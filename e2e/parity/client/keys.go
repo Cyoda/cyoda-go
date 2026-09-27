@@ -112,32 +112,6 @@ func FetchClientCredentialsToken(ctx context.Context, baseURL, clientID, secret 
 	return out.AccessToken, resp.StatusCode, nil
 }
 
-// DeleteKeyPairOnCleanup registers a t.Cleanup that deletes the key pair, so
-// a scenario that fails part-way does not leave it signing on a shared
-// server. The request runs on its own context: t.Context() is cancelled
-// before cleanups run, so DeleteKeyPairRaw(t, ...) there never sends.
-func (c *Client) DeleteKeyPairOnCleanup(t *testing.T, kid string) {
-	t.Helper()
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/api/oauth/keys/keypair/"+url.PathEscape(kid), nil)
-		if err != nil {
-			t.Errorf("cleanup: build key-pair delete: %v", err)
-			return
-		}
-		if c.token != "" {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-		}
-		resp, err := c.http.Do(req)
-		if err != nil {
-			t.Errorf("cleanup: delete key pair %s: %v", kid, err)
-			return
-		}
-		resp.Body.Close()
-	})
-}
-
 // TokenKID returns the "kid" of a JWT's header, or "" when the token is not a
 // JWT with a decodable header. It reads only the header, never the claims.
 func TokenKID(tok string) string {

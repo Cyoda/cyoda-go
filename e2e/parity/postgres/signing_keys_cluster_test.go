@@ -3,11 +3,13 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/multinode"
 )
 
 // reconcileInterval is the own cluster's CYODA_AUTH_CACHE_RECONCILE_INTERVAL.
@@ -47,34 +49,48 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	}
 	waitStatus(t, urls[1], t1, http.StatusOK, "B accepts K1's token")
 
-	t.Run("rotation on A ends the old key and the bootstrap key on B", func(t *testing.T) {
-		k2 := issueOn(t, client.NewClient(urls[0], t1), true)
-		t2 := adminToken(t)
-		if got := client.TokenKID(t2); got != k2 {
+	// k2 is the key the rotation issues; k2Token fetches an admin token from
+	// A and checks A signed it with K2.
+	var k2 string
+	k2Token := func(t *testing.T) string {
+		t.Helper()
+		tok := adminToken(t)
+		if got := client.TokenKID(tok); got != k2 {
 			t.Fatalf("A signs with %q, want K2 %q", got, k2)
 		}
+		return tok
+	}
+
+	t.Run("rotation on A ends the old key and the bootstrap key on B", func(t *testing.T) {
+		k2 = issueOn(t, client.NewClient(urls[0], t1), true)
+		t2 := k2Token(t)
 		waitStatus(t, urls[1], t1, http.StatusUnauthorized, "B refuses K1")
 		waitStatus(t, urls[1], tenant.Token, http.StatusUnauthorized, "B refuses the bootstrap key")
 		waitStatus(t, urls[1], t2, http.StatusOK, "B accepts K2")
 	})
 
-	admin := func(t *testing.T) *client.Client { return client.NewClient(urls[0], adminToken(t)) }
+	// admin does not require K2: a reactivated bootstrap key gets validFrom =
+	// now, so it signs on A (latest validFrom wins) until it is deleted.
+	admin := func(t *testing.T, node int) *client.Client { return client.NewClient(urls[node], adminToken(t)) }
 
 	t.Run("bootstrap reactivate, delete and terminal delete across nodes", func(t *testing.T) {
-		if code, _, err := admin(t).ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
+		if code, _, err := admin(t, 0).ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
 			t.Fatalf("reactivate bootstrap on A: %d %v", code, err)
 		}
 		waitStatus(t, urls[1], tenant.Token, http.StatusOK, "B accepts the reactivated bootstrap key")
-		if code, _, err := admin(t).DeleteKeyPairRaw(t, bootKID); err != nil || code != http.StatusOK {
+		if code, _, err := admin(t, 0).DeleteKeyPairRaw(t, bootKID); err != nil || code != http.StatusOK {
 			t.Fatalf("delete bootstrap on A: %d %v", code, err)
 		}
 		waitStatus(t, urls[1], tenant.Token, http.StatusUnauthorized, "B refuses the deleted bootstrap key")
-		waitStatus(t, urls[1], adminToken(t), http.StatusOK, "control: B accepts K2 after the bootstrap delete")
-		if code, _, err := admin(t).ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)); err != nil || code != http.StatusNotFound {
-			t.Fatalf("reactivate after delete: %d %v, want 404", code, err)
-		}
-		if code, _, err := admin(t).InvalidateKeyPairRaw(t, bootKID); err != nil || code != http.StatusNotFound {
-			t.Fatalf("invalidate after delete: %d %v, want 404", code, err)
+		waitStatus(t, urls[1], k2Token(t), http.StatusOK, "control: B accepts K2 after the bootstrap delete")
+		// The deleted bootstrap state is terminal on both nodes.
+		for node, name := range []string{"A", "B"} {
+			if code, _, err := admin(t, node).ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)); err != nil || code != http.StatusNotFound {
+				t.Errorf("reactivate after delete on %s: %d %v, want 404", name, code, err)
+			}
+			if code, _, err := admin(t, node).InvalidateKeyPairRaw(t, bootKID); err != nil || code != http.StatusNotFound {
+				t.Errorf("invalidate after delete on %s: %d %v, want 404", name, code, err)
+			}
 		}
 	})
 
@@ -86,9 +102,9 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		if !ok {
 			t.Fatal("fixture does not expose PauseDatabase")
 		}
-		tok := adminToken(t)
+		tok := k2Token(t)
 		waitStatus(t, urls[1], tok, http.StatusOK, "B accepts the current key")
-		if code := statusOf(t, urls[1]+"/api/.well-known/jwks.json", ""); code != http.StatusOK {
+		if code, _, _ := getJWKS(t, urls[1]); code != http.StatusOK {
 			t.Fatalf("control: JWKS on B before the pause: %d, want 200", code)
 		}
 
@@ -101,17 +117,19 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		})
 		// Past the staleness bound (10 × interval), with margin.
 		time.Sleep(10*reconcileInterval + 3*time.Second)
-		if code := statusOf(t, urls[1]+"/api/.well-known/jwks.json", ""); code != http.StatusServiceUnavailable {
-			t.Errorf("JWKS on a stale node: %d, want 503", code)
+		code, header, body := getJWKS(t, urls[1])
+		multinode.AssertProblem(t, code, body, http.StatusServiceUnavailable, "STORAGE_UNAVAILABLE", true)
+		if header.Get("Retry-After") == "" {
+			t.Errorf("JWKS 503 on a stale node carries no Retry-After header")
 		}
-		if code := statusOf(t, urls[1]+"/api/model/", tok); code != http.StatusUnauthorized {
+		if code := modelListStatus(t, urls[1], tok); code != http.StatusUnauthorized {
 			t.Errorf("stale node on a token of the current key: %d, want 401 (0 = no response)", code)
 		}
 
 		pauser.UnpauseDatabase(t)
 		paused = false
 		waitStatus(t, urls[1], tok, http.StatusOK, "B recovers after the database returns")
-		if code := statusOf(t, urls[1]+"/api/.well-known/jwks.json", ""); code != http.StatusOK {
+		if code, _, _ := getJWKS(t, urls[1]); code != http.StatusOK {
 			t.Errorf("JWKS on B after recovery: %d, want 200", code)
 		}
 	})
@@ -167,17 +185,33 @@ func fetchClientToken(t *testing.T, baseURL, id, secret string) string {
 // node accepts would hang on its database read.
 var probeHTTP = &http.Client{Timeout: 10 * time.Second}
 
-// statusOf returns the status of GET u (with the bearer token, if any), or 0
-// when no response arrived within probeHTTP's timeout. Never logs the token.
-func statusOf(t *testing.T, u, token string) int {
+// getJWKS fetches baseURL's public JWKS: status (0 when no response arrived
+// within probeHTTP's timeout), headers and body.
+func getJWKS(t *testing.T, baseURL string) (int, http.Header, []byte) {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, baseURL+"/api/.well-known/jwks.json", nil)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := probeHTTP.Do(req)
+	if err != nil {
+		return 0, nil, nil
 	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, resp.Header, body
+}
+
+// modelListStatus returns the status of an authenticated read on baseURL
+// (200 when the node accepts token, 401 when it refuses it), or 0 when no
+// response arrived within probeHTTP's timeout. Never logs the token.
+func modelListStatus(t *testing.T, baseURL, token string) int {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, baseURL+"/api/model/", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := probeHTTP.Do(req)
 	if err != nil {
 		return 0
@@ -192,7 +226,7 @@ func waitStatus(t *testing.T, baseURL, token string, want int, what string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		got := statusOf(t, baseURL+"/api/model/", token)
+		got := modelListStatus(t, baseURL, token)
 		if got == want {
 			return
 		}

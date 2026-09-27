@@ -109,8 +109,9 @@ func mnWarmUp(t *testing.T, fixture MultiNodeFixture, owner *client.Client, tena
 	}
 }
 
-// mnProblem asserts status, errorCode and retryable, and returns detail.
-func mnProblem(t *testing.T, status int, body []byte, wantStatus int, wantCode string, wantRetryable bool) string {
+// AssertProblem asserts a problem document's status, properties.errorCode and
+// properties.retryable, and returns its detail.
+func AssertProblem(t *testing.T, status int, body []byte, wantStatus int, wantCode string, wantRetryable bool) string {
 	t.Helper()
 	var pd struct {
 		Detail     string         `json:"detail"`
@@ -218,7 +219,7 @@ func RunCallout_HandOverCarriesMessageAndVerdict(t *testing.T, fixture MultiNode
 	if err != nil {
 		t.Fatalf("CreateEntityRaw: %v", err)
 	}
-	detail := mnProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", true)
+	detail := AssertProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", true)
 	if want := "processor noop failed: scripted failure: fail-retryable"; !strings.Contains(detail, want) {
 		t.Errorf("detail = %q; want it to contain %q", detail, want)
 	}
@@ -254,7 +255,7 @@ func RunCallout_TwoTenantsShareATag(t *testing.T, fixture MultiNodeFixture) {
 	if err != nil {
 		t.Fatalf("tenant X CreateEntityRaw: %v", err)
 	}
-	detail := mnProblem(t, status, body, http.StatusServiceUnavailable, "CALLOUT_FAILED", true)
+	detail := AssertProblem(t, status, body, http.StatusServiceUnavailable, "CALLOUT_FAILED", true)
 	named := map[string]bool{}
 	for _, m := range mnMemberRe.FindAllStringSubmatch(detail, -1) {
 		named[m[1]] = true

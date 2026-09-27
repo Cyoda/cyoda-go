@@ -176,7 +176,7 @@ func (oc ownCase) create(t *testing.T, model, wf string) uuid.UUID {
 	// Delete the entity when the scenario ends, however it ends (a skip or a
 	// failure included), so a task that keeps retrying does not run for the
 	// rest of the shared server's life.
-	t.Cleanup(func() { _ = oc.c.DeleteEntity(t, id) })
+	oc.c.DeleteEntityOnCleanup(t, id)
 	return id
 }
 

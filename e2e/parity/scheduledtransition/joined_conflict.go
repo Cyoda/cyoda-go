@@ -44,7 +44,7 @@ func RunScheduledTransition_JoinedCallbackConflictRecorded(t *testing.T, fixture
 	if err != nil {
 		t.Fatalf("CreateEntity F: %v", err)
 	}
-	t.Cleanup(func() { _ = oc.c.DeleteEntity(t, fID) })
+	oc.c.DeleteEntityOnCleanup(t, fID)
 
 	setupModelWithWorkflow(t, oc.c, "st-jc-e", 1, targetSample,
 		ownWorkflow("st-jc-e-wf", fireToDone(100, 0, ownProc("cb-update-target-strict", oc.tag, true))))
@@ -52,7 +52,7 @@ func RunScheduledTransition_JoinedCallbackConflictRecorded(t *testing.T, fixture
 	if err != nil {
 		t.Fatalf("CreateEntity E: %v", err)
 	}
-	t.Cleanup(func() { _ = oc.c.DeleteEntity(t, eID) })
+	oc.c.DeleteEntityOnCleanup(t, eID)
 
 	awaitCallout(t, cc, eID, fireTimeout)
 	if err := oc.c.UpdateEntityData(t, fID, `{"k":2,"flavor":"two"}`); err != nil {
