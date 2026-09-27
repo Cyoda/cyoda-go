@@ -6,45 +6,49 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
-- **Signing key pairs are shared and persisted by the cluster.** JWT signing
-  key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
-  invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store,
-  converge across every node the same way trusted keys already do, and
-  survive a restart on a persistent backend (not on the memory backend).
-  First-party token verification now depends on that store: a node that
-  cannot read it for 10 reconcile intervals fails closed, refusing every key
-  (`401` on verification, `503` with `Retry-After` on JWKS) instead of
-  serving a stale answer. Four of the five key-pair endpoints — `current`,
-  `invalidate`, `reactivate` and `delete` — mapped every failure of the
-  underlying store call to `404` before; `POST /oauth/keys/keypair` already
-  answered `500` for a store or key-generation failure. All five now answer
-  `500` with a ticket for an ordinary store or vault failure. `issue`,
-  `invalidate`, `reactivate` and `delete` each read or write the store
-  directly and answer `503 STORAGE_UNAVAILABLE` when the store itself reports
-  it unavailable; `current` and JWKS never touch the store on this path at
-  all — their own node copy going stale is the only thing that makes them
-  answer `503 STORAGE_UNAVAILABLE` (JWKS: with `Retry-After`). `404` is
-  reserved for a key pair that is genuinely not found, retired, a foreign
-  bootstrap record or a deleted bootstrap key; `invalidate`/`reactivate` also
-  answer `404` for an undecodable record, while `delete` always succeeds on
-  one (`200`), replacing it with a deleted bootstrap-state record instead of
-  leaving it in place. A broken (unopenable) key pair still answers `200` on
-  `invalidate`/`reactivate`/`delete` and fails only on `current`, `500` not
-  `404`, if it wins signer selection. `POST
-  /oauth/token`'s existing `500 server_error`
-  gains new causes: a broken selected key pair, any undecodable record (which
-  blocks signing for every audience, not only the one it would have signed
-  for), or a stale store. A restart no longer restores a revoked bootstrap
-  key: invalidating, reactivating or deleting it through the API is now
-  durable. Deleting it is permanent for that key — replacing
-  `CYODA_JWT_SIGNING_KEY` afterwards starts a fresh bootstrap key with no
-  stored state; it does not undelete the old one. Replacing
-  `CYODA_JWT_SIGNING_KEY` also retires every key pair the old key owned — they
-  stop signing, verifying and appearing in JWKS — because a private key is
-  sealed at rest under a key derived from the bootstrap key, so a key pair
-  issued under a replaced bootstrap key can no longer be opened; restoring the
-  old key brings them back. See `cyoda help config auth` ("JWT signing keypair
-  rotation") and `docs/cloud-parity/signing-key-pairs.md`.
+- **Signing key pairs are shared and persisted by the cluster.** See
+  `cyoda help config auth` ("JWT signing keypair rotation") and
+  `docs/cloud-parity/signing-key-pairs.md`.
+  - JWT signing key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
+    invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store.
+    They converge across every node the same way trusted keys already do.
+  - They survive a restart on a persistent backend (not on the memory
+    backend).
+  - First-party token verification now depends on that store. A node that
+    cannot read it for 10 reconcile intervals fails closed and refuses every
+    key: `401` on verification, `503` with `Retry-After` on JWKS. It does not
+    serve a stale answer.
+  - Before, `current`, `invalidate`, `reactivate` and `delete` mapped every
+    failure of the store call to `404`. `POST /oauth/keys/keypair` already
+    answered `500` for a store or key-generation failure.
+  - All five endpoints now answer `500` with a ticket for an ordinary store or
+    vault failure.
+  - `issue`, `invalidate`, `reactivate` and `delete` read or write the store
+    directly. They answer `503 STORAGE_UNAVAILABLE` when the store reports
+    itself unavailable.
+  - `current` and JWKS never touch the store on this path. They answer
+    `503 STORAGE_UNAVAILABLE` only when their node copy is stale (JWKS: with
+    `Retry-After`).
+  - `404` is reserved for a key pair that is not found, retired, a foreign
+    bootstrap record or a deleted bootstrap key.
+  - `invalidate` and `reactivate` also answer `404` for an undecodable record.
+    `delete` always succeeds on one (`200`): it replaces the record with a
+    deleted bootstrap-state record.
+  - A broken (unopenable) key pair still answers `200` on `invalidate`,
+    `reactivate` and `delete`. It fails only on `current`, with `500` not
+    `404`, if it wins signer selection.
+  - `POST /oauth/token`'s existing `500 server_error` has new causes: a broken
+    selected key pair, any undecodable record, or a stale store. An
+    undecodable record blocks signing for every audience, not only its own.
+  - A restart no longer restores a revoked bootstrap key. Invalidating,
+    reactivating or deleting it through the API is now durable.
+  - Deleting the bootstrap key is permanent for that key. Replacing
+    `CYODA_JWT_SIGNING_KEY` afterwards starts a fresh bootstrap key with no
+    stored state; it does not undelete the old one.
+  - Replacing `CYODA_JWT_SIGNING_KEY` retires every key pair the old key
+    owned: they stop signing, verifying and appearing in JWKS. A private key
+    is sealed at rest under a key derived from the bootstrap key, so the new
+    key cannot open them. Restoring the old key brings them back.
 
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute

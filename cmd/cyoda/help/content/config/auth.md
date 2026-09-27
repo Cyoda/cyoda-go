@@ -274,52 +274,63 @@ new window has opened.
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
-- **If `/oauth/token` answers 500 because the selected key pair is broken,**
-  the fix depends on why. Broken because its vault kind is unrecognised: that
-  check runs before the ownership check, so it stays broken whatever
-  `CYODA_JWT_SIGNING_KEY` is set to — invalidate it or `DELETE` it. Broken
-  because it is owned by the currently configured bootstrap key but cannot be
-  opened: replacing `CYODA_JWT_SIGNING_KEY` also fixes this, since it changes
-  what "owned" means and the record becomes retired (inert) instead of broken
-  (blocking); invalidating or deleting it works too. Use an unexpired admin
-  token or an admin from a federated OIDC provider; the log names the KID and
-  the reason.
-- **If `/oauth/token` answers 500 because a stored record cannot be decoded
-  at all:** it blocks signing for every audience, not only the audience of
-  the record that cannot be decoded. `invalidate`/`reactivate` answer `404`
-  for it (it is not a key pair the API recognises); `DELETE` always succeeds
-  instead, replacing the record with a deleted bootstrap-state record. For a
-  genuinely malformed record elsewhere in the store, this node's bootstrap
-  key is unaffected: authenticate the `DELETE` with an unexpired admin token
-  or an admin from a federated OIDC provider. Replacing `CYODA_JWT_SIGNING_KEY`
-  does not help there — the decode failure has nothing to do with which key
-  owns it. One case does depend on the configured key, and disables the
-  bootstrap key too while it lasts: an issued record stored at whatever this
-  node currently derives as its own bootstrap key id is refused as
-  undecodable (two keys can never share one KID), which makes the bootstrap
-  key unusable for signing and verifying — a bootstrap-signed admin token
-  will not verify here. Authenticate instead with a token signed by an active
-  issued key pair, or an admin from a federated OIDC provider, and either
-  call `DELETE` or replace `CYODA_JWT_SIGNING_KEY` — replacing it also fixes
-  the classification directly, since it changes which KID the rule applies
-  to and the record then decodes normally under the new key. At this node's
-  own bootstrap key id, `DELETE` permanently deletes the bootstrap key (see
-  above); at any other id it replaces the record with an inert, deleted
-  bootstrap-state record. An ERROR log names the KV key either way.
-- **If `/oauth/token` answers 500 with no signer** because the bootstrap key
-  has no active state for the audience and no issued key pair is active
-  either: with the default `client` bootstrap audience and no other key
-  pairs, this also means no first-party token verifies at all, so an admin
-  token minted earlier does not help — it was signed by a key that no
-  longer signs or verifies. Recovery needs an admin from a federated OIDC
-  provider, whose tokens do not depend on cyoda's own signing key: reactivate
-  the bootstrap key if it was only invalidated (a deleted bootstrap key
-  cannot be reactivated — see above), or issue a new key pair either way; or
-  replace `CYODA_JWT_SIGNING_KEY`, which starts a fresh, active bootstrap key
-  with no stored state.
 - **No exportable signing key:** a KMS-backed key vault for issued key pairs,
   with the bootstrap key deleted once an issued key signs, is supported by the
   design; no KMS vault ships yet.
+
+#### Recovering from a `/oauth/token` 500
+
+**The selected key pair is broken.** The log names the KID and the reason.
+The fix depends on why:
+
+- Its vault kind is unrecognised. This check runs before the ownership
+  check, so the pair stays broken whatever `CYODA_JWT_SIGNING_KEY` is set to.
+  Invalidate it or `DELETE` it.
+- It is owned by the configured bootstrap key but cannot be opened.
+  Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
+  it: the record is then retired (inert), not broken (blocking).
+- Authenticate with an unexpired admin token or an admin from a federated
+  OIDC provider.
+
+**A stored record cannot be decoded at all.**
+
+- It blocks signing for every audience, not only the audience of that
+  record.
+- `invalidate` and `reactivate` answer `404` for it: it is not a key pair the
+  API recognises.
+- `DELETE` always succeeds. It replaces the record with a deleted
+  bootstrap-state record. An ERROR log names the KV key.
+- At any id other than this node's bootstrap key id, the replacement is
+  inert. The bootstrap key is unaffected: authenticate the `DELETE` with an
+  unexpired admin token or an admin from a federated OIDC provider. Replacing
+  `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does not depend
+  on which key owns the record.
+- At this node's bootstrap key id, `DELETE` permanently deletes the bootstrap
+  key (see above).
+
+**An issued record is stored at this node's bootstrap key id.** Two keys can
+never share one KID, so the record is refused as undecodable.
+
+- The bootstrap key is then unusable for signing and verifying. A
+  bootstrap-signed admin token does not verify on this node.
+- Authenticate with a token signed by an active issued key pair, or an admin
+  from a federated OIDC provider.
+- Then call `DELETE`, or replace `CYODA_JWT_SIGNING_KEY`. A new key changes
+  the bootstrap key id, and the record then decodes normally.
+
+**No signer.** The bootstrap key has no active state for the audience, and no
+issued key pair is active either.
+
+- With the default `client` bootstrap audience and no other key pairs, no
+  first-party token verifies at all. An admin token minted earlier does not
+  help: its key no longer signs or verifies.
+- Recovery needs an admin from a federated OIDC provider, whose tokens do not
+  depend on cyoda's own signing key.
+- That admin can reactivate the bootstrap key if it was only invalidated. A
+  deleted bootstrap key cannot be reactivated (see above).
+- That admin can issue a new key pair in either case.
+- Or replace `CYODA_JWT_SIGNING_KEY`. This starts a fresh, active bootstrap
+  key with no stored state.
 
 #### Upgrading from v0.7.x
 
