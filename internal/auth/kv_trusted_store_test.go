@@ -629,11 +629,6 @@ func (f *failingKV) Put(ctx context.Context, ns, key string, value []byte) error
 	return f.KeyValueStore.Put(ctx, ns, key, value)
 }
 
-// TestKVTrustedKeyStore_RotationCompensatesOnSiblingFailure in
-// kv_trusted_store_admin_test.go replaces the old best-effort assertion here:
-// a failed sibling write now undoes the whole rotation instead of leaving the
-// new key committed with a stale sibling.
-
 // TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange verifies that if the
 // new-key KV write itself fails (before any sibling flips), no state changes.
 func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {

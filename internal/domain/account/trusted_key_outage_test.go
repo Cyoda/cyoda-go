@@ -34,6 +34,10 @@ type outageTrustedKeyStore struct {
 	auth.TrustedKeyStore
 }
 
+func (outageTrustedKeyStore) Register(context.Context, *auth.TrustedKey, auth.RotateOptions) error {
+	return fmt.Errorf("failed to persist trusted key: %w", kvOutageErr{})
+}
+
 func (outageTrustedKeyStore) Delete(context.Context, spi.TenantID, string) error {
 	return fmt.Errorf("failed to delete trusted key from KV store: %w", kvOutageErr{})
 }
@@ -117,4 +121,59 @@ func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
 			commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeTrustedKeyNotFound)
 		})
 	}
+}
+
+// Register goes through the same trustedKeyMutationError routing as the
+// other four handlers: a KV write failure is a 503, not a 500 that leaks
+// storage internals, and not misread as some domain 4xx.
+func TestRegisterTrustedKey_StorageOutage_Return503(t *testing.T) {
+	h := handlerWithTrustedStore(outageTrustedKeyStore{})
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, http.MethodPost, "/oauth/keys/trusted", body))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeStorageUnavailable)
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if r, _ := pd.Properties["retryable"].(bool); !r {
+		t.Errorf("503 is not advertised as retryable; body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), kvOutageDSN) {
+		t.Errorf("response leaked storage internals: %s", w.Body.String())
+	}
+}
+
+// reactivateThenMissingStore simulates Reactivate succeeding on this node
+// while the immediate read-back misses the key — e.g. a concurrent delete
+// landing on another node between the write and the read. It exercises
+// ReactivateTrustedKey's post-Reactivate Get: that failure must route
+// through trustedKeyMutationError like every other trusted-key store
+// failure, not an unconditional 500.
+type reactivateThenMissingStore struct {
+	auth.TrustedKeyStore
+}
+
+func (reactivateThenMissingStore) Reactivate(context.Context, spi.TenantID, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (reactivateThenMissingStore) Get(context.Context, spi.TenantID, string) (*auth.TrustedKey, error) {
+	return nil, fmt.Errorf("%w: k1", auth.ErrTrustedKeyNotFound)
+}
+
+func TestReactivateTrustedKey_GetAfterReactivate_NotFound_Returns404(t *testing.T) {
+	h := handlerWithTrustedStore(reactivateThenMissingStore{})
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateTrustedKey(w, adminReq(t, http.MethodPut, "/oauth/keys/trusted/k1/reactivate", body), "k1")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeTrustedKeyNotFound)
 }

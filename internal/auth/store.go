@@ -92,13 +92,17 @@ type KeyStore interface {
 // gone".
 var ErrTrustedKeyNotFound = errors.New("trusted key not found")
 
-// TrustedKeyStore manages trusted external public keys. The admin methods
-// (Register, Get, Delete, Invalidate, Reactivate) take a context because a
-// cluster-backed implementation reads authoritative state through to the
-// store on every admin call: an admin decision is never made on a possibly
-// stale node copy. GetForVerification stays copy-only — it is the hot,
-// high-volume path and a key's presence there is bounded by reconciliation,
-// not by an admin call's need for ground truth.
+// TrustedKeyStore manages trusted external public keys. Register, Delete,
+// Invalidate and Reactivate take a context because a cluster-backed
+// implementation reads authoritative state through to the store on every
+// call: an admin decision is never made on a possibly stale node copy. Get
+// also takes a context, but is not one of those store-read methods: it
+// serves the node copy when the copy is not stale, and reads through to the
+// store only on a copy miss or while stale — a compromise for a method both
+// admin handlers and ordinary lookups share. GetForVerification stays
+// copy-only with no context — it is the hot, high-volume path, and a key's
+// presence there is bounded by reconciliation, not by a need for ground
+// truth on every call.
 type TrustedKeyStore interface {
 	Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error
 	Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error)
