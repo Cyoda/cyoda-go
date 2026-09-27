@@ -206,10 +206,11 @@ type KeyStore interface {
     Invalidate(ctx context.Context, kid string, graceSec int64) error
     Reactivate(ctx context.Context, kid string, from, to time.Time) (*KeyPair, error)
     Delete(ctx context.Context, kid string) error
-
-    Start(ctx context.Context) // starts the re-read loop
 }
 ```
+
+`KVKeyStore` also has `Start(ctx)`, which runs its re-read loop; it is not on the
+interface, because no consumer of the interface starts loops.
 
 - `IssueRequest`: audience, `validFrom`, `validTo`, `invalidateCurrent`, grace.
   Validation stays in the adapter (`keys_adapter.go:33-94`).
