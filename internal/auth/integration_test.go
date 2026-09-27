@@ -122,8 +122,12 @@ func TestAuthService_DeterministicKID(t *testing.T) {
 		t.Fatalf("NewAuthService B: %v", err)
 	}
 
-	kidA := svcA.SigningKID()
-	kidB := svcB.SigningKID()
+	kpA, errA := svcA.KeyStore().Current("client")
+	kpB, errB := svcB.KeyStore().Current("client")
+	if errA != nil || errB != nil || !kpA.Bootstrap || !kpB.Bootstrap {
+		t.Fatalf("bootstrap signers: A=%v (%v), B=%v (%v)", kpA, errA, kpB, errB)
+	}
+	kidA, kidB := kpA.KID, kpB.KID
 
 	if kidA == "" {
 		t.Fatal("KID A is empty")

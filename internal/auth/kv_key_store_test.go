@@ -50,6 +50,27 @@ func issueWindow(t *testing.T, s *auth.KVKeyStore, aud string, from, to time.Tim
 	return kp
 }
 
+// ReconcileInterval is the re-read interval the store runs with: the
+// configured one, or the default when none is configured.
+func TestKVKeyStore_ReconcileInterval(t *testing.T) {
+	boot := newBootstrap(t)
+	for _, tc := range []struct {
+		configured, want time.Duration
+	}{
+		{0, 60 * time.Second},
+		{5 * time.Second, 5 * time.Second},
+	} {
+		s, err := auth.NewKVKeyStore(systemCtx(), mustNewMemoryKV(t, systemCtx()),
+			auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", ReconcileInterval: tc.configured})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := s.ReconcileInterval(); got != tc.want {
+			t.Errorf("configured %v: ReconcileInterval() = %v, want %v", tc.configured, got, tc.want)
+		}
+	}
+}
+
 func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 	boot := newBootstrap(t)
 	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")

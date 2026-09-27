@@ -12,8 +12,9 @@ import (
 // window counted from each node's start would differ per node, reset on every
 // restart, and stop a long-running node from verifying the cluster's tokens.
 func TestBootstrapKey_HasNoWindow(t *testing.T) {
+	pem := generateTestPEM(t)
 	svc := newTestAuthService(t, auth.AuthConfig{
-		SigningKeyPEM: generateTestPEM(t),
+		SigningKeyPEM: pem,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures: auth.IAMFeatures{
@@ -29,8 +30,8 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
-		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
+	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
 	}
 	if kp.Audience != "client" {
 		t.Errorf("audience = %q, want client", kp.Audience)
@@ -50,8 +51,9 @@ func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 	features := auth.DefaultIAMFeatures()
 	features.BootstrapAudience = "human"
 	features.KeypairDefaultValidityDays = 30
+	pem := generateTestPEM(t)
 	svc := newTestAuthService(t, auth.AuthConfig{
-		SigningKeyPEM: generateTestPEM(t),
+		SigningKeyPEM: pem,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures:   features,
@@ -60,8 +62,8 @@ func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
-		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
+	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
 	}
 	if kp.Audience != "human" {
 		t.Errorf("audience = %q, want the configured human", kp.Audience)
@@ -87,8 +89,9 @@ func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
 // TestBootstrapKey_DefaultIAMFeaturesApplied: a zero-value IAMFeatures takes
 // the defaults, so the bootstrap key gets the default audience.
 func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
+	pem := generateTestPEM(t)
 	svc := newTestAuthService(t, auth.AuthConfig{
-		SigningKeyPEM: generateTestPEM(t),
+		SigningKeyPEM: pem,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		// IAMFeatures deliberately omitted — should use DefaultIAMFeatures().
@@ -98,8 +101,8 @@ func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
-		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
+	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
 	}
 	if want := auth.DefaultIAMFeatures().BootstrapAudience; kp.Audience != want {
 		t.Errorf("audience = %q, want the default %q", kp.Audience, want)
@@ -117,4 +120,18 @@ func TestNewAuthService_RequiresKV(t *testing.T) {
 	if err == nil {
 		t.Fatal("NewAuthService accepted a config with no KV store")
 	}
+}
+
+// pemKID is the KID of the bootstrap key a PEM configures.
+func pemKID(t *testing.T, pem string) string {
+	t.Helper()
+	k, err := auth.ParseRSAPrivateKeyFromPEM([]byte(pem))
+	if err != nil {
+		t.Fatal(err)
+	}
+	kid, err := auth.DeriveKID(&k.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kid
 }

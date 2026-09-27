@@ -23,17 +23,16 @@ type AuthConfig struct {
 	SigningKeyMetrics ReconcileMetrics       // nil: no metrics
 }
 
-// AuthService wires together all auth components and exposes HTTP handlers.
-// Public endpoints (token, JWKS) are on Handler().
-// Admin endpoints (key mgmt, M2M mgmt, trusted keys) are on AdminHandler()
-// and must be wrapped with authentication middleware by the caller.
+// AuthService wires together the auth stores and serves the public auth
+// endpoints (token, JWKS) on Handler(). The admin endpoints for key pairs,
+// trusted keys and M2M clients are served by internal/domain/account over the
+// stores this service exposes.
 type AuthService struct {
 	keyStore     *KVKeyStore
 	trustedStore *KVTrustedKeyStore
 	m2mStore     *InMemoryM2MClientStore
 	issuer       string
 	handler      http.Handler
-	adminHandler http.Handler
 }
 
 // NewAuthService builds and loads both key stores from the KV store; a failed
@@ -86,19 +85,11 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	}
 	m2mStore := NewInMemoryM2MClientStore()
 
-	retryAfter := config.ReconcileInterval
-	if retryAfter <= 0 {
-		retryAfter = defaultReconcileInterval
-	}
-
-	// Public mux: token issuance and JWKS (no auth required).
+	// Public mux: token issuance and JWKS (no auth required). A stale JWKS
+	// answer asks the caller to retry after one re-read interval.
 	publicMux := http.NewServeMux()
-	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, retryAfter))
+	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
 	publicMux.Handle("POST /oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds))
-
-	// Admin mux: key-pair, trusted-key and M2M-client endpoints are chi
-	// adapters in internal/domain/account; this mux stays empty.
-	adminMux := http.NewServeMux()
 
 	return &AuthService{
 		keyStore:     keyStore,
@@ -106,7 +97,6 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 		m2mStore:     m2mStore,
 		issuer:       config.Issuer,
 		handler:      publicMux,
-		adminHandler: adminMux,
 	}, nil
 }
 
@@ -119,13 +109,6 @@ func (s *AuthService) Start(ctx context.Context) {
 // Handler returns the HTTP handler for public auth endpoints (token, JWKS).
 func (s *AuthService) Handler() http.Handler {
 	return s.handler
-}
-
-// AdminHandler returns the HTTP handler for admin auth endpoints
-// (key management, M2M client management, trusted keys).
-// The caller MUST wrap this with authentication + authorization middleware.
-func (s *AuthService) AdminHandler() http.Handler {
-	return s.adminHandler
 }
 
 // Issuer returns the configured issuer string.
@@ -146,9 +129,4 @@ func (s *AuthService) TrustedKeyStore() TrustedKeyStore {
 // M2MClientStore returns the M2M client store.
 func (s *AuthService) M2MClientStore() M2MClientStore {
 	return s.m2mStore
-}
-
-// SigningKID returns the KID of the bootstrap signing key.
-func (s *AuthService) SigningKID() string {
-	return s.keyStore.BootstrapKID()
 }

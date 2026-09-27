@@ -112,7 +112,10 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 	return s, nil
 }
 
-func (s *KVKeyStore) BootstrapKID() string                { return s.boot.kid }
+func (s *KVKeyStore) BootstrapKID() string { return s.boot.kid }
+
+// ReconcileInterval is the store's re-read interval, the default applied.
+func (s *KVKeyStore) ReconcileInterval() time.Duration    { return s.rep.cfg.interval }
 func (s *KVKeyStore) Reconcile(ctx context.Context) error { return s.rep.Reconcile(ctx) }
 func (s *KVKeyStore) Start(ctx context.Context)           { s.rep.Start(ctx) }
 
