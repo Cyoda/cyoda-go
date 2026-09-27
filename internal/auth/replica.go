@@ -51,11 +51,18 @@ type replicaConfig[R any] struct {
 	interval    time.Duration
 	broadcaster spi.ClusterBroadcaster
 	metrics     ReconcileMetrics
-	// afterChange runs after every swap or apply, once the copy lock has
-	// been released. It must not call mutate or Reconcile on this replica:
-	// mutate holds adminMu and Reconcile holds reconcileMu across the whole
-	// call including this callback, so either would deadlock against itself.
-	afterChange func()
+	// afterChange runs after every swap or apply, with the resulting copy
+	// passed directly under a read lock (r.read(r.cfg.afterChange)) — never
+	// by reaching back into the replica for it, so a caller that assigns its
+	// own reference to the replica only after construction (e.g. KVKeyStore
+	// assigning s.rep after newKVReplica returns) is never raced: a gossip
+	// message delivered during Subscribe, before that assignment, still only
+	// ever hands the callback a recs map, nothing that could be nil. It must
+	// not call mutate or Reconcile on this replica: mutate holds adminMu and
+	// Reconcile holds reconcileMu across the whole call including this
+	// callback, so either would deadlock against itself. Like read's fn, it
+	// must not retain recs beyond the call.
+	afterChange func(recs map[string]R)
 }
 
 // kvReplica keeps a node copy of one KV namespace. A change message from a
@@ -185,7 +192,7 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 			r.cfg.metrics.SetReconcileConsecutiveFailures(0)
 			r.cfg.metrics.SetReconcileStalenessSeconds(0)
 			if r.cfg.afterChange != nil {
-				r.cfg.afterChange()
+				r.read(r.cfg.afterChange)
 			}
 			return nil
 		}
@@ -278,7 +285,7 @@ func (r *kvReplica[R]) mutate(fn func() (apply func(recs map[string]R), wrote bo
 			r.gen.Add(1)
 		}()
 		if r.cfg.afterChange != nil {
-			r.cfg.afterChange()
+			r.read(r.cfg.afterChange)
 		}
 	} else if wrote {
 		// The store was written but fn had no direct patch for the copy

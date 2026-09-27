@@ -1,8 +1,14 @@
 package auth
 
-import "testing"
+import (
+	"bytes"
+	"log/slog"
+	"strings"
+	"testing"
+	"time"
+)
 
-// signerCached is a white-box accessor for the test below: it reaches into
+// signerCached is a white-box accessor for the tests below: it reaches into
 // the classifier's signer cache directly rather than adding a production
 // accessor whose only caller would be a test.
 func signerCached(s *KVKeyStore, kid string) bool {
@@ -15,7 +21,9 @@ func signerCached(s *KVKeyStore, kid string) bool {
 // A record deleted from the store and re-read must not leave its opened
 // signer cached forever: retain() runs after every swap/apply alongside
 // logClassChanges so a deleted (or retired, or reclassified) owned record's
-// signer leaves memory instead of accumulating.
+// signer leaves memory instead of accumulating. A second, still-owned record
+// must keep its cached signer — retain must evict precisely, not empty the
+// cache wholesale.
 func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
@@ -31,12 +39,15 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, "issued-1", issuedRecord(t, v, "issued-1", "client")); err != nil {
 		t.Fatal(err)
 	}
+	if err := kv.Put(ctx, signingKeysNamespace, "issued-2", issuedRecord(t, v, "issued-2", "human")); err != nil {
+		t.Fatal(err)
+	}
 	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !signerCached(s, "issued-1") {
-		t.Fatal("expected the opened signer to be cached after the initial load")
+	if !signerCached(s, "issued-1") || !signerCached(s, "issued-2") {
+		t.Fatal("expected both opened signers to be cached after the initial load")
 	}
 	if err := kv.Delete(ctx, signingKeysNamespace, "issued-1"); err != nil {
 		t.Fatal(err)
@@ -46,5 +57,47 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	}
 	if signerCached(s, "issued-1") {
 		t.Fatal("expected the deleted record's cached signer to have been evicted")
+	}
+	if !signerCached(s, "issued-2") {
+		t.Fatal("expected the still-owned record's cached signer to remain — retain must not empty the whole cache")
+	}
+}
+
+// Regression: a broadcaster that delivers a gossip message during Subscribe
+// — before NewKVKeyStore has assigned s.rep — must not panic and must leave
+// the store usable. Before the fix, the replica's afterChange callback took
+// no arguments and KVKeyStore's implementation read s.rep.read(...) inside
+// it; a ping arriving in that window ran the callback against a nil s.rep
+// (a recovered panic logged as an ERROR, and an unsynchronised read/write of
+// s.rep). The fix passes the replica's copy directly into the callback, so
+// KVKeyStore's callback never touches s.rep at all.
+func TestKVKeyStore_GossipDuringConstructionDoesNotPanic(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	boot := loadFixtureKey(t)
+
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{
+		Bootstrap: boot, BootstrapAudience: "client", Broadcaster: immediateBroadcaster{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for s.rep.ping.busy() {
+		if time.Now().After(deadline) {
+			t.Fatal("ping never settled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if strings.Contains(buf.String(), "panic") {
+		t.Fatalf("gossip during construction must not panic; log: %s", buf.String())
+	}
+	if _, _, err := s.Signer("client"); err != nil {
+		t.Fatalf("store must still work after construction-time gossip: %v", err)
 	}
 }

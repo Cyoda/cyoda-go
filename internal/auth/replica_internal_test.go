@@ -446,3 +446,118 @@ func (b *internalBroadcaster) Subscribe(topic string, h func([]byte)) {
 	defer b.mu.Unlock()
 	b.hs[topic] = append(b.hs[topic], h)
 }
+
+// immediateBroadcaster invokes the handler synchronously, inside Subscribe
+// itself, simulating a gossip message that a real broadcaster could deliver
+// before the constructor that is still setting up returns to its caller.
+type immediateBroadcaster struct{}
+
+func (immediateBroadcaster) Broadcast(string, []byte) {}
+
+func (immediateBroadcaster) Subscribe(_ string, h func([]byte)) { h(nil) }
+
+func newStringReplicaWithAfterChange(t *testing.T, kv spi.KeyValueStore, bc spi.ClusterBroadcaster, afterChange func(map[string]string)) *kvReplica[string] {
+	t.Helper()
+	r, err := newKVReplica(replicaSystemCtx(), kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond, broadcaster: bc, afterChange: afterChange,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// afterChange must receive the copy it applies (the swapped map on Reconcile,
+// the applied map on mutate), not reach back into the replica for it: it runs
+// after the copy lock is released, and the only safe way to hand it a
+// consistent snapshot is to pass it directly under a read lock.
+func TestReplica_AfterChangeReceivesRecsOnReconcile(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	var calls int
+	var got map[string]string
+	r := newStringReplicaWithAfterChange(t, kv, nil, func(recs map[string]string) {
+		calls++
+		got = map[string]string{}
+		for k, v := range recs {
+			got[k] = v
+		}
+	})
+	_ = kv.Put(ctx, "ns", "a", []byte("1"))
+	if err := r.Reconcile(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || got["a"] != "1" {
+		t.Fatalf("calls = %d, got = %v", calls, got)
+	}
+}
+
+func TestReplica_AfterChangeReceivesRecsOnMutate(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	var got map[string]string
+	r := newStringReplicaWithAfterChange(t, kv, nil, func(recs map[string]string) {
+		got = map[string]string{}
+		for k, v := range recs {
+			got[k] = v
+		}
+	})
+	err := r.mutate(func() (func(map[string]string), bool, error) {
+		_ = kv.Put(ctx, "ns", "x", []byte("1"))
+		return func(m map[string]string) { m["x"] = "1" }, true, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["x"] != "1" {
+		t.Fatalf("afterChange did not see mutate's result: %v", got)
+	}
+}
+
+// A broadcaster that delivers a gossip message during Subscribe — before
+// newKVReplica has even returned to its caller — must not observe anything
+// but a fully-formed replica: afterChange only ever sees the recs argument,
+// never the replica whose fields a caller (e.g. KVKeyStore) may still be
+// assigning.
+func TestReplica_AfterChangeDuringConstructionSeesOnlyRecs(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	_ = kv.Put(ctx, "ns", "a", []byte("1"))
+	called := make(chan map[string]string, 1)
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond, broadcaster: immediateBroadcaster{},
+		afterChange: func(recs map[string]string) {
+			cp := map[string]string{}
+			for k, v := range recs {
+				cp[k] = v
+			}
+			called <- cp
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// handlePing triggers reconcileOnce on its own goroutine (coalescingRunner);
+	// wait for it to settle so the afterChange call above (if any) has run.
+	deadline := time.Now().Add(2 * time.Second)
+	for r.ping.busy() {
+		if time.Now().After(deadline) {
+			t.Fatal("ping never settled")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case got := <-called:
+		if got["a"] != "1" {
+			t.Fatalf("afterChange saw = %v", got)
+		}
+	default:
+		// No ping fired before Subscribe returned inline data race window;
+		// either way the replica itself must be usable.
+	}
+	if snapshot(r)["a"] != "1" {
+		t.Fatal("replica unusable after construction-time gossip")
+	}
+}

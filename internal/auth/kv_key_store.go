@@ -107,7 +107,7 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 		return nil, fmt.Errorf("failed to load signing keys from KV store: %w", err)
 	}
 	s.rep = rep
-	s.afterChange()
+	s.rep.read(s.afterChange)
 	s.logRevokedBootstrap(slog.LevelInfo)
 	return s, nil
 }
@@ -249,42 +249,40 @@ func (s *KVKeyStore) Published() ([]*KeyPair, error) {
 	return out, nil
 }
 
-// afterChange runs after every swap or apply: it logs class-set changes and
-// evicts cached signers of records that are no longer owned (deleted,
-// retired, or reclassified) so they leave memory instead of accumulating.
-func (s *KVKeyStore) afterChange() {
-	s.logClassChanges()
-	s.retainOwnedSigners()
+// afterChange is the replica's afterChange callback: it receives the copy
+// directly (never through s.rep, which a construction-time gossip message
+// could still be racing to assign) and logs class-set changes and evicts
+// cached signers of records that are no longer owned (deleted, retired, or
+// reclassified) so they leave memory instead of accumulating.
+func (s *KVKeyStore) afterChange(recs map[string]*signingEntry) {
+	s.logClassChanges(recs)
+	s.retainOwnedSigners(recs)
 }
 
 // retainOwnedSigners drops every cached signer whose record is not currently
 // classified owned in the copy.
-func (s *KVKeyStore) retainOwnedSigners() {
+func (s *KVKeyStore) retainOwnedSigners(recs map[string]*signingEntry) {
 	owned := map[string]bool{}
-	s.rep.read(func(recs map[string]*signingEntry) {
-		for k, e := range recs {
-			if e.class == classOwned {
-				owned[k] = true
-			}
+	for k, e := range recs {
+		if e.class == classOwned {
+			owned[k] = true
 		}
-	})
+	}
 	s.cls.signers.retain(owned)
 }
 
 // logClassChanges logs when the set of retired, or of broken and undecodable,
 // records changes — not on every re-read.
-func (s *KVKeyStore) logClassChanges() {
+func (s *KVKeyStore) logClassChanges(recs map[string]*signingEntry) {
 	var retired, broken []string
-	s.rep.read(func(recs map[string]*signingEntry) {
-		for k, e := range recs {
-			switch e.class {
-			case classRetired:
-				retired = append(retired, k)
-			case classBroken, classUndecodable:
-				broken = append(broken, k+" ("+e.reason+")")
-			}
+	for k, e := range recs {
+		switch e.class {
+		case classRetired:
+			retired = append(retired, k)
+		case classBroken, classUndecodable:
+			broken = append(broken, k+" ("+e.reason+")")
 		}
-	})
+	}
 	sort.Strings(retired)
 	sort.Strings(broken)
 	s.logMu.Lock()
@@ -305,12 +303,16 @@ func (s *KVKeyStore) logClassChanges() {
 	}
 }
 
-// ownedIssuedCount counts the issued key pairs this node's vault owns.
+// ownedIssuedCount counts the issued key pairs this node's vault owns: owned
+// records, and broken ones the vault attempted to open and failed to (any
+// reason but "unknown vault kind" — a record in that class was never sealed
+// under this bootstrap key's wrap scheme at all, so replacing the PEM would
+// not unseal it, and it must not inflate this count).
 func (s *KVKeyStore) ownedIssuedCount() int {
 	n := 0
 	s.rep.read(func(recs map[string]*signingEntry) {
 		for _, e := range recs {
-			if e.class == classOwned || e.class == classBroken {
+			if e.class == classOwned || (e.class == classBroken && e.reason != "unknown vault kind") {
 				n++
 			}
 		}
