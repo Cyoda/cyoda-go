@@ -135,8 +135,11 @@ func (v *wrappedVault) Open(_ context.Context, meta KeyMeta, sealed []byte) (Sig
 		return nil, fmt.Errorf("%w: decryption", ErrUnseal)
 	}
 	parsed, err := x509.ParsePKCS8PrivateKey(pk8)
+	if err != nil {
+		return nil, fmt.Errorf("%w: not PKCS#8", ErrUnseal)
+	}
 	priv, ok := parsed.(*rsa.PrivateKey)
-	if err != nil || !ok {
+	if !ok {
 		return nil, fmt.Errorf("%w: not RSA", ErrUnseal)
 	}
 	spki, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)

@@ -3,6 +3,8 @@ package auth
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -13,6 +15,7 @@ import (
 	"flag"
 	"math/big"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -31,6 +34,33 @@ func loadFixtureKey(t *testing.T) *rsa.PrivateKey {
 	return k
 }
 
+// requireUnsealReason asserts err is ErrUnseal AND names the given reason
+// class. errors.Is alone would still pass if Open collapsed every distinct
+// failure into one indistinguishable reason, so every failure test checks
+// the reason text too.
+func requireUnsealReason(t *testing.T, err error, reason string) {
+	t.Helper()
+	if !errors.Is(err, ErrUnseal) {
+		t.Fatalf("err = %v, want ErrUnseal", err)
+	}
+	if !strings.Contains(err.Error(), reason) {
+		t.Fatalf("err = %v, want reason %q", err, reason)
+	}
+}
+
+// asWrappedVault gives a test direct access to the vault's AEAD, to seal
+// payloads the exported API can never produce (a mismatched key, a
+// non-RSA key, or garbage) so the post-decryption checks in Open can be
+// exercised directly.
+func asWrappedVault(t *testing.T, v KeyVault) *wrappedVault {
+	t.Helper()
+	wv, ok := v.(*wrappedVault)
+	if !ok {
+		t.Fatalf("vault is %T, not *wrappedVault", v)
+	}
+	return wv
+}
+
 type vaultGolden struct {
 	WrappingKeyHex string  `json:"wrappingKeyHex"`
 	Meta           KeyMeta `json:"meta"`
@@ -46,7 +76,10 @@ func TestWrappedVault_Golden(t *testing.T) {
 		t.Fatal(err)
 	}
 	if *updateGolden {
-		v, _ := NewWrappedVault(key, "owner-kid")
+		v, err := NewWrappedVault(key, "owner-kid")
+		if err != nil {
+			t.Fatal(err)
+		}
 		meta := KeyMeta{KID: "golden-kid", Audience: "client", Algorithm: "RS256", Owner: "owner-kid"}
 		spki, sealed, _, err := v.Generate(context.Background(), meta)
 		if err != nil {
@@ -54,7 +87,11 @@ func TestWrappedVault_Golden(t *testing.T) {
 		}
 		meta.SPKI = spki
 		g := vaultGolden{WrappingKeyHex: hex.EncodeToString(wk), Meta: meta, SealedHex: hex.EncodeToString(sealed)}
-		b, _ := json.MarshalIndent(g, "", "  ")
+		b, err := json.MarshalIndent(g, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b = append(b, '\n')
 		if err := os.WriteFile("testdata/vault/golden.json", b, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -70,8 +107,14 @@ func TestWrappedVault_Golden(t *testing.T) {
 	if hex.EncodeToString(wk) != g.WrappingKeyHex {
 		t.Fatalf("wrapping key changed: got %x", wk)
 	}
-	v, _ := NewWrappedVault(key, "owner-kid")
-	sealed, _ := hex.DecodeString(g.SealedHex)
+	v, err := NewWrappedVault(key, "owner-kid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := hex.DecodeString(g.SealedHex)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := v.Open(context.Background(), g.Meta, sealed); err != nil {
 		t.Fatalf("golden sealed record no longer opens: %v", err)
 	}
@@ -84,8 +127,14 @@ func TestWrappingKey_IndependentOfEncoding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, _ := deriveWrappingKey(key)
-	b, _ := deriveWrappingKey(again)
+	a, err := deriveWrappingKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := deriveWrappingKey(again)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(a, b) {
 		t.Fatal("PKCS#1 and PKCS#8 encodings of one key derive different wrapping keys")
 	}
@@ -99,8 +148,14 @@ func TestWrappingKey_MultiPrime(t *testing.T) {
 	}
 	reordered := *key
 	reordered.Primes = []*big.Int{key.Primes[2], key.Primes[0], key.Primes[1]}
-	a, _ := deriveWrappingKey(key)
-	b, _ := deriveWrappingKey(&reordered)
+	a, err := deriveWrappingKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := deriveWrappingKey(&reordered)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !bytes.Equal(a, b) {
 		t.Fatal("prime order changes the wrapping key")
 	}
@@ -131,7 +186,9 @@ func TestWrappedVault_RoundTrip(t *testing.T) {
 	}
 }
 
-// Every bound field must stop the sealed key opening when it changes.
+// Every bound field must stop the sealed key opening when it changes. All
+// four are authenticated as AEAD associated data, so any change fails
+// decryption itself, before the key is ever parsed.
 func TestWrappedVault_AssociatedDataBindsEachField(t *testing.T) {
 	v, meta := newTestVault(t)
 	spki, sealed, _, err := v.Generate(context.Background(), meta)
@@ -139,8 +196,14 @@ func TestWrappedVault_AssociatedDataBindsEachField(t *testing.T) {
 		t.Fatal(err)
 	}
 	meta.SPKI = spki
-	other, _ := rsa.GenerateKey(rand.Reader, 2048)
-	otherSPKI, _ := x509.MarshalPKIXPublicKey(&other.PublicKey)
+	other, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSPKI, err := x509.MarshalPKIXPublicKey(&other.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
 	cases := map[string]func(m *KeyMeta){
 		"kid":       func(m *KeyMeta) { m.KID = "k2" },
 		"audience":  func(m *KeyMeta) { m.Audience = "human" },
@@ -151,29 +214,128 @@ func TestWrappedVault_AssociatedDataBindsEachField(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := meta
 			mutate(&m)
-			if _, err := v.Open(context.Background(), m, sealed); !errors.Is(err, ErrUnseal) {
-				t.Fatalf("Open with changed %s: err = %v, want ErrUnseal", name, err)
-			}
+			_, err := v.Open(context.Background(), m, sealed)
+			requireUnsealReason(t, err, "decryption")
 		})
 	}
 }
 
 func TestWrappedVault_RefusesOtherOwner(t *testing.T) {
 	v, meta := newTestVault(t)
-	spki, sealed, _, _ := v.Generate(context.Background(), meta)
-	meta.SPKI, meta.Owner = spki, "another-owner"
-	if _, err := v.Open(context.Background(), meta, sealed); !errors.Is(err, ErrUnseal) {
-		t.Fatalf("err = %v, want ErrUnseal", err)
+	spki, sealed, _, err := v.Generate(context.Background(), meta)
+	if err != nil {
+		t.Fatal(err)
 	}
+	meta.SPKI, meta.Owner = spki, "another-owner"
+	_, err = v.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "owner mismatch")
+}
+
+// The owner is bound cryptographically, not only pre-checked: a second
+// vault built from the SAME bootstrap key but a different owner passes the
+// early owner check when meta.Owner is set to match ITS OWN owner, yet
+// still cannot open a record sealed under the first vault's owner, because
+// Owner is authenticated as associated data.
+func TestWrappedVault_OwnerBoundThroughAEAD(t *testing.T) {
+	v, meta := newTestVault(t) // owner "owner-kid"
+	spki, sealed, _, err := v.Generate(context.Background(), meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.SPKI = spki
+
+	other, err := NewWrappedVault(loadFixtureKey(t), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.Owner = "other" // matches other's own owner: passes the pre-check
+	_, err = other.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "decryption")
 }
 
 func TestWrappedVault_OtherBootstrapKeyCannotOpen(t *testing.T) {
 	v, meta := newTestVault(t)
-	spki, sealed, _, _ := v.Generate(context.Background(), meta)
-	meta.SPKI = spki
-	otherKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	w, _ := NewWrappedVault(otherKey, "owner-kid")
-	if _, err := w.Open(context.Background(), meta, sealed); !errors.Is(err, ErrUnseal) {
-		t.Fatalf("err = %v, want ErrUnseal", err)
+	spki, sealed, _, err := v.Generate(context.Background(), meta)
+	if err != nil {
+		t.Fatal(err)
 	}
+	meta.SPKI = spki
+	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := NewWrappedVault(otherKey, "owner-kid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "decryption")
+}
+
+// The public-key check runs only after decryption succeeds: sealing key B's
+// private key directly under associated data that names key A's SPKI makes
+// Open decrypt cleanly and then catch the swap in the post-decryption
+// comparison.
+func TestWrappedVault_PublicKeyMismatchAfterDecryption(t *testing.T) {
+	v, meta := newTestVault(t)
+	wv := asWrappedVault(t, v)
+
+	keyB, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk8B, err := x509.MarshalPKCS8PrivateKey(keyB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyA, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spkiA, err := x509.MarshalPKIXPublicKey(&keyA.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	meta.SPKI = spkiA
+	sealed := wv.aead.Seal(nil, nil, pk8B, associatedData(meta))
+	_, err = v.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "public key mismatch")
+}
+
+// A non-RSA key parses successfully as PKCS#8 but fails the *rsa.PrivateKey
+// type assertion; sealing it directly (bypassing Generate, which only ever
+// produces RSA keys) reaches that branch.
+func TestWrappedVault_NotRSAAfterDecryption(t *testing.T) {
+	v, meta := newTestVault(t)
+	wv := asWrappedVault(t, v)
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk8, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The RSA type assertion fails before SPKI is ever compared, so its
+	// value only needs to match what was sealed for decryption to succeed.
+	meta.SPKI = []byte("placeholder-spki")
+	sealed := wv.aead.Seal(nil, nil, pk8, associatedData(meta))
+	_, err = v.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "not RSA")
+}
+
+// Bytes that are not a valid PKCS#8 DER encoding at all must be reported as
+// a distinct reason from "not RSA" (a valid PKCS#8 key of the wrong type).
+func TestWrappedVault_NotPKCS8AfterDecryption(t *testing.T) {
+	v, meta := newTestVault(t)
+	wv := asWrappedVault(t, v)
+
+	meta.SPKI = []byte("placeholder-spki")
+	garbage := []byte("not a valid PKCS#8 DER-encoded private key")
+	sealed := wv.aead.Seal(nil, nil, garbage, associatedData(meta))
+	_, err := v.Open(context.Background(), meta, sealed)
+	requireUnsealReason(t, err, "not PKCS#8")
 }
