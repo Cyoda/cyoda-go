@@ -1,9 +1,6 @@
 package auth
 
 import (
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
 	"fmt"
 	"net/http"
 )
@@ -60,12 +57,10 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	// Derive KID deterministically from the public key so all nodes sharing the
 	// same RSA key produce the same KID. This is required for multi-node clusters
 	// where any node must validate tokens issued by any other node.
-	pubDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
+	signingKID, err := DeriveKID(&privateKey.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal public key for KID: %w", err)
+		return nil, err
 	}
-	kidHash := sha256.Sum256(pubDER)
-	signingKID := hex.EncodeToString(kidHash[:16])
 
 	// Register the signing key as the initial active key pair. It lives as
 	// long as the configuration that supplies it, so it has no window: no
