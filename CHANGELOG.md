@@ -34,6 +34,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - `invalidate` and `reactivate` also answer `404` for an undecodable record.
     `delete` always succeeds on one (`200`): it replaces the record with a
     deleted bootstrap-state record.
+  - `delete`, `invalidate` and `reactivate` answer `400 BAD_REQUEST` for a
+    `keyId` that is not 32 lowercase hex characters (was `404`). Every issued
+    and bootstrap key id has that form.
   - A broken (unopenable) key pair still answers `200` on `invalidate`,
     `reactivate` and `delete`. It fails only on `current`, with `500` not
     `404`, if it wins signer selection.
@@ -756,6 +759,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ERROR naming the records left changed, and a crash between writes (rather
   than a reported error) can still leave the new record active alongside old
   siblings, for the admin to repeat.
+
+- **A key's timestamp could make its stored record unreadable.** An offset
+  timestamp such as `9999-12-31T23:59:59-05:00` is in year 10000 in UTC, and
+  a stored record cannot hold that year in a form it can read back. Issuing
+  or reactivating a key pair, and registering or reactivating a trusted key,
+  stored it anyway: an unreadable trusted-key record stopped every node from
+  starting after a restart, and an unreadable key-pair record blocked signing
+  for every audience. A `validFrom` or `validTo` (the default included) whose
+  UTC year is outside 1–9999 is now refused with `400 BAD_REQUEST`, and
+  neither store writes one. A trusted-key record that cannot be read no
+  longer stops a node starting: it is skipped with an ERROR, which refuses
+  only that key, and `DELETE` removes it.
 
 - **A scheduled transition could run twice at the same time.** A task still
   running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,

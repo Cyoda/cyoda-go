@@ -47,9 +47,10 @@ across a restart, and when its issuing bootstrap key is replaced.
   `404` is reserved for a KID that is genuinely absent, retired, a foreign
   bootstrap-state record, an undecodable record, or (at this node's own
   bootstrap key id specifically) already deleted. `DELETE` treats an
-  undecodable record differently from every other 404 cause: it always
-  succeeds (`200`), replacing the record with a deleted bootstrap-state
-  record instead of leaving it in place — the one way to clear it.
+  undecodable record differently from every other 404 cause: at a
+  well-formed key id it always succeeds (`200`), replacing the record with a
+  deleted bootstrap-state record instead of leaving it in place — the one way
+  to clear it through the API.
 - **A storage-unavailable failure is 503, never a stale or wrong answer** —
   but which operations can even reach one differs by endpoint. `current` and
   `GET /.well-known/jwks.json` read only the node's own copy and never call
@@ -68,6 +69,15 @@ across a restart, and when its issuing bootstrap key is replaced.
   `invalidateCurrent`) reads nothing from the store at all before writing the
   new record, so only the write itself can produce a `503` there. None of
   these cases is ever downgraded to a `404` or to an empty/partial answer.
+- **Malformed input is `400`, never stored.** `DELETE`, `invalidate` and
+  `reactivate` answer `400 BAD_REQUEST` for a `keyId` that is not 32
+  lowercase hex characters (every issued and bootstrap KID has that form).
+  A `validFrom` or `validTo` whose UTC year is outside 1..9999 — e.g.
+  `9999-12-31T23:59:59-05:00`, which is year 10000 in UTC — is `400
+  BAD_REQUEST` on key-pair issue and reactivate and on trusted-key register
+  and reactivate, including a default `validTo` that lands there; no such
+  record is ever written, because RFC 3339 cannot represent it for reading
+  back.
 - **At-rest sealing is an implementation property, not part of the contract.**
   cyoda-go seals an issued key pair's private key at rest (AES-256-GCM under a
   key derived from the bootstrap key's RSA primes) so a copy of the store
@@ -99,6 +109,9 @@ Confirm, or record where Cloud differs:
    only where it would actually be used to sign.
 5. A storage or availability failure on a key-pair endpoint or JWKS answers a
    retryable `5xx`, never a `404` and never an empty or partial JWKS set.
+6. A malformed key-pair `keyId`, and a `validFrom`/`validTo` outside UTC
+   years 1..9999 on the key-pair and trusted-key endpoints, answer `400
+   BAD_REQUEST`, and nothing is stored.
 
 ## CaaS ticket to file
 
@@ -122,6 +135,9 @@ divergence, against these points (full contract:
 - A storage or availability failure on a key-pair endpoint, or on the JWKS
   endpoint, answers a retryable `5xx`, never `404` and never an empty or
   partial key set.
+- A key-pair `keyId` that is not 32 lowercase hex characters, and a
+  `validFrom`/`validTo` outside UTC years 1..9999 on the key-pair and
+  trusted-key endpoints, answer `400 BAD_REQUEST`; nothing is stored.
 - At-rest sealing of a private key is an implementation detail, not part of
   the contract — Cloud need not match cyoda-go's AES-256-GCM sealing scheme,
   only the visible behaviour above.

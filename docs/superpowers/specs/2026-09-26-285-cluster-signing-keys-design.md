@@ -93,7 +93,7 @@ Namespace `signing-keys` in the SYSTEM-tenant KV store; KV key = KID; JSON.
 |---|---|
 | `kind` | `"issued"` |
 | `kid`, `audience`, `algorithm` | as today (`RS256` only) |
-| `active`, `validFrom`, `validTo` | as today; RFC 3339 nano, UTC |
+| `active`, `validFrom`, `validTo` | as today; RFC 3339 nano, UTC; UTC year 1..9999 |
 | `publicKey` | SPKI DER, base64 |
 | `vault.kind` | `"wrapped"` |
 | `vault.owner` | owner value (§2) |
@@ -107,6 +107,10 @@ Namespace `signing-keys` in the SYSTEM-tenant KV store; KV key = KID; JSON.
 | `kid` | the bootstrap KID |
 | `active`, `validFrom`, `validTo` | the state the API set |
 | `deleted` | `true` once deleted; terminal |
+
+A timestamp whose UTC year is outside 1..9999 is never written — by either store:
+its RFC 3339 form would have no four-digit year, so no node could read the
+record back. The adapters answer it with 400 (§7); the encoders refuse it too.
 
 No key material. Absent means the default state: active, zero `validFrom`, no
 `validTo` (`service.go:70-85`). It is written when the bootstrap key is
@@ -250,7 +254,9 @@ Each record is classified when a node loads it:
   audience; if its KV key is the bootstrap KID, the bootstrap key also stops
   verifying. An ERROR names the KV key. `DELETE` on that KID replaces it with a deleted bootstrap-state record: if it was some node's bootstrap state that key stays revoked, and otherwise the record is a foreign bootstrap record, which every node ignores. Startup
   does not fail on it (the API must stay usable to remove it). The trusted-key
-  store keeps skipping undecodable records: for it, absence only refuses a key.
+  store skips an undecodable record with an ERROR, at startup as on every
+  re-read — for it, absence only refuses that key, so it never stops a node
+  starting — and `DELETE` removes it by its tenant-prefixed KV key.
 - Invalidate, reactivate and delete answer 404 for retired records and foreign
   bootstrap-state records. A node deployed with the wrong bootstrap key therefore
   cannot change the cluster's key pairs.
@@ -291,7 +297,9 @@ signing-key store (and by M2M clients, #286, next). It owns:
 
 Each store supplies: the namespace, the gossip topic (`auth.trustedkeys`,
 `auth.signingkeys`), a decode function from `(kvKey, bytes)` to `(copyKey,
-record)`, its policy for undecodable records (§5.5), and the metrics names. The
+record)` — an undecodable record is the signing-key store's own class, and one
+the trusted-key store's decode refuses is left out of the copy with an ERROR
+(§5.5) — and the metrics names. The
 copy key is the store's choice: the trusted-key store keeps keying by bare KID.
 
 **Admin write path** (both stores):
@@ -451,6 +459,7 @@ a node is unreachable.
 | | 500 | — | any other store or vault failure (ticket UUID, generic message) | yes (was 404) |
 | `POST /oauth/keys/keypair` | 200 | — | issued (and siblings invalidated) | stored now |
 | | 400 | `BAD_REQUEST`, `UNSUPPORTED_ALGORITHM` | validation (unchanged) | no |
+| | 400 | `BAD_REQUEST` | `validFrom` or `validTo` (the default included) outside UTC years 1..9999 | yes (was 500) |
 | | 500 / 503 | — | a write failed; compensated (§5.7) | yes |
 | `GET /oauth/keys/keypair/current` | 200 | — | the selected signer | retired excluded |
 | | 400 | `BAD_REQUEST` | invalid audience | no |
@@ -459,11 +468,14 @@ a node is unreachable.
 | | 503 | `STORAGE_UNAVAILABLE` | stale | yes |
 | `POST .../{keyId}/invalidate` | 200 | — | invalidated | stored now |
 | | 400 | `BAD_REQUEST` | grace out of range (unchanged) | no |
+| | 400 | `BAD_REQUEST` | `keyId` not 32 lowercase hex characters | yes (was 404) |
 | | 404 | `KEYPAIR_NOT_FOUND` | unknown, retired, foreign bootstrap state, deleted bootstrap | yes |
 | `POST .../{keyId}/reactivate` | 200 | — | reactivated | stored now |
 | | 400 | `BAD_REQUEST` | window validation (unchanged) | no |
+| | 400 | `BAD_REQUEST` | `keyId` not 32 lowercase hex characters; `validFrom` or `validTo` outside UTC years 1..9999 | yes (was 404 / 500) |
 | | 404 | `KEYPAIR_NOT_FOUND` | unknown, retired, foreign bootstrap state, deleted bootstrap | yes |
 | `DELETE .../{keyId}` | 200 | — | issued record removed; undecodable record replaced by a deleted bootstrap-state record; bootstrap `deleted = true` | stored now |
+| | 400 | `BAD_REQUEST` | `keyId` not 32 lowercase hex characters | yes (was 404) |
 | | 404 | `KEYPAIR_NOT_FOUND` | unknown, retired, foreign bootstrap state, deleted bootstrap | yes |
 | `POST /oauth/token` | 500 | `server_error` | signer broken; undecodable record; stale; no signer; store failure | new causes |
 | `GET /.well-known/jwks.json` | 200 | — | owned issued keys and the bootstrap key | retired excluded |
@@ -540,6 +552,9 @@ a node is unreachable.
 | restart with another bootstrap key retires issued pairs; the new key signs | | ✓ | | |
 | WARN when the bootstrap key is invalidated or deleted while it still owns issued key pairs; none with zero | ✓ | | | |
 | existing trusted-key unit and e2e tests pass unchanged | ✓ | ✓ | | |
+| a timestamp outside UTC years 1..9999: both stores write nothing; 400 on issue and reactivate (key pair and trusted key) | ✓ | ✓ | | |
+| `keyId` not 32 lowercase hex → 400 on delete, invalidate, reactivate; a well-formed unknown `keyId` → 404 | ✓ | ✓ | | |
+| trusted-key store: an undecodable record is skipped at startup (ERROR); `DELETE` removes it | ✓ | | | |
 
 Waivers:
 - 500 and 503 on the admin endpoints are not tested end to end. The adapters pass

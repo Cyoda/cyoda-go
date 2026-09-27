@@ -243,7 +243,10 @@ keeps it published in JWKS for up to N more seconds (never past its
 `validTo`), for external verifiers that
 cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
 and `validTo` must be in the future; both are `400`. Reactivating a key pair
-also refuses a future `validFrom`. To schedule a rotation,
+also refuses a future `validFrom`. A `validFrom` or `validTo` (the default
+included) whose UTC year is outside 1–9999 is `400` on every key-pair and
+trusted-key endpoint, and so is a key-pair `keyId` that is not 32 lowercase
+hex characters. To schedule a rotation,
 issue the new key pair ahead of time, then invalidate the old one once the
 new window has opened.
 
@@ -298,8 +301,10 @@ The fix depends on why:
   record.
 - `invalidate` and `reactivate` answer `404` for it: it is not a key pair the
   API recognises.
-- `DELETE` always succeeds. It replaces the record with a deleted
-  bootstrap-state record. An ERROR log names the KV key.
+- `DELETE` on its KV key always succeeds. It replaces the record with a
+  deleted bootstrap-state record. An ERROR log names the KV key. A KV key
+  that is not 32 lowercase hex characters was never written by cyoda and is
+  refused by the API (`400`); remove that record in the database itself.
 - At any id other than this node's bootstrap key id, the replacement is
   inert. The bootstrap key is unaffected: authenticate the `DELETE` with an
   unexpired admin token or an admin from a federated OIDC provider. Replacing
