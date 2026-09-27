@@ -186,9 +186,11 @@ func (sc *signerCache) put(kid string, fp [32]byte, s Signer) {
 	sc.m[kid] = cachedSigner{fingerprint: fp, signer: s}
 }
 
-// retain drops every cached signer whose KID is not in kids. A later task
-// calls it after each re-read so signers of records no longer stored leave
-// memory (spec §5.3).
+// retain drops every cached signer whose KID is not in kids. KVKeyStore's
+// retainOwnedSigners calls it from the replica's afterChange callback after
+// every swap or apply, with the owned KIDs of that copy, so signers of
+// records no longer owned (deleted, retired, or reclassified) leave memory
+// (spec §5.3).
 func (sc *signerCache) retain(kids map[string]bool) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()

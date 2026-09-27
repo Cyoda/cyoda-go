@@ -448,13 +448,23 @@ func (b *internalBroadcaster) Subscribe(topic string, h func([]byte)) {
 }
 
 // immediateBroadcaster invokes the handler synchronously, inside Subscribe
-// itself, simulating a gossip message that a real broadcaster could deliver
-// before the constructor that is still setting up returns to its caller.
+// itself, then blocks for longer than a re-read normally takes. This
+// simulates a gossip message that a real broadcaster could deliver — and
+// have fully processed on the ping's own goroutine — before the constructor
+// that is still setting up (newKVReplica itself, or a caller assigning its
+// own reference to the result, such as KVKeyStore assigning s.rep only after
+// newKVReplica returns) gets control back. Subscribe blocking is what makes
+// the race deterministic enough to test: without it, the triggered re-read
+// runs on a fresh goroutine that may or may not finish before the caller
+// moves on.
 type immediateBroadcaster struct{}
 
 func (immediateBroadcaster) Broadcast(string, []byte) {}
 
-func (immediateBroadcaster) Subscribe(_ string, h func([]byte)) { h(nil) }
+func (immediateBroadcaster) Subscribe(_ string, h func([]byte)) {
+	h(nil)
+	time.Sleep(300 * time.Millisecond)
+}
 
 func newStringReplicaWithAfterChange(t *testing.T, kv spi.KeyValueStore, bc spi.ClusterBroadcaster, afterChange func(map[string]string)) *kvReplica[string] {
 	t.Helper()
@@ -516,10 +526,13 @@ func TestReplica_AfterChangeReceivesRecsOnMutate(t *testing.T) {
 }
 
 // A broadcaster that delivers a gossip message during Subscribe — before
-// newKVReplica has even returned to its caller — must not observe anything
-// but a fully-formed replica: afterChange only ever sees the recs argument,
-// never the replica whose fields a caller (e.g. KVKeyStore) may still be
-// assigning.
+// newKVReplica has even returned to its caller — must still only ever hand
+// afterChange the recs argument, never require it to reach back into the
+// replica (whose fields, or a caller's own reference to it such as
+// KVKeyStore's s.rep, may not be fully assigned yet). immediateBroadcaster
+// blocks Subscribe long enough that the ping's triggered reconcile has
+// already run and called afterChange by the time construction returns, so
+// this test requires the callback to have fired — it is not a maybe.
 func TestReplica_AfterChangeDuringConstructionSeesOnlyRecs(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
@@ -539,23 +552,13 @@ func TestReplica_AfterChangeDuringConstructionSeesOnlyRecs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// handlePing triggers reconcileOnce on its own goroutine (coalescingRunner);
-	// wait for it to settle so the afterChange call above (if any) has run.
-	deadline := time.Now().Add(2 * time.Second)
-	for r.ping.busy() {
-		if time.Now().After(deadline) {
-			t.Fatal("ping never settled")
-		}
-		time.Sleep(time.Millisecond)
-	}
 	select {
 	case got := <-called:
 		if got["a"] != "1" {
 			t.Fatalf("afterChange saw = %v", got)
 		}
-	default:
-		// No ping fired before Subscribe returned inline data race window;
-		// either way the replica itself must be usable.
+	case <-time.After(2 * time.Second):
+		t.Fatal("afterChange was never called for the construction-time gossip")
 	}
 	if snapshot(r)["a"] != "1" {
 		t.Fatal("replica unusable after construction-time gossip")

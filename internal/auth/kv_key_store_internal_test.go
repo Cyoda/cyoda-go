@@ -4,9 +4,25 @@ import (
 	"bytes"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// lockedBuf is a concurrency-safe slog sink: the ping's reconcile can log
+// from its own goroutine while the test goroutine is still inspecting or
+// about to inspect the buffer, and a plain bytes.Buffer is not safe for that.
+type lockedBuf struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuf) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+func (l *lockedBuf) String() string { l.mu.Lock(); defer l.mu.Unlock(); return l.b.String() }
 
 // signerCached is a white-box accessor for the tests below: it reaches into
 // the classifier's signer cache directly rather than adding a production
@@ -71,14 +87,18 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 // (a recovered panic logged as an ERROR, and an unsynchronised read/write of
 // s.rep). The fix passes the replica's copy directly into the callback, so
 // KVKeyStore's callback never touches s.rep at all.
+//
+// immediateBroadcaster blocks Subscribe for longer than a re-read takes, so
+// the ping's triggered reconcile — and, pre-fix, its panic — has already run
+// by the time NewKVKeyStore returns: this is not a maybe.
 func TestKVKeyStore_GossipDuringConstructionDoesNotPanic(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
 	boot := loadFixtureKey(t)
 
-	var buf bytes.Buffer
+	buf := &lockedBuf{}
 	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(buf, nil)))
 	defer slog.SetDefault(prev)
 
 	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{
@@ -87,6 +107,8 @@ func TestKVKeyStore_GossipDuringConstructionDoesNotPanic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Belt-and-braces margin beyond immediateBroadcaster's own 300ms block, in
+	// case a slow CI host pushes the reconcile past it.
 	deadline := time.Now().Add(2 * time.Second)
 	for s.rep.ping.busy() {
 		if time.Now().After(deadline) {
