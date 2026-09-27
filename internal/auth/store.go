@@ -29,6 +29,7 @@ type KeyPair struct {
 	Active     bool
 	ValidFrom  time.Time
 	ValidTo    *time.Time
+	Bootstrap  bool // the key built from configuration
 }
 
 // InWindow reports whether now is inside the key pair's window
