@@ -110,7 +110,9 @@ Namespace `signing-keys` in the SYSTEM-tenant KV store; KV key = KID; JSON.
 
 A timestamp whose UTC year is outside 1..9999 is never written — by either store:
 its RFC 3339 form would have no four-digit year, so no node could read the
-record back. The adapters answer it with 400 (§7); the encoders refuse it too.
+record back. The adapters answer it with 400 (§7); the encoders refuse it too,
+and the decoders treat a stored one as undecodable, so both sides accept the
+same range.
 
 No key material. Absent means the default state: active, zero `validFrom`, no
 `validTo` (`service.go:70-85`). It is written when the bootstrap key is
@@ -562,6 +564,9 @@ Waivers:
   errors through `common.Internal`, whose mapping is already tested; the unit rows
   assert every adapter reaches it with each error class.
 - Cassandra multi-node: no fixture yet (cyoda-go-cassandra#35).
+- Timestamp-range and `keyId`-format rows: no parity scenario. They are adapter
+  validation, and a record the adapters refuse cannot be written through the
+  API on any backend.
 
 ## 9. Documentation and parity
 

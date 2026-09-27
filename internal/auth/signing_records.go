@@ -119,15 +119,23 @@ func decodeSigningRecord(kvKey string, data []byte) (signingRecord, KeyPair, []b
 	if rec.KID != kvKey {
 		return rec, KeyPair{}, nil, nil, errors.New("kid does not match its key")
 	}
+	// Decode accepts exactly the range encodeSigningRecord writes
+	// (StorableTime), so both sides agree on what a record can hold.
 	from, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)
 	if err != nil {
 		return rec, KeyPair{}, nil, nil, fmt.Errorf("invalid validFrom: %w", err)
+	}
+	if !StorableTime(from) {
+		return rec, KeyPair{}, nil, nil, errors.New("validFrom out of range")
 	}
 	var to *time.Time
 	if rec.ValidTo != nil {
 		t, err := time.Parse(time.RFC3339Nano, *rec.ValidTo)
 		if err != nil {
 			return rec, KeyPair{}, nil, nil, fmt.Errorf("invalid validTo: %w", err)
+		}
+		if !StorableTime(t) {
+			return rec, KeyPair{}, nil, nil, errors.New("validTo out of range")
 		}
 		to = &t
 	}

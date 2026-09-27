@@ -485,9 +485,14 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		E: eVal,
 	}
 
+	// Deserialize accepts exactly the range serializeTrustedKey writes
+	// (StorableTime), so both sides agree on what a record can hold.
 	validFrom, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)
 	if err != nil {
 		return nil, fmt.Errorf("invalid validFrom: %w", err)
+	}
+	if !StorableTime(validFrom) {
+		return nil, errors.New("validFrom out of range")
 	}
 
 	var validTo *time.Time
@@ -495,6 +500,9 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		t, err := time.Parse(time.RFC3339Nano, *rec.ValidTo)
 		if err != nil {
 			return nil, fmt.Errorf("invalid validTo: %w", err)
+		}
+		if !StorableTime(t) {
+			return nil, errors.New("validTo out of range")
 		}
 		validTo = &t
 	}

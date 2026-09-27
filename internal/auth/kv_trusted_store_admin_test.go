@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -337,5 +338,81 @@ func TestKVTrustedKeyStore_DeleteUndecodable(t *testing.T) {
 	}
 	if _, err := s.GetForVerification(tID, "good"); err != nil {
 		t.Fatalf("good key lost: %v", err)
+	}
+}
+
+// Deleting tenant A's undecodable record at KID k must not drop tenant B's
+// key k from the node copy: the copy is keyed by bare KID, and Register's
+// cross-tenant check cannot see a record that does not decode.
+func TestKVTrustedKeyStore_DeleteUndecodableKeepsOtherTenantsKey(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	if err := kv.Put(ctx, "trusted-keys", auth.TrustedKeyKVKeyForTesting("A", "k"), []byte("{")); err != nil {
+		t.Fatal(err)
+	}
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Register(ctx, newTrustedKey(t, "B", "k", time.Now()), auth.RotateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(ctx, "A", "k"); err != nil {
+		t.Fatalf("delete A's record: %v", err)
+	}
+	if _, err := s.GetForVerification("B", "k"); err != nil {
+		t.Fatalf("B's key dropped by A's delete: %v", err)
+	}
+}
+
+// Construction fails, and never serves an empty copy, when the initial List
+// fails.
+func TestKVTrustedKeyStore_ConstructionFailsWhenListFails(t *testing.T) {
+	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
+	kv.fail.Store(true)
+	if s, err := auth.NewKVTrustedKeyStore(systemCtx(), kv); err == nil || s != nil {
+		t.Fatalf("store = %v, err = %v; want a construction error", s, err)
+	}
+}
+
+// Decode accepts exactly the range encode writes: a stored timestamp whose UTC
+// year is outside 1..9999 does not decode, even where RFC 3339 can spell it
+// (year 0).
+func TestKVTrustedKeyStore_DecodeRefusesUnstorableTime(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tID := spi.TenantID("t")
+	if err := s.Register(ctx, newTrustedKey(t, tID, "k", time.Now()), auth.RotateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	key := auth.TrustedKeyKVKeyForTesting(tID, "k")
+	good, err := kv.Get(ctx, "trusted-keys", key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"validFrom", "validTo"} {
+		var rec map[string]any
+		if err := json.Unmarshal(good, &rec); err != nil {
+			t.Fatal(err)
+		}
+		rec[field] = "0000-06-01T00:00:00Z"
+		b, _ := json.Marshal(rec)
+		if err := kv.Put(ctx, "trusted-keys", key, b); err != nil {
+			t.Fatal(err)
+		}
+		r, err := auth.NewKVTrustedKeyStore(ctx, kv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.GetForVerification(tID, "k"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+			t.Fatalf("%s in year 0 loaded: err = %v", field, err)
+		}
+		if _, err := r.Get(ctx, tID, "k"); err == nil || errors.Is(err, auth.ErrTrustedKeyNotFound) {
+			t.Fatalf("%s in year 0: Get err = %v, want a decode error", field, err)
+		}
 	}
 }

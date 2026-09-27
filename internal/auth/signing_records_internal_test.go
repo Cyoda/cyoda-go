@@ -340,6 +340,7 @@ func TestClassify_Undecodable(t *testing.T) {
 		t.Fatal(err)
 	}
 	invalidTime := "not-a-time"
+	yearZero := "0000-06-01T00:00:00Z"
 
 	cases := map[string][]byte{
 		"not json":             []byte("{"),
@@ -360,6 +361,10 @@ func TestClassify_Undecodable(t *testing.T) {
 		"bad sealed base64": mutate(func(r *signingRecord) { r.Vault.Sealed = "not-base64!!!" }),
 		"invalid validFrom": mutate(func(r *signingRecord) { r.ValidFrom = invalidTime }),
 		"invalid validTo":   mutate(func(r *signingRecord) { r.ValidTo = &invalidTime }),
+		// RFC 3339 spells year 0, but encode never writes it: decode refuses
+		// it too, so both sides accept the same range.
+		"validFrom in year 0": mutate(func(r *signingRecord) { r.ValidFrom = yearZero }),
+		"validTo in year 0":   mutate(func(r *signingRecord) { r.ValidTo = &yearZero }),
 		"bootstrap record with invalid validFrom": func() []byte {
 			b, err := json.Marshal(signingRecord{Kind: recordKindBootstrap, KID: testKID("k1"), Active: true, ValidFrom: invalidTime})
 			if err != nil {

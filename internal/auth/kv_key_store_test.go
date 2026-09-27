@@ -228,3 +228,14 @@ func TestKVKeyStore_NonKIDRecordIsIgnored(t *testing.T) {
 		t.Fatalf("verification: err = %v", err)
 	}
 }
+
+// Construction fails, and never serves an empty copy, when the initial List
+// fails.
+func TestKVKeyStore_ConstructionFailsWhenListFails(t *testing.T) {
+	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
+	kv.fail.Store(true)
+	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t), BootstrapAudience: "client"})
+	if err == nil || s != nil {
+		t.Fatalf("store = %v, err = %v; want a construction error", s, err)
+	}
+}
