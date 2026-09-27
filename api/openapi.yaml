@@ -5390,14 +5390,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -5456,14 +5456,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -5513,14 +5513,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -5584,14 +5584,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -5657,14 +5657,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
