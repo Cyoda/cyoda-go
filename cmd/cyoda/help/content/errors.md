@@ -81,7 +81,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
 - `errors.INCOMPATIBLE_TYPE` — `400` — not retryable — entity payload's leaf value type is not assignable to the schema's declared DataType for that path; carries `fieldPath`, `expectedType`, `actualType` in `properties` (Cloud's `FoundIncompatibleTypeWithEntityModelException` equivalent)
 - `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
-- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist.
+- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
 - `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
 - `errors.INVALID_AGGREGATION_FIELD` — `400` — not retryable — grouped-stats aggregation `field` is outside the scalar JSONPath grammar (most often a missing `$.` leader)
 - `errors.INVALID_AGGREGATION_OP` — `400` — not retryable — grouped-stats aggregation `op` is not one of `sum`, `avg`, `min`, `max`, `stdev`

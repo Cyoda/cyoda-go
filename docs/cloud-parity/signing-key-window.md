@@ -27,9 +27,10 @@ at once. Invalidating the only key pair that can sign is allowed — revocation
 must always work — and leaves the audience without a signing key until a new
 one is issued.
 
-The bootstrap signing key (from configuration) has no window: it lasts as long
-as the configuration supplies it. Reactivating it through the API gives it the
-window the request names, on the node that serves the request.
+The bootstrap signing key (from configuration) has no window unless the
+key-pair API gave it one: reactivating it through the API gives it the window
+the request names, invalidating it stops it signing and verifying, and both
+states are stored and shared by the cluster (see `signing-key-pairs.md`).
 
 ## Cloud action
 

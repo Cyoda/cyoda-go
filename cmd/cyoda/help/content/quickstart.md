@@ -102,7 +102,7 @@ Env vars required to move from defaults to a production-shaped deployment.
 
 ### Generating secrets
 
-**JWT signing key** — RSA private key, PEM-encoded. The binary accepts PKCS#8 (`BEGIN PRIVATE KEY`) and PKCS#1 (`BEGIN RSA PRIVATE KEY`) formats. Only RSA keys are accepted; the signature algorithm is always RS256. Minimum recommended size: 2048 bits.
+**JWT signing key** — RSA private key, PEM-encoded. The binary accepts PKCS#8 (`BEGIN PRIVATE KEY`) and PKCS#1 (`BEGIN RSA PRIVATE KEY`) formats. Only RSA keys are accepted; the signature algorithm is always RS256. Minimum recommended size: 2048 bits. This key is also the root secret for issued signing key pairs; see `config.auth` before replacing it.
 
 Generate a PKCS#8 RSA-2048 key (preferred):
 

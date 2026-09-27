@@ -118,14 +118,15 @@ Claim shape for cyoda-minted tokens:
 - `caas_tier` (string) — Tier label. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers.
 - `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens.
 
-Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` header points at the active keypair in the keystore (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
+Cyoda issues tokens signed with `CYODA_JWT_SIGNING_KEY` (RS256). The `kid` header points at the signing key pair, shared by every node of the cluster (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
 
 ## ERRORS
 
-- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not in cyoda's keystore or a registered OIDC provider's JWKS.
+- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not a usable key of this node or a registered OIDC provider's JWKS.
 - `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation.
 - `errors.BAD_REQUEST` (`400`) — malformed `grant_type`, missing form fields, invalid `subject_token` shape.
 - The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`) per RFC 6749 rather than the generic cyoda error envelope — `invalid_client`, `invalid_grant`, `access_denied`, `server_error`.
+- `GET /.well-known/jwks.json` answers `503` with `Retry-After` while the node's key copy is stale.
 
 ## SEE ALSO
 

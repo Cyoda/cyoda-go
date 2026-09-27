@@ -26,6 +26,11 @@ Returned by:
 - `POST /oauth/keys/keypair/{keyId}/reactivate` — keyId not present.
 - `GET /oauth/keys/keypair/current?audience=X` — no active key for audience X.
 
+Also returned for a key pair owned by another bootstrap key — retired after
+`CYODA_JWT_SIGNING_KEY` was replaced, until it is restored — and for the
+bootstrap key after it was deleted through the API, which is permanent for
+that key.
+
 Verify the keyId, or check the bootstrap-key audience configuration via `CYODA_JWT_BOOTSTRAP_AUDIENCE`.
 
 ## SEE ALSO

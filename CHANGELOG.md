@@ -6,6 +6,32 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Signing key pairs are shared and persisted by the cluster; the store's own
+  failures answer `500`/`503`, not `404`.** JWT signing key pairs
+  (`/oauth/keys/keypair*`) and the bootstrap key's invalidate/reactivate/delete
+  state now live in the SYSTEM-tenant KV store, converge across every node the
+  same way trusted keys already do, and survive a restart on a persistent
+  backend (not on the memory backend). First-party token verification now
+  depends on that store: a node that cannot read it for 10 reconcile intervals
+  fails closed, refusing every key (`401` on verification, `503` with
+  `Retry-After` on JWKS) instead of serving a stale answer. Every one of the
+  five key-pair endpoints answered `404` for any failure before; now a store
+  or vault failure answers `500` with a ticket, or `503 STORAGE_UNAVAILABLE`
+  when storage is marked unavailable or the node's copy is stale, and `404` is
+  reserved for a key pair that is genuinely not found, retired, a foreign
+  bootstrap record or a deleted bootstrap key. `POST /oauth/token`'s existing
+  `500 server_error` gains the same new causes: a broken or undecodable
+  selected key pair, or a stale store. A restart no longer restores a revoked
+  bootstrap key: invalidating, reactivating or deleting it through the API is
+  now durable, and deleting it is permanent for that key until
+  `CYODA_JWT_SIGNING_KEY` is replaced. Replacing `CYODA_JWT_SIGNING_KEY` now
+  retires every key pair the old key owned — they
+  stop signing, verifying and appearing in JWKS — because a private key is
+  sealed at rest under a key derived from the bootstrap key, so a key pair
+  issued under a replaced bootstrap key can no longer be opened; restoring the
+  old key brings them back. See `cyoda help config auth` ("JWT signing keypair
+  rotation") and `docs/cloud-parity/signing-key-pairs.md`.
+
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute
   member echoes on a callback — was joined to that transaction on every
@@ -686,6 +712,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 ### Fixed
+
+- **A runtime-issued signing key pair only worked on the node that issued
+  it.** In a cluster, a token signed with one was rejected by every other
+  node, and the key pair itself did not survive a restart. Key pairs are now
+  shared and persisted across the cluster the same way trusted keys already
+  were (see Breaking).
+
+- **A trusted-key admin write could act on a stale copy, leave a rotation half
+  applied, or block verification.** An invalidate or reactivate read the
+  node's cache rather than the store, so a node that had not yet received an
+  earlier delete could write the deleted record back; a rotation that
+  invalidated a predecessor could miss a sibling issued on another node; and
+  an admin write held the cache's lock across the KV call, so a slow write
+  blocked every token verification on that node. Admin writes (for both
+  trusted keys and signing key pairs) now take a store-specific mutex, read
+  the current records from KV directly, and apply the result to the node copy
+  only after the KV write succeeds — hot-path verification never waits on KV.
 
 - **A scheduled transition could run twice at the same time.** A task still
   running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,

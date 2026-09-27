@@ -318,6 +318,8 @@ kubectl create secret generic cyoda-jwt -n cyoda \
   --from-file=signing-key.pem=signing.pem
 ```
 
+This key is also the root secret for issued signing key pairs; see `config.auth` before replacing it.
+
 **HMAC secret** — generate 32 bytes of entropy (64 hex chars) and load into a Kubernetes Secret:
 
 ```
