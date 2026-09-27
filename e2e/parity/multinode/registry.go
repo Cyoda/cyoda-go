@@ -4,10 +4,11 @@
 // processes (memory, sqlite single-file) do not implement
 // MultiNodeFixture and never run these scenarios.
 //
-// The cluster-capable backends (postgres in-tree; cassandra in
-// cyoda-go-cassandra) provide a fixture
-// implementation and a TestMultiNode entry that blank-imports this
-// package to trigger init-time registration.
+// The cluster-capable backend that runs these scenarios is postgres
+// (e2e/parity/postgres): it provides a fixture implementation and a
+// TestMultiNode entry that imports this package, which triggers
+// init-time registration. The cassandra plugin runs the single-node
+// parity list only; a multi-node fixture for it is not yet provided.
 package multinode
 
 import "testing"
@@ -24,8 +25,8 @@ var allTests []NamedTest
 // Register appends additional NamedTests to the canonical list at
 // init time. Sub-packages call Register from init().
 //
-// Per-backend test wrappers (postgres in-tree, cassandra out-of-tree)
-// MUST blank-import the multinode-extension packages — otherwise the
+// Every cluster-capable backend's test wrapper (today only postgres)
+// MUST import the multinode-extension packages — otherwise the
 // extension's init() never runs and the wrapper silently misses the
 // entire scenario set. Currently the only extension is this package
 // itself; future cluster-shareable extension packages added by later
