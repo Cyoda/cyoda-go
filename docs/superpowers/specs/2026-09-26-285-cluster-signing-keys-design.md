@@ -520,7 +520,7 @@ a node is unreachable.
 | deleted bootstrap is never a rotation sibling; `deleted` survives every write | ✓ | | | |
 | retired: 404 on invalidate / reactivate / delete; not in JWKS or current | ✓ | ✓ (restart with another PEM) | | |
 | broken signer → `/oauth/token` 500 and `GET current` 500 | ✓ | ✓ (raw KV write) | | |
-| undecodable record: signing fails; at the bootstrap KID the bootstrap key stops verifying; `DELETE` removes it | ✓ | | | |
+| undecodable record: signing fails; at the bootstrap KID the bootstrap key stops verifying; `DELETE` replaces it with a deleted bootstrap-state record | ✓ | | | |
 | bootstrap state: absent → default; applied after re-read | ✓ | | | |
 | admin writes read KV: a stale copy cannot bring back a deleted record; rotation sees a sibling issued elsewhere; hot-path reads do not wait on a slow KV call — both stores | ✓ | | | |
 | generation-guarded single-record load (trusted keys) | ✓ | | | |
