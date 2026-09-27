@@ -392,6 +392,9 @@ func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r.Start(ctx)
+	if r.Stale() {
+		t.Fatal("stale immediately after Start: the gap before Start counted")
+	}
 	deadline := time.Now().Add(3 * time.Second)
 	for !r.Stale() {
 		if time.Now().After(deadline) {
