@@ -377,7 +377,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 		t.Fatalf("expected exactly one retired WARN after load, got %d; log: %s", n, buf.String())
 	}
 	buf.Reset()
-	if err := s.Reconcile(ctx); err != nil {
+	if err := s.rep.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(buf.String(), "retired on this node"); n != 0 {
@@ -386,7 +386,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, "retired-2", issuedRecord(t, otherVault, "retired-2", "human")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Reconcile(ctx); err != nil {
+	if err := s.rep.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(buf.String(), "retired on this node"); n != 1 {

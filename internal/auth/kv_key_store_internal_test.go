@@ -68,7 +68,7 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	if err := kv.Delete(ctx, signingKeysNamespace, "issued-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Reconcile(ctx); err != nil {
+	if err := s.rep.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if signerCached(s, "issued-1") {

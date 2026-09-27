@@ -18,3 +18,13 @@ func OpenPrivateKeyForTest(boot *rsa.PrivateKey, owner string, meta KeyMeta, sea
 	}
 	return s.(rsaSigner).key, nil
 }
+
+// ReconcileForTest re-reads the store now, instead of waiting for a change
+// message or the periodic loop. Test-only: it lives in a _test.go file.
+func (s *KVKeyStore) ReconcileForTest(ctx context.Context) error { return s.rep.Reconcile(ctx) }
+
+// ReconcileForTest re-reads the store now, instead of waiting for a change
+// message or the periodic loop. Test-only: it lives in a _test.go file.
+func (s *KVTrustedKeyStore) ReconcileForTest(ctx context.Context) error {
+	return s.rep.Reconcile(ctx)
+}

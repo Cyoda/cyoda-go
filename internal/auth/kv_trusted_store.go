@@ -156,7 +156,6 @@ func decodeTrustedEntry(kvKey string, data []byte) (string, *TrustedKey, bool, e
 	return tk.KID, tk, true, nil
 }
 
-func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error         { return s.rep.Reconcile(ctx) }
 func (s *KVTrustedKeyStore) StartReconcileLoop(ctx context.Context) bool { return s.rep.Start(ctx) }
 
 // storedKeys reads the whole namespace from the store: admin decisions are

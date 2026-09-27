@@ -244,7 +244,10 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 	if err != nil {
 		t.Fatalf("key store: %v", err)
 	}
-	kid := ks.BootstrapKID()
+	kid, err := auth.DeriveKID(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("derive KID: %v", err)
+	}
 
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(ks), issuer)
 	authSvc := auth.NewDelegatingAuthenticator(validator)

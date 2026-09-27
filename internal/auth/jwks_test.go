@@ -33,7 +33,7 @@ func serveJWKS(t *testing.T, ks KeyStore) jwksResponse {
 // publishes an empty set.
 func TestJWKS_EmptyKeyStore(t *testing.T) {
 	store := newTestKeyStore(t, loadFixtureKey(t))
-	if err := store.Delete(replicaSystemCtx(), store.BootstrapKID()); err != nil {
+	if err := store.Delete(replicaSystemCtx(), store.boot.kid); err != nil {
 		t.Fatal(err)
 	}
 	if resp := serveJWKS(t, store); len(resp.Keys) != 0 {
@@ -53,8 +53,8 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 	if entry.Kty != "RSA" {
 		t.Errorf("expected kty RSA, got %s", entry.Kty)
 	}
-	if entry.KID != store.BootstrapKID() {
-		t.Errorf("expected kid %s, got %s", store.BootstrapKID(), entry.KID)
+	if entry.KID != store.boot.kid {
+		t.Errorf("expected kid %s, got %s", store.boot.kid, entry.KID)
 	}
 	if entry.Use != "sig" {
 		t.Errorf("expected use sig, got %s", entry.Use)

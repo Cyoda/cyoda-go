@@ -31,7 +31,7 @@ func TestKVTrustedKeyStore_StaleCopyCannotResurrectDeleted(t *testing.T) {
 	if err := a.Register(ctx, newTrustedKey(t, tID, "k", time.Now()), auth.RotateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := b.Reconcile(ctx); err != nil {
+	if err := b.ReconcileForTest(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.Delete(ctx, tID, "k"); err != nil {
@@ -57,7 +57,7 @@ func TestKVTrustedKeyStore_RotationSeesSiblingRegisteredElsewhere(t *testing.T) 
 	if err := b.Register(ctx, newTrustedKey(t, tID, "k2", time.Now().Add(time.Second)), auth.RotateOptions{Invalidate: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.Reconcile(ctx); err != nil {
+	if err := a.ReconcileForTest(ctx); err != nil {
 		t.Fatal(err)
 	}
 	k1, err := a.Get(ctx, tID, "k1")

@@ -329,13 +329,14 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 // --- KeyStore (audience-partitioned) Tests ---
 
 func TestKeyStore_Current_AudiencePartition(t *testing.T) {
-	s := newTestKeyStore(t, newBootstrap(t)) // bootstrap signs for "client"
+	boot := newBootstrap(t)
+	s := newTestKeyStore(t, boot) // bootstrap signs for "client"
 	human := issueWindow(t, s, "human", time.Now(), time.Now().Add(time.Hour))
 	got, err := s.Current("human")
 	if err != nil || got.KID != human.KID {
 		t.Fatalf("Current(human): got=%+v err=%v", got, err)
 	}
-	if got, err := s.Current("client"); err != nil || got.KID != s.BootstrapKID() {
+	if got, err := s.Current("client"); err != nil || got.KID != bootKID(t, boot) {
 		t.Fatalf("Current(client): got=%+v err=%v; want the bootstrap key", got, err)
 	}
 	if _, err := s.Current("robot"); !errors.Is(err, auth.ErrKeyPairNotFound) {

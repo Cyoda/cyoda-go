@@ -33,6 +33,16 @@ func newKeyStore(t *testing.T, kv spi.KeyValueStore, boot *rsa.PrivateKey, aud s
 	return s
 }
 
+// bootKID is the KID a store gives the bootstrap key boot.
+func bootKID(t *testing.T, boot *rsa.PrivateKey) string {
+	t.Helper()
+	kid, err := auth.DeriveKID(&boot.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kid
+}
+
 // newTestKeyStore is the signing-key store every package test uses: a
 // KVKeyStore over a fresh in-memory KV store, boot signing for "client".
 func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *auth.KVKeyStore {
@@ -78,14 +88,14 @@ func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !kp.Bootstrap || kp.KID != s.BootstrapKID() || !signer.Public().(*rsa.PublicKey).Equal(&boot.PublicKey) {
+	if !kp.Bootstrap || kp.KID != bootKID(t, boot) || !signer.Public().(*rsa.PublicKey).Equal(&boot.PublicKey) {
 		t.Fatalf("signer = %+v", kp)
 	}
-	if _, err := s.VerificationKey(s.BootstrapKID()); err != nil {
+	if _, err := s.VerificationKey(bootKID(t, boot)); err != nil {
 		t.Fatal(err)
 	}
 	pub, err := s.Published()
-	if err != nil || len(pub) != 1 || pub[0].KID != s.BootstrapKID() {
+	if err != nil || len(pub) != 1 || pub[0].KID != bootKID(t, boot) {
 		t.Fatalf("published = %v, %v", pub, err)
 	}
 	if _, _, err := s.Signer("human"); !errors.Is(err, auth.ErrKeyPairNotFound) {
@@ -96,9 +106,13 @@ func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 func TestDeriveKID_MatchesBootstrapKID(t *testing.T) {
 	boot := newBootstrap(t)
 	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
+	kp, _, err := s.Signer("client")
+	if err != nil {
+		t.Fatal(err)
+	}
 	kid, err := auth.DeriveKID(&boot.PublicKey)
-	if err != nil || kid != s.BootstrapKID() || len(kid) != 32 {
-		t.Fatalf("kid = %q, err = %v", kid, err)
+	if err != nil || kid != kp.KID || len(kid) != 32 {
+		t.Fatalf("kid = %q, err = %v; the store signs as %q", kid, err, kp.KID)
 	}
 }
 
@@ -169,7 +183,7 @@ func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
 	if !errors.As(auth.ErrStoreStale, &su) || !su.StorageUnavailable() {
 		t.Fatal("ErrStoreStale must carry the storage-unavailable marker")
 	}
-	if _, err := s.VerificationKey(s.BootstrapKID()); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	if _, err := s.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("verification while stale: err = %v", err)
 	}
 	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrStoreStale) {

@@ -44,7 +44,7 @@ func TestKVKeyStore_IssueSignsAndIsSharedThroughTheStore(t *testing.T) {
 	if err != nil || signerKP.KID != kp.KID {
 		t.Fatalf("A signs with %v, err %v; want %s", signerKP, err, kp.KID)
 	}
-	if err := b.Reconcile(ctx); err != nil {
+	if err := b.ReconcileForTest(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := b.VerificationKey(kp.KID); err != nil {
@@ -71,7 +71,7 @@ func TestKVKeyStore_StoredValueHasNoPrivateKey(t *testing.T) {
 	_ = json.Unmarshal(raw, &rec)
 	spki, _ := base64.StdEncoding.DecodeString(rec.PublicKey)
 	sealed, _ := base64.StdEncoding.DecodeString(rec.Vault.Sealed)
-	priv := mustOpenPrivate(t, boot, s.BootstrapKID(), kp.KID, rec.Vault.Owner, spki, sealed)
+	priv := mustOpenPrivate(t, boot, bootKID(t, boot), kp.KID, rec.Vault.Owner, spki, sealed)
 	for _, der := range [][]byte{x509.MarshalPKCS1PrivateKey(priv), mustPKCS8(t, priv)} {
 		head := der
 		if len(head) > 48 {
@@ -187,14 +187,15 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 func TestKVKeyStore_RotationInvalidatesSiblingsAndBootstrap(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	s := newKeyStore(t, kv, newBootstrap(t), "client")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, kv, boot, "client")
 	old := issue(t, s, "client", false)
 	humanKey := issue(t, s, "human", false)
 	nw := issue(t, s, "client", true)
 	if _, err := s.VerificationKey(old.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("old client key still verifies after rotation")
 	}
-	if _, err := s.VerificationKey(s.BootstrapKID()); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	if _, err := s.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("bootstrap key (audience client) still verifies after rotation")
 	}
 	if _, err := s.VerificationKey(humanKey.KID); err != nil {
@@ -207,9 +208,10 @@ func TestKVKeyStore_RotationInvalidatesSiblingsAndBootstrap(t *testing.T) {
 
 // Review focus: bootstrap audience human; a client rotation leaves it alone.
 func TestKVKeyStore_RotationLeavesOtherAudienceBootstrap(t *testing.T) {
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), newBootstrap(t), "human")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "human")
 	issue(t, s, "client", true)
-	if _, err := s.VerificationKey(s.BootstrapKID()); err != nil {
+	if _, err := s.VerificationKey(bootKID(t, boot)); err != nil {
 		t.Fatalf("human bootstrap key invalidated by a client rotation: %v", err)
 	}
 }
@@ -253,14 +255,14 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	pre := newKeyStore(t, mem, boot, "client")
 	old := issue(t, pre, "client", false)
 	before, _ := mem.Get(ctx, "signing-keys", old.KID)
-	bootKID := pre.BootstrapKID()
-	if _, err := mem.Get(ctx, "signing-keys", bootKID); !errors.Is(err, spi.ErrNotFound) {
+	kid := bootKID(t, boot)
+	if _, err := mem.Get(ctx, "signing-keys", kid); !errors.Is(err, spi.ErrNotFound) {
 		t.Fatal("bootstrap key already has a stored record before the rotation")
 	}
 	bc := newFakeBroadcaster()
 	var pings int
 	bc.Subscribe("auth.signingkeys", func([]byte) { pings++ })
-	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: bootKID},
+	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: kid},
 		auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", Broadcaster: bc})
 	now := time.Now()
 	_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
@@ -274,7 +276,7 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	if after, _ := mem.Get(ctx, "signing-keys", old.KID); !bytes.Equal(before, after) {
 		t.Fatal("sibling changed by a failed rotation")
 	}
-	if _, err := mem.Get(ctx, "signing-keys", bootKID); !errors.Is(err, spi.ErrNotFound) {
+	if _, err := mem.Get(ctx, "signing-keys", kid); !errors.Is(err, spi.ErrNotFound) {
 		t.Fatal("bootstrap sibling left behind: its committed write was not restored to absent")
 	}
 	if pings == 0 {
@@ -346,23 +348,23 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
-	if err := s.Delete(ctx, s.BootstrapKID()); err != nil {
+	if err := s.Delete(ctx, bootKID(t, boot)); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "still unseals") || !strings.Contains(buf.String(), "level=WARN") {
 		t.Fatalf("missing WARN about the PEM; log: %s", buf.String())
 	}
 	r := newKeyStore(t, kv, boot, "client") // restart
-	if _, err := r.VerificationKey(r.BootstrapKID()); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	if _, err := r.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("deleted bootstrap key verifies after restart")
 	}
 	for name, call := range map[string]func() error{
 		"reactivate": func() error {
-			_, err := r.Reactivate(ctx, r.BootstrapKID(), time.Now(), time.Now().Add(time.Hour))
+			_, err := r.Reactivate(ctx, bootKID(t, boot), time.Now(), time.Now().Add(time.Hour))
 			return err
 		},
-		"invalidate": func() error { return r.Invalidate(ctx, r.BootstrapKID(), 0) },
-		"delete":     func() error { return r.Delete(ctx, r.BootstrapKID()) },
+		"invalidate": func() error { return r.Invalidate(ctx, bootKID(t, boot), 0) },
+		"delete":     func() error { return r.Delete(ctx, bootKID(t, boot)) },
 	} {
 		if err := call(); !errors.Is(err, auth.ErrKeyPairNotFound) {
 			t.Fatalf("%s after delete: err = %v, want ErrKeyPairNotFound", name, err)
@@ -371,12 +373,12 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	// A rotation never touches a deleted bootstrap key: it is never a
 	// sibling, so its stored bytes must come out byte-identical, not merely
 	// still containing the deleted flag.
-	before, err := kv.Get(ctx, "signing-keys", r.BootstrapKID())
+	before, err := kv.Get(ctx, "signing-keys", bootKID(t, boot))
 	if err != nil {
 		t.Fatal(err)
 	}
 	issue(t, r, "client", true)
-	after, err := kv.Get(ctx, "signing-keys", r.BootstrapKID())
+	after, err := kv.Get(ctx, "signing-keys", bootKID(t, boot))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -387,12 +389,13 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 
 func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
 	ctx := systemCtx()
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "client")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
-	if err := s.Invalidate(ctx, s.BootstrapKID(), 0); err != nil {
+	if err := s.Invalidate(ctx, bootKID(t, boot), 0); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "still unseals") {
@@ -404,13 +407,14 @@ func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
 // so invalidating the bootstrap key directly must warn.
 func TestKVKeyStore_InvalidateBootstrapWithOwnedPairWarns(t *testing.T) {
 	ctx := systemCtx()
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "client")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
 	issue(t, s, "client", false)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
-	if err := s.Invalidate(ctx, s.BootstrapKID(), 0); err != nil {
+	if err := s.Invalidate(ctx, bootKID(t, boot), 0); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "still unseals") || !strings.Contains(buf.String(), "level=WARN") {
@@ -443,9 +447,10 @@ func TestKVKeyStore_RotationEndingBootstrapWarns(t *testing.T) {
 // the assertion pass for the wrong reason.
 func TestKVKeyStore_IssuedKeyInvalidateNeverWarns(t *testing.T) {
 	ctx := systemCtx()
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "client")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
 	kp := issue(t, s, "client", false)
-	if err := s.Invalidate(ctx, s.BootstrapKID(), 0); err != nil {
+	if err := s.Invalidate(ctx, bootKID(t, boot), 0); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -465,16 +470,16 @@ func TestKVKeyStore_BootstrapInvalidateReactivateAcrossRestart(t *testing.T) {
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
 	s := newKeyStore(t, kv, boot, "client")
-	_ = s.Invalidate(ctx, s.BootstrapKID(), 0)
+	_ = s.Invalidate(ctx, bootKID(t, boot), 0)
 	r := newKeyStore(t, kv, boot, "client")
-	if _, err := r.VerificationKey(r.BootstrapKID()); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	if _, err := r.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("invalidated bootstrap key back after restart")
 	}
-	kp, err := r.Reactivate(ctx, r.BootstrapKID(), time.Now().Add(-time.Second), time.Now().Add(time.Hour))
+	kp, err := r.Reactivate(ctx, bootKID(t, boot), time.Now().Add(-time.Second), time.Now().Add(time.Hour))
 	if err != nil || !kp.Active || kp.ValidTo == nil {
 		t.Fatalf("reactivate: %+v %v", kp, err)
 	}
-	if _, err := r.VerificationKey(r.BootstrapKID()); err != nil {
+	if _, err := r.VerificationKey(bootKID(t, boot)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -482,11 +487,12 @@ func TestKVKeyStore_BootstrapInvalidateReactivateAcrossRestart(t *testing.T) {
 func TestKVKeyStore_RetiredAndForeignAreNotFound(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	a := newKeyStore(t, kv, newBootstrap(t), "client")
+	bootA, bootB := newBootstrap(t), newBootstrap(t) // two different bootstrap keys
+	a := newKeyStore(t, kv, bootA, "client")
 	kp := issue(t, a, "client", false)
-	_ = a.Invalidate(ctx, a.BootstrapKID(), 60)        // writes a bootstrap-state record
-	b := newKeyStore(t, kv, newBootstrap(t), "client") // another bootstrap key
-	for _, kid := range []string{kp.KID, a.BootstrapKID()} {
+	_ = a.Invalidate(ctx, bootKID(t, bootA), 60) // writes a bootstrap-state record
+	b := newKeyStore(t, kv, bootB, "client")
+	for _, kid := range []string{kp.KID, bootKID(t, bootA)} {
 		if err := b.Invalidate(ctx, kid, 0); !errors.Is(err, auth.ErrKeyPairNotFound) {
 			t.Fatalf("invalidate %s: %v", kid, err)
 		}
@@ -497,7 +503,7 @@ func TestKVKeyStore_RetiredAndForeignAreNotFound(t *testing.T) {
 			t.Fatalf("reactivate %s: %v", kid, err)
 		}
 	}
-	if got, _, _ := b.Signer("client"); got.KID != b.BootstrapKID() {
+	if got, _, _ := b.Signer("client"); got.KID != bootKID(t, bootB) {
 		t.Fatalf("retired key signs on another bootstrap key's node: %s", got.KID)
 	}
 	pub, _ := b.Published()
@@ -534,7 +540,7 @@ func TestKVKeyStore_RotationSeesSiblingIssuedElsewhere(t *testing.T) {
 	b := newKeyStore(t, kv, boot, "human")
 	k1 := issue(t, a, "client", false)
 	issue(t, b, "client", true) // b has not re-read
-	if err := a.Reconcile(ctx); err != nil {
+	if err := a.ReconcileForTest(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.VerificationKey(k1.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
@@ -686,7 +692,7 @@ func TestKVKeyStore_StoreFailureIsNotNotFound(t *testing.T) {
 		"invalidate":       func() error { return s.Invalidate(ctx, kp.KID, 0) },
 		"reactivate":       func() error { _, err := s.Reactivate(ctx, kp.KID, now, now.Add(time.Hour)); return err },
 		"delete issued":    func() error { return s.Delete(ctx, kp.KID) },
-		"delete bootstrap": func() error { return s.Delete(ctx, s.BootstrapKID()) },
+		"delete bootstrap": func() error { return s.Delete(ctx, bootKID(t, boot)) },
 	}
 	for name, call := range checks {
 		if err := call(); err == nil || errors.Is(err, auth.ErrKeyPairNotFound) {

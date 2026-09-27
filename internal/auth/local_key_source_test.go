@@ -29,7 +29,7 @@ func TestLocalKeySource_ReturnsBootstrapPublicKey(t *testing.T) {
 	boot := newBootstrap(t)
 	ks := newTestKeyStore(t, boot)
 
-	got, err := auth.NewLocalKeySource(ks).GetKey(ks.BootstrapKID())
+	got, err := auth.NewLocalKeySource(ks).GetKey(bootKID(t, boot))
 	if err != nil {
 		t.Fatalf("GetKey(bootstrap) returned unexpected error: %v", err)
 	}
