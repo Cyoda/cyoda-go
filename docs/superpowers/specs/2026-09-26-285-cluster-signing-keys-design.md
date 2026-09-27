@@ -247,7 +247,7 @@ Each record is classified when a node loads it:
   or can change which key signs, so an undecodable record is never skipped
   silently. While any exists, `Signer` fails with `ErrKeyPairBroken` for every
   audience; if its KV key is the bootstrap KID, the bootstrap key also stops
-  verifying. An ERROR names the KV key. `DELETE` on that KID removes it. Startup
+  verifying. An ERROR names the KV key. `DELETE` on that KID replaces it with a deleted bootstrap-state record: if it was some node's bootstrap state that key stays revoked, and otherwise the record is a foreign bootstrap record, which every node ignores. Startup
   does not fail on it (the API must stay usable to remove it). The trusted-key
   store keeps skipping undecodable records: for it, absence only refuses a key.
 - Invalidate, reactivate and delete answer 404 for retired records and foreign
@@ -462,7 +462,7 @@ a node is unreachable.
 | `POST .../{keyId}/reactivate` | 200 | — | reactivated | stored now |
 | | 400 | `BAD_REQUEST` | window validation (unchanged) | no |
 | | 404 | `KEYPAIR_NOT_FOUND` | unknown, retired, foreign bootstrap state, deleted bootstrap | yes |
-| `DELETE .../{keyId}` | 200 | — | issued or undecodable record removed; bootstrap `deleted = true` | stored now |
+| `DELETE .../{keyId}` | 200 | — | issued record removed; undecodable record replaced by a deleted bootstrap-state record; bootstrap `deleted = true` | stored now |
 | | 404 | `KEYPAIR_NOT_FOUND` | unknown, retired, foreign bootstrap state, deleted bootstrap | yes |
 | `POST /oauth/token` | 500 | `server_error` | signer broken; undecodable record; stale; no signer; store failure | new causes |
 | `GET /.well-known/jwks.json` | 200 | — | owned issued keys and the bootstrap key | retired excluded |
