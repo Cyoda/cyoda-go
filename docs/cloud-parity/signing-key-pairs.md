@@ -43,10 +43,13 @@ across a restart, and when its issuing bootstrap key is replaced.
   pair — by KID, the admin API treats it like any owned key pair, whether or
   not its vault can actually open it. Only `current` (and token issuance) can
   fail on it, and only if it wins signer selection for its audience:
-  `current` then answers `500`, not `404`. Across every lifecycle endpoint,
+  `current` then answers `500`, not `404`. On `invalidate`/`reactivate`,
   `404` is reserved for a KID that is genuinely absent, retired, a foreign
-  bootstrap-state record, or (at this node's own bootstrap key id
-  specifically) already deleted.
+  bootstrap-state record, an undecodable record, or (at this node's own
+  bootstrap key id specifically) already deleted. `DELETE` treats an
+  undecodable record differently from every other 404 cause: it always
+  succeeds (`200`), replacing the record with a deleted bootstrap-state
+  record instead of leaving it in place — the one way to clear it.
 - **A storage-unavailable failure is 503, never a stale or wrong answer** —
   but which operations can even reach one differs by endpoint. `current` and
   `GET /.well-known/jwks.json` read only the node's own copy and never call

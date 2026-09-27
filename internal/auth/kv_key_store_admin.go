@@ -45,11 +45,10 @@ func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, con
 
 // Issue creates a key pair and, with Invalidate, ends every sibling of its
 // audience (spec §5.7). The new record is written before the siblings; if a
-// sibling write fails, writeAll tries to undo every write already made
-// (see internal/auth/kv_trusted_store.go's Register doc comment for what
-// that guarantees and does not — a failed undo is logged at ERROR with the
-// keys left changed, and a crash between writes can still leave a rotation
-// half applied).
+// sibling write fails, writeAll (replica.go) tries to undo every write
+// already made — see its doc comment for what that guarantees and does not:
+// a failed undo is logged at ERROR with the keys left changed, and a crash
+// between writes can still leave a rotation half applied.
 func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, error) {
 	var issued *KeyPair
 	var bootstrapTouched bool

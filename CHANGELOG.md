@@ -25,9 +25,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   all — their own node copy going stale is the only thing that makes them
   answer `503 STORAGE_UNAVAILABLE` (JWKS: with `Retry-After`). `404` is
   reserved for a key pair that is genuinely not found, retired, a foreign
-  bootstrap record or a deleted bootstrap key — a broken (unopenable) one
-  still answers `200` on `invalidate`/`reactivate`/`delete` and fails only on
-  `current`, `500` not `404`, if it wins signer selection. `POST
+  bootstrap record or a deleted bootstrap key; `invalidate`/`reactivate` also
+  answer `404` for an undecodable record, while `delete` always succeeds on
+  one (`200`), replacing it with a deleted bootstrap-state record instead of
+  leaving it in place. A broken (unopenable) key pair still answers `200` on
+  `invalidate`/`reactivate`/`delete` and fails only on `current`, `500` not
+  `404`, if it wins signer selection. `POST
   /oauth/token`'s existing `500 server_error`
   gains new causes: a broken selected key pair, any undecodable record (which
   blocks signing for every audience, not only the one it would have signed
