@@ -172,8 +172,10 @@ type KeyVault interface {
   key with `NewRSASigner`), and `e2e/parity/fixtureutil` (its token minting).
   The token handler passes the request's context (`token.go:76` gains the
   request).
-- A node opens a record once and keeps the `Signer` until the record's KID or
-  sealed bytes change.
+- A node opens a record once and keeps the `Signer` until any field bound to the
+  sealed key (KID, audience, algorithm, owner, public key) or the sealed bytes
+  change; opened signers of records no longer stored are dropped after each
+  re-read.
 - A KMS vault stores a key reference as `sealed`, uses its KMS scope as `Owner`,
   and checks the public key against `meta.SPKI` without a network call. AWS KMS
   (`MessageType=DIGEST`), GCP `AsymmetricSign` and Vault transit (`prehashed`) all
@@ -239,7 +241,7 @@ Each record is classified when a node loads it:
 | **retired** | issued, vault kind `wrapped`, another owner | nothing |
 | **bootstrap state** | `kind = bootstrap`, KID = this node's bootstrap KID | applied to the configured bootstrap key |
 | **foreign bootstrap state** | `kind = bootstrap`, another KID | nothing |
-| **undecodable** | the value does not decode as a record | see below |
+| **undecodable** | the value does not decode as a record, or an issued record sits at this node's bootstrap KID | see below |
 
 - **Undecodable** records: absence of a record can mean "active" (bootstrap state)
   or can change which key signs, so an undecodable record is never skipped
