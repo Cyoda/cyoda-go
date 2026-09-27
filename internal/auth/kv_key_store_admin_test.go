@@ -712,3 +712,116 @@ func mustOpenPrivate(t *testing.T, boot *rsa.PrivateKey, owner, kid, recOwner st
 	}
 	return k
 }
+
+// Times whose UTC form has no four-digit year: Go reads the offset forms, but
+// a record formatted from them could never be parsed back.
+var (
+	year10000 = time.Date(9999, 12, 31, 23, 59, 59, 0, time.FixedZone("", -5*3600))
+	yearMinus = time.Date(0, 1, 1, 0, 0, 0, 0, time.FixedZone("", 5*3600))
+)
+
+func signingRecords(t *testing.T, kv spi.KeyValueStore) map[string][]byte {
+	t.Helper()
+	all, err := kv.List(systemCtx(), "signing-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
+}
+
+func sameRecords(t *testing.T, before, after map[string][]byte) {
+	t.Helper()
+	if len(after) != len(before) {
+		t.Fatalf("records = %d, want %d", len(after), len(before))
+	}
+	for k, v := range before {
+		if !bytes.Equal(after[k], v) {
+			t.Fatalf("record %s changed", k)
+		}
+	}
+}
+
+func TestKVKeyStore_IssueRefusesUnstorableTime(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	boot := newBootstrap(t)
+	s := newKeyStore(t, kv, boot, "client")
+	now := time.Now()
+	for name, req := range map[string]auth.IssueRequest{
+		"validTo year 10000": {Audience: "client", ValidFrom: now, ValidTo: year10000},
+		"validFrom year -1":  {Audience: "client", ValidFrom: yearMinus, ValidTo: now.Add(time.Hour)},
+	} {
+		if _, err := s.Issue(ctx, req); err == nil {
+			t.Fatalf("%s: issued", name)
+		}
+	}
+	if got := signingRecords(t, kv); len(got) != 0 {
+		t.Fatalf("%d records written", len(got))
+	}
+	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+		t.Fatalf("signing changed: %v %v", kp, err)
+	}
+	if _, err := newKeyStore(t, kv, boot, "client").VerificationKey(bootKID(t, boot)); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+}
+
+func TestKVKeyStore_ReactivateRefusesUnstorableTime(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	boot := newBootstrap(t)
+	s := newKeyStore(t, kv, boot, "human")
+	kp := issue(t, s, "client", false)
+	if err := s.Invalidate(ctx, bootKID(t, boot), 60); err != nil {
+		t.Fatal(err)
+	}
+	before := signingRecords(t, kv)
+	for _, kid := range []string{kp.KID, bootKID(t, boot)} {
+		if _, err := s.Reactivate(ctx, kid, time.Now().Add(-time.Second), year10000); err == nil {
+			t.Fatalf("%s: reactivated with validTo in year 10000", kid)
+		}
+		if _, err := s.Reactivate(ctx, kid, yearMinus, time.Now().Add(time.Hour)); err == nil {
+			t.Fatalf("%s: reactivated with validFrom in year -1", kid)
+		}
+	}
+	sameRecords(t, before, signingRecords(t, kv))
+	if _, err := newKeyStore(t, kv, boot, "human").VerificationKey(kp.KID); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+}
+
+// The bootstrap key in its never-changed state has no record: a refused
+// reactivation must not write one.
+func TestKVKeyStore_ReactivateAbsentBootstrapRefusesUnstorableTime(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	boot := newBootstrap(t)
+	s := newKeyStore(t, kv, boot, "client")
+	if _, err := s.Reactivate(ctx, bootKID(t, boot), time.Now().Add(-time.Second), year10000); err == nil {
+		t.Fatal("reactivated with validTo in year 10000")
+	}
+	if got := signingRecords(t, kv); len(got) != 0 {
+		t.Fatalf("%d records written", len(got))
+	}
+	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+		t.Fatalf("signing changed: %v %v", kp, err)
+	}
+}
+
+func TestStorableTime(t *testing.T) {
+	for _, c := range []struct {
+		t    time.Time
+		want bool
+	}{
+		{time.Time{}, true},
+		{time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC), true},
+		{year10000, false},
+		{yearMinus, false},
+		{time.Date(0, 6, 1, 0, 0, 0, 0, time.UTC), false},
+		{time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), false},
+	} {
+		if got := auth.StorableTime(c.t); got != c.want {
+			t.Errorf("StorableTime(%v) = %v, want %v", c.t, got, c.want)
+		}
+	}
+}

@@ -216,3 +216,51 @@ func TestKVTrustedKeyStore_GetStoreFailureIsNotNotFound(t *testing.T) {
 		t.Fatalf("working store, absent key: err = %v, want ErrTrustedKeyNotFound", err)
 	}
 }
+
+func trustedRecords(t *testing.T, kv spi.KeyValueStore) map[string][]byte {
+	t.Helper()
+	all, err := kv.List(systemCtx(), "trusted-keys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all
+}
+
+// A time the stored record could not be read back with is refused, and
+// nothing is written: an unreadable record would otherwise be served by no
+// node, and survive in the store.
+func TestKVTrustedKeyStore_RefusesUnstorableTime(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	s, err := auth.NewKVTrustedKeyStore(ctx, kv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tID := spi.TenantID("t")
+	far := newTrustedKey(t, tID, "far", time.Now())
+	vt := year10000
+	far.ValidTo = &vt
+	if err := s.Register(ctx, far, auth.RotateOptions{}); err == nil {
+		t.Fatal("registered a key with validTo in year 10000")
+	}
+	if err := s.Register(ctx, newTrustedKey(t, tID, "early", yearMinus), auth.RotateOptions{}); err == nil {
+		t.Fatal("registered a key with validFrom in year -1")
+	}
+	if got := trustedRecords(t, kv); len(got) != 0 {
+		t.Fatalf("records written: %v", mapKeys(got))
+	}
+	if err := s.Register(ctx, newTrustedKey(t, tID, "k", time.Now()), auth.RotateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	before := trustedRecords(t, kv)
+	if err := s.Reactivate(ctx, tID, "k", time.Now(), year10000); err == nil {
+		t.Fatal("reactivated with validTo in year 10000")
+	}
+	if err := s.Reactivate(ctx, tID, "k", yearMinus, time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("reactivated with validFrom in year -1")
+	}
+	sameRecords(t, before, trustedRecords(t, kv))
+	if _, err := auth.NewKVTrustedKeyStore(ctx, kv); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+}

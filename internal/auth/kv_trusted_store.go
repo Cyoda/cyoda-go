@@ -419,7 +419,16 @@ func (s *KVTrustedKeyStore) update(ctx context.Context, tenantID spi.TenantID, k
 
 // --- Serialization ---
 
+// serializeTrustedKey refuses a key whose window deserializeTrustedKey could
+// not read back (StorableTime): such a record would be undecodable on every
+// node.
 func serializeTrustedKey(tk *TrustedKey) ([]byte, error) {
+	if !StorableTime(tk.ValidFrom) {
+		return nil, errors.New("failed to encode trusted-key record: validFrom out of range")
+	}
+	if tk.ValidTo != nil && !StorableTime(*tk.ValidTo) {
+		return nil, errors.New("failed to encode trusted-key record: validTo out of range")
+	}
 	rec := trustedKeyRecord{
 		KID:       tk.KID,
 		TenantID:  string(tk.TenantID),

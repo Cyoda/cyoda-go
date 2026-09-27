@@ -313,7 +313,9 @@ func TestClassify_Undecodable(t *testing.T) {
 			r.Vault = &vaultCopy
 		}
 		fn(&r)
-		b, err := encodeSigningRecord(r)
+		// json.Marshal, not encodeSigningRecord: some of these records are
+		// ones the encoder refuses to write.
+		b, err := json.Marshal(r)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -350,7 +352,7 @@ func TestClassify_Undecodable(t *testing.T) {
 		"invalid validFrom": mutate(func(r *signingRecord) { r.ValidFrom = invalidTime }),
 		"invalid validTo":   mutate(func(r *signingRecord) { r.ValidTo = &invalidTime }),
 		"bootstrap record with invalid validFrom": func() []byte {
-			b, err := encodeSigningRecord(signingRecord{Kind: recordKindBootstrap, KID: "k1", Active: true, ValidFrom: invalidTime})
+			b, err := json.Marshal(signingRecord{Kind: recordKindBootstrap, KID: "k1", Active: true, ValidFrom: invalidTime})
 			if err != nil {
 				t.Fatal(err)
 			}

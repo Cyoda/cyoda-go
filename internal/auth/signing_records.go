@@ -72,7 +72,29 @@ func fmtTimePtr(t *time.Time) *string {
 	return &s
 }
 
+// StorableTime reports whether a key record can hold t. Records store UTC
+// RFC 3339 timestamps, whose years have exactly four digits: a time whose UTC
+// year is outside 1..9999 would be written in a form no node can read back.
+func StorableTime(t time.Time) bool {
+	y := t.UTC().Year()
+	return y >= 1 && y <= 9999
+}
+
+// storableTimestamp reports whether s is a timestamp a record can hold.
+func storableTimestamp(s string) bool {
+	t, err := time.Parse(time.RFC3339Nano, s)
+	return err == nil && StorableTime(t)
+}
+
+// encodeSigningRecord refuses a record whose timestamps decodeSigningRecord
+// could not read back: such a record would be undecodable on every node.
 func encodeSigningRecord(rec signingRecord) ([]byte, error) {
+	if !storableTimestamp(rec.ValidFrom) {
+		return nil, errors.New("failed to encode signing-key record: validFrom out of range")
+	}
+	if rec.ValidTo != nil && !storableTimestamp(*rec.ValidTo) {
+		return nil, errors.New("failed to encode signing-key record: validTo out of range")
+	}
 	b, err := json.Marshal(rec)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encode signing-key record: %w", err)
