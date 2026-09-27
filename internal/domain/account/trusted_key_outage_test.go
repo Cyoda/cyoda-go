@@ -1,6 +1,7 @@
 package account_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,15 +34,15 @@ type outageTrustedKeyStore struct {
 	auth.TrustedKeyStore
 }
 
-func (outageTrustedKeyStore) Delete(spi.TenantID, string) error {
+func (outageTrustedKeyStore) Delete(context.Context, spi.TenantID, string) error {
 	return fmt.Errorf("failed to delete trusted key from KV store: %w", kvOutageErr{})
 }
 
-func (outageTrustedKeyStore) Invalidate(spi.TenantID, string, int64) error {
+func (outageTrustedKeyStore) Invalidate(context.Context, spi.TenantID, string, int64) error {
 	return fmt.Errorf("failed to persist invalidation: %w", kvOutageErr{})
 }
 
-func (outageTrustedKeyStore) Reactivate(spi.TenantID, string, time.Time, time.Time) error {
+func (outageTrustedKeyStore) Reactivate(context.Context, spi.TenantID, string, time.Time, time.Time) error {
 	return fmt.Errorf("failed to persist reactivation: %w", kvOutageErr{})
 }
 

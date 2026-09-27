@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
@@ -165,15 +166,15 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Register
-	if err := store.Register(tk1, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk1, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk1 failed: %v", err)
 	}
-	if err := store.Register(tk2, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk2, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk2 failed: %v", err)
 	}
 
 	// Get
-	got, err := store.Get(tID, "tk-1")
+	got, err := store.Get(context.Background(), tID, "tk-1")
 	if err != nil {
 		t.Fatalf("Get tk-1 failed: %v", err)
 	}
@@ -182,7 +183,7 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Get not found
-	_, err = store.Get(tID, "tk-999")
+	_, err = store.Get(context.Background(), tID, "tk-999")
 	if err == nil {
 		t.Fatal("expected error for missing trusted key, got nil")
 	}
@@ -194,29 +195,29 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Invalidate (with 0 grace period — ValidTo = now)
-	if err := store.Invalidate(tID, "tk-1", 0); err != nil {
+	if err := store.Invalidate(context.Background(), tID, "tk-1", 0); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
-	got, _ = store.Get(tID, "tk-1")
+	got, _ = store.Get(context.Background(), tID, "tk-1")
 	if got.Active {
 		t.Error("expected tk-1 to be inactive after Invalidate")
 	}
 
 	// Reactivate with a fresh validity window
 	now := time.Now()
-	if err := store.Reactivate(tID, "tk-1", now, now.Add(24*time.Hour)); err != nil {
+	if err := store.Reactivate(context.Background(), tID, "tk-1", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("Reactivate failed: %v", err)
 	}
-	got, _ = store.Get(tID, "tk-1")
+	got, _ = store.Get(context.Background(), tID, "tk-1")
 	if !got.Active {
 		t.Error("expected tk-1 to be active after Reactivate")
 	}
 
 	// Delete
-	if err := store.Delete(tID, "tk-1"); err != nil {
+	if err := store.Delete(context.Background(), tID, "tk-1"); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	_, err = store.Get(tID, "tk-1")
+	_, err = store.Get(context.Background(), tID, "tk-1")
 	if err == nil {
 		t.Fatal("expected error after Delete, got nil")
 	}
@@ -226,17 +227,17 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Delete not found
-	if err := store.Delete(tID, "tk-1"); err == nil {
+	if err := store.Delete(context.Background(), tID, "tk-1"); err == nil {
 		t.Fatal("expected error deleting non-existent trusted key, got nil")
 	}
 
 	// Invalidate not found
-	if err := store.Invalidate(tID, "tk-999", 0); err == nil {
+	if err := store.Invalidate(context.Background(), tID, "tk-999", 0); err == nil {
 		t.Fatal("expected error invalidating non-existent trusted key, got nil")
 	}
 
 	// Reactivate not found
-	if err := store.Reactivate(tID, "tk-999", now, now.Add(24*time.Hour)); err == nil {
+	if err := store.Reactivate(context.Background(), tID, "tk-999", now, now.Add(24*time.Hour)); err == nil {
 		t.Fatal("expected error reactivating non-existent trusted key, got nil")
 	}
 }
@@ -265,14 +266,14 @@ func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
 	}
 
 	for i := 0; i < capVal; i++ {
-		if err := store.Register(mkKey(i), auth.RotateOptions{}); err != nil {
+		if err := store.Register(context.Background(), mkKey(i), auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register #%d (under cap): %v", i, err)
 		}
 	}
 
 	// (N+1)th must be rejected with 400 TRUSTED_KEY_CAP_REACHED.
 	overflow := mkKey(capVal)
-	err := store.Register(overflow, auth.RotateOptions{})
+	err := store.Register(context.Background(), overflow, auth.RotateOptions{})
 	if err == nil {
 		t.Fatalf("Register beyond cap: expected error, got nil")
 	}
@@ -308,18 +309,18 @@ func TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot(t *tes
 		}
 	}
 
-	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), mk("k1"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register k1: %v", err)
 	}
-	if err := store.Register(mk("k2"), auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), mk("k2"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register k2: %v", err)
 	}
 	// Re-register existing kid — should succeed even at cap (upsert, not insert).
-	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), mk("k1"), auth.RotateOptions{}); err != nil {
 		t.Fatalf("re-Register k1 (upsert at cap): %v", err)
 	}
 	// New kid still rejected with 400.
-	err := store.Register(mk("k3"), auth.RotateOptions{})
+	err := store.Register(context.Background(), mk("k3"), auth.RotateOptions{})
 	if err == nil {
 		t.Fatalf("Register k3 beyond cap: expected error, got nil")
 	}
@@ -750,16 +751,16 @@ func TestTrustedKeyStore_TenantIsolation(t *testing.T) {
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
 	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := s.Register(context.Background(), tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := s.Get(tB, "k1"); err == nil {
+	if _, err := s.Get(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Get(k1) leaked")
 	}
-	if err := s.Delete(tB, "k1"); err == nil {
+	if err := s.Delete(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Delete(k1) leaked")
 	}
-	if err := s.Invalidate(tB, "k1", 0); err == nil {
+	if err := s.Invalidate(context.Background(), tB, "k1", 0); err == nil {
 		t.Error("B.Invalidate(k1) leaked")
 	}
 }
@@ -770,9 +771,9 @@ func TestTrustedKeyStore_CrossTenantCollision_409(t *testing.T) {
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
 	kA := &auth.TrustedKey{KID: "shared", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(kA, auth.RotateOptions{})
+	_ = s.Register(context.Background(), kA, auth.RotateOptions{})
 	kB := &auth.TrustedKey{KID: "shared", TenantID: tB, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	err := s.Register(kB, auth.RotateOptions{})
+	err := s.Register(context.Background(), kB, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected cross-tenant error")
 	}
@@ -789,9 +790,9 @@ func TestTrustedKeyStore_CapReached(t *testing.T) {
 	mk := func(kid string) *auth.TrustedKey {
 		return &auth.TrustedKey{KID: kid, TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
 	}
-	_ = s.Register(mk("k1"), auth.RotateOptions{})
-	_ = s.Register(mk("k2"), auth.RotateOptions{})
-	err := s.Register(mk("k3"), auth.RotateOptions{})
+	_ = s.Register(context.Background(), mk("k1"), auth.RotateOptions{})
+	_ = s.Register(context.Background(), mk("k2"), auth.RotateOptions{})
+	err := s.Register(context.Background(), mk("k3"), auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected cap-reached error")
 	}
@@ -808,10 +809,10 @@ func TestTrustedKeyStore_CapCountsValidOnly(t *testing.T) {
 	past := time.Now().Add(-1 * time.Hour)
 	expired := &auth.TrustedKey{KID: "old", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
 	active := &auth.TrustedKey{KID: "new", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(expired, auth.RotateOptions{})
-	_ = s.Register(active, auth.RotateOptions{})
+	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
+	_ = s.Register(context.Background(), active, auth.RotateOptions{})
 	third := &auth.TrustedKey{KID: "third", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(third, auth.RotateOptions{}); err != nil {
+	if err := s.Register(context.Background(), third, auth.RotateOptions{}); err != nil {
 		t.Fatalf("expected accept; expired excluded from count; got %v", err)
 	}
 }
@@ -821,12 +822,12 @@ func TestTrustedKeyStore_RotateInvalidatesSameTenant(t *testing.T) {
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(a, auth.RotateOptions{})
+	_ = s.Register(context.Background(), a, auth.RotateOptions{})
 	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	if err := s.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+	if err := s.Register(context.Background(), b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	gotA, _ := s.Get(tID, "a")
+	gotA, _ := s.Get(context.Background(), tID, "a")
 	if gotA.Active || gotA.ValidTo == nil {
 		t.Errorf("expected a invalidated with ValidTo; got %+v", gotA)
 	}
@@ -839,11 +840,11 @@ func TestTrustedKeyStore_Reactivate_RequiresFreshWindow(t *testing.T) {
 	now := time.Now()
 	past := now.Add(-1 * time.Hour)
 	expired := &auth.TrustedKey{KID: "e", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	_ = s.Register(expired, auth.RotateOptions{})
-	if err := s.Reactivate(tID, "e", now, past); err == nil {
+	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
+	if err := s.Reactivate(context.Background(), tID, "e", now, past); err == nil {
 		t.Error("expected past validTo rejected")
 	}
-	if err := s.Reactivate(tID, "e", now, now.Add(24*time.Hour)); err != nil {
+	if err := s.Reactivate(context.Background(), tID, "e", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
 }

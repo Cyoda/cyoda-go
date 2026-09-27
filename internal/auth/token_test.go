@@ -69,7 +69,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	trustedKID := "trusted-kid-1"
 	// Create M2M client.
 	tenantID := "tenant-abc"
-	err = trustedKeyStore.Register(&auth.TrustedKey{
+	err = trustedKeyStore.Register(context.Background(), &auth.TrustedKey{
 		KID:       trustedKID,
 		TenantID:  spi.TenantID(tenantID),
 		PublicKey: &trustedKey.PublicKey,
@@ -494,7 +494,7 @@ func TestTokenExchangeKeyFromAnotherTenant(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 	const otherKID = "other-tenant-kid"
-	if err := env.trustedKeyStore.Register(&auth.TrustedKey{
+	if err := env.trustedKeyStore.Register(context.Background(), &auth.TrustedKey{
 		KID:       otherKID,
 		TenantID:  spi.TenantID("tenant-other"),
 		PublicKey: &otherKey.PublicKey,
@@ -616,7 +616,7 @@ func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 // with invalidatePrevious relies on to avoid an outage.
 func TestTokenExchangeKeyInGracePeriod(t *testing.T) {
 	env := setupTokenEnv(t)
-	if err := env.trustedKeyStore.Invalidate(spi.TenantID(env.tenantID), env.trustedKID, 3600); err != nil {
+	if err := env.trustedKeyStore.Invalidate(context.Background(), spi.TenantID(env.tenantID), env.trustedKID, 3600); err != nil {
 		t.Fatalf("failed to invalidate trusted key: %v", err)
 	}
 
@@ -644,7 +644,7 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	env := setupTokenEnv(t)
 
 	// Invalidate the trusted key.
-	if err := env.trustedKeyStore.Invalidate(spi.TenantID(env.tenantID), env.trustedKID, 0); err != nil {
+	if err := env.trustedKeyStore.Invalidate(context.Background(), spi.TenantID(env.tenantID), env.trustedKID, 0); err != nil {
 		t.Fatalf("failed to invalidate trusted key: %v", err)
 	}
 

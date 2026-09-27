@@ -2,6 +2,7 @@ package account_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -88,7 +89,7 @@ func TestRegisterTrustedKey_NonRSA_400_UnsupportedKeyType(t *testing.T) {
 func TestRegisterTrustedKey_CrossTenantCollision_409(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	pre := &auth.TrustedKey{KID: "shared", TenantID: spi.TenantID("tenant-a"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = ts.Register(pre, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), pre, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -107,8 +108,8 @@ func TestListTrustedKeys_TenantScoped(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	mine := &auth.TrustedKey{KID: "mine", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "mine"}}
 	theirs := &auth.TrustedKey{KID: "theirs", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "theirs"}}
-	_ = ts.Register(mine, auth.RotateOptions{})
-	_ = ts.Register(theirs, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), mine, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), theirs, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -127,7 +128,7 @@ func TestListTrustedKeys_TenantScoped(t *testing.T) {
 func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -141,7 +142,7 @@ func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
 func TestInvalidateTrustedKey_Grace(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -151,7 +152,7 @@ func TestInvalidateTrustedKey_Grace(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d", w.Code)
 	}
-	got, _ := ts.Get(spi.TenantID("t1"), "k")
+	got, _ := ts.Get(context.Background(), spi.TenantID("t1"), "k")
 	if got.Active || got.ValidTo == nil {
 		t.Errorf("expected invalidated; got %+v", got)
 	}
@@ -161,7 +162,7 @@ func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	past := time.Now().Add(-1 * time.Hour)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: false, ValidFrom: past, ValidTo: &past, JWK: map[string]any{"kty": "RSA", "kid": "k"}}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -206,8 +207,8 @@ func TestListTrustedKeys_InvalidatedKeyHasActiveFalse(t *testing.T) {
 		Audience: "human", Active: true, ValidFrom: time.Now(),
 		JWK: map[string]any{"kty": "RSA", "kid": "k"},
 	}
-	_ = ts.Register(tk, auth.RotateOptions{})
-	_ = ts.Invalidate(spi.TenantID("t1"), "k", 0)
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
+	_ = ts.Invalidate(context.Background(), spi.TenantID("t1"), "k", 0)
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -236,7 +237,7 @@ func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 		Audience: "human", Active: false, ValidFrom: past, ValidTo: &past,
 		JWK: map[string]any{"kty": "RSA", "kid": "k"},
 	}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -261,11 +262,11 @@ func TestReactivateTrustedKey_AtCap_400(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStoreWithCap(1)
 	past := time.Now().Add(-1 * time.Hour)
 	future := time.Now().Add(time.Hour)
-	_ = ts.Register(&auth.TrustedKey{
+	_ = ts.Register(context.Background(), &auth.TrustedKey{
 		KID: "old", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
 		Audience: "human", Active: false, ValidFrom: past.Add(-time.Hour), ValidTo: &past,
 	}, auth.RotateOptions{})
-	_ = ts.Register(&auth.TrustedKey{
+	_ = ts.Register(context.Background(), &auth.TrustedKey{
 		KID: "live", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
 		Audience: "human", Active: true, ValidFrom: past, ValidTo: &future,
 	}, auth.RotateOptions{})
@@ -342,7 +343,7 @@ func TestRegression_TrustedAudienceRoundTrip(t *testing.T) {
 func TestInvalidateTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -373,7 +374,7 @@ func TestRegisterTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 func TestInvalidateTrustedKey_GracePeriodAtCapBoundary(t *testing.T) {
 	ts := auth.NewInMemoryTrustedKeyStore()
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
-	_ = ts.Register(tk, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
@@ -388,7 +389,7 @@ func TestInvalidateTrustedKey_GracePeriodAtCapBoundary(t *testing.T) {
 
 	// Reset to active, then one over cap: reject.
 	tk2 := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
-	_ = ts.Register(tk2, auth.RotateOptions{})
+	_ = ts.Register(context.Background(), tk2, auth.RotateOptions{})
 	w = httptest.NewRecorder()
 	body = []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec+1))
 	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")

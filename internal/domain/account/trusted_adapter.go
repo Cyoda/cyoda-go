@@ -24,12 +24,13 @@ func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request)
 	return true
 }
 
-// trustedKeyMutationError maps a Delete / Invalidate / Reactivate failure to a
-// response. A KID that is not registered for this tenant keeps 404
-// TRUSTED_KEY_NOT_FOUND; every other failure routes through common.Internal, so
-// a KV write that failed because storage was unavailable surfaces as a retryable
-// 503 with its cause logged rather than as "the key does not exist" — an answer
-// that reads as a completed lookup and stops the caller retrying.
+// trustedKeyMutationError maps a Register / Get / Delete / Invalidate /
+// Reactivate failure to a response. A KID that is not registered for this
+// tenant keeps 404 TRUSTED_KEY_NOT_FOUND; every other failure routes through
+// common.Internal, so a KV write or read that failed because storage was
+// unavailable surfaces as a retryable 503 with its cause logged rather than
+// as "the key does not exist" — an answer that reads as a completed lookup
+// and stops the caller retrying.
 func trustedKeyMutationError(err error) *common.AppError {
 	if errors.Is(err, auth.ErrTrustedKeyNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found")
@@ -119,17 +120,8 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		Audience: string(req.Audience), Issuers: issuers,
 		Active: true, ValidFrom: validFrom, ValidTo: &vt,
 	}
-	if err := h.trustedKeyStore.Register(tk, auth.RotateOptions{Invalidate: invalidate, GracePeriodSec: grace}); err != nil {
-		var ae *common.AppError
-		if errors.As(err, &ae) {
-			common.WriteError(w, r, ae)
-			return
-		}
-		// Note: a 500 here may indicate partial success — the new key was
-		// persisted but sibling invalidation failed. The new key is live;
-		// the retry is safe (silent upsert + repeats sibling-flip best-effort).
-		// The failed sibling KIDs are logged server-side, never in the response.
-		common.WriteError(w, r, common.Internal("trustedKeyStore.Register", err))
+	if err := h.trustedKeyStore.Register(r.Context(), tk, auth.RotateOptions{Invalidate: invalidate, GracePeriodSec: grace}); err != nil {
+		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -222,7 +214,7 @@ func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId
 		return
 	}
 	tID := tenantFromCtx(r)
-	if err := h.trustedKeyStore.Delete(tID, keyId); err != nil {
+	if err := h.trustedKeyStore.Delete(r.Context(), tID, keyId); err != nil {
 		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
@@ -264,7 +256,7 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		}
 	}
 	tID := tenantFromCtx(r)
-	if err := h.trustedKeyStore.Invalidate(tID, keyId, grace); err != nil {
+	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId, grace); err != nil {
 		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
@@ -308,16 +300,13 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	tID := tenantFromCtx(r)
-	if err := h.trustedKeyStore.Reactivate(tID, keyId, validFrom, validTo); err != nil {
+	if err := h.trustedKeyStore.Reactivate(r.Context(), tID, keyId, validFrom, validTo); err != nil {
 		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
-	// This read is served from the cache Reactivate just wrote, so it cannot
-	// fail for a storage reason — the storage classification that matters on
-	// this endpoint is the Reactivate above.
-	tk, err := h.trustedKeyStore.Get(tID, keyId)
+	tk, err := h.trustedKeyStore.Get(r.Context(), tID, keyId)
 	if err != nil {
-		common.WriteError(w, r, common.Internal("trustedKeyStore.Get after Reactivate", err))
+		common.WriteError(w, r, trustedKeyMutationError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

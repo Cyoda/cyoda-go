@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/hex"
@@ -91,10 +92,16 @@ type KeyStore interface {
 // gone".
 var ErrTrustedKeyNotFound = errors.New("trusted key not found")
 
-// TrustedKeyStore manages trusted external public keys.
+// TrustedKeyStore manages trusted external public keys. The admin methods
+// (Register, Get, Delete, Invalidate, Reactivate) take a context because a
+// cluster-backed implementation reads authoritative state through to the
+// store on every admin call: an admin decision is never made on a possibly
+// stale node copy. GetForVerification stays copy-only — it is the hot,
+// high-volume path and a key's presence there is bounded by reconciliation,
+// not by an admin call's need for ground truth.
 type TrustedKeyStore interface {
-	Register(tk *TrustedKey, opts RotateOptions) error
-	Get(tenantID spi.TenantID, kid string) (*TrustedKey, error)
+	Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error
+	Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	List(tenantID spi.TenantID) []*TrustedKey
 	// GetForVerification returns the key a subject token names, for the
 	// token-exchange grant. The key is found only in tenantID — the tenant of
@@ -102,9 +109,9 @@ type TrustedKeyStore interface {
 	// window; otherwise the error wraps ErrTrustedKeyNotFound. A key's tenant
 	// is the tenant that registered it, never a claim in the token it signs.
 	GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error)
-	Delete(tenantID spi.TenantID, kid string) error
-	Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error
-	Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
+	Delete(ctx context.Context, tenantID spi.TenantID, kid string) error
+	Invalidate(ctx context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error
+	Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
 }
 
 // M2MClientStore manages machine-to-machine clients.
@@ -329,7 +336,7 @@ func NewInMemoryTrustedKeyStoreWithCap(cap int) *InMemoryTrustedKeyStore {
 // opts.Invalidate is true, every other key of the tenant whose window is still
 // open is marked inactive with the grace expiry (graceExpiry). Stores a shallow
 // copy of *tk (ownership-mutability rule 4).
-func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
+func (s *InMemoryTrustedKeyStore) Register(_ context.Context, tk *TrustedKey, opts RotateOptions) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -362,14 +369,15 @@ func (s *InMemoryTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) e
 	return nil
 }
 
-// Get retrieves a trusted key by tenant and KID. Returns an error if the key
-// does not exist or belongs to a different tenant.
-func (s *InMemoryTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
+// Get retrieves a trusted key by tenant and KID. Returns an error wrapping
+// ErrTrustedKeyNotFound if the key does not exist or belongs to a different
+// tenant.
+func (s *InMemoryTrustedKeyStore) Get(_ context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	tk, ok := s.keys[kid]
 	if !ok || tk.TenantID != tenantID {
-		return nil, fmt.Errorf("trusted key not found: %s", kid)
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	copied := *tk
 	return &copied, nil
@@ -441,7 +449,7 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 }
 
 // Delete removes a trusted key by tenant and KID.
-func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
+func (s *InMemoryTrustedKeyStore) Delete(_ context.Context, tenantID spi.TenantID, kid string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
@@ -455,7 +463,7 @@ func (s *InMemoryTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) erro
 // Invalidate marks a trusted key as inactive and sets ValidTo to
 // now+gracePeriodSec, never later than its current ValidTo, so the key keeps
 // verifying token-exchange subject tokens until then.
-func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
+func (s *InMemoryTrustedKeyStore) Invalidate(_ context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
@@ -469,7 +477,7 @@ func (s *InMemoryTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, 
 
 // Reactivate sets a trusted key as active and updates its validity window.
 // validTo must be non-zero, strictly in the future, and after validFrom.
-func (s *InMemoryTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
+func (s *InMemoryTrustedKeyStore) Reactivate(_ context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tk, ok := s.keys[kid]
