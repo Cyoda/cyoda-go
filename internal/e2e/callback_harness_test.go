@@ -192,6 +192,27 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 	if err != nil {
 		t.Fatalf("generate RSA key: %v", err)
 	}
+	return newCalloutHarnessWithKey(t, rsaKey, configure)
+}
+
+// newCalloutHarnessWithKey is newCalloutHarness with a given JWT signing key,
+// so a test can restart a stack with the same bootstrap key.
+func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
+	t.Helper()
+	h := newCalloutHarnessUnseeded(t, rsaKey, configure)
+	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
+	// read it from other goroutines and cannot fetch it themselves.
+	h.token(t)
+	return h
+}
+
+// newCalloutHarnessUnseeded is newCalloutHarnessWithKey without seeding the
+// cached bearer token at the end of construction. A stack whose signer is
+// broken cannot mint that seed token, so a test proving a broken signer fails
+// closed must build the stack without it.
+func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
+	t.Helper()
+
 	keyBytes, err := x509.MarshalPKCS8PrivateKey(rsaKey)
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)
@@ -265,9 +286,6 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 	h.apiConn = apiConn
 	t.Cleanup(func() { _ = apiConn.Close() })
 
-	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
-	// read it from other goroutines and cannot fetch it themselves.
-	h.token(t)
 	return h
 }
 
