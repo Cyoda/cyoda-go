@@ -53,19 +53,33 @@ both stores use it.
    (`internal/grpc/interceptor.go:17-54`, `authenticateFromMetadata` `:66-89`).
 8. No admin change is left half-applied across several records (§5.7).
 
-## 4. Threat model
+## 4. Threat model and what addresses each threat
 
-Sealing protects against **read** exposure of the store: backups, replicas, a
-read-only injection. **Write** access to the store is out of scope: it already
-allows registering a trusted key or changing any stored data. The binding in §5.2
-detects corruption and records mixed up with each other; it is not a defence
-against a writer.
+| Threat | Addressed by |
+|---|---|
+| **Read exposure of the store** (a backup, a replica, a read-only injection) | Private keys are sealed (§5.2). Test: the raw stored value contains no DER of the private key (§8.2). |
+| **The bootstrap PEM is exposed** | Replacing the PEM is the response, and the design makes it safe: it retires every issued key pair (§5.5) and the new bootstrap key signs at once, with no lockout. Tested end to end (§8.2, "restart with another bootstrap key"). The help topic gives the procedure (§9). A WARN at the moment an operator could believe otherwise (below). |
+| **Write access to the store** | Out of scope: the same access already allows registering a trusted key or changing any stored data. The binding in §5.2 detects corruption and records mixed up with each other, not a writer. |
 
-The bootstrap PEM is the root secret. Anyone who holds it and a copy of the store
-can open every issued private key, whether or not the bootstrap key is still
-active. The only response to a leaked PEM is to replace it, which retires every
-issued key pair (§5.5). Invalidating or deleting the bootstrap key through the API
-stops it signing and verifying but does not protect the sealed keys.
+**Why replacing the PEM is the only response to its exposure.** Anyone who holds
+the PEM and a copy of the store can open every issued private key it owns, whether
+or not the bootstrap key is still active. Invalidating or deleting the bootstrap
+key through the API stops it signing and verifying, but does not change what the
+PEM can open.
+
+**Where the false belief would arise, and the WARN there.** When the bootstrap key
+is invalidated or deleted through the API while the wrapped vault still owns issued
+key pairs, the node that took the call logs a WARN: the bootstrap key no longer
+signs, `CYODA_JWT_SIGNING_KEY` still unseals N issued key pairs, and it must be
+replaced if it may be exposed. At startup, while that state lasts, an INFO line
+says the same. With a KMS vault the count is zero and nothing is logged.
+
+**Procedure (help topic, §9) when the PEM may be exposed:** generate a new key;
+update the secret for every node; restart every node. On each restarted node, every
+token signed by the old bootstrap key or by an issued key pair stops verifying,
+and clients fetch new tokens from `/oauth/token`, which the new bootstrap key
+signs. Issue new key pairs if API-managed rotation is wanted. The retired records
+stay inert in the store.
 
 ## 5. Design
 
@@ -514,6 +528,7 @@ a node is unreachable.
 | stale fails closed (`PauseDatabase`, `multinode_fixture.go:137`) | ✓ | | | ✓ own cluster |
 | restart keeps an issued pair, a bootstrap invalidation and a bootstrap delete | | ✓ | | |
 | restart with another bootstrap key retires issued pairs; the new key signs | | ✓ | | |
+| WARN when the bootstrap key is invalidated or deleted while it still owns issued key pairs; none with zero | ✓ | | | |
 | existing trusted-key unit and e2e tests pass unchanged | ✓ | ✓ | | |
 
 Waivers:
@@ -524,22 +539,35 @@ Waivers:
 
 ## 9. Documentation and parity
 
-- `cmd/cyoda/help/content/config/auth.md`:
-  - `:51-52` — `CYODA_JWT_SIGNING_KEY` also derives the wrapping key; replacing it
-    retires issued key pairs; a leaked PEM must be replaced (§4).
+`cyoda help` topics (`cmd/cyoda/help/content/`):
+- `config/auth.md`:
+  - `:51-52` — `CYODA_JWT_SIGNING_KEY` also derives the wrapping key and is the
+    root secret; replacing it retires issued key pairs.
   - `:180-185` — the bootstrap key has no window unless the API gave it one.
   - §"Auth cache reconciliation" (`:187-197`) — three caches; the fail-closed
     effect on first-party tokens.
   - §"JWT signing keypair rotation" (`:224-252`) — remove both limitations;
     sharing, persistence, the §6 bound and the no-refusal rotation practice,
-    retire-on-replacement, recovery from a broken signer and from a deleted or
-    invalidated bootstrap key (an unexpired token, an admin from a federated OIDC
-    provider — subject to #624 — or replacing the key), and the KMS path (§5.10).
-- `cmd/cyoda/help/content/auth/tokens.md:121,125` — keystore wording; JWKS 503.
-- `cmd/cyoda/help/content/errors/KEYPAIR_NOT_FOUND.md` — new causes (retired,
-  deleted bootstrap).
-- `cmd/cyoda/help/config_registry.go:87,97,99` and `README.md:169` — same
-  corrections.
+    retire-on-replacement, the exposed-PEM procedure (§4), recovery from a broken
+    signer and from a deleted or invalidated bootstrap key (an unexpired token, an
+    admin from a federated OIDC provider — subject to #624 — or replacing the key),
+    and the KMS path (§5.10).
+- `auth/tokens.md:121,125` — the keystore is shared by the cluster; JWKS 503.
+- `errors.md:84` and `errors/KEYPAIR_NOT_FOUND.md` — new causes (retired key pair,
+  deleted bootstrap key).
+- `errors/NOT_FOUND.md:16,24` — says the key-pair and trusted-key endpoints return
+  `NOT_FOUND`; they return `KEYPAIR_NOT_FOUND` and `TRUSTED_KEY_NOT_FOUND`
+  (`keys_adapter.go:152-245`, `trusted_adapter.go:35`). Corrected.
+- `helm.md:313` and `quickstart.md:105` (signing-key sections) — one line each: the
+  key is the root secret for issued key pairs; see `config.auth` for replacing it.
+- `config_registry.go:87,97,99` (the `cyoda help config` variable table) — same
+  corrections as `config/auth.md`.
+- Checked and unaffected: `auth/oidc.md`, `auth/trusted-keys.md`, `cli/serve.md`,
+  `errors/FEATURE_DISABLED.md`, `openapi.md`, `run.md`, `cluster.md`,
+  `errors/STORAGE_UNAVAILABLE.md`.
+
+Other documents:
+- `README.md:169` — three caches.
 - OpenAPI: 503 on the five key-pair endpoints; `go generate ./api`.
 - `docs/ARCHITECTURE.md` §7.2 (`:1846-1873`), including `:1863`, which says
   first-party validation has no KV dependency.
