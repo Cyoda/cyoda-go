@@ -559,8 +559,12 @@ Waivers:
   - §"JWT signing keypair rotation" (`:224-252`) — remove both limitations;
     sharing, persistence, the §6 bound and the no-refusal rotation practice,
     retire-on-replacement, the exposed-PEM procedure (§4), recovery from a broken
-    signer and from a deleted or invalidated bootstrap key (an unexpired token, an
-    admin from a federated OIDC provider — subject to #624 — or replacing the key),
+    signer (invalidate or `DELETE` it; replacing the PEM helps only when this node
+    cannot open it under the current PEM), from an undecodable record (`DELETE`),
+    and from a deleted or invalidated bootstrap key with no other signer (no
+    first-party token then verifies: an admin from a federated OIDC provider —
+    subject to #624 — reactivates an invalidated key or issues a key pair, or the
+    PEM is replaced; a deleted bootstrap key cannot be reactivated),
     and the KMS path (§5.10).
 - `auth/tokens.md:121,125` — the keystore is shared by the cluster; JWKS 503.
 - `errors.md:84` and `errors/KEYPAIR_NOT_FOUND.md` — new causes (retired key pair,
