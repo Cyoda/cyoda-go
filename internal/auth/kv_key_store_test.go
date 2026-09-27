@@ -139,10 +139,14 @@ func TestKVKeyStore_UndecodableBootstrapStateRefusesBootstrap(t *testing.T) {
 	}
 }
 
+// undecodableKID is a well-formed key id (32 lowercase hex) for records that
+// do not decode: only a record at a key id is classified undecodable.
+const undecodableKID = "0badc0de0badc0de0badc0de0badc0de"
+
 func TestKVKeyStore_UndecodableRecordStopsSigning(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	_ = kv.Put(ctx, "signing-keys", "garbage", []byte("not json"))
+	_ = kv.Put(ctx, "signing-keys", undecodableKID, []byte("not json"))
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -151,7 +155,7 @@ func TestKVKeyStore_UndecodableRecordStopsSigning(t *testing.T) {
 	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrKeyPairBroken) {
 		t.Fatalf("err = %v, want ErrKeyPairBroken", err)
 	}
-	if !strings.Contains(buf.String(), "garbage") || !strings.Contains(buf.String(), "level=ERROR") {
+	if !strings.Contains(buf.String(), undecodableKID) || !strings.Contains(buf.String(), "level=ERROR") {
 		t.Fatalf("expected an ERROR naming the record; log: %s", buf.String())
 	}
 }
@@ -188,5 +192,39 @@ func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
 	}
 	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrStoreStale) {
 		t.Fatalf("signer while stale: err = %v", err)
+	}
+}
+
+// A record at a KV key that cannot be a key id (not 32 lowercase hex) is
+// ignored: no key pair can have that id, so it cannot sign or be any
+// bootstrap key's state, and it does not block signing. An ERROR names the
+// key once, not on every re-read.
+func TestKVKeyStore_NonKIDRecordIsIgnored(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	_ = kv.Put(ctx, "signing-keys", "junk", []byte("{"))
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+	boot := newBootstrap(t)
+	s := newKeyStore(t, kv, boot, "client")
+	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+		t.Fatalf("signer = %v, err = %v; want the bootstrap key", kp, err)
+	}
+	if err := s.ReconcileForTest(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(buf.String(), "level=ERROR"); n != 1 || !strings.Contains(buf.String(), "junk") {
+		t.Fatalf("want one ERROR naming the key, got %d; log: %s", n, buf.String())
+	}
+	if strings.Contains(buf.String(), "{") {
+		t.Fatalf("record value logged: %s", buf.String())
+	}
+	if err := s.Delete(ctx, "junk"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("delete: err = %v, want ErrKeyPairNotFound", err)
+	}
+	if _, err := s.VerificationKey("junk"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("verification: err = %v", err)
 	}
 }

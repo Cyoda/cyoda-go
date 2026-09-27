@@ -113,49 +113,49 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 		{
 			name: "latest validFrom wins",
 			recs: []rec{
-				{kid: "aaa", active: true, from: earlier},
-				{kid: "bbb", active: true, from: almostNow},
+				{kid: testKID("aaa"), active: true, from: earlier},
+				{kid: testKID("bbb"), active: true, from: almostNow},
 			},
-			wantKID: "bbb",
+			wantKID: testKID("bbb"),
 		},
 		{
 			name: "tie on validFrom, greater KID wins",
 			recs: []rec{
-				{kid: "aaa", active: true, from: almostNow},
-				{kid: "bbb", active: true, from: almostNow},
+				{kid: testKID("aaa"), active: true, from: almostNow},
+				{kid: testKID("bbb"), active: true, from: almostNow},
 			},
-			wantKID: "bbb",
+			wantKID: testKID("bbb"),
 		},
 		{
 			name:    "inactive owned key does not sign",
-			recs:    []rec{{kid: "aaa", active: false, from: almostNow}},
+			recs:    []rec{{kid: testKID("aaa"), active: false, from: almostNow}},
 			wantErr: ErrKeyPairNotFound,
 		},
 		{
 			name:    "future-window owned key does not sign",
-			recs:    []rec{{kid: "aaa", active: true, from: future}},
+			recs:    []rec{{kid: testKID("aaa"), active: true, from: future}},
 			wantErr: ErrKeyPairNotFound,
 		},
 		{
 			name:    "expired owned key does not sign",
-			recs:    []rec{{kid: "aaa", active: true, from: past, to: &almostNow}},
+			recs:    []rec{{kid: testKID("aaa"), active: true, from: past, to: &almostNow}},
 			wantErr: ErrKeyPairNotFound,
 		},
 		{
 			name: "a broken record that would win fails closed",
 			recs: []rec{
-				{kid: "aaa", active: true, from: earlier},
-				{kid: "bbb", active: true, from: almostNow, broken: true},
+				{kid: testKID("aaa"), active: true, from: earlier},
+				{kid: testKID("bbb"), active: true, from: almostNow, broken: true},
 			},
 			wantErr: ErrKeyPairBroken,
 		},
 		{
 			name: "a broken record that loses does not block signing",
 			recs: []rec{
-				{kid: "aaa", active: true, from: earlier, broken: true},
-				{kid: "bbb", active: true, from: almostNow},
+				{kid: testKID("aaa"), active: true, from: earlier, broken: true},
+				{kid: testKID("bbb"), active: true, from: almostNow},
 			},
-			wantKID: "bbb",
+			wantKID: testKID("bbb"),
 		},
 	}
 	for _, tc := range cases {
@@ -237,18 +237,18 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 			}
 			var b []byte
 			if tc.broken {
-				b = brokenRecord(t, v, "kid1", "human", tc.from, tc.to)
+				b = brokenRecord(t, v, testKID("kid1"), "human", tc.from, tc.to)
 			} else {
-				b = issuedRecordFull(t, v, "kid1", "human", tc.active, tc.from, tc.to)
+				b = issuedRecordFull(t, v, testKID("kid1"), "human", tc.active, tc.from, tc.to)
 			}
-			if err := kv.Put(ctx, signingKeysNamespace, "kid1", b); err != nil {
+			if err := kv.Put(ctx, signingKeysNamespace, testKID("kid1"), b); err != nil {
 				t.Fatal(err)
 			}
 			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = s.VerificationKey("kid1")
+			_, err = s.VerificationKey(testKID("kid1"))
 			ok := err == nil
 			if ok != tc.wantOK {
 				t.Fatalf("VerificationKey ok = %v, want %v (err=%v)", ok, tc.wantOK, err)
@@ -276,15 +276,15 @@ func TestKVKeyStore_PublishedIncludesGraceExcludesExpiredSorted(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	// Invalidated but still inside its grace window: must still be published
 	// so a verifier holding a token it already signed can still check it.
-	if err := kv.Put(ctx, signingKeysNamespace, "zzz-grace", issuedRecordFull(t, v, "zzz-grace", "human", false, past, &future)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("zzz-grace"), issuedRecordFull(t, v, testKID("zzz-grace"), "human", false, past, &future)); err != nil {
 		t.Fatal(err)
 	}
 	// Window fully ended: excluded.
-	if err := kv.Put(ctx, signingKeysNamespace, "aaa-expired", issuedRecordFull(t, v, "aaa-expired", "human", true, past, &past)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("aaa-expired"), issuedRecordFull(t, v, testKID("aaa-expired"), "human", true, past, &past)); err != nil {
 		t.Fatal(err)
 	}
 	// Active, no window end: included.
-	if err := kv.Put(ctx, signingKeysNamespace, "mmm-active", issuedRecordFull(t, v, "mmm-active", "human", true, past, nil)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("mmm-active"), issuedRecordFull(t, v, testKID("mmm-active"), "human", true, past, nil)); err != nil {
 		t.Fatal(err)
 	}
 	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
@@ -304,13 +304,13 @@ func TestKVKeyStore_PublishedIncludesGraceExcludesExpiredSorted(t *testing.T) {
 	if !sort.StringsAreSorted(kids) {
 		t.Fatalf("Published not sorted by KID: %v", kids)
 	}
-	if !present["zzz-grace"] {
+	if !present[testKID("zzz-grace")] {
 		t.Fatal("expected an invalidated-in-grace key to be published")
 	}
-	if present["aaa-expired"] {
+	if present[testKID("aaa-expired")] {
 		t.Fatal("expected an expired key to be excluded from Published")
 	}
-	if !present["mmm-active"] {
+	if !present[testKID("mmm-active")] {
 		t.Fatal("expected an active key with no window end to be published")
 	}
 }
@@ -360,7 +360,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "retired-1", issuedRecord(t, otherVault, "retired-1", "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-1"), issuedRecord(t, otherVault, testKID("retired-1"), "human")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -383,7 +383,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	if n := strings.Count(buf.String(), "retired on this node"); n != 0 {
 		t.Fatalf("expected no retired WARN on an unchanged re-read, got %d; log: %s", n, buf.String())
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "retired-2", issuedRecord(t, otherVault, "retired-2", "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-2"), issuedRecord(t, otherVault, testKID("retired-2"), "human")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.rep.Reconcile(ctx); err != nil {
@@ -414,7 +414,7 @@ func TestKVKeyStore_LogRevokedBootstrapWhenOwnedPairsExist(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, bootKID, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "issued-1", issuedRecord(t, v, "issued-1", "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"), "human")); err != nil {
 		t.Fatal(err)
 	}
 

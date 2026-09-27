@@ -301,10 +301,10 @@ The fix depends on why:
   record.
 - `invalidate` and `reactivate` answer `404` for it: it is not a key pair the
   API recognises.
-- `DELETE` on its KV key always succeeds. It replaces the record with a
-  deleted bootstrap-state record. An ERROR log names the KV key. A KV key
-  that is not 32 lowercase hex characters was never written by cyoda and is
-  refused by the API (`400`); remove that record in the database itself.
+- `DELETE` always succeeds. It replaces the record with a deleted
+  bootstrap-state record. An ERROR log names the KV key.
+- A record at a KV key that is not 32 lowercase hex characters cannot be a
+  key id: it is ignored (it does not block signing) and logged at ERROR.
 - At any id other than this node's bootstrap key id, the replacement is
   inert. The bootstrap key is unaffected: authenticate the `DELETE` with an
   unexpired admin token or an admin from a federated OIDC provider. Replacing

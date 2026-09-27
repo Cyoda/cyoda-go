@@ -116,9 +116,9 @@ func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
 		active  bool
 		validTo *time.Time
 	}{
-		{"active-1", true, nil},     // active, no expiry — always published
-		{"grace-1", false, &future}, // grace period — published
-		{"expired-1", false, &past}, // window ended — excluded
+		{testKID("active-1"), true, nil},     // active, no expiry — always published
+		{testKID("grace-1"), false, &future}, // grace period — published
+		{testKID("expired-1"), false, &past}, // window ended — excluded
 	} {
 		rec := issuedRecordFull(t, v, tc.kid, "client", tc.active, from, tc.validTo)
 		if err := kv.Put(ctx, signingKeysNamespace, tc.kid, rec); err != nil {
@@ -134,13 +134,13 @@ func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
 	for _, entry := range serveJWKS(t, store).Keys {
 		kids[entry.KID] = true
 	}
-	if !kids["active-1"] {
+	if !kids[testKID("active-1")] {
 		t.Error("expected active-1 in JWKS (active, no expiry)")
 	}
-	if !kids["grace-1"] {
+	if !kids[testKID("grace-1")] {
 		t.Error("expected grace-1 in JWKS (grace-period key, ValidTo in future)")
 	}
-	if kids["expired-1"] {
+	if kids[testKID("expired-1")] {
 		t.Error("expired-1 must not be in JWKS (ValidTo in past)")
 	}
 }

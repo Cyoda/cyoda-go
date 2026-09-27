@@ -52,29 +52,29 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "issued-1", issuedRecord(t, v, "issued-1", "client")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"), "client")); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "issued-2", issuedRecord(t, v, "issued-2", "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-2"), issuedRecord(t, v, testKID("issued-2"), "human")); err != nil {
 		t.Fatal(err)
 	}
 	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !signerCached(s, "issued-1") || !signerCached(s, "issued-2") {
+	if !signerCached(s, testKID("issued-1")) || !signerCached(s, testKID("issued-2")) {
 		t.Fatal("expected both opened signers to be cached after the initial load")
 	}
-	if err := kv.Delete(ctx, signingKeysNamespace, "issued-1"); err != nil {
+	if err := kv.Delete(ctx, signingKeysNamespace, testKID("issued-1")); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.rep.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if signerCached(s, "issued-1") {
+	if signerCached(s, testKID("issued-1")) {
 		t.Fatal("expected the deleted record's cached signer to have been evicted")
 	}
-	if !signerCached(s, "issued-2") {
+	if !signerCached(s, testKID("issued-2")) {
 		t.Fatal("expected the still-owned record's cached signer to remain — retain must not empty the whole cache")
 	}
 }

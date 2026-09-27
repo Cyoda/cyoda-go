@@ -277,11 +277,12 @@ func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, r
 }
 
 // Delete removes an issued key pair (owned or broken). An undecodable record
-// — at any KID — is instead replaced with a deleted bootstrap-state record,
+// — at any key id — is instead replaced with a deleted bootstrap-state record,
 // never removed outright: if that KID is some node's bootstrap key it stays
 // revoked, and otherwise the record is a foreign bootstrap record every node
 // already ignores (spec §5.5). Deleting this node's own bootstrap key marks
-// its bootstrap state deleted — terminal: no API call removes that record.
+// its bootstrap state deleted — terminal: no API call removes that record. A
+// record at a key that cannot be a key id is ignored, and not found here.
 func (s *KVKeyStore) Delete(ctx context.Context, kid string) error {
 	err := s.rep.mutate(func() (func(map[string]*signingEntry), bool, error) {
 		data, err := s.kv.Get(ctx, signingKeysNamespace, kid)

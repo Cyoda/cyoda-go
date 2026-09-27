@@ -33,7 +33,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     bootstrap record or a deleted bootstrap key.
   - `invalidate` and `reactivate` also answer `404` for an undecodable record.
     `delete` always succeeds on one (`200`): it replaces the record with a
-    deleted bootstrap-state record.
+    deleted bootstrap-state record. A record at a key that cannot be a key id
+    is ignored and logged; it does not block signing.
   - `delete`, `invalidate` and `reactivate` answer `400 BAD_REQUEST` for a
     `keyId` that is not 32 lowercase hex characters (was `404`). Every issued
     and bootstrap key id has that form.

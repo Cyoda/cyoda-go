@@ -47,10 +47,11 @@ across a restart, and when its issuing bootstrap key is replaced.
   `404` is reserved for a KID that is genuinely absent, retired, a foreign
   bootstrap-state record, an undecodable record, or (at this node's own
   bootstrap key id specifically) already deleted. `DELETE` treats an
-  undecodable record differently from every other 404 cause: at a
-  well-formed key id it always succeeds (`200`), replacing the record with a
-  deleted bootstrap-state record instead of leaving it in place — the one way
-  to clear it through the API.
+  undecodable record differently from every other 404 cause: it always
+  succeeds (`200`), replacing the record with a deleted bootstrap-state
+  record instead of leaving it in place — the one way to clear it. A record
+  at a key that cannot be a key id (not 32 lowercase hex) is ignored and
+  logged; it never blocks signing.
 - **A storage-unavailable failure is 503, never a stale or wrong answer** —
   but which operations can even reach one differs by endpoint. `current` and
   `GET /.well-known/jwks.json` read only the node's own copy and never call

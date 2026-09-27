@@ -51,6 +51,10 @@ const (
 	classBootstrapState
 	classForeignBootstrap
 	classUndecodable
+	// classIgnored: a record at a KV key that cannot be a key id. Used for
+	// nothing — it never signs, verifies, is published or blocks signing,
+	// and is never a rotation sibling.
+	classIgnored
 )
 
 // signingEntry is one record of the node copy, classified for this node.
@@ -235,6 +239,14 @@ func newClassifier(vault KeyVault, bootKID string) *classifier {
 
 // classify decides what this node does with one stored record (spec §5.5).
 func (c *classifier) classify(ctx context.Context, kvKey string, data []byte) *signingEntry {
+	if !keyPairIDPattern.MatchString(kvKey) {
+		// Every key id — issued (newKID) or bootstrap (DeriveKID) — is 32
+		// lowercase hex, and cyoda never writes any other key here. A record
+		// elsewhere can neither sign nor be any bootstrap key's state, so the
+		// fail-closed reason to block signing on an undecodable record does
+		// not apply: it is ignored, and logged.
+		return &signingEntry{class: classIgnored, reason: "not a key id", pair: KeyPair{KID: kvKey}}
+	}
 	rec, pair, spki, sealed, err := decodeSigningRecord(kvKey, data)
 	if err != nil {
 		return &signingEntry{class: classUndecodable, reason: "undecodable", pair: KeyPair{KID: kvKey}}

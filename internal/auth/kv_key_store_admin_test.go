@@ -556,15 +556,15 @@ func TestKVKeyStore_RotationSeesSiblingIssuedElsewhere(t *testing.T) {
 func TestKVKeyStore_UndecodableCanBeDeleted(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	_ = kv.Put(ctx, "signing-keys", "junk", []byte("{"))
+	_ = kv.Put(ctx, "signing-keys", undecodableKID, []byte("{"))
 	s := newKeyStore(t, kv, newBootstrap(t), "client")
-	if err := s.Delete(ctx, "junk"); err != nil {
+	if err := s.Delete(ctx, undecodableKID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := s.Signer("client"); err != nil {
 		t.Fatalf("signing still blocked after deleting the undecodable record: %v", err)
 	}
-	raw, err := kv.Get(ctx, "signing-keys", "junk")
+	raw, err := kv.Get(ctx, "signing-keys", undecodableKID)
 	if err != nil {
 		t.Fatalf("undecodable record removed instead of replaced: %v", err)
 	}

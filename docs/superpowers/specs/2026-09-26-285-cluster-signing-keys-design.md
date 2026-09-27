@@ -246,7 +246,8 @@ Each record is classified when a node loads it:
 | **retired** | issued, vault kind `wrapped`, another owner | nothing |
 | **bootstrap state** | `kind = bootstrap`, KID = this node's bootstrap KID | applied to the configured bootstrap key |
 | **foreign bootstrap state** | `kind = bootstrap`, another KID | nothing |
-| **undecodable** | the value does not decode as a record, or an issued record sits at this node's bootstrap KID | see below |
+| **undecodable** | KV key is a key id; the value does not decode as a record, or an issued record sits at this node's bootstrap KID | see below |
+| **ignored** | KV key cannot be a key id (not 32 lowercase hex: `newKID` and `DeriveKID` both give 32 lowercase hex, and cyoda writes no other key) | nothing: never signs, verifies, is published or blocks signing; not a rotation sibling; the admin endpoints refuse its key (400). An ERROR names the keys when their set changes |
 
 - **Undecodable** records: absence of a record can mean "active" (bootstrap state)
   or can change which key signs, so an undecodable record is never skipped

@@ -77,6 +77,7 @@ type KVKeyStore struct {
 	logMu       sync.Mutex
 	lastRetired []string
 	lastBroken  []string
+	lastIgnored []string
 }
 
 func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConfig) (*KVKeyStore, error) {
@@ -271,20 +272,24 @@ func (s *KVKeyStore) retainOwnedSigners(recs map[string]*signingEntry) {
 	s.cls.signers.retain(owned)
 }
 
-// logClassChanges logs when the set of retired, or of broken and undecodable,
-// records changes — not on every re-read.
+// logClassChanges logs when the set of retired, of broken and undecodable, or
+// of ignored records changes — not on every re-read. Only KV keys and reason
+// classes are logged, never record values.
 func (s *KVKeyStore) logClassChanges(recs map[string]*signingEntry) {
-	var retired, broken []string
+	var retired, broken, ignored []string
 	for k, e := range recs {
 		switch e.class {
 		case classRetired:
 			retired = append(retired, k)
 		case classBroken, classUndecodable:
 			broken = append(broken, k+" ("+e.reason+")")
+		case classIgnored:
+			ignored = append(ignored, k)
 		}
 	}
 	sort.Strings(retired)
 	sort.Strings(broken)
+	sort.Strings(ignored)
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
 	if !slices.Equal(retired, s.lastRetired) {
@@ -300,6 +305,13 @@ func (s *KVKeyStore) logClassChanges(recs map[string]*signingEntry) {
 				"pkg", "auth", "records", broken)
 		}
 		s.lastBroken = broken
+	}
+	if !slices.Equal(ignored, s.lastIgnored) {
+		if len(ignored) > 0 {
+			slog.Error("signing key records at keys that cannot be a key id are ignored",
+				"pkg", "auth", "keys", ignored)
+		}
+		s.lastIgnored = ignored
 	}
 }
 

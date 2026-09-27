@@ -8,12 +8,21 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// testKID turns a readable fixture name into a key id (32 lowercase hex): the
+// name's bytes in hex, padded with zeros, so fixture names keep their order.
+// A record is only classified at a KV key that can be a key id.
+func testKID(name string) string {
+	h := hex.EncodeToString([]byte(name))
+	return h + strings.Repeat("0", 32-len(h))
+}
 
 type countingVault struct {
 	KeyVault
@@ -47,17 +56,17 @@ func issuedRecord(t *testing.T, v KeyVault, kid, aud string) []byte {
 
 func testClassifier(t *testing.T) (*classifier, *countingVault) {
 	t.Helper()
-	v, err := NewWrappedVault(loadFixtureKey(t), "boot-kid")
+	v, err := NewWrappedVault(loadFixtureKey(t), testKID("boot-kid"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	cv := &countingVault{KeyVault: v}
-	return newClassifier(cv, "boot-kid"), cv
+	return newClassifier(cv, testKID("boot-kid")), cv
 }
 
 func TestClassify_Owned(t *testing.T) {
 	c, v := testClassifier(t)
-	e := c.classify(context.Background(), "k1", issuedRecord(t, v, "k1", "client"))
+	e := c.classify(context.Background(), testKID("k1"), issuedRecord(t, v, testKID("k1"), "client"))
 	if e.class != classOwned || e.signer == nil || e.pair.PublicKey == nil || e.pair.Audience != "client" {
 		t.Fatalf("entry = %+v", e)
 	}
@@ -65,9 +74,9 @@ func TestClassify_Owned(t *testing.T) {
 
 func TestClassify_SignerOpenedOnceWhileSealedUnchanged(t *testing.T) {
 	c, v := testClassifier(t)
-	rec := issuedRecord(t, v, "k1", "client")
-	c.classify(context.Background(), "k1", rec)
-	c.classify(context.Background(), "k1", rec)
+	rec := issuedRecord(t, v, testKID("k1"), "client")
+	c.classify(context.Background(), testKID("k1"), rec)
+	c.classify(context.Background(), testKID("k1"), rec)
 	if n := v.opens.Load(); n != 1 {
 		t.Fatalf("opened %d times, want 1", n)
 	}
@@ -81,8 +90,8 @@ func TestClassify_SignerOpenedOnceWhileSealedUnchanged(t *testing.T) {
 // and wrongly report owned.
 func TestClassify_SignerReopensWhenSealedChanges(t *testing.T) {
 	c, v := testClassifier(t)
-	good := issuedRecord(t, v, "k1", "client")
-	if e := c.classify(context.Background(), "k1", good); e.class != classOwned {
+	good := issuedRecord(t, v, testKID("k1"), "client")
+	if e := c.classify(context.Background(), testKID("k1"), good); e.class != classOwned {
 		t.Fatalf("setup: %+v", e)
 	}
 
@@ -101,7 +110,7 @@ func TestClassify_SignerReopensWhenSealedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := c.classify(context.Background(), "k1", b)
+	e := c.classify(context.Background(), testKID("k1"), b)
 	if e.class != classBroken || !strings.Contains(e.reason, "decryption") {
 		t.Fatalf("tampered sealed after cache fill: class=%v reason=%q, want broken/decryption", e.class, e.reason)
 	}
@@ -114,8 +123,8 @@ func TestClassify_SignerReopensWhenSealedChanges(t *testing.T) {
 // (owned) after a rewrite that only changes a bound field.
 func TestClassify_CacheChecksEveryBoundFieldNotJustSealedBytes(t *testing.T) {
 	c, v := testClassifier(t)
-	good := issuedRecord(t, v, "k1", "client")
-	if e := c.classify(context.Background(), "k1", good); e.class != classOwned {
+	good := issuedRecord(t, v, testKID("k1"), "client")
+	if e := c.classify(context.Background(), testKID("k1"), good); e.class != classOwned {
 		t.Fatalf("setup: class = %v, want owned", e.class)
 	}
 
@@ -147,7 +156,7 @@ func TestClassify_CacheChecksEveryBoundFieldNotJustSealedBytes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			e := c.classify(context.Background(), "k1", b)
+			e := c.classify(context.Background(), testKID("k1"), b)
 			if e.class != classBroken {
 				t.Fatalf("class = %v, want broken (a cache hit must not skip the vault's binding check)", e.class)
 			}
@@ -165,14 +174,14 @@ func TestClassify_Retired(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e := c.classify(context.Background(), "k1", issuedRecord(t, ov, "k1", "client")); e.class != classRetired {
+	if e := c.classify(context.Background(), testKID("k1"), issuedRecord(t, ov, testKID("k1"), "client")); e.class != classRetired {
 		t.Fatalf("class = %v, want retired", e.class)
 	}
 }
 
 func TestClassify_BrokenReasons(t *testing.T) {
 	c, v := testClassifier(t)
-	good := issuedRecord(t, v, "k1", "client")
+	good := issuedRecord(t, v, testKID("k1"), "client")
 	mutate := func(fn func(r *signingRecord)) []byte {
 		var r signingRecord
 		if err := json.Unmarshal(good, &r); err != nil {
@@ -197,7 +206,7 @@ func TestClassify_BrokenReasons(t *testing.T) {
 		"unknown vault kind": mutate(func(r *signingRecord) { r.Vault.Kind = "kms-x" }),
 	}
 	for want, rec := range cases {
-		e := c.classify(context.Background(), "k1", rec)
+		e := c.classify(context.Background(), testKID("k1"), rec)
 		if e.class != classBroken || !strings.Contains(e.reason, want) {
 			t.Fatalf("%s: entry = %+v", want, e)
 		}
@@ -209,11 +218,11 @@ func TestClassify_BrokenReasons(t *testing.T) {
 // publicKey field) must surface through classify as broken, not just at the
 // vault layer.
 func TestClassify_BrokenPublicKeyMismatch(t *testing.T) {
-	v, err := NewWrappedVault(loadFixtureKey(t), "boot-kid")
+	v, err := NewWrappedVault(loadFixtureKey(t), testKID("boot-kid"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := newClassifier(v, "boot-kid")
+	c := newClassifier(v, testKID("boot-kid"))
 	wv := asWrappedVault(t, v)
 
 	keyB, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -233,11 +242,11 @@ func TestClassify_BrokenPublicKeyMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta := KeyMeta{KID: "k1", Audience: "client", Algorithm: "RS256", Owner: v.Owner(), SPKI: spkiA}
+	meta := KeyMeta{KID: testKID("k1"), Audience: "client", Algorithm: "RS256", Owner: v.Owner(), SPKI: spkiA}
 	sealed := wv.aead.Seal(nil, nil, pk8B, associatedData(meta))
 
 	rec, err := encodeSigningRecord(signingRecord{
-		Kind: recordKindIssued, KID: "k1", Audience: "client", Algorithm: "RS256", Active: true,
+		Kind: recordKindIssued, KID: testKID("k1"), Audience: "client", Algorithm: "RS256", Active: true,
 		ValidFrom: fmtTime(time.Now()),
 		PublicKey: base64.StdEncoding.EncodeToString(spkiA),
 		Vault:     &vaultReference{Kind: v.Kind(), Owner: v.Owner(), Sealed: base64.StdEncoding.EncodeToString(sealed)},
@@ -246,7 +255,7 @@ func TestClassify_BrokenPublicKeyMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	e := c.classify(context.Background(), "k1", rec)
+	e := c.classify(context.Background(), testKID("k1"), rec)
 	if e.class != classBroken || !strings.Contains(e.reason, "public key mismatch") {
 		t.Fatalf("entry = %+v", e)
 	}
@@ -257,13 +266,13 @@ func TestClassify_BootstrapAndForeign(t *testing.T) {
 	vt := time.Now().Add(time.Hour)
 
 	own, err := encodeSigningRecord(signingRecord{
-		Kind: recordKindBootstrap, KID: "boot-kid", Active: false,
+		Kind: recordKindBootstrap, KID: testKID("boot-kid"), Active: false,
 		ValidFrom: fmtTime(time.Time{}), ValidTo: fmtTimePtr(&vt), Deleted: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	e := c.classify(context.Background(), "boot-kid", own)
+	e := c.classify(context.Background(), testKID("boot-kid"), own)
 	if e.class != classBootstrapState || !e.deleted {
 		t.Fatalf("own bootstrap = %+v", e)
 	}
@@ -272,11 +281,11 @@ func TestClassify_BootstrapAndForeign(t *testing.T) {
 		t.Fatalf("own bootstrap pair = %+v", e.pair)
 	}
 
-	other, err := encodeSigningRecord(signingRecord{Kind: recordKindBootstrap, KID: "old-boot", Active: true, ValidFrom: fmtTime(time.Time{})})
+	other, err := encodeSigningRecord(signingRecord{Kind: recordKindBootstrap, KID: testKID("old-boot"), Active: true, ValidFrom: fmtTime(time.Time{})})
 	if err != nil {
 		t.Fatal(err)
 	}
-	e2 := c.classify(context.Background(), "old-boot", other)
+	e2 := c.classify(context.Background(), testKID("old-boot"), other)
 	if e2.class != classForeignBootstrap {
 		t.Fatalf("foreign bootstrap = %+v", e2)
 	}
@@ -291,9 +300,9 @@ func TestClassify_BootstrapAndForeign(t *testing.T) {
 // owner is this node's own bootstrap KID) would mean two keys under one KID.
 func TestClassify_IssuedAtBootstrapKID(t *testing.T) {
 	c, v := testClassifier(t)
-	rec := issuedRecord(t, v, "boot-kid", "client")
-	e := c.classify(context.Background(), "boot-kid", rec)
-	if e.class != classUndecodable || e.reason != "issued record at the bootstrap key id" || e.pair.KID != "boot-kid" {
+	rec := issuedRecord(t, v, testKID("boot-kid"), "client")
+	e := c.classify(context.Background(), testKID("boot-kid"), rec)
+	if e.class != classUndecodable || e.reason != "issued record at the bootstrap key id" || e.pair.KID != testKID("boot-kid") {
 		t.Fatalf("entry = %+v", e)
 	}
 }
@@ -301,7 +310,7 @@ func TestClassify_IssuedAtBootstrapKID(t *testing.T) {
 func TestClassify_Undecodable(t *testing.T) {
 	c, v := testClassifier(t)
 
-	goodIssued := issuedRecord(t, v, "k1", "client")
+	goodIssued := issuedRecord(t, v, testKID("k1"), "client")
 	var base signingRecord
 	if err := json.Unmarshal(goodIssued, &base); err != nil {
 		t.Fatal(err)
@@ -334,8 +343,8 @@ func TestClassify_Undecodable(t *testing.T) {
 
 	cases := map[string][]byte{
 		"not json":             []byte("{"),
-		"kid mismatch":         issuedRecord(t, v, "other", "client"),
-		"bad kind":             []byte(`{"kind":"x","kid":"k1","validFrom":"2026-01-01T00:00:00Z"}`),
+		"kid mismatch":         issuedRecord(t, v, testKID("other"), "client"),
+		"bad kind":             []byte(`{"kind":"x","kid":"` + testKID("k1") + `","validFrom":"2026-01-01T00:00:00Z"}`),
 		"invalid audience":     mutate(func(r *signingRecord) { r.Audience = "admin" }),
 		"non-RS256 algorithm":  mutate(func(r *signingRecord) { r.Algorithm = "RS512" }),
 		"nil vault":            mutate(func(r *signingRecord) { r.Vault = nil }),
@@ -352,7 +361,7 @@ func TestClassify_Undecodable(t *testing.T) {
 		"invalid validFrom": mutate(func(r *signingRecord) { r.ValidFrom = invalidTime }),
 		"invalid validTo":   mutate(func(r *signingRecord) { r.ValidTo = &invalidTime }),
 		"bootstrap record with invalid validFrom": func() []byte {
-			b, err := json.Marshal(signingRecord{Kind: recordKindBootstrap, KID: "k1", Active: true, ValidFrom: invalidTime})
+			b, err := json.Marshal(signingRecord{Kind: recordKindBootstrap, KID: testKID("k1"), Active: true, ValidFrom: invalidTime})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -361,7 +370,7 @@ func TestClassify_Undecodable(t *testing.T) {
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
-			if e := c.classify(context.Background(), "k1", data); e.class != classUndecodable || e.pair.KID != "k1" {
+			if e := c.classify(context.Background(), testKID("k1"), data); e.class != classUndecodable || e.pair.KID != testKID("k1") {
 				t.Fatalf("entry = %+v", e)
 			}
 		})
@@ -374,7 +383,7 @@ func TestClassify_Undecodable(t *testing.T) {
 // needs the more specific reason.
 func TestDecodeSigningRecord_PublicKeyErrors(t *testing.T) {
 	_, v := testClassifier(t)
-	good := issuedRecord(t, v, "k1", "client")
+	good := issuedRecord(t, v, testKID("k1"), "client")
 	var base signingRecord
 	if err := json.Unmarshal(good, &base); err != nil {
 		t.Fatal(err)
@@ -395,7 +404,7 @@ func TestDecodeSigningRecord_PublicKeyErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := decodeSigningRecord("k1", garbageBytes); err == nil || !strings.Contains(err.Error(), "invalid public key") {
+	if _, _, _, _, err := decodeSigningRecord(testKID("k1"), garbageBytes); err == nil || !strings.Contains(err.Error(), "invalid public key") {
 		t.Fatalf("err = %v, want %q", err, "invalid public key")
 	}
 
@@ -405,7 +414,7 @@ func TestDecodeSigningRecord_PublicKeyErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := decodeSigningRecord("k1", notRSABytes); err == nil || !strings.Contains(err.Error(), "public key is not RSA") {
+	if _, _, _, _, err := decodeSigningRecord(testKID("k1"), notRSABytes); err == nil || !strings.Contains(err.Error(), "public key is not RSA") {
 		t.Fatalf("err = %v, want %q", err, "public key is not RSA")
 	}
 }
@@ -414,7 +423,7 @@ func TestDecodeSigningRecord_PublicKeyErrors(t *testing.T) {
 func TestDecodeSigningRecord_IgnoresUnknownFields(t *testing.T) {
 	_, v := testClassifier(t)
 	var m map[string]any
-	if err := json.Unmarshal(issuedRecord(t, v, "k1", "client"), &m); err != nil {
+	if err := json.Unmarshal(issuedRecord(t, v, testKID("k1"), "client"), &m); err != nil {
 		t.Fatal(err)
 	}
 	m["futureField"] = map[string]any{"x": 1}
@@ -422,7 +431,7 @@ func TestDecodeSigningRecord_IgnoresUnknownFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, _, err := decodeSigningRecord("k1", b); err != nil {
+	if _, _, _, _, err := decodeSigningRecord(testKID("k1"), b); err != nil {
 		t.Fatalf("unknown field made the record undecodable: %v", err)
 	}
 }
@@ -439,5 +448,17 @@ func TestSignerCache_Retain(t *testing.T) {
 	}
 	if _, ok := sc.m["k2"]; ok {
 		t.Fatal("retain kept a KID that was not in the set")
+	}
+}
+
+// A decodable issued record owned by this vault is still ignored at a KV key
+// that cannot be a key id: no key pair can have that id.
+func TestClassify_NonKIDKeyIsIgnored(t *testing.T) {
+	c, v := testClassifier(t)
+	for _, key := range []string{"issued-1", strings.ToUpper(testKID("k1")), testKID("k1")[1:]} {
+		e := c.classify(context.Background(), key, issuedRecord(t, v, key, "client"))
+		if e.class != classIgnored || e.pair.KID != key || e.signer != nil {
+			t.Fatalf("%s: entry = %+v", key, e)
+		}
 	}
 }
