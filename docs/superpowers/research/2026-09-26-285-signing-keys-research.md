@@ -191,8 +191,9 @@ Source: `~/dev/cyoda` and `~/dev/cyoda-platform`. "[code]" = seen in code.
 
 - Key-pair E2E tests are single-node: `internal/e2e/oauth_keys_test.go:85-296`,
   `internal/e2e/keys_trusted_reconciliation_test.go:19-90`.
-- Multi-node parity scenarios run on postgres (in-tree) and cassandra (plugin):
-  `e2e/parity/multinode/registry.go:1-45`; fixture
+- Multi-node parity scenarios run on postgres only (`e2e/parity/multinode/registry.go:1-45`
+  says cassandra too, but the plugin's `e2e/cassandra_test.go:91` runs only
+  `parity.AllTests()`; its multi-node fixture is cyoda-go-cassandra#35); fixture
   `e2e/parity/postgres/multinode_fixture.go:27,119-177`. The fixture can kill a
   node but cannot restart one into the cluster
   (`e2e/parity/fixtureutil/fixtureutil.go:717-724`).
