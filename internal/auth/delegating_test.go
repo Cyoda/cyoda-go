@@ -35,14 +35,11 @@ func generateTestPEM(t *testing.T) string {
 func TestAuthService_FullFlow(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := NewAuthService(AuthConfig{
+	svc := newTestAuthService(t, AuthConfig{
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService failed: %v", err)
-	}
 
 	// Start test server with AuthService handler.
 	server := httptest.NewServer(svc.Handler())
@@ -111,23 +108,20 @@ func TestAuthService_FullFlow(t *testing.T) {
 func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := NewAuthService(AuthConfig{
+	svc := newTestAuthService(t, AuthConfig{
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService failed: %v", err)
-	}
 
 	// Start test server for JWKS.
 	server := httptest.NewServer(svc.Handler())
 	defer server.Close()
 
 	// Get active key pair for signing.
-	kp, err := svc.KeyStore().GetActive("client")
+	kp, signer, err := svc.KeyStore().Signer("client")
 	if err != nil {
-		t.Fatalf("failed to get active key pair: %v", err)
+		t.Fatalf("failed to get the signing key pair: %v", err)
 	}
 
 	// Sign a token directly.
@@ -142,7 +136,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 		"iat":          float64(now.Unix()),
 	}
 
-	token, err := Sign(context.Background(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
+	token, err := Sign(context.Background(), claims, signer, kp.KID)
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}
@@ -199,14 +193,11 @@ func TestDelegatingAuthenticator_NoToken(t *testing.T) {
 func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := NewAuthService(AuthConfig{
+	svc := newTestAuthService(t, AuthConfig{
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService failed: %v", err)
-	}
 
 	server := httptest.NewServer(svc.Handler())
 	defer server.Close()
@@ -221,7 +212,7 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.Header.Set("Authorization", "Bearer invalid.token.value")
 
-	_, err = authn.Authenticate(context.Background(), req)
+	_, err := authn.Authenticate(context.Background(), req)
 	if err == nil {
 		t.Fatal("expected error for invalid token")
 	}

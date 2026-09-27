@@ -145,8 +145,7 @@ func TestKVTrustedKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 // Cross-tenant refusal on the KV store itself: tenant B's Delete, Invalidate
 // and Reactivate on tenant A's key each answer ErrTrustedKeyNotFound, and A's
 // stored bytes are untouched — read via kv.Get, never through the node's
-// copy, so this stays true once InMemoryTrustedKeyStore (the only place this
-// was previously covered) is deleted in a later task.
+// copy.
 func TestKVTrustedKeyStore_CrossTenantRefusal_DeleteInvalidateReactivate(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)

@@ -582,6 +582,28 @@ func mustNewMemoryKV(t *testing.T, ctx context.Context) spi.KeyValueStore {
 	return kv
 }
 
+// newTestTrustedStore is a KVTrustedKeyStore over a fresh in-memory KV store.
+func newTestTrustedStore(t *testing.T, opts ...auth.KVTrustedKeyStoreOption) *auth.KVTrustedKeyStore {
+	t.Helper()
+	s, err := auth.NewKVTrustedKeyStore(systemCtx(), mustNewMemoryKV(t, systemCtx()), opts...)
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+	return s
+}
+
+// newTestAuthService builds an AuthService over a fresh in-memory KV store;
+// cfg.KV is filled in.
+func newTestAuthService(t *testing.T, cfg auth.AuthConfig) *auth.AuthService {
+	t.Helper()
+	cfg.KV = mustNewMemoryKV(t, systemCtx())
+	svc, err := auth.NewAuthService(systemCtx(), cfg)
+	if err != nil {
+		t.Fatalf("NewAuthService: %v", err)
+	}
+	return svc
+}
+
 func TestKVTrustedKeyStore_LoadAll_SkipsOldShape_EmitsWARN(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
@@ -658,10 +680,9 @@ func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
 }
 
 // TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo verifies that
-// KVTrustedKeyStore.Reactivate enforces the same contract as
-// InMemoryTrustedKeyStore.Reactivate: validTo is required and must be in the
-// future and after validFrom. This aligns the two store implementations so a
-// caller bypassing the adapter cannot accidentally create an immortal key.
+// KVTrustedKeyStore.Reactivate enforces its window contract itself: validTo
+// is required and must be in the future and after validFrom, so a caller
+// bypassing the adapter cannot accidentally create an immortal key.
 func TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)

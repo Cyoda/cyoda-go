@@ -358,9 +358,8 @@ func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantI
 
 // Reactivate sets a trusted key as active, updates its validity window, and
 // persists. Returns an error if the key does not exist or belongs to a
-// different tenant. Enforces the same contract as InMemoryTrustedKeyStore:
-// validTo is required (non-zero), must be strictly in the future, and must
-// be after validFrom.
+// different tenant. validTo is required (non-zero), must be strictly in the
+// future, and must be after validFrom.
 func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")

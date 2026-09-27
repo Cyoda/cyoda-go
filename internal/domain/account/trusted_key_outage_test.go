@@ -50,10 +50,11 @@ func (outageTrustedKeyStore) Reactivate(context.Context, spi.TenantID, string, t
 	return fmt.Errorf("failed to persist reactivation: %w", kvOutageErr{})
 }
 
-func handlerWithTrustedStore(store auth.TrustedKeyStore) *account.Handler {
+func handlerWithTrustedStore(t *testing.T, store auth.TrustedKeyStore) *account.Handler {
+	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	return account.New(nil, nil, auth.NewInMemoryKeyStore(), store, nil, feats)
+	return account.New(nil, nil, newTestKeyStore(t), store, nil, feats)
 }
 
 // trustedKeyMutations drives the three handlers whose only failure answer was
@@ -83,7 +84,7 @@ func trustedKeyMutations(h *account.Handler) map[string]func(*testing.T) *httpte
 // Answering 404 tells the admin the key is gone — during an outage, when it is
 // not — and a client that believes that stops retrying.
 func TestTrustedKeyMutations_StorageOutage_Return503(t *testing.T) {
-	h := handlerWithTrustedStore(outageTrustedKeyStore{})
+	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
 	for name, call := range trustedKeyMutations(h) {
 		t.Run(name, func(t *testing.T) {
 			w := call(t)
@@ -108,10 +109,10 @@ func TestTrustedKeyMutations_StorageOutage_Return503(t *testing.T) {
 }
 
 // The other direction: a key that genuinely is not registered still answers
-// 404 TRUSTED_KEY_NOT_FOUND. The in-memory store is the real one here — no
+// 404 TRUSTED_KEY_NOT_FOUND. The KV-backed store is the real one here — no
 // stubbing — so this asserts the shipped behaviour, not a double's.
 func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
-	h := handlerWithTrustedStore(auth.NewInMemoryTrustedKeyStore())
+	h := handlerWithTrustedStore(t, newTestTrustedStore(t))
 	for name, call := range trustedKeyMutations(h) {
 		t.Run(name, func(t *testing.T) {
 			w := call(t)
@@ -127,7 +128,7 @@ func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
 // other four handlers: a KV write failure is a 503, not a 500 that leaks
 // storage internals, and not misread as some domain 4xx.
 func TestRegisterTrustedKey_StorageOutage_Return503(t *testing.T) {
-	h := handlerWithTrustedStore(outageTrustedKeyStore{})
+	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
 	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
 	w := httptest.NewRecorder()
 	h.RegisterTrustedKey(w, adminReq(t, http.MethodPost, "/oauth/keys/trusted", body))
@@ -168,7 +169,7 @@ func (reactivateThenMissingStore) Get(context.Context, spi.TenantID, string) (*a
 }
 
 func TestReactivateTrustedKey_GetAfterReactivate_NotFound_Returns404(t *testing.T) {
-	h := handlerWithTrustedStore(reactivateThenMissingStore{})
+	h := handlerWithTrustedStore(t, reactivateThenMissingStore{})
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
 	w := httptest.NewRecorder()
 	h.ReactivateTrustedKey(w, adminReq(t, http.MethodPut, "/oauth/keys/trusted/k1/reactivate", body), "k1")

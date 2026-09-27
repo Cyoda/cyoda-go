@@ -5390,6 +5390,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -5454,6 +5456,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -5509,6 +5513,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -5578,6 +5584,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -5649,6 +5657,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
         '501':
           description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
           content:
@@ -12696,7 +12706,8 @@ components:
         node owning that transaction is not in the cluster's registry, is marked
         dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE), or the
         transaction already has as many callbacks waiting as it may have
-        (TOO_MANY_JOINED_REQUESTS). Retryable.
+        (TOO_MANY_JOINED_REQUESTS), or this node's copy of the signing key pairs
+        has had no successful re-read from storage within its bound. Retryable.
       content:
         application/problem+json:
           schema:

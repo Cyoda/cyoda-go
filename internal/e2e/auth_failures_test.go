@@ -178,7 +178,7 @@ func TestAuth_ValidCredentialsStillPass(t *testing.T) {
 
 // mintFirstPartyToken signs a first-party token carrying an arbitrary user
 // (caas_user_id and sub) and caas_org_id, so a test can present a claim no
-// legitimate client could obtain. The kid is the one app.NewAuthService
+// legitimate client could obtain. The kid is the one auth.DeriveKID
 // derives from the signing key's public part (sha256(SPKI)[:16] hex).
 func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	t.Helper()

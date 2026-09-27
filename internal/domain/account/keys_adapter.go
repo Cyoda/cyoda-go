@@ -1,12 +1,10 @@
 package account
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -93,25 +91,12 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 			"invalidateCurrent cannot be combined with a validFrom in the future"))
 		return
 	}
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	kp, err := h.keyStore.Issue(r.Context(), auth.IssueRequest{
+		Audience: string(req.Audience), ValidFrom: validFrom, ValidTo: validTo,
+		Invalidate: invalidate, GracePeriodSec: grace,
+	})
 	if err != nil {
-		common.WriteError(w, r, common.Internal("rsa.GenerateKey", err))
-		return
-	}
-	kidBytes := make([]byte, 16)
-	if _, err := rand.Read(kidBytes); err != nil {
-		common.WriteError(w, r, common.Internal("rand.Read", err))
-		return
-	}
-	kid := hex.EncodeToString(kidBytes)
-	vt := validTo
-	kp := &auth.KeyPair{
-		KID: kid, Audience: string(req.Audience), Algorithm: "RS256",
-		PublicKey: &priv.PublicKey, PrivateKey: priv,
-		Active: true, ValidFrom: validFrom, ValidTo: &vt,
-	}
-	if err := h.keyStore.Save(kp, auth.RotateOptions{Invalidate: invalidate, GracePeriodSec: grace}); err != nil {
-		common.WriteError(w, r, common.Internal("keyStore.Save", err))
+		common.WriteError(w, r, keyPairError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -119,6 +104,16 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 }
 
 func isValidKeyPairAudience(s string) bool { return s == "human" || s == "client" }
+
+// keyPairError: not found keeps 404 KEYPAIR_NOT_FOUND; every other failure
+// goes through common.Internal (500 with a ticket, or 503 when storage is
+// unavailable or the node's copy is stale).
+func keyPairError(err error) *common.AppError {
+	if errors.Is(err, auth.ErrKeyPairNotFound) {
+		return common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found")
+	}
+	return common.Internal("key-pair store", err)
+}
 
 func toJwtKeyPairResponse(kp *auth.KeyPair) genapi.JwtKeyPairResponseDto {
 	der, _ := x509.MarshalPKIXPublicKey(kp.PublicKey)
@@ -147,9 +142,13 @@ func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, p
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
 		return
 	}
-	kp, err := h.keyStore.GetActive(string(params.Audience))
-	if err != nil {
+	kp, err := h.keyStore.Current(string(params.Audience))
+	if errors.Is(err, auth.ErrKeyPairNotFound) {
 		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "no active key pair for audience"))
+		return
+	}
+	if err != nil {
+		common.WriteError(w, r, keyPairError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -163,8 +162,8 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 	if !h.requireKeyStore(w, r) {
 		return
 	}
-	if err := h.keyStore.Delete(keyId); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
+	if err := h.keyStore.Delete(r.Context(), keyId); err != nil {
+		common.WriteError(w, r, keyPairError(err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -197,8 +196,8 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 			}
 		}
 	}
-	if err := h.keyStore.Invalidate(keyId, grace); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
+	if err := h.keyStore.Invalidate(r.Context(), keyId, grace); err != nil {
+		common.WriteError(w, r, keyPairError(err))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
@@ -241,13 +240,9 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
 	}
-	if err := h.keyStore.Reactivate(keyId, validFrom, validTo); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "key pair not found"))
-		return
-	}
-	kp, err := h.keyStore.Get(keyId)
+	kp, err := h.keyStore.Reactivate(r.Context(), keyId, validFrom, validTo)
 	if err != nil {
-		common.WriteError(w, r, common.Internal("keyStore.Get after Reactivate", err))
+		common.WriteError(w, r, keyPairError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

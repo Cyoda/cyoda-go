@@ -138,3 +138,27 @@ func signTokenNoKID(t *testing.T, iss, sub, orgID string, expOffsetSec int) stri
 	}
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
+
+// newTestKeyStore is the signing-key store the package's internal tests use:
+// a KVKeyStore over a fresh in-memory KV store, with boot as its bootstrap
+// key for the "client" audience.
+func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *KVKeyStore {
+	t.Helper()
+	s, err := NewKVKeyStore(replicaSystemCtx(), newReplicaKV(t), KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// newTestAuthService builds an AuthService over a fresh in-memory KV store;
+// cfg.KV is filled in.
+func newTestAuthService(t *testing.T, cfg AuthConfig) *AuthService {
+	t.Helper()
+	cfg.KV = newReplicaKV(t)
+	svc, err := NewAuthService(replicaSystemCtx(), cfg)
+	if err != nil {
+		t.Fatalf("NewAuthService failed: %v", err)
+	}
+	return svc
+}

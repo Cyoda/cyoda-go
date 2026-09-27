@@ -24,8 +24,8 @@ import (
 
 // testTokenEnv holds shared test fixtures for token endpoint tests.
 type testTokenEnv struct {
-	keyStore        *auth.InMemoryKeyStore
-	trustedKeyStore *auth.InMemoryTrustedKeyStore
+	keyStore        *auth.KVKeyStore
+	trustedKeyStore *auth.KVTrustedKeyStore
 	m2mStore        *auth.InMemoryM2MClientStore
 	handler         http.Handler
 	clientID        string
@@ -39,27 +39,12 @@ type testTokenEnv struct {
 func setupTokenEnv(t *testing.T) *testTokenEnv {
 	t.Helper()
 
-	keyStore := auth.NewInMemoryKeyStore()
-	trustedKeyStore := auth.NewInMemoryTrustedKeyStore()
+	// The token endpoint signs with the bootstrap key of the "client"
+	// audience.
+	signingKey := newBootstrap(t)
+	keyStore := newTestKeyStore(t, signingKey)
+	trustedKeyStore := newTestTrustedStore(t)
 	m2mStore := auth.NewInMemoryM2MClientStore()
-
-	// Generate signing key pair for the token endpoint.
-	signingKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate signing key: %v", err)
-	}
-	err = keyStore.Save(&auth.KeyPair{
-		KID:        "signing-kid-1",
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &signingKey.PublicKey,
-		PrivateKey: signingKey,
-		Active:     true,
-		ValidFrom:  time.Now(),
-	}, auth.RotateOptions{})
-	if err != nil {
-		t.Fatalf("failed to save signing key: %v", err)
-	}
 
 	// Generate trusted external key (simulates an external IdP).
 	trustedKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -678,21 +663,22 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	}
 }
 
-// failingKeyStore is an auth.KeyStore whose GetActive always fails; the
-// other methods are not exercised by this test and return zero values or
-// the same error, whichever the interface requires.
+// failingKeyStore is an auth.KeyStore whose Signer always fails; the other
+// methods are not exercised by this test and return the same error.
 type failingKeyStore struct{ err error }
 
-func (f failingKeyStore) Save(*auth.KeyPair, auth.RotateOptions) error { return f.err }
-func (f failingKeyStore) Get(string) (*auth.KeyPair, error)            { return nil, f.err }
-func (f failingKeyStore) GetActive(string) (*auth.KeyPair, error)      { return nil, f.err }
-func (f failingKeyStore) List() []*auth.KeyPair                        { return nil }
-func (f failingKeyStore) ListForVerification() []*auth.KeyPair         { return nil }
-func (f failingKeyStore) Delete(string) error                          { return f.err }
-func (f failingKeyStore) Invalidate(string, int64) error               { return f.err }
-func (f failingKeyStore) Reactivate(string, time.Time, time.Time) error {
-	return f.err
+func (f failingKeyStore) Signer(string) (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
+func (f failingKeyStore) Current(string) (*auth.KeyPair, error)             { return nil, f.err }
+func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error)    { return nil, f.err }
+func (f failingKeyStore) Published() ([]*auth.KeyPair, error)               { return nil, f.err }
+func (f failingKeyStore) Issue(context.Context, auth.IssueRequest) (*auth.KeyPair, error) {
+	return nil, f.err
 }
+func (f failingKeyStore) Invalidate(context.Context, string, int64) error { return f.err }
+func (f failingKeyStore) Reactivate(context.Context, string, time.Time, time.Time) (*auth.KeyPair, error) {
+	return nil, f.err
+}
+func (f failingKeyStore) Delete(context.Context, string) error { return f.err }
 
 // TestTokenEndpoint_ServerErrorCarriesTicket pins Gate 3 for this endpoint:
 // every 5xx carries a generic message plus a ticket UUID and no internals.
@@ -712,7 +698,7 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
 	t.Cleanup(func() { slog.SetDefault(prevLogger) })
 
-	// A key store whose GetActive always fails drives the server_error path.
+	// A key store whose Signer always fails drives the server_error path.
 	// The trusted-key store, M2M store and client credentials come from the
 	// shared env so the request authenticates normally before hitting the
 	// failing key store.

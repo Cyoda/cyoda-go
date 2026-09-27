@@ -19,17 +19,17 @@ import (
 
 // --- Types ---
 
-// KeyPair holds an RSA key pair with metadata.
+// KeyPair describes a signing key pair: public data only. The private key
+// stays behind the Signer the store hands out and is never on this type.
 type KeyPair struct {
-	KID        string
-	Audience   string // "human" | "client"
-	Algorithm  string // RS256 only in v0.8.0
-	PublicKey  *rsa.PublicKey
-	PrivateKey *rsa.PrivateKey
-	Active     bool
-	ValidFrom  time.Time
-	ValidTo    *time.Time
-	Bootstrap  bool // the key built from configuration
+	KID       string
+	Audience  string // "human" | "client"
+	Algorithm string // RS256 only
+	PublicKey *rsa.PublicKey
+	Active    bool
+	ValidFrom time.Time
+	ValidTo   *time.Time
+	Bootstrap bool // the key built from configuration
 }
 
 // InWindow reports whether now is inside the key pair's window
@@ -51,7 +51,8 @@ type TrustedKey struct {
 	ValidTo   *time.Time
 }
 
-// RotateOptions controls sibling-invalidation behaviour during Save.
+// RotateOptions controls sibling invalidation when a trusted key is
+// registered.
 type RotateOptions struct {
 	Invalidate     bool
 	GracePeriodSec int64
@@ -70,19 +71,26 @@ type M2MClient struct {
 
 // --- Store Interfaces ---
 
-// KeyStore manages RSA key pairs.
+// KeyStore holds the signing key pairs. Signer, Current, VerificationKey and
+// Published read the node copy; Issue, Invalidate, Reactivate and Delete read
+// and write the store, so an admin decision is never made on a stale copy.
+// ErrKeyPairNotFound means the key pair is absent; any other error is the
+// store failing (ErrStoreStale and storage-unavailable errors answer 503).
 type KeyStore interface {
-	Save(kp *KeyPair, opts RotateOptions) error
-	Get(kid string) (*KeyPair, error)
-	// GetActive returns the key pair that signs new tokens for audience: the
-	// active key pair inside its window with the latest ValidFrom, and on a
-	// tie the greater KID.
-	GetActive(audience string) (*KeyPair, error)
-	List() []*KeyPair
-	ListForVerification() []*KeyPair
-	Delete(kid string) error
-	Invalidate(kid string, gracePeriodSec int64) error
-	Reactivate(kid string, validFrom, validTo time.Time) error
+	// Signer returns the key pair that signs new tokens for audience and its
+	// Signer: the active key pair inside its window with the latest
+	// ValidFrom, and on a tie the greater KID.
+	Signer(audience string) (*KeyPair, Signer, error)
+	// Current is the key pair Signer would choose, without the signer.
+	Current(audience string) (*KeyPair, error)
+	// VerificationKey returns the public key of kid if it may verify now.
+	VerificationKey(kid string) (*rsa.PublicKey, error)
+	// Published returns the key pairs to publish in JWKS.
+	Published() ([]*KeyPair, error)
+	Issue(ctx context.Context, req IssueRequest) (*KeyPair, error)
+	Invalidate(ctx context.Context, kid string, graceSec int64) error
+	Reactivate(ctx context.Context, kid string, from, to time.Time) (*KeyPair, error)
+	Delete(ctx context.Context, kid string) error
 }
 
 // ErrTrustedKeyNotFound is returned by a TrustedKeyStore's Delete / Invalidate
@@ -145,274 +153,7 @@ func GenerateSecret() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-// --- InMemoryKeyStore ---
-
-// InMemoryKeyStore stores RSA key pairs in memory.
-type InMemoryKeyStore struct {
-	mu   sync.RWMutex
-	keys map[string]*KeyPair
-}
-
-// NewInMemoryKeyStore creates a new InMemoryKeyStore.
-func NewInMemoryKeyStore() *InMemoryKeyStore {
-	return &InMemoryKeyStore{
-		keys: make(map[string]*KeyPair),
-	}
-}
-
-// Save stores a key pair. When opts.Invalidate is true, every other key pair
-// of the same Audience whose window is still open is marked inactive with a
-// ValidTo of now+GracePeriodSec, never later than the ValidTo it already had.
-// The new key pair itself is always stored active (it is never
-// self-invalidated). All mutations are performed under a single Lock so
-// concurrent rotations cannot leave two active keys for the same audience.
-func (s *InMemoryKeyStore) Save(kp *KeyPair, opts RotateOptions) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if opts.Invalidate {
-		now := time.Now()
-		for _, existing := range s.keys {
-			if existing.Audience == kp.Audience && existing.KID != kp.KID && windowOpen(existing.ValidTo, now) {
-				existing.Active = false
-				existing.ValidTo = graceExpiry(existing.ValidTo, now, opts.GracePeriodSec)
-			}
-		}
-	}
-	copied := *kp
-	s.keys[kp.KID] = &copied
-	return nil
-}
-
-// Get retrieves a key pair by KID.
-func (s *InMemoryKeyStore) Get(kid string) (*KeyPair, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	kp, ok := s.keys[kid]
-	if !ok {
-		return nil, fmt.Errorf("key pair not found: %s", kid)
-	}
-	copied := *kp
-	return &copied, nil
-}
-
-// GetActive returns the key pair that signs new tokens for the audience: of
-// the active key pairs inside their window (InWindow), the one with the latest
-// ValidFrom, and on a tie the one with the greater KID. A key pair issued ahead of time does not sign until its window
-// opens, and one past its ValidTo stops even if Active is still set. Returns
-// an error if no key pair qualifies.
-func (s *InMemoryKeyStore) GetActive(audience string) (*KeyPair, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	now := time.Now()
-	var best *KeyPair
-	for _, kp := range s.keys {
-		if kp.Audience != audience || !kp.Active {
-			continue
-		}
-		// Sign only with a key inside its window: not one issued ahead of
-		// time whose ValidFrom has not come, and not one past its ValidTo.
-		if !kp.InWindow(now) {
-			continue
-		}
-		// Latest ValidFrom wins; on a tie the greater KID, so the choice
-		// never depends on map iteration order.
-		if best == nil || kp.ValidFrom.After(best.ValidFrom) ||
-			(kp.ValidFrom.Equal(best.ValidFrom) && kp.KID > best.KID) {
-			best = kp
-		}
-	}
-	if best == nil {
-		return nil, fmt.Errorf("no active key pair for audience %q", audience)
-	}
-	copied := *best
-	return &copied, nil
-}
-
-// List returns all key pairs.
-func (s *InMemoryKeyStore) List() []*KeyPair {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*KeyPair, 0, len(s.keys))
-	for _, kp := range s.keys {
-		copied := *kp
-		result = append(result, &copied)
-	}
-	return result
-}
-
-// ListForVerification returns the key pairs to publish in JWKS: every key pair
-// whose ValidTo is nil or in the future — including one issued ahead of its
-// window, so external verifiers can fetch it early, and one in the grace
-// period after invalidation. cyoda's own verification is stricter: it accepts
-// only an active key pair inside its window (see localKeySource.GetKey).
-func (s *InMemoryKeyStore) ListForVerification() []*KeyPair {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	now := time.Now()
-	out := make([]*KeyPair, 0, len(s.keys))
-	for _, kp := range s.keys {
-		if kp.ValidTo == nil || now.Before(*kp.ValidTo) {
-			copied := *kp
-			out = append(out, &copied)
-		}
-	}
-	return out
-}
-
-// Delete removes a key pair by KID.
-func (s *InMemoryKeyStore) Delete(kid string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.keys[kid]; !ok {
-		return fmt.Errorf("key pair not found: %s", kid)
-	}
-	delete(s.keys, kid)
-	return nil
-}
-
-// Invalidate marks a key pair as inactive and sets its ValidTo to
-// now+gracePeriodSec, never later than its current ValidTo, so grace-period
-// JWKS publishing still includes the key until then.
-func (s *InMemoryKeyStore) Invalidate(kid string, gracePeriodSec int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	kp, ok := s.keys[kid]
-	if !ok {
-		return fmt.Errorf("key pair not found: %s", kid)
-	}
-	kp.Active = false
-	kp.ValidTo = graceExpiry(kp.ValidTo, time.Now(), gracePeriodSec)
-	return nil
-}
-
-// Reactivate sets a key pair as active and updates its validity window.
-// validTo must be strictly in the future and after validFrom; if the key is
-// already active the call is idempotent — Active remains true and ValidTo is
-// extended to the supplied value.
-func (s *InMemoryKeyStore) Reactivate(kid string, validFrom, validTo time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	kp, ok := s.keys[kid]
-	if !ok {
-		return fmt.Errorf("key pair not found: %s", kid)
-	}
-	if !validTo.After(time.Now()) {
-		return fmt.Errorf("validTo must be in the future")
-	}
-	if !validTo.After(validFrom) {
-		return fmt.Errorf("validTo must be after validFrom")
-	}
-	kp.Active = true
-	kp.ValidFrom = validFrom
-	vt := validTo
-	kp.ValidTo = &vt
-	return nil
-}
-
-// --- InMemoryTrustedKeyStore ---
-
-// InMemoryTrustedKeyStore stores trusted external public keys in memory with
-// full tenant scoping. Each KID is globally unique — cross-tenant KID
-// collisions are rejected with KEY_OWNED_BY_DIFFERENT_TENANT (409).
-type InMemoryTrustedKeyStore struct {
-	mu           sync.RWMutex
-	keys         map[string]*TrustedKey
-	maxPerTenant int
-}
-
-// NewInMemoryTrustedKeyStore creates a new InMemoryTrustedKeyStore with no cap.
-func NewInMemoryTrustedKeyStore() *InMemoryTrustedKeyStore {
-	return NewInMemoryTrustedKeyStoreWithCap(0)
-}
-
-// NewInMemoryTrustedKeyStoreWithCap creates a new InMemoryTrustedKeyStore with
-// a per-tenant cap on currently-valid (non-expired) keys. Values <= 0 disable
-// the cap.
-func NewInMemoryTrustedKeyStoreWithCap(cap int) *InMemoryTrustedKeyStore {
-	return &InMemoryTrustedKeyStore{
-		keys:         make(map[string]*TrustedKey),
-		maxPerTenant: cap,
-	}
-}
-
-// Register adds or replaces a trusted key. Cross-tenant KID collision returns
-// 409 KEY_OWNED_BY_DIFFERENT_TENANT. Per-tenant cap (counts every key that
-// can still verify) returns 400 TRUSTED_KEY_CAP_REACHED. When
-// opts.Invalidate is true, every other key of the tenant whose window is still
-// open is marked inactive with the grace expiry (graceExpiry). Stores a shallow
-// copy of *tk (ownership-mutability rule 4).
-func (s *InMemoryTrustedKeyStore) Register(_ context.Context, tk *TrustedKey, opts RotateOptions) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Cross-tenant collision guard.
-	if existing, ok := s.keys[tk.KID]; ok && existing.TenantID != tk.TenantID {
-		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
-	}
-
-	// Per-tenant cap: count every key that can still verify — active, or in
-	// its grace period after invalidation — excluding the KID being
-	// registered, so same-KID upserts don't consume a slot.
-	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
-		return errTrustedKeyCapReached()
-	}
-
-	// Atomic sibling invalidation within the same tenant.
-	if opts.Invalidate {
-		now := time.Now()
-		for _, k := range s.keys {
-			if k.TenantID == tk.TenantID && k.KID != tk.KID && windowOpen(k.ValidTo, now) {
-				k.Active = false
-				k.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
-			}
-		}
-	}
-
-	// Shallow-copy on store (callers may continue using *tk after Register).
-	copied := *tk
-	s.keys[tk.KID] = &copied
-	return nil
-}
-
-// Get retrieves a trusted key by tenant and KID. Returns an error wrapping
-// ErrTrustedKeyNotFound if the key does not exist or belongs to a different
-// tenant.
-func (s *InMemoryTrustedKeyStore) Get(_ context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	copied := *tk
-	return &copied, nil
-}
-
-// List returns all trusted keys for the given tenant.
-func (s *InMemoryTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*TrustedKey, 0)
-	for _, tk := range s.keys {
-		if tk.TenantID == tenantID {
-			copied := *tk
-			result = append(result, &copied)
-		}
-	}
-	return result
-}
-
-// GetForVerification implements TrustedKeyStore.
-func (s *InMemoryTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
-		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	copied := *tk
-	return &copied, nil
-}
+// --- Key-window helpers ---
 
 // graceExpiry is the ValidTo an invalidation leaves on a key: now plus the
 // grace period, but never later than the ValidTo the key already has. A grace
@@ -451,62 +192,6 @@ func errTrustedKeyCapReached() error {
 // test for which siblings a rotation still has to end.
 func windowOpen(validTo *time.Time, now time.Time) bool {
 	return validTo == nil || now.Before(*validTo)
-}
-
-// Delete removes a trusted key by tenant and KID.
-func (s *InMemoryTrustedKeyStore) Delete(_ context.Context, tenantID spi.TenantID, kid string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	delete(s.keys, kid)
-	return nil
-}
-
-// Invalidate marks a trusted key as inactive and sets ValidTo to
-// now+gracePeriodSec, never later than its current ValidTo, so the key keeps
-// verifying token-exchange subject tokens until then.
-func (s *InMemoryTrustedKeyStore) Invalidate(_ context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	tk.Active = false
-	tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
-	return nil
-}
-
-// Reactivate sets a trusted key as active and updates its validity window.
-// validTo must be non-zero, strictly in the future, and after validFrom.
-func (s *InMemoryTrustedKeyStore) Reactivate(_ context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	if validTo.IsZero() {
-		return fmt.Errorf("validTo required for reactivation")
-	}
-	if !validTo.After(time.Now()) {
-		return fmt.Errorf("validTo must be in the future")
-	}
-	if !validTo.After(validFrom) {
-		return fmt.Errorf("validTo must be after validFrom")
-	}
-	// A reactivated key verifies again, so it is held to the cap.
-	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
-		return errTrustedKeyCapReached()
-	}
-	tk.Active = true
-	tk.ValidFrom = validFrom
-	vt := validTo
-	tk.ValidTo = &vt
-	return nil
 }
 
 // --- InMemoryM2MClientStore ---

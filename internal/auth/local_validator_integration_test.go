@@ -2,8 +2,6 @@ package auth_test
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"io"
@@ -22,14 +20,11 @@ import (
 // even if a JWKS endpoint is also exposed. That is the invariant: there is
 // no loopback fetch to MITM because there is no fetch at all.
 func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
 
 	if err := svc.M2MClientStore().CreateWithSecret(
 		"client-1", "tenant-1", "user-1", "secret-1", []string{"ROLE_USER"},
@@ -89,43 +84,38 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 // key pair is inside its window and is rejected once the window has ended,
 // even though the key pair is still marked active.
 func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generate key: %v", err)
-	}
-	save := func(validTo time.Time) {
-		t.Helper()
-		if err := svc.KeyStore().Save(&auth.KeyPair{
-			KID: "runtime-kid", Audience: "client", Algorithm: "RS256",
-			PublicKey: &priv.PublicKey, PrivateKey: priv,
-			Active: true, ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: &validTo,
-		}, auth.RotateOptions{}); err != nil {
-			t.Fatalf("save key pair: %v", err)
-		}
-	}
+	ctx := systemCtx()
 	now := time.Now()
+	from := now.Add(-2 * time.Hour)
+	issued, err := svc.KeyStore().Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: from, ValidTo: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("issue key pair: %v", err)
+	}
+	kp, signer, err := svc.KeyStore().Signer("client")
+	if err != nil || kp.KID != issued.KID {
+		t.Fatalf("signer = %v, %v; want the issued key pair %s", kp, err, issued.KID)
+	}
 	tok, err := auth.Sign(context.Background(), map[string]any{
 		"iss": "cyoda", "sub": "user-1", "caas_user_id": "user-1", "caas_org_id": "tenant-1",
 		"iat": float64(now.Unix()), "exp": float64(now.Add(time.Hour).Unix()),
-	}, auth.NewRSASigner(priv), "runtime-kid")
+	}, signer, kp.KID)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
 
-	save(now.Add(time.Hour))
 	if _, err := validator.Validate(tok); err != nil {
 		t.Fatalf("token rejected while its key pair is in its window: %v", err)
 	}
-	save(now.Add(-time.Minute))
+	// End the window; the key pair stays active.
+	if _, err := svc.KeyStore().Reactivate(ctx, kp.KID, from, now.Add(-time.Minute)); err != nil {
+		t.Fatalf("end the window: %v", err)
+	}
 	if _, err := validator.Validate(tok); err == nil {
 		t.Fatal("token accepted after its key pair's window ended")
 	}

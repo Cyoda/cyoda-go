@@ -4,7 +4,6 @@ import (
 	"crypto/rsa"
 	"errors"
 	"fmt"
-	"time"
 )
 
 // KeySource retrieves RSA public keys by KID for JWT signature verification.
@@ -33,23 +32,14 @@ func NewLocalKeySource(ks KeyStore) KeySource {
 	return &localKeySource{ks: ks}
 }
 
+// GetKey returns the public key of kid if the store lets it verify now:
+// active and inside its window (an invalidated key pair, or one whose window
+// has ended, verifies nothing). Every refusal wraps ErrKeyNotFound.
 func (s *localKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
-	kp, err := s.ks.Get(kid)
+	pub, err := s.ks.VerificationKey(kid)
 	if err != nil {
-		// Double %w so callers can errors.Is against both ErrKeyNotFound
-		// (semantic) and the underlying KeyStore error (diagnostic).
+		// Double %w: callers match ErrKeyNotFound; the store error is diagnostic.
 		return nil, fmt.Errorf("%w (kid=%q): %w", ErrKeyNotFound, kid, err)
 	}
-	// An invalidated key pair must not validate signatures. Returning the
-	// public key for an inactive kid lets tokens signed under that kid keep
-	// passing validation after rotation — defeating the point of Invalidate.
-	if !kp.Active {
-		return nil, fmt.Errorf("%w (kid=%q): key invalidated", ErrKeyNotFound, kid)
-	}
-	// A key pair verifies only inside its window, the same window GetActive
-	// signs within: tokens it signed stop verifying when the window ends.
-	if !kp.InWindow(time.Now()) {
-		return nil, fmt.Errorf("%w (kid=%q): key outside its validity window", ErrKeyNotFound, kid)
-	}
-	return kp.PublicKey, nil
+	return pub, nil
 }

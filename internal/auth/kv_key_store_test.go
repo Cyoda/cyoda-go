@@ -33,6 +33,23 @@ func newKeyStore(t *testing.T, kv spi.KeyValueStore, boot *rsa.PrivateKey, aud s
 	return s
 }
 
+// newTestKeyStore is the signing-key store every package test uses: a
+// KVKeyStore over a fresh in-memory KV store, boot signing for "client".
+func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *auth.KVKeyStore {
+	t.Helper()
+	return newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
+}
+
+// issueWindow issues a key pair of aud with the window [from, to).
+func issueWindow(t *testing.T, s *auth.KVKeyStore, aud string, from, to time.Time) *auth.KeyPair {
+	t.Helper()
+	kp, err := s.Issue(systemCtx(), auth.IssueRequest{Audience: aud, ValidFrom: from, ValidTo: to})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kp
+}
+
 func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 	boot := newBootstrap(t)
 	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")

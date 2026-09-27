@@ -80,9 +80,9 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	kp, err := h.keyStore.GetActive("client")
+	kp, signer, err := h.keyStore.Signer("client")
 	if err != nil {
-		writeTokenServerError(w, "keyStore.GetActive", err)
+		writeTokenServerError(w, "keyStore.Signer", err)
 		return
 	}
 
@@ -99,7 +99,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(r.Context(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
+	token, err := Sign(r.Context(), claims, signer, kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return
@@ -218,9 +218,9 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	kp, err := h.keyStore.GetActive("client")
+	kp, signer, err := h.keyStore.Signer("client")
 	if err != nil {
-		writeTokenServerError(w, "keyStore.GetActive", err)
+		writeTokenServerError(w, "keyStore.Signer", err)
 		return
 	}
 
@@ -238,7 +238,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(r.Context(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
+	token, err := Sign(r.Context(), claims, signer, kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return

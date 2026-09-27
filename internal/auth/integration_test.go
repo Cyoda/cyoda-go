@@ -32,7 +32,8 @@ func generateTestPEM(t *testing.T) string {
 func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -105,14 +106,16 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 func TestAuthService_DeterministicKID(t *testing.T) {
 	sharedPEM := generateTestPEM(t)
 
-	svcA, err := auth.NewAuthService(auth.AuthConfig{
+	svcA, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: sharedPEM, Issuer: "cyoda", ExpirySeconds: 3600,
 	})
 	if err != nil {
 		t.Fatalf("NewAuthService A: %v", err)
 	}
 
-	svcB, err := auth.NewAuthService(auth.AuthConfig{
+	svcB, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: sharedPEM, Issuer: "cyoda", ExpirySeconds: 3600,
 	})
 	if err != nil {
@@ -137,9 +140,12 @@ func TestAuthService_DeterministicKID(t *testing.T) {
 func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	// Same key for both nodes — simulates shared CYODA_JWT_SIGNING_KEY
 	sharedPEM := generateTestPEM(t)
+	// The nodes of a cluster share one store.
+	clusterKV := mustNewMemoryKV(t, systemCtx())
 
 	// Node A
-	svcA, err := auth.NewAuthService(auth.AuthConfig{
+	svcA, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            clusterKV,
 		SigningKeyPEM: sharedPEM,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -151,7 +157,8 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	defer srvA.Close()
 
 	// Node B — same key, separate instance
-	svcB, err := auth.NewAuthService(auth.AuthConfig{
+	svcB, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            clusterKV,
 		SigningKeyPEM: sharedPEM,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -209,7 +216,8 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -250,7 +258,8 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -276,7 +285,8 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: pemKey,
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,

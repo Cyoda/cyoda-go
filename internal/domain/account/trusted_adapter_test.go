@@ -33,7 +33,7 @@ func enabledHandler(t *testing.T) *account.Handler {
 	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	return account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), nil, feats)
+	return account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, feats)
 }
 
 func TestRegisterTrustedKey_Happy(t *testing.T) {
@@ -54,7 +54,7 @@ func TestRegisterTrustedKey_Happy(t *testing.T) {
 
 func TestRegisterTrustedKey_FlagDisabled_404(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, feats)
 	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
 	w := httptest.NewRecorder()
 	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
@@ -87,12 +87,12 @@ func TestRegisterTrustedKey_NonRSA_400_UnsupportedKeyType(t *testing.T) {
 }
 
 func TestRegisterTrustedKey_CrossTenantCollision_409(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	pre := &auth.TrustedKey{KID: "shared", TenantID: spi.TenantID("tenant-a"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now()}
 	_ = ts.Register(context.Background(), pre, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "tenant-b"}, Roles: []string{"ROLE_ADMIN"}}
 	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "shared", Jwk: rsaJWK(t, "shared"), Audience: "human"})
 	req := httptest.NewRequest("POST", "/", bytes.NewReader(body)).WithContext(spi.WithUserContext(httptest.NewRequest("POST", "/", nil).Context(), uc))
@@ -105,14 +105,14 @@ func TestRegisterTrustedKey_CrossTenantCollision_409(t *testing.T) {
 }
 
 func TestListTrustedKeys_TenantScoped(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	mine := &auth.TrustedKey{KID: "mine", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "mine"}}
 	theirs := &auth.TrustedKey{KID: "theirs", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "theirs"}}
 	_ = ts.Register(context.Background(), mine, auth.RotateOptions{})
 	_ = ts.Register(context.Background(), theirs, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	w := httptest.NewRecorder()
 	h.ListTrustedKeys(w, adminReq(t, "GET", "/oauth/keys/trusted", nil))
 	if w.Code != http.StatusOK {
@@ -126,12 +126,12 @@ func TestListTrustedKeys_TenantScoped(t *testing.T) {
 }
 
 func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("other"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now()}
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	w := httptest.NewRecorder()
 	h.DeleteTrustedKey(w, adminReq(t, "DELETE", "/", nil), "k")
 	if w.Code != http.StatusNotFound {
@@ -140,12 +140,12 @@ func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
 }
 
 func TestInvalidateTrustedKey_Grace(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	body, _ := json.Marshal(genapi.InvalidateKeyRequestDto{GracePeriodSec: ptrInt64(60)})
 	w := httptest.NewRecorder()
 	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
@@ -159,13 +159,13 @@ func TestInvalidateTrustedKey_Grace(t *testing.T) {
 }
 
 func TestReactivateTrustedKey_RequiresValidTo(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	past := time.Now().Add(-1 * time.Hour)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: false, ValidFrom: past, ValidTo: &past, JWK: map[string]any{"kty": "RSA", "kid": "k"}}
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
 	w := httptest.NewRecorder()
 	h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
@@ -201,7 +201,7 @@ func TestRegisterTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 }
 
 func TestListTrustedKeys_InvalidatedKeyHasActiveFalse(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	tk := &auth.TrustedKey{
 		KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
 		Audience: "human", Active: true, ValidFrom: time.Now(),
@@ -211,7 +211,7 @@ func TestListTrustedKeys_InvalidatedKeyHasActiveFalse(t *testing.T) {
 	_ = ts.Invalidate(context.Background(), spi.TenantID("t1"), "k", 0)
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	w := httptest.NewRecorder()
 	h.ListTrustedKeys(w, adminReq(t, "GET", "/oauth/keys/trusted", nil))
 	if w.Code != http.StatusOK {
@@ -230,7 +230,7 @@ func TestListTrustedKeys_InvalidatedKeyHasActiveFalse(t *testing.T) {
 }
 
 func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	past := time.Now().Add(-1 * time.Hour)
 	tk := &auth.TrustedKey{
 		KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t),
@@ -240,7 +240,7 @@ func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
 	w := httptest.NewRecorder()
 	h.ReactivateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
@@ -259,7 +259,7 @@ func TestReactivateTrustedKey_ResponseIncludesActiveTrue(t *testing.T) {
 // Reactivating a trusted key at the per-tenant cap is 400
 // TRUSTED_KEY_CAP_REACHED, the same answer registration gives — not a 5xx.
 func TestReactivateTrustedKey_AtCap_400(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStoreWithCap(1)
+	ts := newTestTrustedStore(t, auth.WithMaxTrustedKeys(1))
 	past := time.Now().Add(-1 * time.Hour)
 	future := time.Now().Add(time.Hour)
 	_ = ts.Register(context.Background(), &auth.TrustedKey{
@@ -272,7 +272,7 @@ func TestReactivateTrustedKey_AtCap_400(t *testing.T) {
 	}, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
 	w := httptest.NewRecorder()
@@ -341,12 +341,12 @@ func TestRegression_TrustedAudienceRoundTrip(t *testing.T) {
 }
 
 func TestInvalidateTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 	w := httptest.NewRecorder()
 	h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), "k")
 	if w.Code != http.StatusBadRequest {
@@ -357,7 +357,7 @@ func TestInvalidateTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 func TestRegisterTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), auth.NewInMemoryTrustedKeyStore(), nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, feats)
 	jwk := rsaJWK(t, "k")
 	jwkBytes, _ := json.Marshal(jwk)
 	body := append([]byte(`{"keyId":"k","jwk":`), jwkBytes...)
@@ -372,12 +372,12 @@ func TestRegisterTrustedKey_GracePeriodOverflow_Rejected(t *testing.T) {
 // TestInvalidateTrustedKey_GracePeriodAtCapBoundary pins the > vs >= comparison:
 // exactly at cap is accepted; one over cap is rejected.
 func TestInvalidateTrustedKey_GracePeriodAtCapBoundary(t *testing.T) {
-	ts := auth.NewInMemoryTrustedKeyStore()
+	ts := newTestTrustedStore(t)
 	tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Audience: "human", Active: true, ValidFrom: time.Now(), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
 	_ = ts.Register(context.Background(), tk, auth.RotateOptions{})
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, auth.NewInMemoryKeyStore(), ts, nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats)
 
 	// Exactly at cap: accept.
 	w := httptest.NewRecorder()

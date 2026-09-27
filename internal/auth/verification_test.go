@@ -203,10 +203,6 @@ func assertCapCountsVerifyingKeys(t *testing.T, ctx context.Context, s auth.Trus
 	}
 }
 
-func TestInMemoryTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {
-	assertCapCountsVerifyingKeys(t, context.Background(), auth.NewInMemoryTrustedKeyStoreWithCap(2))
-}
-
 func TestKVTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {
 	ctx := systemCtx()
 	kv, err := memory.NewStoreFactory().KeyValueStore(ctx)
@@ -218,14 +214,6 @@ func TestKVTrustedKeyStore_CapCountsVerifyingKeys(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	assertCapCountsVerifyingKeys(t, ctx, s)
-}
-
-func TestInMemoryTrustedKeyStore_GetForVerification(t *testing.T) {
-	assertGetForVerification(t, context.Background(), auth.NewInMemoryTrustedKeyStore())
-}
-
-func TestInMemoryTrustedKeyStore_InvalidateNeverExtends(t *testing.T) {
-	assertInvalidateNeverExtends(t, context.Background(), auth.NewInMemoryTrustedKeyStore())
 }
 
 func TestKVTrustedKeyStore_InvalidateNeverExtends(t *testing.T) {

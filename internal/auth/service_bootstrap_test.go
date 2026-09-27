@@ -12,7 +12,7 @@ import (
 // window counted from each node's start would differ per node, reset on every
 // restart, and stop a long-running node from verifying the cluster's tokens.
 func TestBootstrapKey_HasNoWindow(t *testing.T) {
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -24,13 +24,13 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 			TrustedKeyMaxJWKProperties: 20,
 		},
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
 
-	kp, err := svc.KeyStore().Get(svc.SigningKID())
+	kp, err := svc.KeyStore().Current("client")
 	if err != nil {
-		t.Fatalf("bootstrap key not in the key store: %v", err)
+		t.Fatalf("bootstrap key does not sign: %v", err)
+	}
+	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
 	}
 	if kp.Audience != "client" {
 		t.Errorf("audience = %q, want client", kp.Audience)
@@ -50,18 +50,18 @@ func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 	features := auth.DefaultIAMFeatures()
 	features.BootstrapAudience = "human"
 	features.KeypairDefaultValidityDays = 30
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures:   features,
 	})
+	kp, err := svc.KeyStore().Current("human")
 	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
+		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
-	kp, err := svc.KeyStore().Get(svc.SigningKID())
-	if err != nil {
-		t.Fatalf("bootstrap key not in the key store: %v", err)
+	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
 	}
 	if kp.Audience != "human" {
 		t.Errorf("audience = %q, want the configured human", kp.Audience)
@@ -72,7 +72,8 @@ func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 // validated, not silently used — an empty BootstrapAudience would leave the
 // bootstrap key under an audience no token is signed for.
 func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
-	_, err := auth.NewAuthService(auth.AuthConfig{
+	_, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		KV:            mustNewMemoryKV(t, systemCtx()),
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
@@ -86,21 +87,34 @@ func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
 // TestBootstrapKey_DefaultIAMFeaturesApplied: a zero-value IAMFeatures takes
 // the defaults, so the bootstrap key gets the default audience.
 func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
-	svc, err := auth.NewAuthService(auth.AuthConfig{
+	svc := newTestAuthService(t, auth.AuthConfig{
 		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		// IAMFeatures deliberately omitted — should use DefaultIAMFeatures().
 	})
-	if err != nil {
-		t.Fatalf("NewAuthService: %v", err)
-	}
 
-	kp, err := svc.KeyStore().Get(svc.SigningKID())
+	kp, err := svc.KeyStore().Current(auth.DefaultIAMFeatures().BootstrapAudience)
 	if err != nil {
-		t.Fatalf("bootstrap key not in the key store: %v", err)
+		t.Fatalf("bootstrap key does not sign: %v", err)
+	}
+	if kp.KID != svc.SigningKID() || !kp.Bootstrap {
+		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, svc.SigningKID())
 	}
 	if want := auth.DefaultIAMFeatures().BootstrapAudience; kp.Audience != want {
 		t.Errorf("audience = %q, want the default %q", kp.Audience, want)
+	}
+}
+
+// TestNewAuthService_RequiresKV: the key stores live in the KV store, so a
+// service without one is a wiring error, reported rather than panicking.
+func TestNewAuthService_RequiresKV(t *testing.T) {
+	_, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+	})
+	if err == nil {
+		t.Fatal("NewAuthService accepted a config with no KV store")
 	}
 }

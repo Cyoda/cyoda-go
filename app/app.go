@@ -268,7 +268,8 @@ func New(cfg Config) *App {
 				"error", "CYODA_JWT_SIGNING_KEY is required when IAM mode is jwt")
 			os.Exit(1)
 		}
-		// Create a KV-backed trusted key store for persistence across restarts.
+		// The SYSTEM-tenant KV store holds the cluster's auth state: signing
+		// key pairs, trusted keys and OIDC providers.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
@@ -278,40 +279,14 @@ func New(cfg Config) *App {
 		kvStore, err := a.storeFactory.KeyValueStore(systemCtx)
 		if err != nil {
 			slog.Error("startup failure",
-				"phase", "kv-store-trusted-keys",
+				"phase", "kv-store-system",
 				"error", err.Error())
 			os.Exit(1)
 		}
-		authReconcileMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.trustedkeys")
-		if err != nil {
-			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
-			os.Exit(1)
-		}
-		trustedOpts := []auth.KVTrustedKeyStoreOption{
-			auth.WithMaxTrustedKeys(cfg.IAM.TrustedKeyMaxPerTenant),
-			auth.WithReconcileInterval(cfg.IAM.AuthCacheReconcileInterval),
-			auth.WithReconcileMetrics(authReconcileMetrics),
-		}
-		if gossipReg != nil {
-			// Typed-nil guard: only append when non-nil (same rationale as
-			// cacheBroadcaster above).
-			trustedOpts = append(trustedOpts, auth.WithTrustedKeyBroadcaster(gossipReg))
-		}
-		trustedKeyStore, err := auth.NewKVTrustedKeyStore(systemCtx, kvStore, trustedOpts...)
-		if err != nil {
-			slog.Error("startup failure",
-				"phase", "kv-trusted-store-bootstrap",
-				"error", err.Error())
-			os.Exit(1)
-		}
-		// Periodic KV-reconcile backstop; systemCtx is process-lifetime, so
-		// the loop runs until exit (same lifecycle as the warmup retry loop).
-		trustedKeyStore.StartReconcileLoop(systemCtx)
-
 		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
-		// enabled. Checked here (after KVTrustedKeyStore bootstrap, before OIDC
-		// subsystem init) so the OIDC registry is never constructed with a
-		// missing broadcaster in cluster mode.
+		// enabled. Checked here (before OIDC subsystem init and the auth
+		// service) so neither the OIDC registry nor the key stores are ever
+		// constructed with a missing broadcaster in cluster mode.
 		if cfg.Cluster.Enabled && gossipReg == nil {
 			slog.Error("startup failure", "phase", "oidc-broadcaster-missing")
 			os.Exit(1)
@@ -369,12 +344,32 @@ func New(cfg Config) *App {
 			oidcRegistry.StartReconcileLoop(systemCtx)
 		}
 
-		authSvc, err = auth.NewAuthService(auth.AuthConfig{
-			SigningKeyPEM:   cfg.IAM.JWTSigningKey,
-			Issuer:          cfg.IAM.JWTIssuer,
-			ExpirySeconds:   cfg.IAM.JWTExpiry,
-			TrustedKeyStore: trustedKeyStore,
-			IAMFeatures:     cfg.IAM.AuthIAMFeatures(),
+		trustedMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.trustedkeys")
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		signingMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.signingkeys")
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
+		var authBroadcaster spi.ClusterBroadcaster
+		if gossipReg != nil {
+			// Typed-nil guard: only assign when non-nil (same rationale as
+			// cacheBroadcaster above).
+			authBroadcaster = gossipReg
+		}
+		authSvc, err = auth.NewAuthService(systemCtx, auth.AuthConfig{
+			SigningKeyPEM:     cfg.IAM.JWTSigningKey,
+			Issuer:            cfg.IAM.JWTIssuer,
+			ExpirySeconds:     cfg.IAM.JWTExpiry,
+			IAMFeatures:       cfg.IAM.AuthIAMFeatures(),
+			KV:                kvStore,
+			Broadcaster:       authBroadcaster,
+			ReconcileInterval: cfg.IAM.AuthCacheReconcileInterval,
+			TrustedKeyMetrics: trustedMetrics,
+			SigningKeyMetrics: signingMetrics,
 		})
 		if err != nil {
 			slog.Error("startup failure",
@@ -382,9 +377,13 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		// The built-in IAM holds its signing keys in-process, so the validator
-		// reads public keys directly from the local key store. No loopback JWKS
-		// fetch, no HTTP client, no attack surface on that path.
+		// Periodic KV re-read of both key stores; systemCtx is
+		// process-lifetime, so the loops run until exit (same lifecycle as
+		// the OIDC warm-up retry loop).
+		authSvc.Start(systemCtx)
+		// The built-in IAM holds a copy of the cluster's signing keys on every
+		// node, so the validator reads public keys directly from that copy. No
+		// loopback JWKS fetch, no HTTP client, no attack surface on that path.
 		jwksValidator := auth.NewValidatorFromSource(auth.NewLocalKeySource(authSvc.KeyStore()), authSvc.Issuer())
 		if cfg.IAM.JWTAudience != "" {
 			jwksValidator.SetExpectedAudience(cfg.IAM.JWTAudience)
