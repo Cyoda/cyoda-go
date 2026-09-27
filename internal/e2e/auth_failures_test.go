@@ -7,6 +7,7 @@ package e2e_test
 // detail — routing and wiring the unit tests cannot see.
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -189,7 +190,7 @@ func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	kid := hex.EncodeToString(sum[:16])
 
 	now := time.Now()
-	tok, err := auth.Sign(map[string]any{
+	tok, err := auth.Sign(context.Background(), map[string]any{
 		"sub":          user,
 		"iss":          e2eIssuer,
 		"caas_user_id": user,
@@ -198,7 +199,7 @@ func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 		"exp":          now.Add(time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
-	}, e2eSignKey, kid)
+	}, auth.NewRSASigner(e2eSignKey), kid)
 	if err != nil {
 		t.Fatalf("mint token: %v", err)
 	}

@@ -65,7 +65,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	grantType := r.FormValue("grant_type")
 	switch grantType {
 	case "client_credentials":
-		h.handleClientCredentials(w, clientID)
+		h.handleClientCredentials(w, r, clientID)
 	case "urn:ietf:params:oauth:grant-type:token-exchange":
 		h.handleTokenExchange(w, r, clientID)
 	default:
@@ -73,7 +73,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID string) {
+func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, clientID string) {
 	client, err := h.m2mStore.Get(clientID)
 	if err != nil {
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
@@ -99,7 +99,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, clientID s
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(claims, kp.PrivateKey, kp.KID)
+	token, err := Sign(r.Context(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return
@@ -238,7 +238,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(claims, kp.PrivateKey, kp.KID)
+	token, err := Sign(r.Context(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return

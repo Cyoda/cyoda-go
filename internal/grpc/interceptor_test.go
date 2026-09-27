@@ -250,14 +250,14 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 	interceptor := UnaryAuthInterceptor(authSvc)
 
 	now := time.Now()
-	tok, err := auth.Sign(map[string]any{
+	tok, err := auth.Sign(context.Background(), map[string]any{
 		"iss":          issuer,
 		"sub":          user,
 		"caas_user_id": user,
 		"caas_org_id":  tenant,
 		"iat":          float64(now.Unix()),
 		"exp":          float64(now.Add(time.Hour).Unix()),
-	}, priv, kid)
+	}, auth.NewRSASigner(priv), kid)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}

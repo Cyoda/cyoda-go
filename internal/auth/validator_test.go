@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -41,7 +42,7 @@ func setupTestJWKS(t *testing.T) (*rsa.PrivateKey, string, *httptest.Server) {
 
 func signTestToken(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
 	t.Helper()
-	token, err := auth.Sign(claims, key, kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}

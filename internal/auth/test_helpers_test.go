@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
@@ -82,7 +83,7 @@ func signTokenWithKey(t *testing.T, kid string, priv *rsa.PrivateKey, iss, sub, 
 		"iat":          float64(now),
 		"exp":          float64(nowOffset(expOffsetSec)),
 	}
-	tok, err := Sign(claims, priv, kid)
+	tok, err := Sign(context.Background(), claims, NewRSASigner(priv), kid)
 	if err != nil {
 		t.Fatalf("signTokenWithKey: %v", err)
 	}

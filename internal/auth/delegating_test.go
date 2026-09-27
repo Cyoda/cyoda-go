@@ -142,7 +142,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 		"iat":          float64(now.Unix()),
 	}
 
-	token, err := Sign(claims, kp.PrivateKey, kp.KID)
+	token, err := Sign(context.Background(), claims, NewRSASigner(kp.PrivateKey), kp.KID)
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}

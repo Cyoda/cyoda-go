@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -133,7 +134,7 @@ func decodeResponse(t *testing.T, rr *httptest.ResponseRecorder) map[string]any 
 // signSubjectToken creates a JWT signed with the trusted key, simulating an external IdP token.
 func signSubjectToken(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
 	t.Helper()
-	token, err := auth.Sign(claims, key, kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
 	if err != nil {
 		t.Fatalf("failed to sign subject token: %v", err)
 	}

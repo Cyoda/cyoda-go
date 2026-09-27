@@ -78,7 +78,7 @@ func (h *callbackHarness) mintUserToken(t *testing.T, userID string, roles ...st
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-	tok, err := auth.Sign(claims, h.signKey, h.signingKID(t))
+	tok, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(h.signKey), h.signingKID(t))
 	if err != nil {
 		t.Fatalf("mint user token: %v", err)
 	}

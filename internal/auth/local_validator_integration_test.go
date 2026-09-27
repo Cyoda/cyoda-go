@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -111,10 +112,10 @@ func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
 		}
 	}
 	now := time.Now()
-	tok, err := auth.Sign(map[string]any{
+	tok, err := auth.Sign(context.Background(), map[string]any{
 		"iss": "cyoda", "sub": "user-1", "caas_user_id": "user-1", "caas_org_id": "tenant-1",
 		"iat": float64(now.Unix()), "exp": float64(now.Add(time.Hour).Unix()),
-	}, priv, "runtime-kid")
+	}, auth.NewRSASigner(priv), "runtime-kid")
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
