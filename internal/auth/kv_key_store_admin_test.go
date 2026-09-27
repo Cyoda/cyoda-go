@@ -825,3 +825,21 @@ func TestStorableTime(t *testing.T) {
 		}
 	}
 }
+
+// Every KID a store gives a key pair — issued or bootstrap — has the form the
+// key-pair endpoints accept.
+func TestMatchesKeyPairIDPattern(t *testing.T) {
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
+	for _, kid := range []string{issue(t, s, "human", false).KID, bootKID(t, boot)} {
+		if !auth.MatchesKeyPairIDPattern(kid) {
+			t.Errorf("store KID %q refused", kid)
+		}
+	}
+	hex32 := "0123456789abcdef0123456789abcdef"
+	for _, kid := range []string{"", "not-a-kid", strings.ToUpper(hex32), hex32[1:], hex32 + "0", "../" + hex32[3:], hex32[:31] + "\n"} {
+		if auth.MatchesKeyPairIDPattern(kid) {
+			t.Errorf("%q accepted", kid)
+		}
+	}
+}

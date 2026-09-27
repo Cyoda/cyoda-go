@@ -21,6 +21,14 @@ var trustedKIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 // MatchesTrustedKIDPattern is the exported form for adapter consumption.
 func MatchesTrustedKIDPattern(kid string) bool { return trustedKIDPattern.MatchString(kid) }
 
+// keyPairIDPattern is the form of every key-pair KID: an issued key pair's 16
+// random bytes (newKID) and the bootstrap key's SPKI hash prefix (DeriveKID),
+// both as 32 lowercase hex characters.
+var keyPairIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// MatchesKeyPairIDPattern reports whether kid has the form of a key-pair KID.
+func MatchesKeyPairIDPattern(kid string) bool { return keyPairIDPattern.MatchString(kid) }
+
 // ParseRSAPublicKeyFromJWK is the exported form for adapter consumption.
 // Returns a generic error on non-RSA kty; callers needing the specific
 // UNSUPPORTED_KEY_TYPE response should check kty before calling.

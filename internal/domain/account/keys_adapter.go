@@ -108,6 +108,16 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 
 func isValidKeyPairAudience(s string) bool { return s == "human" || s == "client" }
 
+// validKeyPairID writes 400 BAD_REQUEST and returns false if keyId does not
+// have the form of a key-pair KID (auth.MatchesKeyPairIDPattern).
+func validKeyPairID(w http.ResponseWriter, r *http.Request, keyId string) bool {
+	if !auth.MatchesKeyPairIDPattern(keyId) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
+		return false
+	}
+	return true
+}
+
 // storableWindow writes 400 BAD_REQUEST and returns false if the key store
 // could not hold validFrom or validTo (auth.StorableTime): a UTC year outside
 // 1..9999, which an offset timestamp such as 9999-12-31T23:59:59-05:00 reaches.
@@ -182,6 +192,9 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 	if !h.requireKeyStore(w, r) {
 		return
 	}
+	if !validKeyPairID(w, r, keyId) {
+		return
+	}
 	if err := h.keyStore.Delete(r.Context(), keyId); err != nil {
 		common.WriteError(w, r, keyPairError(err))
 		return
@@ -194,6 +207,9 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	if !h.requireKeyStore(w, r) {
+		return
+	}
+	if !validKeyPairID(w, r, keyId) {
 		return
 	}
 	var grace int64
@@ -228,6 +244,9 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	if !h.requireKeyStore(w, r) {
+		return
+	}
+	if !validKeyPairID(w, r, keyId) {
 		return
 	}
 	var req genapi.ReactivateKeyRequestDto

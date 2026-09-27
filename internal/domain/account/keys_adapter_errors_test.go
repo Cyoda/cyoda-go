@@ -43,6 +43,9 @@ func adminReq(method, path, body string) *http.Request {
 	}))
 }
 
+// wellFormedKID has the key-pair id form: 32 lowercase hex characters.
+const wellFormedKID = "0123456789abcdef0123456789abcdef"
+
 func TestKeyPairAdapters_StoreErrorsAreNot404(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	calls := map[string]func(h *Handler, w http.ResponseWriter){
@@ -53,13 +56,13 @@ func TestKeyPairAdapters_StoreErrorsAreNot404(t *testing.T) {
 			h.GetCurrentJwtKeyPair(w, adminReq("GET", "/oauth/keys/keypair/current", ""), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
 		},
 		"delete": func(h *Handler, w http.ResponseWriter) {
-			h.DeleteJwtKeyPair(w, adminReq("DELETE", "/oauth/keys/keypair/k", ""), "k")
+			h.DeleteJwtKeyPair(w, adminReq("DELETE", "/oauth/keys/keypair/"+wellFormedKID, ""), wellFormedKID)
 		},
 		"invalidate": func(h *Handler, w http.ResponseWriter) {
-			h.InvalidateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/k/invalidate", ""), "k")
+			h.InvalidateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/invalidate", ""), wellFormedKID)
 		},
 		"reactivate": func(h *Handler, w http.ResponseWriter) {
-			h.ReactivateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/k/reactivate", `{"validTo":"`+future+`"}`), "k")
+			h.ReactivateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/reactivate", `{"validTo":"`+future+`"}`), wellFormedKID)
 		},
 	}
 	for name, call := range calls {
@@ -77,6 +80,34 @@ func TestKeyPairAdapters_StoreErrorsAreNot404(t *testing.T) {
 			call(h, w)
 			if w.Code != tc.want {
 				t.Errorf("%s with %v: status %d, want %d", name, tc.err, w.Code, tc.want)
+			}
+		}
+	}
+}
+
+// A keyId that is not 32 lowercase hex characters — the form of every issued
+// and bootstrap KID — is refused with 400 before any store call: the store
+// here would answer 404 for anything it is asked.
+func TestKeyPairAdapters_MalformedKeyId_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	calls := map[string]func(h *Handler, w http.ResponseWriter, kid string){
+		"delete": func(h *Handler, w http.ResponseWriter, kid string) {
+			h.DeleteJwtKeyPair(w, adminReq("DELETE", "/", ""), kid)
+		},
+		"invalidate": func(h *Handler, w http.ResponseWriter, kid string) {
+			h.InvalidateJwtKeyPair(w, adminReq("POST", "/", ""), kid)
+		},
+		"reactivate": func(h *Handler, w http.ResponseWriter, kid string) {
+			h.ReactivateJwtKeyPair(w, adminReq("POST", "/", `{"validTo":"`+future+`"}`), kid)
+		},
+	}
+	for name, call := range calls {
+		for _, kid := range []string{"", "not-a-kid", strings.ToUpper(wellFormedKID), wellFormedKID[1:], wellFormedKID + "0", "../" + wellFormedKID[3:]} {
+			h := &Handler{keyStore: failingKeyStore{err: auth.ErrKeyPairNotFound}, iam: auth.DefaultIAMFeatures()}
+			w := httptest.NewRecorder()
+			call(h, w, kid)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "BAD_REQUEST") || !strings.Contains(w.Body.String(), "invalid keyId format") {
+				t.Errorf("%s %q: status %d body %s, want 400 BAD_REQUEST invalid keyId format", name, kid, w.Code, w.Body.String())
 			}
 		}
 	}

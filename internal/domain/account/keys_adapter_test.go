@@ -240,7 +240,7 @@ func TestDeleteJwtKeyPair(t *testing.T) {
 func TestDeleteJwtKeyPair_404(t *testing.T) {
 	h, _, _ := newHandler(t)
 	w := httptest.NewRecorder()
-	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "missing")
+	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "00000000000000000000000000000000")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", w.Code)
 	}
