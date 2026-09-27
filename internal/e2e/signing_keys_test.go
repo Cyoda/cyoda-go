@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -27,7 +28,7 @@ import (
 // retires the issued pairs it did not mint, a broken (tampered) signer fails
 // closed rather than silently substituting another key, the stored KV record
 // never carries the private key, and gRPC honours the same key state as HTTP.
-//
+
 // newKeyStackOn opens a stack on s's database with the given bootstrap key —
 // a restart of a node, or a node configured with another key.
 func newKeyStackOn(t *testing.T, s *schedDB, key *rsa.PrivateKey) *callbackHarness {
@@ -71,8 +72,28 @@ func (h *callbackHarness) issueKey(t *testing.T, aud string, invalidate bool) st
 		t.Fatalf("issue: %d %s", code, b)
 	}
 	var out struct{ KeyId string }
-	_ = json.Unmarshal(b, &out)
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("issue: decode %s: %v", b, err)
+	}
+	if out.KeyId == "" {
+		t.Fatalf("issue: empty keyId in %s", b)
+	}
 	return out.KeyId
+}
+
+// currentKey fetches GET /oauth/keys/keypair/current?audience=aud, returning
+// the status and, on 200, the decoded keyId.
+func (h *callbackHarness) currentKey(t *testing.T, aud string) (int, string) {
+	t.Helper()
+	code, b := h.keyCall(t, "GET", "/oauth/keys/keypair/current?audience="+aud, "")
+	if code != http.StatusOK {
+		return code, ""
+	}
+	var out struct{ KeyId string }
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatalf("current: decode %s: %v", b, err)
+	}
+	return code, out.KeyId
 }
 
 func tokenKID(t *testing.T, tok string) string {
@@ -104,8 +125,14 @@ func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("jwks: %d %s", resp.StatusCode, b)
+	}
 	var set struct{ Keys []struct{ Kid string } }
-	_ = json.NewDecoder(resp.Body).Decode(&set)
+	if err := json.Unmarshal(b, &set); err != nil {
+		t.Fatalf("decode jwks %s: %v", b, err)
+	}
 	out := map[string]bool{}
 	for _, k := range set.Keys {
 		out[k.Kid] = true
@@ -165,6 +192,9 @@ func TestSigningKeys_BootstrapRevocationSurvivesRestart(t *testing.T) {
 	bootKID, _ := auth.DeriveKID(&key.PublicKey)
 	h1 := newKeyStackOn(t, s, key)
 	h1.issueKey(t, "client", false) // tokens now come from an issued key
+	if code := h1.authedStatus(t, bootstrapToken(t, key)); code != http.StatusOK {
+		t.Fatalf("bootstrap key not yet invalidated: %d, want 200", code)
+	}
 	if code, b := h1.keyCall(t, "POST", "/oauth/keys/keypair/"+bootKID+"/invalidate", ""); code != http.StatusOK {
 		t.Fatalf("invalidate bootstrap: %d %s", code, b)
 	}
@@ -198,12 +228,21 @@ func TestSigningKeys_AnotherBootstrapKeyRetiresIssuedPairs(t *testing.T) {
 	if got := tokenKID(t, h2.fetchToken(t)); got != boot2 {
 		t.Fatalf("node with a new bootstrap key signs with %s, want its bootstrap %s", got, boot2)
 	}
-	if h2.jwksKIDs(t)[kid] {
+	kids := h2.jwksKIDs(t)
+	if kids[kid] {
 		t.Fatal("retired key published")
 	}
+	if !kids[boot2] {
+		t.Fatalf("new bootstrap key %s missing from JWKS", boot2)
+	}
+	if code, got := h2.currentKey(t, "client"); code != http.StatusOK || got != boot2 {
+		t.Fatalf("current audience=client on the new node: %d %q, want 200 %s", code, got, boot2)
+	}
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, c := range []struct{ method, path, body string }{
 		{"POST", "/oauth/keys/keypair/" + kid + "/invalidate", ""},
 		{"DELETE", "/oauth/keys/keypair/" + kid, ""},
+		{"POST", "/oauth/keys/keypair/" + kid + "/reactivate", `{"validTo":"` + future + `"}`},
 	} {
 		if code, _ := h2.keyCall(t, c.method, c.path, c.body); code != http.StatusNotFound {
 			t.Fatalf("%s %s on a retired key: %d, want 404", c.method, c.path, code)
@@ -224,16 +263,37 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var rec map[string]any
-	_ = json.Unmarshal(raw, &rec)
-	vault := rec["vault"].(map[string]any)
-	sealed, _ := base64.StdEncoding.DecodeString(vault["sealed"].(string))
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("decode stored record: %v", err)
+	}
+	vault, ok := rec["vault"].(map[string]any)
+	if !ok {
+		t.Fatalf("record has no vault object: %s", raw)
+	}
+	sealedStr, ok := vault["sealed"].(string)
+	if !ok {
+		t.Fatalf("vault has no sealed string: %v", vault)
+	}
+	sealed, err := base64.StdEncoding.DecodeString(sealedStr)
+	if err != nil {
+		t.Fatalf("decode sealed: %v", err)
+	}
 	sealed[len(sealed)-1] ^= 1
 	vault["sealed"] = base64.StdEncoding.EncodeToString(sealed)
-	tampered, _ := json.Marshal(rec)
+	tampered, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal tampered record: %v", err)
+	}
 	if _, err := s.pool.Exec(ctx, `UPDATE kv_store SET value=$1 WHERE tenant_id='SYSTEM' AND namespace='signing-keys' AND key=$2`, tampered, kid); err != nil {
 		t.Fatal(err)
 	}
 	h2 := newKeyStackOnUnseeded(t, s, key)
+
+	// A response leaking the sealed bytes, the decryption failure, or the kid
+	// would hand an attacker exactly what they'd need next; the 5xx contract
+	// (Gate 3) is a generic message plus a ticket UUID, nothing internal.
+	forbidden := []string{"sealed", "decryption", kid}
+
 	// /oauth/token must fail closed: the broken key is the selected signer.
 	req, _ := http.NewRequest("POST", h2.baseURL+"/api/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -242,10 +302,18 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("/oauth/token with a broken signer: %d, want 500", resp.StatusCode)
+		t.Fatalf("/oauth/token with a broken signer: %d %s, want 500", resp.StatusCode, body)
 	}
+	var oauthErr struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &oauthErr); err != nil || oauthErr.Error != "server_error" {
+		t.Fatalf(`/oauth/token error body: %s, want {"error":"server_error",...}`, body)
+	}
+	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
 	req, _ = http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
 	req.Header.Set("Authorization", "Bearer "+bootstrapToken(t, key))
@@ -253,10 +321,12 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	body, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("current with a broken signer: %d, want 500", resp.StatusCode)
+		t.Fatalf("current with a broken signer: %d %s, want 500", resp.StatusCode, body)
 	}
+	assertNoLeak(t, "keypair-current", string(body), forbidden)
 }
 
 func TestSigningKeys_StoredValueHasNoPrivateKey(t *testing.T) {
@@ -270,24 +340,76 @@ func TestSigningKeys_StoredValueHasNoPrivateKey(t *testing.T) {
 	if err := s.pool.QueryRow(context.Background(), `SELECT value FROM kv_store WHERE namespace='signing-keys' AND key=$1`, kid).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"PRIVATE KEY", "MIIE"} {
-		if strings.Contains(string(raw), marker) {
-			t.Fatalf("stored record contains %q", marker)
-		}
+	var rec map[string]any
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		t.Fatalf("decode stored record: %v", err)
 	}
-	var rec struct{ PublicKey string }
-	_ = json.Unmarshal(raw, &rec)
-	spki, _ := base64.StdEncoding.DecodeString(rec.PublicKey)
+	// Rather than grep for PEM/DER markers (which a differently-shaped private
+	// key encoding could dodge), try to parse every string value anywhere in
+	// the record — decoded both ways a byte blob could be base64-encoded — as
+	// a private key. None must succeed, including the sealed vault bytes.
+	walkStrings(rec, func(path, val string) {
+		for _, dec := range []func(string) ([]byte, error){
+			base64.StdEncoding.DecodeString,
+			base64.RawURLEncoding.DecodeString,
+		} {
+			b, err := dec(val)
+			if err != nil {
+				continue
+			}
+			if _, err := x509.ParsePKCS8PrivateKey(b); err == nil {
+				t.Fatalf("record field %s decodes to a PKCS8 private key", path)
+			}
+			if _, err := x509.ParsePKCS1PrivateKey(b); err == nil {
+				t.Fatalf("record field %s decodes to a PKCS1 private key", path)
+			}
+		}
+	})
+
+	pub, ok := rec["publicKey"].(string)
+	if !ok {
+		t.Fatalf("record has no publicKey string: %s", raw)
+	}
+	spki, err := base64.StdEncoding.DecodeString(pub)
+	if err != nil {
+		t.Fatalf("decode publicKey: %v", err)
+	}
 	if _, err := x509.ParsePKIXPublicKey(spki); err != nil {
 		t.Fatal("public key not stored in the clear")
 	}
+}
+
+// walkStrings calls fn(path, value) for every string found anywhere in v (a
+// value decoded from JSON: nested maps, slices, or a bare string), path being
+// a dotted/indexed breadcrumb for diagnostics.
+func walkStrings(v any, fn func(path, value string)) {
+	var walk func(path string, v any)
+	walk = func(path string, v any) {
+		switch x := v.(type) {
+		case string:
+			fn(path, x)
+		case map[string]any:
+			for k, vv := range x {
+				p := k
+				if path != "" {
+					p = path + "." + k
+				}
+				walk(p, vv)
+			}
+		case []any:
+			for i, vv := range x {
+				walk(fmt.Sprintf("%s[%d]", path, i), vv)
+			}
+		}
+	}
+	walk("", v)
 }
 
 func TestSigningKeys_GRPCFollowsKeyState(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	h := newCalloutHarness(t, nil)
+	h := newKeyStackOn(t, newSchedDB(t), genKey(t))
 	kid := h.issueKey(t, "client", false)
 	tok := h.fetchToken(t)
 	if tokenKID(t, tok) != kid {
@@ -298,7 +420,10 @@ func TestSigningKeys_GRPCFollowsKeyState(t *testing.T) {
 		_, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearch(h.grpcCtxAs(tok, ""), ce)
 		return err
 	}
-	if err := call(); status.Code(err) == codes.Unauthenticated {
+	// A not-found lookup still answers with an EntityResponse envelope
+	// (Success=false), not a transport error, so an accepted call is a nil
+	// error — not merely "the error isn't Unauthenticated".
+	if err := call(); err != nil {
 		t.Fatalf("token from an issued key refused on gRPC: %v", err)
 	}
 	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+kid+"/invalidate", ""); code != http.StatusOK {
