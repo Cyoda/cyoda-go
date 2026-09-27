@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,8 +125,11 @@ func decodeSigningRecord(kvKey string, data []byte) (signingRecord, KeyPair, []b
 		return rec, KeyPair{}, nil, nil, errors.New("invalid public key encoding")
 	}
 	parsed, err := x509.ParsePKIXPublicKey(spki)
+	if err != nil {
+		return rec, KeyPair{}, nil, nil, errors.New("invalid public key")
+	}
 	pub, ok := parsed.(*rsa.PublicKey)
-	if err != nil || !ok {
+	if !ok {
 		return rec, KeyPair{}, nil, nil, errors.New("public key is not RSA")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(rec.Vault.Sealed)
@@ -137,32 +141,62 @@ func decodeSigningRecord(kvKey string, data []byte) (signingRecord, KeyPair, []b
 }
 
 type cachedSigner struct {
-	sealedHash [32]byte
-	signer     Signer
+	fingerprint [32]byte
+	signer      Signer
 }
 
-// signerCache keeps each opened signer until its record's sealed bytes change.
+// signerFingerprint hashes every field bound to the sealed key (KID,
+// audience, algorithm, owner, SPKI — the same set the vault authenticates as
+// AEAD associated data, spec §5.2/§5.3) together with the sealed bytes
+// themselves, each length-prefixed to keep the concatenation unambiguous. A
+// record rewritten with the same sealed bytes but a different bound field —
+// or the same bound fields under new sealed bytes — must never be treated as
+// the same cached signer.
+func signerFingerprint(meta KeyMeta, sealed []byte) [32]byte {
+	var b []byte
+	for _, f := range [][]byte{[]byte(meta.KID), []byte(meta.Audience), []byte(meta.Algorithm), []byte(meta.Owner), meta.SPKI, sealed} {
+		b = binary.BigEndian.AppendUint32(b, uint32(len(f)))
+		b = append(b, f...)
+	}
+	return sha256.Sum256(b)
+}
+
+// signerCache keeps each opened signer until any field bound to the sealed
+// key, or the sealed bytes, change (spec §5.3).
 type signerCache struct {
 	mu sync.Mutex
 	m  map[string]cachedSigner
 }
 
-// get returns the cached signer for kid if its sealed bytes still match h.
-func (sc *signerCache) get(kid string, h [32]byte) (Signer, bool) {
+// get returns the cached signer for kid if its fingerprint still matches fp.
+func (sc *signerCache) get(kid string, fp [32]byte) (Signer, bool) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	cached, ok := sc.m[kid]
-	if !ok || cached.sealedHash != h {
+	if !ok || cached.fingerprint != fp {
 		return nil, false
 	}
 	return cached.signer, true
 }
 
-// put stores the opened signer for kid keyed by its sealed bytes' hash.
-func (sc *signerCache) put(kid string, h [32]byte, s Signer) {
+// put stores the opened signer for kid keyed by its fingerprint.
+func (sc *signerCache) put(kid string, fp [32]byte, s Signer) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	sc.m[kid] = cachedSigner{sealedHash: h, signer: s}
+	sc.m[kid] = cachedSigner{fingerprint: fp, signer: s}
+}
+
+// retain drops every cached signer whose KID is not in kids. A later task
+// calls it after each re-read so signers of records no longer stored leave
+// memory (spec §5.3).
+func (sc *signerCache) retain(kids map[string]bool) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for kid := range sc.m {
+		if !kids[kid] {
+			delete(sc.m, kid)
+		}
+	}
 }
 
 type classifier struct {
@@ -180,6 +214,12 @@ func (c *classifier) classify(ctx context.Context, kvKey string, data []byte) *s
 	rec, pair, spki, sealed, err := decodeSigningRecord(kvKey, data)
 	if err != nil {
 		return &signingEntry{class: classUndecodable, reason: "undecodable", pair: KeyPair{KID: kvKey}}
+	}
+	if rec.Kind == recordKindIssued && kvKey == c.bootKID {
+		// Two keys can never share one KID; the bootstrap KID is reserved
+		// for bootstrap-state records, so an issued record there is refused
+		// rather than trusted (fail closed, spec §5.5).
+		return &signingEntry{class: classUndecodable, reason: "issued record at the bootstrap key id", pair: KeyPair{KID: kvKey}}
 	}
 	if rec.Kind == recordKindBootstrap {
 		if kvKey == c.bootKID {
@@ -205,14 +245,14 @@ func (c *classifier) classify(ctx context.Context, kvKey string, data []byte) *s
 }
 
 func (c *classifier) open(ctx context.Context, meta KeyMeta, sealed []byte) (Signer, error) {
-	h := sha256.Sum256(sealed)
-	if s, ok := c.signers.get(meta.KID, h); ok {
+	fp := signerFingerprint(meta, sealed)
+	if s, ok := c.signers.get(meta.KID, fp); ok {
 		return s, nil
 	}
 	s, err := c.vault.Open(ctx, meta, sealed)
 	if err != nil {
 		return nil, err
 	}
-	c.signers.put(meta.KID, h, s)
+	c.signers.put(meta.KID, fp, s)
 	return s, nil
 }
