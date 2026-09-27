@@ -494,9 +494,12 @@ a node is unreachable.
 - **M2M clients are per node** until #286: a scenario creates its M2M client on
   the node whose `/oauth/token` it calls.
 - **Shared registries.** The single-node parity server and the shared multi-node
-  cluster run every scenario in sequence. Key-pair scenarios there use audience
-  `human` (nothing signs with it, `token.go:83,221`), never `invalidateCurrent`,
-  and delete their key pairs in `t.Cleanup`. `e2e/parity/client` gains helpers for
+  cluster run every scenario in sequence. Key-pair scenarios there never use
+  `invalidateCurrent` and delete their key pairs in `t.Cleanup` (on a fresh
+  context: `t.Context()` is already cancelled when cleanups run). On the
+  single-node server they use audience `human` (nothing signs with it,
+  `token.go:83,221`); on the shared multi-node cluster, audience `client`, so B
+  can be shown signing with the key issued on A. `e2e/parity/client` gains helpers for
   the key-pair endpoints, `/oauth/token` and JWKS (today only `ProbeAuthRaw`).
 - **Restart in-process.** `newSchedDB` + `newStackOn`
   (`internal/e2e/scheduler_harness_test.go:85-117`) give a stack its own database
