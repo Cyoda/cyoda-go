@@ -1,99 +1,201 @@
-# M2M clients shared by the cluster — design (#286)
+# `cyoda token` replaces the bootstrap client; M2M clients shared by the cluster — design (#286)
 
-Issue: #286. Prerequisite work in the same change: an SPI contract for
-deleting an absent key (§5.8), with its cassandra plugin fix.
+Issue: #286. Delivered as two stacked PRs on `release/v0.9.0`: Part A (§4),
+then Part B (§5). Part B carries an SPI contract fix (§5.9) with its cassandra
+plugin change. Related: cyoda-go-cassandra#104 (consistency levels), #624
+(platform-operator role), #622 (stale bootstrap comment, closed by Part A).
 
 ## 1. Summary
 
-M2M clients are stored in the SYSTEM-tenant KV store. There is no node copy:
-every operation, including the token endpoint, reads or writes the store
-directly. A client created, deleted or given a new secret on any node takes
-effect on every node when the call returns 2xx, and survives a restart on a
-persistent backend. The bootstrap client is defined by configuration on every
-node; a record in the store pins its identity and holds the state the API gave
-it (a reset secret, or deletion), so its revocation is cluster-wide and
-survives a restart.
+**Part A.** The bootstrap M2M client (`CYODA_BOOTSTRAP_*`) is removed. It was
+added to solve "needing a token to create tokens", but whoever holds
+`CYODA_JWT_SIGNING_KEY` can already sign an admin token for any tenant
+(`internal/auth/validator.go:133-168`; #285 spec `:143-146`), so it was a
+second root credential weaker than the first, and it needed special handling
+at every layer. In its place, `cyoda token` signs a short-lived token offline
+with the signing key. An operator uses it for the first admin calls, such as
+creating M2M clients. Tokens issued by `/oauth/token` gain the `aud` claim,
+which they lack today, so a server configured with `CYODA_JWT_AUDIENCE`
+accepts them.
+
+**Part B.** M2M clients are stored in the SYSTEM-tenant KV store, one
+namespace per tenant plus a global id index. There is no node copy: every
+operation, the token endpoint included, reads or writes the store. A client
+created, deleted or given a new secret on any node takes effect on every node
+when the call returns 2xx, and survives a restart on a persistent backend.
 
 ## 2. Terms
 
-- **M2M client**: an OAuth `client_credentials` client, with an id, a bcrypt
-  hash of its secret, a tenant, a user id and roles.
-- **Bootstrap client**: the client configured by `CYODA_BOOTSTRAP_CLIENT_ID`,
-  `_SECRET`, `_TENANT_ID`, `_USER_ID` and `_ROLES` (`app/config.go:333`,
-  `app/app.go:404-426`).
-- **Ordinary client**: a client created by `POST /clients`.
-- **KV store**: the SPI `KeyValueStore` of the SYSTEM tenant, the one
-  `AuthConfig.KV` already carries (`internal/auth/service.go:20`,
-  `app/app.go:279`). Its interface is `Put`, `Get`, `Delete`, `List`; there is
-  no compare-and-set (`cyoda-go-spi persistence.go:545-550`).
-- **Identity** of a client: its tenant, user id and roles.
+- **Signing key**: `CYODA_JWT_SIGNING_KEY`, the bootstrap key pair of the #285
+  design. Its KID is derived from its public key (`auth.DeriveKID`).
+- **M2M client**: an OAuth `client_credentials` client with an id, a bcrypt
+  hash of its secret, a tenant, a user id and roles. Every client is created
+  by `POST /clients`.
+- **Admin client**: an M2M client whose roles include `ROLE_ADMIN`.
+- **KV store**: the SPI `KeyValueStore` of the SYSTEM tenant, already carried
+  by `AuthConfig.KV` (`internal/auth/service.go:19`, `app/app.go:279`):
+  `Put`, `Get`, `Delete`, `List`, no compare-and-set
+  (`cyoda-go-spi persistence.go:545-550`).
 
 ## 3. Requirements
 
-1. A client created, deleted or given a new secret on any node takes effect on
+1. No credential is defined by configuration except the signing key.
+2. An operator holding the signing key can obtain an admin token for a tenant
+   without a running client, a network call or the store.
+3. A token issued by cyoda-go carries `aud` when `CYODA_JWT_AUDIENCE` is set,
+   so it passes cyoda-go's own audience check.
+4. A client created, deleted or given a new secret on any node takes effect on
    every node when the call returns 2xx.
-2. Clients and every change to them survive a restart on a persistent backend
+5. Clients and every change to them survive a restart on a persistent backend
    (sqlite, postgres, cassandra). The memory backend persists nothing.
-3. Deleting the bootstrap client or resetting its secret takes effect on every
-   node and survives a restart.
-4. A client's identity never changes after it is created, the bootstrap
-   client's included.
-5. Tenant isolation is enforced by the store: an admin of one tenant can
-   neither see nor change another tenant's client, and cannot tell it exists.
-6. The token endpoint's timing does not reveal whether a client id exists.
-7. No plaintext secret is stored or logged; a configured bootstrap secret is
-   held only as its bcrypt hash after startup.
-8. A store failure is reported as a store failure (5xx), never as an absent
-   client (401 / 404).
+6. Tenant isolation holds at the storage layer: a tenant's admin operations
+   read and write only that tenant's namespace.
+7. The token endpoint's timing does not reveal whether a client id exists.
+8. No plaintext secret is stored or logged.
+9. A store failure is reported as a store failure (5xx), never as an absent or
+   invalid client (401 / 404).
+10. `GET /clients` reads only the caller's tenant's records; a tenant's client
+    count is capped.
+11. No reference to the bootstrap client remains in code, comments, tests,
+    fixtures, the Helm chart, scripts or documentation outside
+    `docs/superpowers/` and past `CHANGELOG.md` entries (§6).
 
-## 4. Threat model
+## 4. Part A — `cyoda token`; the bootstrap client removed
 
-| Threat | Addressed by |
-|---|---|
-| A revoked or re-secreted client keeps working on another node | No node copy: every token request reads the store (§5.4). |
-| An admin reaches another tenant's client | Every admin method takes the caller's tenant; another tenant's client is `ErrM2MClientNotFound`, the same as an absent one (§5.3). |
-| An admin who reset the bootstrap secret gains a different identity when the operator changes the bootstrap tenant, user or roles | The bootstrap record pins the identity; a node whose configuration differs refuses to start (§5.5). |
-| Client-id enumeration through `/oauth/token` timing | Every request that reaches the store runs exactly one bcrypt comparison, against the dummy hash when there is no usable client (§5.4). |
-| Read exposure of the store (a backup, a replica) | Secrets are stored only as bcrypt hashes, the conventional persistence shape. |
-| Write access to the store | Out of scope, as for the key stores: the same access can change any stored data. |
+### 4.1 `cyoda token`
 
-## 5. Design
+```
+cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]
+```
 
-### 5.1 Records
+- A subcommand of the `cyoda` binary, dispatched in `cmd/cyoda/main.go` like
+  `migrate` (`:60-76`), in `cmd/cyoda/token.go`.
+- Loads configuration the way the server does (`app.LoadEnvFiles`,
+  `app.DefaultConfig`): `CYODA_JWT_SIGNING_KEY` (or `_FILE`),
+  `CYODA_JWT_ISSUER`, `CYODA_JWT_AUDIENCE`. It opens no store and makes no
+  network call.
+- Flags:
+  - `--tenant`, required, checked with `common.ValidateTenantID`;
+  - `--user`, default `operator`, checked with `common.ValidateFirstPartyUserID`;
+  - `--roles`, default `ROLE_ADMIN`; comma-separated, trimmed; an empty entry
+    is refused;
+  - `--ttl`, default `15m`, greater than 0 and at most `24h`.
+- Claims: `sub` and `caas_user_id` = user, `caas_org_id` = tenant,
+  `user_roles` = roles (the principal is a person, `validator.go:149-157`),
+  `iss`, `aud` when `CYODA_JWT_AUDIENCE` is set, `iat`, `exp`, `jti`. Signed by
+  the signing key with its derived KID.
+- Output: the token and a newline on stdout, nothing else. Errors go to stderr
+  and never contain the token or key material. Exit codes: 0 success; 1 missing
+  or unparseable signing key; 2 flag error (`migrate`'s convention).
+- A token it signs is accepted only while the signing key is active on the
+  cluster. If the key was invalidated or deleted through the API, recovery is
+  an OIDC admin or a new signing key (#285 spec §4); the command cannot check
+  this offline, and the help topic says so.
 
-Namespace `m2m-clients`, one record per client id; the KV key is the client
-id. JSON:
+### 4.2 Removed
 
-| Field | Ordinary (`kind: "client"`) | Bootstrap (`kind: "bootstrap"`) |
+- `app.Config.Bootstrap` and `CYODA_BOOTSTRAP_CLIENT_ID`, `_CLIENT_SECRET`,
+  `_CLIENT_SECRET_FILE`, `_TENANT_ID`, `_USER_ID`, `_ROLES`
+  (`app/config.go:333-346,383-389`); `validateBootstrapConfig`
+  (`app/app.go:1084-1123`) and its caller; the creation block
+  (`app/app.go:401-427`); the registry entries
+  (`cmd/cyoda/help/config_registry.go:100-104`); `app/app_bootstrap_test.go`
+  and the bootstrap cases in `app/config_*_test.go`.
+- `CreateWithSecret` (its only production caller was the bootstrap block).
+- Helm: `bootstrap.*` in `values.yaml:58-88` and `values.schema.json:62`,
+  `templates/secret-bootstrap.yaml`, the ConfigMap keys
+  (`templates/configmap.yaml:67-73`), the Secret mount
+  (`templates/statefulset.yaml:98-100,165-170`), the related `_helpers.tpl`
+  helpers, `NOTES.txt:27-29` (replaced by the `cyoda token` instruction below)
+  and the chart README sections (`README.md:52-66,211-223`).
+- `scripts/multi-node-docker/start-cluster.sh:94-107,344-347` and its README;
+  `.env.jwt.example:11-13`.
+- There is no check for the removed variables at startup: a leftover
+  `CYODA_BOOTSTRAP_*` is ignored like any unknown variable, and the first
+  token request that relied on it fails with `401`. The CHANGELOG's
+  `### Breaking` entry names the variables and the replacement.
+
+The bootstrap *signing key* (`CYODA_JWT_SIGNING_KEY`, KID, bootstrap key-pair
+state) is unrelated and unchanged.
+
+### 4.3 The `aud` claim on issued tokens
+
+`/oauth/token` builds its claims without `aud` for both grants
+(`internal/auth/token.go:89-99` and the token-exchange claims), `Sign` adds
+none (`internal/auth/jwt.go:18-36`), and the validator requires `aud` whenever
+`CYODA_JWT_AUDIENCE` is set (`validator.go:91`, `app/app.go:388-389`). No test
+sets that variable. `NewTokenHandler` receives the configured audience and
+both grants set `aud` when it is non-empty; `cyoda token` does the same.
+
+### 4.4 Getting started in jwt mode
+
+`README.md` "First real call" (`:78-113`), `quickstart.md`, `helm.md` and the
+chart's `NOTES.txt` become:
+
+1. start cyoda-go in jwt mode with a signing key;
+2. `TOKEN=$(cyoda token --tenant <tenant>)` — in Kubernetes,
+   `kubectl exec <pod> -- cyoda token --tenant <tenant>`, the pod already
+   holding the key;
+3. `POST /clients` with that token to create the M2M clients applications and
+   compute nodes use.
+
+Mock mode (the default) is unchanged.
+
+### 4.5 Tests and fixtures
+
+- `internal/e2e`: TestMain (`e2e_test.go:133-139`) no longer sets bootstrap
+  variables. `authRequestRaw` (`helpers_test.go:118-130`) and the harness
+  (`callback_harness_test.go:228-234,361-385`) sign their admin tokens with
+  the suite's signing key (`e2eSignKey`, `h.signKey`), in the same shape as a
+  `client_credentials` token today (`scopes`, tenant `test-tenant`, the same
+  user id), so tests that assert on attribution see no change. Tests that
+  exercise `/oauth/token` itself create their clients with `POST /clients`.
+  `async_stream_test.go:1170,1196` and `clients_test.go:36-45` change
+  accordingly.
+- `e2e/parity/fixtureutil/fixtureutil.go:492-496`: the bootstrap variables go;
+  nothing reads them.
+- cyoda-go-cassandra: `cyoda-go-cassandra-docker.sh:53-56` and
+  `.env.cassandra.example:37-38` (a courtesy PR, together with §5.9).
+
+| Scenario | unit | e2e (postgres, in-process) |
 |---|---|---|
-| `kind` | `"client"` | `"bootstrap"` |
-| `clientId` | = KV key | = KV key |
-| `tenantId`, `userId`, `roles` | identity | the identity pinned at first start |
-| `hashedSecret` | bcrypt hash, required | bcrypt hash after a reset; empty until then |
-| `deleted` | absent | `true` after a delete |
-| `createdAt`, `updatedAt` | RFC 3339 UTC | same |
+| `cyoda token`: claims, KID, `aud` present only when configured, stdout carries only the token | ✓ | |
+| `cyoda token`: each flag refusal (tenant, user, empty role, ttl 0 / > 24h), missing or bad key → exit codes; no token or key in stderr | ✓ | |
+| a `cyoda token` token is accepted on HTTP and gRPC; refused after the signing key is invalidated through the API | | ✓ |
+| `CYODA_JWT_AUDIENCE` set: `client_credentials` and token-exchange tokens are accepted; a `cyoda token` token is accepted; a token without `aud` is refused | ✓ | ✓ |
+| the server starts and serves with no bootstrap variables; a leftover `CYODA_BOOTSTRAP_CLIENT_ID` changes nothing | ✓ | |
 
-Decoding fails — the record is **undecodable** — when the JSON does not parse,
-`kind` is unknown, `clientId` differs from the KV key, `tenantId` fails
-`common.ValidateTenantID`, `hashedSecret` is not a bcrypt hash where one is
-required or present, or a timestamp is outside `StorableTime`. The encoder
-refuses to write any record the decoder would reject.
+## 5. Part B — M2M clients in the store
+
+### 5.1 Layout
+
+| Namespace | Key | Value |
+|---|---|---|
+| `m2m-clients:<tenantId>` | client id | the client record |
+| `m2m-client-ids` | client id | `{"tenantId": …}` — the index |
+
+Client record (JSON): `clientId` (= KV key), `tenantId` (= the namespace's
+tenant), `userId`, `roles`, `hashedSecret`, `createdAt`, `updatedAt`
+(RFC 3339 UTC).
+
+A record is **undecodable** when the JSON does not parse, `clientId` differs
+from its key, `tenantId` differs from its namespace or fails
+`common.ValidateTenantID`, `userId` fails `common.ValidateFirstPartyUserID`,
+`roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash,
+or a timestamp is outside `StorableTime`. An index entry is undecodable when
+it does not parse or its tenant fails `ValidateTenantID`. The encoder refuses
+to write anything the decoder would reject.
+
+A client **exists** when both its index entry and its record exist. The index
+entry is written last on create and removed first on delete, so a failure
+between the two writes leaves at most a record without an index entry: listed
+by `GET /clients`, unable to authenticate, removable by `DELETE`.
 
 ### 5.2 Client id grammar
 
-`^[A-Za-z0-9_-]{1,100}$`, widened from `^[A-Za-z0-9]{1,100}$`:
-
-- the adapter pattern (`internal/domain/account/m2m_adapter.go:21`);
-- the four OpenAPI sites: the `clientId` path parameter of
-  `deleteTechnicalUser` and `resetTechnicalUserSecret` (`api/openapi.yaml:761,835`),
-  `TechnicalUserCredentialsDto.client_id` (`:9705`) and
-  `TechnicalUserDto.clientId` (`:11775`); then `go generate ./api`.
-
-`validateBootstrapConfig` (`app/app.go:1086-1122`) checks
-`CYODA_BOOTSTRAP_CLIENT_ID` against the same grammar; an id outside it refuses
-to start. `.` is excluded because routers normalise dot segments; `:` and `/`
-because they break HTTP Basic credentials and the path. Generated ids
-(16-character base32-hex, `m2m_adapter.go` `generateClientID`) are unchanged.
+Unchanged: `^[A-Za-z0-9]{1,100}$` (`internal/domain/account/m2m_adapter.go:21`,
+`api/openapi.yaml:761,835,9705,11775`). Generated ids are 16-character
+base32-hex (`m2m_adapter.go:30`). The token endpoint now applies it too (§5.4).
 
 ### 5.3 Interface (package `internal/auth`)
 
@@ -108,287 +210,277 @@ type M2MClientStore interface {
 ```
 
 Errors: `ErrInvalidClient` (new; `Authenticate` only), `ErrM2MClientNotFound`,
-`ErrM2MClientExists`. Any other error is the store failing, and carries the
-KV error so `common.Internal` can map a storage-unavailable one to 503.
+`ErrM2MClientExists`, `ErrM2MClientCapReached` (new; `Create`),
+`ErrM2MAdminRoleDisabled` (new; `ResetSecret`). Any other error
+is the store failing and wraps the KV error, so `common.Internal` maps a
+storage-unavailable one to 503.
 
-Removed: `InMemoryM2MClientStore`, `CreateWithSecret`, `Get`, `VerifySecret`.
-`Get` has no caller once the tenant check is in the store and the token
-endpoint uses `Authenticate`.
+`KVM2MClientStore` (`internal/auth/kv_m2m_store.go`):
+`NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int, adminRoleEnabled bool)`,
+built by `NewAuthService` from `IAMFeatures`. It loads
+nothing at construction. Every method first removes any transaction from the
+context (`spi.WithTransaction(ctx, nil)`), so a KV call never joins a caller's
+entity transaction (`plugins/postgres/store_factory.go:148-161`).
 
-`KVM2MClientStore` (`internal/auth/kv_m2m_store.go`) implements it:
-
-```go
-type BootstrapClientConfig struct {
-	ClientID string
-	Secret   string
-	TenantID spi.TenantID
-	UserID   string
-	Roles    []string
-}
-
-func NewKVM2MClientStore(ctx context.Context, kv spi.KeyValueStore, boot *BootstrapClientConfig) (*KVM2MClientStore, error)
-```
-
-`AuthConfig` gains `BootstrapClient *BootstrapClientConfig` (nil: none);
-`NewAuthService` builds the store from it and `app.go` no longer creates the
-client (`app/app.go:404-426` goes; the "registered" INFO line moves into the
-store's constructor).
+Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
+`VerifySecret`; `clientBelongsToTenant` and the pre-read in the adapter
+(`m2m_adapter.go:109,197-203,238-243`).
 
 ### 5.4 Operations
 
-A **usable client** for id X is, after one `Get` of X:
-- an ordinary record; or
-- when X is this node's bootstrap id: the bootstrap record with this node's
-  identity and `deleted` false. Its secret hash is the stored one if set, else
-  the configured secret's hash. A bootstrap record whose identity differs from
-  this node's configuration is not usable, and is logged at ERROR (it can
-  exist only if a node with other configuration wrote it; §5.5 refuses such a
-  node at startup). An absent record at the bootstrap id — only possible if
-  the store was changed outside the API after startup — is the client as
-  configured, dated with this store's construction time.
+- **Authenticate(id, secret)**:
+  1. id outside §5.2 → bcrypt against `dummyHash`, `ErrInvalidClient`. No
+     store read: the id is attacker-controlled and would otherwise reach the
+     store and its error text (`plugins/postgres/kv_store.go:40`).
+  2. `Get` the index entry. Absent → dummy bcrypt, `ErrInvalidClient`.
+  3. `Get` the record in the entry's tenant namespace. Absent → dummy bcrypt,
+     `ErrInvalidClient`.
+  4. bcrypt against the record's hash; mismatch → `ErrInvalidClient`; match →
+     the client.
 
-Anything else — absent, a bootstrap record at an id that is not this node's
-bootstrap id, a deleted bootstrap record — is **no client**. An undecodable
-record is a store failure, logged at ERROR with its KV key.
-
-- **Authenticate(id, secret)**: `Get` id. Store failure or undecodable → that
-  error, no bcrypt. Usable client → bcrypt against its hash; mismatch →
-  `ErrInvalidClient`. No client → bcrypt against `dummyHash`
-  (`internal/auth/store.go:215-221`), then `ErrInvalidClient`. So every request
-  that reaches a decision runs one bcrypt comparison.
-- **Create(tenant, id, user, roles)**: generate and hash the secret; `Get` id;
-  any record, undecodable included, or id = this node's bootstrap id →
-  `ErrM2MClientExists`; else `Put` an ordinary record.
-- **List(tenant)**: `List` the namespace; ordinary records of `tenant`, plus
-  the bootstrap client when it is usable and in `tenant`. Undecodable records
-  are skipped and logged at ERROR with their KV keys, as the replica does at
-  load (`internal/auth/replica.go:117-122`): one corrupt record does not fail
-  every tenant's list.
-- **Delete(tenant, id)**: `Get` id; no usable client of `tenant` →
-  `ErrM2MClientNotFound`. Ordinary → KV `Delete`. Bootstrap → `Put` the record
-  with `deleted: true`, `hashedSecret` cleared, `updatedAt` now.
-- **ResetSecret(tenant, id)**: generate and hash the secret first (so the
-  window between read and write is one round trip, not a bcrypt); `Get` id; no
-  usable client of `tenant` → `ErrM2MClientNotFound`; else `Put` the record
-  with the new hash and `updatedAt` now. Returns the client for the response
-  body (roles).
+  A store failure or an undecodable entry or record at step 2 or 3 returns
+  that error without bcrypt, logged at ERROR with the KV key (the id, which
+  passed §5.2). Every request that reaches a decision runs one bcrypt.
+- **Create(tenant, id, user, roles)**: generate and hash the secret. `List`
+  the tenant's namespace; at `maxPerTenant` or more records →
+  `ErrM2MClientCapReached` (`maxPerTenant` ≤ 0: no cap). `Get` the index
+  entry; present or undecodable → `ErrM2MClientExists`. `Put` the record, then
+  the index entry. If the index `Put` fails, delete the record (on a context
+  the caller cannot cancel); a failed delete is logged at ERROR with the key.
+- **List(tenant)**: `List` the tenant's namespace. Undecodable records are
+  skipped and logged at ERROR with their keys, as the replica does at load
+  (`internal/auth/replica.go:117-122`).
+- **Delete(tenant, id)**: `Get` the record in the tenant's namespace; absent →
+  `ErrM2MClientNotFound`; undecodable → store error. Delete the index entry,
+  then the record. A client of another tenant is not in this namespace, so it
+  is `ErrM2MClientNotFound` by construction.
+- **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
+  between read and write is one round trip, not a bcrypt. `Get` the record in
+  the tenant's namespace; absent → `ErrM2MClientNotFound`. An admin client
+  while admin-role grants are disabled → `ErrM2MAdminRoleDisabled` (§5.6).
+  `Put` the record with the new hash and `updatedAt` now.
 
 The token handler (`internal/auth/token.go:59-80,141`) calls `Authenticate`
-once and uses the returned client in both grants: `ErrInvalidClient` → `401
-invalid_client`; any other error → `writeTokenServerError` (`token.go:305`,
-`500 server_error` with a ticket).
+once and uses the returned client for both grants: `ErrInvalidClient` →
+`401 invalid_client`; any other error → `writeTokenServerError`
+(`token.go:305`, `500 server_error` with a ticket).
 
-The adapter (`m2m_adapter.go`) drops its `Get`-then-check pre-reads
-(`:197-203,238-243`) and `clientBelongsToTenant` (`:109`): `ErrM2MClientNotFound`
-→ `404 M2M_CLIENT_NOT_FOUND`; any other error → `common.Internal` (500 with a
-ticket, or 503 `STORAGE_UNAVAILABLE`).
+The adapter maps `ErrM2MClientNotFound` → `404 M2M_CLIENT_NOT_FOUND`,
+`ErrM2MClientCapReached` → `400 M2M_CLIENT_CAP_REACHED`,
+`ErrM2MAdminRoleDisabled` → `404 FEATURE_DISABLED`, anything else →
+`common.Internal` (500 with a ticket, or `503 STORAGE_UNAVAILABLE`).
 
-### 5.5 Bootstrap client
+### 5.5 Cap
 
-At construction, with a bootstrap configuration:
+`CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`, default 100, 0 = unbounded, a field of
+`IAMFeatures` beside `TrustedKeyMaxPerTenant` (`app/config.go:276,434`). The
+check reads the tenant's namespace, so concurrent creates on different nodes
+can pass it together and exceed the cap by their number (no compare-and-set);
+documented.
 
-1. Hash the configured secret (bcrypt, default cost) and drop the plaintext.
-2. `Get` the record at the bootstrap id:
-   - store failure or undecodable → error (startup fails);
-   - absent → `Put` a bootstrap record with this node's identity, no hash,
-     `createdAt` = `updatedAt` = now;
-   - an ordinary record → error: "CYODA_BOOTSTRAP_CLIENT_ID names an existing
-     client";
-   - a bootstrap record whose identity differs (tenant, user id, or roles as a
-     set) → error naming the differing fields and saying that changing the
-     bootstrap client's identity needs a new `CYODA_BOOTSTRAP_CLIENT_ID`;
-   - a bootstrap record with this identity → used. `deleted` → WARN "the
-     bootstrap client was deleted through the API; configure another
-     CYODA_BOOTSTRAP_CLIENT_ID to have one"; a stored hash → WARN "the
-     bootstrap client's secret was reset through the API;
-     CYODA_BOOTSTRAP_CLIENT_SECRET is not used".
-3. `NewAuthService` returns the error; `app.go` exits as for every other
-   auth-service startup failure (`app/app.go:374-378`).
+### 5.6 Resetting an admin client
 
-The configured secret may change freely while no reset is stored: it is never
-stored. Recovery from a deleted bootstrap client, or a change of its identity,
-is a new client id; the old record stays inert.
+Creating an admin client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
+(`m2m_adapter.go:123-126`, off by default, `internal/auth/iam_features.go:17-20`).
+Resetting one does not today (`m2m_adapter.go:222-266`), so a tenant admin can
+obtain an admin machine credential by resetting an existing admin client while
+the flag is off. With Part B, resetting an admin client needs the flag too,
+and answers `404 FEATURE_DISABLED` without it — after the tenant check, so
+another tenant's client still answers `404 M2M_CLIENT_NOT_FOUND`. Delete is not
+gated: revocation always works.
 
-### 5.6 Consistency and races
+### 5.7 Consistency and races
 
-The store adds no consistency mechanism of its own. Requirement 1 holds
-because every read goes to the store and the store makes a committed write
-visible to a read on any node: postgres; cassandra at its default `QUORUM`
-reads and writes (`cyoda-go-cassandra internal/config/config.go:201`).
-Memory and sqlite are single-node.
+Requirement 4 holds because every read goes to the store and the store makes a
+committed write visible to a read on any node: postgres; cassandra at `QUORUM`
+or `LOCAL_QUORUM` (cyoda-go-cassandra#104 makes these the only accepted
+levels). Memory and sqlite are single-node.
 
-Two races are documented, not prevented (the KV SPI has no compare-and-set):
+Documented, not prevented (no compare-and-set): concurrent admin changes to
+one client on two nodes — the later write wins, so a reset racing a delete can
+leave the client present with the new secret, held by the admin who reset it
+(same tenant); and the cap overshoot of §5.5.
 
-- **Concurrent admin changes to one client on two nodes.** The later write
-  wins. A reset racing a delete can leave the client present with the new
-  secret, held only by the admin who reset it (same tenant).
-- **A node's first start racing a bootstrap delete.** A node that finds no
-  bootstrap record while another node deletes the bootstrap client can write
-  the record back undeleted. This needs the bootstrap client to be deleted
-  within its cluster's first start.
+### 5.8 Token endpoint cost
 
-Both need two actions on the same id within milliseconds and are recorded in
-the help topic (§9).
+Two KV point reads per `POST /oauth/token` (on cassandra each is a metadata
+and a data read at the configured level), next to ~100 ms of bcrypt. Tokens
+live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 
-### 5.7 Token endpoint load
-
-One KV point read per `POST /oauth/token`, next to ~100 ms of bcrypt. Tokens
-live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`); nothing
-in cyoda-go calls the endpoint per request.
-
-### 5.8 SPI: deleting an absent key
+### 5.9 SPI: deleting an absent key
 
 The SPI does not say what `Delete` of an absent key returns, and `spitest`
-does not test it (`cyoda-go-spi spitest/keyvalue.go:48-55`, `message.go:48-66`,
-`workflow.go:56-64`). The backends disagree:
-
-- memory, sqlite, postgres: `nil` for KV, message and workflow `Delete`
-  (`plugins/*/kv_store.go`, `message_store.go`, `workflow_store.go`);
-- cassandra: `spi.ErrNotFound` for all three, through the shared
-  `dataStore.delete` (`cyoda-go-cassandra internal/store/data_store.go:170-180,
-  274,327,388,393`). Visible today: `DELETE /message` with a batch that
-  contains an absent id answers 500 on cassandra and 200 elsewhere
-  (`internal/domain/messaging/handler.go:332`), and
-  `KVOidcProviderStore.Delete` (`internal/auth/oidc/kv_store.go:104-111`)
-  fails on cassandra when its index key is already gone.
+does not test it (`cyoda-go-spi spitest/keyvalue.go:48-55`,
+`message.go:48-66`, `workflow.go:56-64`). Memory, sqlite and postgres return
+`nil` for KV, message and workflow `Delete`; cassandra returns
+`spi.ErrNotFound` for all three through its shared `dataStore.delete`
+(`cyoda-go-cassandra internal/store/data_store.go:170-180,274,327,388,393`).
+Visible today: a `DELETE /message` batch containing an absent id answers 500
+on cassandra and 200 elsewhere (`internal/domain/messaging/handler.go:332`);
+`KVOidcProviderStore.Delete` (`internal/auth/oidc/kv_store.go:104-111`) fails
+on cassandra when its index key is already gone.
 
 Contract: `Delete` (KV, message, workflow) and `DeleteBatch` of an absent key
-return `nil`. SPI doc comments state it; `spitest` gains a case per method.
-The cassandra plugin's `dataStore.delete` returns `nil` for an absent or
+return `nil`. SPI doc comments state it; `spitest` gains a case per method; the
+cassandra plugin's `dataStore.delete` returns `nil` for an absent or
 already-deleted key. Mechanics: an SPI PR into `main`, cyoda-go pseudo-pins
-`main` (no tag mid-milestone), a cassandra PR on the same pin.
-`replica.go:379` keeps tolerating `ErrNotFound` until the pin lands, then the
-tolerance is removed (it guards a case the contract rules out).
+`main` (no tag mid-milestone), a cassandra PR on the same pin. Once pinned,
+the `ErrNotFound` tolerance at `internal/auth/replica.go:379` is unreachable
+and is removed.
 
-## 6. Errors
+### 5.10 Errors
 
 | Endpoint | Status | Code | Cause | New? |
 |---|---|---|---|---|
-| `POST /oauth/token` | 401 | `invalid_client` | no Basic credentials; unknown id; wrong secret; deleted bootstrap client; bootstrap record of another id or identity | no |
-| | 500 | `server_error` | store failure; undecodable record | yes (was 401) |
-| | 400 / 500 | | grant validation, signer failure | no |
-| all four `/clients` operations | 401 / 403 / 501 | | unauthenticated / not admin / not jwt mode | no |
+| `POST /oauth/token` | 401 | `invalid_client` | no Basic credentials; id outside §5.2; unknown id; wrong secret | id check new |
+| | 500 | `server_error` | store failure; undecodable entry or record | yes (was 401) |
+| | 400 / 500 | | grant validation; signer failure | no |
+| all four `/clients` operations | 401 / 403 / 501 | | unauthenticated; not admin; not jwt mode | no |
 | | 500 | | store failure; undecodable record (ticket, generic message) | yes (list: new; delete, reset: was 404) |
 | | 503 | `STORAGE_UNAVAILABLE` | the store reports itself unavailable | yes; add to OpenAPI for all four |
 | `POST /clients` | 200 | | created | stored now |
+| | 400 | `M2M_CLIENT_CAP_REACHED` | the tenant is at the cap | yes; new code |
 | | 404 | `FEATURE_DISABLED` | `withAdminRole=true` while disabled | no |
-| `GET /clients` | 200 | | caller's tenant's clients, bootstrap client included when usable and in that tenant | stored now |
-| `DELETE /clients/{clientId}` | 200 | | deleted (bootstrap: `deleted` stored) | stored now |
-| | 400 | `BAD_REQUEST` | id outside §5.2 | ids with `_` / `-` now valid |
-| | 404 | `M2M_CLIENT_NOT_FOUND` | absent, another tenant's, deleted bootstrap, bootstrap record of another id or identity | no |
-| `PUT /clients/{clientId}/secret` | 200 | | new secret (bootstrap: hash stored) | stored now |
-| | 400 / 404 | | as `DELETE` | as `DELETE` |
-| startup (jwt mode, bootstrap configured) | exit 1 | | id outside §5.2; ordinary client at the bootstrap id; identity differs from the stored bootstrap record; undecodable record at the bootstrap id; store failure | yes |
+| `GET /clients` | 200 | | the caller's tenant's clients | stored now |
+| `DELETE /clients/{clientId}` | 200 | | deleted | stored now |
+| | 400 | `BAD_REQUEST` | id outside §5.2 | no |
+| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's | no |
+| `PUT /clients/{clientId}/secret` | 200 | | new secret | stored now |
+| | 400 | `BAD_REQUEST` | id outside §5.2 | no |
+| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's | no |
+| | 404 | `FEATURE_DISABLED` | an admin client while `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` is off | yes |
 
-No new error code. No gRPC surface manages clients (a search of
-`internal/grpc` and `api/grpc` for client-management terms is empty); gRPC
-only verifies tokens, through the signing-key store.
+No gRPC surface manages clients (a search of `internal/grpc` and `api/grpc` for
+client-management terms is empty); gRPC only verifies tokens.
 
-## 7. Tests
+### 5.11 Tests
 
-### 7.1 Fixture constraints
-
-- **In-process cross-node.** Two stacks on one database (`newSchedDB`,
-  `newStackOn`, `internal/e2e/scheduler_harness_test.go:41,109`) are two
-  nodes: with no node copy there is no gossip to wait for, so every
-  cross-node assertion runs without polling. A restart is a new stack on the
-  same database.
-- **Bootstrap tests use their own database.** The shared TestMain server's
-  bootstrap client (`testclient`, `internal/e2e/helpers_test.go:119`) is used by
-  every test.
-- **Undecodable record** is a raw KV write on a stack's own database (as
+Fixture constraints:
+- **In-process cross-node**: two stacks on one database (`newSchedDB`,
+  `newStackOn`, `internal/e2e/scheduler_harness_test.go:41,109`). With no node
+  copy there is nothing to wait for, so cross-node assertions do not poll. A
+  restart is a new stack on the same database.
+- **Undecodable records**: a raw KV write on a stack's own database (as
   `internal/e2e/signing_keys_test.go:287`), never the shared server.
-- **Parity must not touch the fixture's bootstrap client** (`compute-test`,
-  `e2e/parity/fixtureutil/fixtureutil.go:492`).
 - **Multi-node runs on postgres only**; cassandra runs the single-node parity
-  list (`cyoda-go-cassandra e2e/cassandra_test.go:91`), its multi-node fixture
-  is cyoda-go-cassandra#35.
-- **Callers of the removed methods move to `Create`**, which returns the
-  secret: `internal/e2e/callback_txjoin_errors_test.go:75`,
+  list (`cyoda-go-cassandra e2e/cassandra_test.go:91`; its multi-node fixture
+  is cyoda-go-cassandra#35).
+- The remaining callers of removed methods move to `Create`
+  (`internal/e2e/callback_txjoin_errors_test.go:75`,
   `internal/e2e/oauth_keys_test.go:598`,
   `internal/auth/local_validator_integration_test.go:29`,
   `internal/auth/token_test.go`, `internal/domain/account/m2m_adapter_test.go`,
-  `internal/auth/store_test.go` (M2M part).
-
-### 7.2 Coverage matrix
+  `internal/auth/store_test.go`).
 
 | Scenario | unit | e2e (postgres, in-process) | parity single-node (memory, sqlite, postgres, cassandra) | multi-node (postgres) |
 |---|---|---|---|---|
-| create → authenticate; list; reset → old secret invalid, new valid; delete → invalid | ✓ | ✓ | ✓ | |
-| another tenant: list excludes, delete / reset → 404, identical body to absent | ✓ | ✓ | ✓ | |
+| create → token; list; reset → old secret 401, new 200; delete → 401 | ✓ | ✓ | ✓ | |
+| another tenant: absent from list; delete and reset → 404 with the absent-client body | ✓ | ✓ | ✓ | |
 | create on A → token on B at once; reset on A → old secret 401 on B; delete on A → 401 on B | | ✓ | | ✓ shared cluster |
 | create, reset, delete each survive a restart | | ✓ | | |
-| ids with `_` and `-`: accepted on delete / reset; `.`, `:`, `/`, 101 chars → 400 | ✓ | ✓ | | |
-| bootstrap: absent → record written with identity; config secret authenticates | ✓ | ✓ | | |
-| bootstrap: reset → config secret 401, new secret 200, on the other stack and after restart; WARN at start | ✓ | ✓ | | |
-| bootstrap: delete → 401 and 404 on reset, on the other stack and after restart; WARN at start | ✓ | ✓ | | |
-| bootstrap: a changed config secret authenticates while no reset is stored | ✓ | ✓ | | |
-| bootstrap: identity differs from the record → constructor error; ordinary client at the id → error; undecodable at the id → error; id outside §5.2 → config error | ✓ | | | |
-| bootstrap record of another id: no client on authenticate, list, delete, reset; create refuses the id | ✓ | | | |
-| create refuses an existing id, an undecodable record's id and this node's bootstrap id | ✓ | | | |
-| undecodable record: authenticate → store error (token 500); list skips it with ERROR; delete / reset → 500 | ✓ | ✓ (raw KV write) | | |
-| failing KV on every method → store error, never not-found / invalid-client; adapter → `common.Internal` (500 / 503); token → 500 | ✓ (faulty KV) | | | |
-| unknown id and wrong secret both run one bcrypt (dummy hash on the unknown path) | ✓ | | | |
-| codec: round trip; each decode refusal; encoder refuses what decode rejects | ✓ | | | |
-| no plaintext secret in the stored record | ✓ | ✓ (raw KV read) | | |
-| SPI: absent-key `Delete` (KV, message, workflow) and `DeleteBatch` → nil | spitest, all backends | | | |
-| OpenAPI conformance of every `/clients` response (enforce-mode validator) | | ✓ | | |
+| cap: at the cap → 400 `M2M_CLIENT_CAP_REACHED`; 0 → unbounded; a delete frees a slot | ✓ | ✓ | ✓ | |
+| reset of an admin client: flag off → 404 `FEATURE_DISABLED`; flag on → 200; another tenant's admin client → 404 `M2M_CLIENT_NOT_FOUND` | ✓ | ✓ | | |
+| token endpoint: id with NUL, invalid UTF-8, 101 characters, an encoded `:` → 401, no store read, one bcrypt | ✓ | ✓ | | |
+| unknown id; a record without an index entry; wrong secret: each runs one bcrypt → 401 | ✓ | | | |
+| create: index `Put` fails → record removed; list never shows a client that authenticates without being listed | ✓ (faulty KV) | | | |
+| undecodable index entry or record: token → 500; list skips with ERROR; delete / reset → 500 | ✓ | ✓ (raw KV write) | | |
+| failing KV on every method → store error, never not-found / invalid-client; adapter → 500 / 503; token → 500 | ✓ (faulty KV) | | | |
+| a caller's transaction in the context is not joined by the store | ✓ | | | |
+| codec: round trip; each decode refusal; the encoder refuses what decode rejects | ✓ | | | |
+| no plaintext secret in any stored value | ✓ | ✓ (raw KV read) | | |
+| SPI: absent-key `Delete` (KV, message, workflow) and `DeleteBatch` → nil | spitest, every backend | | | |
+| every `/clients` and `/oauth/token` response conforms to the OpenAPI (enforce-mode validator) | | ✓ | | |
 
 Waivers:
 - 503 on `/clients` is not tested end to end: the shared container cannot be
-  paused and the adapter passes errors through `common.Internal`, whose 503
-  mapping is tested (`internal/common/errors.go:169-177`); the unit row asserts
+  paused, and the adapter passes errors through `common.Internal`, whose 503
+  mapping is tested (`internal/common/errors.go:169-177`); a unit row asserts
   the adapter reaches it.
-- Startup refusal is tested at the constructor, not end to end: `app.go`
-  exits the process, and the exit path is shared with every other auth-service
-  startup failure.
 - Cassandra multi-node: no fixture yet (cyoda-go-cassandra#35).
 
-## 8. Deletions and exit checks
+## 6. Documentation, comments and exit checks
 
-- `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `CreateWithSecret`,
-  `VerifySecret`, the M2M `Get`, `clientBelongsToTenant`: `grep -rn` over the
-  repo returns nothing outside `docs/superpowers/`.
-- `app/app.go` has no bootstrap-client creation block.
-- The note "M2M clients are per node" (`e2e/parity/multinode/signing_keys.go:56-57`)
-  is gone, and `newM2MClient` callers no longer need to fetch tokens from the
-  creating node.
+Every document and code comment outside `docs/superpowers/` (plans, specs and
+research are records of their time) and past `CHANGELOG.md` entries is brought
+in line. Each PR ends with a fresh-context documentation review against this
+section, and with the exit checks below, which return nothing outside the
+excluded paths.
 
-## 9. Documentation and parity
+### 6.1 Part A
 
-- `cmd/cyoda/help/content/auth/clients.md`: clients are stored and shared by
-  the cluster; the id grammar; the bootstrap client (configuration defines it,
-  the API's reset and delete are stored and permanent, identity pinned,
-  recovery by a new id); the two races (§5.6); 500 / 503 on store failure.
-- `cmd/cyoda/help/content/config/auth.md` and `config_registry.go`:
-  `CYODA_BOOTSTRAP_CLIENT_ID` grammar and the identity pin; the secret is not
-  used after an API reset.
-- `helm.md:110-138`, `quickstart.md:87-96`: "provisioned at startup" → defined
-  by configuration, stored state as above.
-- `docs/ARCHITECTURE.md:1857` (component table) and `:1879-1888` (bootstrap
-  M2M client).
-- `README.md`: checked for bootstrap and client wording.
-- OpenAPI: the widened pattern (§5.2) and 503 on the four `/clients`
-  operations; `go generate ./api`.
-- `docs/cloud-parity/m2m-client-id-grammar.md` (new) and the README index:
-  the widened grammar. Cloud answers 400 where cyoda-go answers 404 for such
-  an id until it widens its pattern; a CaaS ticket asks it to. The bootstrap
-  client is cyoda-go only. Clients being shared and persistent is not a
-  contract change (Cloud already behaves so).
-- `COMPATIBILITY.md`: the cyoda-go-spi pin, and that the cassandra plugin must
-  include the absent-key `Delete` fix.
-- `CHANGELOG.md` `### Breaking`: clients stored and shared; the bootstrap
-  client's API delete is permanent and a reset retires the configured secret;
-  a changed bootstrap identity needs a new id; the bootstrap id grammar is
-  checked at startup; the token endpoint answers 500, not 401, on a store
-  failure; `/clients` delete and reset answer 500 / 503, not 404, on a store
-  failure. `### Changed`: the client id grammar allows `_` and `-`.
-- Issue #286: a comment recording that the store is read directly, not
-  replicated, and why.
+- `cyoda help` (`cmd/cyoda/help/content/`): new `cli/token.md`; `cli.md`;
+  `auth.md`; `auth/clients.md:34`; `auth/tokens.md`; `config.md:48`;
+  `config/auth.md:140-160,370-376` and its `CYODA_JWT_AUDIENCE` entry (issued
+  tokens now carry `aud`); `helm.md:110-138,302,340,477-490`;
+  `quickstart.md:87-96`; `run.md`; `errors/KEYPAIR_NOT_FOUND.md` and
+  `errors/OIDC_INVALID_TENANT.md` (both mention the bootstrap client or
+  tenant). `config_registry.go:100-104`.
+- `README.md:78-113` (first real call) and any other mention; `docs/PRD.md:560`;
+  `docs/ARCHITECTURE.md:1879-1888,2164-2172`; `docs/cyoda/cloud-divergences.md:49-63`
+  (the stub-probe recipe uses `cyoda token`); `docs/cloud-parity/tenant-id-grammar.md`
+  and `user-id-rule.md` (they list `CYODA_BOOTSTRAP_*` as an entry point);
+  `scripts/dev/README.md`; `scripts/multi-node-docker/README.md`.
+- Helm chart: `deploy/helm/cyoda/README.md`, `NOTES.txt`, `values.yaml`
+  comments.
+- Code comments that name the bootstrap client or its variables, among them
+  `internal/auth/validator.go:139` ("the other is CYODA_BOOTSTRAP_TENANT_ID"),
+  `internal/common/user_id.go:32,70`, `e2e/parity/multinode/attribution.go:74`,
+  and every file the exit check finds.
+- `COMPATIBILITY.md` if it names the variables; `CHANGELOG.md` `### Breaking`:
+  the six variables and the chart's `bootstrap.*` values are removed; use
+  `cyoda token`; `/oauth/token` tokens now carry `aud` when
+  `CYODA_JWT_AUDIENCE` is set.
+- Issues: #622 closed by Part A; a comment on #624 (the bootstrap client is no
+  longer a candidate route to a platform operator); a comment on #286.
+- `docs/audits/2026-06-e2e-test-catalog.md` is a dated audit record and is
+  left as it is.
 
-## 10. Out of scope
+Exit checks (repo root, both repos):
+```
+grep -rnE 'CYODA_BOOTSTRAP_|Bootstrap\.Client|bootstrap (M2M )?client|bootstrap\.(clientId|clientSecret|tenantId|userId|roles)|validateBootstrapConfig|CreateWithSecret|secret-bootstrap' \
+  --exclude-dir=docs/superpowers --exclude=CHANGELOG.md .
+grep -rn 'testclient\|testsecret\|compute-secret' .   # fixtures
+```
+Past `CHANGELOG.md` entries are the only allowed hits of the first check.
 
-- A compare-and-set in the KV SPI (would close the §5.6 races).
-- A per-tenant cap on M2M clients.
+### 6.2 Part B
+
+- `cyoda help`: `auth/clients.md` (clients stored and shared by the cluster;
+  the cap; resetting an admin client needs the flag; the documented races;
+  500 / 503 on store failure); `auth/tokens.md` (`/oauth/token` 500 on store
+  failure); `config/auth.md` and `config_registry.go`
+  (`CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`; `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
+  now also gates reset); `errors/M2M_CLIENT_CAP_REACHED.md` (new);
+  `errors/FEATURE_DISABLED.md` (reset); `errors.md`.
+- `README.md` configuration reference; `DefaultConfig()`.
+- `docs/ARCHITECTURE.md:1857` (the component table) and §7.2's store text.
+- OpenAPI: 503 on the four `/clients` operations, 400
+  `M2M_CLIENT_CAP_REACHED` on create, 404 `FEATURE_DISABLED` on reset;
+  `go generate ./api`.
+- `docs/cloud-parity/m2m-clients.md` (new) and the README index: the cap and
+  its error code, and the reset gate, with a CaaS ticket. Clients being
+  shared and persistent is not a contract change (Cloud already behaves so).
+- `COMPATIBILITY.md`: the cyoda-go-spi pin; the cassandra plugin must include
+  the absent-key `Delete` fix.
+- `CHANGELOG.md` `### Breaking`: clients stored and shared; token endpoint
+  500 (was 401) on store failure; `/clients` delete and reset 500 / 503 (was
+  404) on store failure; reset of an admin client needs the flag. `### Added`:
+  the cap.
+- Code comments: `internal/auth/store.go` (the duplicated section header and
+  the in-memory store's comments go with it), `e2e/parity/multinode/signing_keys.go:56-57`
+  ("M2M clients are per node"), and every file the exit check finds.
+
+Exit checks:
+```
+grep -rnE 'InMemoryM2MClientStore|NewInMemoryM2MClientStore|VerifySecret|clientBelongsToTenant|per node' \
+  --exclude-dir=docs/superpowers --exclude=CHANGELOG.md . | grep -i 'm2m\|client'
+grep -n 'ErrNotFound' internal/auth/replica.go
+```
+
+## 7. Out of scope
+
+- A compare-and-set in the KV SPI (would close the §5.7 races).
+- The platform-operator role: #624.
+- Cassandra consistency levels: cyoda-go-cassandra#104.
 - Cassandra multi-node fixture: cyoda-go-cassandra#35.
 - Data migration: there are no production instances.
