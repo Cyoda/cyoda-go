@@ -4,7 +4,6 @@ title: "KEYPAIR_NOT_FOUND — signing keypair not found"
 stability: stable
 see_also:
   - errors
-  - errors.NOT_FOUND
 ---
 
 # errors.KEYPAIR_NOT_FOUND
@@ -43,4 +42,3 @@ Verify the keyId, or check the bootstrap-key audience configuration via `CYODA_J
 ## SEE ALSO
 
 - errors
-- errors.NOT_FOUND

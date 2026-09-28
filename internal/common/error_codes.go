@@ -51,7 +51,6 @@ const (
 	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
 	ErrCodeServerError               = "SERVER_ERROR"
 	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
-	ErrCodeNotFound                  = "NOT_FOUND"
 	ErrCodePreconditionRequired      = "PRECONDITION_REQUIRED"
 	ErrCodeUnsupportedMediaType      = "UNSUPPORTED_MEDIA_TYPE"
 )
@@ -341,7 +340,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeModelNotFound:                    {},
 	ErrCodeModelNotLocked:                   {},
 	ErrCodeNoComputeMemberForTag:            {},
-	ErrCodeNotFound:                         {},
 	ErrCodeNotImplemented:                   {},
 	ErrCodeOidcInvalidTenant:                {},
 	ErrCodeOIDCProviderDuplicate:            {},

@@ -617,6 +617,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
+  resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,
+  `TRUSTED_KEY_NOT_FOUND`, `MODEL_NOT_FOUND`). The `errors.NOT_FOUND` help
+  topic is removed with it. The async search-job status value `NOT_FOUND` is
+  a different thing and is unchanged.
+
 - **PostgreSQL migration `000015` and SQLite `000010`: `search_jobs.point_in_time`
   is `NOT NULL`.** Every search job has a point in time and the stores have
   always written one; the column was declared nullable on a mistaken note that

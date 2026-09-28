@@ -98,7 +98,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
-- `errors.NOT_FOUND` — `404` — not retryable — a generic resource-not-found code, declared but not currently returned by any endpoint; the key-pair and trusted-key admin endpoints return `KEYPAIR_NOT_FOUND` / `TRUSTED_KEY_NOT_FOUND` instead, and domain-specific resources have their own codes
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
