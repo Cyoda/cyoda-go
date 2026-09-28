@@ -113,32 +113,3 @@ Confirm, or record where Cloud differs:
 6. A malformed key-pair `keyId`, and a `validFrom`/`validTo` outside UTC
    years 1..9999 on the key-pair and trusted-key endpoints, answer `400
    BAD_REQUEST`, and nothing is stored.
-
-## CaaS ticket to file
-
-**Title:** `[CaaS] Signing key pairs: persisted bootstrap revocation, 503 on key-pair endpoints and JWKS, 404 for retired key pairs`
-
-**Description:**
-
-cyoda-go now shares signing key pairs across every node of a cluster and
-persists them (and the bootstrap key's invalidate/reactivate/delete state)
-across a restart. Confirm Cloud's equivalent behaviour, or record the
-divergence, against these points (full contract:
-`docs/cloud-parity/signing-key-pairs.md` in cyoda-go):
-
-- A key pair change (issue/invalidate/reactivate/delete) and a bootstrap-key
-  revocation change are effective everywhere Cloud's request could land, and
-  persist across a restart.
-- Deleting the bootstrap key is terminal until the configured key changes; no
-  reactivate call restores a deleted bootstrap key.
-- A key pair that cannot be used because its owning key was replaced answers
-  `404`, not a stale `200`.
-- A storage or availability failure on a key-pair endpoint, or on the JWKS
-  endpoint, answers a retryable `5xx`, never `404` and never an empty or
-  partial key set.
-- A key-pair `keyId` that is not 32 lowercase hex characters, and a
-  `validFrom`/`validTo` outside UTC years 1..9999 on the key-pair and
-  trusted-key endpoints, answer `400 BAD_REQUEST`; nothing is stored.
-- At-rest sealing of a private key is an implementation detail, not part of
-  the contract — Cloud need not match cyoda-go's AES-256-GCM sealing scheme,
-  only the visible behaviour above.
