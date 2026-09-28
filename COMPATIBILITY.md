@@ -162,7 +162,7 @@ predecessor) also calls `List`, but only to decide which sibling records to
 end — the write then patches just the records it touched into the node copy,
 never a full rebuild. `cyoda-go-cassandra` must include its fix for `List`
 returning a partial result on a per-key read failure to run this version:
-today a missing sibling in a rotation's `List` read would stay active. Worse
+without it, a missing sibling in a rotation's `List` read would stay active. Worse
 for the bootstrap key specifically: if `List` omits its bootstrap-state
 record, a rotation treats it as absent, builds the default (active, no window)
 record in its place, and writes a fresh "ended" version of *that* over it — a
@@ -173,7 +173,9 @@ Separately, and more mildly: a missing bootstrap-state record in any node's
 own initial load or periodic re-read (not only a rotation's) only resets that
 node's in-memory view of the bootstrap key to its default until the next
 successful `List` — no write, and self-healing. The fixed plugin is required
-to rule out both. cyoda-go-cassandra#102 tracks the bug.
+to rule out both. The fix is cyoda-go-cassandra#103 (merged to its `main` as
+`77bad8d`, closing cyoda-go-cassandra#102); the first cyoda-go-cassandra
+release that contains it is the minimum for this version.
 
 ## Helm chart × binary
 
