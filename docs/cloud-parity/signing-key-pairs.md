@@ -93,7 +93,7 @@ across a restart, and when its issuing bootstrap key is replaced.
 
 ## Cloud action
 
-Confirm, or record where Cloud differs:
+Tracked in CP-3979. Confirm, or record where Cloud differs:
 
 1. A key pair issued, invalidated, reactivated or deleted on one node is
    visible and effective on every node, and survives a restart.
