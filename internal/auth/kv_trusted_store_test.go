@@ -63,12 +63,12 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 		t.Fatalf("NewKVTrustedKeyStore (instance 1): %v", err)
 	}
 
-	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
 	// Verify it's accessible on instance 1.
-	got, err := store1.Get(spi.SystemTenantID, "persist-key-1")
+	got, err := store1.Get(ctx, spi.SystemTenantID, "persist-key-1")
 	if err != nil {
 		t.Fatalf("Get on instance 1: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
 
-	got2, err := store2.Get(spi.SystemTenantID, "persist-key-1")
+	got2, err := store2.Get(ctx, spi.SystemTenantID, "persist-key-1")
 	if err != nil {
 		t.Fatalf("Get on instance 2 (after simulated restart): %v", err)
 	}
@@ -147,12 +147,12 @@ func TestKVTrustedKeyStore_CrossNodeVisibility(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register on node-1: %v", err)
 	}
 
 	// Node-2 must see the key without restart
-	got, err := store2.Get(spi.SystemTenantID, "cross-node-key")
+	got, err := store2.Get(ctx, spi.SystemTenantID, "cross-node-key")
 	if err != nil {
 		t.Fatalf("Get on node-2 should find key registered on node-1: %v", err)
 	}
@@ -183,10 +183,10 @@ func TestKVTrustedKeyStore_DeletePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore: %v", err)
 	}
-	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := store1.Delete(spi.SystemTenantID, "del-key"); err != nil {
+	if err := store1.Delete(ctx, spi.SystemTenantID, "del-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 
@@ -195,7 +195,7 @@ func TestKVTrustedKeyStore_DeletePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	_, err = store2.Get(spi.SystemTenantID, "del-key")
+	_, err = store2.Get(ctx, spi.SystemTenantID, "del-key")
 	if err == nil {
 		t.Fatal("expected error for deleted key on new instance, got nil")
 	}
@@ -223,10 +223,10 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore: %v", err)
 	}
-	if err := store1.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := store1.Invalidate(spi.SystemTenantID, "toggle-key", 0); err != nil {
+	if err := store1.Invalidate(ctx, spi.SystemTenantID, "toggle-key", 0); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	got, err := store2.Get(spi.SystemTenantID, "toggle-key")
+	got, err := store2.Get(ctx, spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -245,14 +245,14 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 
 	// Reactivate and verify persists. Must supply a valid future validTo.
 	future := time.Now().Add(24 * time.Hour)
-	if err := store2.Reactivate(spi.SystemTenantID, "toggle-key", time.Now(), future); err != nil {
+	if err := store2.Reactivate(ctx, spi.SystemTenantID, "toggle-key", time.Now(), future); err != nil {
 		t.Fatalf("Reactivate: %v", err)
 	}
 	store3, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 3): %v", err)
 	}
-	got3, err := store3.Get(spi.SystemTenantID, "toggle-key")
+	got3, err := store3.Get(ctx, spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 			Active:    true,
 			ValidFrom: time.Now().UTC(),
 		}
-		if err := store.Register(tk, auth.RotateOptions{}); err != nil {
+		if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register %d: %v", i, err)
 		}
 	}
@@ -302,7 +302,7 @@ func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	err = store.Register(overflow, auth.RotateOptions{})
+	err = store.Register(ctx, overflow, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected Register to reject 4th key when MaxTrustedKeys=3, got nil")
 	}
@@ -345,7 +345,7 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(original, auth.RotateOptions{}); err != nil {
+	if err := store.Register(ctx, original, auth.RotateOptions{}); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
 
@@ -360,11 +360,11 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(rotated, auth.RotateOptions{}); err != nil {
+	if err := store.Register(ctx, rotated, auth.RotateOptions{}); err != nil {
 		t.Fatalf("re-Register (upsert): expected nil, got %v", err)
 	}
 
-	got, err := store.Get(spi.SystemTenantID, "rotate-kid")
+	got, err := store.Get(ctx, spi.SystemTenantID, "rotate-kid")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -381,7 +381,7 @@ func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
 	}
-	got2, err := store2.Get(spi.SystemTenantID, "rotate-kid")
+	got2, err := store2.Get(ctx, spi.SystemTenantID, "rotate-kid")
 	if err != nil {
 		t.Fatalf("Get on instance 2: %v", err)
 	}
@@ -418,7 +418,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 			Active:    true,
 			ValidFrom: time.Now().UTC(),
 		}
-		if err := store.Register(tk, auth.RotateOptions{}); err != nil {
+		if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 			t.Fatalf("Register %d (%s): %v", i, kid, err)
 		}
 	}
@@ -433,7 +433,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	if err := store.Register(rotated, auth.RotateOptions{}); err != nil {
+	if err := store.Register(ctx, rotated, auth.RotateOptions{}); err != nil {
 		t.Fatalf("upsert on cap-saturated registry: expected nil, got %v", err)
 	}
 
@@ -447,7 +447,7 @@ func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
 		Active:    true,
 		ValidFrom: time.Now().UTC(),
 	}
-	err = store.Register(novel, auth.RotateOptions{})
+	err = store.Register(ctx, novel, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected Register of new KID at cap to be rejected, got nil")
 	}
@@ -475,12 +475,12 @@ func TestKVTrustedKeyStore_ListPersists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewKVTrustedKeyStore: %v", err)
 	}
-	if err := store1.Register(&auth.TrustedKey{
+	if err := store1.Register(ctx, &auth.TrustedKey{
 		KID: "list-1", TenantID: spi.SystemTenantID, PublicKey: &key1.PublicKey, Audience: "a", Active: true, ValidFrom: time.Now().UTC(),
 	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register list-1: %v", err)
 	}
-	if err := store1.Register(&auth.TrustedKey{
+	if err := store1.Register(ctx, &auth.TrustedKey{
 		KID: "list-2", TenantID: spi.SystemTenantID, PublicKey: &key2.PublicKey, Audience: "b", Active: true, ValidFrom: time.Now().UTC(),
 	}, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register list-2: %v", err)
@@ -507,7 +507,7 @@ func TestKVTrustedKeyStore_TenantScopedKeyEncoding(t *testing.T) {
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	tID := spi.TenantID("tenant-a")
 	tk := &auth.TrustedKey{KID: "k1", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "k1"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := store.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	all, err := kv.List(ctx, "trusted-keys")
@@ -527,14 +527,14 @@ func TestKVTrustedKeyStore_NoCrossTenantCachePollution(t *testing.T) {
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
 	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "k1"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = store.Register(tk, auth.RotateOptions{})
-	if _, err := store.Get(tA, "k1"); err != nil {
+	_ = store.Register(ctx, tk, auth.RotateOptions{})
+	if _, err := store.Get(ctx, tA, "k1"); err != nil {
 		t.Fatalf("A.Get: %v", err)
 	}
-	if _, err := store.Get(tB, "k1"); err == nil {
+	if _, err := store.Get(ctx, tB, "k1"); err == nil {
 		t.Error("B.Get(k1) leaked A's key")
 	}
-	if _, err := store.Get(tA, "k1"); err != nil {
+	if _, err := store.Get(ctx, tA, "k1"); err != nil {
 		t.Errorf("A.Get post-B failure: %v", err)
 	}
 }
@@ -547,12 +547,12 @@ func TestKVTrustedKeyStore_RoundTripsTenantIDAndJWK(t *testing.T) {
 	originalJWK := map[string]any{"kty": "RSA", "kid": "k", "extra": "field"}
 	tk := &auth.TrustedKey{KID: "k", TenantID: tID, PublicKey: &priv.PublicKey, JWK: originalJWK, Audience: "human", Active: true, ValidFrom: time.Now()}
 	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	_ = store.Register(tk, auth.RotateOptions{})
+	_ = store.Register(ctx, tk, auth.RotateOptions{})
 	store2, err := auth.NewKVTrustedKeyStore(ctx, kv)
 	if err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	got, err := store2.Get(tID, "k")
+	got, err := store2.Get(ctx, tID, "k")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -580,6 +580,28 @@ func mustNewMemoryKV(t *testing.T, ctx context.Context) spi.KeyValueStore {
 		t.Fatalf("memory KV: %v", err)
 	}
 	return kv
+}
+
+// newTestTrustedStore is a KVTrustedKeyStore over a fresh in-memory KV store.
+func newTestTrustedStore(t *testing.T, opts ...auth.KVTrustedKeyStoreOption) *auth.KVTrustedKeyStore {
+	t.Helper()
+	s, err := auth.NewKVTrustedKeyStore(systemCtx(), mustNewMemoryKV(t, systemCtx()), opts...)
+	if err != nil {
+		t.Fatalf("NewKVTrustedKeyStore: %v", err)
+	}
+	return s
+}
+
+// newTestAuthService builds an AuthService over a fresh in-memory KV store;
+// cfg.KV is filled in.
+func newTestAuthService(t *testing.T, cfg auth.AuthConfig) *auth.AuthService {
+	t.Helper()
+	cfg.KV = mustNewMemoryKV(t, systemCtx())
+	svc, err := auth.NewAuthService(systemCtx(), cfg)
+	if err != nil {
+		t.Fatalf("NewAuthService: %v", err)
+	}
+	return svc
 }
 
 func TestKVTrustedKeyStore_LoadAll_SkipsOldShape_EmitsWARN(t *testing.T) {
@@ -629,41 +651,6 @@ func (f *failingKV) Put(ctx context.Context, ns, key string, value []byte) error
 	return f.KeyValueStore.Put(ctx, ns, key, value)
 }
 
-// TestKVTrustedKeyStore_PartialKVFailureKeepsNewKey verifies the reordered
-// write sequence: new key is persisted first, then siblings are invalidated.
-// If a sibling KV write fails, the new key is still active; the failed sibling
-// remains active (operator can retry). This is strictly better than the old
-// order where a sibling-flip failure left the new key missing and siblings dead.
-func TestKVTrustedKeyStore_PartialKVFailureKeepsNewKey(t *testing.T) {
-	ctx := systemCtx()
-	mem := mustNewMemoryKV(t, ctx)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tID := spi.TenantID("t")
-	pre, _ := auth.NewKVTrustedKeyStore(ctx, mem)
-	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "a"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = pre.Register(a, auth.RotateOptions{})
-
-	// Inject failure on the SIBLING flip-write (key 't:a').
-	// New key 'b' write succeeds (it happens first); sibling 'a' flip fails.
-	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "a")}
-	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	err := store.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
-	if err == nil {
-		t.Fatal("expected error reporting sibling invalidation failed")
-	}
-	// New key B IS persisted and cached (written before sibling flip).
-	gotB, getErr := store.Get(tID, "b")
-	if getErr != nil || gotB == nil {
-		t.Errorf("new key b should be present despite sibling failure: %v", getErr)
-	}
-	// Sibling A is unchanged (still active — KV write failed before mutation).
-	gotA, _ := store.Get(tID, "a")
-	if gotA == nil || !gotA.Active {
-		t.Errorf("sibling a should still be active after failed flip; got %+v", gotA)
-	}
-}
-
 // TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange verifies that if the
 // new-key KV write itself fails (before any sibling flips), no state changes.
 func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
@@ -673,30 +660,29 @@ func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
 	tID := spi.TenantID("t")
 	pre, _ := auth.NewKVTrustedKeyStore(ctx, mem)
 	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "a"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = pre.Register(a, auth.RotateOptions{})
+	_ = pre.Register(ctx, a, auth.RotateOptions{})
 
 	// Inject failure on the NEW KEY write (key 't:b'). No sibling should be touched.
 	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "b")}
 	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
 	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	err := store.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
+	err := store.Register(ctx, b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
 	if err == nil {
 		t.Fatal("expected error from new-key KV write failure")
 	}
-	if _, e := store.Get(tID, "b"); e == nil {
+	if _, e := store.Get(ctx, tID, "b"); e == nil {
 		t.Error("new key b should NOT be visible after its own write failed")
 	}
-	gotA, _ := store.Get(tID, "a")
+	gotA, _ := store.Get(ctx, tID, "a")
 	if gotA == nil || !gotA.Active {
 		t.Errorf("sibling a should still be active (no flip attempted): %+v", gotA)
 	}
 }
 
 // TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo verifies that
-// KVTrustedKeyStore.Reactivate enforces the same contract as
-// InMemoryTrustedKeyStore.Reactivate: validTo is required and must be in the
-// future and after validFrom. This aligns the two store implementations so a
-// caller bypassing the adapter cannot accidentally create an immortal key.
+// KVTrustedKeyStore.Reactivate enforces its window contract itself: validTo
+// is required and must be in the future and after validFrom, so a caller
+// bypassing the adapter cannot accidentally create an immortal key.
 func TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
@@ -705,24 +691,24 @@ func TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo(t *testing.T) {
 	tID := spi.TenantID("t1")
 	past := time.Now().Add(-1 * time.Hour)
 	tk := &auth.TrustedKey{KID: "k", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA"}, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	_ = store.Register(tk, auth.RotateOptions{})
+	_ = store.Register(ctx, tk, auth.RotateOptions{})
 
 	// Zero validTo must be rejected.
-	if err := store.Reactivate(tID, "k", time.Now(), time.Time{}); err == nil {
+	if err := store.Reactivate(ctx, tID, "k", time.Now(), time.Time{}); err == nil {
 		t.Error("expected error for zero validTo")
 	}
 	// Past validTo must be rejected.
-	if err := store.Reactivate(tID, "k", past.Add(-1*time.Hour), past); err == nil {
+	if err := store.Reactivate(ctx, tID, "k", past.Add(-1*time.Hour), past); err == nil {
 		t.Error("expected error for past validTo")
 	}
 	// validTo before validFrom must be rejected.
 	future := time.Now().Add(24 * time.Hour)
 	wayFuture := time.Now().Add(48 * time.Hour)
-	if err := store.Reactivate(tID, "k", wayFuture, future); err == nil {
+	if err := store.Reactivate(ctx, tID, "k", wayFuture, future); err == nil {
 		t.Error("expected error for validTo < validFrom")
 	}
 	// Valid call must succeed.
-	if err := store.Reactivate(tID, "k", time.Now(), future); err != nil {
+	if err := store.Reactivate(ctx, tID, "k", time.Now(), future); err != nil {
 		t.Errorf("valid Reactivate failed: %v", err)
 	}
 }

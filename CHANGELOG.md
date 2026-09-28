@@ -6,6 +6,54 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Signing key pairs are shared and persisted by the cluster.** See
+  `cyoda help config auth` ("JWT signing keypair rotation") and
+  `docs/cloud-parity/signing-key-pairs.md`.
+  - JWT signing key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
+    invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store.
+    They converge across every node the same way trusted keys already do.
+  - They survive a restart on a persistent backend (not on the memory
+    backend).
+  - First-party token verification now depends on that store. A node that
+    cannot read it for 10 reconcile intervals fails closed and refuses every
+    key: `401` on verification, `503` with `Retry-After` on JWKS. It does not
+    serve a stale answer.
+  - Before, `current`, `invalidate`, `reactivate` and `delete` mapped every
+    failure of the store call to `404`. `POST /oauth/keys/keypair` already
+    answered `500` for a store or key-generation failure.
+  - All five endpoints now answer `500` with a ticket for an ordinary store or
+    vault failure.
+  - `issue`, `invalidate`, `reactivate` and `delete` read or write the store
+    directly. They answer `503 STORAGE_UNAVAILABLE` when the store reports
+    itself unavailable.
+  - `current` and JWKS never touch the store on this path. They answer
+    `503 STORAGE_UNAVAILABLE` only when their node copy is stale (JWKS: with
+    `Retry-After`).
+  - `404` is reserved for a key pair that is not found, retired, a foreign
+    bootstrap record or a deleted bootstrap key.
+  - `invalidate` and `reactivate` also answer `404` for an undecodable record.
+    `delete` always succeeds on one (`200`): it replaces the record with a
+    deleted bootstrap-state record. A record at a key that cannot be a key id
+    is ignored and logged; it does not block signing.
+  - `delete`, `invalidate` and `reactivate` answer `400 BAD_REQUEST` for a
+    `keyId` that is not 32 lowercase hex characters (was `404`). Every issued
+    and bootstrap key id has that form.
+  - A broken (unopenable) key pair still answers `200` on `invalidate`,
+    `reactivate` and `delete`. It fails only on `current`, with `500` not
+    `404`, if it wins signer selection.
+  - `POST /oauth/token`'s existing `500 server_error` has new causes: a broken
+    selected key pair, any undecodable record, or a stale store. An
+    undecodable record blocks signing for every audience, not only its own.
+  - A restart no longer restores a revoked bootstrap key. Invalidating,
+    reactivating or deleting it through the API is now durable.
+  - Deleting the bootstrap key is permanent for that key. Replacing
+    `CYODA_JWT_SIGNING_KEY` afterwards starts a fresh bootstrap key with no
+    stored state; it does not undelete the old one.
+  - Replacing `CYODA_JWT_SIGNING_KEY` retires every key pair the old key
+    owned: they stop signing, verifying and appearing in JWKS. A private key
+    is sealed at rest under a key derived from the bootstrap key, so the new
+    key cannot open them. Restoring the old key brings them back.
+
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute
   member echoes on a callback — was joined to that transaction on every
@@ -569,6 +617,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
+  resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,
+  `TRUSTED_KEY_NOT_FOUND`, `MODEL_NOT_FOUND`). The `errors.NOT_FOUND` help
+  topic is removed with it. The async search-job status value `NOT_FOUND` is
+  a different thing and is unchanged.
+
 - **PostgreSQL migration `000015` and SQLite `000010`: `search_jobs.point_in_time`
   is `NOT NULL`.** Every search job has a point in time and the stores have
   always written one; the column was declared nullable on a mistaken note that
@@ -686,6 +740,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 ### Fixed
+
+- **A runtime-issued signing key pair only worked on the node that issued
+  it.** In a cluster, a token signed with one was rejected by every other
+  node, and the key pair itself did not survive a restart. Key pairs are now
+  shared and persisted across the cluster the same way trusted keys already
+  were (see Breaking).
+
+- **A trusted-key admin write could act on a stale copy, miss a rotation's
+  sibling, leave a failed rotation with nothing rolled back, or block
+  verification.** An invalidate or reactivate read the node's cache rather
+  than the store, so a node that had not yet received an earlier delete could
+  write the deleted record back. A rotation (`invalidatePrevious`) listed
+  siblings from the node's own cache too, so it could miss one issued on
+  another node; and it was best-effort — if a sibling write failed partway
+  through, whatever had already been written stayed as it was, with nothing
+  undone. An admin write also held the cache's lock across the KV call, so a
+  slow write blocked every token verification on that node. Admin writes (for
+  both trusted keys and signing key pairs) now take a store-specific mutex,
+  list and read the current records from KV directly rather than the node's
+  cache, and apply the result to the node copy only after the KV write
+  succeeds — hot-path verification never waits on KV. A multi-record write
+  that fails partway now tries to restore every record it already wrote; this
+  is still not a full guarantee — a restore that itself fails is logged at
+  ERROR naming the records left changed, and a crash between writes (rather
+  than a reported error) can still leave the new record active alongside old
+  siblings, for the admin to repeat.
+
+- **A key's timestamp could make its stored record unreadable.** An offset
+  timestamp such as `9999-12-31T23:59:59-05:00` is in year 10000 in UTC, and
+  a stored record cannot hold that year in a form it can read back. Issuing
+  or reactivating a key pair, and registering or reactivating a trusted key,
+  stored it anyway: an unreadable trusted-key record stopped every node from
+  starting after a restart, and an unreadable key-pair record blocked signing
+  for every audience. A `validFrom` or `validTo` (the default included) whose
+  UTC year is outside 1–9999 is now refused with `400 BAD_REQUEST`, and
+  neither store writes one. A trusted-key record that cannot be read no
+  longer stops a node starting: it is skipped with an ERROR, which refuses
+  only that key, and `DELETE` removes it.
 
 - **A scheduled transition could run twice at the same time.** A task still
   running after `CYODA_SCHEDULER_REDISPATCH_BACKOFF` (30 s) was dispatched again,

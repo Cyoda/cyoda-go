@@ -1,6 +1,7 @@
 package account_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -33,22 +34,27 @@ type outageTrustedKeyStore struct {
 	auth.TrustedKeyStore
 }
 
-func (outageTrustedKeyStore) Delete(spi.TenantID, string) error {
+func (outageTrustedKeyStore) Register(context.Context, *auth.TrustedKey, auth.RotateOptions) error {
+	return fmt.Errorf("failed to persist trusted key: %w", kvOutageErr{})
+}
+
+func (outageTrustedKeyStore) Delete(context.Context, spi.TenantID, string) error {
 	return fmt.Errorf("failed to delete trusted key from KV store: %w", kvOutageErr{})
 }
 
-func (outageTrustedKeyStore) Invalidate(spi.TenantID, string, int64) error {
+func (outageTrustedKeyStore) Invalidate(context.Context, spi.TenantID, string, int64) error {
 	return fmt.Errorf("failed to persist invalidation: %w", kvOutageErr{})
 }
 
-func (outageTrustedKeyStore) Reactivate(spi.TenantID, string, time.Time, time.Time) error {
+func (outageTrustedKeyStore) Reactivate(context.Context, spi.TenantID, string, time.Time, time.Time) error {
 	return fmt.Errorf("failed to persist reactivation: %w", kvOutageErr{})
 }
 
-func handlerWithTrustedStore(store auth.TrustedKeyStore) *account.Handler {
+func handlerWithTrustedStore(t *testing.T, store auth.TrustedKeyStore) *account.Handler {
+	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	return account.New(nil, nil, auth.NewInMemoryKeyStore(), store, nil, feats)
+	return account.New(nil, nil, newTestKeyStore(t), store, nil, feats)
 }
 
 // trustedKeyMutations drives the three handlers whose only failure answer was
@@ -78,7 +84,7 @@ func trustedKeyMutations(h *account.Handler) map[string]func(*testing.T) *httpte
 // Answering 404 tells the admin the key is gone — during an outage, when it is
 // not — and a client that believes that stops retrying.
 func TestTrustedKeyMutations_StorageOutage_Return503(t *testing.T) {
-	h := handlerWithTrustedStore(outageTrustedKeyStore{})
+	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
 	for name, call := range trustedKeyMutations(h) {
 		t.Run(name, func(t *testing.T) {
 			w := call(t)
@@ -103,10 +109,10 @@ func TestTrustedKeyMutations_StorageOutage_Return503(t *testing.T) {
 }
 
 // The other direction: a key that genuinely is not registered still answers
-// 404 TRUSTED_KEY_NOT_FOUND. The in-memory store is the real one here — no
+// 404 TRUSTED_KEY_NOT_FOUND. The KV-backed store is the real one here — no
 // stubbing — so this asserts the shipped behaviour, not a double's.
 func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
-	h := handlerWithTrustedStore(auth.NewInMemoryTrustedKeyStore())
+	h := handlerWithTrustedStore(t, newTestTrustedStore(t))
 	for name, call := range trustedKeyMutations(h) {
 		t.Run(name, func(t *testing.T) {
 			w := call(t)
@@ -116,4 +122,59 @@ func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
 			commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeTrustedKeyNotFound)
 		})
 	}
+}
+
+// Register goes through the same trustedKeyMutationError routing as the
+// other four handlers: a KV write failure is a 503, not a 500 that leaks
+// storage internals, and not misread as some domain 4xx.
+func TestRegisterTrustedKey_StorageOutage_Return503(t *testing.T) {
+	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, http.MethodPost, "/oauth/keys/trusted", body))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeStorageUnavailable)
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if r, _ := pd.Properties["retryable"].(bool); !r {
+		t.Errorf("503 is not advertised as retryable; body: %s", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), kvOutageDSN) {
+		t.Errorf("response leaked storage internals: %s", w.Body.String())
+	}
+}
+
+// reactivateThenMissingStore simulates Reactivate succeeding on this node
+// while the immediate read-back misses the key — e.g. a concurrent delete
+// landing on another node between the write and the read. It exercises
+// ReactivateTrustedKey's post-Reactivate Get: that failure must route
+// through trustedKeyMutationError like every other trusted-key store
+// failure, not an unconditional 500.
+type reactivateThenMissingStore struct {
+	auth.TrustedKeyStore
+}
+
+func (reactivateThenMissingStore) Reactivate(context.Context, spi.TenantID, string, time.Time, time.Time) error {
+	return nil
+}
+
+func (reactivateThenMissingStore) Get(context.Context, spi.TenantID, string) (*auth.TrustedKey, error) {
+	return nil, fmt.Errorf("%w: k1", auth.ErrTrustedKeyNotFound)
+}
+
+func TestReactivateTrustedKey_GetAfterReactivate_NotFound_Returns404(t *testing.T) {
+	h := handlerWithTrustedStore(t, reactivateThenMissingStore{})
+	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: time.Now().Add(24 * time.Hour)})
+	w := httptest.NewRecorder()
+	h.ReactivateTrustedKey(w, adminReq(t, http.MethodPut, "/oauth/keys/trusted/k1/reactivate", body), "k1")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeTrustedKeyNotFound)
 }

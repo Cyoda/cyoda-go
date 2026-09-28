@@ -9,11 +9,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
-	"math/rand/v2"
 	"net/http"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -27,11 +24,6 @@ const trustedKeysNamespace = "trusted-keys"
 // arbitrary peer-controlled bytes; the ping's only information is that it
 // arrived.
 const topicTrustedKeys = "auth.trustedkeys"
-
-// defaultReconcileInterval mirrors the config default; the store falls back
-// to it when no interval option is supplied (tests, callers predating the
-// reconcile loop).
-const defaultReconcileInterval = 60 * time.Second
 
 // defaultMaxTrustedKeys caps the number of trusted keys a store will accept by
 // default per tenant. Trusted keys are an admin-managed registry — a 100-key
@@ -114,339 +106,96 @@ type trustedKeyRecord struct {
 	E string `json:"e"` // base64url-encoded exponent
 }
 
-// KVTrustedKeyStore persists trusted keys via a KeyValueStore backend.
-// It keeps an in-memory cache for fast reads and writes through to KV on
-// mutations. All operations are tenant-scoped: KV keys use the layout
-// "<tenantID>:<kid>" and cache reads verify the stored TenantID.
+// KVTrustedKeyStore persists trusted keys via a KeyValueStore backend, kept
+// current by a kvReplica. Hot verification reads the node copy; every admin
+// method reads the store itself so an admin decision is never made on a
+// possibly stale copy, and admin writes never hold the copy lock across the
+// store call.
 type KVTrustedKeyStore struct {
-	mu   sync.RWMutex
-	keys map[string]*TrustedKey // keyed by kid (KV key within namespace is tenantID:kid)
-	kv   spi.KeyValueStore
-	// ctx is a long-lived system context for KV operations. It is stored here
-	// because the TrustedKeyStore interface does not accept context parameters.
-	// This context must never carry cancellation or deadlines.
-	ctx context.Context
-	// maxPerTenant is the per-tenant cap enforced by Register; <=0 means unbounded.
+	rep          *kvReplica[*TrustedKey]
+	kv           spi.KeyValueStore
 	maxPerTenant int
-	// gen counts cache-mutating commits (Register/Delete/Invalidate/
-	// Reactivate/loadOne and every reconcile swap). Reconcile snapshots it
-	// before its KV List and discards the built snapshot if it changed by
-	// swap time — a mutation that lands mid-rebuild always wins.
-	gen atomic.Uint64
-	// reconcileMu serializes reconcile executions (periodic tick, gossip
-	// ping, explicit calls) so two overlapping rebuilds can never commit
-	// KV snapshots out of order.
-	reconcileMu sync.Mutex
-	// broadcaster is the cluster gossip fast path. Nil disables it (single
-	// node, or callers predating this option).
-	broadcaster spi.ClusterBroadcaster
-	// reconcileInterval bounds each reconcileOnce attempt and (from Task 3)
-	// the periodic reconcile loop's tick period.
-	reconcileInterval time.Duration
-	// pingCoalescer coalesces concurrent gossip pings into at most one
-	// trailing Reconcile so a burst of peer mutations never queues an
-	// unbounded pile of redundant KV List calls.
-	pingCoalescer coalescingRunner
-	// reconcileLoopStarted guards StartReconcileLoop so at most one periodic
-	// reconcile goroutine ever runs per store.
-	reconcileLoopStarted atomic.Bool
-	// lastReconcileNanos is the UnixNano of the last successful Reconcile
-	// swap (also stamped after the initial loadAll). The staleness breaker
-	// compares against it.
-	lastReconcileNanos atomic.Int64
-	// consecutiveFailures counts back-to-back transport-level List failures
-	// inside Reconcile; reset to 0 on the next successful swap.
-	consecutiveFailures atomic.Int64
-	// metrics receives reconcile health signals; defaults to
-	// NopReconcileMetrics.
-	metrics ReconcileMetrics
 }
 
 // NewKVTrustedKeyStore creates a KVTrustedKeyStore, loading any existing keys
 // from the KV backend. Pass WithMaxTrustedKeys to override the default cap.
 func NewKVTrustedKeyStore(ctx context.Context, kv spi.KeyValueStore, opts ...KVTrustedKeyStoreOption) (*KVTrustedKeyStore, error) {
-	cfg := kvTrustedKeyStoreConfig{
-		maxTrustedKeys:    defaultMaxTrustedKeys,
-		reconcileInterval: defaultReconcileInterval,
-		metrics:           NopReconcileMetrics{},
-	}
+	cfg := kvTrustedKeyStoreConfig{maxTrustedKeys: defaultMaxTrustedKeys, reconcileInterval: defaultReconcileInterval, metrics: NopReconcileMetrics{}}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	s := &KVTrustedKeyStore{
-		keys: make(map[string]*TrustedKey),
-		kv:   kv,
-		// context.WithoutCancel ensures the long-lived store ctx never propagates
-		// a cancellation or deadline from the caller. Defence in depth: a future
-		// caller passing a request-scoped ctx would otherwise silently abort KV
-		// operations on request completion.
-		ctx:               context.WithoutCancel(ctx),
-		maxPerTenant:      cfg.maxTrustedKeys,
-		broadcaster:       cfg.broadcaster,
-		reconcileInterval: cfg.reconcileInterval,
-		metrics:           cfg.metrics,
-	}
-	if err := s.loadAll(); err != nil {
+	rep, err := newKVReplica(ctx, kv, replicaConfig[*TrustedKey]{
+		name: "trusted-key", namespace: trustedKeysNamespace, topic: topicTrustedKeys,
+		decode: decodeTrustedEntry, interval: cfg.reconcileInterval,
+		broadcaster: cfg.broadcaster, metrics: cfg.metrics,
+	})
+	if err != nil {
 		return nil, fmt.Errorf("failed to load trusted keys from KV store: %w", err)
 	}
-	s.lastReconcileNanos.Store(time.Now().UnixNano())
-	if s.broadcaster != nil {
-		s.broadcaster.Subscribe(topicTrustedKeys, s.handlePing)
-	}
-	return s, nil
-}
-
-func (s *KVTrustedKeyStore) loadAll() error {
-	entries, err := s.kv.List(s.ctx, trustedKeysNamespace)
-	if err != nil {
-		return err
-	}
-	keys, skipped, err := buildTrustedKeyMap(entries, true)
-	if err != nil {
-		return err
-	}
-	s.keys = keys
-	if skipped > 0 {
+	if rep.skippedAtLoad > 0 {
 		slog.Warn("skipped pre-v0.8.0 trusted-key entries without tenant scope",
-			"count", skipped,
-			"namespace", trustedKeysNamespace)
+			"count", rep.skippedAtLoad, "namespace", trustedKeysNamespace)
 	}
-	return nil
+	return &KVTrustedKeyStore{rep: rep, kv: kv, maxPerTenant: cfg.maxTrustedKeys}, nil
 }
 
-// maxReconcileAttempts bounds the generation-guard retry inside Reconcile.
-// Only continuous mutation churn (which itself proves KV is reachable)
-// can exhaust it.
-const maxReconcileAttempts = 5
-
-// stalenessMultiplier × reconcileInterval is the fail-closed bound: once
-// the reconcile loop is running, an enumeration cache older than this stops
-// serving — an unbounded-stale answer on the verification path would be
-// wrong-but-available.
-const stalenessMultiplier = 10
-
-// errorEscalationThreshold is the consecutive-failure count from which
-// reconcile failures log at ERROR instead of WARN.
-const errorEscalationThreshold = 3
-
-// errReconcileContention marks a reconcile that gave up because mutations
-// kept landing mid-rebuild. It is not a KV failure: callers must not count
-// it toward staleness accounting.
-var errReconcileContention = errors.New("trusted-key reconcile: retry budget exhausted under concurrent mutation")
-
-// buildTrustedKeyMap deserializes a KV List result into a fresh cache map.
-// Legacy un-tenanted entries are skipped (pre-tenant-scoping layout). When
-// strict, the first undeserializable record fails the build (construction
-// fail-fast); otherwise bad records are skipped with an ERROR log so one
-// corrupt write can never disable reconciliation.
-func buildTrustedKeyMap(entries map[string][]byte, strict bool) (map[string]*TrustedKey, int, error) {
-	keys := make(map[string]*TrustedKey, len(entries))
-	skipped := 0
-	for kvKey, data := range entries {
-		if !strings.Contains(kvKey, ":") {
-			skipped++
-			continue
-		}
-		tk, err := deserializeTrustedKey(data)
-		if err != nil {
-			if strict {
-				return nil, 0, fmt.Errorf("failed to deserialize trusted key %q: %w", kvKey, err)
-			}
-			slog.Error("trusted-key reconcile: skipping undeserializable record",
-				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
-			continue
-		}
-		if tk.TenantID == "" {
-			skipped++
-			continue
-		}
-		keys[tk.KID] = tk
-	}
-	return keys, skipped, nil
-}
-
-// Reconcile rebuilds the in-memory cache from the authoritative KV store.
-// The List and deserialization run off-lock; the swap takes s.mu and is
-// discarded (and retried) if any mutation committed since the pre-List
-// generation snapshot. Serialized against concurrent reconciles by
-// reconcileMu. On a transport-level List failure the previous cache state
-// is kept and the error returned — bounded staleness beats dropping every
-// key over an infrastructure blip; the staleness bound is enforced
-// separately by the callers' breaker accounting.
-func (s *KVTrustedKeyStore) Reconcile(ctx context.Context) error {
-	s.reconcileMu.Lock()
-	defer s.reconcileMu.Unlock()
-	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
-		gen := s.gen.Load()
-		entries, err := s.kv.List(ctx, trustedKeysNamespace)
-		if err != nil {
-			n := s.consecutiveFailures.Add(1)
-			s.metrics.SetReconcileConsecutiveFailures(int(n))
-			s.metrics.SetReconcileStalenessSeconds(s.reconcileAge().Seconds())
-			msg := "trusted-key reconcile failed; serving last-known state until it succeeds"
-			if n > errorEscalationThreshold {
-				slog.Error(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
-			} else {
-				slog.Warn(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
-			}
-			return fmt.Errorf("failed to list trusted keys for reconcile: %w", err)
-		}
-		fresh, _, err := buildTrustedKeyMap(entries, false)
-		if err != nil {
-			return err // unreachable in lenient mode; kept for signature honesty
-		}
-		swapped := func() bool {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if s.gen.Load() != gen {
-				return false
-			}
-			s.keys = fresh
-			s.gen.Add(1)
-			return true
-		}()
-		if swapped {
-			s.lastReconcileNanos.Store(time.Now().UnixNano())
-			s.consecutiveFailures.Store(0)
-			s.metrics.SetReconcileConsecutiveFailures(0)
-			s.metrics.SetReconcileStalenessSeconds(0)
-			return nil
-		}
-	}
-	// Contention does not touch lastReconcileNanos or consecutiveFailures
-	// (local churn proves KV writes work; stamping success here would be
-	// fail-open, and counting it as a KV failure would be wrong). But the
-	// staleness gauge must still be recorded so alerting on the fail-closed
-	// breaker (age > stalenessMultiplier x interval) is never blinded by a
-	// gauge stuck at its last (typically zero) value under sustained
-	// mutation churn.
-	stalenessSeconds := s.reconcileAge().Seconds()
-	s.metrics.SetReconcileStalenessSeconds(stalenessSeconds)
-	msg := "trusted-key reconcile: giving up after repeated mid-rebuild mutations"
-	fields := []any{"pkg", "auth", "attempts", maxReconcileAttempts, "stalenessSeconds", int64(stalenessSeconds + 0.5)}
-	if s.reconcileAge() > (stalenessMultiplier/2)*s.reconcileInterval {
-		slog.Error(msg, fields...)
-	} else {
-		slog.Warn(msg, fields...)
-	}
-	return errReconcileContention
-}
-
-// handlePing runs on the broadcaster's shared receive goroutine: it must
-// not block and must not let a panic escape. The payload is deliberately
-// ignored and never logged (arbitrary peer bytes).
-func (s *KVTrustedKeyStore) handlePing(_ []byte) {
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Error("trusted-key ping handler panic", "pkg", "auth", "panic", rec)
-		}
-	}()
-	s.pingCoalescer.Trigger(s.reconcileOnce)
-}
-
-// reconcileOnce runs a single bounded reconcile attempt. Each attempt gets
-// its own deadline (one interval) so a hung KV call aborts the attempt
-// instead of wedging the loop/coalescer permanently — the store's own ctx
-// is deliberately deadline-free and must not be used raw for periodic I/O.
-//
-// Recover-wrapped: reconcileOnce runs both from StartReconcileLoop's tick
-// (no caller to propagate a panic to) and from the pingCoalescer's
-// dispatched goroutine (which runs detached from handlePing's own recover,
-// see coalescingRunner.Trigger) — an unrecovered panic in either would
-// crash the process. Same contract as warmOneSafely / safeDispatch in the
-// oidc package — log-only, never the payload.
-func (s *KVTrustedKeyStore) reconcileOnce() {
-	defer func() {
-		if rec := recover(); rec != nil {
-			slog.Error("trusted-key reconcile panic", "pkg", "auth", "panic", rec)
-		}
-	}()
-	ctx, cancel := context.WithTimeout(s.ctx, s.reconcileInterval)
-	defer cancel()
-	_ = s.Reconcile(ctx) // failures logged/accounted inside Reconcile paths
-}
-
-// StartReconcileLoop starts the periodic KV-reconcile backstop: every
-// interval (jittered ±10%) the cache is rebuilt from the authoritative KV
-// store, bounding the staleness a dropped gossip ping can cause. Returns
-// false (starting nothing) if the loop already runs. The loop exits when
-// ctx is cancelled; callers pass a process-lifetime context.
-func (s *KVTrustedKeyStore) StartReconcileLoop(ctx context.Context) bool {
-	if !s.reconcileLoopStarted.CompareAndSwap(false, true) {
-		return false
-	}
-	go func() {
-		for {
-			timer := time.NewTimer(jitteredInterval(s.reconcileInterval))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-				s.reconcileOnce()
-			}
-		}
-	}()
-	return true
-}
-
-// reconcileAge returns the time since the last successful reconcile.
-func (s *KVTrustedKeyStore) reconcileAge() time.Duration {
-	return time.Since(time.Unix(0, s.lastReconcileNanos.Load()))
-}
-
-// reconcileStale reports whether the fail-closed staleness bound is
-// exceeded. Always false until the reconcile loop has started: a store
-// without a loop (tests, bootstrap) must not fail auth on healthy KV.
-func (s *KVTrustedKeyStore) reconcileStale() bool {
-	if !s.reconcileLoopStarted.Load() {
-		return false
-	}
-	return s.reconcileAge() > stalenessMultiplier*s.reconcileInterval
-}
-
-// jitteredInterval returns d × [0.9, 1.1) — the model-cache herd-avoidance
-// convention.
-func jitteredInterval(d time.Duration) time.Duration {
-	return time.Duration(float64(d) * (0.9 + 0.2*rand.Float64()))
-}
-
-// broadcastChanged publishes the payload-free change ping. No-op without a
-// broadcaster.
-func (s *KVTrustedKeyStore) broadcastChanged() {
-	if s.broadcaster == nil {
-		return
-	}
-	s.broadcaster.Broadcast(topicTrustedKeys, nil)
-}
-
-// loadOne loads a single trusted key for the given tenant from the KV backend
-// into the in-memory cache. Returns an error if not found or tenant mismatch.
-func (s *KVTrustedKeyStore) loadOne(tenantID spi.TenantID, kid string) error {
-	data, err := s.kv.Get(s.ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid))
-	if err != nil {
-		return err
+// decodeTrustedEntry keys the copy by bare KID: a KID is unique across
+// tenants, which Register enforces. Entries without a tenant prefix predate
+// tenant scoping and are skipped.
+func decodeTrustedEntry(kvKey string, data []byte) (string, *TrustedKey, bool, error) {
+	if !strings.Contains(kvKey, ":") {
+		return "", nil, false, nil
 	}
 	tk, err := deserializeTrustedKey(data)
 	if err != nil {
-		return fmt.Errorf("failed to deserialize trusted key %s:%s: %w", tenantID, kid, err)
+		return "", nil, false, err
 	}
-	if tk.TenantID != tenantID {
-		return fmt.Errorf("trusted key not found: %s", kid)
+	if tk.TenantID == "" {
+		return "", nil, false, nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.keys[kid] = tk
-	s.gen.Add(1)
-	return nil
+	return tk.KID, tk, true, nil
 }
 
-func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
-	data, err := serializeTrustedKey(tk)
+func (s *KVTrustedKeyStore) StartReconcileLoop(ctx context.Context) bool { return s.rep.Start(ctx) }
+
+// storedKeys reads the whole namespace from the store: admin decisions are
+// made on stored state, never on the copy.
+func (s *KVTrustedKeyStore) storedKeys(ctx context.Context) (map[string][]byte, map[string]*TrustedKey, error) {
+	entries, err := s.kv.List(ctx, trustedKeysNamespace)
 	if err != nil {
-		return err
+		return nil, nil, fmt.Errorf("failed to list trusted keys: %w", err)
 	}
-	return s.kv.Put(s.ctx, trustedKeysNamespace, kvKey, data)
+	keys := make(map[string]*TrustedKey, len(entries))
+	for kvKey, data := range entries {
+		if k, tk, ok, err := decodeTrustedEntry(kvKey, data); err == nil && ok {
+			keys[k] = tk
+		}
+	}
+	return entries, keys, nil
+}
+
+// errTrustedKeyUndecodable marks a stored record of the caller's tenant that
+// does not decode.
+var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not decode")
+
+// storedKey reads one key of tenantID from the store. A record that does not
+// decode returns its bytes with an error wrapping errTrustedKeyUndecodable.
+func (s *KVTrustedKeyStore) storedKey(ctx context.Context, tenantID spi.TenantID, kid string) ([]byte, *TrustedKey, error) {
+	data, err := s.kv.Get(ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid))
+	if errors.Is(err, spi.ErrNotFound) {
+		return nil, nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to read trusted key: %w", err)
+	}
+	tk, err := deserializeTrustedKey(data)
+	if err != nil {
+		return data, nil, fmt.Errorf("%w: %w", errTrustedKeyUndecodable, err)
+	}
+	if tk.TenantID != tenantID {
+		return nil, nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+	}
+	return data, tk, nil
 }
 
 // Register adds or replaces a trusted key and persists it. Per the cyoda
@@ -461,201 +210,171 @@ func (s *KVTrustedKeyStore) persistWithKey(kvKey string, tk *TrustedKey) error {
 // the tenant whose window is still open is marked inactive with the grace
 // expiry (graceExpiry).
 //
-// Write order: new key FIRST, then siblings. This guarantees that a KV failure
-// mid-sibling-flip never destroys the only active key:
-//   - new-key write fails → no state change (rollback safe).
-//   - sibling-flip fails → new key is active; stale siblings remain active
-//     (operator can retry Register to clean up — strictly better than the
-//     inverse where siblings are dead with no replacement).
-func (s *KVTrustedKeyStore) Register(tk *TrustedKey, opts RotateOptions) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Cross-tenant collision guard.
-	if existing, ok := s.keys[tk.KID]; ok && existing.TenantID != tk.TenantID {
-		return common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
-	}
-
-	// Per-tenant cap: count every key that can still verify — active, or in
-	// its grace period after invalidation — excluding the KID being
-	// registered, so same-KID upserts don't consume a slot.
-	if capReached(s.keys, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
-		return errTrustedKeyCapReached()
-	}
-
-	// Step 1: persist the new/updated entry to KV FIRST.
-	// If this fails, no state has been mutated — safe to return.
-	copied := *tk
-	kvKey := trustedKeyKey(tk.TenantID, tk.KID)
-	if err := s.persistWithKey(kvKey, &copied); err != nil {
-		return fmt.Errorf("failed to persist trusted key: %w", err)
-	}
-	// Commit to cache after successful KV write.
-	s.keys[copied.KID] = &copied
-	s.gen.Add(1)
-
-	// Step 2: invalidate siblings (best-effort). A sibling KV write failure
-	// leaves the new key active (already committed above) and the sibling
-	// unchanged — operator can retry Register to clean up stragglers.
-	if opts.Invalidate {
-		now := time.Now()
-		var failed []string
-		for _, k := range s.keys {
-			if k.TenantID != tk.TenantID || k.KID == tk.KID || !windowOpen(k.ValidTo, now) {
-				continue
+// The decision (cap, collision, which siblings to flip) is made on state read
+// straight from the store, never the node's copy, so a rotation always sees a
+// sibling registered on another node that this node has not yet reconciled.
+// All writes go through writeAll: if any of them fails, it tries to restore
+// every write already applied, including the failing one; a restore that
+// itself fails is logged at ERROR with the keys left changed, and a crash
+// between writes (rather than a reported failure) can still leave the new
+// key committed alongside a stale or half-flipped sibling, for the admin to
+// repeat.
+func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error {
+	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
+		entries, stored, err := s.storedKeys(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		if existing, ok := stored[tk.KID]; ok && existing.TenantID != tk.TenantID {
+			return nil, false, common.Operational(http.StatusConflict, common.ErrCodeKeyOwnedByDifferentTenant, "key with this keyId belongs to a different tenant")
+		}
+		if capReached(stored, tk.TenantID, tk.KID, s.maxPerTenant, time.Now()) {
+			return nil, false, errTrustedKeyCapReached()
+		}
+		created := copyTrustedKey(tk)
+		data, err := serializeTrustedKey(created)
+		if err != nil {
+			return nil, false, err
+		}
+		kvKey := trustedKeyKey(tk.TenantID, tk.KID)
+		writes := []kvWrite{{key: kvKey, value: data, prev: entries[kvKey]}}
+		changed := []*TrustedKey{created}
+		if opts.Invalidate {
+			now := time.Now()
+			for _, k := range stored {
+				if k.TenantID != tk.TenantID || k.KID == tk.KID || !windowOpen(k.ValidTo, now) {
+					continue
+				}
+				sib := copyTrustedKey(k)
+				sib.Active = false
+				sib.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
+				b, err := serializeTrustedKey(sib)
+				if err != nil {
+					return nil, false, err
+				}
+				sk := trustedKeyKey(k.TenantID, k.KID)
+				writes = append(writes, kvWrite{key: sk, value: b, prev: entries[sk]})
+				changed = append(changed, sib)
 			}
-			// Clone, mutate, persist to KV.
-			sibling := *k
-			sibling.Active = false
-			sibling.ValidTo = graceExpiry(k.ValidTo, now, opts.GracePeriodSec)
-			if err := s.persistWithKey(trustedKeyKey(k.TenantID, k.KID), &sibling); err != nil {
-				failed = append(failed, k.KID)
-				continue
+		}
+		if err := s.rep.writeAll(ctx, writes); err != nil {
+			return nil, true, err
+		}
+		return func(m map[string]*TrustedKey) {
+			for _, k := range changed {
+				m[k.KID] = k
 			}
-			// Commit sibling to cache after successful KV write.
-			*k = sibling
-		}
-		if len(failed) > 0 {
-			// The new key IS committed even though the sibling flip wasn't —
-			// still broadcast so peers pick it up.
-			s.broadcastChanged()
-			return fmt.Errorf("key %s registered, but failed to invalidate siblings %v (retry Register or invalidate manually)", tk.KID, failed)
-		}
-	}
-
-	s.broadcastChanged()
-	return nil
+		}, true, nil
+	})
 }
 
-// Get retrieves a trusted key by tenant and KID. Cache hits verify that the
-// cached entry belongs to the caller's tenant; cross-tenant cache hits fall
-// through to a KV lookup. If the key is not in cache, it attempts to load it
-// from the KV backend (multi-node visibility: a key registered on another node
-// after this store was constructed will be found here).
-func (s *KVTrustedKeyStore) Get(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	// Critical section 1: cache lookup. When the reconcile is stale past the
-	// fail-closed bound the cached entry can no longer be trusted — force
-	// the KV read-through below so admin flows keep operating on ground
-	// truth instead of failing closed.
-	stale := s.reconcileStale()
-	var cached *TrustedKey
-	var ok bool
-	if !stale {
-		cached, ok = func() (*TrustedKey, bool) {
-			s.mu.RLock()
-			defer s.mu.RUnlock()
-			v, o := s.keys[kid]
-			return v, o
-		}()
-	}
-
-	if ok {
-		if cached.TenantID == tenantID {
-			return copyTrustedKey(cached), nil
-		}
-		// Cross-tenant cache hit — this tenant doesn't own this KID.
-		return nil, fmt.Errorf("trusted key not found: %s", kid)
-	}
-
-	// Cache miss — try loading from KV backend (may have been registered on
-	// another node after this instance started). Slow I/O outside any lock.
-	if err := s.loadOne(tenantID, kid); err != nil {
-		return nil, fmt.Errorf("trusted key not found: %s", kid)
-	}
-
-	// Critical section 2: re-read from cache after load.
-	tk, ok := func() (*TrustedKey, bool) {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		v, ok := s.keys[kid]
-		return v, ok
-	}()
-	if !ok || tk.TenantID != tenantID {
-		return nil, fmt.Errorf("trusted key not found: %s", kid)
-	}
-	return copyTrustedKey(tk), nil
-}
-
-// List returns all trusted keys for the given tenant.
-func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*TrustedKey, 0)
-	for _, tk := range s.keys {
-		if tk.TenantID == tenantID {
-			result = append(result, copyTrustedKey(tk))
+// Get retrieves a trusted key by tenant and KID. When the node copy is not
+// stale it is served from there for speed; otherwise (and on a copy miss) it
+// reads through to the store for multi-node visibility. Returns an error
+// wrapping ErrTrustedKeyNotFound for absence or cross-tenant; any other error
+// is a store failure.
+func (s *KVTrustedKeyStore) Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
+	if !s.rep.Stale() {
+		var hit *TrustedKey
+		s.rep.read(func(m map[string]*TrustedKey) {
+			if tk, ok := m[kid]; ok {
+				hit = copyTrustedKey(tk)
+			}
+		})
+		if hit != nil {
+			if hit.TenantID != tenantID {
+				return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+			}
+			return hit, nil
 		}
 	}
-	return result
-}
-
-// GetForVerification implements TrustedKeyStore. It reads the cache only: a
-// key registered on another node is verifiable once gossip or the reconcile
-// loop has brought it here.
-func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	if s.reconcileStale() {
-		// Fail closed: the cache can no longer prove this key was not
-		// revoked. The reconcile loop is already logging at ERROR.
-		return nil, fmt.Errorf("%w: %s (trusted-key cache stale)", ErrTrustedKeyNotFound, kid)
+	tk, found, err := s.rep.loadOne(ctx, trustedKeyKey(tenantID, kid))
+	if err != nil {
+		return nil, err
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID || !windowOpen(tk.ValidTo, time.Now()) {
+	if !found || tk.TenantID != tenantID {
 		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	return copyTrustedKey(tk), nil
 }
 
-// Delete removes a trusted key by tenant and KID. Returns an error if the key
-// does not exist or belongs to a different tenant.
-func (s *KVTrustedKeyStore) Delete(tenantID spi.TenantID, kid string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
+// List returns all trusted keys for the given tenant, from the node copy.
+func (s *KVTrustedKeyStore) List(tenantID spi.TenantID) []*TrustedKey {
+	out := make([]*TrustedKey, 0)
+	s.rep.read(func(m map[string]*TrustedKey) {
+		for _, tk := range m {
+			if tk.TenantID == tenantID {
+				out = append(out, copyTrustedKey(tk))
+			}
+		}
+	})
+	return out
+}
+
+// GetForVerification implements TrustedKeyStore. It reads the node copy only:
+// a key registered on another node is verifiable once gossip or the
+// reconcile loop has brought it here. Never blocks on an admin write to this
+// or any other key — it never touches the store.
+func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error) {
+	if s.rep.Stale() {
+		// Fail closed: the copy can no longer prove this key was not revoked.
+		// The reconcile loop is already logging at ERROR.
+		return nil, fmt.Errorf("%w: %s (trusted-key cache stale)", ErrTrustedKeyNotFound, kid)
 	}
-	if err := s.kv.Delete(s.ctx, trustedKeysNamespace, trustedKeyKey(tenantID, kid)); err != nil {
-		return fmt.Errorf("failed to delete trusted key from KV store: %w", err)
+	var out *TrustedKey
+	s.rep.read(func(m map[string]*TrustedKey) {
+		if tk, ok := m[kid]; ok && tk.TenantID == tenantID && windowOpen(tk.ValidTo, time.Now()) {
+			out = copyTrustedKey(tk)
+		}
+	})
+	if out == nil {
+		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
-	delete(s.keys, kid)
-	s.gen.Add(1)
-	s.broadcastChanged()
-	return nil
+	return out, nil
+}
+
+// Delete removes a trusted key by tenant and KID. The store, not the node
+// copy, decides whether the key exists: a node that has not yet reconciled a
+// peer's delete must not resurrect the key by reporting it present. A record
+// that does not decode is deleted too: its KV key carries the tenant, so the
+// delete stays within tenantID. The copy loses kid only if it holds that
+// tenant's key there.
+func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, kid string) error {
+	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
+		data, _, err := s.storedKey(ctx, tenantID, kid)
+		if err != nil && !errors.Is(err, errTrustedKeyUndecodable) {
+			return nil, false, err
+		}
+		if err := s.rep.writeAll(ctx, []kvWrite{{key: trustedKeyKey(tenantID, kid), prev: data}}); err != nil {
+			return nil, true, err
+		}
+		return func(m map[string]*TrustedKey) {
+			if tk, ok := m[kid]; ok && tk.TenantID == tenantID {
+				delete(m, kid)
+			}
+		}, true, nil
+	})
 }
 
 // Invalidate marks a trusted key as inactive, sets ValidTo to the grace
 // expiry (graceExpiry: now+gracePeriodSec, never later than the key's current
-// ValidTo), and persists. Returns an error if the key does not
-// exist or belongs to a different tenant.
-func (s *KVTrustedKeyStore) Invalidate(tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	// Clone, mutate, persist to KV first (rollback safety).
-	updated := *tk
-	updated.Active = false
-	updated.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
-	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
-		return fmt.Errorf("failed to persist invalidation: %w", err)
-	}
-	// Commit to cache after successful KV write.
-	s.keys[kid] = &updated
-	s.gen.Add(1)
-	s.broadcastChanged()
-	return nil
+// ValidTo), and persists. Returns an error wrapping ErrTrustedKeyNotFound if
+// the key is not found in the store for this tenant — a stale node copy
+// alone is never grounds to invalidate, and never grounds to report the key
+// missing when it is not.
+func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
+	return s.update(ctx, tenantID, kid, func(tk *TrustedKey, _ map[string]*TrustedKey) error {
+		tk.Active = false
+		tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
+		return nil
+	}, false)
 }
 
 // Reactivate sets a trusted key as active, updates its validity window, and
 // persists. Returns an error if the key does not exist or belongs to a
-// different tenant. Enforces the same contract as InMemoryTrustedKeyStore:
-// validTo is required (non-zero), must be strictly in the future, and must
-// be after validFrom.
-func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
+// different tenant. validTo is required (non-zero), must be strictly in the
+// future, and must be after validFrom.
+func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")
 	}
@@ -665,35 +384,65 @@ func (s *KVTrustedKeyStore) Reactivate(tenantID spi.TenantID, kid string, validF
 	if !validTo.After(validFrom) {
 		return fmt.Errorf("validTo must be after validFrom")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	tk, ok := s.keys[kid]
-	if !ok || tk.TenantID != tenantID {
-		return fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
-	}
-	// A reactivated key verifies again, so it is held to the cap.
-	if capReached(s.keys, tenantID, kid, s.maxPerTenant, time.Now()) {
-		return errTrustedKeyCapReached()
-	}
-	// Clone, mutate, persist to KV first (rollback safety).
-	updated := *tk
-	updated.Active = true
-	updated.ValidFrom = validFrom
-	vt := validTo
-	updated.ValidTo = &vt
-	if err := s.persistWithKey(trustedKeyKey(tenantID, kid), &updated); err != nil {
-		return fmt.Errorf("failed to persist reactivation: %w", err)
-	}
-	// Commit to cache after successful KV write.
-	s.keys[kid] = &updated
-	s.gen.Add(1)
-	s.broadcastChanged()
-	return nil
+	return s.update(ctx, tenantID, kid, func(tk *TrustedKey, stored map[string]*TrustedKey) error {
+		// A reactivated key verifies again, so it is held to the cap.
+		if capReached(stored, tenantID, kid, s.maxPerTenant, time.Now()) {
+			return errTrustedKeyCapReached()
+		}
+		tk.Active, tk.ValidFrom = true, validFrom
+		vt := validTo
+		tk.ValidTo = &vt
+		return nil
+	}, true)
+}
+
+// update changes one stored key, reading ground truth from the store (never
+// the node copy) before applying change, and writing the result back through
+// writeAll, which tries to undo a failed write (see Register's doc comment
+// for what that guarantees and does not). needAll also lists the whole
+// namespace first, for change functions (the cap check) that need it. A
+// record that does not decode cannot be changed: that is a store error (a
+// 5xx), not not-found; Delete removes such a record.
+func (s *KVTrustedKeyStore) update(ctx context.Context, tenantID spi.TenantID, kid string,
+	change func(tk *TrustedKey, stored map[string]*TrustedKey) error, needAll bool) error {
+	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
+		var stored map[string]*TrustedKey
+		if needAll {
+			var err error
+			if _, stored, err = s.storedKeys(ctx); err != nil {
+				return nil, false, err
+			}
+		}
+		data, tk, err := s.storedKey(ctx, tenantID, kid)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := change(tk, stored); err != nil {
+			return nil, false, err
+		}
+		b, err := serializeTrustedKey(tk)
+		if err != nil {
+			return nil, false, err
+		}
+		if err := s.rep.writeAll(ctx, []kvWrite{{key: trustedKeyKey(tenantID, kid), value: b, prev: data}}); err != nil {
+			return nil, true, err
+		}
+		return func(m map[string]*TrustedKey) { m[kid] = tk }, true, nil
+	})
 }
 
 // --- Serialization ---
 
+// serializeTrustedKey refuses a key whose window deserializeTrustedKey could
+// not read back (StorableTime): such a record would be undecodable on every
+// node.
 func serializeTrustedKey(tk *TrustedKey) ([]byte, error) {
+	if !StorableTime(tk.ValidFrom) {
+		return nil, errors.New("failed to encode trusted-key record: validFrom out of range")
+	}
+	if tk.ValidTo != nil && !StorableTime(*tk.ValidTo) {
+		return nil, errors.New("failed to encode trusted-key record: validTo out of range")
+	}
 	rec := trustedKeyRecord{
 		KID:       tk.KID,
 		TenantID:  string(tk.TenantID),
@@ -736,9 +485,14 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		E: eVal,
 	}
 
+	// Deserialize accepts exactly the range serializeTrustedKey writes
+	// (StorableTime), so both sides agree on what a record can hold.
 	validFrom, err := time.Parse(time.RFC3339Nano, rec.ValidFrom)
 	if err != nil {
 		return nil, fmt.Errorf("invalid validFrom: %w", err)
+	}
+	if !StorableTime(validFrom) {
+		return nil, errors.New("validFrom out of range")
 	}
 
 	var validTo *time.Time
@@ -746,6 +500,9 @@ func deserializeTrustedKey(data []byte) (*TrustedKey, error) {
 		t, err := time.Parse(time.RFC3339Nano, *rec.ValidTo)
 		if err != nil {
 			return nil, fmt.Errorf("invalid validTo: %w", err)
+		}
+		if !StorableTime(t) {
+			return nil, errors.New("validTo out of range")
 		}
 		validTo = &t
 	}
@@ -790,10 +547,4 @@ func copyTrustedKey(tk *TrustedKey) *TrustedKey {
 		copied.JWK = jwkCopy
 	}
 	return &copied
-}
-
-// TrustedKeyKVKeyForTesting exposes trustedKeyKey for cross-package tests
-// that need to predict KV keys (e.g. for injection mocks).
-func TrustedKeyKVKeyForTesting(tenantID spi.TenantID, kid string) string {
-	return trustedKeyKey(tenantID, kid)
 }

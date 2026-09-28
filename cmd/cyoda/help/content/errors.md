@@ -81,7 +81,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
 - `errors.INCOMPATIBLE_TYPE` — `400` — not retryable — entity payload's leaf value type is not assignable to the schema's declared DataType for that path; carries `fieldPath`, `expectedType`, `actualType` in `properties` (Cloud's `FoundIncompatibleTypeWithEntityModelException` equivalent)
 - `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
-- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist.
+- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
 - `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
 - `errors.INVALID_AGGREGATION_FIELD` — `400` — not retryable — grouped-stats aggregation `field` is outside the scalar JSONPath grammar (most often a missing `$.` leader)
 - `errors.INVALID_AGGREGATION_OP` — `400` — not retryable — grouped-stats aggregation `op` is not one of `sum`, `avg`, `min`, `max`, `stdev`
@@ -98,7 +98,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
-- `errors.NOT_FOUND` — `404` — not retryable — generic resource not found, used by admin endpoints (key pair lifecycle, trusted-key lifecycle); domain-specific resources have their own codes
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant

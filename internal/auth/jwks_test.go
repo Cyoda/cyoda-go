@@ -1,8 +1,6 @@
 package auth
 
 import (
-	"crypto/rand"
-	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -11,80 +9,52 @@ import (
 	"time"
 )
 
-func TestJWKS_EmptyKeyStore(t *testing.T) {
-	store := NewInMemoryKeyStore()
-	handler := NewJWKSHandler(store)
-
+// serveJWKS answers one GET on a JWKS handler over ks and decodes the body.
+func serveJWKS(t *testing.T, ks KeyStore) jwksResponse {
+	t.Helper()
+	handler := NewJWKSHandler(ks, time.Minute)
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
 	rr := httptest.NewRecorder()
-
 	handler.ServeHTTP(rr, req)
-
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected status 200, got %d", rr.Code)
 	}
-
 	if ct := rr.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("expected Content-Type application/json, got %s", ct)
 	}
-
 	var resp jwksResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
+	return resp
+}
 
-	if len(resp.Keys) != 0 {
+// A store whose bootstrap key is deleted and that has no issued key pair
+// publishes an empty set.
+func TestJWKS_EmptyKeyStore(t *testing.T) {
+	store := newTestKeyStore(t, loadFixtureKey(t))
+	if err := store.Delete(replicaSystemCtx(), store.boot.kid); err != nil {
+		t.Fatal(err)
+	}
+	if resp := serveJWKS(t, store); len(resp.Keys) != 0 {
 		t.Fatalf("expected 0 keys, got %d", len(resp.Keys))
 	}
 }
 
 func TestJWKS_OneActiveKey(t *testing.T) {
-	store := NewInMemoryKeyStore()
-	handler := NewJWKSHandler(store)
+	boot := loadFixtureKey(t)
+	store := newTestKeyStore(t, boot)
 
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate RSA key: %v", err)
-	}
-
-	kp := &KeyPair{
-		KID:        "key-1",
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &privKey.PublicKey,
-		PrivateKey: privKey,
-		Active:     true,
-		ValidFrom:  time.Now(),
-	}
-	if err := store.Save(kp, RotateOptions{}); err != nil {
-		t.Fatalf("failed to save key pair: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	var resp jwksResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
+	resp := serveJWKS(t, store)
 	if len(resp.Keys) != 1 {
 		t.Fatalf("expected 1 key, got %d", len(resp.Keys))
 	}
-
 	entry := resp.Keys[0]
-
 	if entry.Kty != "RSA" {
 		t.Errorf("expected kty RSA, got %s", entry.Kty)
 	}
-	if entry.KID != "key-1" {
-		t.Errorf("expected kid key-1, got %s", entry.KID)
+	if entry.KID != store.boot.kid {
+		t.Errorf("expected kid %s, got %s", store.boot.kid, entry.KID)
 	}
 	if entry.Use != "sig" {
 		t.Errorf("expected use sig, got %s", entry.Use)
@@ -92,12 +62,10 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 	if entry.Alg != "RS256" {
 		t.Errorf("expected alg RS256, got %s", entry.Alg)
 	}
-
-	expectedN := base64.RawURLEncoding.EncodeToString(privKey.PublicKey.N.Bytes())
+	expectedN := base64.RawURLEncoding.EncodeToString(boot.PublicKey.N.Bytes())
 	if entry.N != expectedN {
 		t.Errorf("modulus mismatch")
 	}
-
 	// Standard exponent 65537 → big-endian bytes [1, 0, 1] → base64url "AQAB"
 	expectedE := base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1})
 	if entry.E != expectedE {
@@ -105,120 +73,74 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 	}
 }
 
+// A key pair invalidated with no grace period has ended, so it is not
+// published.
 func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
-	store := NewInMemoryKeyStore()
-	handler := NewJWKSHandler(store)
-
-	privKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	ctx := replicaSystemCtx()
+	store := newTestKeyStore(t, loadFixtureKey(t))
+	kp, err := store.Issue(ctx, IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour)})
 	if err != nil {
-		t.Fatalf("failed to generate RSA key: %v", err)
+		t.Fatal(err)
 	}
-
-	kp := &KeyPair{
-		KID:        "key-inactive",
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &privKey.PublicKey,
-		PrivateKey: privKey,
-		Active:     true,
-		ValidFrom:  time.Now(),
-	}
-	if err := store.Save(kp, RotateOptions{}); err != nil {
-		t.Fatalf("failed to save key pair: %v", err)
-	}
-
-	if err := store.Invalidate("key-inactive", 0); err != nil {
+	if err := store.Invalidate(ctx, kp.KID, 0); err != nil {
 		t.Fatalf("failed to invalidate key: %v", err)
 	}
-
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	var resp jwksResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-
-	if len(resp.Keys) != 0 {
-		t.Fatalf("expected 0 keys after invalidation, got %d", len(resp.Keys))
+	for _, entry := range serveJWKS(t, store).Keys {
+		if entry.KID == kp.KID {
+			t.Fatalf("invalidated key %s is still published", kp.KID)
+		}
 	}
 }
 
 // TestJWKS_GracePeriodKeyIncluded verifies that a grace-period key
-// (Active=false but ValidTo in the future) IS published in JWKS per spec §3.2 #1,
-// so that external verifiers can validate tokens signed before rotation.
-// Only keys whose ValidTo is in the past are excluded.
+// (Active=false but ValidTo in the future) IS published in JWKS, so that
+// external verifiers can validate tokens signed before rotation. Only keys
+// whose ValidTo is in the past are excluded.
 func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
-	store := NewInMemoryKeyStore()
-	handler := NewJWKSHandler(store)
-
-	futureValidTo := time.Now().Add(30 * time.Second)
-	pastValidTo := time.Now().Add(-1 * time.Second)
-
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	boot := loadFixtureKey(t)
+	bootKID, err := DeriveKID(&boot.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWrappedVault(boot, bootKID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(30 * time.Second)
+	past := time.Now().Add(-time.Second)
+	from := time.Now().Add(-time.Minute)
 	for _, tc := range []struct {
 		kid     string
 		active  bool
 		validTo *time.Time
-		wantIn  bool
 	}{
-		// Active key with no expiry — always published.
-		{"active-1", true, nil, true},
-		// Grace-period key (Active=false) with future ValidTo — published per spec §3.2 #1.
-		{"grace-1", false, &futureValidTo, true},
-		// Expired key (past ValidTo) — excluded by ListForVerification.
-		{"expired-1", false, &pastValidTo, false},
+		{testKID("active-1"), true, nil},     // active, no expiry — always published
+		{testKID("grace-1"), false, &future}, // grace period — published
+		{testKID("expired-1"), false, &past}, // window ended — excluded
 	} {
-		privKey, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			t.Fatalf("generate RSA key: %v", err)
-		}
-		kp := &KeyPair{
-			KID:        tc.kid,
-			Audience:   "client",
-			Algorithm:  "RS256",
-			PublicKey:  &privKey.PublicKey,
-			PrivateKey: privKey,
-			Active:     tc.active,
-			ValidFrom:  time.Now(),
-			ValidTo:    tc.validTo,
-		}
-		if err := store.Save(kp, RotateOptions{}); err != nil {
-			t.Fatalf("save key pair %s: %v", tc.kid, err)
+		rec := issuedRecordFull(t, v, tc.kid, "client", tc.active, from, tc.validTo)
+		if err := kv.Put(ctx, signingKeysNamespace, tc.kid, rec); err != nil {
+			t.Fatal(err)
 		}
 	}
-
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/jwks.json", nil)
-	rr := httptest.NewRecorder()
-
-	handler.ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", rr.Code)
-	}
-
-	var resp jwksResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode response: %v", err)
+	store, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	kids := make(map[string]bool)
-	for _, entry := range resp.Keys {
+	for _, entry := range serveJWKS(t, store).Keys {
 		kids[entry.KID] = true
 	}
-
-	if !kids["active-1"] {
+	if !kids[testKID("active-1")] {
 		t.Error("expected active-1 in JWKS (active, no expiry)")
 	}
-	if !kids["grace-1"] {
+	if !kids[testKID("grace-1")] {
 		t.Error("expected grace-1 in JWKS (grace-period key, ValidTo in future)")
 	}
-	if kids["expired-1"] {
+	if kids[testKID("expired-1")] {
 		t.Error("expired-1 must not be in JWKS (ValidTo in past)")
 	}
 }

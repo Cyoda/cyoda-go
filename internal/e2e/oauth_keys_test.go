@@ -469,7 +469,7 @@ func fetchJWKSKIDs(t *testing.T) map[string]bool {
 // JWKS semantics (spec §3.2 #1): grace-period keys (Active=false, ValidTo in
 // the future) ARE published in JWKS so that external verifiers can validate
 // tokens signed before the rotation. After ValidTo passes the key is excluded
-// by ListForVerification and therefore absent from JWKS.
+// from the published set and therefore absent from JWKS.
 func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	// Step 1: issue keypair A.
 	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
@@ -497,7 +497,7 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	}
 
 	// Step 3: immediately after rotation, BOTH A (grace-period) and B (active)
-	// appear in JWKS. A's ValidTo is still in the future so ListForVerification
+	// appear in JWKS. A's ValidTo is still in the future so the published set
 	// includes it; JWKS publishes it so external verifiers can validate
 	// tokens signed with A before the rotation.
 	kidsDuring := fetchJWKSKIDs(t)

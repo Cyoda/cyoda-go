@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -40,7 +41,7 @@ func forgeTokenWithAlg(t *testing.T, alg, kid string, claims map[string]any, key
 		sigB64 = base64.RawURLEncoding.EncodeToString([]byte("not-a-real-hmac"))
 	default:
 		// Legitimately sign with RS256 semantics so an RS256 header passes.
-		legit, err := auth.Sign(claims, key, kid)
+		legit, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
 		if err != nil {
 			t.Fatalf("sign: %v", err)
 		}

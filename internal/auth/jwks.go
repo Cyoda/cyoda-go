@@ -3,8 +3,13 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"math/big"
 	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // jwkEntry represents a single JWK entry in the JWKS response.
@@ -24,12 +29,15 @@ type jwksResponse struct {
 
 // JWKSHandler serves the /.well-known/jwks.json endpoint.
 type JWKSHandler struct {
-	keyStore KeyStore
+	keyStore   KeyStore
+	retryAfter time.Duration
 }
 
-// NewJWKSHandler creates a new JWKSHandler.
-func NewJWKSHandler(keyStore KeyStore) *JWKSHandler {
-	return &JWKSHandler{keyStore: keyStore}
+// NewJWKSHandler serves the key set; while the store is stale it answers 503
+// with Retry-After instead of an empty set, which would make external
+// verifiers drop their cached keys.
+func NewJWKSHandler(keyStore KeyStore, retryAfter time.Duration) *JWKSHandler {
+	return &JWKSHandler{keyStore: keyStore, retryAfter: retryAfter}
 }
 
 // ServeHTTP handles GET requests and returns the JWKS JSON.
@@ -39,12 +47,18 @@ func (h *JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allKeys := h.keyStore.ListForVerification()
+	allKeys, err := h.keyStore.Published()
+	if err != nil {
+		// Whole seconds, rounded up so a sub-second interval never says 0.
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(h.retryAfter.Seconds()))))
+		common.WriteError(w, r, common.Internal("jwks", err))
+		return
+	}
 
-	// ListForVerification already filters expired keys (ValidTo in the past).
-	// We do NOT filter by Active here: grace-period keys (Active=false, ValidTo
+	// Published already leaves out key pairs whose window has ended. It does
+	// NOT filter by Active: grace-period keys (Active=false, ValidTo
 	// in the future) are intentionally published so external verifiers can
-	// validate tokens that were signed before a rotation (spec §3.2 #1).
+	// validate tokens that were signed before a rotation.
 	entries := make([]jwkEntry, 0, len(allKeys))
 	for _, kp := range allKeys {
 		entries = append(entries, jwkEntry{

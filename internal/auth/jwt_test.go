@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -31,7 +32,7 @@ func TestSignParseVerifyRoundTrip(t *testing.T) {
 		"iat":       float64(time.Now().Unix()),
 	}
 
-	token, err := auth.Sign(claims, key, "kid-1")
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), "kid-1")
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -73,7 +74,7 @@ func TestExpiredTokenRejected(t *testing.T) {
 		"iat": float64(time.Now().Add(-2 * time.Hour).Unix()),
 	}
 
-	token, err := auth.Sign(claims, key, "kid-1")
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), "kid-1")
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -99,7 +100,7 @@ func TestTamperedPayloadRejected(t *testing.T) {
 		"exp": float64(time.Now().Add(time.Hour).Unix()),
 	}
 
-	token, err := auth.Sign(claims, key, "kid-1")
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key), "kid-1")
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -130,7 +131,7 @@ func TestInvalidSignatureRejected(t *testing.T) {
 	}
 
 	// Sign with key1
-	token, err := auth.Sign(claims, key1, "kid-1")
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(key1), "kid-1")
 	if err != nil {
 		t.Fatalf("Sign failed: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestParseRSAPrivateKeyFromPEM(t *testing.T) {
 		"sub": "test",
 		"exp": float64(time.Now().Add(time.Hour).Unix()),
 	}
-	token, err := auth.Sign(claims, parsed, "kid-pem")
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(parsed), "kid-pem")
 	if err != nil {
 		t.Fatalf("Sign with parsed key failed: %v", err)
 	}

@@ -27,30 +27,70 @@ func TestKeys_IssueNonRS256_400UnsupportedAlgorithm(t *testing.T) {
 	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_ALGORITHM")
 }
 
+// unknownKeyPairID is a well-formed key-pair id (32 lowercase hex) that no
+// store issues or derives.
+const unknownKeyPairID = "00000000000000000000000000000000"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// keyId format and unknown keyId (delete, invalidate, reactivate)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestKeys_KeyPair_MalformedId_400 verifies that a keyId that is not 32
+// lowercase hex characters returns 400 BAD_REQUEST on every key-pair
+// lifecycle endpoint.
+func TestKeys_KeyPair_MalformedId_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	validTo := mustJSON(t, map[string]any{"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339)})
+	for _, c := range []struct {
+		method, path string
+		body         []byte
+	}{
+		{"DELETE", "/oauth/keys/keypair/not-a-kid", nil},
+		{"POST", "/oauth/keys/keypair/not-a-kid/invalidate", nil},
+		{"POST", "/oauth/keys/keypair/not-a-kid/reactivate", validTo},
+	} {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			assertProblemJSON(t, adminRequest(t, c.method, c.path, c.body), http.StatusBadRequest, "BAD_REQUEST")
+		})
+	}
+}
+
+// TestKeys_DeleteKeyPair_UnknownId_404 verifies that deleting a well-formed
+// but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
+func TestKeys_DeleteKeyPair_UnknownId_404(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+unknownKeyPairID, nil)
+	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // invalidateJwtKeyPair error surface
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestKeys_InvalidateKeyPair_BadGrace_400 verifies that gracePeriodSec < 0
 // returns 400 BAD_REQUEST. The grace check runs before the key-store lookup,
-// so any keyId (including non-existent) triggers it.
+// so a well-formed unknown keyId triggers it.
 func TestKeys_InvalidateKeyPair_BadGrace_400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/no-such-kid/invalidate", mustJSON(t, map[string]any{
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", mustJSON(t, map[string]any{
 		"gracePeriodSec": int64(-1),
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }
 
 // TestKeys_InvalidateKeyPair_UnknownId_404 verifies that invalidating a
-// non-existent key returns 404 KEYPAIR_NOT_FOUND.
+// well-formed but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
 func TestKeys_InvalidateKeyPair_UnknownId_404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/no-such-kid/invalidate", nil)
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", nil)
 	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
 }
 
@@ -60,18 +100,18 @@ func TestKeys_InvalidateKeyPair_UnknownId_404(t *testing.T) {
 
 // TestKeys_ReactivateKeyPair_BadBody_400 verifies that omitting the required
 // validTo field returns 400 BAD_REQUEST. The validTo check runs before the
-// key-store lookup, so any keyId triggers it.
+// key-store lookup, so a well-formed unknown keyId triggers it.
 func TestKeys_ReactivateKeyPair_BadBody_400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	// {} decodes to zero ValidTo; handler returns 400 "validTo required".
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/no-such-kid/reactivate", mustJSON(t, map[string]any{}))
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }
 
 // TestKeys_ReactivateKeyPair_UnknownId_404 verifies that reactivating a
-// non-existent key returns 404 KEYPAIR_NOT_FOUND.
+// well-formed but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
 func TestKeys_ReactivateKeyPair_UnknownId_404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -79,7 +119,7 @@ func TestKeys_ReactivateKeyPair_UnknownId_404(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 	})
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/no-such-kid/reactivate", body)
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", body)
 	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
 }
 
@@ -236,4 +276,69 @@ func TestTrusted_Reactivate_UnknownId_404(t *testing.T) {
 	})
 	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", body)
 	assertProblemJSON(t, resp, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timestamps a key record cannot hold
+// ─────────────────────────────────────────────────────────────────────────────
+
+// year10000 is a timestamp Go reads whose UTC form is in year 10000: a key
+// record holding it could never be read back.
+const year10000 = "9999-12-31T23:59:59-05:00"
+
+// TestKeys_IssueKeyPair_ValidToOutOfRange_400 verifies that a validTo whose
+// UTC year is outside 1..9999 returns 400 BAD_REQUEST.
+func TestKeys_IssueKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256",
+		"audience":  "human",
+		"validTo":   year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_ReactivateKeyPair_ValidToOutOfRange_400: the range check runs
+// before the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestKeys_ReactivateKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Register_ValidToOutOfRange_400 verifies that registering a
+// trusted key with a validTo whose UTC year is outside 1..9999 returns 400
+// BAD_REQUEST and stores nothing.
+func TestTrusted_Register_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	kid := fmt.Sprintf("e2e-far-%d", time.Now().UnixNano())
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{
+		"keyId":    kid,
+		"jwk":      rsaJWK(t, kid),
+		"audience": "human",
+		"validTo":  year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	del := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+	assertProblemJSON(t, del, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// TestTrusted_Reactivate_ValidToOutOfRange_400: the range check runs before
+// the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestTrusted_Reactivate_ValidToOutOfRange_400(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }

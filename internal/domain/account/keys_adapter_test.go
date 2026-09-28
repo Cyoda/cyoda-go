@@ -2,10 +2,12 @@ package account_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 func adminUC() *spi.UserContext {
@@ -44,10 +47,50 @@ func adminReq(t *testing.T, method, path string, body []byte) *http.Request {
 
 func resultResp(w *httptest.ResponseRecorder) *http.Response { return w.Result() }
 
-func newHandler(t *testing.T) (*account.Handler, auth.KeyStore, auth.TrustedKeyStore) {
+func systemCtx() context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Tenant: spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
+	})
+}
+
+func newMemoryKV(t *testing.T) spi.KeyValueStore {
 	t.Helper()
-	ks := auth.NewInMemoryKeyStore()
-	ts := auth.NewInMemoryTrustedKeyStore()
+	kv, err := memory.NewStoreFactory().KeyValueStore(systemCtx())
+	if err != nil {
+		t.Fatalf("memory KV: %v", err)
+	}
+	return kv
+}
+
+// newTestKeyStore is a KVKeyStore over a fresh in-memory KV store whose
+// bootstrap key signs for "client".
+func newTestKeyStore(t *testing.T) *auth.KVKeyStore {
+	t.Helper()
+	boot, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ks, err := auth.NewKVKeyStore(systemCtx(), newMemoryKV(t), auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	if err != nil {
+		t.Fatalf("key store: %v", err)
+	}
+	return ks
+}
+
+// newTestTrustedStore is a KVTrustedKeyStore over a fresh in-memory KV store.
+func newTestTrustedStore(t *testing.T, opts ...auth.KVTrustedKeyStoreOption) *auth.KVTrustedKeyStore {
+	t.Helper()
+	ts, err := auth.NewKVTrustedKeyStore(systemCtx(), newMemoryKV(t), opts...)
+	if err != nil {
+		t.Fatalf("trusted key store: %v", err)
+	}
+	return ts
+}
+
+func newHandler(t *testing.T) (*account.Handler, *auth.KVKeyStore, auth.TrustedKeyStore) {
+	t.Helper()
+	ks := newTestKeyStore(t)
+	ts := newTestTrustedStore(t)
 	h := account.New(nil, nil, ks, ts, nil, auth.DefaultIAMFeatures())
 	return h, ks, ts
 }
@@ -122,21 +165,46 @@ func contains(s, sub string) bool {
 	return false
 }
 
-func mkRSAKeyPair(t *testing.T, audience string) *auth.KeyPair {
-	t.Helper()
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	return &auth.KeyPair{KID: "k", Audience: audience, Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
-}
-
 func mkRSAPub(t *testing.T) *rsa.PublicKey {
 	t.Helper()
 	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	return &priv.PublicKey
 }
 
+// issueKey issues a key pair of audience with the window [from, to).
+func issueKey(t *testing.T, ks *auth.KVKeyStore, audience string, from, to time.Time) *auth.KeyPair {
+	t.Helper()
+	kp, err := ks.Issue(systemCtx(), auth.IssueRequest{Audience: audience, ValidFrom: from, ValidTo: to})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	return kp
+}
+
+// issueCurrent issues a key pair of audience that signs from now on.
+func issueCurrent(t *testing.T, ks *auth.KVKeyStore, audience string) *auth.KeyPair {
+	t.Helper()
+	return issueKey(t, ks, audience, time.Now(), time.Now().Add(time.Hour))
+}
+
+// published reports whether kid is in the key store's JWKS set.
+func published(t *testing.T, ks auth.KeyStore, kid string) bool {
+	t.Helper()
+	all, err := ks.Published()
+	if err != nil {
+		t.Fatalf("Published: %v", err)
+	}
+	for _, kp := range all {
+		if kp.KID == kid {
+			return true
+		}
+	}
+	return false
+}
+
 func TestGetCurrentJwtKeyPair_Happy(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	issueCurrent(t, ks, "client")
 	req := adminReq(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
 	w := httptest.NewRecorder()
 	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
@@ -158,22 +226,21 @@ func TestGetCurrentJwtKeyPair_404_NoKeyForAudience(t *testing.T) {
 
 func TestDeleteJwtKeyPair(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	kp := mkRSAKeyPair(t, "client")
-	_ = ks.Save(kp, auth.RotateOptions{})
+	kp := issueCurrent(t, ks, "client")
 	w := httptest.NewRecorder()
-	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "k")
+	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), kp.KID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d", w.Code)
 	}
-	if _, err := ks.Get("k"); err == nil {
-		t.Error("expected deleted")
+	if _, err := ks.VerificationKey(kp.KID); !errors.Is(err, auth.ErrKeyPairNotFound) || published(t, ks, kp.KID) {
+		t.Errorf("expected deleted; VerificationKey err = %v", err)
 	}
 }
 
 func TestDeleteJwtKeyPair_404(t *testing.T) {
 	h, _, _ := newHandler(t)
 	w := httptest.NewRecorder()
-	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "missing")
+	h.DeleteJwtKeyPair(w, adminReq(t, "DELETE", "/", nil), "00000000000000000000000000000000")
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status=%d", w.Code)
 	}
@@ -182,25 +249,24 @@ func TestDeleteJwtKeyPair_404(t *testing.T) {
 
 func TestInvalidateJwtKeyPair_GraceDefaultZero(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	now := time.Now()
-	kp := mkRSAKeyPair(t, "client")
-	_ = ks.Save(kp, auth.RotateOptions{})
+	kp := issueCurrent(t, ks, "client")
 	w := httptest.NewRecorder()
-	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), kp.KID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d", w.Code)
 	}
-	got, _ := ks.Get("k")
-	if got.ValidTo == nil || !got.ValidTo.Before(now.Add(2*time.Second)) {
-		t.Errorf("expected ValidTo near now (grace=0); got %v", got.ValidTo)
+	// Grace 0: the window ends at once, so the key pair neither verifies nor
+	// stays published.
+	if _, err := ks.VerificationKey(kp.KID); err == nil || published(t, ks, kp.KID) {
+		t.Errorf("expected the key pair to end at once (grace=0); VerificationKey err = %v", err)
 	}
 }
 
 func TestInvalidateJwtKeyPair_NegativeGraceRejected(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	kp := issueCurrent(t, ks, "client")
 	w := httptest.NewRecorder()
-	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":-5}`)), "k")
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":-5}`)), kp.KID)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d", w.Code)
 	}
@@ -211,8 +277,7 @@ func TestInvalidateJwtKeyPair_NegativeGraceRejected(t *testing.T) {
 // no signing key. It is refused, and the key pair is unchanged.
 func TestReactivateJwtKeyPair_FutureValidFrom_Rejected(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	current := mkRSAKeyPair(t, "client")
-	_ = ks.Save(current, auth.RotateOptions{})
+	current := issueCurrent(t, ks, "client")
 
 	from := time.Now().Add(time.Hour)
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidFrom: &from, ValidTo: from.Add(24 * time.Hour)})
@@ -222,7 +287,7 @@ func TestReactivateJwtKeyPair_FutureValidFrom_Rejected(t *testing.T) {
 		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
-	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+	if got, err := ks.Current("client"); err != nil || got.KID != current.KID {
 		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
 	}
 }
@@ -230,18 +295,18 @@ func TestReactivateJwtKeyPair_FutureValidFrom_Rejected(t *testing.T) {
 func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	h, ks, _ := newHandler(t)
 	past := time.Now().Add(-1 * time.Hour)
-	priv := &auth.KeyPair{KID: "k", Audience: "client", Algorithm: "RS256", PublicKey: mkRSAPub(t), Active: false, ValidFrom: past, ValidTo: &past}
-	_ = ks.Save(priv, auth.RotateOptions{})
+	expired := issueKey(t, ks, "client", past.Add(-time.Hour), past)
+	kid := expired.KID
 
 	w := httptest.NewRecorder()
-	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), "k")
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{}`)), kid)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("missing validTo: status=%d", w.Code)
 	}
 
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: past})
 	w = httptest.NewRecorder()
-	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), kid)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("past validTo: status=%d", w.Code)
 	}
@@ -249,7 +314,7 @@ func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	future := time.Now().Add(24 * time.Hour)
 	body, _ = json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: future})
 	w = httptest.NewRecorder()
-	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), kid)
 	if w.Code != http.StatusOK {
 		t.Fatalf("fresh validTo: status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -257,8 +322,11 @@ func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &reactivateResp); err != nil {
 		t.Fatalf("reactivate response decode: %v", err)
 	}
-	if reactivateResp.KeyId == "" {
-		t.Error("reactivate response missing keyId")
+	if reactivateResp.KeyId != kid {
+		t.Errorf("reactivate response keyId = %q, want %q", reactivateResp.KeyId, kid)
+	}
+	if _, err := ks.VerificationKey(kid); err != nil {
+		t.Errorf("reactivated key pair does not verify: %v", err)
 	}
 }
 
@@ -360,7 +428,7 @@ func TestIssueJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 
 func TestGetCurrentJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	issueCurrent(t, ks, "client")
 	w := httptest.NewRecorder()
 	h.GetCurrentJwtKeyPair(w, adminReq(t, "GET", "/", nil), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
 	if w.Code != http.StatusOK {
@@ -378,12 +446,11 @@ func TestGetCurrentJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 func TestReactivateJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 	h, ks, _ := newHandler(t)
 	past := time.Now().Add(-1 * time.Hour)
-	kp := &auth.KeyPair{KID: "k2", Audience: "client", Algorithm: "RS256", PublicKey: mkRSAPub(t), Active: false, ValidFrom: past, ValidTo: &past}
-	_ = ks.Save(kp, auth.RotateOptions{})
+	kp := issueKey(t, ks, "client", past.Add(-time.Hour), past)
 	future := time.Now().Add(24 * time.Hour)
 	body, _ := json.Marshal(genapi.ReactivateKeyRequestDto{ValidTo: future})
 	w := httptest.NewRecorder()
-	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k2")
+	h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", body), kp.KID)
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -398,10 +465,10 @@ func TestReactivateJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 
 func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	kp := issueCurrent(t, ks, "client")
 	w := httptest.NewRecorder()
 	// Value above the 1-year cap → must be rejected before multiplying by time.Second
-	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), "k")
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), kp.KID)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
 	}
@@ -413,8 +480,7 @@ func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 // request is refused and nothing changes; issuing ahead of time alone works.
 func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	current := mkRSAKeyPair(t, "client")
-	_ = ks.Save(current, auth.RotateOptions{})
+	current := issueCurrent(t, ks, "client")
 	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 
 	body := []byte(fmt.Sprintf(`{"algorithm":"RS256","audience":"client","validFrom":%q,"invalidateCurrent":true}`, from))
@@ -424,7 +490,7 @@ func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testin
 		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
-	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+	if got, err := ks.Current("client"); err != nil || got.KID != current.KID {
 		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
 	}
 
@@ -440,8 +506,7 @@ func TestIssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_Rejected(t *testin
 // refused, like reactivating one, and nothing changes.
 func TestIssueJwtKeyPair_ValidToInPast_Rejected(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	current := mkRSAKeyPair(t, "client")
-	_ = ks.Save(current, auth.RotateOptions{})
+	current := issueCurrent(t, ks, "client")
 
 	body := []byte(`{"algorithm":"RS256","audience":"client","validFrom":"2020-01-01T00:00:00Z","validTo":"2020-01-02T00:00:00Z","invalidateCurrent":true}`)
 	w := httptest.NewRecorder()
@@ -450,7 +515,7 @@ func TestIssueJwtKeyPair_ValidToInPast_Rejected(t *testing.T) {
 		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
-	if got, err := ks.GetActive("client"); err != nil || got.KID != current.KID {
+	if got, err := ks.Current("client"); err != nil || got.KID != current.KID {
 		t.Errorf("current key changed by a refused request: got=%+v err=%v", got, err)
 	}
 }
@@ -469,22 +534,77 @@ func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
 // exactly at cap is accepted; one over cap is rejected.
 func TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	kp := issueCurrent(t, ks, "client")
 
 	// Exactly at cap: accept.
 	w := httptest.NewRecorder()
 	body := []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec))
-	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), kp.KID)
 	if w.Code != http.StatusOK {
 		t.Errorf("at-cap (%d): status=%d want 200", account.MaxGracePeriodSec, w.Code)
 	}
 
 	// One over cap: reject.
-	_ = ks.Save(mkRSAKeyPair(t, "client"), auth.RotateOptions{})
+	kp = issueCurrent(t, ks, "client")
 	w = httptest.NewRecorder()
 	body = []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec+1))
-	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), "k")
+	h.InvalidateJwtKeyPair(w, adminReq(t, "POST", "/", body), kp.KID)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("one-over-cap: status=%d want 400", w.Code)
+	}
+}
+
+// Offset timestamps Go reads but whose UTC year is outside 1..9999: a record
+// holding them could never be read back.
+const (
+	year10000JSON = "9999-12-31T23:59:59-05:00"
+	yearMinusJSON = "0000-01-01T00:00:00+05:00"
+	lastDayJSON   = "9999-12-31T00:00:00Z" // default validTo from here is in year 10000
+)
+
+// expectOutOfRange asserts a 400 BAD_REQUEST naming field as out of range.
+func expectOutOfRange(t *testing.T, w *httptest.ResponseRecorder, field string) {
+	t.Helper()
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d want 400; body=%s", w.Code, w.Body.String())
+	}
+	if !contains(w.Body.String(), field+" out of range") {
+		t.Fatalf("body %s does not name %s out of range", w.Body.String(), field)
+	}
+	commontest.ExpectErrorCode(t, w.Result(), "BAD_REQUEST")
+}
+
+func TestIssueJwtKeyPair_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ name, body, field string }{
+		{"validTo year 10000", `{"algorithm":"RS256","audience":"client","validTo":"` + year10000JSON + `"}`, "validTo"},
+		{"validFrom year -1", `{"algorithm":"RS256","audience":"client","validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"}`, "validFrom"},
+		{"default validTo year 10000", `{"algorithm":"RS256","audience":"client","validFrom":"` + lastDayJSON + `"}`, "validTo"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, ks, _ := newHandler(t)
+			w := httptest.NewRecorder()
+			h.IssueJwtKeyPair(w, adminReq(t, "POST", "/oauth/keys/keypair", []byte(c.body)))
+			expectOutOfRange(t, w, c.field)
+			if all, err := ks.Published(); err != nil || len(all) != 1 {
+				t.Fatalf("published = %d (%v), want only the bootstrap key", len(all), err)
+			}
+		})
+	}
+}
+
+func TestReactivateJwtKeyPair_UnstorableTime_400(t *testing.T) {
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, c := range []struct{ name, body, field string }{
+		{"validTo year 10000", `{"validTo":"` + year10000JSON + `"}`, "validTo"},
+		{"validFrom year -1", `{"validFrom":"` + yearMinusJSON + `","validTo":"` + future + `"}`, "validFrom"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h, ks, _ := newHandler(t)
+			kp := issueCurrent(t, ks, "client")
+			w := httptest.NewRecorder()
+			h.ReactivateJwtKeyPair(w, adminReq(t, "POST", "/", []byte(c.body)), kp.KID)
+			expectOutOfRange(t, w, c.field)
+		})
 	}
 }

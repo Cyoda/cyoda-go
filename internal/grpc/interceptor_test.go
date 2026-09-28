@@ -19,6 +19,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // mockAuthService is a test double for contract.AuthenticationService.
@@ -229,20 +230,23 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	const kid = "grpc-claim-test"
 	const issuer = "cyoda-grpc-test"
 
-	ks := auth.NewInMemoryKeyStore()
-	if err := ks.Save(&auth.KeyPair{
-		KID:        kid,
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &priv.PublicKey,
-		PrivateKey: priv,
-		Active:     true,
-		ValidFrom:  time.Now().Add(-time.Minute),
-	}, auth.RotateOptions{}); err != nil {
-		t.Fatalf("save key: %v", err)
+	// The key store signs with priv as its bootstrap key.
+	systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Tenant: spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
+	})
+	kv, err := memory.NewStoreFactory().KeyValueStore(systemCtx)
+	if err != nil {
+		t.Fatalf("memory KV: %v", err)
+	}
+	ks, err := auth.NewKVKeyStore(systemCtx, kv, auth.KVKeyStoreConfig{Bootstrap: priv, BootstrapAudience: "client"})
+	if err != nil {
+		t.Fatalf("key store: %v", err)
+	}
+	kid, err := auth.DeriveKID(&priv.PublicKey)
+	if err != nil {
+		t.Fatalf("derive KID: %v", err)
 	}
 
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(ks), issuer)
@@ -250,14 +254,14 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 	interceptor := UnaryAuthInterceptor(authSvc)
 
 	now := time.Now()
-	tok, err := auth.Sign(map[string]any{
+	tok, err := auth.Sign(context.Background(), map[string]any{
 		"iss":          issuer,
 		"sub":          user,
 		"caas_user_id": user,
 		"caas_org_id":  tenant,
 		"iat":          float64(now.Unix()),
 		"exp":          float64(now.Add(time.Hour).Unix()),
-	}, priv, kid)
+	}, auth.NewRSASigner(priv), kid)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}

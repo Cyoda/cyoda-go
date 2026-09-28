@@ -124,13 +124,6 @@ func NewAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration)
 	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, time.Now)
 }
 
-// NewAEADPeerAuthWithClockForTesting is an AEADPeerAuth whose notion of "now"
-// is controlled by the caller. Reserved for tests that exercise timestamp
-// skew and replay-TTL behaviour. Production code MUST use NewAEADPeerAuth.
-func NewAEADPeerAuthWithClockForTesting(sharedSecret []byte, selfNodeID string, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
-	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, clockFn)
-}
-
 func newAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {
 	if len(sharedSecret) < 32 {
 		return nil, ErrSharedSecretTooShort
@@ -154,21 +147,6 @@ func newAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration,
 		skew:       skew,
 		clockFn:    clockFn,
 	}, nil
-}
-
-// SetClockForTesting swaps the clock function for both the AEAD and its
-// nonce cache. Reserved for tests that need to manipulate observed time.
-// Production code MUST NOT call this.
-func (a *AEADPeerAuth) SetClockForTesting(clockFn func() time.Time) {
-	a.clockFn = clockFn
-	a.nonces.nowFn = clockFn
-}
-
-// DeriveDispatchKeyForTesting exposes the HKDF key derivation for a single
-// test that proves derivation actually runs. Production code uses it
-// internally only.
-func DeriveDispatchKeyForTesting(sharedSecret []byte) []byte {
-	return deriveDispatchKey(sharedSecret)
 }
 
 func deriveDispatchKey(sharedSecret []byte) []byte {

@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -59,14 +60,14 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string) *http.Response {
 	t.Helper()
 	now := time.Now()
-	subject, err := auth.Sign(map[string]any{
+	subject, err := auth.Sign(context.Background(), map[string]any{
 		"sub":         sub,
 		"caas_org_id": tenant,
 		"user_roles":  []string{"ROLE_USER"},
 		"exp":         now.Add(time.Hour).Unix(),
 		"iat":         now.Unix(),
 		"jti":         uuid.NewString(),
-	}, priv, kid)
+	}, auth.NewRSASigner(priv), kid)
 	if err != nil {
 		t.Fatalf("sign subject token: %v", err)
 	}
@@ -121,14 +122,14 @@ func TestToken_TokenExchange_KeyFromAnotherTenant_400(t *testing.T) {
 	clientID, secret := createM2MClient(t, otherTenant, "other-m2m", []string{"ROLE_M2M"})
 
 	now := time.Now()
-	subject, err := auth.Sign(map[string]any{
+	subject, err := auth.Sign(context.Background(), map[string]any{
 		"sub":         "ext-user-1",
 		"caas_org_id": otherTenant,
 		"user_roles":  []string{"ROLE_ADMIN"},
 		"exp":         now.Add(time.Hour).Unix(),
 		"iat":         now.Unix(),
 		"jti":         uuid.NewString(),
-	}, priv, kid)
+	}, auth.NewRSASigner(priv), kid)
 	if err != nil {
 		t.Fatalf("sign subject token: %v", err)
 	}

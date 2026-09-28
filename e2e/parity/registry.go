@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 297 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 298 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -546,6 +546,14 @@ var allTests = []NamedTest{
 	{"ScheduledTasksQueryPaging", RunScheduledTasksQueryPaging},
 	{"ScheduledTasksQueryFilters", RunScheduledTasksQueryFilters},
 	{"ScheduledTasksQueryTenantIsolation", RunScheduledTasksQueryTenantIsolation},
+
+	// Signing key-pair lifecycle: issue, current, JWKS, invalidate,
+	// reactivate, delete — the same lifecycle now round-trips through
+	// each plugin's shared KV store rather than a per-node in-memory one.
+	// Signing key pairs are server-global, not tenant-scoped: other
+	// scenarios must not issue human-audience key pairs or rotate/invalidate
+	// client keys on the shared server; use their own cluster/stack for that.
+	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

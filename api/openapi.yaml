@@ -5367,7 +5367,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid audience, validTo not after validFrom, validTo not in the future, invalidateGracePeriodSec out of range, or invalidateCurrent with a validFrom in the future; UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
+          description: "Bad request — BAD_REQUEST: malformed body, invalid audience, validTo not after validFrom, validTo not in the future, invalidateGracePeriodSec out of range, invalidateCurrent with a validFrom in the future, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
           content:
             application/problem+json:
               schema:
@@ -5396,6 +5396,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/current:
@@ -5460,6 +5462,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}:
@@ -5477,7 +5481,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The unique identifier (kid) of the key-pair to delete
+          description: The unique identifier (kid) of the key-pair to delete — 32 lowercase hex characters
           required: true
           schema:
             type: string
@@ -5485,6 +5489,12 @@ paths:
         "200":
           description: JWT key-pair deleted successfully
           content: {}
+        "400":
+          description: "Bad request — BAD_REQUEST: invalid keyId format."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -5515,6 +5525,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/invalidate:
@@ -5535,7 +5547,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The unique identifier (kid) of the key-pair to invalidate
+          description: The unique identifier (kid) of the key-pair to invalidate — 32 lowercase hex characters
           required: true
           schema:
             type: string
@@ -5549,7 +5561,7 @@ paths:
           description: JWT key-pair invalidated successfully
           content: {}
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body or gracePeriodSec out of range."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, malformed body, or gracePeriodSec out of range."
           content:
             application/problem+json:
               schema:
@@ -5584,6 +5596,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/keypair/{keyId}/reactivate:
@@ -5602,7 +5616,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The unique identifier (kid) of the key-pair to reactivate
+          description: The unique identifier (kid) of the key-pair to reactivate — 32 lowercase hex characters
           required: true
           schema:
             type: string
@@ -5620,7 +5634,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: missing or past validTo, validTo not after validFrom, or validFrom in the future."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom, validFrom in the future, or validFrom or validTo out of range (UTC year outside 1..9999)."
           content:
             application/problem+json:
               schema:
@@ -5655,6 +5669,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /oauth/keys/trusted:
@@ -5765,7 +5781,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, or invalid audience; UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
+          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, invalid audience, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -5982,7 +5998,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom; TRUSTED_KEY_CAP_REACHED: reactivating would exceed the per-tenant trusted-key cap."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, missing or past validTo, validTo not after validFrom, or validFrom or validTo out of range (UTC year outside 1..9999); TRUSTED_KEY_CAP_REACHED: reactivating would exceed the per-tenant trusted-key cap."
           content:
             application/problem+json:
               schema:
@@ -12696,7 +12712,8 @@ components:
         node owning that transaction is not in the cluster's registry, is marked
         dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE), or the
         transaction already has as many callbacks waiting as it may have
-        (TOO_MANY_JOINED_REQUESTS). Retryable.
+        (TOO_MANY_JOINED_REQUESTS), or this node's copy of the signing key pairs
+        has had no successful re-read from storage within its bound. Retryable.
       content:
         application/problem+json:
           schema:

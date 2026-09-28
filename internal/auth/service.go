@@ -1,38 +1,43 @@
 package auth
 
 import (
-	"crypto/sha256"
-	"crypto/x509"
-	"encoding/hex"
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 // AuthConfig holds configuration for the AuthService.
 type AuthConfig struct {
-	SigningKeyPEM   string          // PEM-encoded RSA private key
-	Issuer          string          // e.g., "cyoda"
-	ExpirySeconds   int             // e.g., 3600
-	TrustedKeyStore TrustedKeyStore // optional: externally-provided persistent store; if nil, uses in-memory
-	IAMFeatures     IAMFeatures     // IAM feature surface for /oauth/keys/* and bootstrap key config
+	SigningKeyPEM     string                 // PEM-encoded RSA private key: the bootstrap key
+	Issuer            string                 // e.g., "cyoda"
+	ExpirySeconds     int                    // e.g., 3600
+	IAMFeatures       IAMFeatures            // IAM feature surface for /oauth/keys/* and bootstrap key config
+	KV                spi.KeyValueStore      // SYSTEM-tenant KV store; required
+	Broadcaster       spi.ClusterBroadcaster // nil on a single node
+	ReconcileInterval time.Duration          // re-read interval of both key stores; <= 0 uses the default
+	TrustedKeyMetrics ReconcileMetrics       // nil: no metrics
+	SigningKeyMetrics ReconcileMetrics       // nil: no metrics
 }
 
-// AuthService wires together all auth components and exposes HTTP handlers.
-// Public endpoints (token, JWKS) are on Handler().
-// Admin endpoints (key mgmt, M2M mgmt, trusted keys) are on AdminHandler()
-// and must be wrapped with authentication middleware by the caller.
+// AuthService wires together the auth stores and serves the public auth
+// endpoints (token, JWKS) on Handler(). The admin endpoints for key pairs,
+// trusted keys and M2M clients are served by internal/domain/account over the
+// stores this service exposes.
 type AuthService struct {
-	keyStore     *InMemoryKeyStore
-	trustedStore TrustedKeyStore
+	keyStore     *KVKeyStore
+	trustedStore *KVTrustedKeyStore
 	m2mStore     *InMemoryM2MClientStore
-	signingKID   string
 	issuer       string
 	handler      http.Handler
-	adminHandler http.Handler
 }
 
-// NewAuthService creates a fully wired AuthService from the given config.
-func NewAuthService(config AuthConfig) (*AuthService, error) {
+// NewAuthService builds and loads both key stores from the KV store; a failed
+// load fails. Start runs their re-read loops.
+func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error) {
 	// Apply defaults only for a wholly unset IAMFeatures, so callers that
 	// don't set the field (e.g. tests) still get the default bootstrap
 	// audience and IAM limits, and a caller that sets any field keeps it.
@@ -42,83 +47,68 @@ func NewAuthService(config AuthConfig) (*AuthService, error) {
 	if err := config.IAMFeatures.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid IAM features: %w", err)
 	}
-
+	if config.KV == nil {
+		return nil, errors.New("auth service requires a KV store")
+	}
 	privateKey, err := ParseRSAPrivateKeyFromPEM([]byte(config.SigningKeyPEM))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse signing key: %w", err)
 	}
 
-	keyStore := NewInMemoryKeyStore()
-	var trustedStore TrustedKeyStore
-	if config.TrustedKeyStore != nil {
-		trustedStore = config.TrustedKeyStore
-	} else {
-		trustedStore = NewInMemoryTrustedKeyStore()
+	trustedOpts := []KVTrustedKeyStoreOption{
+		WithMaxTrustedKeys(config.IAMFeatures.TrustedKeyMaxPerTenant),
+		WithReconcileInterval(config.ReconcileInterval),
+	}
+	if config.TrustedKeyMetrics != nil {
+		trustedOpts = append(trustedOpts, WithReconcileMetrics(config.TrustedKeyMetrics))
+	}
+	if config.Broadcaster != nil {
+		trustedOpts = append(trustedOpts, WithTrustedKeyBroadcaster(config.Broadcaster))
+	}
+	trustedStore, err := NewKVTrustedKeyStore(ctx, config.KV, trustedOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// The bootstrap key is built from configuration on every node; its KID
+	// is derived from the public key, so every node sharing the key has the
+	// same KID. Its stored state, if any, comes from the KV store.
+	keyStore, err := NewKVKeyStore(ctx, config.KV, KVKeyStoreConfig{
+		Bootstrap:         privateKey,
+		BootstrapAudience: config.IAMFeatures.BootstrapAudience,
+		Broadcaster:       config.Broadcaster,
+		ReconcileInterval: config.ReconcileInterval,
+		Metrics:           config.SigningKeyMetrics,
+	})
+	if err != nil {
+		return nil, err
 	}
 	m2mStore := NewInMemoryM2MClientStore()
 
-	// Derive KID deterministically from the public key so all nodes sharing the
-	// same RSA key produce the same KID. This is required for multi-node clusters
-	// where any node must validate tokens issued by any other node.
-	pubDER, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal public key for KID: %w", err)
-	}
-	kidHash := sha256.Sum256(pubDER)
-	signingKID := hex.EncodeToString(kidHash[:16])
-
-	// Register the signing key as the initial active key pair. It lives as
-	// long as the configuration that supplies it, so it has no window: no
-	// ValidTo, and a zero ValidFrom that no clock can be before. A window
-	// counted from node start would differ per node, reset on every restart,
-	// and — once past — stop that node verifying the cluster's tokens.
-	kp := &KeyPair{
-		KID:        signingKID,
-		Audience:   config.IAMFeatures.BootstrapAudience,
-		Algorithm:  "RS256",
-		PublicKey:  &privateKey.PublicKey,
-		PrivateKey: privateKey,
-		Active:     true,
-	}
-	if err := keyStore.Save(kp, RotateOptions{}); err != nil {
-		return nil, fmt.Errorf("save bootstrap key: %w", err)
-	}
-
-	// Build handlers.
-	jwksHandler := NewJWKSHandler(keyStore)
-	tokenHandler := NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds)
-
-	// Public mux: token issuance and JWKS (no auth required).
+	// Public mux: token issuance and JWKS (no auth required). A stale JWKS
+	// answer asks the caller to retry after one re-read interval.
 	publicMux := http.NewServeMux()
-	publicMux.Handle("GET /.well-known/jwks.json", jwksHandler)
-	publicMux.Handle("POST /oauth/token", tokenHandler)
-
-	// Admin mux: key management (requires auth + ROLE_ADMIN).
-	// Trusted-key endpoints moved to chi adapters in a prior milestone.
-	// M2M-client endpoints moved to chi adapters in account/m2m_adapter.go.
-	adminMux := http.NewServeMux()
+	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
+	publicMux.Handle("POST /oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds))
 
 	return &AuthService{
 		keyStore:     keyStore,
 		trustedStore: trustedStore,
 		m2mStore:     m2mStore,
-		signingKID:   signingKID,
 		issuer:       config.Issuer,
 		handler:      publicMux,
-		adminHandler: adminMux,
 	}, nil
+}
+
+// Start runs both key stores' re-read loops until ctx ends.
+func (s *AuthService) Start(ctx context.Context) {
+	s.trustedStore.StartReconcileLoop(ctx)
+	s.keyStore.Start(ctx)
 }
 
 // Handler returns the HTTP handler for public auth endpoints (token, JWKS).
 func (s *AuthService) Handler() http.Handler {
 	return s.handler
-}
-
-// AdminHandler returns the HTTP handler for admin auth endpoints
-// (key management, M2M client management, trusted keys).
-// The caller MUST wrap this with authentication + authorization middleware.
-func (s *AuthService) AdminHandler() http.Handler {
-	return s.adminHandler
 }
 
 // Issuer returns the configured issuer string.
@@ -139,9 +129,4 @@ func (s *AuthService) TrustedKeyStore() TrustedKeyStore {
 // M2MClientStore returns the M2M client store.
 func (s *AuthService) M2MClientStore() M2MClientStore {
 	return s.m2mStore
-}
-
-// SigningKID returns the key ID used for signing tokens.
-func (s *AuthService) SigningKID() string {
-	return s.signingKID
 }

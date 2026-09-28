@@ -1,11 +1,10 @@
 package auth_test
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
-	"fmt"
-	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -17,129 +16,94 @@ import (
 
 // --- KeyStore Tests ---
 
-func TestKeyStore_SaveGetGetActiveListInvalidateReactivateDelete(t *testing.T) {
-	store := auth.NewInMemoryKeyStore()
+// newIssuedOnlyStore is a key store whose bootstrap key signs for "human",
+// so the "client" audience has only the key pairs a test issues.
+func newIssuedOnlyStore(t *testing.T) *auth.KVKeyStore {
+	t.Helper()
+	return newKeyStore(t, mustNewMemoryKV(t, systemCtx()), newBootstrap(t), "human")
+}
 
-	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
-	key2, _ := rsa.GenerateKey(rand.Reader, 2048)
-
-	kp1 := &auth.KeyPair{
-		KID:        "kid-1",
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &key1.PublicKey,
-		PrivateKey: key1,
-		Active:     true,
-		ValidFrom:  time.Now(),
-	}
-	kp2 := &auth.KeyPair{
-		KID:        "kid-2",
-		Audience:   "client",
-		Algorithm:  "RS256",
-		PublicKey:  &key2.PublicKey,
-		PrivateKey: key2,
-		Active:     false,
-		ValidFrom:  time.Now(),
-	}
-
-	// Save
-	if err := store.Save(kp1, auth.RotateOptions{}); err != nil {
-		t.Fatalf("Save kp1 failed: %v", err)
-	}
-	if err := store.Save(kp2, auth.RotateOptions{}); err != nil {
-		t.Fatalf("Save kp2 failed: %v", err)
-	}
-
-	// Get
-	got, err := store.Get("kid-1")
+// published reports whether kid is in the store's JWKS set.
+func published(t *testing.T, s auth.KeyStore, kid string) (*auth.KeyPair, bool) {
+	t.Helper()
+	all, err := s.Published()
 	if err != nil {
-		t.Fatalf("Get kid-1 failed: %v", err)
+		t.Fatalf("Published: %v", err)
 	}
-	if got.KID != "kid-1" || !got.Active {
+	for _, kp := range all {
+		if kp.KID == kid {
+			return kp, true
+		}
+	}
+	return nil, false
+}
+
+func TestKeyStore_IssueCurrentInvalidateReactivateDelete(t *testing.T) {
+	ctx := systemCtx()
+	store := newIssuedOnlyStore(t)
+	kp1 := issueWindow(t, store, "client", time.Now(), time.Now().Add(time.Hour))
+
+	// Current
+	got, err := store.Current("client")
+	if err != nil {
+		t.Fatalf("Current failed: %v", err)
+	}
+	if got.KID != kp1.KID || !got.Active {
 		t.Errorf("unexpected key pair: KID=%s Active=%v", got.KID, got.Active)
 	}
 
-	// Get not found
-	_, err = store.Get("kid-999")
-	if err == nil {
-		t.Fatal("expected error for missing key, got nil")
-	}
-
-	// GetActive
-	active, err := store.GetActive("client")
-	if err != nil {
-		t.Fatalf("GetActive failed: %v", err)
-	}
-	if active.KID != "kid-1" {
-		t.Errorf("expected active kid-1, got %s", active.KID)
-	}
-
-	// List
-	all := store.List()
-	if len(all) != 2 {
-		t.Errorf("expected 2 keys, got %d", len(all))
-	}
-
 	// Invalidate
-	if err := store.Invalidate("kid-1", 0); err != nil {
+	if err := store.Invalidate(ctx, kp1.KID, 0); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
-	got, _ = store.Get("kid-1")
-	if got.Active {
-		t.Error("expected kid-1 to be inactive after Invalidate")
+	if _, err := store.VerificationKey(kp1.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Errorf("invalidated key pair still verifies: %v", err)
 	}
-
-	// GetActive should fail now (both inactive)
-	_, err = store.GetActive("client")
-	if err == nil {
-		t.Fatal("expected error when no active keys, got nil")
+	// Current fails now (no active key pair for the audience)
+	if _, err := store.Current("client"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("Current with no active key pair: err = %v, want ErrKeyPairNotFound", err)
 	}
 
 	// Reactivate
 	now := time.Now()
-	if err := store.Reactivate("kid-1", now, now.Add(24*time.Hour)); err != nil {
+	re, err := store.Reactivate(ctx, kp1.KID, now, now.Add(24*time.Hour))
+	if err != nil {
 		t.Fatalf("Reactivate failed: %v", err)
 	}
-	got, _ = store.Get("kid-1")
-	if !got.Active {
-		t.Error("expected kid-1 to be active after Reactivate")
+	if !re.Active {
+		t.Error("expected the key pair to be active after Reactivate")
+	}
+	if got, err := store.Current("client"); err != nil || got.KID != kp1.KID {
+		t.Fatalf("Current after Reactivate = %v, %v; want %s", got, err, kp1.KID)
 	}
 
 	// Delete
-	if err := store.Delete("kid-1"); err != nil {
+	if err := store.Delete(ctx, kp1.KID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	_, err = store.Get("kid-1")
-	if err == nil {
-		t.Fatal("expected error after Delete, got nil")
+	if _, ok := published(t, store, kp1.KID); ok {
+		t.Fatal("deleted key pair is still published")
 	}
-	all = store.List()
-	if len(all) != 1 {
-		t.Errorf("expected 1 key after delete, got %d", len(all))
+	if _, err := store.VerificationKey(kp1.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("deleted key pair still verifies: %v", err)
 	}
 
-	// Delete not found
-	if err := store.Delete("kid-1"); err == nil {
-		t.Fatal("expected error deleting non-existent key, got nil")
+	// Delete, Invalidate and Reactivate of an unknown key pair: not found.
+	if err := store.Delete(ctx, kp1.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("Delete of a deleted key pair: err = %v, want ErrKeyPairNotFound", err)
 	}
-
-	// Invalidate not found
-	if err := store.Invalidate("kid-999", 0); err == nil {
-		t.Fatal("expected error invalidating non-existent key, got nil")
+	if err := store.Invalidate(ctx, "kid-999", 0); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("Invalidate unknown: err = %v, want ErrKeyPairNotFound", err)
 	}
-
-	// Reactivate not found
-	futureFrom := time.Now()
-	futureTo := futureFrom.Add(24 * time.Hour)
-	if err := store.Reactivate("kid-999", futureFrom, futureTo); err == nil {
-		t.Fatal("expected error reactivating non-existent key, got nil")
+	if _, err := store.Reactivate(ctx, "kid-999", now, now.Add(24*time.Hour)); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("Reactivate unknown: err = %v, want ErrKeyPairNotFound", err)
 	}
 }
 
 // --- TrustedKeyStore Tests ---
 
 func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T) {
-	store := auth.NewInMemoryTrustedKeyStore()
+	store := newTestTrustedStore(t)
 	tID := spi.TenantID("tenant-test")
 
 	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
@@ -165,15 +129,15 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Register
-	if err := store.Register(tk1, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk1, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk1 failed: %v", err)
 	}
-	if err := store.Register(tk2, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk2, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register tk2 failed: %v", err)
 	}
 
 	// Get
-	got, err := store.Get(tID, "tk-1")
+	got, err := store.Get(context.Background(), tID, "tk-1")
 	if err != nil {
 		t.Fatalf("Get tk-1 failed: %v", err)
 	}
@@ -182,7 +146,7 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Get not found
-	_, err = store.Get(tID, "tk-999")
+	_, err = store.Get(context.Background(), tID, "tk-999")
 	if err == nil {
 		t.Fatal("expected error for missing trusted key, got nil")
 	}
@@ -194,29 +158,29 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Invalidate (with 0 grace period — ValidTo = now)
-	if err := store.Invalidate(tID, "tk-1", 0); err != nil {
+	if err := store.Invalidate(context.Background(), tID, "tk-1", 0); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
-	got, _ = store.Get(tID, "tk-1")
+	got, _ = store.Get(context.Background(), tID, "tk-1")
 	if got.Active {
 		t.Error("expected tk-1 to be inactive after Invalidate")
 	}
 
 	// Reactivate with a fresh validity window
 	now := time.Now()
-	if err := store.Reactivate(tID, "tk-1", now, now.Add(24*time.Hour)); err != nil {
+	if err := store.Reactivate(context.Background(), tID, "tk-1", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("Reactivate failed: %v", err)
 	}
-	got, _ = store.Get(tID, "tk-1")
+	got, _ = store.Get(context.Background(), tID, "tk-1")
 	if !got.Active {
 		t.Error("expected tk-1 to be active after Reactivate")
 	}
 
 	// Delete
-	if err := store.Delete(tID, "tk-1"); err != nil {
+	if err := store.Delete(context.Background(), tID, "tk-1"); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	_, err = store.Get(tID, "tk-1")
+	_, err = store.Get(context.Background(), tID, "tk-1")
 	if err == nil {
 		t.Fatal("expected error after Delete, got nil")
 	}
@@ -226,109 +190,18 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Delete not found
-	if err := store.Delete(tID, "tk-1"); err == nil {
+	if err := store.Delete(context.Background(), tID, "tk-1"); err == nil {
 		t.Fatal("expected error deleting non-existent trusted key, got nil")
 	}
 
 	// Invalidate not found
-	if err := store.Invalidate(tID, "tk-999", 0); err == nil {
+	if err := store.Invalidate(context.Background(), tID, "tk-999", 0); err == nil {
 		t.Fatal("expected error invalidating non-existent trusted key, got nil")
 	}
 
 	// Reactivate not found
-	if err := store.Reactivate(tID, "tk-999", now, now.Add(24*time.Hour)); err == nil {
+	if err := store.Reactivate(context.Background(), tID, "tk-999", now, now.Add(24*time.Hour)); err == nil {
 		t.Fatal("expected error reactivating non-existent trusted key, got nil")
-	}
-}
-
-// TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys verifies that the cap
-// is enforced per-tenant on currently-valid keys. The new implementation
-// returns 400 TRUSTED_KEY_CAP_REACHED (not 409) for cap violations.
-func TestInMemoryTrustedKeyStore_RegisterEnforcesMaxKeys(t *testing.T) {
-	const capVal = 3
-	store := auth.NewInMemoryTrustedKeyStoreWithCap(capVal)
-	tID := spi.TenantID("tenant-cap")
-
-	mkKey := func(i int) *auth.TrustedKey {
-		k, err := rsa.GenerateKey(rand.Reader, 2048)
-		if err != nil {
-			t.Fatalf("GenerateKey: %v", err)
-		}
-		return &auth.TrustedKey{
-			KID:       fmt.Sprintf("cap-key-%d", i),
-			TenantID:  tID,
-			PublicKey: &k.PublicKey,
-			Audience:  "svc",
-			Active:    true,
-			ValidFrom: time.Now().UTC(),
-		}
-	}
-
-	for i := 0; i < capVal; i++ {
-		if err := store.Register(mkKey(i), auth.RotateOptions{}); err != nil {
-			t.Fatalf("Register #%d (under cap): %v", i, err)
-		}
-	}
-
-	// (N+1)th must be rejected with 400 TRUSTED_KEY_CAP_REACHED.
-	overflow := mkKey(capVal)
-	err := store.Register(overflow, auth.RotateOptions{})
-	if err == nil {
-		t.Fatalf("Register beyond cap: expected error, got nil")
-	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", appErr.Status)
-	}
-	if appErr.Code != common.ErrCodeTrustedKeyCapReached {
-		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeTrustedKeyCapReached)
-	}
-
-	// Existing keys are unaffected — overflow rejection must not corrupt state.
-	if got := len(store.List(tID)); got != capVal {
-		t.Errorf("expected list size %d after overflow rejection, got %d", capVal, got)
-	}
-}
-
-// TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot
-// mirrors the KV-store edge case: re-registering an existing KID at full
-// capacity must remain permitted (rotation), only brand-new active KIDs trip the cap.
-func TestInMemoryTrustedKeyStore_RegisterUpsertExistingDoesNotConsumeSlot(t *testing.T) {
-	store := auth.NewInMemoryTrustedKeyStoreWithCap(2)
-	tID := spi.TenantID("tenant-upsert")
-
-	mk := func(kid string) *auth.TrustedKey {
-		k, _ := rsa.GenerateKey(rand.Reader, 2048)
-		return &auth.TrustedKey{
-			KID: kid, TenantID: tID, PublicKey: &k.PublicKey, Audience: "svc",
-			Active: true, ValidFrom: time.Now().UTC(),
-		}
-	}
-
-	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
-		t.Fatalf("Register k1: %v", err)
-	}
-	if err := store.Register(mk("k2"), auth.RotateOptions{}); err != nil {
-		t.Fatalf("Register k2: %v", err)
-	}
-	// Re-register existing kid — should succeed even at cap (upsert, not insert).
-	if err := store.Register(mk("k1"), auth.RotateOptions{}); err != nil {
-		t.Fatalf("re-Register k1 (upsert at cap): %v", err)
-	}
-	// New kid still rejected with 400.
-	err := store.Register(mk("k3"), auth.RotateOptions{})
-	if err == nil {
-		t.Fatalf("Register k3 beyond cap: expected error, got nil")
-	}
-	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", appErr.Status)
 	}
 }
 
@@ -455,139 +328,123 @@ func TestM2MClientStore_CreateGetListVerifySecretResetSecretDelete(t *testing.T)
 
 // --- KeyStore (audience-partitioned) Tests ---
 
-func TestKeyStore_GetActive_AudiencePartition(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	now := time.Now()
-	human := &auth.KeyPair{KID: "h1", Audience: "human", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
-	client := &auth.KeyPair{KID: "c1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
-	if err := s.Save(human, auth.RotateOptions{}); err != nil {
-		t.Fatalf("save human: %v", err)
+func TestKeyStore_Current_AudiencePartition(t *testing.T) {
+	boot := newBootstrap(t)
+	s := newTestKeyStore(t, boot) // bootstrap signs for "client"
+	human := issueWindow(t, s, "human", time.Now(), time.Now().Add(time.Hour))
+	got, err := s.Current("human")
+	if err != nil || got.KID != human.KID {
+		t.Fatalf("Current(human): got=%+v err=%v", got, err)
 	}
-	if err := s.Save(client, auth.RotateOptions{}); err != nil {
-		t.Fatalf("save client: %v", err)
+	if got, err := s.Current("client"); err != nil || got.KID != bootKID(t, boot) {
+		t.Fatalf("Current(client): got=%+v err=%v; want the bootstrap key", got, err)
 	}
-	got, err := s.GetActive("human")
-	if err != nil || got.KID != "h1" {
-		t.Fatalf("GetActive(human): got=%+v err=%v", got, err)
-	}
-	if _, err := s.GetActive("robot"); err == nil {
-		t.Fatal("GetActive(robot) should error")
+	if _, err := s.Current("robot"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("Current(robot): err = %v, want ErrKeyPairNotFound", err)
 	}
 }
 
 // A key pair issued ahead of time (ValidFrom in the future) is not used to
 // sign until its window opens: the current key keeps signing.
-func TestKeyStore_GetActive_SkipsKeyNotYetValid(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
+func TestKeyStore_Signer_SkipsKeyNotYetValid(t *testing.T) {
+	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	for kid, from := range map[string]time.Time{
-		"current": now.Add(-time.Hour),
-		"next":    now.Add(time.Hour),
-	} {
-		if err := s.Save(&auth.KeyPair{
-			KID: kid, Audience: "client", Algorithm: "RS256",
-			PublicKey: &priv.PublicKey, PrivateKey: priv,
-			Active: true, ValidFrom: from,
-		}, auth.RotateOptions{}); err != nil {
-			t.Fatalf("save %s: %v", kid, err)
-		}
-	}
-	got, err := s.GetActive("client")
-	if err != nil || got.KID != "current" {
-		t.Fatalf("GetActive = %+v, %v; want current", got, err)
+	current := issueWindow(t, s, "client", now.Add(-time.Hour), now.Add(2*time.Hour))
+	issueWindow(t, s, "client", now.Add(time.Hour), now.Add(2*time.Hour))
+	got, _, err := s.Signer("client")
+	if err != nil || got.KID != current.KID {
+		t.Fatalf("Signer = %+v, %v; want %s", got, err, current.KID)
 	}
 }
 
-// Two key pairs with the same ValidFrom (a client may send any validFrom,
-// including the bootstrap key's zero one) resolve the same way every time:
-// the greater KID signs. Map iteration order must not decide.
-func TestKeyStore_GetActive_TieBreakIsDeterministic(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
+// Two key pairs with the same ValidFrom (a client may send any validFrom)
+// resolve the same way every time: the greater KID signs.
+func TestKeyStore_Signer_TieBreakIsDeterministic(t *testing.T) {
+	s := newIssuedOnlyStore(t)
 	from := time.Now().Add(-time.Hour)
-	for _, kid := range []string{"k-a", "k-b", "k-c", "k-d", "k-e"} {
-		if err := s.Save(&auth.KeyPair{
-			KID: kid, Audience: "client", Algorithm: "RS256",
-			PublicKey: &priv.PublicKey, PrivateKey: priv,
-			Active: true, ValidFrom: from,
-		}, auth.RotateOptions{}); err != nil {
-			t.Fatalf("save %s: %v", kid, err)
+	want := ""
+	for i := 0; i < 5; i++ {
+		kp := issueWindow(t, s, "client", from, from.Add(2*time.Hour))
+		if kp.KID > want {
+			want = kp.KID
 		}
 	}
 	for i := 0; i < 50; i++ {
-		got, err := s.GetActive("client")
-		if err != nil || got.KID != "k-e" {
-			t.Fatalf("GetActive = %+v, %v; want k-e every time", got, err)
+		got, _, err := s.Signer("client")
+		if err != nil || got.KID != want {
+			t.Fatalf("Signer = %+v, %v; want %s every time", got, err, want)
 		}
 	}
 }
 
-func TestKeyStore_GetActive_MaxValidFrom(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	older := &auth.KeyPair{KID: "old", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now().Add(-1 * time.Hour)}
-	newer := &auth.KeyPair{KID: "new", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
-	_ = s.Save(older, auth.RotateOptions{})
-	_ = s.Save(newer, auth.RotateOptions{})
-	got, _ := s.GetActive("client")
-	if got.KID != "new" {
-		t.Errorf("expected newer ValidFrom selected, got %s", got.KID)
-	}
-}
-
-func TestKeyStore_Save_RotateInvalidatesSiblings(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
+func TestKeyStore_Signer_MaxValidFrom(t *testing.T) {
+	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	existing := &auth.KeyPair{KID: "e1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
-	_ = s.Save(existing, auth.RotateOptions{})
-	fresh := &auth.KeyPair{KID: "f1", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now.Add(1 * time.Second)}
-	if err := s.Save(fresh, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-	old, _ := s.Get("e1")
-	if old.Active {
-		t.Error("expected e1.Active=false")
-	}
-	if old.ValidTo == nil {
-		t.Error("expected e1.ValidTo set")
+	issueWindow(t, s, "client", now.Add(-time.Hour), now.Add(time.Hour))
+	newer := issueWindow(t, s, "client", now, now.Add(time.Hour))
+	got, _, err := s.Signer("client")
+	if err != nil || got.KID != newer.KID {
+		t.Errorf("expected newer ValidFrom selected, got %+v, %v", got, err)
 	}
 }
 
-func TestKeyStore_Save_RotateNoOp(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	fresh := &auth.KeyPair{KID: "alone", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
-	if err := s.Save(fresh, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
-		t.Fatalf("save: %v", err)
+func TestKeyStore_Issue_RotateInvalidatesSiblings(t *testing.T) {
+	ctx := systemCtx()
+	s := newIssuedOnlyStore(t)
+	now := time.Now()
+	existing := issueWindow(t, s, "client", now, now.Add(time.Hour))
+	fresh, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now.Add(time.Second), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
 	}
-	got, _ := s.Get("alone")
-	if !got.Active {
-		t.Error("solo Save with Invalidate=true should still leave new key active")
+	if !fresh.Active {
+		t.Error("the new key pair must stay active")
+	}
+	if _, err := s.VerificationKey(existing.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Errorf("expected the sibling inactive, VerificationKey err = %v", err)
+	}
+	old, ok := published(t, s, existing.KID)
+	if !ok || old.Active || old.ValidTo == nil || old.ValidTo.After(time.Now().Add(61*time.Second)) {
+		t.Errorf("expected the sibling published in a 60s grace period, got %+v (published %v)", old, ok)
 	}
 }
 
-func TestKeyStore_Save_ConcurrentRotateExactlyOneActive(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	baseline := &auth.KeyPair{KID: "base", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
-	_ = s.Save(baseline, auth.RotateOptions{})
+func TestKeyStore_Issue_RotateNoOp(t *testing.T) {
+	s := newIssuedOnlyStore(t)
+	now := time.Now()
+	fresh, err := s.Issue(systemCtx(), auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if got, err := s.Current("client"); err != nil || got.KID != fresh.KID || !got.Active {
+		t.Errorf("solo Issue with Invalidate=true should still leave the new key active: %+v, %v", got, err)
+	}
+}
+
+func TestKeyStore_Issue_ConcurrentRotateExactlyOneActive(t *testing.T) {
+	ctx := systemCtx()
+	s := newIssuedOnlyStore(t)
+	base := issueWindow(t, s, "client", time.Now(), time.Now().Add(time.Hour))
+	kids := []string{base.KID, "", ""}
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
-		i := i
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			kp := &auth.KeyPair{KID: fmt.Sprintf("c%d", i), Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now().Add(time.Duration(i+1) * time.Millisecond)}
-			_ = s.Save(kp, auth.RotateOptions{Invalidate: true, GracePeriodSec: 1})
-		}()
+			now := time.Now()
+			kp, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now.Add(time.Duration(i+1) * time.Millisecond), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 1})
+			if err == nil {
+				kids[i+1] = kp.KID
+			}
+		}(i)
 	}
 	wg.Wait()
 	active := 0
-	for _, kid := range []string{"base", "c0", "c1"} {
-		if kp, err := s.Get(kid); err == nil && kp.Active {
+	for _, kid := range kids {
+		if kid == "" {
+			t.Fatal("a concurrent issue failed")
+		}
+		if _, err := s.VerificationKey(kid); err == nil {
 			active++
 		}
 	}
@@ -596,50 +453,48 @@ func TestKeyStore_Save_ConcurrentRotateExactlyOneActive(t *testing.T) {
 	}
 }
 
-func TestKeyStore_ListForVerification_LazyFilter(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
+func TestKeyStore_Published_LazyFilter(t *testing.T) {
+	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	past := now.Add(-1 * time.Hour)
-	active := &auth.KeyPair{KID: "active", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: now}
-	expired := &auth.KeyPair{KID: "expired", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: false, ValidFrom: past, ValidTo: &past}
-	_ = s.Save(active, auth.RotateOptions{})
-	_ = s.Save(expired, auth.RotateOptions{})
-	got := s.ListForVerification()
-	if len(got) != 1 || got[0].KID != "active" {
-		t.Fatalf("expected only active, got %+v", got)
+	past := now.Add(-time.Hour)
+	active := issueWindow(t, s, "client", now, now.Add(time.Hour))
+	expired := issueWindow(t, s, "client", past.Add(-time.Hour), past)
+	if _, ok := published(t, s, active.KID); !ok {
+		t.Error("expected the active key pair published")
+	}
+	if _, ok := published(t, s, expired.KID); ok {
+		t.Error("expected the expired key pair not published")
 	}
 }
 
 func TestKeyStore_Reactivate_FreshWindow(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
+	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	past := now.Add(-1 * time.Hour)
-	expired := &auth.KeyPair{KID: "e", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: false, ValidFrom: past, ValidTo: &past}
-	_ = s.Save(expired, auth.RotateOptions{})
-	if err := s.Reactivate("e", now, past); err == nil {
-		t.Error("expected past-validTo to reject")
+	past := now.Add(-time.Hour)
+	expired := issueWindow(t, s, "client", past.Add(-time.Hour), past)
+	if _, err := s.VerificationKey(expired.KID); err == nil {
+		t.Fatal("an expired key pair verifies")
 	}
-	if err := s.Reactivate("e", now, now.Add(24*time.Hour)); err != nil {
+	got, err := s.Reactivate(systemCtx(), expired.KID, now, now.Add(24*time.Hour))
+	if err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
-	got, _ := s.Get("e")
 	if !got.Active {
 		t.Error("expected Active=true after reactivate")
+	}
+	if _, err := s.VerificationKey(expired.KID); err != nil {
+		t.Errorf("a reactivated key pair does not verify: %v", err)
 	}
 }
 
 func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	kp := &auth.KeyPair{KID: "k", Audience: "client", Algorithm: "RS256", PublicKey: &priv.PublicKey, PrivateKey: priv, Active: true, ValidFrom: time.Now()}
-	_ = s.Save(kp, auth.RotateOptions{})
+	s := newIssuedOnlyStore(t)
+	kp := issueWindow(t, s, "client", time.Now(), time.Now().Add(time.Hour))
 	newWindow := time.Now().Add(48 * time.Hour)
-	if err := s.Reactivate("k", time.Now(), newWindow); err != nil {
+	got, err := s.Reactivate(systemCtx(), kp.KID, time.Now(), newWindow)
+	if err != nil {
 		t.Fatalf("reactivate on already-active: %v", err)
 	}
-	got, _ := s.Get("k")
 	if !got.Active {
 		t.Error("expected Active=true (idempotent)")
 	}
@@ -648,20 +503,14 @@ func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
 	}
 }
 
-func TestKeyStore_ListForVerification_IncludesGracePeriodKey(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	now := time.Now()
-	future := now.Add(1 * time.Hour)
-	grace := &auth.KeyPair{
-		KID: "grace", Audience: "client", Algorithm: "RS256",
-		PublicKey: &priv.PublicKey, PrivateKey: priv,
-		Active: false, ValidFrom: now.Add(-1 * time.Hour), ValidTo: &future,
+func TestKeyStore_Published_IncludesGracePeriodKey(t *testing.T) {
+	s := newIssuedOnlyStore(t)
+	kp := issueWindow(t, s, "client", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err := s.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
 	}
-	_ = s.Save(grace, auth.RotateOptions{})
-	got := s.ListForVerification()
-	if len(got) != 1 || got[0].KID != "grace" {
-		t.Fatalf("expected grace-period key included, got %+v", got)
+	if got, ok := published(t, s, kp.KID); !ok || got.Active {
+		t.Fatalf("expected the grace-period key published and inactive, got %+v (published %v)", got, ok)
 	}
 }
 
@@ -669,68 +518,64 @@ func TestKeyStore_ListForVerification_IncludesGracePeriodKey(t *testing.T) {
 // beyond the end of the window it already had: invalidating, directly or by
 // rotation, can only shorten a key pair's life.
 func TestKeyStore_InvalidateNeverExtends(t *testing.T) {
-	s := auth.NewInMemoryKeyStore()
-	priv := testRSAPriv(t)
-	save := func(kid string, validTo time.Time, opts auth.RotateOptions) {
+	ctx := systemCtx()
+	s := newIssuedOnlyStore(t)
+	issue := func(validTo time.Time, invalidate bool, grace int64) *auth.KeyPair {
 		t.Helper()
-		vt := validTo
-		if err := s.Save(&auth.KeyPair{
-			KID: kid, Audience: "client", Algorithm: "RS256",
-			PublicKey: &priv.PublicKey, PrivateKey: priv,
-			Active: true, ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: &vt,
-		}, opts); err != nil {
-			t.Fatalf("save %s: %v", kid, err)
+		kp, err := s.Issue(ctx, auth.IssueRequest{
+			Audience: "client", ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: validTo,
+			Invalidate: invalidate, GracePeriodSec: grace,
+		})
+		if err != nil {
+			t.Fatalf("issue: %v", err)
 		}
+		return kp
 	}
 	verifiable := func(kid string) bool {
-		for _, kp := range s.ListForVerification() {
-			if kp.KID == kid {
-				return true
-			}
-		}
-		return false
+		_, ok := published(t, s, kid)
+		return ok
 	}
 
-	save("expired", time.Now().Add(-time.Minute), auth.RotateOptions{})
-	if err := s.Invalidate("expired", 3600); err != nil {
+	expired := issue(time.Now().Add(-time.Minute), false, 0)
+	if err := s.Invalidate(ctx, expired.KID, 3600); err != nil {
 		t.Fatalf("invalidate expired: %v", err)
 	}
-	if verifiable("expired") {
+	if verifiable(expired.KID) {
 		t.Error("invalidating an expired key pair with a grace period revived it")
 	}
 
-	save("revoked", time.Now().Add(time.Hour), auth.RotateOptions{})
-	if err := s.Invalidate("revoked", 0); err != nil {
+	revoked := issue(time.Now().Add(time.Hour), false, 0)
+	if err := s.Invalidate(ctx, revoked.KID, 0); err != nil {
 		t.Fatalf("revoke: %v", err)
 	}
-	if err := s.Invalidate("revoked", 3600); err != nil {
+	if err := s.Invalidate(ctx, revoked.KID, 3600); err != nil {
 		t.Fatalf("invalidate revoked: %v", err)
 	}
-	if verifiable("revoked") {
+	if verifiable(revoked.KID) {
 		t.Error("a second invalidation with a grace period revived a revoked key pair")
 	}
 
 	end := time.Now().Add(10 * time.Minute)
-	save("short", end, auth.RotateOptions{})
-	if err := s.Invalidate("short", 3600); err != nil {
+	short := issue(end, false, 0)
+	if err := s.Invalidate(ctx, short.KID, 3600); err != nil {
 		t.Fatalf("invalidate short: %v", err)
 	}
-	if kp, err := s.Get("short"); err != nil || kp.ValidTo == nil || kp.ValidTo.After(end) {
-		t.Errorf("a grace period extended a key pair beyond its window: %+v %v", kp, err)
+	if kp, ok := published(t, s, short.KID); !ok || kp.ValidTo == nil || kp.ValidTo.After(end) {
+		t.Errorf("a grace period extended a key pair beyond its window: %+v (published %v)", kp, ok)
 	}
 
-	save("old", time.Now().Add(-time.Minute), auth.RotateOptions{})
-	save("new", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 3600})
-	if verifiable("old") {
+	old := issue(time.Now().Add(-time.Minute), false, 0)
+	issue(time.Now().Add(time.Hour), true, 3600)
+	if verifiable(old.KID) {
 		t.Error("rotation with a grace period revived an expired key pair")
 	}
 
-	save("graced", time.Now().Add(time.Hour), auth.RotateOptions{})
-	if err := s.Invalidate("graced", 3600); err != nil {
+	graced := issue(time.Now().Add(time.Hour), false, 0)
+	if err := s.Invalidate(ctx, graced.KID, 3600); err != nil {
 		t.Fatalf("invalidate graced: %v", err)
 	}
-	save("newest", time.Now().Add(time.Hour), auth.RotateOptions{Invalidate: true, GracePeriodSec: 0})
-	if verifiable("graced") {
+	issue(time.Now().Add(time.Hour), true, 0)
+	if verifiable(graced.KID) {
 		t.Error("rotation with no grace left a key pair in its grace period published")
 	}
 }
@@ -745,34 +590,34 @@ func testRSAPriv(t *testing.T) *rsa.PrivateKey {
 }
 
 func TestTrustedKeyStore_TenantIsolation(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStore()
+	s := newTestTrustedStore(t)
 	priv := testRSAPriv(t)
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
 	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := s.Register(context.Background(), tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	if _, err := s.Get(tB, "k1"); err == nil {
+	if _, err := s.Get(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Get(k1) leaked")
 	}
-	if err := s.Delete(tB, "k1"); err == nil {
+	if err := s.Delete(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Delete(k1) leaked")
 	}
-	if err := s.Invalidate(tB, "k1", 0); err == nil {
+	if err := s.Invalidate(context.Background(), tB, "k1", 0); err == nil {
 		t.Error("B.Invalidate(k1) leaked")
 	}
 }
 
 func TestTrustedKeyStore_CrossTenantCollision_409(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStore()
+	s := newTestTrustedStore(t)
 	priv := testRSAPriv(t)
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
 	kA := &auth.TrustedKey{KID: "shared", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(kA, auth.RotateOptions{})
+	_ = s.Register(context.Background(), kA, auth.RotateOptions{})
 	kB := &auth.TrustedKey{KID: "shared", TenantID: tB, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	err := s.Register(kB, auth.RotateOptions{})
+	err := s.Register(context.Background(), kB, auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected cross-tenant error")
 	}
@@ -783,15 +628,15 @@ func TestTrustedKeyStore_CrossTenantCollision_409(t *testing.T) {
 }
 
 func TestTrustedKeyStore_CapReached(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStoreWithCap(2)
+	s := newTestTrustedStore(t, auth.WithMaxTrustedKeys(2))
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	mk := func(kid string) *auth.TrustedKey {
 		return &auth.TrustedKey{KID: kid, TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
 	}
-	_ = s.Register(mk("k1"), auth.RotateOptions{})
-	_ = s.Register(mk("k2"), auth.RotateOptions{})
-	err := s.Register(mk("k3"), auth.RotateOptions{})
+	_ = s.Register(context.Background(), mk("k1"), auth.RotateOptions{})
+	_ = s.Register(context.Background(), mk("k2"), auth.RotateOptions{})
+	err := s.Register(context.Background(), mk("k3"), auth.RotateOptions{})
 	if err == nil {
 		t.Fatal("expected cap-reached error")
 	}
@@ -802,48 +647,48 @@ func TestTrustedKeyStore_CapReached(t *testing.T) {
 }
 
 func TestTrustedKeyStore_CapCountsValidOnly(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStoreWithCap(2)
+	s := newTestTrustedStore(t, auth.WithMaxTrustedKeys(2))
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	past := time.Now().Add(-1 * time.Hour)
 	expired := &auth.TrustedKey{KID: "old", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
 	active := &auth.TrustedKey{KID: "new", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(expired, auth.RotateOptions{})
-	_ = s.Register(active, auth.RotateOptions{})
+	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
+	_ = s.Register(context.Background(), active, auth.RotateOptions{})
 	third := &auth.TrustedKey{KID: "third", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(third, auth.RotateOptions{}); err != nil {
+	if err := s.Register(context.Background(), third, auth.RotateOptions{}); err != nil {
 		t.Fatalf("expected accept; expired excluded from count; got %v", err)
 	}
 }
 
 func TestTrustedKeyStore_RotateInvalidatesSameTenant(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStore()
+	s := newTestTrustedStore(t)
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(a, auth.RotateOptions{})
+	_ = s.Register(context.Background(), a, auth.RotateOptions{})
 	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	if err := s.Register(b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+	if err := s.Register(context.Background(), b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	gotA, _ := s.Get(tID, "a")
+	gotA, _ := s.Get(context.Background(), tID, "a")
 	if gotA.Active || gotA.ValidTo == nil {
 		t.Errorf("expected a invalidated with ValidTo; got %+v", gotA)
 	}
 }
 
 func TestTrustedKeyStore_Reactivate_RequiresFreshWindow(t *testing.T) {
-	s := auth.NewInMemoryTrustedKeyStore()
+	s := newTestTrustedStore(t)
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	now := time.Now()
 	past := now.Add(-1 * time.Hour)
 	expired := &auth.TrustedKey{KID: "e", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	_ = s.Register(expired, auth.RotateOptions{})
-	if err := s.Reactivate(tID, "e", now, past); err == nil {
+	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
+	if err := s.Reactivate(context.Background(), tID, "e", now, past); err == nil {
 		t.Error("expected past validTo rejected")
 	}
-	if err := s.Reactivate(tID, "e", now, now.Add(24*time.Hour)); err != nil {
+	if err := s.Reactivate(context.Background(), tID, "e", now, now.Add(24*time.Hour)); err != nil {
 		t.Fatalf("reactivate: %v", err)
 	}
 }

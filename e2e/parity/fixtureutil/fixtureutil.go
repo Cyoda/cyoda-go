@@ -5,6 +5,7 @@ package fixtureutil
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -157,7 +158,7 @@ func MintNonAdminTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 	if err != nil {
 		t.Fatalf("failed to mint non-admin tenant JWT: %v", err)
 	}
@@ -187,7 +188,7 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 	if err != nil {
 		t.Fatalf("failed to mint tenant JWT: %v", err)
 	}
@@ -223,7 +224,7 @@ func MintM2MJWTForTenant(ks *JWTKeySet, tenantID string) (string, error) {
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-	return auth.Sign(claims, ks.Key, ks.Kid)
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 }
 
 // MintComputeTenantJWT creates a regular (non-M2M) JWT whose tenant matches
@@ -246,7 +247,7 @@ func MintComputeTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 	if err != nil {
 		t.Fatalf("failed to mint compute tenant JWT: %v", err)
 	}
@@ -284,7 +285,7 @@ func MintComputeUserJWT(t *testing.T, ks *JWTKeySet, userID string, roles ...str
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := auth.Sign(claims, ks.Key, ks.Kid)
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 	if err != nil {
 		t.Fatalf("failed to mint compute user JWT: %v", err)
 	}

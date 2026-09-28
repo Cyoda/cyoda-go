@@ -46,7 +46,7 @@ const (
 
 // --- token minting + explicit-bearer request helpers -------------------------
 
-// signingKID recomputes the deterministic KID app.NewAuthService derives from
+// signingKID recomputes the deterministic KID auth.DeriveKID derives from
 // the signing key's public part (sha256(SPKI)[:16] hex) so a self-minted token
 // validates against the stack's local key source.
 func (h *callbackHarness) signingKID(t *testing.T) string {
@@ -78,7 +78,7 @@ func (h *callbackHarness) mintUserToken(t *testing.T, userID string, roles ...st
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-	tok, err := auth.Sign(claims, h.signKey, h.signingKID(t))
+	tok, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(h.signKey), h.signingKID(t))
 	if err != nil {
 		t.Fatalf("mint user token: %v", err)
 	}

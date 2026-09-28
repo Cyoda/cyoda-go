@@ -7,6 +7,7 @@ package e2e_test
 // detail — routing and wiring the unit tests cannot see.
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -177,7 +178,7 @@ func TestAuth_ValidCredentialsStillPass(t *testing.T) {
 
 // mintFirstPartyToken signs a first-party token carrying an arbitrary user
 // (caas_user_id and sub) and caas_org_id, so a test can present a claim no
-// legitimate client could obtain. The kid is the one app.NewAuthService
+// legitimate client could obtain. The kid is the one auth.DeriveKID
 // derives from the signing key's public part (sha256(SPKI)[:16] hex).
 func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	t.Helper()
@@ -189,7 +190,7 @@ func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	kid := hex.EncodeToString(sum[:16])
 
 	now := time.Now()
-	tok, err := auth.Sign(map[string]any{
+	tok, err := auth.Sign(context.Background(), map[string]any{
 		"sub":          user,
 		"iss":          e2eIssuer,
 		"caas_user_id": user,
@@ -198,7 +199,7 @@ func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 		"exp":          now.Add(time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
-	}, e2eSignKey, kid)
+	}, auth.NewRSASigner(e2eSignKey), kid)
 	if err != nil {
 		t.Fatalf("mint token: %v", err)
 	}

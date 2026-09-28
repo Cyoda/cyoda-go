@@ -123,13 +123,6 @@ func (i PeerIdentity) AuthMethod() string { return i.authMethod }
 // "authenticated cluster member, identity unknown" rather than "anonymous".
 func (i PeerIdentity) NodeID() string { return i.nodeID }
 
-// NewPeerIdentityForTesting constructs a PeerIdentity with the given fields.
-// Production PeerAuth implementations have their own internal constructors
-// so the zero-value invariant stays meaningful; tests use this helper.
-func NewPeerIdentityForTesting(authMethod, nodeID string) PeerIdentity {
-	return PeerIdentity{authMethod: authMethod, nodeID: nodeID}
-}
-
 type peerIdentityCtxKey struct{}
 
 // WithPeerIdentity returns ctx annotated with the authenticated peer identity.

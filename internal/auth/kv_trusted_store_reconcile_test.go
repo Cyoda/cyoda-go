@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -58,7 +59,7 @@ func (h *hookKV) setOverlay(k string, v []byte) {
 	h.overlay[k] = v
 }
 
-func newTrustedKey(t *testing.T, kid string, tenant spi.TenantID) *auth.TrustedKey {
+func newReconcileTrustedKey(t *testing.T, kid string, tenant spi.TenantID) *auth.TrustedKey {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -133,16 +134,16 @@ var _ auth.ReconcileMetrics = (*recordingReconcileMetrics)(nil)
 // T1: cross-node convergence via Reconcile for every mutation kind.
 func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 	s1, s2, _, ctx := twoStores(t)
-	tk := newTrustedKey(t, "conv-key", spi.SystemTenantID)
+	tk := newReconcileTrustedKey(t, "conv-key", spi.SystemTenantID)
 
 	// Register on node 1 → invisible to node 2's enumeration → reconcile fixes.
-	if err := s1.Register(tk, auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if verifiable(s2, "conv-key") {
 		t.Fatal("pre-reconcile: node 2 already verifies conv-key")
 	}
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if !verifiable(s2, "conv-key") {
@@ -153,10 +154,10 @@ func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 	}
 
 	// Invalidate on node 1 → node 2 reconcile picks up Active=false.
-	if err := s1.Invalidate(spi.SystemTenantID, "conv-key", 0); err != nil {
+	if err := s1.Invalidate(ctx, spi.SystemTenantID, "conv-key", 0); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	// gracePeriod 0 ⇒ ValidTo=now ⇒ excluded from verification listing.
@@ -165,13 +166,13 @@ func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 	}
 
 	// Delete on node 1 → gone from node 2 after reconcile (Get included).
-	if err := s1.Delete(spi.SystemTenantID, "conv-key"); err != nil {
+	if err := s1.Delete(ctx, spi.SystemTenantID, "conv-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if _, err := s2.Get(spi.SystemTenantID, "conv-key"); err == nil {
+	if _, err := s2.Get(ctx, spi.SystemTenantID, "conv-key"); err == nil {
 		t.Fatal("deleted key still Get-able on node 2 after reconcile")
 	}
 }
@@ -179,11 +180,11 @@ func TestKVTrustedKeyStore_Reconcile_ConvergesAcrossNodes(t *testing.T) {
 // T2a: a corrupt record is skipped; the rest reconcile.
 func TestKVTrustedKeyStore_Reconcile_SkipsCorruptRecord(t *testing.T) {
 	s1, s2, hkv, ctx := twoStores(t)
-	if err := s1.Register(newTrustedKey(t, "good-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "good-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	hkv.setOverlay(string(spi.SystemTenantID)+":corrupt", []byte("{not json"))
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("Reconcile with corrupt record must not fail: %v", err)
 	}
 	if !verifiable(s2, "good-key") || len(s2.List(spi.SystemTenantID)) != 1 {
@@ -194,14 +195,14 @@ func TestKVTrustedKeyStore_Reconcile_SkipsCorruptRecord(t *testing.T) {
 // T2b: transport failure aborts the tick and keeps last-known state.
 func TestKVTrustedKeyStore_Reconcile_TransportFailureKeepsState(t *testing.T) {
 	s1, _, hkv, ctx := twoStores(t)
-	if err := s1.Register(newTrustedKey(t, "keep-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "keep-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := s1.Reconcile(ctx); err != nil {
+	if err := s1.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("baseline Reconcile: %v", err)
 	}
 	hkv.setListErr(errors.New("kv down"))
-	if err := s1.Reconcile(ctx); err == nil {
+	if err := s1.ReconcileForTest(ctx); err == nil {
 		t.Fatal("Reconcile must return the transport error")
 	}
 	if !verifiable(s1, "keep-key") {
@@ -212,10 +213,10 @@ func TestKVTrustedKeyStore_Reconcile_TransportFailureKeepsState(t *testing.T) {
 // T3: a mutation landing between List and swap is not clobbered.
 func TestKVTrustedKeyStore_Reconcile_GenerationGuard(t *testing.T) {
 	s1, s2, hkv, ctx := twoStores(t)
-	if err := s1.Register(newTrustedKey(t, "doomed", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "doomed", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("warm-up Reconcile: %v", err)
 	}
 	// First List of the next reconcile sees "doomed"; the hook then deletes it
@@ -227,14 +228,14 @@ func TestKVTrustedKeyStore_Reconcile_GenerationGuard(t *testing.T) {
 			return
 		}
 		fired = true
-		if err := s2.Delete(spi.SystemTenantID, "doomed"); err != nil {
+		if err := s2.Delete(ctx, spi.SystemTenantID, "doomed"); err != nil {
 			t.Errorf("hook Delete: %v", err)
 		}
 	})
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if _, err := s2.Get(spi.SystemTenantID, "doomed"); err == nil {
+	if _, err := s2.Get(ctx, spi.SystemTenantID, "doomed"); err == nil {
 		t.Fatal("generation guard failed: deleted key resurrected by stale snapshot")
 	}
 }
@@ -242,7 +243,7 @@ func TestKVTrustedKeyStore_Reconcile_GenerationGuard(t *testing.T) {
 // T4: overlapping Reconcile calls are serialized; final state matches KV.
 func TestKVTrustedKeyStore_Reconcile_ConcurrentReconcilesSerialized(t *testing.T) {
 	s1, s2, _, ctx := twoStores(t)
-	if err := s1.Register(newTrustedKey(t, "racer", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "racer", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	var wg sync.WaitGroup
@@ -250,7 +251,7 @@ func TestKVTrustedKeyStore_Reconcile_ConcurrentReconcilesSerialized(t *testing.T
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_ = s2.Reconcile(ctx)
+			_ = s2.ReconcileForTest(ctx)
 		}()
 	}
 	wg.Wait()
@@ -315,14 +316,14 @@ func TestKVTrustedKeyStore_PingTriggersReconcile(t *testing.T) {
 		t.Fatalf("store 2: %v", err)
 	}
 
-	if err := s1.Register(newTrustedKey(t, "ping-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "ping-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
 		return verifiable(s2, "ping-key")
 	}, "node 2 never saw the registered key after ping")
 
-	if err := s1.Delete(spi.SystemTenantID, "ping-key"); err != nil {
+	if err := s1.Delete(ctx, spi.SystemTenantID, "ping-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
@@ -355,7 +356,7 @@ func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
 		t.Fatal("second StartReconcileLoop must be a no-op returning false")
 	}
 
-	if err := s1.Register(newTrustedKey(t, "loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	eventually(t, 3*time.Second, func() bool {
@@ -365,7 +366,7 @@ func TestKVTrustedKeyStore_ReconcileLoop(t *testing.T) {
 	// Cancel, then mutate again: node 2 must NOT converge (loop stopped).
 	cancel()
 	time.Sleep(100 * time.Millisecond) // let the loop goroutine observe cancel
-	if err := s1.Delete(spi.SystemTenantID, "loop-key"); err != nil {
+	if err := s1.Delete(ctx, spi.SystemTenantID, "loop-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
 	time.Sleep(200 * time.Millisecond)
@@ -390,7 +391,7 @@ func TestKVTrustedKeyStore_StalenessBreaker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	if err := s.Register(newTrustedKey(t, "breaker-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s.Register(ctx, newReconcileTrustedKey(t, "breaker-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	loopCtx, cancel := context.WithCancel(ctx)
@@ -412,7 +413,7 @@ func TestKVTrustedKeyStore_StalenessBreaker(t *testing.T) {
 
 	// Get during the trip: forced read-through still serves KV truth
 	// (kv.Get is healthy — only List fails).
-	if _, err := s.Get(spi.SystemTenantID, "breaker-key"); err != nil {
+	if _, err := s.Get(ctx, spi.SystemTenantID, "breaker-key"); err != nil {
 		t.Fatalf("Get during breaker trip must serve KV ground truth: %v", err)
 	}
 
@@ -433,7 +434,7 @@ func TestKVTrustedKeyStore_BreakerInertWithoutLoop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
-	if err := s.Register(newTrustedKey(t, "no-loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s.Register(ctx, newReconcileTrustedKey(t, "no-loop-key", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	time.Sleep(300 * time.Millisecond) // ≫ 10× interval, but no loop running
@@ -453,27 +454,36 @@ func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
 	// Already known to s2 before contention — must survive the failed
 	// reconcile untouched (proves the breaker did not trip / cache wasn't
 	// wiped).
-	if err := s2.Register(newTrustedKey(t, "already-known", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s2.Register(ctx, newReconcileTrustedKey(t, "already-known", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register already-known: %v", err)
 	}
 	// Registered only on the peer (s1) — only a successful swap could ever
 	// surface it on s2. Used to prove "no swap occurred".
-	if err := s1.Register(newTrustedKey(t, "peer-only", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
+	if err := s1.Register(ctx, newReconcileTrustedKey(t, "peer-only", spi.SystemTenantID), auth.RotateOptions{}); err != nil {
 		t.Fatalf("Register peer-only: %v", err)
 	}
 
 	// Mutate s2 on EVERY List call so the generation guard never sees a
-	// stable snapshot: Reconcile exhausts its retry budget.
+	// stable snapshot: Reconcile exhausts its retry budget. Register itself
+	// now reads the store (storedKeys → List) before deciding, so the churn
+	// Register below triggers this same hook again on its own internal List;
+	// the reentrancy guard runs the churn exactly once per Reconcile attempt
+	// instead of recursing without bound on the same goroutine.
 	n := 0
+	var inHook atomic.Bool
 	hkv.setOnList(func() {
+		if !inHook.CompareAndSwap(false, true) {
+			return
+		}
+		defer inHook.Store(false)
 		n++
-		churn := newTrustedKey(t, fmt.Sprintf("churn-%d", n), spi.SystemTenantID)
-		if err := s2.Register(churn, auth.RotateOptions{}); err != nil {
+		churn := newReconcileTrustedKey(t, fmt.Sprintf("churn-%d", n), spi.SystemTenantID)
+		if err := s2.Register(ctx, churn, auth.RotateOptions{}); err != nil {
 			t.Errorf("hook Register: %v", err)
 		}
 	})
 
-	if err := s2.Reconcile(ctx); err == nil {
+	if err := s2.ReconcileForTest(ctx); err == nil {
 		t.Fatal("want an error when the retry budget is exhausted under continuous contention")
 	}
 	hkv.setOnList(nil)
@@ -514,7 +524,7 @@ func TestKVTrustedKeyStore_Reconcile_RetryBudgetExhausted(t *testing.T) {
 
 	// A subsequent clean Reconcile (no racing mutation) succeeds and
 	// converges the peer-only key.
-	if err := s2.Reconcile(ctx); err != nil {
+	if err := s2.ReconcileForTest(ctx); err != nil {
 		t.Fatalf("clean Reconcile after contention: %v", err)
 	}
 	if !hasKID(s2.List(spi.SystemTenantID), "peer-only") {
@@ -556,4 +566,18 @@ func TestKVTrustedKeyStore_PingIgnoresPayload(t *testing.T) {
 func verifiable(s *auth.KVTrustedKeyStore, kid string) bool {
 	_, err := s.GetForVerification(spi.SystemTenantID, kid)
 	return err == nil
+}
+
+// toggleListKV fails every List call once fail is set, simulating the store
+// going unavailable for reconcile (initial load still succeeds).
+type toggleListKV struct {
+	spi.KeyValueStore
+	fail atomic.Bool
+}
+
+func (k *toggleListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	if k.fail.Load() {
+		return nil, errors.New("list down")
+	}
+	return k.KeyValueStore.List(ctx, ns)
 }

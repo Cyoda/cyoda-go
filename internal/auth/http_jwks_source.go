@@ -3,7 +3,6 @@ package auth
 import (
 	"crypto/rsa"
 	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -64,26 +63,6 @@ func NewHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration, opts ...H
 		opt(s)
 	}
 	return s
-}
-
-// NewHTTPJWKSSourceWithTransportForTesting returns a KeySource with a
-// caller-supplied transport. Reserved for tests that need to trust an
-// httptest.Server's self-signed certificate. Production code MUST use
-// NewHTTPJWKSSource; grep-enforced.
-func NewHTTPJWKSSourceWithTransportForTesting(jwksURL, issuer string, cacheTTL time.Duration, transport *http.Transport) KeySource {
-	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
-}
-
-// NewHTTPJWKSSourceWithRootCAsForTesting returns a KeySource built via the
-// production transport assembly (TLS 1.3 pinned, no InsecureSkipVerify) with
-// the given CertPool substituted as RootCAs. Tests use this to verify that
-// the **production** MinVersion is TLS 1.3 end-to-end against an httptest
-// TLS server — not just the test-transport variant. Production code MUST
-// use NewHTTPJWKSSource; grep-enforced.
-func NewHTTPJWKSSourceWithRootCAsForTesting(jwksURL, issuer string, cacheTTL time.Duration, rootCAs *x509.CertPool) KeySource {
-	transport := defaultJWKSTransport()
-	transport.TLSClientConfig.RootCAs = rootCAs
-	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
 }
 
 func newHTTPJWKSSource(jwksURL, issuer string, cacheTTL time.Duration, transport *http.Transport) *httpJWKSSource {

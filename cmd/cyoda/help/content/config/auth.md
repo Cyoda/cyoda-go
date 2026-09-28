@@ -48,7 +48,10 @@ signal that requests are unauthenticated.
 
 ### JWT mode (`CYODA_IAM_MODE=jwt`)
 
-- `CYODA_JWT_SIGNING_KEY` — RSA private key in PEM format; required in jwt mode
+- `CYODA_JWT_SIGNING_KEY` — RSA private key in PEM format; required in jwt mode.
+  Also derives the key that encrypts stored signing key pairs, so treat it as
+  the root secret. Replacing it retires every issued key pair sealed by the
+  wrapped vault (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
 - `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`) (default: `cyoda`)
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs;
@@ -180,20 +183,22 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   key pair signs and verifies tokens only inside its window, from
   `validFrom` to `validTo`: one issued with a future `validFrom` is published
   in JWKS but not used until then, and once `validTo` passes, tokens it
-  signed are rejected. The bootstrap signing key (`CYODA_JWT_SIGNING_KEY`)
-  has no window: it lasts as long as the configuration that supplies it, and
-  you rotate it by replacing that key. (default: `365`)
+  signed are rejected. The bootstrap signing key has no window unless the
+  key-pair API invalidates or reactivates it; that state is stored and shared
+  by the cluster. (default: `365`)
 
 ### Auth cache reconciliation
 
-Both per-node auth caches (trusted keys, OIDC providers) push updates to peers
-on write and additionally run a periodic KV-reconcile as a backstop against
-missed broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` sets that shared
-interval; each tick is jittered ±10% to avoid a cross-node reconcile herd. A
-cache that goes 10× this interval without a successful reconcile fails closed
-on verification rather than serving a potentially stale answer.
+All three per-node auth caches (trusted keys, signing key pairs, OIDC
+providers) push updates to peers on write and additionally run a periodic
+KV-reconcile as a backstop against missed broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL`
+sets that shared interval; each tick is jittered ±10% to avoid a cross-node
+reconcile herd. A cache that goes 10× this interval without a successful
+reconcile fails closed on verification rather than serving a potentially stale
+answer. A stale signing-key cache refuses first-party tokens (`401`) and
+answers JWKS with `503`.
 
-- `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for both caches
+- `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for all three caches
   (default: `60s`, floor: `1s`)
 
 ### Federated OIDC providers (`POST /oauth/oidc/providers`)
@@ -238,18 +243,101 @@ keeps it published in JWKS for up to N more seconds (never past its
 `validTo`), for external verifiers that
 cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
 and `validTo` must be in the future; both are `400`. Reactivating a key pair
-also refuses a future `validFrom`. To schedule a rotation,
+also refuses a future `validFrom`. A `validFrom` or `validTo` (the default
+included) whose UTC year is outside 1–9999 is `400` on every key-pair and
+trusted-key endpoint, and so is a key-pair `keyId` that is not 32 lowercase
+hex characters. To schedule a rotation,
 issue the new key pair ahead of time, then invalidate the old one once the
 new window has opened.
 
-Limitations:
-- Runtime-issued keypairs are held in memory only; they do not survive
-  process restart. The bootstrap key survives because its KID is derived
-  deterministically from the PEM input.
-- Runtime-issued keypairs exist only on the node that issued them. In a
-  cluster, a token signed with one is rejected by the other nodes, so do not
-  issue, invalidate or reactivate keypairs through the API in cluster mode
-  until key pairs are shared across nodes.
+- **Shared and persisted.** Key pairs, and changes to the bootstrap key's
+  state, are stored and apply on every node; they survive restarts (not on the
+  memory backend). The node that takes the call applies the change before
+  answering; other nodes apply it when the change message arrives (normally
+  under a second), at the latest after up to 1.1× the reconcile interval (66 s
+  by default — the periodic re-read timer is jittered ±10%), plus however
+  long that re-read itself takes; a node that cannot read its database keeps
+  its last copy until it is stale (10 intervals), then refuses all keys.
+- **Rotating without refusals in a cluster.** Issue the new key pair with
+  `validFrom` a few seconds ahead, then invalidate the old one once the new
+  window has opened; a token signed with a brand-new key can otherwise be
+  refused by a node that has not yet received the change.
+- **Replacing `CYODA_JWT_SIGNING_KEY`** retires every issued key pair sealed
+  by the wrapped vault: they stop signing, verifying and appearing in JWKS,
+  and the new bootstrap key signs. Restoring the old key brings them back. A
+  key pair broken because its vault kind is unrecognised is not sealed by
+  this node's wrapped vault and stays broken regardless (see the broken-key
+  recovery below).
+- **If `CYODA_JWT_SIGNING_KEY` may be exposed:** generate a new key; update
+  the secret for every node; restart every node. Tokens signed by the old key
+  or by issued key pairs stop verifying; clients fetch new tokens. Issue new
+  key pairs if you use API rotation. Invalidating or deleting the bootstrap
+  key through the API does not protect stored key pairs: the key still
+  decrypts them.
+- **Deleting the bootstrap key is permanent** for that key: it cannot be
+  reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
+  with no stored state — it does not undelete the old one.
+- **No exportable signing key:** a KMS-backed key vault for issued key pairs,
+  with the bootstrap key deleted once an issued key signs, is supported by the
+  design; no KMS vault ships yet.
+
+#### Recovering from a `/oauth/token` 500
+
+**The selected key pair is broken.** The log names the KID and the reason.
+The fix depends on why:
+
+- Its vault kind is unrecognised. This check runs before the ownership
+  check, so the pair stays broken whatever `CYODA_JWT_SIGNING_KEY` is set to.
+  Invalidate it or `DELETE` it.
+- It is owned by the configured bootstrap key but cannot be opened.
+  Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
+  it: the record is then retired (inert), not broken (blocking).
+- Authenticate with an unexpired admin token or an admin from a federated
+  OIDC provider.
+
+**A stored record cannot be decoded at all.**
+
+- It blocks signing for every audience, not only the audience of that
+  record.
+- `invalidate` and `reactivate` answer `404` for it: it is not a key pair the
+  API recognises.
+- `DELETE` always succeeds. It replaces the record with a deleted
+  bootstrap-state record. An ERROR log names the KV key.
+- A record at a KV key that is not 32 lowercase hex characters cannot be a
+  key id: it is ignored (it does not block signing) and logged at ERROR.
+- At any id other than this node's bootstrap key id, the replacement is
+  inert. The bootstrap key is unaffected: authenticate the `DELETE` with an
+  unexpired admin token or an admin from a federated OIDC provider. Replacing
+  `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does not depend
+  on which key owns the record.
+- At this node's bootstrap key id, `DELETE` permanently deletes the bootstrap
+  key (see above).
+
+**An issued record is stored at this node's bootstrap key id.** Two keys can
+never share one KID, so the record is refused as undecodable.
+
+- The bootstrap key is then unusable for signing and verifying. A
+  bootstrap-signed admin token does not verify on this node.
+- Authenticate with a token signed by an active issued key pair, or an admin
+  from a federated OIDC provider.
+- Then replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new key changes
+  the bootstrap key id, and the record then decodes normally.
+- Warning: `DELETE` at this id permanently deletes the bootstrap key (see
+  above).
+
+**No signer.** The bootstrap key has no active state for the audience, and no
+issued key pair is active either.
+
+- With the default `client` bootstrap audience and no other key pairs, no
+  first-party token verifies at all. An admin token minted earlier does not
+  help: its key no longer signs or verifies.
+- Recovery needs an admin from a federated OIDC provider, whose tokens do not
+  depend on cyoda's own signing key.
+- That admin can reactivate the bootstrap key if it was only invalidated. A
+  deleted bootstrap key cannot be reactivated (see above).
+- That admin can issue a new key pair in either case.
+- Or replace `CYODA_JWT_SIGNING_KEY`. This starts a fresh, active bootstrap
+  key with no stored state.
 
 #### Upgrading from v0.7.x
 

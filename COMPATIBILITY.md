@@ -153,6 +153,27 @@ did —
 rolled-back savepoint still fails `Commit` with `ErrConflict`), the fenced
 `AsyncSearchStore.ClearResults(ctx, jobID, epoch)`, and `ErrTxAborted` if its
 engine aborts a transaction on conflict. cyoda-go-cassandra#68 tracks the store.
+Also for `v0.9.0`: signing key pairs are now stored and shared by the cluster
+in the SYSTEM-tenant KV store the same way trusted keys already were. Both
+stores' node copies are rebuilt in full from a KV `List` of the namespace on
+every node's initial load and on every periodic re-read. A multi-record admin
+write (a key-pair rotation, a trusted-key registration that invalidates a
+predecessor) also calls `List`, but only to decide which sibling records to
+end — the write then patches just the records it touched into the node copy,
+never a full rebuild. `cyoda-go-cassandra` must include its fix for `List`
+returning a partial result on a per-key read failure to run this version:
+today a missing sibling in a rotation's `List` read would stay active. Worse
+for the bootstrap key specifically: if `List` omits its bootstrap-state
+record, a rotation treats it as absent, builds the default (active, no window)
+record in its place, and writes a fresh "ended" version of *that* over it — a
+real KV write, with the record's previous bytes recorded as absent — so a
+deleted bootstrap key can come back merely invalidated, or an existing window
+can be silently discarded, cluster-wide once other nodes reconcile.
+Separately, and more mildly: a missing bootstrap-state record in any node's
+own initial load or periodic re-read (not only a rotation's) only resets that
+node's in-memory view of the bootstrap key to its default until the next
+successful `List` — no write, and self-healing. The fixed plugin is required
+to rule out both. cyoda-go-cassandra#102 tracks the bug.
 
 ## Helm chart × binary
 
