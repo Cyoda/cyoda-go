@@ -603,15 +603,9 @@ func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (str
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("createM2MClient: seed POST /clients: %d: %s", resp.StatusCode, raw)
 	}
-	var cred struct {
-		ID     string `json:"client_id"`
-		Secret string `json:"client_secret"`
-	}
-	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
-		t.Fatalf("createM2MClient: no credentials in response (%v)", err)
-	}
-	deleteClientAtCleanup(t, serverURL, cred.ID, func() string { return adminTokenForTenant(t, tenantID, userID) })
-	return cred.ID, cred.Secret
+	cred := decodeCredential(t, "createM2MClient", raw)
+	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return adminTokenForTenant(t, tenantID, userID) })
+	return cred.id, cred.secret
 }
 
 // adminRequestAs issues an authenticated request using a specific M2M client's token.

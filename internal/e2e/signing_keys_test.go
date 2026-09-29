@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -78,14 +79,8 @@ func createKeyStackClient(t *testing.T, h *callbackHarness) *m2mCredential {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create keyStack M2M client: %d %s", resp.StatusCode, raw)
 	}
-	var cred struct {
-		ID     string `json:"client_id"`
-		Secret string `json:"client_secret"`
-	}
-	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
-		t.Fatalf("create keyStack M2M client: no credentials in response (%v)", err)
-	}
-	return &m2mCredential{id: cred.ID, secret: cred.Secret}
+	cred := decodeCredential(t, "create keyStack M2M client", raw)
+	return &cred
 }
 
 // oauthToken fetches a fresh bearer through the real /oauth/token endpoint —
@@ -341,13 +336,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	// check), no JWT needed for that, so it is unaffected by the tampered key.
 
 	// /oauth/token must fail closed: the broken key is the selected signer.
-	req, _ := http.NewRequest("POST", h2.baseURL+"/api/oauth/token", strings.NewReader("grant_type=client_credentials"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(h2.clientID, h2.clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := postTokenTo(t, h2.baseURL, url.Values{"grant_type": {"client_credentials"}}, h2.clientID, h2.clientSecret)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -361,7 +350,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	}
 	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
-	req, _ = http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
+	req, _ := http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
 	req.Header.Set("Authorization", "Bearer "+bootstrapToken(t, key))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {

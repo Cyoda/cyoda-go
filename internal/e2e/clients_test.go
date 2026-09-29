@@ -3,10 +3,10 @@ package e2e_test
 import (
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -181,8 +181,8 @@ func TestE2E_Clients_ResetSecretRotatesAuth(t *testing.T) {
 	}
 
 	// Old secret fails — use a direct request instead of getToken (which fatals on error).
-	if statusForToken(t, creds.ClientId, creds.ClientSecret) == http.StatusOK {
-		t.Error("old secret still authenticates after reset")
+	if code := statusForToken(t, creds.ClientId, creds.ClientSecret); code != http.StatusUnauthorized {
+		t.Errorf("old secret after reset: %d, want 401", code)
 	}
 	// New secret works.
 	if statusForToken(t, creds.ClientId, newCreds.ClientSecret) != http.StatusOK {
@@ -205,8 +205,8 @@ func TestE2E_Clients_DeleteInvalidatesToken(t *testing.T) {
 		t.Fatalf("delete: %d", delResp.StatusCode)
 	}
 
-	if statusForToken(t, creds.ClientId, creds.ClientSecret) == http.StatusOK {
-		t.Error("deleted client's credentials still authenticate")
+	if code := statusForToken(t, creds.ClientId, creds.ClientSecret); code != http.StatusUnauthorized {
+		t.Errorf("deleted client's credentials: %d, want 401", code)
 	}
 }
 
@@ -241,20 +241,14 @@ func TestE2E_Clients_WithAdminRoleFlagOn(t *testing.T) {
 // returns the HTTP status code (does not fatal on non-200, unlike getToken).
 func statusForToken(t *testing.T, clientID, clientSecret string) int {
 	t.Helper()
-	data := url.Values{}
-	data.Set("grant_type", "client_credentials")
-	body := strings.NewReader(data.Encode())
-	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/token", body)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	creds := base64.StdEncoding.EncodeToString([]byte(clientID + ":" + clientSecret))
-	req.Header.Set("Authorization", "Basic "+creds)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("do: %v", err)
-	}
+	return tokenStatusOn(t, serverURL, clientID, clientSecret)
+}
+
+// tokenStatusOn is statusForToken against the server at baseURL — the shared
+// server or a harness stack.
+func tokenStatusOn(t *testing.T, baseURL, clientID, clientSecret string) int {
+	t.Helper()
+	resp := postTokenTo(t, baseURL, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
@@ -278,45 +272,50 @@ func decodeJWTPayload(t *testing.T, tokenStr string) map[string]any {
 }
 
 // TestE2E_Clients_CrossTenantIsolation_404 verifies that tenant B's admin
-// cannot delete or reset-secret a client owned by tenant A. The unit tests
+// cannot see, delete or reset-secret a client owned by tenant A, and cannot
+// tell it from a client that does not exist: DELETE and PUT .../secret answer
+// 404 M2M_CLIENT_NOT_FOUND with the body an absent id gets (instance, the
+// request path, aside), and B's GET /clients does not list it. The unit tests
 // mock the tenant context directly; this E2E case proves the JWT-claim
 // extraction in the auth middleware correctly gates the chi adapter.
 func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
-	// Seed tenant A: create a client via the standard admin path (the suite
-	// tenant). The suite tenant is "test-tenant".
-	createResp := adminRequest(t, "POST", "/clients", nil)
-	defer createResp.Body.Close()
-	if createResp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(createResp.Body)
-		t.Fatalf("seed tenant A client: %d: %s", createResp.StatusCode, raw)
-	}
-	var tenantAClient genapi.TechnicalUserCredentialsDto
-	if err := json.NewDecoder(createResp.Body).Decode(&tenantAClient); err != nil {
-		t.Fatalf("decode tenant A client: %v", err)
-	}
+	// Tenant A is the suite tenant, "test-tenant".
+	clientA, secretA := createClient(t, false)
+	clientB, secretB := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	absent := "ABSENT" + strings.ToUpper(randSuffix(t))
 
-	// Seed tenant B with admin privileges via store-direct seeding.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
-
-	// Tenant B attempts to delete tenant A's client.
-	delResp := adminRequestAs(t, clientBID, clientBSecret, "DELETE", "/clients/"+tenantAClient.ClientId, nil)
-	defer delResp.Body.Close()
-	if delResp.StatusCode != http.StatusNotFound {
-		raw, _ := io.ReadAll(delResp.Body)
-		t.Errorf("cross-tenant DELETE: got %d want 404: %s", delResp.StatusCode, raw)
-	}
-
-	// Tenant B attempts to reset tenant A's secret.
-	resetResp := adminRequestAs(t, clientBID, clientBSecret, "PUT", "/clients/"+tenantAClient.ClientId+"/secret", nil)
-	defer resetResp.Body.Close()
-	if resetResp.StatusCode != http.StatusNotFound {
-		raw, _ := io.ReadAll(resetResp.Body)
-		t.Errorf("cross-tenant PUT secret: got %d want 404: %s", resetResp.StatusCode, raw)
+	for _, op := range []struct{ method, suffix string }{
+		{http.MethodDelete, ""},
+		{http.MethodPut, "/secret"},
+	} {
+		var bodies [2]map[string]any
+		for i, id := range []string{clientA, absent} {
+			resp := adminRequestAs(t, clientB, secretB, op.method, "/clients/"+id+op.suffix, nil)
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("tenant B %s /clients/{id}%s (id %d of [A's, absent]): %d, want 404: %s", op.method, op.suffix, i, resp.StatusCode, withheld(resp.StatusCode, raw))
+			}
+			if code := problemErrorCode(string(raw)); code != "M2M_CLIENT_NOT_FOUND" {
+				t.Fatalf("tenant B %s /clients/{id}%s (id %d of [A's, absent]): errorCode %q, want M2M_CLIENT_NOT_FOUND: %s", op.method, op.suffix, i, code, raw)
+			}
+			if err := json.Unmarshal(raw, &bodies[i]); err != nil {
+				t.Fatalf("decode problem %s: %v", raw, err)
+			}
+			delete(bodies[i], "instance")
+		}
+		if !reflect.DeepEqual(bodies[0], bodies[1]) {
+			t.Errorf("tenant B %s /clients/{id}%s: A's client answers %v, an absent id %v — an existence oracle", op.method, op.suffix, bodies[0], bodies[1])
+		}
 	}
 
-	// Tenant A's client must still authenticate (record untouched).
-	cleanupResp := adminRequest(t, "DELETE", "/clients/"+tenantAClient.ClientId, nil)
-	cleanupResp.Body.Close()
+	if listsClient(t, adminTokenForTenant(t, "tenant-b", "user-b"), clientA) {
+		t.Errorf("tenant B's GET /clients lists tenant A's client %s", clientA)
+	}
+	// B's attempts left A's client as it was.
+	if code := statusForToken(t, clientA, secretA); code != http.StatusOK {
+		t.Errorf("tenant A's client after tenant B's attempts: %d, want 200", code)
+	}
 }
 
 func containsString(haystack []string, needle string) bool {
@@ -337,5 +336,3 @@ func containsAnyString(haystack []any, needle string) bool {
 	return false
 }
 
-// fmt kept for diagnostic use in failure messages above.
-var _ = fmt.Sprintf

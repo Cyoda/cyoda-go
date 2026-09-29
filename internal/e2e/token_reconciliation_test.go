@@ -9,12 +9,21 @@ import (
 	"testing"
 )
 
-// postToken issues a POST to /api/oauth/token with the given form values and
-// optional HTTP Basic credentials. It does NOT use authRequest because the
-// token endpoint does not require a pre-existing bearer token.
+// postToken issues a POST to the shared server's /api/oauth/token with the
+// given form values and optional HTTP Basic credentials. It does NOT use
+// authRequest because the token endpoint does not require a pre-existing
+// bearer token.
 func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http.Response {
 	t.Helper()
-	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	return postTokenTo(t, serverURL, form, basicUser, basicPass)
+}
+
+// postTokenTo is postToken against the server at baseURL — the shared server
+// or a harness stack. basicUser and basicPass are sent as given, so a caller
+// can pass a form-urlencoded client id (the endpoint decodes both parts).
+func postTokenTo(t *testing.T, baseURL string, form url.Values, basicUser, basicPass string) *http.Response {
+	t.Helper()
+	req, err := e2eNewRequest(t, "POST", baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("postToken: new request: %v", err)
 	}
