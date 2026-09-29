@@ -486,7 +486,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`cyoda token` signs a short-lived admin token offline.**
   `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
   signs a person token (`user_roles`, default `ROLE_ADMIN`; user `operator`;
-  lifetime `15m`, at most `CYODA_JWT_EXPIRY_SECONDS`) with
+  lifetime `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter; an
+  explicit `--ttl` is at most `CYODA_JWT_EXPIRY_SECONDS`) with
   `CYODA_JWT_SIGNING_KEY` and prints it, and nothing else, on stdout. It opens
   no store and makes no network call. The token carries `aud` when
   `CYODA_JWT_AUDIENCE` is set, serves HTTP and unary gRPC calls, and verifies

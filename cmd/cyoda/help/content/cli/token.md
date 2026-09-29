@@ -44,7 +44,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - `--tenant <tenantId>` — required. The tenant the token acts in. A tenant that will register OIDC providers must be a UUID in its canonical lowercase form (see `cyoda help errors OIDC_INVALID_TENANT`).
 - `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
 - `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`.
-- `--ttl <duration>` — lifetime, greater than 0 and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s). Default `15m`.
+- `--ttl <duration>` — lifetime, greater than 0 and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s); a larger value is a flag error. Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
 
 ## ENVIRONMENT VARIABLES
 

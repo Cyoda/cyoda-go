@@ -78,6 +78,53 @@ func TestRunToken_AudienceFromConfig(t *testing.T) {
 	}
 }
 
+// Without --ttl the lifetime is 15 minutes, or CYODA_JWT_EXPIRY_SECONDS when
+// that is shorter: the default never exceeds a valid configured cap.
+func TestRunToken_DefaultTTL(t *testing.T) {
+	for _, tc := range []struct {
+		expiry  string
+		wantSec float64
+	}{
+		{expiry: "3600", wantSec: 900},
+		{expiry: "900", wantSec: 900},
+		{expiry: "300", wantSec: 300},
+	} {
+		t.Run(tc.expiry, func(t *testing.T) {
+			_, pemText := tokenTestKey(t)
+			setTokenEnv(t, pemText)
+			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", tc.expiry)
+			var out, errOut bytes.Buffer
+			if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d, want 0 (stderr %q)", code, errOut.String())
+			}
+			p, err := auth.Parse(strings.TrimSpace(out.String()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			exp, _ := p.Claims["exp"].(float64)
+			iat, _ := p.Claims["iat"].(float64)
+			if got := exp - iat; got != tc.wantSec {
+				t.Fatalf("exp - iat = %v, want %v", got, tc.wantSec)
+			}
+		})
+	}
+}
+
+// An explicit --ttl above CYODA_JWT_EXPIRY_SECONDS is refused, also when the
+// cap is shorter than the default lifetime.
+func TestRunToken_ExplicitTTLAboveShortExpiryExit2(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "300")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme", "--ttl", "301s"}, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2 (stderr %q)", code, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout must be empty on error: %q", out.String())
+	}
+}
+
 func TestRunToken_FlagErrorsExit2(t *testing.T) {
 	_, pemText := tokenTestKey(t)
 	setTokenEnv(t, pemText)
