@@ -8,7 +8,7 @@ import (
 
 func TestValidateUserID_Accepts(t *testing.T) {
 	accepted := []string{
-		"admin",                                // CYODA_BOOTSTRAP_USER_ID default
+		"admin",                                // common first-party user id shape
 		"user-42",                              // e2e fixtures
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",     // generated M2M client id
 		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d", // UUID

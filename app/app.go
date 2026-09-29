@@ -105,14 +105,6 @@ func New(cfg Config) *App {
 		os.Exit(1)
 	}
 
-	// Validate and normalise bootstrap config before any auth wiring.
-	validatedCfg, err := validateBootstrapConfig(&cfg)
-	if err != nil {
-		slog.Error("invalid bootstrap configuration", "pkg", "app", "err", err)
-		os.Exit(1)
-	}
-	cfg = *validatedCfg
-
 	// Metrics-auth coupled predicate: if CYODA_METRICS_REQUIRE_AUTH=true
 	// the bearer must be set. Refuse to start rather than silently drop
 	// auth for operators who thought they'd enabled it.
@@ -398,35 +390,6 @@ func New(cfg Config) *App {
 		chainedValidator := auth.NewChainedValidator(jwksValidator, oidcValidator)
 		a.authService = auth.NewDelegatingAuthenticator(chainedValidator)
 		a.authSvc = authSvc
-
-		// Bootstrap M2M client if configured.
-		// validateBootstrapConfig (called above) guarantees that in jwt mode,
-		// ClientID and ClientSecret are coupled: both set or neither set.
-		if cfg.Bootstrap.ClientID != "" {
-			roles := strings.Split(cfg.Bootstrap.Roles, ",")
-			for i := range roles {
-				roles[i] = strings.TrimSpace(roles[i])
-			}
-			if err := authSvc.M2MClientStore().CreateWithSecret(
-				cfg.Bootstrap.ClientID,
-				spi.TenantID(cfg.Bootstrap.TenantID),
-				cfg.Bootstrap.UserID,
-				cfg.Bootstrap.ClientSecret,
-				roles,
-			); err != nil {
-				slog.Error("startup failure",
-					"phase", "bootstrap-m2m-client",
-					"clientId", cfg.Bootstrap.ClientID,
-					"error", err.Error())
-				os.Exit(1)
-			}
-			slog.Info("bootstrap M2M client registered",
-				"pkg", "app",
-				"clientId", cfg.Bootstrap.ClientID,
-				"tenantId", cfg.Bootstrap.TenantID,
-				"roles", roles,
-			)
-		}
 	} else {
 		defaultUser := &spi.UserContext{
 			UserID:   cfg.IAM.MockUserID,
@@ -1071,55 +1034,6 @@ func (a *App) Shutdown() {
 		if err := a.nodeRegistry.Deregister(context.Background(), a.config.Cluster.NodeID); err != nil {
 			slog.Warn("failed to deregister from cluster", "pkg", "cluster", "err", err)
 		}
-	}
-}
-
-// validateBootstrapConfig enforces bootstrap-secret policy:
-//   - jwt mode: CYODA_BOOTSTRAP_CLIENT_SECRET is required (fatal startup error
-//     if unset); the Helm chart always provides it via a Kubernetes Secret, so
-//     auto-generation is never needed in a deployment context.
-//   - mock mode: the secret is irrelevant; zero it to prevent accidental use.
-//
-// Returns a new Config with the policy applied, or an error the caller must
-// surface as a fatal startup failure.
-func validateBootstrapConfig(cfg *Config) (*Config, error) {
-	out := *cfg
-	if out.IAM.Mode != "jwt" {
-		// Mock (or any non-jwt) mode: bootstrap is irrelevant. Zero the secret defensively so
-		// downstream code can't accidentally use it.
-		out.Bootstrap.ClientSecret = ""
-		return &out, nil
-	}
-	idSet := out.Bootstrap.ClientID != ""
-	secretSet := out.Bootstrap.ClientSecret != ""
-	switch {
-	case !idSet && !secretSet:
-		// No bootstrap M2M client configured. System starts without one;
-		// operator authenticates via JWKS / external signing keys.
-		return &out, nil
-	case idSet && secretSet:
-		// Bootstrap M2M client configured. Creation happens in New().
-		//
-		// Door 2 of two. The tenant is validated here rather than at the top of
-		// the function because envString uses LookupEnv: an explicitly-empty
-		// CYODA_BOOTSTRAP_TENANT_ID overrides the default, and a deployment
-		// that configures no bootstrap client never consumes the value. Only
-		// the branch that actually creates a client may refuse to start over it.
-		if err := common.ValidateTenantID(spi.TenantID(out.Bootstrap.TenantID)); err != nil {
-			return nil, fmt.Errorf("CYODA_BOOTSTRAP_TENANT_ID is not a valid tenant id: %w", err)
-		}
-		// The user id becomes the caas_user_id of every token the bootstrap
-		// client is issued, and the validator rejects one outside this check.
-		if err := common.ValidateFirstPartyUserID(out.Bootstrap.UserID); err != nil {
-			return nil, fmt.Errorf("CYODA_BOOTSTRAP_USER_ID is not a valid user id: %w", err)
-		}
-		return &out, nil
-	case idSet && !secretSet:
-		return nil, fmt.Errorf(
-			"CYODA_BOOTSTRAP_CLIENT_SECRET is required when CYODA_BOOTSTRAP_CLIENT_ID is set in jwt mode")
-	default: // !idSet && secretSet
-		return nil, fmt.Errorf(
-			"CYODA_BOOTSTRAP_CLIENT_ID is required when CYODA_BOOTSTRAP_CLIENT_SECRET is set in jwt mode (secret would otherwise be unused)")
 	}
 }
 

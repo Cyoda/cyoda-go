@@ -28,9 +28,9 @@ var ErrInvalidUserID = errors.New("invalid user id")
 // every lone surrogate escape into it: admitting it would let distinct signed
 // claims name one user.
 //
-// Every door that takes a user id from outside — the first-party JWT claim, the
-// OIDC sub, a token-exchange subject and CYODA_BOOTSTRAP_USER_ID — applies this
-// one rule; every door except the OIDC sub also reserves the "oidc:" prefix
+// Every door that takes a user id from outside — the first-party JWT claim,
+// the OIDC sub and a token-exchange subject — applies this one rule; every
+// door except the OIDC sub also reserves the "oidc:" prefix
 // (ValidateFirstPartyUserID). A user id is not a key or a path segment, so
 // unlike a tenant id it has no grammar beyond this: any other character is
 // admitted, and nothing is normalised.
@@ -66,10 +66,10 @@ func ValidateUserID(id string) error {
 const OIDCUserIDPrefix = "oidc:"
 
 // ValidateFirstPartyUserID is ValidateUserID for a user id that does not come
-// from the OIDC path — the first-party JWT claim, a token-exchange subject and
-// CYODA_BOOTSTRAP_USER_ID. It also rejects an id beginning with the reserved
-// OIDCUserIDPrefix, in any case, so a first-party principal can never carry,
-// or appear to carry, the user id of an OIDC principal.
+// from the OIDC path — the first-party JWT claim, a token-exchange subject
+// and `cyoda token`'s --user flag. It also rejects an id beginning with the
+// reserved OIDCUserIDPrefix, in any case, so a first-party principal can
+// never carry, or appear to carry, the user id of an OIDC principal.
 func ValidateFirstPartyUserID(id string) error {
 	if err := ValidateUserID(id); err != nil {
 		return err

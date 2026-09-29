@@ -58,6 +58,19 @@ func decodeErrCode(t *testing.T, body []byte) string {
 	return code
 }
 
+// decodeErrDetail returns the RFC 9457 "detail" member of a problem-detail
+// response body: the human-readable message.
+func decodeErrDetail(t *testing.T, body []byte) string {
+	t.Helper()
+	var env struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		t.Fatalf("decode error envelope: %v\nbody: %s", err, string(body))
+	}
+	return env.Detail
+}
+
 // --- List, admin, empty store ---
 
 func TestListTechnicalUsers_AdminEmpty_Returns200EmptyArray(t *testing.T) {

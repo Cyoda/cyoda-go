@@ -771,8 +771,9 @@ func TestHandler_OidcStub_Returns501_WhenAdapterNil(t *testing.T) {
 // ---------- Non-UUID tenant rejection (Critical-2 fix) ----------
 
 // withNonUUIDTenantAdminCtx puts a non-UUID tenant admin user in the request
-// context. This mimics a bootstrap deployment where CYODA_BOOTSTRAP_TENANT_ID
-// is set to the literal "default-tenant" string.
+// context. This mimics a deployment whose tenant id was created as a plain
+// hyphenated word (e.g. via `cyoda token --tenant default-tenant`) rather
+// than a UUID.
 func withNonUUIDTenantAdminCtx(req *http.Request) *http.Request {
 	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
 		UserID:   "admin-user",
@@ -802,6 +803,13 @@ func TestOidcAdapter_NonUUIDTenantRejected(t *testing.T) {
 	}
 	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeOidcInvalidTenant {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeOidcInvalidTenant)
+	}
+	// The message no longer names the removed bootstrap client or its
+	// "default-tenant" literal: `cyoda token` replaced it, and there is no
+	// bootstrap deployment shape left to call out.
+	const wantDetail = "OIDC_INVALID_TENANT: OIDC providers can be registered only by a tenant whose id is a UUID, in its canonical lowercase form"
+	if detail := decodeErrDetail(t, rr.Body.Bytes()); detail != wantDetail {
+		t.Errorf("detail: got %q want %q", detail, wantDetail)
 	}
 }
 

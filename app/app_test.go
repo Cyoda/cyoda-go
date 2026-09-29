@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -16,6 +17,20 @@ import (
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
+
+// TestConfig_NoBootstrapClient verifies that app.Config no longer carries a
+// Bootstrap field: `cyoda token` replaces the config-defined bootstrap M2M
+// client, and no credential is defined by configuration except the signing
+// key. A leftover CYODA_BOOTSTRAP_CLIENT_ID creates nothing and is not read.
+func TestConfig_NoBootstrapClient(t *testing.T) {
+	t.Setenv("CYODA_BOOTSTRAP_CLIENT_ID", "leftover")
+	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET", "leftover-secret")
+	cfg := app.DefaultConfig()
+	v := reflect.ValueOf(cfg)
+	if _, ok := v.Type().FieldByName("Bootstrap"); ok {
+		t.Fatal("app.Config still has a Bootstrap field")
+	}
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	cfg := app.DefaultConfig()
@@ -171,10 +186,6 @@ func jwtApp(t *testing.T) *app.App {
 	cfg.IAM.JWTSigningKey = generateTestPEM(t)
 	cfg.IAM.JWTIssuer = "cyoda"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap.ClientID = "test-bootstrap"
-	cfg.Bootstrap.ClientSecret = "test-secret-that-is-long-enough-for-bcrypt"
-	cfg.Bootstrap.TenantID = "test-tenant"
-	cfg.Bootstrap.Roles = "ROLE_ADMIN,ROLE_M2M"
 	return app.New(cfg)
 }
 

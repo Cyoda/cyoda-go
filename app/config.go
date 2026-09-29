@@ -29,7 +29,6 @@ type Config struct {
 	IAM                IAMConfig
 	GRPC               GRPCConfig
 	Admin              AdminConfig
-	Bootstrap          BootstrapConfig
 	CORS               CORSConfig
 	StorageBackend     string
 	StartupTimeout     time.Duration
@@ -328,21 +327,12 @@ type CORSConfig struct {
 	AllowedOrigins []string // populated only in allowlist mode (Wildcard==false, len > 0)
 }
 
-type BootstrapConfig struct {
-	ClientID     string // CYODA_BOOTSTRAP_CLIENT_ID
-	ClientSecret string // CYODA_BOOTSTRAP_CLIENT_SECRET (optional, generated if empty)
-	TenantID     string // CYODA_BOOTSTRAP_TENANT_ID
-	UserID       string // CYODA_BOOTSTRAP_USER_ID
-	Roles        string // CYODA_BOOTSTRAP_ROLES (comma-separated)
-}
-
 func DefaultConfig() Config {
 	// Resolve credential env vars first; _FILE paths take precedence over
 	// the plain var when both are set. mustResolveSecretEnv panics if the
 	// _FILE path is set but unreadable — that is a fatal startup misconfiguration.
 	jwtSigningKey := envPEMFromSecret("CYODA_JWT_SIGNING_KEY")
 	hmacSecret := envHexFromSecret("CYODA_HMAC_SECRET")
-	bootstrapClientSecret := mustResolveSecretEnv("CYODA_BOOTSTRAP_CLIENT_SECRET")
 	metricsBearerToken := mustResolveSecretEnv("CYODA_METRICS_BEARER")
 
 	// CYODA_STATS_GROUP_MAX defends against an operator setting the cap to
@@ -378,13 +368,6 @@ func DefaultConfig() Config {
 			Port:              envInt("CYODA_GRPC_PORT", 9090),
 			KeepAliveInterval: envInt("CYODA_KEEPALIVE_INTERVAL", 10),
 			KeepAliveTimeout:  envInt("CYODA_KEEPALIVE_TIMEOUT", 30),
-		},
-		Bootstrap: BootstrapConfig{
-			ClientID:     envString("CYODA_BOOTSTRAP_CLIENT_ID", ""),
-			ClientSecret: bootstrapClientSecret,
-			TenantID:     envString("CYODA_BOOTSTRAP_TENANT_ID", "default-tenant"),
-			UserID:       envString("CYODA_BOOTSTRAP_USER_ID", "admin"),
-			Roles:        envString("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M"),
 		},
 		CORS: func() CORSConfig {
 			wildcard, origins := parseCORSAllowedOrigins(envString("CYODA_CORS_ALLOWED_ORIGINS", ""))

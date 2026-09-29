@@ -62,20 +62,3 @@ func TestDefaultConfig_HMACSecretFromFile(t *testing.T) {
 		t.Errorf("expected HMAC secret loaded via _FILE; got empty")
 	}
 }
-
-// TestDefaultConfig_BootstrapClientSecretFromFile verifies that
-// CYODA_BOOTSTRAP_CLIENT_SECRET_FILE is honoured end-to-end through DefaultConfig.
-func TestDefaultConfig_BootstrapClientSecretFromFile(t *testing.T) {
-	dir := t.TempDir()
-	secretPath := filepath.Join(dir, "client-secret")
-	if err := os.WriteFile(secretPath, []byte("super-secret-value\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET", "")
-	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET_FILE", secretPath)
-
-	cfg := DefaultConfig()
-	if cfg.Bootstrap.ClientSecret != "super-secret-value" {
-		t.Errorf("expected client secret loaded via _FILE; got %q", cfg.Bootstrap.ClientSecret)
-	}
-}

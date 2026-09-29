@@ -70,8 +70,8 @@ type AttributionCapable interface {
 }
 
 // attrServiceID is the executor principal id of every member callback — the
-// bootstrap user id the compute-test-client authenticates as (CyodaEnv:
-// CYODA_BOOTSTRAP_USER_ID=compute-admin; MintM2MJWT: caas_user_id=compute-admin).
+// user id the compute-test-client's self-signed M2M JWT carries
+// (fixtureutil.MintM2MJWT: caas_user_id=compute-admin).
 const attrServiceID = "compute-admin"
 
 // attrRequireCapable type-asserts the optional attribution capability, skipping

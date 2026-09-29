@@ -722,27 +722,6 @@ func TestInMemoryM2MClientStore_Create_StampsCreatedAndUpdatedAt(t *testing.T) {
 	}
 }
 
-func TestInMemoryM2MClientStore_CreateWithSecret_StampsCreatedAndUpdatedAt(t *testing.T) {
-	store := auth.NewInMemoryM2MClientStore()
-	before := time.Now()
-	err := store.CreateWithSecret("client-b", spi.TenantID("tenant-b"), "user-b", "secret-b", []string{"ROLE_M2M"})
-	if err != nil {
-		t.Fatalf("CreateWithSecret: %v", err)
-	}
-	after := time.Now()
-
-	c, err := store.Get("client-b")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if c.CreatedAt.Before(before) || c.CreatedAt.After(after) {
-		t.Errorf("CreatedAt %v outside [%v, %v]", c.CreatedAt, before, after)
-	}
-	if !c.UpdatedAt.Equal(c.CreatedAt) {
-		t.Errorf("CreateWithSecret: UpdatedAt should equal CreatedAt on fresh create")
-	}
-}
-
 func TestInMemoryM2MClientStore_ResetSecret_AdvancesUpdatedAt(t *testing.T) {
 	store := auth.NewInMemoryM2MClientStore()
 	if _, err := store.Create("client-c", spi.TenantID("tenant-c"), "user-c", []string{"ROLE_M2M"}); err != nil {

@@ -11,8 +11,7 @@ import (
 
 // Mock IAM defaults must grant ROLE_M2M so the gRPC streaming service accepts
 // connections from a default mock-authenticated client, and ROLE_ADMIN so the
-// admin HTTP endpoints accept the same user. This matches the bootstrap mode
-// defaults (CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M).
+// admin HTTP endpoints accept the same user.
 func TestDefaultConfig_MockRolesIncludeM2MAndAdmin(t *testing.T) {
 	// t.Setenv registers cleanup, then Unsetenv ensures the var is absent
 	// so we observe the DefaultConfig fallback, not an inherited value.
