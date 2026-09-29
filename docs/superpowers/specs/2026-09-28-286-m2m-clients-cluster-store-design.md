@@ -22,7 +22,8 @@ which they lack today, so a server configured with `CYODA_JWT_AUDIENCE`
 accepts them. A rotation no longer ends the signing key, so routine key
 management never takes `cyoda token` away; only invalidating or deleting the
 signing key by its key id does. An invalidated key pair keeps verifying until
-the end of its grace period, as in Cloud, and never signs again.
+the end of its grace period, as in Cloud, and never signs again (stricter
+than Cloud, which may keep signing with it).
 
 **Part B.** M2M clients are stored in the SYSTEM-tenant KV store, one
 namespace per tenant plus a global id index. There is no node copy: every
@@ -176,27 +177,66 @@ does the same.
 **Rotation.** `Issue` with `invalidateCurrent` ends its siblings: the issued
 key pairs of the audience whose window is open, and today also the signing
 key (`internal/auth/kv_key_store_admin.go:139-160`). The signing key stops
-being a sibling. After a rotation it no longer signs anyway — the newest
-active key pair signs — but it keeps verifying, so `cyoda token` keeps
-working. This loses nothing: a rotation cannot protect against an exposed
-signing key, because that key opens every issued key pair, and replacing it
-is the only response (#285 spec §4). `invalidateCurrent` is documented as
-ending issued key pairs only, the first rotation included.
+being a sibling, so it stays active and keeps verifying, and `cyoda token`
+keeps working. This loses nothing: a rotation cannot protect against an
+exposed signing key, because that key opens every issued key pair, and
+replacing it is the only response (#285 spec §4). Cloud treats its own
+configured key (`KeyPairStrategy.LOCAL_FILE`,
+`JwtSigningKeyProvider.kt:40-70`) the same way: it is not stored and is never
+a rotation sibling. `invalidateCurrent` is documented as ending issued key
+pairs only, the first rotation included. The signing-key branch of
+`siblingWrites` and the `bootstrapTouched` path in `Issue`
+(`kv_key_store_admin.go:54,77-81,100-102,138-163`) become unreachable and are
+deleted.
+
+**The signing key as signer.** Signer selection takes the newest active key
+pair of the audience inside its window, and the signing key takes part with a
+zero `validFrom` (`kv_key_store.go:157-179`, `signing_records.go:110`). While
+an issued key pair of the audience is active and in its window, that key pair
+signs. When none is — every issued key pair invalidated, deleted or past its
+`validTo` — the signing key signs again, and `GET …/current` returns it. This
+is the rules applied as written, not a fallback: the signing key is an active
+key pair of its audience. The "no signer" state therefore arises only when the
+signing key itself has been invalidated or deleted by its key id.
 
 **Grace.** Today an invalidated key pair stops verifying at once and the
 grace period only keeps its public key in JWKS (`VerificationKey` requires
 `Active`, `internal/auth/kv_key_store.go:206-217`; contract in
 `docs/cloud-parity/signing-key-window.md:13-16`). Cloud keeps an invalidated
 key valid until `validTo` = now + grace
-(`platform-service-iam/.../StoredJWKService.kt:607-624,710-713`). cyoda-go
-adopts that for verification: an invalidated key pair — issued or the signing
-key — verifies until its `validTo`, the end of the grace period. It never
-signs again: signer selection keeps requiring `Active`. A grace period of 0,
-the default (`internal/domain/account/keys_adapter.go:71-73`), ends
-verification at once, so revocation stays immediate when asked for. A deleted
-key pair never verifies. Trusted keys already behave this way
-(`GetForVerification` checks the window, not `Active`,
-`internal/auth/kv_trusted_store.go`).
+(`platform-service-iam/.../StoredJWKService.kt:607-624,710-713`; its
+verification uses the window only, `StoredJWKPublicKeyProvider.kt:39`).
+cyoda-go adopts that for verification. The verification predicate is exact:
+
+> not deleted, and `InWindow(now)` (`validFrom` ≤ now < `validTo`), and
+> (`Active` or `validTo` is set).
+
+An inactive record with no `validTo` never verifies (the case
+`TestKVKeyStore_VerificationRule` "owned inactive does not verify",
+`kv_key_store_rules_internal_test.go:220`, stays). Signer selection keeps
+requiring `Active`, so an invalidated key pair never signs again on a node
+that has its change. A node that has not yet applied it (up to about 1.1 ×
+the reconcile interval, 66 s by default, §6 of the #285 spec) can still sign
+with it; with a grace period those tokens verify everywhere until `validTo`.
+Cloud has no active flag and may keep signing with a key in grace
+(`StoredJWKService.kt:409-412`); "never signs again" is a cyoda-go rule Cloud
+is asked to adopt (§6.1).
+
+A grace period of 0, the default (`internal/domain/account/keys_adapter.go:71-73`;
+Cloud's default rotation grace is 3600 s, `IAMProperties.kt:24`), ends
+verification at once. **Emergency revocation:** rotate or invalidate with
+grace 0. A grace period already running is cut short by invalidating again
+with 0 (`graceExpiry` never lengthens `validTo`, `internal/auth/store.go:162-168`,
+and an invalidated key pair can be invalidated again,
+`kv_key_store_admin.go:191-192`), or by `DELETE`. A deleted key pair never
+verifies. The help topic and the OpenAPI descriptions say so.
+
+**The WARN.** `logRevokedBootstrap` today returns early when the signing key
+owns no issued key pairs (`kv_key_store.go:346-349`), so on a fresh cluster
+invalidating or deleting the signing key logs nothing. The WARN that
+`cyoda token` stops granting access is logged whenever the signing key is
+invalidated or deleted; the part about issued key pairs stays conditional on
+there being some.
 
 ### 4.5 Getting started in jwt mode
 
@@ -244,8 +284,11 @@ Mock mode (the default) is unchanged.
 | a `cyoda token` token is accepted on HTTP and on a unary gRPC call | | ✓ |
 | after the signing key is invalidated through the API with grace 0, a `cyoda token` token is refused (own stack, `newKeyStackOnUnseeded`, `signing_keys_test.go:291`) | | ✓ |
 | rotation with `invalidateCurrent` on the signing key's audience: the new key pair signs; the signing key is not written, still verifies, and a `cyoda token` token is accepted; issued siblings are ended | ✓ | ✓ |
-| an invalidated key pair (issued, and the signing key) with grace N: verifies before `validTo`, refused after, never selected as signer; grace 0 → refused at once; a deleted key pair never verifies | ✓ | ✓ |
-| multi-node (postgres, shared cluster): an issued key pair invalidated on A with a grace period still verifies on B until its `validTo` | | multi-node |
+| when no issued key pair of the audience is active and in its window, `GET …/current` returns the signing key and `/oauth/token` signs with it | ✓ | ✓ |
+| an invalidated key pair (issued, and the signing key) with grace N: verifies before `validTo`, refused after, never selected as signer; grace 0 → refused at once; an inactive record with no `validTo` never verifies; a deleted key pair never verifies | ✓ | ✓ |
+| during a grace period: invalidate again with 0 → refused at once; `DELETE` → refused at once; reactivate → active again | ✓ | ✓ |
+| the WARN is logged when the signing key is invalidated or deleted with zero owned issued key pairs | ✓ | |
+| multi-node (postgres, shared cluster): an issued key pair invalidated on A with a grace period verifies on B until its `validTo`, is refused on B after it, and is never B's signer | | multi-node |
 | `CYODA_JWT_AUDIENCE` set: `client_credentials` and token-exchange tokens accepted; a `cyoda token` token accepted; a token without `aud` refused (own stack) | ✓ | ✓ |
 | the server starts and serves with no bootstrap variables; a leftover `CYODA_BOOTSTRAP_CLIENT_ID` creates nothing | ✓ | |
 
@@ -548,19 +591,39 @@ of documentation and comments against this section.
   `scripts/multi-node-docker/README.md`.
 - Helm: `deploy/helm/cyoda/README.md`, `NOTES.txt`, `values.yaml` comments,
   `Chart.yaml:25`; `COMPATIBILITY.md:184` (the 0.9.0 chart row).
-- Signing-key rules (§4.4): `config/auth.md` §"JWT signing keypair rotation"
-  (`:236-262`: `invalidateCurrent` ends issued key pairs only; an invalidated
-  key verifies through its grace period and never signs); the OpenAPI
-  descriptions of `invalidateCurrent`, `invalidateGracePeriodSec` and
-  `gracePeriodSec` (`api/openapi.yaml:5542,5759,5903` and the schemas at
-  `:10586,10603,10708`), then `go generate ./api`;
-  `docs/cloud-parity/signing-key-window.md:13-16` and `signing-key-pairs.md`
-  (the grace rule now matches Cloud; the signing key is not a rotation
-  sibling — Cloud has no signing key from configuration);
-  `docs/ARCHITECTURE.md` §7.2; the `logRevokedBootstrap` WARN.
+- Signing-key rules (§4.4):
+  - `config/auth.md` §"JWT signing keypair rotation" (`:236-262`:
+    `invalidateCurrent` ends issued key pairs only; an invalidated key
+    verifies through its grace period and never signs; emergency revocation
+    with grace 0 or `DELETE`) and §"No signer" (`:328-341`: the signing key
+    signs again when no issued key pair is active; "its key no longer signs
+    or verifies" is wrong during a grace period);
+  - the OpenAPI key-pair texts: invalidate (`api/openapi.yaml:5536-5544`),
+    `invalidateCurrent` / `invalidateGracePeriodSec` (`:5759` and the schemas
+    at `:10586,10708`), `gracePeriodSec` (`:10603`); the trusted-key text at
+    `:5903` does not change; then `go generate ./api`;
+  - `docs/cloud-parity/signing-key-window.md:13-16,26-33` and
+    `signing-key-pairs.md`: the grace rule for verification matches Cloud;
+    Cloud action: do not select a key in its grace period as signer; the
+    signing key from configuration is not a rotation sibling, as Cloud's
+    `LOCAL_FILE` key is not; record the default grace (cyoda-go 0, Cloud
+    3600 s);
+  - code comments: `internal/auth/key_source.go:35-37`,
+    `kv_key_store.go:203-205`, `kv_key_store_admin.go:46-51,106-109`,
+    `internal/domain/account/keys_adapter.go:88-91`;
+  - `docs/ARCHITECTURE.md` §7.2; the `logRevokedBootstrap` WARN text.
+- Tests whose expectations change: `internal/auth/local_key_source_test.go:67-89`
+  (grace 3600, asserts refusal), `kv_key_store_admin_test.go:187`
+  (`RotationInvalidatesSiblingsAndBootstrap`), `:251`
+  (`RotationCompensatesOnSiblingFailure` — its injected failure relies on the
+  signing key being the last sibling written; rebuilt with two issued
+  siblings), `:428` (`RotationEndingBootstrapWarns`),
+  `e2e/parity/postgres/signing_keys_cluster_test.go:19-20,64-68` ("B refuses
+  the bootstrap key").
 - `CHANGELOG.md` `### Breaking`: the six variables and the chart's
   `bootstrap.*` values are removed; use `cyoda token`; `invalidateCurrent` no
-  longer ends the signing key; an invalidated key pair verifies until the end
+  longer ends the signing key, which signs again whenever no issued key pair
+  of its audience is active; an invalidated key pair verifies until the end
   of its grace period. `### Fixed`: tokens from `/oauth/token` carry `aud`
   when `CYODA_JWT_AUDIENCE` is set.
 - Issues: #622 closed by Part A; a comment on #624 (the bootstrap client is no
@@ -574,6 +637,8 @@ grep -rnE 'CYODA_BOOTSTRAP_|Bootstrap\.Client|bootstrap (M2M )?client|bootstrap 
   --exclude-dir=superpowers --exclude-dir=audits --exclude-dir=.git --exclude=CHANGELOG.md .
 grep -rnE 'testclient|testsecret|compute-secret|two (doors|places)' \
   --exclude-dir=superpowers --exclude-dir=audits --exclude-dir=.git .
+grep -rnE 'stops? accepting|verifies nothing|no longer signs or verifies|at once\. .gracePeriodSec. keeps|bootstrapTouched' \
+  --exclude-dir=superpowers --exclude-dir=audits --exclude-dir=.git --exclude=CHANGELOG.md .
 ```
 Past `CHANGELOG.md` entries are the only allowed hits; a hit that is not about
 the bootstrap client (e.g. an unrelated "two places") is recorded in the PR
