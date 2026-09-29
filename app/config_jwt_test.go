@@ -50,13 +50,6 @@ func TestLoadJWTSettings_Base64PEMIsDecoded(t *testing.T) {
 	}
 }
 
-func TestLoadJWTSettings_BadExpiryIsAnError(t *testing.T) {
-	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "soon")
-	if _, err := LoadJWTSettings(); err == nil {
-		t.Fatal("want error")
-	}
-}
-
 func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
 	for _, v := range []string{"soon", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1), "9300000000"} {
 		t.Run(v, func(t *testing.T) {
