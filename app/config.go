@@ -1,7 +1,6 @@
 package app
 
 import (
-	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"log/slog"
@@ -499,20 +498,17 @@ func DefaultConfig() Config {
 }
 
 // envPEMFromSecret resolves the raw value for a PEM credential via
-// mustResolveSecretEnv (honouring <name>_FILE), then normalises it:
-// if the value starts with "-----BEGIN" it is used as-is; otherwise it
-// is treated as base64-encoded PEM (single-line friendly for .env files
-// and docker env_file).
+// resolvePEMSecretEnv (honouring <name>_FILE, then normalising: if the value
+// starts with "-----BEGIN" it is used as-is; otherwise it is treated as
+// base64-encoded PEM, single-line friendly for .env files and docker
+// env_file), panicking on error exactly as mustResolveSecretEnv does — a
+// startup-fatal misconfiguration, not a runtime condition.
 func envPEMFromSecret(key string) string {
-	v := mustResolveSecretEnv(key)
-	if v == "" || strings.HasPrefix(v, "-----BEGIN") {
-		return v
-	}
-	decoded, err := base64.StdEncoding.DecodeString(v)
+	v, err := resolvePEMSecretEnv(key)
 	if err != nil {
-		return v // not base64, return as-is
+		panic(fmt.Sprintf("config: %v", err))
 	}
-	return string(decoded)
+	return v
 }
 
 // envHexFromSecret resolves the raw value for a hex credential via
