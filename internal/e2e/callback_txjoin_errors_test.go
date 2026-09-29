@@ -69,7 +69,7 @@ func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) strin
 	return tok
 }
 
-// provisionTenant creates an M2M client at tenantID on THIS stack, through
+// provisionTenant creates an M2M client in tenantID through this stack, via
 // POST /clients authenticated with a seed admin token minted for that tenant
 // (adminTokenFor) rather than reaching into the store directly, and returns
 // its credentials. The client is deleted when the test ends, before the stack

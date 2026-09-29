@@ -22,6 +22,8 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 `POST /clients` enforces a per-tenant cap (default 100, configurable via `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`; 0 means no cap). Delete a client the tenant no longer uses, or raise the cap. Creates on several nodes at the same moment can each pass the check, so a tenant can exceed the cap by at most one client per node.
 
+The cap counts every client record the tenant holds, including a damaged one that `GET /clients` leaves out. A damaged record counts toward the cap until `DELETE` removes it; the log names its id. See `auth.clients` (STORAGE AND CONSISTENCY).
+
 ## SEE ALSO
 
 - errors

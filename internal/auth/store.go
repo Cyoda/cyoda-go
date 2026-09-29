@@ -149,15 +149,18 @@ var ErrM2MClientCapReached = errors.New("m2m client cap reached")
 var ErrM2MClientNotFound = errors.New("m2m client not found")
 
 // ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
-// is already taken, in any tenant. The adapter's collision-retry loop in
+// is already taken, in any tenant — that is, when an index entry exists for
+// it, decodable or not. The adapter's collision-retry loop in
 // CreateTechnicalUser detects this via errors.Is and regenerates.
 var ErrM2MClientExists = errors.New("m2m client already exists")
 
 // M2MClientStore manages machine-to-machine clients. The store enforces
 // tenant isolation: List, Delete and ResetSecret act only on tenantID's
 // clients, and another tenant's client is ErrM2MClientNotFound, exactly as an
-// absent one. Any error other than the sentinels above is the store failing
-// and wraps the KV error, so a storage-unavailable one keeps its marker.
+// absent one. Any error other than the sentinels above is a server-side
+// failure: a KV error, wrapped so a storage-unavailable one keeps its
+// marker; stored data that does not decode (errM2MUndecodable); or a failure
+// to generate or hash a secret, which wraps no KV error.
 type M2MClientStore interface {
 	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string) (secret string, err error)
 	Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error)

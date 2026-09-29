@@ -105,15 +105,20 @@ for completeness):
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
 - `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
+- `internal/auth/replica.go:78-83` — per store (signing keys, trusted keys): `mu` (RWMutex) on the node copy, brief; `adminMu`, held across an admin write's KV reads and writes; `reconcileMu`, held across a re-read's KV `List`.
+- `internal/auth/oidc/registry.go:86,112,122` — `mu` (RWMutex) on the provider maps, brief; `reconcileMu`, held across a reload's KV read; `reloadWarmMu`, held across a reload and the JWKS fetches that follow it.
+- `internal/auth/kv_m2m_store.go:42` — `createLocks`: 64 striped mutexes, chosen by a hash of the tenant id, that serialise M2M client creates of one tenant on one node. One is held across a KV `List`, a `Get` and two `Put`s, and, when the index write fails, through the undo's two `Delete`s for up to `undoTimeout` (30 s). A create that waits on a slow store therefore delays the creates of every tenant on the same stripe, on that node. The store removes any transaction from its context before it calls the KV store.
 
 These locks are local to their owning component and do not interact
-with the tx-state lock order. They each have brief, bounded critical
-sections; none is held across slow operations.
+with the tx-state lock order. Except for the `internal/auth` locks held
+across KV calls or network fetches, listed above, each has a brief,
+bounded critical section.
 
 Test infrastructure (`internal/testing/...`, `internal/e2e/...`,
-`internal/common/diagnostics.go`) and per-package caches in `internal/auth/`
-are excluded from the inventory — they are local to JWT/JWKS caching or
-test setup and do not interact with the tx-state surface.
+`internal/common/diagnostics.go`) and the remaining small mutexes in
+`internal/auth/` (JWKS, validator and signer caches, log throttling, gossip-ping
+coalescing, OIDC single-flight) are excluded from the inventory — they
+guard in-memory state only and do not interact with the tx-state surface.
 
 ## 4. The SPI tx-state locking contract
 

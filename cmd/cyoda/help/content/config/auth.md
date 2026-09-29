@@ -325,6 +325,14 @@ new window has opened.
 
 #### Recovering from a `/oauth/token` 500
 
+**The M2M client store failed, or holds a damaged client record or index
+entry for the client id.** The `ticket` in `error_description` names the
+ERROR log line that carries the cause; a damaged record or index entry is
+also logged at ERROR with its client id. A damaged record is removed with
+`DELETE /clients/{clientId}`. A damaged index entry makes that `DELETE`
+answer `500` too, so it cannot be removed through the API. See
+`auth.clients`.
+
 **The selected key pair is broken.** The log names the KID and the reason.
 The fix depends on why:
 

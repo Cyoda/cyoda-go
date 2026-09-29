@@ -108,7 +108,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   clients survive a restart on a persistent backend (not on the memory
   backend). See `cyoda help auth clients`.
   - `POST /oauth/token` answers `500 server_error` with a ticket when the
-    client store fails, or holds a damaged record for the client id. It used
+    client store fails, or holds a damaged record or index entry for the
+    client id. It used
     to answer `401 invalid_client`. A client id that does not match
     `^[A-Za-z0-9]{1,100}$` is `401 invalid_client` without a store read.
   - `DELETE /clients/{clientId}` and `PUT /clients/{clientId}/secret` answer
@@ -116,8 +117,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     when it reports itself unavailable. They used to answer
     `404 M2M_CLIENT_NOT_FOUND`. `GET /clients` can answer `500` or `503` the
     same way.
-  - A damaged stored client is left out of `GET /clients` and logged at
-    ERROR; `DELETE` removes it, and a reset of it answers `500`.
+  - A damaged stored client record is left out of `GET /clients` and logged
+    at ERROR, and still counts toward the cap; `DELETE` removes it, and a
+    reset of it answers `500`. A damaged index entry makes a delete, a reset
+    or a token request for that client id answer `500`.
   - The store has no compare-and-set. Two changes to one client at the same
     moment resolve by the later write. A reset racing a delete of one client
     can leave it listed by `GET /clients` but unable to get a token; a reset

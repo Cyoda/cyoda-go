@@ -129,7 +129,7 @@ Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap ke
 - `errors.BAD_REQUEST` (`400`) — malformed `grant_type`, missing form fields, invalid `subject_token` shape.
 - The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`) per RFC 6749 rather than the generic cyoda error envelope — `invalid_client`, `invalid_grant`, `access_denied`, `server_error`.
 - `401 invalid_client` — no Basic credentials, a client id that does not match `^[A-Za-z0-9]{1,100}$` (refused before the client store is read), an unknown client id, or a wrong secret. Each of the last three costs one bcrypt comparison, so the answer time does not reveal whether a client id exists.
-- `500 server_error` — the client store failed, or holds a damaged record for the client id (see `auth.clients`); also a signing failure. `error_description` carries a `ticket` for log correlation and no internal detail. A store failure is never answered `401`.
+- `500 server_error` — the client store failed, or holds a damaged record or index entry for the client id (see `auth.clients`); also a signing failure. `error_description` carries a `ticket` for log correlation and no internal detail. A store failure is never answered `401`.
 - `GET /.well-known/jwks.json` answers `503` with `Retry-After` while the node's key copy is stale.
 
 ## SEE ALSO

@@ -139,7 +139,9 @@ The store has no compare-and-set. So when two admin calls for one tenant run at 
 - A reset and a delete of one client: the reset can write the client back after the delete removed it. The client then appears in `GET /clients` but cannot get a token, and a reset of it answers `404 M2M_CLIENT_NOT_FOUND`. `DELETE` removes it.
 - Two creates on two different nodes: each node checks the cap before the other's client is written, so a tenant can exceed the cap by at most one client per node. Creates on one node run one at a time and never exceed it.
 
-A stored client that cannot be read back (a damaged record) is left out of `GET /clients` and logged at `ERROR` with its client id. `DELETE` removes it; a reset of it answers `500`, and a token request for it `500 server_error`. A damaged index entry (the stored mapping from a client id to its tenant) makes a delete, a reset or a token request for that id answer `500`.
+A create writes the client's record, then its index entry (the stored mapping from a client id to its tenant). A node that crashes between the two writes, or a failed create whose clean-up also fails (logged at `ERROR`), leaves a client that `GET /clients` lists and that no caller can get a token for (it has no index entry, or its secret was never returned). `DELETE` removes it.
+
+A stored client that cannot be read back (a damaged record) is left out of `GET /clients` and logged at `ERROR` with its client id. `DELETE` removes it; a reset of it answers `500`, and a token request for it `500 server_error`. A damaged record counts toward the cap until `DELETE` removes it; the log names its id. A damaged index entry makes a delete, a reset or a token request for that id answer `500`, so it cannot be removed through the API.
 
 ## ERRORS
 

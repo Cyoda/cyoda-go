@@ -603,17 +603,18 @@ paths:
         - User, Machine
       summary: List all M2M clients
       description: >
-        Retrieves a list of all active machine-to-machine (M2M) clients (OAuth
-        2.0 clients) to the current legal entity.
+        Retrieves the machine-to-machine (M2M) clients (OAuth 2.0 clients) of
+        the caller's tenant, sorted by client id, without their secrets.
 
         These users authenticate via client credentials and act on behalf of
         applications, not humans. Clients are stored and shared by the
         cluster: any node answers with the same list.
 
 
-        Returns the client IDs of all M2M clients that are currently active
-
-        and available for authentication.
+        A client whose record was written back without its index entry (a
+        secret reset that raced a delete) is listed but cannot authenticate;
+        deleting it removes it. A stored client that cannot be read back is
+        left out and logged.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -703,7 +704,8 @@ paths:
                 $ref: "#/components/schemas/TechnicalUserCredentialsDto"
         "400":
           description: "Bad request — M2M_CLIENT_CAP_REACHED: the tenant already has
-            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients."
+            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; or BAD_REQUEST:
+            `withAdminRole` is not a boolean."
           content:
             application/problem+json:
               schema:
@@ -749,16 +751,12 @@ paths:
         - User, Machine
       summary: Delete a M2M client
       description: >
-        Deletes a M2M client and invalidates all associated credentials. The
-        client is stored and shared by the cluster, so the deletion is
-        visible to every node.
-
-
-        This operation cannot be undone without a support ticket. Any
-        applications using this client's
-
-        credentials will immediately lose access and must be reconfigured with
-        new credentials.
+        Deletes a M2M client of the caller's tenant. The client is stored and
+        shared by the cluster, so the deletion is visible to every node when
+        this call returns: from then on the client cannot get a token from any
+        node. Tokens it was already issued stay valid until their `exp`.
+        Deletion is permanent; an application that still needs access needs a
+        new client.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -886,7 +884,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable record.
+            generic message), including an undecodable record or index entry.
           content:
             application/problem+json:
               schema:
@@ -6708,13 +6706,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/TokenResponseDto"
         "400":
-          description: Bad request - Invalid credentials or malformed request
+          description: Bad request - unsupported_grant_type (grant_type missing or
+            not supported), or invalid_grant (the token-exchange subject token
+            is unsupported, invalid, unverifiable or carries an unusable sub)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "401":
-          description: Unauthorized - Invalid client credentials or subject token
+          description: Unauthorized - invalid_client (no Basic credentials, a
+            client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
+            wrong secret)
           content:
             application/json:
               schema:
@@ -6732,7 +6734,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - server_error (ticket in
+            error_description, generic message) - the client store failed,
+            including an undecodable record or index entry, or signing failed.
           content:
             application/json:
               schema:
