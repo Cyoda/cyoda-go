@@ -607,7 +607,8 @@ paths:
         2.0 clients) to the current legal entity.
 
         These users authenticate via client credentials and act on behalf of
-        applications, not humans.
+        applications, not humans. Clients are stored and shared by the
+        cluster: any node answers with the same list.
 
 
         Returns the client IDs of all M2M clients that are currently active
@@ -640,7 +641,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -651,6 +652,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     post:
@@ -659,7 +662,8 @@ paths:
       summary: Create M2M client
       description: >
         Creates a new machine-to-machine (M2M) client for API authentication via
-        OAuth 2.0.
+        OAuth 2.0. The client is stored and shared by the cluster: any node
+        can authenticate it once created.
 
 
         The created user will have M2M role permissions, necessary for getting
@@ -697,6 +701,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TechnicalUserCredentialsDto"
+        "400":
+          description: "Bad request — M2M_CLIENT_CAP_REACHED: the tenant already has
+            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Unauthorized - Authentication is required
           content:
@@ -717,7 +728,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -728,6 +739,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -736,7 +749,9 @@ paths:
         - User, Machine
       summary: Delete a M2M client
       description: >
-        Deletes a M2M client and invalidates all associated credentials.
+        Deletes a M2M client and invalidates all associated credentials. The
+        client is stored and shared by the cluster, so the deletion is
+        visible to every node.
 
 
         This operation cannot be undone without a support ticket. Any
@@ -791,7 +806,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket,
+            generic message), including an undecodable index entry.
           content:
             application/problem+json:
               schema:
@@ -802,6 +818,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -810,7 +828,9 @@ paths:
         - User, Machine
       summary: Reset M2M client secret
       description: >
-        Generates a new client secret for an existing M2M client.
+        Generates a new client secret for an existing M2M client. The client
+        is stored and shared by the cluster, so the new secret is usable from
+        any node.
 
 
         This operation invalidates the current client secret and generates a new
@@ -865,7 +885,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket,
+            generic message), including an undecodable record.
           content:
             application/problem+json:
               schema:
@@ -876,6 +897,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /entity/stats:
