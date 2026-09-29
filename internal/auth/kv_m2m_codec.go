@@ -21,6 +21,14 @@ const (
 	m2mDecoyKey = "-"
 )
 
+// The bcrypt cost a stored secret hash may carry. The encoder writes
+// bcrypt.DefaultCost; a lower cost weakens the hash, and a stored cost bounds
+// the CPU an unauthenticated token request can burn.
+const (
+	minM2MBcryptCost = bcrypt.DefaultCost
+	maxM2MBcryptCost = bcrypt.DefaultCost + 4
+)
+
 var errM2MUndecodable = errors.New("stored m2m client data does not decode")
 
 var clientIDGrammar = regexp.MustCompile(`^[A-Za-z0-9]{1,100}$`)
@@ -64,8 +72,12 @@ func validateM2MClient(c *M2MClient) error {
 			return errors.New("empty role")
 		}
 	}
-	if _, err := bcrypt.Cost([]byte(c.HashedSecret)); err != nil {
+	cost, err := bcrypt.Cost([]byte(c.HashedSecret))
+	if err != nil {
 		return errors.New("hashedSecret is not a bcrypt hash")
+	}
+	if cost < minM2MBcryptCost || cost > maxM2MBcryptCost {
+		return fmt.Errorf("hashedSecret has bcrypt cost %d, outside [%d, %d]", cost, minM2MBcryptCost, maxM2MBcryptCost)
 	}
 	if !StorableTime(c.CreatedAt) || !StorableTime(c.UpdatedAt) {
 		return errors.New("timestamp out of range")

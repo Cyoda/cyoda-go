@@ -3,7 +3,9 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -12,11 +14,66 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// testHash is a bcrypt hash of "s" at bcrypt.DefaultCost, made once: the
+// codec refuses any other cost.
+var testHash = sync.OnceValue(func() string {
+	h, err := bcrypt.GenerateFromPassword([]byte("s"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return string(h)
+})
+
+// hashAtCost returns testHash with its cost field set to cost. Generating a
+// hash at a high cost takes hours; bcrypt.Cost reads only this field.
+func hashAtCost(t *testing.T, cost int) string {
+	t.Helper()
+	h := []byte(testHash())
+	copy(h[4:6], fmt.Sprintf("%02d", cost))
+	if got, err := bcrypt.Cost(h); err != nil || got != cost {
+		t.Fatalf("hashAtCost(%d): cost %d, %v", cost, got, err)
+	}
+	return string(h)
+}
+
 func validClient(t *testing.T) *M2MClient {
 	t.Helper()
-	h, _ := bcrypt.GenerateFromPassword([]byte("s"), bcrypt.MinCost)
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	return &M2MClient{ClientID: "ABC123", HashedSecret: string(h), TenantID: "acme", UserID: "ABC123", Roles: []string{"ROLE_M2M"}, CreatedAt: now, UpdatedAt: now}
+	return &M2MClient{ClientID: "ABC123", HashedSecret: testHash(), TenantID: "acme", UserID: "ABC123", Roles: []string{"ROLE_M2M"}, CreatedAt: now, UpdatedAt: now}
+}
+
+// A stored bcrypt cost outside [DefaultCost, DefaultCost+4] is undecodable,
+// and the encoder refuses it: a low cost weakens the hash, and a high cost
+// lets one unauthenticated token request burn hours of CPU.
+func TestM2MCodec_BcryptCostBounds(t *testing.T) {
+	for _, tc := range []struct {
+		cost int
+		ok   bool
+	}{
+		{bcrypt.MinCost, false},
+		{bcrypt.DefaultCost - 1, false},
+		{bcrypt.DefaultCost, true},
+		{bcrypt.DefaultCost + 4, true},
+		{bcrypt.DefaultCost + 5, false},
+		{bcrypt.MaxCost, false},
+	} {
+		t.Run(fmt.Sprintf("cost %d", tc.cost), func(t *testing.T) {
+			h := hashAtCost(t, tc.cost)
+			data := validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = h })
+			_, err := decodeClientRecord("acme", "ABC123", data)
+			if tc.ok && err != nil {
+				t.Fatalf("decode: %v, want accepted", err)
+			}
+			if !tc.ok && !errors.Is(err, errM2MUndecodable) {
+				t.Fatalf("decode: %v, want errM2MUndecodable", err)
+			}
+			c := validClient(t)
+			c.HashedSecret = h
+			if _, err := encodeClientRecord(c); (err == nil) != tc.ok {
+				t.Fatalf("encode: %v, want accepted=%v", err, tc.ok)
+			}
+		})
+	}
 }
 
 func TestM2MCodec_RoundTrip(t *testing.T) {

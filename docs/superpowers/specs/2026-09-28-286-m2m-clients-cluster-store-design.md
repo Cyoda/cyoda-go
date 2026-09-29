@@ -312,8 +312,9 @@ tenant), `userId`, `roles`, `hashedSecret`, `createdAt`, `updatedAt`
 A record is **undecodable** when the JSON does not parse, `clientId` differs
 from its key or is outside §5.2, `tenantId` differs from its namespace or fails
 `common.ValidateTenantID`, `userId` fails `common.ValidateFirstPartyUserID`,
-`roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash,
-or a timestamp is outside `StorableTime`. An index entry is undecodable when it
+`roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash
+or its cost is outside `[bcrypt.DefaultCost, bcrypt.DefaultCost+4]` (a stored
+cost bounds the CPU an unauthenticated token request can burn), or a timestamp is outside `StorableTime`. An index entry is undecodable when it
 does not parse or its tenant fails `ValidateTenantID`. The encoder refuses to
 write anything the decoder would reject.
 
