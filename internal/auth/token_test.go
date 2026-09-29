@@ -816,3 +816,37 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 		t.Errorf("the underlying cause is missing from the log record:\n%s", logged)
 	}
 }
+
+// RFC 6749 §5.1: a response carrying a token has Cache-Control: no-store and
+// Pragma: no-cache, on both grants.
+func TestTokenEndpoint_TokenResponsesAreNotCacheable(t *testing.T) {
+	env := setupTokenEnv(t)
+	subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, map[string]any{
+		"sub":         "external-user",
+		"caas_org_id": env.tenantID,
+		"user_roles":  []string{"viewer"},
+		"exp":         float64(time.Now().Add(time.Hour).Unix()),
+		"iat":         float64(time.Now().Unix()),
+	})
+	exchange := url.Values{}
+	exchange.Set("subject_token", subjectToken)
+	exchange.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	for name, req := range map[string]*http.Request{
+		"client_credentials": makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil),
+		"token_exchange":     makeTokenRequest("urn:ietf:params:oauth:grant-type:token-exchange", basicAuth(env.clientID, env.clientSecret), exchange),
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			env.handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if got := rr.Header().Get("Pragma"); got != "no-cache" {
+				t.Errorf("Pragma = %q, want no-cache", got)
+			}
+		})
+	}
+}

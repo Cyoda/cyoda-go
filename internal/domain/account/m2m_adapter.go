@@ -176,6 +176,7 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		"clientId", clientID,
 		"roles", roles,
 	)
+	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
 }
@@ -243,6 +244,7 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 		"tenantId", tID,
 		"clientId", clientID,
 	)
+	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, client.Roles))
 }

@@ -320,7 +320,16 @@ func writeTokenServerError(w http.ResponseWriter, op string, cause error) {
 		fmt.Sprintf("server_error [ticket: %s]", ticket))
 }
 
+// SetNoStore marks a response that carries a credential — a token or a
+// plaintext client secret — as never to be stored by a cache (RFC 6749 §5.1).
+// It must be called before the header is written.
+func SetNoStore(h http.Header) {
+	h.Set("Cache-Control", "no-store")
+	h.Set("Pragma", "no-cache")
+}
+
 func writeTokenResponse(w http.ResponseWriter, status int, body map[string]any) {
+	SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)

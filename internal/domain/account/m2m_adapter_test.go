@@ -760,6 +760,35 @@ func assertNoHashedSecretLeak(t *testing.T, op string, body []byte) {
 	}
 }
 
+// A response carrying a plaintext client secret is never cached: create and
+// reset set Cache-Control: no-store and Pragma: no-cache.
+func TestM2MAdapter_SecretResponsesAreNotCacheable(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	seedClient(t, h, tenantA, "CLIENTC")
+	for name, call := range map[string]func(rr *httptest.ResponseRecorder){
+		"create": func(rr *httptest.ResponseRecorder) {
+			h.CreateTechnicalUser(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA), genapi.CreateTechnicalUserParams{})
+		},
+		"reset": func(rr *httptest.ResponseRecorder) {
+			h.ResetTechnicalUserSecret(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTC/secret", nil), tenantA), "CLIENTC")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			call(rr)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+			if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+			if got := rr.Header().Get("Pragma"); got != "no-cache" {
+				t.Errorf("Pragma = %q, want no-cache", got)
+			}
+		})
+	}
+}
+
 // --- Cap ---
 
 func TestCreateTechnicalUser_AtCap_Returns400CapReached(t *testing.T) {

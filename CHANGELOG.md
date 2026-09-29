@@ -832,6 +832,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Responses that carry a credential are never cached.** A token from
+  `POST /oauth/token` (both grants) and the plaintext secret from
+  `POST /clients` and `PUT /clients/{clientId}/secret` now come with
+  `Cache-Control: no-store` and `Pragma: no-cache`, as RFC 6749 §5.1
+  requires of a token response.
+
 - **An out-of-range grace period on issue or register names the field the
   request carries.** `POST /oauth/keys/keypair` and
   `POST /oauth/keys/trusted` answered `400` with "gracePeriodSec must be …"

@@ -243,6 +243,40 @@ func TestE2E_Clients_WithAdminRoleFlagOn(t *testing.T) {
 	adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil).Body.Close()
 }
 
+// TestE2E_Clients_CredentialResponsesAreNotCacheable: every response that
+// carries a credential — a create's and a reset's plaintext secret, a
+// client_credentials token — has Cache-Control: no-store and Pragma: no-cache
+// (RFC 6749 §5.1).
+func TestE2E_Clients_CredentialResponsesAreNotCacheable(t *testing.T) {
+	assertNoStore := func(t *testing.T, what string, resp *http.Response) []byte {
+		t.Helper()
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s: %d %s", what, resp.StatusCode, withheld(resp.StatusCode, raw))
+		}
+		if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", what, got)
+		}
+		if got := resp.Header.Get("Pragma"); got != "no-cache" {
+			t.Errorf("%s: Pragma = %q, want no-cache", what, got)
+		}
+		return raw
+	}
+
+	// The header checks report with Errorf, so the delete is registered
+	// before anything can end the test with the client left behind.
+	cred := decodeCredential(t, "create client", assertNoStore(t, "create",
+		adminRequest(t, http.MethodPost, "/clients", nil)))
+	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return suiteToken(t) })
+
+	reset := decodeCredential(t, "reset secret", assertNoStore(t, "reset",
+		adminRequest(t, http.MethodPut, "/clients/"+cred.id+"/secret", nil)))
+
+	assertNoStore(t, "client_credentials token",
+		postToken(t, url.Values{"grant_type": {"client_credentials"}}, reset.id, reset.secret))
+}
+
 // --- local helpers (not exported into the wider e2e harness) ---
 
 // statusForToken issues a /oauth/token request with the given creds and
