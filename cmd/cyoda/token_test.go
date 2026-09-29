@@ -59,8 +59,12 @@ func TestRunToken_StdoutIsOnlyTheToken(t *testing.T) {
 	if p.Claims["caas_org_id"] != "acme" || p.Claims["caas_user_id"] != "operator" || p.Claims["iss"] != "cyoda-test" {
 		t.Fatalf("claims = %v", p.Claims)
 	}
+	// runToken itself writes nothing to its stderr writer on success. Log
+	// lines from app.LoadEnvFiles (which env files were loaded) go to the
+	// process's stderr through slog's default handler, not to errOut, so this
+	// check does not see them; cli/token.md documents that they may appear.
 	if errOut.Len() != 0 {
-		t.Fatalf("stderr not empty: %q", errOut.String())
+		t.Fatalf("runToken wrote to its stderr writer on success: %q", errOut.String())
 	}
 }
 

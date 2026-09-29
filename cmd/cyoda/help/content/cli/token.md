@@ -57,7 +57,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 
 ## OUTPUT
 
-The token and a newline on stdout, nothing else. Errors go to stderr and never contain the token or key material.
+The token and a newline on stdout, nothing else, so `TOKEN=$(cyoda token …)` captures only the token. Errors go to stderr and never contain the token or key material. Informational log lines may also appear on stderr, for example which env files were loaded (see `cyoda help config`).
 
 ## EXIT CODES
 
