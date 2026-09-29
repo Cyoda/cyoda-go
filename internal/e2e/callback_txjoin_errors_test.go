@@ -62,7 +62,7 @@ func randSuffix(t *testing.T) string {
 // to seed a client belonging to tenantID without reaching into the store.
 func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) string {
 	t.Helper()
-	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}
@@ -103,7 +103,13 @@ func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string)
 // fetchTokenFor obtains a client-credentials bearer for the given creds on this stack.
 func (h *callbackHarness) fetchTokenFor(t *testing.T, clientID, secret string) string {
 	t.Helper()
-	form := url.Values{"grant_type": {"client_credentials"}}
+	return h.grantToken(t, url.Values{"grant_type": {"client_credentials"}}, clientID, secret)
+}
+
+// grantToken runs the /oauth/token grant form as the client clientID on this
+// stack and returns the issued bearer; any status but 200 fails the test.
+func (h *callbackHarness) grantToken(t *testing.T, form url.Values, clientID, secret string) string {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("token request: %v", err)

@@ -30,14 +30,7 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 		t.Fatalf("generate RSA key: %v", err)
 	}
 	kid := fmt.Sprintf("e2e-tx-%d", time.Now().UnixNano())
-	jwk := map[string]any{
-		"kty": "RSA",
-		"kid": kid,
-		"n":   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
-		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
-	}
-	resp := adminRequest(t, "POST", "/oauth/keys/trusted",
-		mustJSON(t, map[string]any{"keyId": kid, "jwk": jwk, "audience": "human"}))
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, trustedKeyBody(priv, kid)))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -55,17 +48,26 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 	return priv, kid
 }
 
-// exchangeSubject presents a subject token carrying sub and tenant, signed by
-// the trusted key, to the token-exchange grant as a fresh M2M client of the
-// suite tenant (the exchanging client's own tenant referenced by the
-// TenantMismatch test below).
-func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string) *http.Response {
+// trustedKeyBody is the POST /oauth/keys/trusted body registering priv's
+// public half under kid for the "human" audience.
+func trustedKeyBody(priv *rsa.PrivateKey, kid string) map[string]any {
+	return map[string]any{"keyId": kid, "audience": "human", "jwk": map[string]any{
+		"kty": "RSA",
+		"kid": kid,
+		"n":   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+	}}
+}
+
+// exchangeForm is the token-exchange grant form for a subject token carrying
+// sub, tenant and roles, signed by the trusted key priv/kid.
+func exchangeForm(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string, roles []string) url.Values {
 	t.Helper()
 	now := time.Now()
 	subject, err := auth.Sign(context.Background(), map[string]any{
 		"sub":         sub,
 		"caas_org_id": tenant,
-		"user_roles":  []string{"ROLE_USER"},
+		"user_roles":  roles,
 		"exp":         now.Add(time.Hour).Unix(),
 		"iat":         now.Unix(),
 		"jti":         uuid.NewString(),
@@ -73,13 +75,21 @@ func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string
 	if err != nil {
 		t.Fatalf("sign subject token: %v", err)
 	}
-	form := url.Values{
+	return url.Values{
 		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
 	}
+}
+
+// exchangeSubject presents a subject token carrying sub and tenant, signed by
+// the trusted key, to the token-exchange grant as a fresh M2M client of the
+// suite tenant (the exchanging client's own tenant referenced by the
+// TenantMismatch test below).
+func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string) *http.Response {
+	t.Helper()
 	id, secret := createClient(t, false)
-	return postToken(t, form, id, secret)
+	return postToken(t, exchangeForm(t, priv, kid, sub, tenant, []string{"ROLE_USER"}), id, secret)
 }
 
 // TestToken_TokenExchange_InvalidatedKeyGracePeriod: a key invalidated with a
@@ -124,24 +134,7 @@ func TestToken_TokenExchange_KeyFromAnotherTenant_400(t *testing.T) {
 	otherTenant := fmt.Sprintf("e2e-tx-other-%d", time.Now().UnixNano())
 	clientID, secret := createM2MClient(t, otherTenant, "other-m2m", []string{"ROLE_M2M"})
 
-	now := time.Now()
-	subject, err := auth.Sign(context.Background(), map[string]any{
-		"sub":         "ext-user-1",
-		"caas_org_id": otherTenant,
-		"user_roles":  []string{"ROLE_ADMIN"},
-		"exp":         now.Add(time.Hour).Unix(),
-		"iat":         now.Unix(),
-		"jti":         uuid.NewString(),
-	}, auth.NewRSASigner(priv), kid)
-	if err != nil {
-		t.Fatalf("sign subject token: %v", err)
-	}
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {subject},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
-	}
-	resp := postToken(t, form, clientID, secret)
+	resp := postToken(t, exchangeForm(t, priv, kid, "ext-user-1", otherTenant, []string{"ROLE_ADMIN"}), clientID, secret)
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusBadRequest {

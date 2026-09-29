@@ -1161,7 +1161,7 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	// A self-signed admin token in the shape of a client_credentials token —
 	// this stack has no M2M client of its own; signing directly with rsaKey
 	// (registered as this stack's default signing key) needs no round trip.
-	token, err := signServiceToken(rsaKey, cfg.IAM.JWTIssuer, "suite-admin", "test-tenant", "standalone-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	token, err := signServiceToken(rsaKey, cfg.IAM.JWTIssuer, cfg.IAM.JWTAudience, "suite-admin", "test-tenant", "standalone-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}

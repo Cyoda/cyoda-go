@@ -11,7 +11,10 @@ import (
 )
 
 func init() {
-	Register(NamedTest{Name: "SigningKeyPairFollowsTheCluster", Fn: RunSigningKeyPairFollowsTheCluster})
+	Register(
+		NamedTest{Name: "SigningKeyPairFollowsTheCluster", Fn: RunSigningKeyPairFollowsTheCluster},
+		NamedTest{Name: "InvalidatedKeyPairGraceFollowsTheCluster", Fn: RunInvalidatedKeyPairGraceFollowsTheCluster},
+	)
 }
 
 // keyPairChangeBound is how long another node may take to apply a key-pair
@@ -32,6 +35,11 @@ func eventually(t *testing.T, what string, cond func() bool) {
 		time.Sleep(200 * time.Millisecond)
 	}
 }
+
+// keyPairGrace is the grace period RunInvalidatedKeyPairGraceFollowsTheCluster
+// invalidates with. The change must reach B, and B's in-grace checks finish,
+// inside it; the gossip message normally arrives well under a second.
+const keyPairGrace = 10 * time.Second
 
 var probeHTTP = &http.Client{Timeout: 30 * time.Second}
 
@@ -164,5 +172,94 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 	})
 	if code := modelListStatus(t, urls[1], bootTok); code != http.StatusOK {
 		t.Fatalf("control: B refuses the token signed before the issue too: %d, want 200", code)
+	}
+}
+
+// currentKeyID is the keyId of GET …/keypair/current?audience=client on the
+// node c targets; "" when that is not 200.
+func currentKeyID(t *testing.T, c *client.Client) string {
+	t.Helper()
+	code, body, err := c.CurrentKeyPairRaw(t, "client")
+	if err != nil || code != http.StatusOK {
+		return ""
+	}
+	var kp struct {
+		KeyID string `json:"keyId"`
+	}
+	if json.Unmarshal(body, &kp) != nil {
+		return ""
+	}
+	return kp.KeyID
+}
+
+// RunInvalidatedKeyPairGraceFollowsTheCluster: a key pair issued on A and
+// invalidated on A with a grace period verifies on B until the validTo the
+// grace period sets, is refused on B after it, and is never B's signer once
+// B has the change.
+//
+// Audience "client" without invalidateCurrent, as in
+// RunSigningKeyPairFollowsTheCluster, so the bootstrap key the shared cluster
+// signs its fixture tokens with is untouched; the key pair is deleted on
+// cleanup.
+func RunInvalidatedKeyPairGraceFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) {
+	urls := fixture.BaseURLs()
+	tenant := fixture.NewTenant(t)
+	a := client.NewClient(urls[0], tenant.Token)
+	b := client.NewClient(urls[1], tenant.Token)
+
+	code, body, err := a.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	if err != nil || code != http.StatusOK {
+		t.Fatalf("issue on A: %d %v", code, err)
+	}
+	var kp struct {
+		KeyID string `json:"keyId"`
+	}
+	if err := json.Unmarshal(body, &kp); err != nil || kp.KeyID == "" {
+		t.Fatalf("issue on A: no keyId in the response (decode error: %v)", err)
+	}
+	a.DeleteKeyPairOnCleanup(t, kp.KeyID)
+
+	id, secret := newM2MClient(t, a)
+	tok := clientToken(t, urls[0], id, secret)
+	if got := client.TokenKID(tok); got != kp.KeyID {
+		t.Fatalf("A signs with %q, want the issued key %q", got, kp.KeyID)
+	}
+	eventually(t, "B has the key pair issued on A as its signer", func() bool {
+		return currentKeyID(t, b) == kp.KeyID
+	})
+	if code := modelListStatus(t, urls[1], tok); code != http.StatusOK {
+		t.Fatalf("control: B with a token of the issued key: %d, want 200", code)
+	}
+
+	earliestValidTo := time.Now().Add(keyPairGrace)
+	if code, _, err := a.InvalidateKeyPairWithGraceRaw(t, kp.KeyID, keyPairGrace); err != nil || code != http.StatusOK {
+		t.Fatalf("invalidate on A: %d %v", code, err)
+	}
+	latestValidTo := time.Now().Add(keyPairGrace)
+
+	// B's current key pair moves off the invalidated one only once B has the
+	// change; until then B would accept the token for want of it.
+	for cur := currentKeyID(t, b); cur == "" || cur == kp.KeyID; cur = currentKeyID(t, b) {
+		if !time.Now().Before(earliestValidTo) {
+			t.Fatalf("B did not apply the invalidate within the %s grace period", keyPairGrace)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if code := modelListStatus(t, urls[1], tok); code != http.StatusOK {
+		t.Errorf("B inside the grace period: %d, want 200", code)
+	}
+	if got := currentKeyID(t, b); got == kp.KeyID {
+		t.Errorf("B's current key pair is the invalidated %q", got)
+	}
+	if now := time.Now(); !now.Before(earliestValidTo) {
+		t.Fatalf("the in-grace checks on B ended %s after the earliest end of the grace period; they prove nothing", now.Sub(earliestValidTo))
+	}
+
+	time.Sleep(time.Until(latestValidTo.Add(time.Second)))
+	if code := modelListStatus(t, urls[1], tok); code != http.StatusUnauthorized {
+		t.Errorf("B after the grace period: %d, want 401", code)
+	}
+	if got := currentKeyID(t, b); got == kp.KeyID {
+		t.Errorf("B's current key pair after the grace period is the invalidated %q", got)
 	}
 }

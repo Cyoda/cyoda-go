@@ -32,6 +32,14 @@ func (c *Client) InvalidateKeyPairRaw(t *testing.T, kid string) (int, []byte, er
 	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/keypair/"+url.PathEscape(kid)+"/invalidate", nil)
 }
 
+// InvalidateKeyPairWithGraceRaw issues POST /api/oauth/keys/keypair/{id}/invalidate
+// with gracePeriodSec set to grace (whole seconds).
+func (c *Client) InvalidateKeyPairWithGraceRaw(t *testing.T, kid string, grace time.Duration) (int, []byte, error) {
+	t.Helper()
+	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/keypair/"+url.PathEscape(kid)+"/invalidate",
+		map[string]any{"gracePeriodSec": int64(grace / time.Second)})
+}
+
 // ReactivateKeyPairRaw issues POST /api/oauth/keys/keypair/{id}/reactivate.
 func (c *Client) ReactivateKeyPairRaw(t *testing.T, kid string, validTo time.Time) (int, []byte, error) {
 	t.Helper()

@@ -119,18 +119,19 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 }
 
 // signServiceToken signs a token in the shape of a client_credentials token
-// (scopes → a service principal) with key, for the given issuer/sub/tenant/
-// userID/roles. Every "admin token for a stack" helper in this package
-// (suiteTokenRaw, callbackHarness.fetchToken/adminTokenFor,
-// adminTokenForTenant, newStandaloneApp, bootstrapToken) is a thin wrapper
-// over this one signing call. It never touches *testing.T.
-func signServiceToken(key *rsa.PrivateKey, issuer, sub, tenant, userID string, roles []string) (string, error) {
+// (scopes → a service principal) with key, for the given issuer/audience/
+// sub/tenant/userID/roles; an empty audience omits the aud claim, which a
+// stack with CYODA_JWT_AUDIENCE set requires. Every "admin token for a stack"
+// helper in this package (suiteTokenRaw, callbackHarness.fetchToken/
+// adminTokenFor, adminTokenForTenant, newStandaloneApp, bootstrapToken) is a
+// thin wrapper over this one signing call. It never touches *testing.T.
+func signServiceToken(key *rsa.PrivateKey, issuer, audience, sub, tenant, userID string, roles []string) (string, error) {
 	kid, err := auth.DeriveKID(&key.PublicKey)
 	if err != nil {
 		return "", err
 	}
 	now := time.Now()
-	return auth.Sign(context.Background(), map[string]any{
+	claims := map[string]any{
 		"sub":          sub,
 		"iss":          issuer,
 		"caas_user_id": userID,
@@ -140,14 +141,18 @@ func signServiceToken(key *rsa.PrivateKey, issuer, sub, tenant, userID string, r
 		"exp":          now.Add(time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
-	}, auth.NewRSASigner(key), kid)
+	}
+	if audience != "" {
+		claims["aud"] = audience
+	}
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
 }
 
 // suiteTokenRaw signs an admin token for the shared server in the shape of a
 // client_credentials token (scopes → a service principal), so attribution
 // assertions are unchanged. It never touches *testing.T.
 func suiteTokenRaw() (string, error) {
-	return signServiceToken(e2eSignKey, e2eIssuer, "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 }
 
 // suiteToken is the test-goroutine form of suiteTokenRaw.

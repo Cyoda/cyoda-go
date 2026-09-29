@@ -578,7 +578,7 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 // client belonging to tenantID without reaching into the store.
 func adminTokenForTenant(t *testing.T, tenant, user string) string {
 	t.Helper()
-	tok, err := signServiceToken(e2eSignKey, e2eIssuer, user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
+	tok, err := signServiceToken(e2eSignKey, e2eIssuer, "", user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}
