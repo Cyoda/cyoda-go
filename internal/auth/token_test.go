@@ -71,7 +71,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
 
-	handler := auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, "cyoda", 3600)
+	handler := auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, "cyoda", "", 3600)
 
 	return &testTokenEnv{
 		keyStore:        keyStore,
@@ -84,6 +84,45 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		trustedKey:      trustedKey,
 		trustedKID:      trustedKID,
 		tenantID:        tenantID,
+	}
+}
+
+// setupTokenEnvWithAudience is setupTokenEnv with a configured audience.
+func setupTokenEnvWithAudience(t *testing.T, audience string) *testTokenEnv {
+	t.Helper()
+	env := setupTokenEnv(t)
+	env.handler = auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, "cyoda", audience, 3600)
+	return env
+}
+
+func TestTokenEndpoint_ClientCredentialsCarriesConfiguredAudience(t *testing.T) {
+	env := setupTokenEnvWithAudience(t, "cyoda-api")
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	tok, _ := decodeResponse(t, rr)["access_token"].(string)
+	p, err := auth.Parse(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Claims["aud"] != "cyoda-api" {
+		t.Fatalf("aud = %v, want cyoda-api", p.Claims["aud"])
+	}
+}
+
+func TestTokenEndpoint_NoAudienceConfiguredOmitsAud(t *testing.T) {
+	env := setupTokenEnv(t)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	tok, _ := decodeResponse(t, rr)["access_token"].(string)
+	p, err := auth.Parse(tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, present := p.Claims["aud"]; present {
+		t.Fatalf("aud present without a configured audience: %v", p.Claims["aud"])
 	}
 }
 
@@ -211,7 +250,7 @@ func TestTokenClientCredentialsUnknownClient(t *testing.T) {
 }
 
 func TestTokenExchangeValid(t *testing.T) {
-	env := setupTokenEnv(t)
+	env := setupTokenEnvWithAudience(t, "cyoda-api")
 
 	subjectClaims := map[string]any{
 		"sub":          "external-user",
@@ -279,6 +318,9 @@ func TestTokenExchangeValid(t *testing.T) {
 	}
 	if act["sub"] != env.clientID {
 		t.Errorf("expected act.sub %q, got %v", env.clientID, act["sub"])
+	}
+	if parsed.Claims["aud"] != "cyoda-api" {
+		t.Errorf("expected aud %q, got %v", "cyoda-api", parsed.Claims["aud"])
 	}
 }
 
@@ -708,6 +750,7 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 		env.trustedKeyStore,
 		env.m2mStore,
 		"cyoda-test",
+		"",
 		3600,
 	)
 

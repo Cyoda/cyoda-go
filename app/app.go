@@ -363,6 +363,7 @@ func New(cfg Config) *App {
 		authSvc, err = auth.NewAuthService(systemCtx, auth.AuthConfig{
 			SigningKeyPEM:     cfg.IAM.JWTSigningKey,
 			Issuer:            cfg.IAM.JWTIssuer,
+			Audience:          cfg.IAM.JWTAudience,
 			ExpirySeconds:     cfg.IAM.JWTExpiry,
 			IAMFeatures:       cfg.IAM.AuthIAMFeatures(),
 			KV:                kvStore,

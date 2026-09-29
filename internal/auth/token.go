@@ -21,15 +21,18 @@ type tokenHandler struct {
 	trustedKeyStore TrustedKeyStore
 	m2mStore        M2MClientStore
 	issuer          string
+	audience        string // empty: no aud claim
 	expirySeconds   int
 }
 
-// NewTokenHandler creates a new token endpoint handler.
+// NewTokenHandler creates the token endpoint handler. audience, when not
+// empty, is set as the aud claim of every issued token: a server that checks
+// the audience (CYODA_JWT_AUDIENCE) must accept its own tokens.
 func NewTokenHandler(
 	keyStore KeyStore,
 	trustedKeyStore TrustedKeyStore,
 	m2mStore M2MClientStore,
-	issuer string,
+	issuer, audience string,
 	expirySeconds int,
 ) http.Handler {
 	return &tokenHandler{
@@ -37,8 +40,17 @@ func NewTokenHandler(
 		trustedKeyStore: trustedKeyStore,
 		m2mStore:        m2mStore,
 		issuer:          issuer,
+		audience:        audience,
 		expirySeconds:   expirySeconds,
 	}
+}
+
+// withAudience sets aud on claims when an audience is configured.
+func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
+	if h.audience != "" {
+		claims["aud"] = h.audience
+	}
+	return claims
 }
 
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -99,7 +111,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(r.Context(), claims, signer, kp.KID)
+	token, err := Sign(r.Context(), h.withAudience(claims), signer, kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return
@@ -238,7 +250,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		"jti":          uuid.NewString(),
 	}
 
-	token, err := Sign(r.Context(), claims, signer, kp.KID)
+	token, err := Sign(r.Context(), h.withAudience(claims), signer, kp.KID)
 	if err != nil {
 		writeTokenServerError(w, "Sign", err)
 		return
