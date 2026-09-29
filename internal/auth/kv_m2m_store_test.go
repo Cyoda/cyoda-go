@@ -236,6 +236,30 @@ func TestKVM2M_DeleteKeepsAStoreErrorWhenOwnershipCannotBeProven(t *testing.T) {
 	}
 }
 
+// A mere read failure on the index entry is not proof the entry is damaged:
+// unlike an undecodable entry, it carries no evidence about what the entry
+// names, so it is never treated as "the caller's own damaged entry" even
+// with an own record present. Delete must keep returning the store error and
+// touch neither the index entry nor the record.
+func TestKVM2M_DeleteKeepsAStoreErrorOnAnIndexReadFailureEvenWithAnOwnRecord(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	good := auth.NewKVM2MClientStore(mem, 0)
+	if _, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err != nil {
+		t.Fatal(err)
+	}
+	s := auth.NewKVM2MClientStore(&failNSKV{KeyValueStore: mem, ns: "m2m-client-ids", failGet: true}, 0)
+	err := s.Delete(systemCtx(), "acme", "C1")
+	if err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
+		t.Fatalf("delete: %v, want a store error", err)
+	}
+	if _, err := mem.Get(systemCtx(), "m2m-client-ids", "C1"); err != nil {
+		t.Fatalf("index entry touched on a mere read failure: %v", err)
+	}
+	if _, err := mem.Get(systemCtx(), "m2m-clients:acme", "C1"); err != nil {
+		t.Fatalf("record touched on a mere index read failure: %v", err)
+	}
+}
+
 // A damaged record in the caller's own tenant namespace already proves
 // ownership on its own (TestKVM2M_UndecodableRecord); with the index entry
 // also damaged, both are removed and Delete returns nil.
@@ -356,10 +380,12 @@ func TestKVM2M_NoPlaintextSecretStored(t *testing.T) {
 	}
 }
 
-// failNSKV fails every Put into one namespace, writing nothing.
+// failNSKV fails every Put into one namespace, writing nothing. With failGet
+// set, it fails every Get from that namespace too, reading nothing.
 type failNSKV struct {
 	spi.KeyValueStore
-	ns string
+	ns      string
+	failGet bool
 }
 
 func (k *failNSKV) Put(ctx context.Context, ns, key string, v []byte) error {
@@ -367,6 +393,13 @@ func (k *failNSKV) Put(ctx context.Context, ns, key string, v []byte) error {
 		return errors.New("injected: write failed")
 	}
 	return k.KeyValueStore.Put(ctx, ns, key, v)
+}
+
+func (k *failNSKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
+	if k.failGet && ns == k.ns {
+		return nil, errors.New("injected: read failed")
+	}
+	return k.KeyValueStore.Get(ctx, ns, key)
 }
 
 func TestKVM2M_CreateUndoesARecordWhenTheIndexWriteFails(t *testing.T) {

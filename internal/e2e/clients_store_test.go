@@ -328,6 +328,29 @@ func TestClientsStore_RawRecords(t *testing.T) {
 			http.StatusInternalServerError, "server_error")
 	})
 
+	t.Run("undecodable index entry, own record present", func(t *testing.T) {
+		c := createKeyStackClient(t, h.callbackHarness)
+		s.putRawKV(t, indexNS, c.id, "{")
+		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusOK {
+			t.Fatalf("delete of an own client with a damaged index entry: %d %s, want 200", code, body)
+		}
+		if s.hasRawKV(t, tenantNS, c.id) || s.hasRawKV(t, indexNS, c.id) {
+			t.Fatal("delete left the record or its damaged index entry behind")
+		}
+	})
+
+	t.Run("undecodable index entry, no own record", func(t *testing.T) {
+		c := createKeyStackClient(t, h.callbackHarness)
+		s.deleteRawKV(t, tenantNS, c.id)
+		s.putRawKV(t, indexNS, c.id, "{")
+		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusInternalServerError {
+			t.Fatalf("delete of a damaged index entry with no own record: %d %s, want 500", code, body)
+		}
+		if !s.hasRawKV(t, indexNS, c.id) {
+			t.Fatal("delete removed the index entry though ownership could not be proven")
+		}
+	})
+
 	t.Run("record without its index entry", func(t *testing.T) {
 		c := createKeyStackClient(t, h.callbackHarness)
 		s.deleteRawKV(t, indexNS, c.id)

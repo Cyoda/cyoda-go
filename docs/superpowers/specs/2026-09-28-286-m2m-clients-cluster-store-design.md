@@ -398,10 +398,13 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   undecodable record, and a record left without its index entry; the
   namespace proves ownership. An undecodable index entry is removed the same
   way when the tenant's namespace holds a record for the id (decodable or
-  not) — the namespace proves ownership there too. Without a record in the
-  tenant's namespace, ownership cannot be proven, so an undecodable index
-  entry is left untouched and the read failure is returned. An index entry
-  naming another tenant is never touched.
+  not) — the namespace proves ownership there too. A mere KV read failure on
+  the index entry is not the same as an undecodable one: it carries no
+  evidence of what the entry names, so it never takes that path even with a
+  record present. Without a record in the tenant's namespace — or on a bare
+  read failure regardless of the record — ownership cannot be proven, so the
+  index entry is left untouched and the read failure is returned. An index
+  entry naming another tenant is never touched.
 - **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
   between read and write is one round trip, not a bcrypt. `Get` the record in
   the tenant's namespace and the index entry; the client does not exist
@@ -542,6 +545,7 @@ Fixture constraints:
 | unknown id; a record without an index entry; wrong secret: each makes two reads and one bcrypt → 401 | ✓ | | | |
 | create: index `Put` fails, and a faulty KV whose `Put` commits then errors → index entry and record both gone | ✓ (faulty KV) | | | |
 | delete removes an undecodable record and a record without its index entry; never an index entry naming another tenant | ✓ | ✓ (raw KV write) | | |
+| delete removes an undecodable index entry when the caller's own tenant holds a record for the id → 200, both gone; with no own record → 500, index entry untouched; a mere index read failure (not undecodable) with an own record present → 500, nothing touched | ✓ | ✓ (raw KV write) | | |
 | reset of a record without its index entry → 404 | ✓ | | | |
 | undecodable index entry or record: token → 500; list skips with ERROR | ✓ | ✓ (raw KV write) | | |
 | failing KV on every method → store error, never not-found / invalid-client; adapter → 500 / 503; token → 500 | ✓ (faulty KV) | | | |

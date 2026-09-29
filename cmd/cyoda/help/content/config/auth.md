@@ -330,10 +330,11 @@ entry for the client id.** The `ticket` in `error_description` names the
 ERROR log line that carries the cause; a damaged record or index entry is
 also logged at ERROR with its client id. A damaged record is removed with
 `DELETE /clients/{clientId}`. `DELETE` also removes a damaged index entry,
-as long as the client's own tenant holds a record for that id (own namespace
+as long as the caller's tenant holds a record for that id (own namespace
 proves ownership); without a record in that tenant, ownership cannot be
-proven and `DELETE` still answers `500` — the entry then needs a direct KV
-repair. See `auth.clients`.
+proven and `DELETE` still answers `500` — the fix is then a direct edit of
+the storage backend: remove the key named by the client id from the
+`m2m-client-ids` namespace. See `auth.clients`.
 
 **The selected key pair is broken.** The log names the KID and the reason.
 The fix depends on why:

@@ -232,11 +232,14 @@ func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2
 // then the record if present — decodable or not; tenant's namespace proves
 // ownership. That includes an index entry that does not decode: if tenant's
 // namespace holds a record for id (decodable or not), the damaged entry is
-// removed along with the record. Without a record in tenant's namespace,
-// ownership cannot be proven, so a damaged index entry — which may name
-// another tenant — is left untouched and the read failure is returned. An
-// index entry naming another tenant is never touched. The caller has checked
-// clientID against the client-id grammar.
+// removed along with the record. A mere read failure on the index entry is
+// not the same as an undecodable one — it carries no evidence of what the
+// entry names — so it never takes that path, even with a record present:
+// the read failure is returned and nothing is touched. Without a record in
+// tenant's namespace, ownership cannot be proven either way, so the index
+// entry — which may name another tenant — is left untouched and the read
+// failure is returned. An index entry naming another tenant is never
+// touched. The caller has checked clientID against the client-id grammar.
 func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
 	ctx = noTx(ctx)
 	_, err := s.kv.Get(ctx, m2mTenantNamespace(tenant), clientID)
@@ -247,7 +250,7 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 	idxTenant, idxFound, err := s.getIndex(ctx, clientID)
 	idxOurs := idxFound && idxTenant == tenant
 	if err != nil {
-		if !recPresent {
+		if !recPresent || !errors.Is(err, errM2MUndecodable) {
 			return err
 		}
 		// The index entry does not decode, but tenant's own namespace holds a
