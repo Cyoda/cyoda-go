@@ -2,7 +2,9 @@
 
 Issue: #286. Delivered as two stacked PRs on `release/v0.9.0`: Part A (§4),
 then Part B (§5). Part B carries an SPI contract fix (§5.10) with its cassandra
-plugin change. Related: #624 (platform-operator role, same release),
+plugin change. Related: #632 (the machine-to-machine authentication model,
+which decides admin machine credentials, token-exchange role limits and
+stream lifetime), #624 (platform-operator role, same release),
 cyoda-go-cassandra#104 (consistency levels), #622 (stale bootstrap comment,
 closed by Part A).
 
@@ -17,7 +19,10 @@ at every layer. In its place, `cyoda token` signs a short-lived token offline
 with the signing key; an operator uses it for the first admin calls, such as
 creating M2M clients. Tokens issued by `/oauth/token` gain the `aud` claim,
 which they lack today, so a server configured with `CYODA_JWT_AUDIENCE`
-accepts them.
+accepts them. A rotation no longer ends the signing key, so routine key
+management never takes `cyoda token` away; only invalidating or deleting the
+signing key by its key id does. An invalidated key pair keeps verifying until
+the end of its grace period, as in Cloud, and never signs again.
 
 **Part B.** M2M clients are stored in the SYSTEM-tenant KV store, one
 namespace per tenant plus a global id index. There is no node copy: every
@@ -60,7 +65,11 @@ when the call returns 2xx, and survives a restart on a persistent backend.
    invalid client (401 / 404).
 10. `GET /clients` reads only the caller's tenant's records; a tenant's client
     count is capped.
-11. No reference to the bootstrap client remains in code, comments, tests,
+11. A rotation (`invalidateCurrent`) does not end the signing key; only an
+    invalidate or delete naming its key id does.
+12. An invalidated key pair verifies tokens until the end of its grace period
+    and never signs again; a grace period of 0 ends it at once.
+13. No reference to the bootstrap client remains in code, comments, tests,
     fixtures, the Helm chart, scripts, error messages or documentation outside
     `docs/superpowers/`, dated audit records and past `CHANGELOG.md` entries
     (§6).
@@ -103,18 +112,17 @@ cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <dura
 - The token serves HTTP and unary gRPC calls. gRPC streaming needs `ROLE_M2M`
   (`internal/grpc/streaming.go:33`); compute nodes use an M2M client, not a
   `cyoda token` token.
-- A token it signs is accepted only while the signing key is active on the
-  cluster. When the key has been invalidated or deleted through the API —
-  directly, or as a sibling of a rotation with `invalidateCurrent`
-  (`kv_key_store_admin.go:139-150`) — `cyoda token` no longer grants access,
-  which is what revoking the root key means. The operator's admin access then
-  comes from an OIDC admin or an admin M2M client created beforehand; with
-  neither, the only recovery is a new signing key, which retires every issued
-  key pair and every token (#285 spec §4). The help topic says so, and says to
-  set up another admin path before rotating the signing key out. #285's WARN
-  when the signing key is invalidated or deleted names `cyoda token`. #624
-  (same release) restricts the key-pair endpoints to platform operators, so a
-  tenant admin cannot end the signing key.
+- A token it signs is accepted while the signing key verifies on the cluster.
+  Rotations do not end it (§4.4); only an invalidate or delete that names its
+  key id does, and that is what revoking the root key means: `cyoda token`
+  then stops granting access (after the grace period, if one was given). The
+  operator's admin access then comes from an OIDC admin or an admin M2M client
+  created beforehand; with neither, the recovery is a new signing key, which
+  retires every issued key pair and every token (#285 spec §4). The help topic
+  says so. #285's WARN when the signing key is invalidated or deleted
+  (`kv_key_store.go` `logRevokedBootstrap`) names `cyoda token`. #624 (same
+  release) restricts the key-pair endpoints to platform operators, so a tenant
+  admin cannot revoke the signing key.
 
 ### 4.2 Removed
 
@@ -163,7 +171,34 @@ server against its own tokens. `AuthConfig` gains `Audience`, `NewTokenHandler`
 receives it, and both grants set `aud` when it is non-empty; `cyoda token`
 does the same.
 
-### 4.4 Getting started in jwt mode
+### 4.4 The signing key in rotations; grace periods
+
+**Rotation.** `Issue` with `invalidateCurrent` ends its siblings: the issued
+key pairs of the audience whose window is open, and today also the signing
+key (`internal/auth/kv_key_store_admin.go:139-160`). The signing key stops
+being a sibling. After a rotation it no longer signs anyway — the newest
+active key pair signs — but it keeps verifying, so `cyoda token` keeps
+working. This loses nothing: a rotation cannot protect against an exposed
+signing key, because that key opens every issued key pair, and replacing it
+is the only response (#285 spec §4). `invalidateCurrent` is documented as
+ending issued key pairs only, the first rotation included.
+
+**Grace.** Today an invalidated key pair stops verifying at once and the
+grace period only keeps its public key in JWKS (`VerificationKey` requires
+`Active`, `internal/auth/kv_key_store.go:206-217`; contract in
+`docs/cloud-parity/signing-key-window.md:13-16`). Cloud keeps an invalidated
+key valid until `validTo` = now + grace
+(`platform-service-iam/.../StoredJWKService.kt:607-624,710-713`). cyoda-go
+adopts that for verification: an invalidated key pair — issued or the signing
+key — verifies until its `validTo`, the end of the grace period. It never
+signs again: signer selection keeps requiring `Active`. A grace period of 0,
+the default (`internal/domain/account/keys_adapter.go:71-73`), ends
+verification at once, so revocation stays immediate when asked for. A deleted
+key pair never verifies. Trusted keys already behave this way
+(`GetForVerification` checks the window, not `Active`,
+`internal/auth/kv_trusted_store.go`).
+
+### 4.5 Getting started in jwt mode
 
 `README.md` "First real call" (`:78-113`), `quickstart.md`, `helm.md`,
 `deploy/docker/README.md:58-60`, `scripts/multi-node-docker/README.md` and the
@@ -179,7 +214,7 @@ chart's `NOTES.txt` become:
 
 Mock mode (the default) is unchanged.
 
-### 4.5 Tests and fixtures
+### 4.6 Tests and fixtures
 
 - `internal/e2e`: TestMain (`e2e_test.go:133-139`) and the harness
   (`callback_harness_test.go:228-234`) no longer set bootstrap variables.
@@ -207,7 +242,10 @@ Mock mode (the default) is unchanged.
 | `cyoda token`: claims, KID, `aud` only when configured; stdout carries only the token | ✓ | |
 | `cyoda token`: each flag refusal (tenant, user, empty role, ttl 0, ttl above the expiry) → 2; missing, unreadable or bad key → 1, no panic; stderr carries no token or key | ✓ | |
 | a `cyoda token` token is accepted on HTTP and on a unary gRPC call | | ✓ |
-| after the signing key is invalidated through the API, a `cyoda token` token is refused (own stack, `newKeyStackOnUnseeded`, `signing_keys_test.go:291`) | | ✓ |
+| after the signing key is invalidated through the API with grace 0, a `cyoda token` token is refused (own stack, `newKeyStackOnUnseeded`, `signing_keys_test.go:291`) | | ✓ |
+| rotation with `invalidateCurrent` on the signing key's audience: the new key pair signs; the signing key is not written, still verifies, and a `cyoda token` token is accepted; issued siblings are ended | ✓ | ✓ |
+| an invalidated key pair (issued, and the signing key) with grace N: verifies before `validTo`, refused after, never selected as signer; grace 0 → refused at once; a deleted key pair never verifies | ✓ | ✓ |
+| multi-node (postgres, shared cluster): an issued key pair invalidated on A with a grace period still verifies on B until its `validTo` | | multi-node |
 | `CYODA_JWT_AUDIENCE` set: `client_credentials` and token-exchange tokens accepted; a `cyoda token` token accepted; a token without `aud` refused (own stack) | ✓ | ✓ |
 | the server starts and serves with no bootstrap variables; a leftover `CYODA_BOOTSTRAP_CLIENT_ID` creates nothing | ✓ | |
 
@@ -266,13 +304,12 @@ type M2MClientStore interface {
 ```
 
 Errors: `ErrInvalidClient` (new; `Authenticate`), `ErrM2MClientNotFound`,
-`ErrM2MClientExists`, `ErrM2MClientCapReached` (new; `Create`),
-`ErrM2MAdminRoleDisabled` (new; `ResetSecret`). Any other error is the store
+`ErrM2MClientExists`, `ErrM2MClientCapReached` (new; `Create`). Any other error is the store
 failing and wraps the KV error, so `common.Internal` maps a
 storage-unavailable one to 503.
 
 `KVM2MClientStore` (`internal/auth/kv_m2m_store.go`):
-`NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int, adminRoleEnabled bool)`,
+`NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int)`,
 built by `NewAuthService` from `IAMFeatures`. It loads nothing at
 construction. Every method first removes any transaction from the context
 (`spi.WithTransaction(ctx, nil)`), because the postgres KV store joins a
@@ -320,9 +357,8 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
 - **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
   between read and write is one round trip, not a bcrypt. `Get` the record in
   the tenant's namespace and the index entry; the client does not exist
-  (§5.1) → `ErrM2MClientNotFound`; an admin client while admin-role grants are
-  disabled → `ErrM2MAdminRoleDisabled` (§5.6); `Put` the record with the new
-  hash and `updatedAt` now.
+  (§5.1) → `ErrM2MClientNotFound`; `Put` the record with the new hash and
+  `updatedAt` now.
 
 The token handler (`internal/auth/token.go:59-80,141`) calls `Authenticate`
 once and uses the returned client for both grants: `ErrInvalidClient` →
@@ -330,8 +366,7 @@ once and uses the returned client for both grants: `ErrInvalidClient` →
 (`token.go:305`, `500 server_error` with a ticket).
 
 The adapter maps `ErrM2MClientNotFound` → `404 M2M_CLIENT_NOT_FOUND`,
-`ErrM2MClientCapReached` → `400 M2M_CLIENT_CAP_REACHED`,
-`ErrM2MAdminRoleDisabled` → `404 FEATURE_DISABLED`, anything else →
+`ErrM2MClientCapReached` → `400 M2M_CLIENT_CAP_REACHED`, anything else →
 `common.Internal` (500 with a ticket, or `503 STORAGE_UNAVAILABLE`).
 
 ### 5.5 Cap
@@ -342,16 +377,12 @@ per-node mutex serialises the check on one node; creates on different nodes
 at the same moment can each pass it, so the cap can be exceeded by at most one
 record per node (no compare-and-set). Documented.
 
-### 5.6 Resetting an admin client
+### 5.6 Admin machine credentials
 
-Creating an admin client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
-(`m2m_adapter.go:123-126`, off by default, `internal/auth/iam_features.go:17-20`).
-Resetting one does not today (`m2m_adapter.go:222-266`), so a tenant admin can
-obtain an admin machine credential by resetting an existing admin client while
-the flag is off. With Part B, resetting an admin client needs the flag too,
-and answers `404 FEATURE_DISABLED` without it — after the tenant check, so
-another tenant's client still answers `404 M2M_CLIENT_NOT_FOUND`. Delete is not
-gated: revocation always works.
+Unchanged by this design. Whether admin M2M clients should exist, and the
+rule for creating and resetting them and for minting admin power through
+token exchange, belong to #632. The record's credential field
+(`hashedSecret`) is the one place that design extends to hold public keys.
 
 ### 5.7 Consistency and races
 
@@ -396,7 +427,6 @@ live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 | `PUT /clients/{clientId}/secret` | 200 | | new secret | stored now |
 | | 400 | `BAD_REQUEST` | id outside §5.2 | no |
 | | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's; a record without its index entry | no |
-| | 404 | `FEATURE_DISABLED` | an admin client while `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` is off | yes |
 | | 500 | | an undecodable record | yes |
 
 No gRPC surface manages clients (a search of `internal/grpc` and `api/grpc` for
@@ -457,7 +487,6 @@ Fixture constraints:
 | create on A → token on B at once; reset on A → old secret 401 on B; delete on A → 401 on B | | ✓ | | ✓ shared cluster |
 | create, reset, delete each survive a restart | | ✓ | | |
 | cap: at the cap → 400 `M2M_CLIENT_CAP_REACHED`; 0 → unbounded; a delete frees a slot; concurrent creates on one node stop at the cap | ✓ | ✓ | ✓ | |
-| reset of an admin client: flag off → 404 `FEATURE_DISABLED`; flag on → 200; another tenant's admin client → 404 `M2M_CLIENT_NOT_FOUND` | ✓ | ✓ | | |
 | token endpoint: id with NUL, invalid UTF-8, 101 characters, an encoded `:` → 401, no store read, one bcrypt | ✓ | ✓ | | |
 | unknown id; a record without an index entry; wrong secret: each makes two reads and one bcrypt → 401 | ✓ | | | |
 | create: index `Put` fails, and a faulty KV whose `Put` commits then errors → index entry and record both gone | ✓ (faulty KV) | | | |
@@ -518,9 +547,21 @@ of documentation and comments against this section.
   `scripts/multi-node-docker/README.md`.
 - Helm: `deploy/helm/cyoda/README.md`, `NOTES.txt`, `values.yaml` comments,
   `Chart.yaml:25`; `COMPATIBILITY.md:184` (the 0.9.0 chart row).
+- Signing-key rules (§4.4): `config/auth.md` §"JWT signing keypair rotation"
+  (`:236-262`: `invalidateCurrent` ends issued key pairs only; an invalidated
+  key verifies through its grace period and never signs); the OpenAPI
+  descriptions of `invalidateCurrent`, `invalidateGracePeriodSec` and
+  `gracePeriodSec` (`api/openapi.yaml:5542,5759,5903` and the schemas at
+  `:10586,10603,10708`), then `go generate ./api`;
+  `docs/cloud-parity/signing-key-window.md:13-16` and `signing-key-pairs.md`
+  (the grace rule now matches Cloud; the signing key is not a rotation
+  sibling — Cloud has no signing key from configuration);
+  `docs/ARCHITECTURE.md` §7.2; the `logRevokedBootstrap` WARN.
 - `CHANGELOG.md` `### Breaking`: the six variables and the chart's
-  `bootstrap.*` values are removed; use `cyoda token`. `### Fixed`: tokens from
-  `/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is set.
+  `bootstrap.*` values are removed; use `cyoda token`; `invalidateCurrent` no
+  longer ends the signing key; an invalidated key pair verifies until the end
+  of its grace period. `### Fixed`: tokens from `/oauth/token` carry `aud`
+  when `CYODA_JWT_AUDIENCE` is set.
 - Issues: #622 closed by Part A; a comment on #624 (the bootstrap client is no
   longer a route to a platform operator; `cyoda token` depends on the signing
   key staying active); a comment on #286.
@@ -540,28 +581,26 @@ with the reason.
 ### 6.2 Part B
 
 - `cyoda help`: `auth/clients.md` (clients stored and shared by the cluster;
-  the cap; resetting an admin client needs the flag; the documented races;
+  the cap; the documented races;
   500 / 503 on store failure); `auth/tokens.md` (`/oauth/token` 500 on store
   failure); `config/auth.md` and `config_registry.go`
-  (`CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`; `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
-  also gates reset); `errors/M2M_CLIENT_CAP_REACHED.md` (new);
-  `errors/FEATURE_DISABLED.md` (reset); `errors.md`.
+  (`CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`); `errors/M2M_CLIENT_CAP_REACHED.md`
+  (new); `errors.md`.
 - `README.md` configuration reference; `DefaultConfig()`.
 - `docs/ARCHITECTURE.md:1857` (the component table), §7.2's store text, and
   `:230` ("the M2M client table … does not re-check it" — the decoder now
   does).
 - OpenAPI: 503 on the four `/clients` operations, 400
-  `M2M_CLIENT_CAP_REACHED` on create, 404 `FEATURE_DISABLED` on reset;
+  `M2M_CLIENT_CAP_REACHED` on create;
   `go generate ./api`.
 - `docs/cloud-parity/m2m-clients.md` (new) and the README index: the cap and
-  its error code, and the reset gate, with a CaaS ticket. Clients being shared
+  its error code, with a CaaS ticket. Clients being shared
   and persistent is not a contract change (Cloud already behaves so).
 - `COMPATIBILITY.md`: the cyoda-go-spi pin; the cassandra plugin must include
   the absent-key `Delete` fix.
 - `CHANGELOG.md` `### Breaking`: clients stored and shared; the token endpoint
   answers 500 (was 401) on a store failure; `/clients` delete and reset answer
-  500 / 503 (was 404) on a store failure; resetting an admin client needs the
-  flag. `### Added`: the cap. `### Fixed`: absent-key `Delete` on cassandra.
+  500 / 503 (was 404) on a store failure. `### Added`: the cap. `### Fixed`: absent-key `Delete` on cassandra.
 - Code comments: `internal/auth/store.go` (the duplicated section header and
   the in-memory store go), `e2e/parity/multinode/signing_keys.go:56-57` and
   `e2e/parity/postgres/signing_keys_cluster_test.go:158` ("M2M clients are per
@@ -577,6 +616,9 @@ grep -nE 'Delete\(.*ErrNotFound|errors\.Is\(err, spi\.ErrNotFound\)' internal/au
 ## 7. Out of scope
 
 - A compare-and-set in the KV SPI (would close the §5.7 races).
+- The machine-to-machine authentication model — client authentication by
+  public key or federation, stream lifetime, principal types and scopes,
+  admin machine credentials, token-exchange and OIDC role limits: #632.
 - The platform-operator role: #624.
 - Cassandra consistency levels: cyoda-go-cassandra#104.
 - Cassandra multi-node fixture: cyoda-go-cassandra#35.
