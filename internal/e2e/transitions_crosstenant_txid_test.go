@@ -46,7 +46,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}
 
 	// Tenant B: a second M2M client in a different tenant.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", true)
 
 	getTransitionsAsB := func(txID string) (int, string) {
 		t.Helper()

@@ -45,7 +45,7 @@ type schedTenant struct {
 func newSchedTenant(t *testing.T) schedTenant {
 	t.Helper()
 	id := "schedq-" + randSuffix(t)
-	cid, secret := createM2MClient(t, id, "user-"+id, []string{"ROLE_ADMIN", "ROLE_M2M"})
+	cid, secret := createM2MClient(t, id, "user-"+id, true)
 	return schedTenant{id: id, clientID: cid, secret: secret}
 }
 

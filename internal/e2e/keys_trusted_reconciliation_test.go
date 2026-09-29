@@ -147,7 +147,7 @@ func TestTrusted_RegisterNonRSA_400UnsupportedKeyType(t *testing.T) {
 // own, so filling that tenant's cap does not affect any other test.
 func TestTrustedKey_CapReached_400(t *testing.T) {
 	tenant := fmt.Sprintf("e2e-cap-%d", time.Now().UnixNano())
-	clientID, secret := createM2MClient(t, tenant, "cap-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientID, secret := createM2MClient(t, tenant, "cap-admin", true)
 	limit := app.DefaultConfig().IAM.TrustedKeyMaxPerTenant
 
 	register := func(i int) *http.Response {

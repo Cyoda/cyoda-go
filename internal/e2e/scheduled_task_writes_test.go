@@ -200,7 +200,7 @@ func TestScheduledTaskWrites_DeleteAll_RemovesModelTasks_OtherTenantKept(t *test
 	createEntityE2E(t, model, 1, schedWritesPayload)
 
 	// Tenant B: same model name, its own entity and task.
-	bID, bSecret := createM2MClient(t, "tenant-b-stw", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	bID, bSecret := createM2MClient(t, "tenant-b-stw", "user-b", true)
 	asB := func(method, path, body string) {
 		t.Helper()
 		var raw []byte

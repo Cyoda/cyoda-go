@@ -28,7 +28,7 @@ func TestE2E_Clients_HelpersDeleteTheirClients(t *testing.T) {
 	var suiteID, otherID string
 	t.Run("create", func(t *testing.T) {
 		suiteID, _ = createClient(t, false)
-		otherID, _ = createM2MClient(t, otherTenant, otherUser, []string{"ROLE_M2M"})
+		otherID, _ = createM2MClient(t, otherTenant, otherUser, false)
 	})
 	if listsClient(t, suiteToken(t), suiteID) {
 		t.Errorf("createClient left client %s behind in the suite tenant", suiteID)
@@ -296,7 +296,7 @@ func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
 	}
 
 	// Seed tenant B with admin privileges via store-direct seeding.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", true)
 
 	// Tenant B attempts to delete tenant A's client.
 	delResp := adminRequestAs(t, clientBID, clientBSecret, "DELETE", "/clients/"+tenantAClient.ClientId, nil)
