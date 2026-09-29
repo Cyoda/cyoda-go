@@ -566,6 +566,7 @@ Fixture constraints:
 | another tenant: absent from list; delete and reset → 404 with the absent-client body | ✓ | ✓ | ✓ | |
 | create on A → token on B at once; reset on A → old secret 401 on B; delete on A → 401 on B | | ✓ | | ✓ shared cluster |
 | create, reset, delete each survive a restart | | ✓ | | |
+| `/clients` refusals: unauthenticated → 401 and not admin → 403 on all four operations; an id outside §5.2 → 400 `BAD_REQUEST` on delete and reset; `withAdminRole=true` while disabled → 404 `FEATURE_DISABLED` (a stack of its own) | ✓ (401 on list only) | ✓ | | |
 | cap: at the cap → 400 `M2M_CLIENT_CAP_REACHED`; 0 → unbounded; a delete frees a slot; concurrent creates on one node stop at the cap | ✓ | ✓ | ✓ | |
 | token endpoint: id with NUL, invalid UTF-8, 101 characters, an encoded `:` → 401, no store read, one bcrypt | ✓ | ✓ | | |
 | unknown id; a record without an index entry; wrong secret: each makes two reads and one bcrypt → 401 | ✓ | | | |

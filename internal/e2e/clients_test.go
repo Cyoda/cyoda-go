@@ -11,14 +11,16 @@ import (
 	"testing"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // --- Test cases for the /clients OpenAPI surface ---
 //
 // All requests go through the chi router via adminRequest (the suite's
-// admin token). The M2M-admin-role feature flag is enabled in TestMain
-// so withAdminRole=true is the happy path here; the flag-off case is
-// covered by the unit suite per spec D9.
+// admin token) unless a test names another caller. The M2M-admin-role
+// feature flag is enabled in TestMain, so withAdminRole=true is the happy
+// path on the shared server; TestE2E_Clients_AdminRoleFlagOff_404 builds a
+// stack of its own with the flag off.
 
 // TestE2E_Clients_HelpersDeleteTheirClients pins that createClient and
 // createM2MClient delete the client they create when the calling test ends,
@@ -215,6 +217,76 @@ func TestE2E_Clients_WithAdminRoleFlagOn(t *testing.T) {
 	}
 	if !containsAnyString(scopes, "ROLE_M2M") {
 		t.Errorf("withAdminRole=true should still include ROLE_M2M; got %v", scopes)
+	}
+}
+
+// TestE2E_Clients_AdminRoleFlagOff_404 asserts that POST
+// /clients?withAdminRole=true answers 404 FEATURE_DISABLED on a stack whose
+// M2M-admin-role flag is off. TestMain turns the flag on for the shared
+// server, so the test builds a stack of its own.
+func TestE2E_Clients_AdminRoleFlagOff_404(t *testing.T) {
+	h := newCalloutHarness(t, func(cfg *app.Config) { cfg.IAM.M2MAdminRoleEnabled = false })
+	resp := h.DoAuth(t, http.MethodPost, "/api/clients?withAdminRole=true", "", "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /clients?withAdminRole=true with the flag off: %d, want 404: %s", resp.StatusCode, withheld(resp.StatusCode, raw))
+	}
+	if code := problemErrorCode(string(raw)); code != "FEATURE_DISABLED" {
+		t.Errorf("errorCode %q, want FEATURE_DISABLED: %s", code, raw)
+	}
+}
+
+// TestE2E_Clients_NonAdmin_403 asserts that a caller without ROLE_ADMIN gets
+// 403 FORBIDDEN from all four /clients operations, and that the client it
+// named for delete and reset still authenticates afterwards.
+func TestE2E_Clients_NonAdmin_403(t *testing.T) {
+	id, secret := createClient(t, false)
+	nonAdmin, err := signServiceToken(e2eSignKey, e2eIssuer, "", "clients-non-admin", "test-tenant", "clients-non-admin", []string{"ROLE_USER"})
+	if err != nil {
+		t.Fatalf("sign non-admin token: %v", err)
+	}
+	for _, op := range []struct{ name, method, path string }{
+		{"list", http.MethodGet, "/api/clients"},
+		{"create", http.MethodPost, "/api/clients"},
+		{"delete", http.MethodDelete, "/api/clients/" + id},
+		{"reset", http.MethodPut, "/api/clients/" + id + "/secret"},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			resp := unauthRequest(t, op.method, op.path, "Bearer "+nonAdmin)
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusForbidden {
+				t.Fatalf("non-admin %s %s: %d, want 403: %s", op.method, op.path, resp.StatusCode, withheld(resp.StatusCode, raw))
+			}
+			if code := problemErrorCode(string(raw)); code != "FORBIDDEN" {
+				t.Errorf("non-admin %s %s: errorCode %q, want FORBIDDEN: %s", op.method, op.path, code, raw)
+			}
+		})
+	}
+	if code := statusForToken(t, id, secret); code != http.StatusOK {
+		t.Errorf("client after the non-admin delete and reset: %d, want 200", code)
+	}
+}
+
+// TestE2E_Clients_IDOutsideGrammar_400 asserts that DELETE and PUT .../secret
+// answer 400 BAD_REQUEST for a path id outside the client-id grammar.
+func TestE2E_Clients_IDOutsideGrammar_400(t *testing.T) {
+	for _, op := range []struct{ name, method, path string }{
+		{"delete", http.MethodDelete, "/clients/a-b"},
+		{"reset", http.MethodPut, "/clients/a-b/secret"},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			resp := adminRequest(t, op.method, op.path, nil)
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %s: %d, want 400: %s", op.method, op.path, resp.StatusCode, withheld(resp.StatusCode, raw))
+			}
+			if code := problemErrorCode(string(raw)); code != "BAD_REQUEST" {
+				t.Errorf("%s %s: errorCode %q, want BAD_REQUEST: %s", op.method, op.path, code, raw)
+			}
+		})
 	}
 }
 
