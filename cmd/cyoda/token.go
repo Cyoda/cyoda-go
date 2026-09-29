@@ -61,8 +61,8 @@ func runToken(args []string, stdout, stderr io.Writer) int {
 	if !ttlSet && *ttl > maxTTL {
 		*ttl = maxTTL
 	}
-	if *ttl <= 0 || *ttl > maxTTL {
-		fmt.Fprintf(stderr, "cyoda token: --ttl must be greater than 0 and at most %ds (CYODA_JWT_EXPIRY_SECONDS)\n", settings.ExpirySeconds)
+	if *ttl < time.Second || *ttl > maxTTL {
+		fmt.Fprintf(stderr, "cyoda token: --ttl must be at least 1s and at most %ds (CYODA_JWT_EXPIRY_SECONDS)\n", settings.ExpirySeconds)
 		return 2
 	}
 	req := auth.OperatorTokenRequest{

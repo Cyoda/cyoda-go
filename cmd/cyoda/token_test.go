@@ -125,6 +125,19 @@ func TestRunToken_ExplicitTTLAboveShortExpiryExit2(t *testing.T) {
 	}
 }
 
+// The --ttl flag error states both bounds, so a sub-second value is told why.
+func TestRunToken_TTLErrorStatesTheBounds(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme", "--ttl", "1ns"}, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2 (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "at least 1s and at most 3600s") {
+		t.Fatalf("stderr %q does not state the bounds", errOut.String())
+	}
+}
+
 func TestRunToken_FlagErrorsExit2(t *testing.T) {
 	_, pemText := tokenTestKey(t)
 	setTokenEnv(t, pemText)
@@ -134,6 +147,8 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 		"oidc user":    {"--tenant", "acme", "--user", "oidc:x"},
 		"empty role":   {"--tenant", "acme", "--roles", "ROLE_ADMIN,,ROLE_M2M"},
 		"zero ttl":     {"--tenant", "acme", "--ttl", "0s"},
+		"1ns ttl":      {"--tenant", "acme", "--ttl", "1ns"},
+		"999ms ttl":    {"--tenant", "acme", "--ttl", "999ms"},
 		"ttl too long": {"--tenant", "acme", "--ttl", "61m"},
 		"unknown flag": {"--tenant", "acme", "--nope"},
 		"positional":   {"--tenant", "acme", "extra"},

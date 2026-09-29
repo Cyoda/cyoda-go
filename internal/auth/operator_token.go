@@ -43,8 +43,10 @@ func ValidateOperatorTokenRequest(req OperatorTokenRequest) error {
 			return errors.New("a role is empty")
 		}
 	}
-	if req.TTL <= 0 {
-		return errors.New("ttl must be greater than 0")
+	// iat and exp are whole seconds, so a sub-second ttl would give a token
+	// that has expired when it is issued.
+	if req.TTL < time.Second {
+		return errors.New("ttl must be at least 1s")
 	}
 	if req.Issuer == "" {
 		return errors.New("issuer is required")
