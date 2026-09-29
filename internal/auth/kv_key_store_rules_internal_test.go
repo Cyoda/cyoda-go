@@ -206,21 +206,30 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 func TestKVKeyStore_VerificationRule(t *testing.T) {
 	almostPast := time.Now().Add(-time.Minute)
 	future := time.Now().Add(time.Hour)
+	laterFuture := time.Now().Add(2 * time.Hour)
 	past := time.Now().Add(-time.Hour)
 
 	cases := []struct {
-		name   string
-		active bool
-		from   time.Time
-		to     *time.Time
-		broken bool
-		wantOK bool
+		name      string
+		bootstrap bool
+		active    bool
+		from      time.Time
+		to        *time.Time
+		broken    bool
+		deleted   bool
+		wantOK    bool
 	}{
 		{name: "owned active in window verifies", active: true, from: almostPast, wantOK: true},
 		{name: "owned inactive does not verify", active: false, from: almostPast, wantOK: false},
 		{name: "owned future window does not verify", active: true, from: future, wantOK: false},
 		{name: "owned expired does not verify", active: true, from: past, to: &almostPast, wantOK: false},
 		{name: "broken record never verifies", active: true, from: almostPast, broken: true, wantOK: false},
+		{name: "owned inactive with future validTo verifies (grace)", active: false, from: almostPast, to: &future, wantOK: true},
+		{name: "owned inactive with past validTo does not verify", active: false, from: past, to: &almostPast, wantOK: false},
+		{name: "owned inactive with future validFrom does not verify (window)", active: false, from: future, to: &laterFuture, wantOK: false},
+		{name: "bootstrap state inactive with no validTo does not verify", bootstrap: true, active: false, from: time.Time{}, wantOK: false},
+		{name: "bootstrap state inactive with future validTo verifies", bootstrap: true, active: false, from: time.Time{}, to: &future, wantOK: true},
+		{name: "bootstrap state deleted with future validTo does not verify", bootstrap: true, active: false, from: time.Time{}, to: &future, deleted: true, wantOK: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -235,20 +244,34 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var b []byte
-			if tc.broken {
-				b = brokenRecord(t, v, testKID("kid1"), "human", tc.from, tc.to)
-			} else {
-				b = issuedRecordFull(t, v, testKID("kid1"), "human", tc.active, tc.from, tc.to)
-			}
-			if err := kv.Put(ctx, signingKeysNamespace, testKID("kid1"), b); err != nil {
-				t.Fatal(err)
+			kid := testKID("kid1")
+			switch {
+			case tc.bootstrap:
+				kid = bootKID
+				b, err := encodeSigningRecord(signingRecord{
+					Kind: recordKindBootstrap, KID: bootKID, Active: tc.active,
+					ValidFrom: fmtTime(tc.from), ValidTo: fmtTimePtr(tc.to), Deleted: tc.deleted,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := kv.Put(ctx, signingKeysNamespace, bootKID, b); err != nil {
+					t.Fatal(err)
+				}
+			case tc.broken:
+				if err := kv.Put(ctx, signingKeysNamespace, kid, brokenRecord(t, v, kid, "human", tc.from, tc.to)); err != nil {
+					t.Fatal(err)
+				}
+			default:
+				if err := kv.Put(ctx, signingKeysNamespace, kid, issuedRecordFull(t, v, kid, "human", tc.active, tc.from, tc.to)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = s.VerificationKey(testKID("kid1"))
+			_, err = s.VerificationKey(kid)
 			ok := err == nil
 			if ok != tc.wantOK {
 				t.Fatalf("VerificationKey ok = %v, want %v (err=%v)", ok, tc.wantOK, err)

@@ -38,6 +38,14 @@ func (kp *KeyPair) InWindow(now time.Time) bool {
 	return !now.Before(kp.ValidFrom) && (kp.ValidTo == nil || now.Before(*kp.ValidTo))
 }
 
+// Verifies reports whether the key pair may verify a token at now: inside its
+// window, and active or in the grace period an invalidation gave it (an
+// inactive key pair with a validTo). An inactive key pair with no validTo
+// never verifies. Signing requires Active; verifying does not.
+func (kp *KeyPair) Verifies(now time.Time) bool {
+	return kp.InWindow(now) && (kp.Active || kp.ValidTo != nil)
+}
+
 // TrustedKey holds a trusted external public key.
 type TrustedKey struct {
 	KID       string

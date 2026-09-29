@@ -61,31 +61,67 @@ func TestLocalKeySource_ErrorWrapsBothSentinels(t *testing.T) {
 	}
 }
 
-// An invalidated signing key (Active=false) must NOT be returned by the key
-// source: otherwise the JWT validator would still accept tokens signed by the
-// just-invalidated kid — defeating the entire point of Invalidate.
-func TestLocalKeySource_RejectsInvalidatedKey(t *testing.T) {
+// An invalidated key pair keeps verifying until the end of its grace period
+// (its validTo), and never after. Grace 0 ends it at once.
+func TestLocalKeySource_InvalidatedKeyVerifiesThroughGrace(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
-	kp := issueWindow(t, ks, "client", time.Now(), time.Now().Add(time.Hour))
 	src := auth.NewLocalKeySource(ks)
 
-	// Pre-condition: while Active, the key is returned successfully.
-	if _, err := src.GetKey(kp.KID); err != nil {
-		t.Fatalf("GetKey while active: unexpected error: %v", err)
+	withGrace := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), withGrace.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(withGrace.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
 	}
 
-	// Invalidate the key with a grace period: it stays published for
-	// external verifiers, but cyoda itself stops accepting it at once.
-	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
-		t.Fatalf("Invalidate: %v", err)
+	noGrace := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	if err := ks.Invalidate(systemCtx(), noGrace.KID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(noGrace.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("invalidated with grace 0: want ErrKeyNotFound, got %v", err)
 	}
 
-	got, err := src.GetKey(kp.KID)
-	if !errors.Is(err, auth.ErrKeyNotFound) {
-		t.Fatalf("GetKey after Invalidate: expected errors.Is(err, ErrKeyNotFound), got %v", err)
+	// Cutting a running grace period short: invalidate again with 0.
+	if err := ks.Invalidate(systemCtx(), withGrace.KID, 0); err != nil {
+		t.Fatal(err)
 	}
-	if got != nil {
-		t.Fatalf("GetKey after Invalidate: expected nil key, got %v", got)
+	if _, err := src.GetKey(withGrace.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("re-invalidated with 0: want ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
+	src := auth.NewLocalKeySource(ks)
+	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	if err := ks.Delete(systemCtx(), kp.KID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("deleted during grace: want ErrKeyNotFound, got %v", err)
+	}
+}
+
+func TestLocalKeySource_ReactivateDuringGrace(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
+	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	got, err := ks.Reactivate(systemCtx(), kp.KID, time.Now(), time.Now().Add(2*time.Hour))
+	if err != nil || !got.Active {
+		t.Fatalf("reactivate during grace: %v %v", got, err)
+	}
+}
+
+// An invalidated key pair never signs, even inside its grace period.
+func TestKVKeyStore_InvalidatedKeyInGraceNeverSigns(t *testing.T) {
+	ks := newTestKeyStore(t, newBootstrap(t))
+	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	if _, _, err := ks.Signer("human"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("signer = %v, want none: the only key pair of the audience is invalidated", err)
 	}
 }
 

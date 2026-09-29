@@ -201,8 +201,10 @@ func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
 }
 
 // VerificationKey returns the public key a token's KID names, if that key
-// pair may verify on this node now: owned or the bootstrap key, active and
-// inside its window. There is no store read on this path.
+// pair may verify on this node now: owned or the signing key from
+// configuration, not deleted, and Verifies(now) — an invalidated key pair
+// verifies until the end of its grace period. There is no store read on this
+// path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	if s.rep.Stale() {
 		return nil, fmt.Errorf("%w: %s (store stale)", ErrKeyPairNotFound, kid)
@@ -211,12 +213,12 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	var pub *rsa.PublicKey
 	s.rep.read(func(recs map[string]*signingEntry) {
 		if kid == s.boot.kid {
-			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Active && bv.pair.InWindow(now) {
+			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Verifies(now) {
 				pub = bv.pair.PublicKey
 			}
 			return
 		}
-		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Active && e.pair.InWindow(now) {
+		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Verifies(now) {
 			pub = e.pair.PublicKey
 		}
 	})
