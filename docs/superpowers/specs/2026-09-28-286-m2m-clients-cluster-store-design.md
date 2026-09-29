@@ -324,9 +324,11 @@ names its tenant. Only an existing client authenticates or can be given a new
 secret.
 
 Write order: create writes the record, then the index entry; delete removes
-the index entry, then the record. A create whose index write fails removes the
-index entry and then the record (§5.4), so an ambiguous failure — a write that
-committed but reported an error — leaves nothing behind. A crash between the
+the index entry, then the record. A create whose record write fails removes
+the record, and one whose index write fails removes the index entry and then
+the record (§5.4), so an ambiguous failure — a write that committed but
+reported an error — leaves nothing behind. A reset whose write fails writes
+back the record it read, so the old secret stays in force. A crash between the
 two writes leaves a record without an index entry: listed, unable to
 authenticate, removable by `DELETE`.
 
@@ -387,9 +389,12 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   a per-node, per-tenant mutex: `List` the tenant's namespace; at
   `maxPerTenant` or more records → `ErrM2MClientCapReached` (`maxPerTenant`
   ≤ 0: no cap); `Get` the index entry; present or undecodable →
-  `ErrM2MClientExists`; `Put` the record, then the index entry. If the index
-  `Put` fails, delete the index entry, then the record, on a context the
-  caller cannot cancel; a failed removal is logged at ERROR with the key.
+  `ErrM2MClientExists`; `Put` the record, then the index entry. If the record
+  `Put` fails, delete the record; if the index `Put` fails, delete the index
+  entry, then the record. Each removal runs on a context the caller cannot
+  cancel, and a failed removal is logged at ERROR with the key. A record
+  `Put` that fails never removes the index entry: this call did not write it,
+  and it may name another tenant.
 - **List(tenant)**: `List` the tenant's namespace. Undecodable records are
   skipped and logged at ERROR with their keys, as the replica does at load
   (`internal/auth/replica.go:117-122`).
@@ -414,7 +419,9 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   may name another tenant, so another tenant's undecodable index entry is
   not a store error for this caller. Then `Get` the index entry; absent or
   naming another tenant → `ErrM2MClientNotFound`; undecodable → the store
-  error. `Put` the record with the new hash and `updatedAt` now.
+  error. `Put` the record with the new hash and `updatedAt` now. If that
+  `Put` fails, `Put` the record as read, on a context the caller cannot
+  cancel; a failed restore is logged at ERROR with the key.
 
 The token handler (`internal/auth/token.go:59-80,141`) calls `Authenticate`
 once and uses the returned client for both grants: `ErrInvalidClient` →
@@ -559,6 +566,8 @@ Fixture constraints:
 | token endpoint: id with NUL, invalid UTF-8, 101 characters, an encoded `:` → 401, no store read, one bcrypt | ✓ | ✓ | | |
 | unknown id; a record without an index entry; wrong secret: each makes two reads and one bcrypt → 401 | ✓ | | | |
 | create: index `Put` fails, and a faulty KV whose `Put` commits then errors → index entry and record both gone | ✓ (faulty KV) | | | |
+| create: record `Put` commits then errors, also with the caller cancelled → record gone, index entry untouched | ✓ (faulty KV) | | | |
+| reset: `Put` commits then errors, also with the caller cancelled → the old secret still authenticates | ✓ (faulty KV) | | | |
 | delete removes an undecodable record and a record without its index entry; never an index entry naming another tenant | ✓ | ✓ (raw KV write) | | |
 | delete removes an undecodable index entry when the caller's own tenant holds a record for the id → 200, both gone; with no own record → 500, index entry untouched; a mere index read failure (not undecodable) with an own record present → 500, nothing touched | ✓ | ✓ (raw KV write) | | |
 | reset of a record without its index entry → 404 | ✓ | | | |
