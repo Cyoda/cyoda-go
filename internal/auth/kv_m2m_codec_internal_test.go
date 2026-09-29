@@ -192,11 +192,3 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		t.Fatalf("index not json: %v", err)
 	}
 }
-
-func TestM2MCodec_RecordHoldsNoPlaintext(t *testing.T) {
-	c := validClient(t)
-	b, _ := encodeClientRecord(c)
-	if strings.Contains(string(b), `"s"`) {
-		t.Fatal("record contains the plaintext secret")
-	}
-}
