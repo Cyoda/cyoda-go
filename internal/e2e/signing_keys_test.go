@@ -475,7 +475,7 @@ func grpcEntitySearch(h *keyStack, tok string) error {
 	return err
 }
 
-// invalidateKey invalidates the key pair kid on h with the given grace period.
+// invalidateKey invalidates the key pair kid on ks with the given grace period.
 func (ks *keyStack) invalidateKey(t *testing.T, kid string, grace time.Duration) {
 	t.Helper()
 	body := fmt.Sprintf(`{"gracePeriodSec":%d}`, int64(grace/time.Second))
@@ -519,17 +519,78 @@ func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 	}
 }
 
+// issueSigning issues a key pair of audience client on ks and fetches a
+// token it signs: the newest active key pair of the audience is the signer.
+func (ks *keyStack) issueSigning(t *testing.T) (kid, tok string) {
+	t.Helper()
+	kid = ks.issueKey(t, "client", false)
+	tok = ks.oauthToken(t)
+	if got := tokenKID(t, tok); got != kid {
+		t.Fatalf("the server signs with %s, want the key pair just issued %s", got, kid)
+	}
+	return kid, tok
+}
+
+// TestSigningKeys_InvalidatedKeyPairEndsEarly covers the cases that need no
+// time to pass: grace 0 refuses at once; during a grace period, invalidating
+// again with 0 or DELETE refuses at once; and a key pair in its grace period
+// verifies but is never the signer. The grace period is an hour, so nothing
+// here depends on timing.
+func TestSigningKeys_InvalidatedKeyPairEndsEarly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const grace = time.Hour
+	h := newKeyStackOn(t, newSchedDB(t), genKey(t))
+	kZero, tZero := h.issueSigning(t) // invalidated with grace 0
+	kCut, tCut := h.issueSigning(t)   // grace cut short by an invalidate with 0
+	kDel, tDel := h.issueSigning(t)   // grace cut short by DELETE
+	kAdmin := h.issueKey(t, "client", false)
+	kLong, tLong := h.issueSigning(t) // the newest, in grace: verifies, never signs
+
+	h.invalidateKey(t, kZero, 0)
+	if code := h.authedStatus(t, tZero); code != http.StatusUnauthorized {
+		t.Errorf("invalidated with grace 0: %d, want 401", code)
+	}
+
+	h.invalidateKey(t, kLong, grace)
+	if code := h.authedStatus(t, tLong); code != http.StatusOK {
+		t.Errorf("in its grace period: %d, want 200", code)
+	}
+	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kAdmin {
+		t.Errorf("current: %d %s, want 200 %s (a key pair in grace never signs)", code, cur, kAdmin)
+	}
+
+	h.invalidateKey(t, kCut, grace)
+	if code := h.authedStatus(t, tCut); code != http.StatusOK {
+		t.Fatalf("control: in its grace period: %d, want 200", code)
+	}
+	h.invalidateKey(t, kCut, 0)
+	if code := h.authedStatus(t, tCut); code != http.StatusUnauthorized {
+		t.Errorf("after invalidating again with grace 0: %d, want 401", code)
+	}
+
+	h.invalidateKey(t, kDel, grace)
+	if code := h.authedStatus(t, tDel); code != http.StatusOK {
+		t.Fatalf("control: in its grace period: %d, want 200", code)
+	}
+	if code, b := h.keyCall(t, "DELETE", "/oauth/keys/keypair/"+kDel, ""); code != http.StatusOK {
+		t.Fatalf("delete %s: %d %s", kDel, code, b)
+	}
+	if code := h.authedStatus(t, tDel); code != http.StatusUnauthorized {
+		t.Errorf("after DELETE during the grace period: %d, want 401", code)
+	}
+}
+
 // TestSigningKeys_GracePeriod: an invalidated key pair — issued, or the
 // signing key from configuration — verifies until the validTo its grace
-// period sets and is refused after it, and is never the signer meanwhile.
-// Grace 0 refuses at once. During a grace period, invalidating again with 0
-// or DELETE refuses at once, and reactivating makes the key pair active
-// again.
+// period sets and is refused after it; one reactivated during its grace
+// period is active again and outlives it.
 //
-// Every case shares one stack and one grace period, so the test waits for
-// the period once. The in-grace checks must finish before the earliest
-// validTo the invalidations can have set; the after-grace checks run a
-// margin after the latest one.
+// The in-grace checks must finish before the earliest validTo the
+// invalidations can have set, or the test fails rather than passing on
+// nothing; they are kept to four token grants and two reads. The
+// after-grace checks run a margin after the latest validTo.
 func TestSigningKeys_GracePeriod(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -542,72 +603,30 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 	}
 	h := newKeyStackOn(t, newSchedDB(t), key)
 	opTok := operatorToken(t, key, "cyoda-callback-test", "")
-
-	// issue issues a key pair of audience client and fetches a token it signs:
-	// the newest active key pair of the audience is the signer.
-	issue := func() (kid, tok string) {
-		t.Helper()
-		kid = h.issueKey(t, "client", false)
-		tok = h.oauthToken(t)
-		if got := tokenKID(t, tok); got != kid {
-			t.Fatalf("the server signs with %s, want the key pair just issued %s", got, kid)
-		}
-		return kid, tok
-	}
-	kZero, tZero := issue()   // invalidated with grace 0
-	kCut, tCut := issue()     // grace cut short by an invalidate with 0
-	kDel, tDel := issue()     // grace cut short by DELETE
-	kReact, tReact := issue() // reactivated during its grace
-	kAdmin := h.issueKey(t, "client", false)
-	kGrace, tGrace := issue() // grace runs out; the signer until it is invalidated
+	kReact, tReact := h.issueSigning(t) // reactivated during its grace
+	h.issueKey(t, "client", false)      // signs the admin calls once the others end
+	kGrace, tGrace := h.issueSigning(t) // grace runs out
 
 	earliestValidTo := time.Now().Add(grace)
 	h.invalidateKey(t, kGrace, grace)
 	h.invalidateKey(t, bootKID, grace)
-	h.invalidateKey(t, kCut, grace)
-	h.invalidateKey(t, kDel, grace)
 	h.invalidateKey(t, kReact, grace)
-	h.invalidateKey(t, kZero, 0)
 	latestValidTo := time.Now().Add(grace)
-
-	for _, c := range []struct {
-		name, tok string
-		want      int
-	}{
-		{"issued key pair in grace", tGrace, http.StatusOK},
-		{"signing key in grace", opTok, http.StatusOK},
-		{"issued key pair to be cut by invalidate", tCut, http.StatusOK},
-		{"issued key pair to be deleted", tDel, http.StatusOK},
-		{"issued key pair to be reactivated", tReact, http.StatusOK},
-		{"issued key pair invalidated with grace 0", tZero, http.StatusUnauthorized},
-	} {
-		if code := h.authedStatus(t, c.tok); code != c.want {
-			t.Errorf("inside the grace period, %s: %d, want %d", c.name, code, c.want)
-		}
+	if code := h.authedStatus(t, tGrace); code != http.StatusOK {
+		t.Errorf("inside the grace period, issued key pair: %d, want 200", code)
 	}
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kAdmin {
-		t.Errorf("current inside the grace period: %d %s, want 200 %s (a key pair in grace never signs)", code, cur, kAdmin)
-	}
-
-	h.invalidateKey(t, kCut, 0)
-	if code := h.authedStatus(t, tCut); code != http.StatusUnauthorized {
-		t.Errorf("after invalidating again with grace 0: %d, want 401", code)
-	}
-	if code, b := h.keyCall(t, "DELETE", "/oauth/keys/keypair/"+kDel, ""); code != http.StatusOK {
-		t.Fatalf("delete %s: %d %s", kDel, code, b)
-	}
-	if code := h.authedStatus(t, tDel); code != http.StatusUnauthorized {
-		t.Errorf("after DELETE during the grace period: %d, want 401", code)
+	if code := h.authedStatus(t, opTok); code != http.StatusOK {
+		t.Errorf("inside the grace period, signing key: %d, want 200", code)
 	}
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+kReact+"/reactivate", `{"validTo":"`+future+`"}`); code != http.StatusOK {
 		t.Fatalf("reactivate %s: %d %s", kReact, code, b)
 	}
+	if now := time.Now(); !now.Before(earliestValidTo) {
+		t.Fatalf("the in-grace steps ended %s after the earliest end of the grace period; they prove nothing", now.Sub(earliestValidTo))
+	}
 	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kReact {
 		t.Errorf("current after the reactivate: %d %s, want 200 %s", code, cur, kReact)
-	}
-	if now := time.Now(); !now.Before(earliestValidTo) {
-		t.Fatalf("the in-grace checks ended %s after the earliest end of the grace period; they prove nothing", now.Sub(earliestValidTo))
 	}
 
 	time.Sleep(time.Until(latestValidTo.Add(time.Second)))
@@ -615,8 +634,8 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 		name, tok string
 		want      int
 	}{
-		{"issued key pair after its grace", tGrace, http.StatusUnauthorized},
-		{"signing key after its grace", opTok, http.StatusUnauthorized},
+		{"issued key pair", tGrace, http.StatusUnauthorized},
+		{"signing key", opTok, http.StatusUnauthorized},
 		{"reactivated key pair", tReact, http.StatusOK},
 	} {
 		if code := h.authedStatus(t, c.tok); code != c.want {

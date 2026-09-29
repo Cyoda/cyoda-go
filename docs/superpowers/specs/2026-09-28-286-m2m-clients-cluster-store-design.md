@@ -282,13 +282,14 @@ Mock mode (the default) is unchanged.
 | `cyoda token`: claims, KID, `aud` only when configured; stdout carries only the token | ✓ | |
 | `cyoda token`: each flag refusal (tenant, user, empty role, ttl 0, ttl above the expiry) → 2; missing, unreadable or bad key → 1, no panic; stderr carries no token or key | ✓ | |
 | a `cyoda token` token is accepted on HTTP and on a unary gRPC call | | ✓ |
-| after the signing key is invalidated through the API with grace 0, a `cyoda token` token is refused (own stack, `newKeyStackOnUnseeded`, `signing_keys_test.go:291`) | | ✓ |
+| after the signing key is invalidated through the API with grace 0, a `cyoda token` token is refused (own stack, `newKeyStackOn`, `cyoda_token_test.go`) | | ✓ |
 | rotation with `invalidateCurrent` on the signing key's audience: the new key pair signs; the signing key is not written, still verifies, and a `cyoda token` token is accepted; issued siblings are ended | ✓ | ✓ |
 | when no issued key pair of the audience is active and in its window, `GET …/current` returns the signing key and `/oauth/token` signs with it | ✓ | ✓ |
-| an invalidated key pair (issued, and the signing key) with grace N: verifies before `validTo`, refused after, never selected as signer; grace 0 → refused at once; an inactive record with no `validTo` never verifies; a deleted key pair never verifies | ✓ | ✓ |
+| an invalidated key pair (issued, and the signing key) with grace N: verifies before `validTo`, refused after, never selected as signer; grace 0 → refused at once; a deleted key pair never verifies | ✓ | ✓ |
+| an inactive record with no `validTo` never verifies | ✓ | waived: unreachable through the API, which always sets `validTo` on invalidate (`kv_key_store_admin.go:214`) |
 | during a grace period: invalidate again with 0 → refused at once; `DELETE` → refused at once; reactivate → active again | ✓ | ✓ |
 | the WARN is logged when the signing key is invalidated or deleted with zero owned issued key pairs | ✓ | |
-| multi-node (postgres, shared cluster): an issued key pair invalidated on A with a grace period verifies on B until its `validTo`, is refused on B after it, and is never B's signer | | multi-node |
+| multi-node (postgres, own cluster with a one-second re-read, `TestSigningKeys_OwnCluster`): an issued key pair invalidated on A with a grace period verifies on B until its `validTo`, is refused on B after it, and is never B's signer | | multi-node |
 | `CYODA_JWT_AUDIENCE` set: `client_credentials` and token-exchange tokens accepted; a `cyoda token` token accepted; a token without `aud` refused (own stack) | ✓ | ✓ |
 | the server starts and serves with no bootstrap variables; a leftover `CYODA_BOOTSTRAP_CLIENT_ID` creates nothing | ✓ | |
 

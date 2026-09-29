@@ -66,9 +66,7 @@ func TestCyodaToken_RefusedAfterSigningKeyInvalidated(t *testing.T) {
 	if code := h.authedStatus(t, tok); code != http.StatusOK {
 		t.Fatalf("control: before the invalidate: %d, want 200", code)
 	}
-	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+bootKID+"/invalidate", `{"gracePeriodSec":0}`); code != http.StatusOK {
-		t.Fatalf("invalidate the signing key: %d %s", code, b)
-	}
+	h.invalidateKey(t, bootKID, 0)
 	if code := h.authedStatus(t, tok); code != http.StatusUnauthorized {
 		t.Errorf("HTTP after the invalidate: %d, want 401", code)
 	}
@@ -110,12 +108,19 @@ func TestCyodaToken_SurvivesRotation(t *testing.T) {
 	if code := h.authedStatus(t, operatorToken(t, key, "cyoda-callback-test", "")); code != http.StatusOK {
 		t.Errorf("cyoda token token after the rotation: %d, want 200", code)
 	}
-	var n int
-	if err := s.pool.QueryRow(context.Background(),
-		`SELECT count(*) FROM kv_store WHERE tenant_id='SYSTEM' AND namespace='signing-keys' AND key=$1`, bootKID).Scan(&n); err != nil {
-		t.Fatal(err)
+	rows := func(kid string) int {
+		t.Helper()
+		var n int
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM kv_store WHERE tenant_id='SYSTEM' AND namespace='signing-keys' AND key=$1`, kid).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
 	}
-	if n != 0 {
+	if n := rows(k1); n != 1 {
+		t.Fatalf("control: the replaced key pair has %d stored rows, want 1", n)
+	}
+	if n := rows(bootKID); n != 0 {
 		t.Errorf("the rotation wrote a record for the signing key (%d rows), want none", n)
 	}
 }
@@ -155,8 +160,8 @@ func TestIssuedTokens_AcceptedWithConfiguredAudience(t *testing.T) {
 		t.Fatalf("register trusted key: %d %s", resp.StatusCode, raw)
 	}
 	exchanged := h.grantToken(t, exchangeForm(t, priv, trustedKID, "ext-user-1", "test-tenant", []string{"ROLE_USER"}), h.clientID, h.clientSecret)
-	if code := h.authedStatus(t, exchanged); code == http.StatusUnauthorized {
-		t.Errorf("token-exchange token: 401, want accepted")
+	if code := h.authedStatus(t, exchanged); code != http.StatusOK {
+		t.Errorf("token-exchange token: %d, want 200", code)
 	}
 
 	if code := h.authedStatus(t, operatorToken(t, key, "cyoda-callback-test", audience)); code != http.StatusOK {
