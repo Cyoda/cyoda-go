@@ -516,8 +516,8 @@ func TestKVKeyStore_SigningKeySignsWhenNoIssuedPairActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cur, _ := s.Current("client"); cur.KID != kp.KID {
-		t.Fatalf("current = %s, want the issued pair", cur.KID)
+	if cur, err := s.Current("client"); err != nil || cur.KID != kp.KID {
+		t.Fatalf("current = %v %v, want the issued pair", cur, err)
 	}
 	if err := s.Invalidate(replicaSystemCtx(), kp.KID, 0); err != nil {
 		t.Fatal(err)
@@ -526,7 +526,11 @@ func TestKVKeyStore_SigningKeySignsWhenNoIssuedPairActive(t *testing.T) {
 	if err != nil || cur.KID != bootKID {
 		t.Fatalf("current = %v %v, want the signing key", cur, err)
 	}
-	if _, sg, err := s.Signer("client"); err != nil || sg == nil {
+	signerKP, sg, err := s.Signer("client")
+	if err != nil || sg == nil {
 		t.Fatalf("no signer: %v", err)
+	}
+	if signerKP.KID != bootKID {
+		t.Fatalf("signer = %s, want the signing key %s", signerKP.KID, bootKID)
 	}
 }

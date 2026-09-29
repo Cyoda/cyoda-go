@@ -184,37 +184,31 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 	}
 }
 
-// rawSigningRecord reads signing-keys/<kid> from the store's KV, nil when
-// absent.
-func rawSigningRecord(t *testing.T, s *auth.KVKeyStore, kid string) []byte {
-	t.Helper()
-	return s.RawRecordForTest(kid)
-}
-
 // A rotation ends the issued siblings of its audience only. The signing key
 // from configuration is never a sibling: it is not written, stays active and
 // keeps verifying.
 func TestKVKeyStore_RotationLeavesTheSigningKey(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	ks := newTestKeyStore(t, boot)
-	bootKID, _ := auth.DeriveKID(&boot.PublicKey)
+	ks := newKeyStore(t, kv, boot, "client")
 	old := issueWindow(t, ks, "client", time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
-	neu, err := ks.Issue(systemCtx(), auth.IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	neu, err := ks.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ks.VerificationKey(old.KID); err == nil {
 		t.Error("the issued sibling still verifies")
 	}
-	if _, err := ks.VerificationKey(bootKID); err != nil {
+	if _, err := ks.VerificationKey(bootKID(t, boot)); err != nil {
 		t.Errorf("the signing key stopped verifying: %v", err)
 	}
 	cur, err := ks.Current("client")
 	if err != nil || cur.KID != neu.KID {
 		t.Fatalf("current = %v %v, want the new key pair", cur, err)
 	}
-	if raw := rawSigningRecord(t, ks, bootKID); raw != nil {
-		t.Errorf("the rotation wrote the signing key's state: %s", raw)
+	if _, err := kv.Get(ctx, "signing-keys", bootKID(t, boot)); !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("the rotation wrote the signing key's state: err = %v", err)
 	}
 }
 
@@ -250,23 +244,29 @@ func TestKVKeyStore_RotationLeavesOtherAudienceBootstrap(t *testing.T) {
 }
 
 // commitThenFailKV commits the Put to the underlying store and only then
-// reports failure — the case writeAll's own doc names ("the failing write
-// can itself have partially or fully committed before reporting failure").
-// A KV that rejects the write before it ever lands (failPutKV, the earlier
-// shape of this test) makes "restore the bootstrap key to absent" vacuous:
-// deleting a key that was never written is a no-op regardless of whether the
-// restore loop is even correct. Only a KV that actually commits first can
-// prove the restore loop undoes real, already-stored state.
+// reports failure, on its FIRST call for failKey only — the shape writeAll's
+// own doc names ("the failing write can itself have partially or fully
+// committed before reporting failure"). A KV that rejects the write before
+// it ever lands makes a restore-to-absent assertion vacuous: deleting a key
+// that was never written is a no-op regardless of whether the restore loop
+// is even correct. Only a KV that actually commits first proves the restore
+// loop undoes real, already-stored state. Failing only the first call means
+// writeAll's own restore Put for failKey (issued once, right after the
+// failure) succeeds, so a test can assert genuine full compensation — no
+// "could not be fully undone" ERROR — rather than merely correct final bytes
+// despite a logged failure.
 type commitThenFailKV struct {
 	spi.KeyValueStore
 	failKey string
+	failed  bool
 }
 
 func (f *commitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
 	if err := f.KeyValueStore.Put(ctx, ns, key, v); err != nil {
 		return err
 	}
-	if key == f.failKey {
+	if key == f.failKey && !f.failed {
+		f.failed = true
 		return errors.New("injected failure after commit")
 	}
 	return nil
@@ -298,10 +298,17 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	bc.Subscribe("auth.signingkeys", func([]byte) { pings++ })
 	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: failKey},
 		auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", Broadcaster: bc})
+	var buf bytes.Buffer
+	prevLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prevLog)
 	now := time.Now()
 	_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
 	if err == nil {
 		t.Fatal("expected the sibling failure")
+	}
+	if strings.Contains(buf.String(), "could not be fully undone") {
+		t.Fatalf("compensation was not full: %s", buf.String())
 	}
 	entries, _ := mem.List(ctx, "signing-keys")
 	if len(entries) != 2 {

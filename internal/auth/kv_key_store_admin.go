@@ -116,10 +116,14 @@ func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string,
 	}
 	var writes []kvWrite
 	for k, data := range all {
-		if k == newKID || k == s.boot.kid {
+		if k == newKID {
 			continue
 		}
 		e := s.cls.classify(ctx, k, data)
+		// classify never classifies the bootstrap key id as owned or broken
+		// (signing_records.go: an issued record there is classUndecodable,
+		// a bootstrap-kind record there is classBootstrapState), so it is
+		// never a sibling here regardless of this loop.
 		if (e.class != classOwned && e.class != classBroken) || e.pair.Audience != audience || !windowOpen(e.pair.ValidTo, now) {
 			continue
 		}
