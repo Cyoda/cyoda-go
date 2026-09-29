@@ -910,8 +910,8 @@ func (a *App) AuthenticationService() contract.AuthenticationService {
 }
 
 // AuthService returns the underlying *auth.AuthService when JWT IAM mode is
-// active, or nil when running in mock IAM mode. Exposed for test-mode seeding
-// of M2M clients across tenants without going through the public HTTP surface.
+// active, or nil when running in mock IAM mode. Exposed for tests that
+// inspect the auth stores.
 func (a *App) AuthService() *auth.AuthService { return a.authSvc }
 func (a *App) AuthorizationService() contract.AuthorizationService {
 	return a.authzService

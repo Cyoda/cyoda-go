@@ -79,18 +79,9 @@ func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.R
 // getTokenRaw obtains a JWT token via client_credentials grant. The token
 // endpoint uses HTTP Basic Auth for client authentication.
 func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, error) {
-	data := url.Values{
-		"grant_type": {"client_credentials"},
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/oauth/token", strings.NewReader(data.Encode()))
+	resp, err := postTokenRaw(ctx, serverURL, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	if err != nil {
-		return "", fmt.Errorf("create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token request: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -203,19 +194,37 @@ func createClient(t *testing.T, withAdminRole bool) (string, string) {
 	}
 	resp := doAuth(t, http.MethodPost, path, "")
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		t.Fatalf("create client: %d %s", resp.StatusCode, b)
+		t.Fatalf("create client: %d %s", resp.StatusCode, raw)
 	}
+	cred := decodeCredential(t, "create client", raw)
+	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return suiteToken(t) })
+	return cred.id, cred.secret
+}
+
+// decodeCredential decodes the client_id and client_secret of a 200 answer
+// from POST /clients or PUT /clients/{id}/secret; what names the call in a
+// failure message. raw holds a secret, so it is never printed.
+func decodeCredential(t *testing.T, what string, raw []byte) m2mCredential {
+	t.Helper()
 	var cred struct {
 		ID     string `json:"client_id"`
 		Secret string `json:"client_secret"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&cred); err != nil || cred.ID == "" || cred.Secret == "" {
-		t.Fatalf("create client: no credentials in response (%v)", err)
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("%s: no credentials in response (%v)", what, err)
 	}
-	deleteClientAtCleanup(t, serverURL, cred.ID, func() string { return suiteToken(t) })
-	return cred.ID, cred.Secret
+	return m2mCredential{id: cred.ID, secret: cred.Secret}
+}
+
+// withheld is raw for a failure message, unless status is 200: a 200 from
+// POST /clients or PUT /clients/{id}/secret carries a secret.
+func withheld(status int, raw []byte) string {
+	if status == http.StatusOK {
+		return "(credentials withheld)"
+	}
+	return string(raw)
 }
 
 // authRequestRaw creates an authenticated HTTP request.

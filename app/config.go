@@ -269,7 +269,7 @@ type IAMConfig struct {
 
 	// IAM feature-flag fields — passed through to auth.IAMFeatures via AuthIAMFeatures().
 	// Individual fields document their own purpose; this block covers both
-	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2MAdminRoleEnabled).
+	// /oauth/keys/* (TrustedKey* + KeypairDefault*) and /clients (M2M*).
 	TrustedKeyRegistrationEnabled bool
 	TrustedKeyMaxPerTenant        int
 	TrustedKeyMaxValidityDays     int
@@ -287,6 +287,10 @@ type IAMConfig struct {
 	// M2MAdminRoleEnabled — see auth.IAMFeatures.M2MAdminRoleEnabled.
 	// env CYODA_IAM_M2M_ADMIN_ROLE_ENABLED, default false.
 	M2MAdminRoleEnabled bool
+
+	// M2MClientMaxPerTenant — see auth.IAMFeatures.M2MClientMaxPerTenant.
+	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
+	M2MClientMaxPerTenant int
 
 	// OIDC holds the OIDC provider subsystem configuration.
 	// See OIDCConfig for per-field documentation.
@@ -420,6 +424,7 @@ func DefaultConfig() Config {
 			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
 			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
 			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			M2MClientMaxPerTenant:         envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
 			OIDC: OIDCConfig{
 				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
 				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
@@ -1028,5 +1033,6 @@ func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
 		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
 		BootstrapAudience:             c.BootstrapAudience,
 		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
+		M2MClientMaxPerTenant:         c.M2MClientMaxPerTenant,
 	}
 }

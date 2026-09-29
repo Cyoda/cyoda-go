@@ -106,6 +106,39 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     is sealed at rest under a key derived from the bootstrap key, so the new
     key cannot open them. Restoring the old key brings them back.
 
+- **M2M clients are stored and shared by the cluster.** A client created with
+  `POST /clients` existed only in the memory of the node that created it: it
+  could get a token from that node only, and a restart lost it. Clients now
+  live in the SYSTEM-tenant KV store, and every call reads the store. A
+  create, reset or delete takes effect on every node when it returns, and
+  clients survive a restart on a persistent backend (not on the memory
+  backend). See `cyoda help auth clients`.
+  - `POST /oauth/token` answers `500 server_error` with a ticket when the
+    client store fails, or holds a damaged record or index entry for the
+    client id. It used
+    to answer `401 invalid_client`. A client id that does not match
+    `^[A-Za-z0-9]{1,100}$` is `401 invalid_client` without a store read.
+  - `DELETE /clients/{clientId}` and `PUT /clients/{clientId}/secret` answer
+    `500` with a ticket when the store fails, or `503 STORAGE_UNAVAILABLE`
+    when it reports itself unavailable. They used to answer
+    `404 M2M_CLIENT_NOT_FOUND`. `GET /clients` can answer `500` or `503` the
+    same way.
+  - A damaged stored client record is left out of `GET /clients` and logged
+    at ERROR, and still counts toward the cap; `DELETE` removes it, and a
+    reset of it answers `500`. A damaged index entry makes a token request
+    for that client id answer `500`, and a reset too when the caller's own
+    tenant holds a record for that id (without one, a reset answers `404`);
+    `DELETE` removes it too, as long as the caller's own tenant holds a
+    record for that id, and otherwise keeps answering `500`.
+  - The store has no compare-and-set. Two changes to one client at the same
+    moment resolve by the later write. A reset racing a delete of one client
+    can leave it listed by `GET /clients` but unable to get a token; a reset
+    of it answers `404`, and `DELETE` removes it. A reset that answers `500`
+    writes the client back as it was before that reset. If another reset
+    succeeds in the meantime, the write-back can land after it: the secret
+    that reset returned stops working, and the older secret works again.
+    Reset again to fix it.
+
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute
   member echoes on a callback — was joined to that transaction on every
@@ -501,6 +534,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `-h`/`--help`), `1` key or configuration error, `2` flag error. See
   `cyoda help cli token`.
 
+- **A per-tenant cap on M2M clients.** `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`
+  (default `100`; `0` means no cap; a negative value refuses to start).
+  `POST /clients` in a tenant that already holds that many clients answers
+  `400 M2M_CLIENT_CAP_REACHED` and creates nothing; deleting a client frees a
+  slot. Creates on several nodes at the same moment can each pass the check,
+  so a tenant can exceed the cap by at most one client per node. See
+  `cyoda help errors M2M_CLIENT_CAP_REACHED` and
+  `docs/cloud-parity/m2m-clients.md`.
+
 - **Callout failover: a processor, criterion or function request that is not
   delivered, or not answered, is given to another compute member.** The dividing
   line is the hand-off — the moment the work is on a member's connection. Work
@@ -801,6 +843,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Responses that carry a credential are never cached.** Every
+  `POST /oauth/token` response (both grants, success and error) and the
+  plaintext secret from `POST /clients` and `PUT /clients/{clientId}/secret`
+  now come with `Cache-Control: no-store` and `Pragma: no-cache`, as
+  RFC 6749 §5.1 requires of a token response.
+
 - **An out-of-range grace period on issue or register names the field the
   request carries.** `POST /oauth/keys/keypair` and
   `POST /oauth/keys/trusted` answered `400` with "gracePeriodSec must be …"
@@ -814,6 +862,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_JWT_AUDIENCE` is set, so a server configured with an audience
   refused its own tokens with `401`. Issued tokens now carry the configured
   audience; with `CYODA_JWT_AUDIENCE` empty they carry no `aud`, as before.
+
+- **Deleting a key that is absent is not an error on any storage backend.**
+  The storage SPI now requires `Delete` of an absent key — on the KV, message
+  and workflow stores — and `DeleteBatch` to return no error, and its
+  conformance suite tests it. The cassandra backend returned not-found
+  instead, so a `DELETE /message` batch that named an absent id answered
+  `500` on cassandra and `200` on the other backends. The cassandra plugin
+  conforms from the release that pins this SPI; see `COMPATIBILITY.md`.
 
 - **A runtime-issued signing key pair only worked on the node that issued
   it.** In a cluster, a token signed with one was rejected by every other

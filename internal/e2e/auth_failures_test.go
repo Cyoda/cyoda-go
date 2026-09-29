@@ -60,6 +60,9 @@ func TestAuth_MissingOrInvalidCredentials_401(t *testing.T) {
 		{"entity-create", http.MethodPost, "/api/entity/JSON/e2e-auth-probe/1"},
 		{"admin-log-level", http.MethodGet, "/api/admin/log-level"},
 		{"clients-list", http.MethodGet, "/api/clients"},
+		{"clients-create", http.MethodPost, "/api/clients"},
+		{"clients-delete", http.MethodDelete, "/api/clients/E2EAUTHPROBE"},
+		{"clients-reset", http.MethodPut, "/api/clients/E2EAUTHPROBE/secret"},
 		{"model-export", http.MethodGet, "/api/model/export/SIMPLE_VIEW/e2e-auth-probe/1"},
 	}
 	credentials := []struct {

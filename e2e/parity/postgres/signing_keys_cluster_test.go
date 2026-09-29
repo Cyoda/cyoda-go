@@ -201,8 +201,8 @@ func hasKeyID(body []byte, kid string) bool {
 	return json.Unmarshal(body, &v) == nil && v.KeyID == kid
 }
 
-// createAdminClient creates an M2M client with the admin role on the node c
-// targets. M2M clients are per node: fetch its tokens from that node.
+// createAdminClient creates an M2M client with the admin role through the node
+// c targets.
 func createAdminClient(t *testing.T, c *client.Client) (id, secret string) {
 	t.Helper()
 	code, body, err := c.CreateClientRaw(t, true)

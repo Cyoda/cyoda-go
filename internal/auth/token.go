@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -68,30 +69,29 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	valid, err := h.m2mStore.VerifySecret(clientID, secret)
-	if err != nil || !valid {
+	// A store failure is the server failing, not the credentials being
+	// wrong: it answers 500, never 401.
+	client, err := h.m2mStore.Authenticate(r.Context(), clientID, secret)
+	if errors.Is(err, ErrInvalidClient) {
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
 		return
 	}
+	if err != nil {
+		writeTokenServerError(w, "m2mStore.Authenticate", err)
+		return
+	}
 
-	grantType := r.FormValue("grant_type")
-	switch grantType {
+	switch r.FormValue("grant_type") {
 	case "client_credentials":
-		h.handleClientCredentials(w, r, clientID)
+		h.handleClientCredentials(w, r, client)
 	case "urn:ietf:params:oauth:grant-type:token-exchange":
-		h.handleTokenExchange(w, r, clientID)
+		h.handleTokenExchange(w, r, client)
 	default:
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "")
 	}
 }
 
-func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, clientID string) {
-	client, err := h.m2mStore.Get(clientID)
-	if err != nil {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
-		return
-	}
-
+func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, client *M2MClient) {
 	kp, signer, err := h.keyStore.Signer("client")
 	if err != nil {
 		writeTokenServerError(w, "keyStore.Signer", err)
@@ -100,7 +100,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 
 	now := time.Now()
 	claims := map[string]any{
-		"sub":          clientID,
+		"sub":          client.ClientID,
 		"iss":          h.issuer,
 		"caas_user_id": client.UserID,
 		"caas_org_id":  client.TenantID,
@@ -124,7 +124,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 	})
 }
 
-func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Request, clientID string) {
+func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Request, client *M2MClient) {
 	subjectToken := r.FormValue("subject_token")
 	subjectTokenType := r.FormValue("subject_token_type")
 
@@ -147,12 +147,6 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	kid, _ := parsed.Header["kid"].(string)
 	if kid == "" {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "missing kid in subject token")
-		return
-	}
-
-	client, err := h.m2mStore.Get(clientID)
-	if err != nil {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
 		return
 	}
 
@@ -243,7 +237,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		"caas_user_id": subjectSub,
 		"caas_org_id":  subOrgID,
 		"user_roles":   subRoles,
-		"act":          map[string]any{"sub": clientID},
+		"act":          map[string]any{"sub": client.ClientID},
 		"caas_tier":    "unlimited",
 		"exp":          oboNow.Add(time.Duration(h.expirySeconds) * time.Second).Unix(),
 		"iat":          oboNow.Unix(),
@@ -301,6 +295,7 @@ func writeTokenError(w http.ResponseWriter, status int, errCode, description str
 		description = errCode
 	}
 	resp["error_description"] = description
+	SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)
@@ -326,7 +321,17 @@ func writeTokenServerError(w http.ResponseWriter, op string, cause error) {
 		fmt.Sprintf("server_error [ticket: %s]", ticket))
 }
 
+// SetNoStore marks a response as never to be stored by a cache (RFC 6749
+// §5.1): every /oauth/token response, success or error, and every response
+// carrying a plaintext client secret. It must be called before the header is
+// written.
+func SetNoStore(h http.Header) {
+	h.Set("Cache-Control", "no-store")
+	h.Set("Pragma", "no-cache")
+}
+
 func writeTokenResponse(w http.ResponseWriter, status int, body map[string]any) {
+	SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(body)

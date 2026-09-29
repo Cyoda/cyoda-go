@@ -480,6 +480,11 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 //     with http:// URIs (fake hostnames) so no external TLS is needed.
 //   - CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true — skips DNS-based SSRF
 //     checks so tests can use arbitrary hostnames without network I/O.
+//   - CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3 — low enough that the M2M
+//     client cap scenario (RunM2MClientCap) can exercise it directly,
+//     rather than creating 100 clients. Every other scenario that creates
+//     M2M clients stays under 3 per tenant (grepped for CreateClientRaw /
+//     newM2MClient across e2e/parity).
 func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 	return append(os.Environ(),
 		fmt.Sprintf("CYODA_HTTP_PORT=%d", httpPort),
@@ -492,6 +497,7 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		// OIDC test overrides — allow http:// and skip SSRF DNS checks.
 		"CYODA_OIDC_REQUIRE_HTTPS=false",
 		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true",
+		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3",
 	)
 }
 

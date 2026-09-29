@@ -603,16 +603,18 @@ paths:
         - User, Machine
       summary: List all M2M clients
       description: >
-        Retrieves a list of all active machine-to-machine (M2M) clients (OAuth
-        2.0 clients) to the current legal entity.
+        Retrieves the machine-to-machine (M2M) clients (OAuth 2.0 clients) of
+        the caller's tenant, sorted by client id, without their secrets.
 
         These users authenticate via client credentials and act on behalf of
-        applications, not humans.
+        applications, not humans. Clients are stored and shared by the
+        cluster: any node answers with the same list.
 
 
-        Returns the client IDs of all M2M clients that are currently active
-
-        and available for authentication.
+        A client whose record was written back without its index entry (a
+        secret reset that raced a delete) is listed but cannot authenticate;
+        deleting it removes it. A stored client that cannot be read back is
+        left out and logged.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -640,7 +642,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -651,6 +653,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     post:
@@ -659,7 +663,8 @@ paths:
       summary: Create M2M client
       description: >
         Creates a new machine-to-machine (M2M) client for API authentication via
-        OAuth 2.0.
+        OAuth 2.0. The client is stored and shared by the cluster: any node
+        can authenticate it once created.
 
 
         The created user will have M2M role permissions, necessary for getting
@@ -697,6 +702,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TechnicalUserCredentialsDto"
+        "400":
+          description: "Bad request — M2M_CLIENT_CAP_REACHED: the tenant already has
+            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; or BAD_REQUEST:
+            `withAdminRole` is not a boolean."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Unauthorized - Authentication is required
           content:
@@ -717,7 +730,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -728,6 +741,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -736,14 +751,12 @@ paths:
         - User, Machine
       summary: Delete a M2M client
       description: >
-        Deletes a M2M client and invalidates all associated credentials.
-
-
-        This operation cannot be undone without a support ticket. Any
-        applications using this client's
-
-        credentials will immediately lose access and must be reconfigured with
-        new credentials.
+        Deletes a M2M client of the caller's tenant. The client is stored and
+        shared by the cluster, so the deletion is visible to every node when
+        this call returns: from then on the client cannot get a token from any
+        node. Tokens it was already issued stay valid until their `exp`.
+        Deletion is permanent; an application that still needs access needs a
+        new client.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -791,7 +804,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket,
+            generic message), including an undecodable index entry naming a
+            client absent from the caller's tenant (ownership cannot be
+            proven). An undecodable index entry of a client present in the
+            caller's tenant is removed instead, answering `200`.
           content:
             application/problem+json:
               schema:
@@ -802,6 +819,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /clients/{clientId}/secret:
@@ -810,7 +829,9 @@ paths:
         - User, Machine
       summary: Reset M2M client secret
       description: >
-        Generates a new client secret for an existing M2M client.
+        Generates a new client secret for an existing M2M client. The client
+        is stored and shared by the cluster, so the new secret is usable from
+        any node.
 
 
         This operation invalidates the current client secret and generates a new
@@ -865,7 +886,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - the client store failed (ticket,
+            generic message), including an undecodable record, or an
+            undecodable index entry of a client whose record the caller's
+            tenant holds. An id with no record in the caller's tenant answers
+            `404`, whatever its index entry.
           content:
             application/problem+json:
               schema:
@@ -876,6 +901,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
   /entity/stats:
@@ -6685,13 +6712,17 @@ paths:
               schema:
                 $ref: "#/components/schemas/TokenResponseDto"
         "400":
-          description: Bad request - Invalid credentials or malformed request
+          description: Bad request - unsupported_grant_type (grant_type missing or
+            not supported), or invalid_grant (the token-exchange subject token
+            is unsupported, invalid, unverifiable or carries an unusable sub)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "401":
-          description: Unauthorized - Invalid client credentials or subject token
+          description: Unauthorized - invalid_client (no Basic credentials, a
+            client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
+            wrong secret)
           content:
             application/json:
               schema:
@@ -6709,7 +6740,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "500":
-          description: Internal Server Error - An unexpected error occurred
+          description: Internal Server Error - server_error (ticket in
+            error_description, generic message) - the client store failed,
+            including an undecodable record or index entry, or signing failed.
           content:
             application/json:
               schema:

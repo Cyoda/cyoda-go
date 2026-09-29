@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 298 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 301 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -117,6 +117,10 @@ var allTests = []NamedTest{
 	{"MessageCreateAndGet", RunMessageCreateAndGet},
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
+	// A batch delete naming an absent id alongside a present one still
+	// succeeds and deletes the present one (storage-SPI absent-key Delete
+	// contract).
+	{"MessageDeleteBatchWithAbsentID", RunMessageDeleteBatchWithAbsentID},
 
 	// Edge message — flat metaData round-trip (Task 7, group 4)
 	{"MessageRoundTrip", RunMessageRoundTrip},
@@ -554,6 +558,13 @@ var allTests = []NamedTest{
 	// scenarios must not issue human-audience key pairs or rotate/invalidate
 	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
+
+	// M2M clients in each backend's own spi.KeyValueStore: create, token,
+	// list, reset and delete, with another tenant's id answering 404 on
+	// delete and reset and never listed; and the per-tenant cap — refused
+	// at the cap with 400 M2M_CLIENT_CAP_REACHED, a delete freeing a slot.
+	{"M2MClientLifecycle", RunM2MClientLifecycle},
+	{"M2MClientCap", RunM2MClientCap},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

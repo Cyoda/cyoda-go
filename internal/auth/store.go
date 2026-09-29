@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
@@ -135,18 +134,39 @@ type TrustedKeyStore interface {
 	Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
 }
 
-// M2MClientStore manages machine-to-machine clients.
+// ErrInvalidClient is returned by M2MClientStore.Authenticate when there is
+// no such client or the secret is wrong. The token endpoint answers it with
+// 401 invalid_client.
+var ErrInvalidClient = errors.New("invalid client")
+
+// ErrM2MClientCapReached is returned by M2MClientStore.Create when the tenant
+// already has the configured maximum number of clients.
+var ErrM2MClientCapReached = errors.New("m2m client cap reached")
+
+// ErrM2MClientNotFound is returned by M2MClientStore.Delete and ResetSecret
+// when the client does not exist in the caller's tenant: absent, or another
+// tenant's. Adapters classify with errors.Is.
+var ErrM2MClientNotFound = errors.New("m2m client not found")
+
+// ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
+// is already taken, in any tenant — that is, when an index entry exists for
+// it, decodable or not. The adapter's collision-retry loop in
+// CreateTechnicalUser detects this via errors.Is and regenerates.
+var ErrM2MClientExists = errors.New("m2m client already exists")
+
+// M2MClientStore manages machine-to-machine clients. The store enforces
+// tenant isolation: List, Delete and ResetSecret act only on tenantID's
+// clients, and another tenant's client is ErrM2MClientNotFound, exactly as an
+// absent one. Any error other than the sentinels above is a server-side
+// failure: a KV error, wrapped so a storage-unavailable one keeps its
+// marker; stored data that does not decode (errM2MUndecodable); or a failure
+// to generate or hash a secret, which wraps no KV error.
 type M2MClientStore interface {
-	Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error)
-	Get(clientID string) (*M2MClient, error)
-	// List returns all M2M clients within the given tenant. The store is
-	// responsible for filtering — future persistent implementations can
-	// push this down to the backend, avoiding loading the whole cluster
-	// into memory for what the caller already knows is a per-tenant query.
-	List(tenantID spi.TenantID) []*M2MClient
-	Delete(clientID string) error
-	ResetSecret(clientID string) (string, error)
-	VerifySecret(clientID, plaintext string) (bool, error)
+	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string) (secret string, err error)
+	Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error)
+	List(ctx context.Context, tenantID spi.TenantID) ([]*M2MClient, error)
+	Delete(ctx context.Context, tenantID spi.TenantID, clientID string) error
+	ResetSecret(ctx context.Context, tenantID spi.TenantID, clientID string) (secret string, c *M2MClient, err error)
 }
 
 // --- GenerateSecret ---
@@ -201,24 +221,13 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 	return validTo == nil || now.Before(*validTo)
 }
 
-// --- InMemoryM2MClientStore ---
+// --- Constant-time pad ---
 
-// ErrM2MClientNotFound is returned by InMemoryM2MClientStore.Get / .Delete /
-// .ResetSecret / .VerifySecret when the requested clientID is not present.
-// Adapters should use errors.Is for classification.
-var ErrM2MClientNotFound = errors.New("m2m client not found")
-
-// ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
-// is already present. The adapter's collision-retry loop in
-// CreateTechnicalUser detects this via errors.Is and regenerates.
-var ErrM2MClientExists = errors.New("m2m client already exists")
-
-// dummyHash is a constant-time fallback compared against any unknown
-// clientID so VerifySecret takes ~100ms in both the unknown-clientID
-// and wrong-secret paths. Without this, response-time analysis on
-// POST /oauth/token would reveal whether a given clientID exists.
-// Generated once at init; the plaintext "dummy" is never referenced
-// outside this comparison and never leaves the function.
+// dummyHash is compared against the secret of a token request that names no
+// usable client, so Authenticate makes one bcrypt comparison whether or not
+// the id exists. Without it, response-time analysis on POST /oauth/token
+// would reveal whether a given clientID exists. Generated once at init; the
+// plaintext is never referenced outside this comparison.
 var dummyHash = func() []byte {
 	h, err := bcrypt.GenerateFromPassword([]byte("dummy-constant-time-pad"), bcrypt.DefaultCost)
 	if err != nil {
@@ -226,146 +235,3 @@ var dummyHash = func() []byte {
 	}
 	return h
 }()
-
-// InMemoryM2MClientStore stores M2M clients in memory.
-type InMemoryM2MClientStore struct {
-	mu      sync.RWMutex
-	clients map[string]*M2MClient
-}
-
-// NewInMemoryM2MClientStore creates a new InMemoryM2MClientStore.
-func NewInMemoryM2MClientStore() *InMemoryM2MClientStore {
-	return &InMemoryM2MClientStore{
-		clients: make(map[string]*M2MClient),
-	}
-}
-
-// Create adds an M2M client, hashing the provided plaintext secret with bcrypt.
-// Returns the plaintext secret for the caller to deliver to the client.
-func (s *InMemoryM2MClientStore) Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error) {
-	secret, err := GenerateSecret()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate secret: %w", err)
-	}
-
-	hashed, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash secret: %w", err)
-	}
-
-	rolesCopy := make([]string, len(roles))
-	copy(rolesCopy, roles)
-
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.clients[clientID]; exists {
-		return "", fmt.Errorf("%w: %s", ErrM2MClientExists, clientID)
-	}
-	s.clients[clientID] = &M2MClient{
-		ClientID:     clientID,
-		HashedSecret: string(hashed),
-		TenantID:     tenantID,
-		UserID:       userID,
-		Roles:        rolesCopy,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	return secret, nil
-}
-
-// Get retrieves an M2M client by client ID.
-func (s *InMemoryM2MClientStore) Get(clientID string) (*M2MClient, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	c, ok := s.clients[clientID]
-	if !ok {
-		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
-	copied := *c
-	copied.Roles = make([]string, len(c.Roles))
-	copy(copied.Roles, c.Roles)
-	return &copied, nil
-}
-
-// List returns all M2M clients belonging to tenantID.
-func (s *InMemoryM2MClientStore) List(tenantID spi.TenantID) []*M2MClient {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	result := make([]*M2MClient, 0, len(s.clients))
-	for _, c := range s.clients {
-		if c.TenantID != tenantID {
-			continue
-		}
-		copied := *c
-		copied.Roles = make([]string, len(c.Roles))
-		copy(copied.Roles, c.Roles)
-		result = append(result, &copied)
-	}
-	return result
-}
-
-// Delete removes an M2M client by client ID.
-func (s *InMemoryM2MClientStore) Delete(clientID string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, ok := s.clients[clientID]; !ok {
-		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
-	delete(s.clients, clientID)
-	return nil
-}
-
-// ResetSecret generates a new random secret for the client and returns the plaintext.
-func (s *InMemoryM2MClientStore) ResetSecret(clientID string) (string, error) {
-	secret, err := GenerateSecret()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate secret: %w", err)
-	}
-
-	hashed, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash secret: %w", err)
-	}
-
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	c, ok := s.clients[clientID]
-	if !ok {
-		return "", fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
-	c.HashedSecret = string(hashed)
-	c.UpdatedAt = now
-	return secret, nil
-}
-
-// VerifySecret reports whether plaintext matches the stored bcrypt hash
-// for clientID. Returns (false, ErrM2MClientNotFound) when the client
-// does not exist; the comparison still runs against a dummy hash so the
-// timing profile matches the wrong-secret case and clientID existence
-// cannot be inferred from response latency.
-func (s *InMemoryM2MClientStore) VerifySecret(clientID, plaintext string) (bool, error) {
-	var hashCopy []byte
-	var found bool
-	func() {
-		s.mu.RLock()
-		defer s.mu.RUnlock()
-		if c, ok := s.clients[clientID]; ok {
-			// Copy the hash so we can release the lock before the slow bcrypt
-			// call — otherwise concurrent writes (ResetSecret, Delete, Create)
-			// wait ~100ms on every token request.
-			hashCopy = []byte(c.HashedSecret)
-			found = true
-		}
-	}()
-
-	if !found {
-		// Constant-time compare against the dummy hash to match the
-		// existing-client timing. Discard the result.
-		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(plaintext))
-		return false, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
-	err := bcrypt.CompareHashAndPassword(hashCopy, []byte(plaintext))
-	return err == nil, nil
-}

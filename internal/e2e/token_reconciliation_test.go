@@ -1,7 +1,9 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -9,14 +11,35 @@ import (
 	"testing"
 )
 
-// postToken issues a POST to /api/oauth/token with the given form values and
-// optional HTTP Basic credentials. It does NOT use authRequest because the
-// token endpoint does not require a pre-existing bearer token.
+// postToken issues a POST to the shared server's /api/oauth/token with the
+// given form values and optional HTTP Basic credentials. It does NOT use
+// authRequest because the token endpoint does not require a pre-existing
+// bearer token.
 func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http.Response {
 	t.Helper()
-	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	return postTokenTo(t, serverURL, form, basicUser, basicPass)
+}
+
+// postTokenTo is postToken against the server at baseURL — the shared server
+// or a harness stack. basicUser and basicPass are sent as given, so a caller
+// can pass a form-urlencoded client id (the endpoint decodes both parts).
+func postTokenTo(t *testing.T, baseURL string, form url.Values, basicUser, basicPass string) *http.Response {
+	t.Helper()
+	resp, err := postTokenRaw(e2eCtx(t), baseURL, form, basicUser, basicPass)
 	if err != nil {
-		t.Fatalf("postToken: new request: %v", err)
+		t.Fatalf("postToken: %v", err)
+	}
+	return resp
+}
+
+// postTokenRaw is the one /api/oauth/token request every token helper
+// sends: form as the body, basicUser and basicPass as HTTP Basic credentials
+// when basicUser is set. It never touches *testing.T, so it is safe to call
+// from a goroutine.
+func postTokenRaw(ctx context.Context, baseURL string, form url.Values, basicUser, basicPass string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("create token request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if basicUser != "" {
@@ -24,9 +47,9 @@ func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("postToken: do: %v", err)
+		return nil, fmt.Errorf("token request: %w", err)
 	}
-	return resp
+	return resp, nil
 }
 
 // assertOAuthError asserts the flat RFC-6749 error shape (application/json,

@@ -95,8 +95,11 @@ identifier outside this grammar is only diagnosable from cyoda's own logs.
 `cyoda token --tenant` checks the same rule before it signs, and the claim is
 checked again when the token is used.
 
-Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
-and stored client records all carry a value already admitted at that door.
+Peer dispatch, scheduled tasks and search jobs carry a value already
+admitted at that door and do not re-check it. Stored M2M clients are the
+exception: a stored tenant id names the storage namespace of a client's
+record, so it is checked again whenever a stored client is decoded, and one
+whose tenant id fails the check is treated as damaged (see `auth.clients`).
 
 ### User identifiers
 
@@ -163,6 +166,12 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   shape returns `404` with error code `FEATURE_DISABLED` and no client is
   created. When `true`, the created M2M client receives both `ROLE_M2M`
   and `ROLE_ADMIN`. Toggling does not affect existing clients. (default: `false`)
+- `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` — per-tenant cap on M2M clients.
+  `POST /clients` at the cap returns `400` with error code
+  `M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to
+  start. Creates on several nodes at the same moment can each pass the check,
+  so a tenant can exceed the cap by at most one client per node.
+  (default: `100`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
   that can verify. It counts an active key, and one in its grace period after
   invalidation until its `validTo`. `0` means unbounded. (default: `10`)
@@ -326,6 +335,17 @@ new window has opened.
   design; no KMS vault ships yet.
 
 #### Recovering from a `/oauth/token` 500
+
+**The M2M client store failed, or holds a damaged client record or index
+entry for the client id.** The `ticket` in `error_description` names the
+ERROR log line that carries the cause; a damaged record or index entry is
+also logged at ERROR with its client id. A damaged record is removed with
+`DELETE /clients/{clientId}`. `DELETE` also removes a damaged index entry,
+as long as the caller's tenant holds a record for that id (own namespace
+proves ownership); without a record in that tenant, ownership cannot be
+proven and `DELETE` still answers `500` — the fix is then a direct edit of
+the storage backend: remove the key named by the client id from the
+`m2m-client-ids` namespace. See `auth.clients`.
 
 **The selected key pair is broken.** The log names the KID and the reason.
 The fix depends on why:

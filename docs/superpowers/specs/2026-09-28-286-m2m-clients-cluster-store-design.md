@@ -58,9 +58,10 @@ when the call returns 2xx, and survives a restart on a persistent backend.
 6. Tenant isolation holds at the storage layer: a tenant's admin operations
    read and write only that tenant's namespace, and touch the global index
    only for entries naming that tenant.
-7. The token endpoint's timing does not reveal whether a client id exists:
-   every request that reaches a decision makes the same store reads and one
-   bcrypt comparison.
+7. The token endpoint's own work does not depend on whether a client id
+   exists: every request that reaches a decision makes the same store reads
+   and one bcrypt comparison. A backend's cost for a present and a missing
+   key can differ (§5.8).
 8. No plaintext secret is stored or logged.
 9. A store failure is reported as a store failure (5xx), never as an absent or
    invalid client (401 / 404).
@@ -312,8 +313,12 @@ tenant), `userId`, `roles`, `hashedSecret`, `createdAt`, `updatedAt`
 A record is **undecodable** when the JSON does not parse, `clientId` differs
 from its key or is outside §5.2, `tenantId` differs from its namespace or fails
 `common.ValidateTenantID`, `userId` fails `common.ValidateFirstPartyUserID`,
-`roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash,
-or a timestamp is outside `StorableTime`. An index entry is undecodable when it
+`roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash
+— exactly 60 characters: `$2a$`, `$2b$` or `$2y$`, a two-digit cost, `$`, and
+53 characters from `[./A-Za-z0-9]` (`bcrypt.Cost` reads only the header, and a
+damaged body would fail every comparison as a wrong secret) —
+or its cost is outside `[bcrypt.DefaultCost, bcrypt.DefaultCost+4]` (a stored
+cost bounds the CPU an unauthenticated token request can burn), or a timestamp is outside `StorableTime`. An index entry is undecodable when it
 does not parse or its tenant fails `ValidateTenantID`. The encoder refuses to
 write anything the decoder would reject.
 
@@ -322,9 +327,11 @@ names its tenant. Only an existing client authenticates or can be given a new
 secret.
 
 Write order: create writes the record, then the index entry; delete removes
-the index entry, then the record. A create whose index write fails removes the
-index entry and then the record (§5.4), so an ambiguous failure — a write that
-committed but reported an error — leaves nothing behind. A crash between the
+the index entry, then the record. A create whose record write fails removes
+the record, and one whose index write fails removes the index entry and then
+the record (§5.4), so an ambiguous failure — a write that committed but
+reported an error — leaves nothing behind. A reset whose write fails writes
+back the record it read, so the old secret stays in force. A crash between the
 two writes leaves a record without an index entry: listed, unable to
 authenticate, removable by `DELETE`.
 
@@ -332,8 +339,8 @@ authenticate, removable by `DELETE`.
 
 Unchanged: `^[A-Za-z0-9]{1,100}$` (`internal/domain/account/m2m_adapter.go:21`,
 `api/openapi.yaml:761,835,9705,11775`). Generated ids are 16-character
-base32-hex (`m2m_adapter.go:30`). The codec, `Create` and the token endpoint
-apply it too.
+base32-hex (`m2m_adapter.go:30`). The codec and the token endpoint apply it
+too.
 
 ### 5.3 Interface (package `internal/auth`)
 
@@ -380,14 +387,19 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   A store failure, or an undecodable entry or record, returns that error
   without bcrypt and is logged at ERROR with the KV key (an id that passed
   §5.2).
-- **Create(tenant, id, user, roles)**: id outside §5.2 → `ErrInvalidClient`
-  (the adapter only passes generated ids). Generate and hash the secret. Under
+- **Create(tenant, id, user, roles)**: the adapter is the only caller and
+  passes only generated ids, so `Create` does not check the id itself; the
+  encoder refuses one outside §5.2 before anything is written. Generate and
+  hash the secret. Under
   a per-node, per-tenant mutex: `List` the tenant's namespace; at
   `maxPerTenant` or more records → `ErrM2MClientCapReached` (`maxPerTenant`
   ≤ 0: no cap); `Get` the index entry; present or undecodable →
-  `ErrM2MClientExists`; `Put` the record, then the index entry. If the index
-  `Put` fails, delete the index entry, then the record, on a context the
-  caller cannot cancel; a failed removal is logged at ERROR with the key.
+  `ErrM2MClientExists`; `Put` the record, then the index entry. If the record
+  `Put` fails, delete the record; if the index `Put` fails, delete the index
+  entry, then the record. Each removal runs on a context the caller cannot
+  cancel, and a failed removal is logged at ERROR with the key. A record
+  `Put` that fails never removes the index entry: this call did not write it,
+  and it may name another tenant.
 - **List(tenant)**: `List` the tenant's namespace. Undecodable records are
   skipped and logged at ERROR with their keys, as the replica does at load
   (`internal/auth/replica.go:117-122`).
@@ -396,13 +408,25 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   this tenant → `ErrM2MClientNotFound`. Otherwise remove the index entry if it
   names this tenant, then the record if present. This also removes an
   undecodable record, and a record left without its index entry; the
-  namespace proves ownership. An index entry naming another tenant is never
-  touched.
+  namespace proves ownership. An undecodable index entry is removed the same
+  way when the tenant's namespace holds a record for the id (decodable or
+  not) — the namespace proves ownership there too. A mere KV read failure on
+  the index entry is not the same as an undecodable one: it carries no
+  evidence of what the entry names, so it never takes that path even with a
+  record present. Without a record in the tenant's namespace — or on a bare
+  read failure regardless of the record — ownership cannot be proven, so the
+  index entry is left untouched and the read failure is returned. An index
+  entry naming another tenant is never touched.
 - **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
   between read and write is one round trip, not a bcrypt. `Get` the record in
-  the tenant's namespace and the index entry; the client does not exist
-  (§5.1) → `ErrM2MClientNotFound`; `Put` the record with the new hash and
-  `updatedAt` now.
+  the tenant's namespace; no record → `ErrM2MClientNotFound` without reading
+  the index entry: no reset can succeed without that record, and the entry
+  may name another tenant, so another tenant's undecodable index entry is
+  not a store error for this caller. Then `Get` the index entry; absent or
+  naming another tenant → `ErrM2MClientNotFound`; undecodable → the store
+  error. `Put` the record with the new hash and `updatedAt` now. If that
+  `Put` fails, `Put` the record as read, on a context the caller cannot
+  cancel; a failed restore is logged at ERROR with the key.
 
 The token handler (`internal/auth/token.go:59-80,141`) calls `Authenticate`
 once and uses the returned client for both grants: `ErrInvalidClient` →
@@ -436,9 +460,16 @@ or `LOCAL_QUORUM` (cyoda-go-cassandra#104 makes these the only accepted
 levels). Memory and sqlite are single-node.
 
 Documented, not prevented (no compare-and-set): concurrent admin changes to
-one client on two nodes. A reset racing a delete can write the record back
+one client, on one node or on two — `Delete` and `ResetSecret` take no lock,
+so the later write wins. A reset racing a delete can write the record back
 after the delete removed it, leaving a record without an index entry: listed,
-unable to authenticate, removable by `DELETE`. And the cap overshoot of §5.5.
+unable to authenticate, removable by `DELETE`. A reset whose write commits but
+reports an error writes back the record it read (§5.4); if another reset
+succeeds in between, the write-back can land after it, so the secret the
+successful reset returned with `200` stops working and the secret from
+before both resets works again. The fix is another reset. And the cap
+overshoot of §5.5, the one race that needs two nodes: creates on one node are
+serialised by the per-node mutex.
 
 On cassandra, a write adds a version row and a delete keeps earlier data
 (`cyoda-go-cassandra internal/store/data_store.go:90-97,166-168`): hashes of
@@ -447,9 +478,19 @@ until compaction. They are bcrypt hashes of 256-bit random secrets.
 
 ### 5.8 Token endpoint cost
 
-Two KV point reads per `POST /oauth/token` (on cassandra each is a metadata
-and a data read at the configured level), next to ~100 ms of bcrypt. Tokens
-live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
+Two KV point reads per `POST /oauth/token`, next to ~100 ms of bcrypt. On
+cassandra a read of a present key is a metadata and a data query at the
+configured level, and a read of a missing key is the metadata query alone
+(`cyoda-go-cassandra internal/store/data_store.go:125-160`). Tokens live
+`CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
+
+Every request that reaches a decision makes the same KV reads and one bcrypt
+comparison, so the server's own work does not depend on whether the id
+exists. A backend's cost for reading a present key and a missing key can
+differ: on cassandra an existing id costs four queries and an unknown one two.
+That can let a caller who already holds an id confirm that it exists. Client
+ids are not secret (a token's `sub`), and generated ids are 80-bit random, so
+this does not allow enumeration; the secret is still needed.
 
 ### 5.9 Errors
 
@@ -459,18 +500,18 @@ live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 | | 500 | `server_error` | store failure; undecodable entry or record | yes (was 401) |
 | | 400 / 500 | | grant validation; signer failure | no |
 | all four `/clients` operations | 401 / 403 / 501 | | unauthenticated; not admin; not jwt mode | no |
-| | 500 | | store failure (ticket, generic message); for delete and reset also an undecodable index entry | yes (list: new; delete, reset: was 404) |
+| | 500 | | store failure (ticket, generic message); for reset also an undecodable index entry of an id whose record the caller's tenant holds; for delete, an undecodable index entry naming a client absent from the caller's tenant (ownership unproven) | yes (list: new; delete, reset: was 404) |
 | | 503 | `STORAGE_UNAVAILABLE` | the store reports itself unavailable | yes; add to OpenAPI for all four |
 | `POST /clients` | 200 | | created | stored now |
 | | 400 | `M2M_CLIENT_CAP_REACHED` | the tenant is at the cap | yes; new code |
 | | 404 | `FEATURE_DISABLED` | `withAdminRole=true` while disabled | no |
 | `GET /clients` | 200 | | the caller's tenant's clients; undecodable records skipped | stored now |
-| `DELETE /clients/{clientId}` | 200 | | deleted (an undecodable or unindexed record of the caller's tenant included) | stored now |
+| `DELETE /clients/{clientId}` | 200 | | deleted (an undecodable or unindexed record, or an undecodable index entry, of the caller's tenant included) | stored now |
 | | 400 | `BAD_REQUEST` | id outside §5.2 | no |
 | | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's | no |
 | `PUT /clients/{clientId}/secret` | 200 | | new secret | stored now |
 | | 400 | `BAD_REQUEST` | id outside §5.2 | no |
-| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's; a record without its index entry | no |
+| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's; a record without its index entry; no record in the caller's tenant, whatever the index entry (read only when the record exists) | no |
 | | 500 | | an undecodable record | yes |
 
 No gRPC surface manages clients (a search of `internal/grpc` and `api/grpc` for
@@ -530,17 +571,23 @@ Fixture constraints:
 | another tenant: absent from list; delete and reset → 404 with the absent-client body | ✓ | ✓ | ✓ | |
 | create on A → token on B at once; reset on A → old secret 401 on B; delete on A → 401 on B | | ✓ | | ✓ shared cluster |
 | create, reset, delete each survive a restart | | ✓ | | |
+| `/clients` refusals: unauthenticated → 401 and not admin → 403 on all four operations; an id outside §5.2 → 400 `BAD_REQUEST` on delete and reset; `withAdminRole=true` while disabled → 404 `FEATURE_DISABLED` (a stack of its own) | ✓ (401 on list only) | ✓ | | |
 | cap: at the cap → 400 `M2M_CLIENT_CAP_REACHED`; 0 → unbounded; a delete frees a slot; concurrent creates on one node stop at the cap | ✓ | ✓ | ✓ | |
 | token endpoint: id with NUL, invalid UTF-8, 101 characters, an encoded `:` → 401, no store read, one bcrypt | ✓ | ✓ | | |
 | unknown id; a record without an index entry; wrong secret: each makes two reads and one bcrypt → 401 | ✓ | | | |
 | create: index `Put` fails, and a faulty KV whose `Put` commits then errors → index entry and record both gone | ✓ (faulty KV) | | | |
+| create: record `Put` commits then errors, also with the caller cancelled → record gone, index entry untouched | ✓ (faulty KV) | | | |
+| reset: `Put` commits then errors, also with the caller cancelled → the old secret still authenticates | ✓ (faulty KV) | | | |
 | delete removes an undecodable record and a record without its index entry; never an index entry naming another tenant | ✓ | ✓ (raw KV write) | | |
+| delete removes an undecodable index entry when the caller's own tenant holds a record for the id → 200, both gone; with no own record → 500, index entry untouched; a mere index read failure (not undecodable) with an own record present → 500, nothing touched | ✓ | ✓ (raw KV write) | | |
 | reset of a record without its index entry → 404 | ✓ | | | |
 | undecodable index entry or record: token → 500; list skips with ERROR | ✓ | ✓ (raw KV write) | | |
+| undecodable index entry: the owner's reset (own record present) → 500, index entry and record unchanged; a reset by a tenant with no record for the id → 404, the index entry not read | ✓ | ✓ (raw KV write) | | |
 | failing KV on every method → store error, never not-found / invalid-client; adapter → 500 / 503; token → 500 | ✓ (faulty KV) | | | |
 | a caller's transaction in the context is not joined by the store | ✓ | | | |
 | codec: round trip; each decode refusal; the encoder refuses what decode rejects | ✓ | | | |
 | no plaintext secret in any stored value | ✓ | ✓ (raw KV read) | | |
+| `Cache-Control: no-store` and `Pragma: no-cache`: token success (client_credentials and token exchange), token error (`401 invalid_client`), create, reset | ✓ (all) | ✓ (client_credentials success, create, reset) | | |
 | SPI: absent-key `Delete` (KV, message, workflow) and `DeleteBatch` → nil | spitest, every backend | | ✓ (`DELETE /message` batch with an absent id → 200) | |
 | every `/clients` and `/oauth/token` response conforms to the OpenAPI (enforce-mode validator) | | ✓ | | |
 
@@ -549,6 +596,10 @@ Waivers:
   paused, and the adapter passes errors through `common.Internal`, whose 503
   mapping is tested (`internal/common/errors.go:169-177`); a unit row asserts
   the adapter reaches it.
+- A store-failure 500 on `GET /clients` and `POST /clients` is not tested end
+  to end: it cannot be reproduced on the shared container.
+  `TestM2MAdapter_StoreFailure_Returns500WithTicket` covers it for all four
+  operations.
 - Cassandra multi-node: no fixture yet (cyoda-go-cassandra#35).
 
 ## 6. Documentation, comments and exit checks

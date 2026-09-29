@@ -584,6 +584,38 @@ func TestErrCode_Parity(t *testing.T) {
 	}
 }
 
+// TestErrorIndex_ListsEveryCode: the ERROR CODE INDEX in errors.md has one
+// entry for every errors/<CODE>.md topic, and no entry without a topic.
+func TestErrorIndex_ListsEveryCode(t *testing.T) {
+	root := repoRoot(t)
+	index, err := os.ReadFile(filepath.Join(root, "cmd/cyoda/help/content/errors.md"))
+	if err != nil {
+		t.Fatalf("read errors.md: %v", err)
+	}
+	listed := map[string]bool{}
+	for _, m := range regexp.MustCompile("(?m)^- `errors\\.([A-Z0-9_]+)` — ").FindAllStringSubmatch(string(index), -1) {
+		listed[m[1]] = true
+	}
+	entries, err := os.ReadDir(filepath.Join(root, "cmd/cyoda/help/content/errors"))
+	if err != nil {
+		t.Fatalf("read errors/: %v", err)
+	}
+	topics := map[string]bool{}
+	for _, e := range entries {
+		if code, ok := strings.CutSuffix(e.Name(), ".md"); ok {
+			topics[code] = true
+			if !listed[code] {
+				t.Errorf("errors/%s.md has no entry in the ERROR CODE INDEX of errors.md", code)
+			}
+		}
+	}
+	for code := range listed {
+		if !topics[code] {
+			t.Errorf("errors.md lists %s, but there is no errors/%s.md", code, code)
+		}
+	}
+}
+
 // Phrases that MUST appear somewhere under cli/*.md or config/*.md
 // after the printHelp() migration. Pins content that the env-var
 // grep alone doesn't cover.

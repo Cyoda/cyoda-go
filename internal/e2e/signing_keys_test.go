@@ -10,13 +10,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -35,16 +33,13 @@ import (
 // invalidated key pair verifies through its grace period and no longer.
 
 // keyStack pairs a callbackHarness with the one M2M client keyCall drives the
-// real /oauth/token endpoint with. Unlike the KV-persisted signing keys under
-// test here, the M2M client store is in-memory per process
-// (auth.InMemoryM2MClientStore) and does NOT survive a restart, and several
-// scenarios build a fresh harness only AFTER invalidating the very signing
-// key a self-signed seed bearer (h.token/h.fetchToken — see
-// callback_harness_test.go) would need. So each keyStack seeds its own client
-// directly through the store at construction — the same call POST /clients
-// makes internally, minus the HTTP round trip a brand-new process has no
-// other admin identity to authenticate — rather than through HTTP or by
-// sharing one client across restarts.
+// real /oauth/token endpoint with. The client is created through POST
+// /clients by the first keyStack on a database, with that stack's own
+// self-signed admin token (h.token — see callback_harness_test.go). M2M
+// clients are stored in the database, so a later keyStack on the same
+// database — a restart — uses the same client. It cannot create one of its
+// own: several scenarios build it only AFTER invalidating the very signing
+// key its self-signed admin token is signed with.
 type keyStack struct {
 	*callbackHarness
 	clientID, clientSecret string
@@ -67,14 +62,25 @@ func newKeyStackWith(t *testing.T, s *schedDB, key *rsa.PrivateKey, configure fu
 			configure(cfg)
 		}
 	})
-	clientID := "keystack" + uuid.NewString()[:8]
-	secret, err := h.app.AuthService().M2MClientStore().Create(
-		clientID, spi.TenantID("test-tenant"), clientID, []string{"ROLE_ADMIN", "ROLE_M2M"},
-	)
-	if err != nil {
-		t.Fatalf("seed keyStack M2M client: %v", err)
+	if s.keyClient == nil {
+		s.keyClient = createKeyStackClient(t, h)
 	}
-	return &keyStack{callbackHarness: h, clientID: clientID, clientSecret: secret}
+	return &keyStack{callbackHarness: h, clientID: s.keyClient.id, clientSecret: s.keyClient.secret}
+}
+
+// createKeyStackClient creates an admin M2M client in the harness tenant
+// through POST /clients?withAdminRole=true, with h's own admin token. The
+// client lives as long as the test's database.
+func createKeyStackClient(t *testing.T, h *callbackHarness) *m2mCredential {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodPost, "/api/clients?withAdminRole=true", "", "")
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create keyStack M2M client: %d %s", resp.StatusCode, raw)
+	}
+	cred := decodeCredential(t, "create keyStack M2M client", raw)
+	return &cred
 }
 
 // oauthToken fetches a fresh bearer through the real /oauth/token endpoint —
@@ -326,17 +332,11 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	// (Gate 3) is a generic message plus a ticket UUID, nothing internal.
 	forbidden := []string{"sealed", "decryption", kid}
 
-	// h2's own M2M client authenticates via Basic Auth (bcrypt secret check),
-	// no JWT needed for that, so it is unaffected by the tampered key below.
+	// The keyStack's M2M client authenticates via Basic Auth (bcrypt secret
+	// check), no JWT needed for that, so it is unaffected by the tampered key.
 
 	// /oauth/token must fail closed: the broken key is the selected signer.
-	req, _ := http.NewRequest("POST", h2.baseURL+"/api/oauth/token", strings.NewReader("grant_type=client_credentials"))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(h2.clientID, h2.clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := postTokenTo(t, h2.baseURL, url.Values{"grant_type": {"client_credentials"}}, h2.clientID, h2.clientSecret)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
@@ -350,7 +350,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	}
 	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
-	req, _ = http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
+	req, _ := http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
 	req.Header.Set("Authorization", "Bearer "+bootstrapToken(t, key))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {

@@ -31,7 +31,7 @@ type AuthConfig struct {
 type AuthService struct {
 	keyStore     *KVKeyStore
 	trustedStore *KVTrustedKeyStore
-	m2mStore     *InMemoryM2MClientStore
+	m2mStore     *KVM2MClientStore
 	issuer       string
 	handler      http.Handler
 }
@@ -84,7 +84,7 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	if err != nil {
 		return nil, err
 	}
-	m2mStore := NewInMemoryM2MClientStore()
+	m2mStore := NewKVM2MClientStore(config.KV, config.IAMFeatures.M2MClientMaxPerTenant)
 
 	// Public mux: token issuance and JWKS (no auth required). A stale JWKS
 	// answer asks the caller to retry after one re-read interval.

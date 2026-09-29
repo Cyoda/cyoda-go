@@ -72,10 +72,13 @@ checked again at the door when the token is used. No configuration variable
 carries a tenant id.
 
 Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
-search-job rows, OIDC provider records, the stored M2M client table — carries a
-value this cluster already admitted at that door. Re-checking there
-would guard against a corrupted store or a compromised peer, a threat model in
-which tenant-id spelling is not what saves you.
+search-job rows, OIDC provider records — carries a value this cluster already
+admitted at that door. Re-checking there would guard against a corrupted store
+or a compromised peer, a threat model in which tenant-id spelling is not what
+saves you. The stored M2M clients are the one exception, and an internal one:
+a stored tenant id names the storage namespace of a client's record, so
+cyoda-go checks it again whenever it decodes a stored client and treats a
+failing one as damaged data. That check adds nothing to the contract.
 
 One operator-facing tenant value is covered by a test rather than by the check:
 `cfg.IAM.MockTenantID` becomes the tenant of every request in the non-JWT IAM

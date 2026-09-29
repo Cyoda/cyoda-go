@@ -69,7 +69,7 @@ func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) strin
 	return tok
 }
 
-// provisionTenant creates an M2M client at tenantID on THIS stack, through
+// provisionTenant creates an M2M client in tenantID through this stack, via
 // POST /clients authenticated with a seed admin token minted for that tenant
 // (adminTokenFor) rather than reaching into the store directly, and returns
 // its credentials. The client is deleted when the test ends, before the stack
@@ -91,15 +91,9 @@ func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("provisionTenant: %d: %s", resp.StatusCode, raw)
 	}
-	var cred struct {
-		ID     string `json:"client_id"`
-		Secret string `json:"client_secret"`
-	}
-	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
-		t.Fatalf("provisionTenant: no credentials in response (%v)", err)
-	}
-	deleteClientAtCleanup(t, h.baseURL, cred.ID, func() string { return h.adminTokenFor(t, tenantID, userID) })
-	return cred.ID, cred.Secret
+	cred := decodeCredential(t, "provisionTenant", raw)
+	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.adminTokenFor(t, tenantID, userID) })
+	return cred.id, cred.secret
 }
 
 // fetchTokenFor obtains a client-credentials bearer for the given creds on this stack.
@@ -112,16 +106,7 @@ func (h *callbackHarness) fetchTokenFor(t *testing.T, clientID, secret string) s
 // stack and returns the issued bearer; any status but 200 fails the test.
 func (h *callbackHarness) grantToken(t *testing.T, form url.Values, clientID, secret string) string {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
-	if err != nil {
-		t.Fatalf("token request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, secret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token request failed: %v", err)
-	}
+	resp := postTokenTo(t, h.baseURL, form, clientID, secret)
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
