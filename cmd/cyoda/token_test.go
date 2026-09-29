@@ -21,8 +21,15 @@ func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 	return key, string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 }
 
+// setTokenEnv sets the JWT variables runToken reads and makes its call to
+// app.LoadEnvFiles hermetic: HOME, XDG_CONFIG_HOME and the working directory
+// point at empty temporary directories, so no user config and no ./.env is
+// read (and nothing from them is left set after the test).
 func setTokenEnv(t *testing.T, pemText string) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
 	t.Setenv("CYODA_JWT_SIGNING_KEY", pemText)
 	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
 	t.Setenv("CYODA_JWT_ISSUER", "cyoda-test")
@@ -91,6 +98,60 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 			}
 			if out.Len() != 0 {
 				t.Fatalf("stdout must be empty on error: %q", out.String())
+			}
+		})
+	}
+}
+
+// TestSetTokenEnv_IgnoresDeveloperEnvFiles pins that runToken's call to
+// app.LoadEnvFiles cannot pick up the developer's user config or a ./.env:
+// setTokenEnv points HOME, XDG_CONFIG_HOME and the working directory at empty
+// temporary directories.
+func TestSetTokenEnv_IgnoresDeveloperEnvFiles(t *testing.T) {
+	const userVar, cwdVar = "CYODA_TOKEN_TEST_FROM_USER_CONFIG", "CYODA_TOKEN_TEST_FROM_DOTENV"
+	for _, v := range []string{userVar, cwdVar} {
+		t.Setenv(v, "") // restores the variable's absence at cleanup
+		os.Unsetenv(v)
+	}
+	xdg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(xdg, "cyoda"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "cyoda", "cyoda.env"), []byte(userVar+"=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	cwd := t.TempDir()
+	if err := os.WriteFile(filepath.Join(cwd, ".env"), []byte(cwdVar+"=x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(cwd)
+
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d: %s", code, errOut.String())
+	}
+	for _, v := range []string{userVar, cwdVar} {
+		if _, ok := os.LookupEnv(v); ok {
+			t.Errorf("%s was loaded from a developer env file", v)
+		}
+	}
+}
+
+func TestRunToken_ExpiryOutOfRangeExit1(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	for _, v := range []string{"abc", "0", "31622401", "9300000000"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
+			var out, errOut bytes.Buffer
+			if code := runToken([]string{"--tenant", "acme", "--ttl", "1m"}, &out, &errOut); code != 1 {
+				t.Fatalf("exit %d, want 1 (stderr %q)", code, errOut.String())
+			}
+			if out.Len() != 0 || !strings.Contains(errOut.String(), "CYODA_JWT_EXPIRY_SECONDS") {
+				t.Fatalf("stdout %q, stderr %q", out.String(), errOut.String())
 			}
 		})
 	}

@@ -100,7 +100,7 @@ Key within `jwt.existingSecret` whose value is the PEM-encoded RSA private key.
 JWT issuer claim. Written to ConfigMap as `CYODA_JWT_ISSUER`.
 
 **`jwt.expirySeconds`** — integer — default `3600`
-JWT token expiry in seconds. Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
+JWT token expiry in seconds, from 60 to 31622400 (366 days). Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
 
 **`cluster.hmacSecret.existingSecret`** — string — default `""`
 Name of an operator-managed Secret containing the HMAC secret. When empty, the chart auto-generates the Secret on first install using `lookup` to detect existing state. GitOps controllers (Argo CD) must set this to a pre-created Secret; the chart fails with an error if rendered without live cluster access (e.g. `helm template`, `--dry-run`) and no `existingSecret` is provided.

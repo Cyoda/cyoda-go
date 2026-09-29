@@ -44,7 +44,7 @@
         "existingSecret": {"type": "string", "minLength": 1},
         "existingSecretKey": {"type": "string", "minLength": 1},
         "issuer": {"type": "string"},
-        "expirySeconds": {"type": "integer", "minimum": 60}
+        "expirySeconds": {"type": "integer", "minimum": 60, "maximum": 31622400}
       }
     },
     "cluster": {

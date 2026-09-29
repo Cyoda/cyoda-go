@@ -13,13 +13,13 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
   but does not sign until its window opens.
 - A token whose key pair is outside its window is rejected with the uniform
   `401`.
-- An invalidated key pair never signs again. Its tokens keep verifying until
-  the end of its grace period: invalidating sets `validTo` to now plus the
-  grace period, never later than its current `validTo`. A grace period of 0,
-  the default (`gracePeriodSec` / `invalidateGracePeriodSec` omitted), ends
-  verification at once; invalidating again with 0, or `DELETE`, cuts a
-  running grace period short. JWKS publishes a key pair until it can no
-  longer verify.
+- An invalidated key pair never signs again unless reactivated. Its tokens
+  keep verifying until the end of its grace period: invalidating sets
+  `validTo` to now plus the grace period, never later than its current
+  `validTo`. A grace period of 0, the default (`gracePeriodSec` /
+  `invalidateGracePeriodSec` omitted), ends verification at once;
+  invalidating again with 0, or `DELETE`, cuts a running grace period short.
+  JWKS publishes a key pair until it can no longer verify.
 
 `POST /oauth/keys/keypair` refuses, with `400 BAD_REQUEST`:
 
@@ -43,7 +43,9 @@ no `validFrom`, so it signs whenever no issued key pair of its audience is
 active and inside its window: invalidating the last issued key pair of the
 bootstrap key's audience makes the bootstrap key sign again. A rotation
 (`invalidateCurrent`) never ends it; only an invalidate or `DELETE` that names
-its key id does.
+its key id does. To end a leaked token, the operator revokes the key pair
+named by the `kid` in its header; a rotation does not end tokens the bootstrap
+key signed.
 
 ## Cloud action
 
@@ -61,7 +63,7 @@ Cloud to adopt:
 1. **Never sign with a key in its grace period.** Cloud selects a signer by
    window alone (`isValidSigningKey`, `StoredJWKService.kt:409-412`), so a key
    in its grace period can keep signing. In cyoda-go an invalidated key pair
-   never signs again.
+   never signs again unless reactivated.
 2. **Never lengthen `validTo`.** Cloud sets `validTo` to now plus the grace
    period unconditionally; cyoda-go never moves it past the key pair's
    current `validTo`.

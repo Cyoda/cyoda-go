@@ -59,7 +59,9 @@ signal that requests are unauthenticated.
   grants, and `cyoda token`); empty string disables the audience check and
   issued tokens carry no `aud` (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
-  of `cyoda token --ttl` (default: `3600`)
+  of `cyoda token --ttl`. Must be an integer from 1 to 31622400 (366 days);
+  any other value stops the server at startup and makes `cyoda token` exit 1.
+  (default: `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
   derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
   M2M token-issuance path (`POST /oauth/token`) always uses the
@@ -236,8 +238,8 @@ issued key pairs only: the bootstrap key is never one of them, stays active,
 keeps verifying, and `cyoda token` keeps working. Only an invalidate or a
 `DELETE` that names the bootstrap key's key id ends it.
 
-An invalidated key pair — issued, or the bootstrap key — never signs again.
-Tokens it signed keep verifying until the end of its grace period:
+An invalidated key pair — issued, or the bootstrap key — never signs again
+unless reactivated. Tokens it signed keep verifying until the end of its grace period:
 `invalidateGracePeriodSec: N` on a rotation, or `gracePeriodSec: N` on
 `POST /oauth/keys/keypair/{keyId}/invalidate`, sets its `validTo` to N
 seconds from now, never later than its current `validTo`. The default is 0:
@@ -248,8 +250,22 @@ A node that has not yet applied an invalidation (see *Shared and persisted*
 below) can still sign with the key pair until it does; with a grace period,
 those tokens verify on every node until the key pair's `validTo`.
 
-**Emergency revocation:** rotate or invalidate with a grace period of 0. A
-grace period already running is cut short by invalidating the key pair again
+**Emergency revocation of a leaked token:** revoke the key pair named by the
+`kid` in the token's header. A rotation is not enough: it never ends the
+bootstrap key, which signs every token from `cyoda token`, and every token
+from `POST /oauth/token` while no issued key pair of its audience is active
+and inside its window (before the first rotation, for example).
+
+- If the `kid` names an issued key pair, invalidate it with a grace period of
+  0 (or rotate with `invalidateGracePeriodSec: 0`), or `DELETE` it.
+- If the `kid` names the bootstrap key, invalidate it with a grace period of
+  0. If `cyoda token` is still wanted, reactivate the bootstrap key once
+  `CYODA_JWT_EXPIRY_SECONDS` has passed since every node applied the
+  invalidation (see *Shared and persisted* below): by then every token it
+  signed before has expired. Reactivating it sooner makes those tokens verify
+  again. `DELETE` also ends the bootstrap key, but permanently.
+
+A grace period already running is cut short by invalidating the key pair again
 with 0, or by `DELETE`; a deleted key pair never verifies.
 
 `invalidateCurrent` cannot be combined with a future `validFrom`,

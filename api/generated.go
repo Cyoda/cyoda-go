@@ -2428,7 +2428,7 @@ type IssueJwtKeyPairRequestDto struct {
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
 	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
-	// InvalidateCurrent If true, invalidates the issued key-pairs of this audience whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair of its audience is active and inside its window. An invalidated key-pair never signs again.
+	// InvalidateCurrent If true, invalidates the issued key-pairs of this audience whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair of its audience is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
 	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true.

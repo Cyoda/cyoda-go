@@ -24,6 +24,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gone, the `caas_org_id` claim is the only place a tenant id enters
   cyoda-go from outside it. See `cyoda help cli token`.
 
+- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 31622400 (366
+  days).** The server used to replace a non-numeric value with 3600 and
+  accept 0 or a negative value, issuing tokens that had already expired; it
+  now refuses to start, and `cyoda token` exits 1, for any value outside that
+  range. The Helm chart's `jwt.expirySeconds` has the same upper bound.
+
 - **A rotation no longer ends the signing key from `CYODA_JWT_SIGNING_KEY`,
   and an invalidated key pair verifies until the end of its grace period.**
   `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs
@@ -33,13 +39,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   keeps working through routine key management. Only an invalidate or
   `DELETE` that names its key id ends it, and the node that takes the call
   logs a WARN that tokens from `cyoda token` are refused once any grace
-  period ends. An invalidated key pair, issued or the bootstrap key, never
-  signs again, but tokens it signed keep verifying until the end of its grace
-  period (`gracePeriodSec`, or `invalidateGracePeriodSec` on a rotation;
-  never past its `validTo`). Before, it stopped verifying at once and the
-  grace period only kept its public key in JWKS. The default grace period is
-  still 0, which ends verification at once; invalidating again with 0, or
-  `DELETE`, cuts a running grace period short. See `cyoda help config auth`
+  period ends. A rotation therefore does not end a leaked token that the
+  bootstrap key signed: revoke the key pair named by the `kid` in the
+  token's header. An invalidated key pair, issued or the bootstrap key,
+  never signs again unless reactivated, but tokens it signed keep verifying
+  until the end of its grace period (`gracePeriodSec`, or
+  `invalidateGracePeriodSec` on a rotation; never past its `validTo`).
+  Before, it stopped verifying at once and the grace period only kept its
+  public key in JWKS. The default grace period is still 0, which ends
+  verification at once; invalidating again with 0, or `DELETE`, cuts a
+  running grace period short. See `cyoda help config auth`
   ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-window.md`.
 

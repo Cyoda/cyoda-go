@@ -34,13 +34,14 @@ The token serves HTTP calls and unary gRPC calls. With the default roles it does
 A token from `cyoda token` verifies while the signing key verifies on the cluster:
 
 - Rotating key pairs (`POST /oauth/keys/keypair` with `invalidateCurrent`) does not affect it.
-- Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline.
+- Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require `ROLE_ADMIN`.
+- Reactivating the signing key gives it a window that ends at the reactivation's `validTo`; tokens from `cyoda token` are refused from that time.
 - After that, admin access comes from an OIDC admin, or from an admin M2M client created beforehand while an issued key pair signs its tokens (`/oauth/token` signs with the `client` audience's key pair; creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`). With neither, the recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Tokens from a federated OIDC provider are unaffected.
 
 ## OPTIONS
 
 - `--tenant <tenantId>` — required. The tenant the token acts in. A tenant that will register OIDC providers must be a UUID in its canonical lowercase form (see `cyoda help errors OIDC_INVALID_TENANT`).
-- `--user <userId>` — the user id recorded for calls made with the token. Default `operator`.
+- `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
 - `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`.
 - `--ttl <duration>` — lifetime, greater than 0 and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s). Default `15m`.
 

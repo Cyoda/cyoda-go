@@ -5539,7 +5539,7 @@ paths:
         Invalidates a specific JWT signing key-pair, an issued one or the
         signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key).
 
-        An invalidated key pair never signs again. Tokens it signed keep
+        An invalidated key pair never signs again unless reactivated. Tokens it signed keep
         verifying until the end of its grace period: `gracePeriodSec` sets its
         validTo to now plus that many seconds, never later than its current
         validTo, and JWKS publishes its public key until then. If
@@ -5549,6 +5549,10 @@ paths:
 
         Invalidating the signing key from `CYODA_JWT_SIGNING_KEY` ends the
         tokens `cyoda token` signs, after the grace period.
+
+        To end a leaked token, invalidate the key pair named by the `kid` in
+        its header with a grace period of zero. A rotation is not enough when
+        that is the bootstrap key: a rotation never invalidates it.
       operationId: invalidateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -10716,8 +10720,10 @@ components:
             window is open, the first rotation included. The signing key from
             `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays
             active and signs again whenever no issued key-pair of its audience is
-            active and inside its window. An invalidated key-pair never signs
-            again.
+            active and inside its window, so a rotation does not end the
+            tokens the bootstrap key signed; to end a leaked token, invalidate
+            the key-pair named by the `kid` in its header. An invalidated
+            key-pair never signs again unless reactivated.
           example: false
         invalidateGracePeriodSec:
           type: integer

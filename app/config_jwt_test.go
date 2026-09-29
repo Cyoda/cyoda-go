@@ -2,8 +2,10 @@ package app
 
 import (
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -52,5 +54,55 @@ func TestLoadJWTSettings_BadExpiryIsAnError(t *testing.T) {
 	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "soon")
 	if _, err := LoadJWTSettings(); err == nil {
 		t.Fatal("want error")
+	}
+}
+
+func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
+	for _, v := range []string{"soon", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1), "9300000000"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
+			_, err := LoadJWTSettings()
+			if err == nil || !strings.Contains(err.Error(), "CYODA_JWT_EXPIRY_SECONDS") {
+				t.Fatalf("CYODA_JWT_EXPIRY_SECONDS=%s: err = %v, want one naming the variable", v, err)
+			}
+		})
+	}
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", strconv.Itoa(MaxJWTExpirySeconds))
+	s, err := LoadJWTSettings()
+	if err != nil || s.ExpirySeconds != MaxJWTExpirySeconds {
+		t.Fatalf("at the cap: settings = %+v, err = %v", s, err)
+	}
+}
+
+// TestDefaultConfig_RefusesBadJWTExpiry pins that the server reads the JWT
+// variables through LoadJWTSettings: a value `cyoda token` refuses is refused
+// at server start too, rather than replaced by the default or accepted.
+func TestDefaultConfig_RefusesBadJWTExpiry(t *testing.T) {
+	for _, v := range []string{"abc", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1)} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("DefaultConfig accepted CYODA_JWT_EXPIRY_SECONDS=%s", v)
+				}
+				if msg := fmt.Sprint(r); !strings.Contains(msg, "CYODA_JWT_EXPIRY_SECONDS") {
+					t.Fatalf("panic %q does not name CYODA_JWT_EXPIRY_SECONDS", msg)
+				}
+			}()
+			_ = DefaultConfig()
+		})
+	}
+}
+
+// TestDefaultConfig_JWTSettingsMatchLoadJWTSettings pins that the server's
+// config carries the values LoadJWTSettings resolves.
+func TestDefaultConfig_JWTSettingsMatchLoadJWTSettings(t *testing.T) {
+	t.Setenv("CYODA_JWT_ISSUER", "iss-x")
+	t.Setenv("CYODA_JWT_AUDIENCE", "aud-x")
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "120")
+	cfg := DefaultConfig()
+	if cfg.IAM.JWTIssuer != "iss-x" || cfg.IAM.JWTAudience != "aud-x" || cfg.IAM.JWTExpiry != 120 {
+		t.Fatalf("IAM = issuer %q audience %q expiry %d", cfg.IAM.JWTIssuer, cfg.IAM.JWTAudience, cfg.IAM.JWTExpiry)
 	}
 }
