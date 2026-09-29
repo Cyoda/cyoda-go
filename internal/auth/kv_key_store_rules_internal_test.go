@@ -338,6 +338,42 @@ func TestKVKeyStore_PublishedIncludesGraceExcludesExpiredSorted(t *testing.T) {
 	}
 }
 
+// Published must never list a record Verifies(now) refuses. An inactive
+// record with no validTo is not reachable through the admin API (Invalidate
+// always sets validTo via graceExpiry), but a hand-written or foreign-node
+// record could still take this shape, and JWKS must not publish a key that
+// verifies nothing.
+func TestKVKeyStore_PublishedExcludesInactiveNoValidTo(t *testing.T) {
+	ctx := replicaSystemCtx()
+	kv := newReplicaKV(t)
+	boot := loadFixtureKey(t)
+	bootKID, err := DeriveKID(&boot.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := NewWrappedVault(boot, bootKID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	almostPast := time.Now().Add(-time.Minute)
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("dead"), issuedRecordFull(t, v, testKID("dead"), "human", false, almostPast, nil)); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := s.Published()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pub {
+		if p.KID == testKID("dead") {
+			t.Fatalf("inactive record with no validTo must not be published: %+v", p)
+		}
+	}
+}
+
 func TestKVKeyStore_DeletedBootstrapRefusesVerifyAndSign(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)

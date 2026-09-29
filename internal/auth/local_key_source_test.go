@@ -96,7 +96,12 @@ func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
 	src := auth.NewLocalKeySource(ks)
 	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
-	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
 	if err := ks.Delete(systemCtx(), kp.KID); err != nil {
 		t.Fatal(err)
 	}
@@ -107,21 +112,63 @@ func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
 
 func TestLocalKeySource_ReactivateDuringGrace(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
+	src := auth.NewLocalKeySource(ks)
 	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
-	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
 	got, err := ks.Reactivate(systemCtx(), kp.KID, time.Now(), time.Now().Add(2*time.Hour))
 	if err != nil || !got.Active {
 		t.Fatalf("reactivate during grace: %v %v", got, err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("reactivated: expected the key to verify, got %v", err)
 	}
 }
 
 // An invalidated key pair never signs, even inside its grace period.
 func TestKVKeyStore_InvalidatedKeyInGraceNeverSigns(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
+	src := auth.NewLocalKeySource(ks)
 	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
-	_ = ks.Invalidate(systemCtx(), kp.KID, 3600)
+	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kp.KID); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
 	if _, _, err := ks.Signer("human"); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("signer = %v, want none: the only key pair of the audience is invalidated", err)
+	}
+}
+
+// The configured signing key follows the grace rule too: invalidated with a
+// grace period it keeps verifying (there is no other key pair, so its
+// audience has no signer), invalidated again with 0 it stops verifying.
+func TestKVKeyStore_BootstrapKeyGracePath(t *testing.T) {
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
+	src := auth.NewLocalKeySource(ks)
+	kid := bootKID(t, boot)
+
+	if err := ks.Invalidate(systemCtx(), kid, 3600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kid); err != nil {
+		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
+	}
+	if _, _, err := ks.Signer("client"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+		t.Fatalf("signer = %v, want none: the signing key is invalidated and no other key pair exists", err)
+	}
+
+	if err := ks.Invalidate(systemCtx(), kid, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.GetKey(kid); !errors.Is(err, auth.ErrKeyNotFound) {
+		t.Fatalf("invalidated with grace 0: want ErrKeyNotFound, got %v", err)
 	}
 }
 

@@ -205,9 +205,9 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 }
 
 // Invalidate ends kid as a signer at once (Signer selection requires
-// Active). It keeps verifying through graceSec more seconds from its current
-// validTo (0, the default, ends verification at once too). A grace period
-// already running is cut short by invalidating again with 0.
+// Active). It keeps verifying for graceSec seconds from now, never past its
+// current validTo; 0 ends verification at once. A running grace period is
+// cut short by invalidating again with 0, or by Delete.
 func (s *KVKeyStore) Invalidate(ctx context.Context, kid string, graceSec int64) error {
 	_, err := s.updateState(ctx, kid, func(r *signingRecord, pair KeyPair) {
 		r.Active = false

@@ -228,6 +228,17 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	return pub, nil
 }
 
+// publishable reports whether a key pair belongs in JWKS: its window has not
+// ended (a future validFrom is fine — JWKS publishes a key ahead of its
+// window opening), and it is not the one shape Verifies(now) always refuses,
+// active or not: an inactive record with no validTo. That shape is not
+// reachable through the admin API (Invalidate always sets validTo via
+// graceExpiry), but Published must not publish a key that verifies nothing
+// regardless of how the record arrived.
+func publishable(kp *KeyPair, now time.Time) bool {
+	return windowOpen(kp.ValidTo, now) && (kp.Active || kp.ValidTo != nil)
+}
+
 // Published returns the key pairs for JWKS: owned ones and the bootstrap key
 // whose window has not ended, including those in a grace period.
 func (s *KVKeyStore) Published() ([]*KeyPair, error) {
@@ -238,12 +249,12 @@ func (s *KVKeyStore) Published() ([]*KeyPair, error) {
 	var out []*KeyPair
 	s.rep.read(func(recs map[string]*signingEntry) {
 		for _, e := range recs {
-			if e.class == classOwned && windowOpen(e.pair.ValidTo, now) {
+			if e.class == classOwned && publishable(&e.pair, now) {
 				p := e.pair
 				out = append(out, &p)
 			}
 		}
-		if bv := s.bootstrapView(recs); bv.usable && windowOpen(bv.pair.ValidTo, now) {
+		if bv := s.bootstrapView(recs); bv.usable && publishable(&bv.pair, now) {
 			p := bv.pair
 			out = append(out, &p)
 		}
