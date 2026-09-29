@@ -817,6 +817,23 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	}
 }
 
+// An error response from the token endpoint is not cacheable either, so
+// every /oauth/token response carries the same headers.
+func TestTokenEndpoint_ErrorResponsesAreNotCacheable(t *testing.T) {
+	env := setupTokenEnv(t)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, "wrong"), nil))
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rr.Header().Get("Pragma"); got != "no-cache" {
+		t.Errorf("Pragma = %q, want no-cache", got)
+	}
+}
+
 // RFC 6749 §5.1: a response carrying a token has Cache-Control: no-store and
 // Pragma: no-cache, on both grants.
 func TestTokenEndpoint_TokenResponsesAreNotCacheable(t *testing.T) {
