@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 300 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 301 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -117,6 +117,10 @@ var allTests = []NamedTest{
 	{"MessageCreateAndGet", RunMessageCreateAndGet},
 	{"MessageDelete", RunMessageDelete},
 	{"MessageLargePayload", RunMessageLargePayload},
+	// A batch delete naming an absent id alongside a present one still
+	// succeeds and deletes the present one (storage-SPI absent-key Delete
+	// contract).
+	{"MessageDeleteBatchWithAbsentID", RunMessageDeleteBatchWithAbsentID},
 
 	// Edge message — flat metaData round-trip (Task 7, group 4)
 	{"MessageRoundTrip", RunMessageRoundTrip},

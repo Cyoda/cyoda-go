@@ -1086,6 +1086,15 @@ func (c *Client) GetMessage(t *testing.T, messageID string) (map[string]any, err
 	return result, nil
 }
 
+// GetMessageRaw issues GET /api/message/{messageId} and returns the HTTP
+// status code without decoding the body. Used by tests that expect a
+// specific non-200 response (e.g., a deleted message → 404).
+func (c *Client) GetMessageRaw(t *testing.T, messageID string) (int, error) {
+	t.Helper()
+	path := "/api/message/" + messageID
+	return c.doJSON(t, http.MethodGet, path, nil, nil)
+}
+
 // DeleteMessage issues DELETE /api/message/{messageId}.
 func (c *Client) DeleteMessage(t *testing.T, messageID string) error {
 	t.Helper()

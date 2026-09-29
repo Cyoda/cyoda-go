@@ -348,9 +348,10 @@ func (r *kvReplica[R]) loadOne(ctx context.Context, kvKey string) (R, bool, erro
 // itself plus every write already applied before it, newest first, and
 // returns the error. The failing write can itself have partially or fully
 // committed before reporting failure (e.g. a timeout) — restoring it too is
-// what makes this correct: a prev-restore is idempotent and a delete of an
-// absent key already tolerates ErrNotFound, so restoring a write that never
-// actually landed costs nothing. Restores run on a context the caller cannot
+// what makes this correct: a prev-restore is idempotent, and deleting a key
+// that was never written or already deleted is a no-op by the storage-SPI
+// contract, so restoring a write that never actually landed costs nothing.
+// Restores run on a context the caller cannot
 // cancel; a restore that fails is logged at ERROR with every key left
 // changed.
 func (r *kvReplica[R]) writeAll(ctx context.Context, writes []kvWrite) error {
@@ -376,10 +377,7 @@ func (r *kvReplica[R]) writeAll(ctx context.Context, writes []kvWrite) error {
 
 func (r *kvReplica[R]) put(ctx context.Context, key string, value []byte) error {
 	if value == nil {
-		if err := r.kv.Delete(ctx, r.cfg.namespace, key); err != nil && !errors.Is(err, spi.ErrNotFound) {
-			return err
-		}
-		return nil
+		return r.kv.Delete(ctx, r.cfg.namespace, key)
 	}
 	return r.kv.Put(ctx, r.cfg.namespace, key, value)
 }
