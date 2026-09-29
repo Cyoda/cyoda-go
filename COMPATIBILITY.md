@@ -156,12 +156,13 @@ engine aborts a transaction on conflict. cyoda-go-cassandra#68 tracks the store.
 Also for `v0.9.0`: a delete of an absent key — never written or already
 deleted — returns nil from `KeyValueStore.Delete`, `MessageStore.Delete`/`DeleteBatch`
 and `WorkflowStore.Delete`. This requires the plugin's `dataStore.delete` to
-return nil, not `ErrNotFound`, for an absent key; until it does, the
+return nil, not `ErrNotFound`, for an absent key; without it, the
 `spitest` cases and the parity scenario `MessageDeleteBatchWithAbsentID` fail
 on it, and cyoda-go's auth replica and M2M client store (whose undo of a
 failed create deletes a record that may never have been written) rely on it.
-The fix is [cyoda-go-cassandra#105](https://github.com/Cyoda/cyoda-go-cassandra/pull/105);
-no cyoda-go-cassandra release contains it yet.
+The fix is [cyoda-go-cassandra#105](https://github.com/Cyoda/cyoda-go-cassandra/pull/105)
+(merged to its `main` as `1f53fb5`); the first cyoda-go-cassandra release that
+contains it is the minimum for this version.
 M2M clients (and the signing keys) depend on cross-node read-your-writes,
 which on cassandra holds only at `QUORUM` or `LOCAL_QUORUM`;
 cyoda-go-cassandra#104 tracks refusing every other level.
