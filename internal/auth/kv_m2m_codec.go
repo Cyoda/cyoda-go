@@ -94,11 +94,15 @@ func decodeClientRecord(tenant spi.TenantID, key string, data []byte) (*M2MClien
 	if r.ClientID != key || spi.TenantID(r.TenantID) != tenant {
 		return nil, fmt.Errorf("%w: record does not match its key or namespace", errM2MUndecodable)
 	}
-	created, err1 := time.Parse(time.RFC3339Nano, r.CreatedAt)
-	updated, err2 := time.Parse(time.RFC3339Nano, r.UpdatedAt)
-	if err1 != nil || err2 != nil {
+	// storableTimestamp (signing_records.go) is the same parse-and-range
+	// check decodeSigningRecord uses; reused here so a record with an
+	// unparseable or out-of-range timestamp is rejected the same way on
+	// every KV-backed store this package has.
+	if !storableTimestamp(r.CreatedAt) || !storableTimestamp(r.UpdatedAt) {
 		return nil, fmt.Errorf("%w: bad timestamp", errM2MUndecodable)
 	}
+	created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
+	updated, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
 	c := &M2MClient{ClientID: r.ClientID, HashedSecret: r.HashedSecret, TenantID: spi.TenantID(r.TenantID), UserID: r.UserID, Roles: r.Roles, CreatedAt: created, UpdatedAt: updated}
 	if err := validateM2MClient(c); err != nil {
 		return nil, fmt.Errorf("%w: %w", errM2MUndecodable, err)

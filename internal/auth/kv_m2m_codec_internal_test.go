@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -58,6 +59,33 @@ func TestM2MCodec_EncoderRefuses(t *testing.T) {
 	}
 }
 
+// validRecordJSON marshals a valid m2mClientRecord (mirroring validClient's
+// fields) and applies mutate to it before encoding, so a test can put a
+// single corrupted field on the wire without going through encodeClientRecord
+// (which would refuse it before it ever reached decodeClientRecord).
+func validRecordJSON(t *testing.T, mutate func(r *m2mClientRecord)) []byte {
+	t.Helper()
+	c := validClient(t)
+	ts := c.CreatedAt.UTC().Format(time.RFC3339Nano)
+	r := m2mClientRecord{
+		ClientID:     c.ClientID,
+		TenantID:     string(c.TenantID),
+		UserID:       c.UserID,
+		Roles:        append([]string(nil), c.Roles...),
+		HashedSecret: c.HashedSecret,
+		CreatedAt:    ts,
+		UpdatedAt:    ts,
+	}
+	if mutate != nil {
+		mutate(&r)
+	}
+	b, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestM2MCodec_DecoderRefuses(t *testing.T) {
 	good, _ := encodeClientRecord(validClient(t))
 	cases := map[string]struct {
@@ -69,6 +97,20 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		"key differs":         {"acme", "OTHER1", good},
 		"tenant differs":      {"other", "ABC123", good},
 		"key outside grammar": {"acme", "a-b", []byte(strings.Replace(string(good), `"ABC123"`, `"a-b"`, 1))},
+		// These carry a valid key/tenant/clientId so they reach
+		// validateM2MClient inside decodeClientRecord itself, rather than
+		// being rejected by encodeClientRecord before ever hitting the
+		// wire (which is all TestM2MCodec_EncoderRefuses exercises).
+		"bad user":   {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.UserID = "oidc:x" })},
+		"no roles":   {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{} })},
+		"empty role": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{""} })},
+		"not a hash": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = "plaintext" })},
+		"timestamp out of range": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) {
+			r.CreatedAt = "0000-01-01T00:00:00Z"
+		})},
+		"timestamp not parseable": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) {
+			r.CreatedAt = "not-a-date"
+		})},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -79,6 +121,9 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 	}
 	if _, err := decodeIndexEntry([]byte(`{"tenantId":"a:b"}`)); !errors.Is(err, errM2MUndecodable) {
 		t.Fatalf("index with bad tenant: %v", err)
+	}
+	if _, err := decodeIndexEntry([]byte("{")); !errors.Is(err, errM2MUndecodable) {
+		t.Fatalf("index not json: %v", err)
 	}
 }
 
