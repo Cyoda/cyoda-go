@@ -329,9 +329,11 @@ new window has opened.
 entry for the client id.** The `ticket` in `error_description` names the
 ERROR log line that carries the cause; a damaged record or index entry is
 also logged at ERROR with its client id. A damaged record is removed with
-`DELETE /clients/{clientId}`. A damaged index entry makes that `DELETE`
-answer `500` too, so it cannot be removed through the API. See
-`auth.clients`.
+`DELETE /clients/{clientId}`. `DELETE` also removes a damaged index entry,
+as long as the client's own tenant holds a record for that id (own namespace
+proves ownership); without a record in that tenant, ownership cannot be
+proven and `DELETE` still answers `500` — the entry then needs a direct KV
+repair. See `auth.clients`.
 
 **The selected key pair is broken.** The log names the KID and the reason.
 The fix depends on why:

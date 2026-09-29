@@ -805,7 +805,10 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable index entry.
+            generic message), including an undecodable index entry naming a
+            client absent from the caller's tenant (ownership cannot be
+            proven). An undecodable index entry of a client present in the
+            caller's tenant is removed instead, answering `200`.
           content:
             application/problem+json:
               schema:

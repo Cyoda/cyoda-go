@@ -396,8 +396,12 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   this tenant → `ErrM2MClientNotFound`. Otherwise remove the index entry if it
   names this tenant, then the record if present. This also removes an
   undecodable record, and a record left without its index entry; the
-  namespace proves ownership. An index entry naming another tenant is never
-  touched.
+  namespace proves ownership. An undecodable index entry is removed the same
+  way when the tenant's namespace holds a record for the id (decodable or
+  not) — the namespace proves ownership there too. Without a record in the
+  tenant's namespace, ownership cannot be proven, so an undecodable index
+  entry is left untouched and the read failure is returned. An index entry
+  naming another tenant is never touched.
 - **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
   between read and write is one round trip, not a bcrypt. `Get` the record in
   the tenant's namespace and the index entry; the client does not exist
@@ -462,13 +466,13 @@ live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 | | 500 | `server_error` | store failure; undecodable entry or record | yes (was 401) |
 | | 400 / 500 | | grant validation; signer failure | no |
 | all four `/clients` operations | 401 / 403 / 501 | | unauthenticated; not admin; not jwt mode | no |
-| | 500 | | store failure (ticket, generic message); for delete and reset also an undecodable index entry | yes (list: new; delete, reset: was 404) |
+| | 500 | | store failure (ticket, generic message); for reset also an undecodable index entry; for delete, an undecodable index entry naming a client absent from the caller's tenant (ownership unproven) | yes (list: new; delete, reset: was 404) |
 | | 503 | `STORAGE_UNAVAILABLE` | the store reports itself unavailable | yes; add to OpenAPI for all four |
 | `POST /clients` | 200 | | created | stored now |
 | | 400 | `M2M_CLIENT_CAP_REACHED` | the tenant is at the cap | yes; new code |
 | | 404 | `FEATURE_DISABLED` | `withAdminRole=true` while disabled | no |
 | `GET /clients` | 200 | | the caller's tenant's clients; undecodable records skipped | stored now |
-| `DELETE /clients/{clientId}` | 200 | | deleted (an undecodable or unindexed record of the caller's tenant included) | stored now |
+| `DELETE /clients/{clientId}` | 200 | | deleted (an undecodable or unindexed record, or an undecodable index entry, of the caller's tenant included) | stored now |
 | | 400 | `BAD_REQUEST` | id outside §5.2 | no |
 | | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's | no |
 | `PUT /clients/{clientId}/secret` | 200 | | new secret | stored now |

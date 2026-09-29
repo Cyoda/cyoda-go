@@ -184,7 +184,9 @@ func TestKVM2M_UndecodableRecord(t *testing.T) {
 }
 
 // An undecodable index entry is the store failing, never "no such client":
-// Authenticate, Delete and ResetSecret return a store error.
+// Authenticate and ResetSecret return a store error. Delete does too, unless
+// the caller's own tenant namespace holds a record for the id — see
+// TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient.
 func TestKVM2M_UndecodableIndexEntry(t *testing.T) {
 	s, kv := newM2M(t, 0)
 	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
@@ -192,11 +194,63 @@ func TestKVM2M_UndecodableIndexEntry(t *testing.T) {
 	if _, err := s.Authenticate(systemCtx(), "C1", sec); err == nil || errors.Is(err, auth.ErrInvalidClient) {
 		t.Fatalf("authenticate: %v, want a store error", err)
 	}
-	if err := s.Delete(systemCtx(), "acme", "C1"); err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
-		t.Fatalf("delete: %v, want a store error", err)
-	}
 	if _, _, err := s.ResetSecret(systemCtx(), "acme", "C1"); err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
 		t.Fatalf("reset: %v, want a store error", err)
+	}
+}
+
+// The caller's own tenant namespace holding a record for the id proves
+// ownership, the same rule Delete already applies to a damaged record: a
+// damaged index entry is removed along with the record, and the id becomes
+// creatable again.
+func TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient(t *testing.T) {
+	s, kv := newM2M(t, 0)
+	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
+	if err := s.Delete(systemCtx(), "acme", "C1"); err != nil {
+		t.Fatalf("delete: %v, want nil", err)
+	}
+	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "C1"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatal("damaged index entry left behind")
+	}
+	if _, err := kv.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatal("record left behind")
+	}
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("create after delete: %v", err)
+	}
+}
+
+// With no record in the caller's own tenant namespace, ownership cannot be
+// proven: the damaged index entry may name another tenant, so it is never
+// touched and Delete keeps returning the store error.
+func TestKVM2M_DeleteKeepsAStoreErrorWhenOwnershipCannotBeProven(t *testing.T) {
+	s, kv := newM2M(t, 0)
+	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
+	err := s.Delete(systemCtx(), "acme", "C1")
+	if err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
+		t.Fatalf("delete: %v, want a store error", err)
+	}
+	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "C1"); err != nil {
+		t.Fatalf("index entry touched though ownership could not be proven: %v", err)
+	}
+}
+
+// A damaged record in the caller's own tenant namespace already proves
+// ownership on its own (TestKVM2M_UndecodableRecord); with the index entry
+// also damaged, both are removed and Delete returns nil.
+func TestKVM2M_DeleteRemovesADamagedRecordAndDamagedIndexEntryOfTheCallersOwnClient(t *testing.T) {
+	s, kv := newM2M(t, 0)
+	_ = kv.Put(systemCtx(), "m2m-clients:acme", "C1", []byte("{"))
+	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
+	if err := s.Delete(systemCtx(), "acme", "C1"); err != nil {
+		t.Fatalf("delete: %v, want nil", err)
+	}
+	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "C1"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatal("damaged index entry left behind")
+	}
+	if _, err := kv.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
+		t.Fatal("damaged record left behind")
 	}
 }
 

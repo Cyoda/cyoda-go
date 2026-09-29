@@ -119,8 +119,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     same way.
   - A damaged stored client record is left out of `GET /clients` and logged
     at ERROR, and still counts toward the cap; `DELETE` removes it, and a
-    reset of it answers `500`. A damaged index entry makes a delete, a reset
-    or a token request for that client id answer `500`.
+    reset of it answers `500`. A damaged index entry makes a reset or a token
+    request for that client id answer `500`; `DELETE` removes it too, as long
+    as the caller's own tenant holds a record for that id, and otherwise
+    keeps answering `500`.
   - The store has no compare-and-set. Two changes to one client at the same
     moment resolve by the later write. A reset racing a delete of one client
     can leave it listed by `GET /clients` but unable to get a token; a reset

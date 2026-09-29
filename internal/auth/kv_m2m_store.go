@@ -230,8 +230,13 @@ func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2
 
 // Delete removes tenant's client id: the index entry if it names tenant,
 // then the record if present — decodable or not; tenant's namespace proves
-// ownership. An index entry naming another tenant is never touched. The
-// caller has checked clientID against the client-id grammar.
+// ownership. That includes an index entry that does not decode: if tenant's
+// namespace holds a record for id (decodable or not), the damaged entry is
+// removed along with the record. Without a record in tenant's namespace,
+// ownership cannot be proven, so a damaged index entry — which may name
+// another tenant — is left untouched and the read failure is returned. An
+// index entry naming another tenant is never touched. The caller has checked
+// clientID against the client-id grammar.
 func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
 	ctx = noTx(ctx)
 	_, err := s.kv.Get(ctx, m2mTenantNamespace(tenant), clientID)
@@ -240,10 +245,16 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 		return fmt.Errorf("failed to read m2m client: %w", err)
 	}
 	idxTenant, idxFound, err := s.getIndex(ctx, clientID)
-	if err != nil {
-		return err
-	}
 	idxOurs := idxFound && idxTenant == tenant
+	if err != nil {
+		if !recPresent {
+			return err
+		}
+		// The index entry does not decode, but tenant's own namespace holds a
+		// record for this id: the namespace proves ownership, the same rule
+		// already applied to a damaged record.
+		idxOurs = true
+	}
 	if !recPresent && !idxOurs {
 		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
