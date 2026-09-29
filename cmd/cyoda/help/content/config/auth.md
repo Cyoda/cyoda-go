@@ -93,8 +93,11 @@ identifier outside this grammar is only diagnosable from cyoda's own logs.
 `cyoda token --tenant` checks the same rule before it signs, and the claim is
 checked again when the token is used.
 
-Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
-and stored client records all carry a value already admitted at that door.
+Peer dispatch, scheduled tasks and search jobs carry a value already
+admitted at that door and do not re-check it. Stored M2M clients are the
+exception: a stored tenant id names the storage namespace of a client's
+record, so it is checked again whenever a stored client is decoded, and one
+whose tenant id fails the check is treated as damaged (see `auth.clients`).
 
 ### User identifiers
 
