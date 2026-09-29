@@ -67,10 +67,10 @@ func clientIDsOn(t *testing.T, baseURL, bearer string) map[string]bool {
 	return ids
 }
 
-func TestE2E_Clients_ListEmpty(t *testing.T) {
-	// We only assert the response shape and that a client this test creates
-	// is listed, not emptiness (other tests in the run may have left clients
-	// behind).
+// TestE2E_Clients_ListIncludesACreatedClient asserts the list response shape
+// and that a client this test creates is listed. It does not assert an empty
+// list: other tests share the suite tenant.
+func TestE2E_Clients_ListIncludesACreatedClient(t *testing.T) {
 	cid, _ := createClient(t, false)
 	resp := adminRequest(t, "GET", "/clients", nil)
 	defer resp.Body.Close()
@@ -94,6 +94,9 @@ func TestE2E_Clients_ListEmpty(t *testing.T) {
 }
 
 func TestE2E_Clients_CreateListRoundtrip(t *testing.T) {
+	// The create response's own fields are asserted here, so the create is
+	// made directly; its delete is registered before any assertion can end
+	// the test, as createClient does.
 	resp := adminRequest(t, "POST", "/clients", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -104,8 +107,12 @@ func TestE2E_Clients_CreateListRoundtrip(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&creds); err != nil {
 		t.Fatalf("decode creds: %v", err)
 	}
-	if creds.ClientId == "" || creds.ClientSecret == "" {
-		t.Fatalf("creds blank: %+v", creds)
+	if creds.ClientId == "" {
+		t.Fatal("create response carries no client id")
+	}
+	deleteClientAtCleanup(t, serverURL, creds.ClientId, func() string { return suiteToken(t) })
+	if creds.ClientSecret == "" {
+		t.Error("create response carries no client secret")
 	}
 	if string(creds.GrantType) != "client_credentials" {
 		t.Errorf("grant_type: got %q want client_credentials", creds.GrantType)
@@ -134,47 +141,31 @@ func TestE2E_Clients_CreateListRoundtrip(t *testing.T) {
 	if !containsString(found.Roles, "ROLE_M2M") {
 		t.Errorf("roles %v missing ROLE_M2M", found.Roles)
 	}
-
-	// Cleanup.
-	delResp := adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil)
-	delResp.Body.Close()
-	if delResp.StatusCode != http.StatusOK {
-		t.Errorf("delete: %d", delResp.StatusCode)
-	}
 }
 
 func TestE2E_Clients_TokenExchangeRoundtrip(t *testing.T) {
 	// Create a client, then exchange its credentials for a JWT.
-	resp := adminRequest(t, "POST", "/clients", nil)
-	defer resp.Body.Close()
-	var creds genapi.TechnicalUserCredentialsDto
-	_ = json.NewDecoder(resp.Body).Decode(&creds)
+	id, secret := createClient(t, false)
 
 	// The harness's getToken helper does the client_credentials grant.
-	token := getToken(t, creds.ClientId, creds.ClientSecret)
+	token := getToken(t, id, secret)
 	if token == "" {
 		t.Fatal("getToken returned empty string")
 	}
 	claims := decodeJWTPayload(t, token)
-	if claims["sub"] != creds.ClientId {
-		t.Errorf("sub: got %v want %v", claims["sub"], creds.ClientId)
+	if claims["sub"] != id {
+		t.Errorf("sub: got %v want %v", claims["sub"], id)
 	}
 	scopes, _ := claims["scopes"].([]any)
 	if !containsAnyString(scopes, "ROLE_M2M") {
 		t.Errorf("scopes %v missing ROLE_M2M", scopes)
 	}
-
-	// Cleanup.
-	adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil).Body.Close()
 }
 
 func TestE2E_Clients_ResetSecretRotatesAuth(t *testing.T) {
-	resp := adminRequest(t, "POST", "/clients", nil)
-	defer resp.Body.Close()
-	var creds genapi.TechnicalUserCredentialsDto
-	_ = json.NewDecoder(resp.Body).Decode(&creds)
+	id, secret := createClient(t, false)
 
-	rResp := adminRequest(t, "PUT", "/clients/"+creds.ClientId+"/secret", nil)
+	rResp := adminRequest(t, "PUT", "/clients/"+id+"/secret", nil)
 	defer rResp.Body.Close()
 	if rResp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(rResp.Body)
@@ -184,52 +175,39 @@ func TestE2E_Clients_ResetSecretRotatesAuth(t *testing.T) {
 	if err := json.NewDecoder(rResp.Body).Decode(&newCreds); err != nil {
 		t.Fatalf("decode new creds: %v", err)
 	}
-	if newCreds.ClientSecret == creds.ClientSecret {
+	if newCreds.ClientSecret == secret {
 		t.Fatal("reset returned identical secret")
 	}
 
 	// Old secret fails — use a direct request instead of getToken (which fatals on error).
-	if code := statusForToken(t, creds.ClientId, creds.ClientSecret); code != http.StatusUnauthorized {
+	if code := statusForToken(t, id, secret); code != http.StatusUnauthorized {
 		t.Errorf("old secret after reset: %d, want 401", code)
 	}
 	// New secret works.
-	if statusForToken(t, creds.ClientId, newCreds.ClientSecret) != http.StatusOK {
+	if statusForToken(t, id, newCreds.ClientSecret) != http.StatusOK {
 		t.Error("new secret should authenticate")
 	}
-
-	// Cleanup.
-	adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil).Body.Close()
 }
 
 func TestE2E_Clients_DeleteInvalidatesToken(t *testing.T) {
-	resp := adminRequest(t, "POST", "/clients", nil)
-	defer resp.Body.Close()
-	var creds genapi.TechnicalUserCredentialsDto
-	_ = json.NewDecoder(resp.Body).Decode(&creds)
+	id, secret := createClient(t, false)
 
-	delResp := adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil)
+	delResp := adminRequest(t, "DELETE", "/clients/"+id, nil)
 	defer delResp.Body.Close()
 	if delResp.StatusCode != http.StatusOK {
 		t.Fatalf("delete: %d", delResp.StatusCode)
 	}
 
-	if code := statusForToken(t, creds.ClientId, creds.ClientSecret); code != http.StatusUnauthorized {
+	if code := statusForToken(t, id, secret); code != http.StatusUnauthorized {
 		t.Errorf("deleted client's credentials: %d, want 401", code)
 	}
 }
 
 func TestE2E_Clients_WithAdminRoleFlagOn(t *testing.T) {
 	// M2MAdminRoleEnabled=true is set in TestMain.
-	resp := adminRequest(t, "POST", "/clients?withAdminRole=true", nil)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status %d: %s", resp.StatusCode, raw)
-	}
-	var creds genapi.TechnicalUserCredentialsDto
-	_ = json.NewDecoder(resp.Body).Decode(&creds)
+	id, secret := createClient(t, true)
 
-	token := getToken(t, creds.ClientId, creds.ClientSecret)
+	token := getToken(t, id, secret)
 	claims := decodeJWTPayload(t, token)
 	scopes, _ := claims["scopes"].([]any)
 	if !containsAnyString(scopes, "ROLE_ADMIN") {
@@ -238,9 +216,6 @@ func TestE2E_Clients_WithAdminRoleFlagOn(t *testing.T) {
 	if !containsAnyString(scopes, "ROLE_M2M") {
 		t.Errorf("withAdminRole=true should still include ROLE_M2M; got %v", scopes)
 	}
-
-	// Cleanup.
-	adminRequest(t, "DELETE", "/clients/"+creds.ClientId, nil).Body.Close()
 }
 
 // TestE2E_Clients_CredentialResponsesAreNotCacheable: every response that
