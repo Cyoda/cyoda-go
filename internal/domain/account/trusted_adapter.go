@@ -100,12 +100,12 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	if req.InvalidateGracePeriodSec != nil {
 		grace = *req.InvalidateGracePeriodSec
 		if grace < 0 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalidateGracePeriodSec must be >= 0"))
 			return
 		}
 		if grace > MaxGracePeriodSec {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
+				fmt.Sprintf("invalidateGracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
 			return
 		}
 	}

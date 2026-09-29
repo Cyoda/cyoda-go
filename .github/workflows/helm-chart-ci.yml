@@ -92,6 +92,30 @@ jobs:
           fi
           echo "PASS: schema rejected a zero grace period."
 
+      - name: helm template — schema rejects an empty jwt.issuer
+        run: |
+          # The binary refuses an empty CYODA_JWT_ISSUER at startup; the chart
+          # refuses it at render time.
+          set +e
+          output=$(helm template cyoda deploy/helm/cyoda \
+            --set postgres.existingSecret=test-dsn \
+            --set jwt.existingSecret=test-jwt \
+            --set cluster.hmacSecret.existingSecret=test-hmac \
+            --set monitoring.metricsBearer.existingSecret=test-metrics-bearer \
+            --set gateway.parentRefs[0].name=test-gw \
+            --set gateway.http.hostnames[0]=cyoda.example.com \
+            --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com \
+            --set jwt.issuer= \
+            2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ] || ! echo "$output" | grep -q "/jwt/issuer"; then
+            echo "FAIL: expected schema rejection of an empty jwt.issuer; got:"
+            echo "$output"
+            exit 1
+          fi
+          echo "PASS: schema rejected an empty jwt.issuer."
+
       - name: helm template — ingress mode
         run: |
           helm template cyoda deploy/helm/cyoda \

@@ -4,6 +4,7 @@ title: "helm — Helm chart for Kubernetes deployment"
 stability: stable
 see_also:
   - run
+  - cli.token
   - config
   - config.database
   - config.auth
@@ -26,13 +27,13 @@ helm install cyoda ./deploy/helm/cyoda \
 
 ## DESCRIPTION
 
-The chart at `deploy/helm/cyoda` deploys cyoda-go on Kubernetes as a StatefulSet backed by an external PostgreSQL database. The chart requires Kubernetes `>=1.31.0`. Chart version: `0.1.0`. App version: `0.1.0` (synchronized to the binary by the `bump-chart-appversion.yml` CI workflow).
+The chart at `deploy/helm/cyoda` deploys cyoda-go on Kubernetes as a StatefulSet backed by an external PostgreSQL database. The chart requires Kubernetes `>=1.31.0`. The chart version and app version are in `deploy/helm/cyoda/Chart.yaml`; the app version is synchronized to the binary by the `bump-chart-appversion.yml` CI workflow.
 
 The chart is not published to a Helm repository. Install directly from a local checkout or from the GitHub repository source tree. The canonical install form is `helm install cyoda ./deploy/helm/cyoda`.
 
 Cyoda-go pods are stateless: all persistent state is in PostgreSQL. The chart renders a StatefulSet (not a Deployment) to give each pod a stable DNS identity for gossip peer discovery. Pod management policy is `Parallel` — pods start simultaneously rather than sequentially. Cluster mode is always enabled at the chart level; at `replicas=1` the binary runs as a cluster of one.
 
-Credentials (Postgres DSN, JWT signing key, HMAC secret, metrics bearer token, optional bootstrap client secret) are never stored in the ConfigMap. They are mounted via projected Secret volumes and read by the binary through `CYODA_*_FILE` env vars.
+Credentials (Postgres DSN, JWT signing key, HMAC secret, metrics bearer token) are never stored in the ConfigMap. They are mounted via projected Secret volumes and read by the binary through `CYODA_*_FILE` env vars.
 
 ## CHART REPOSITORY
 
@@ -96,46 +97,16 @@ Name of the Kubernetes Secret containing the PEM-encoded RSA private key for JWT
 Key within `jwt.existingSecret` whose value is the PEM-encoded RSA private key.
 
 **`jwt.issuer`** — string — default `cyoda`
-JWT issuer claim. Written to ConfigMap as `CYODA_JWT_ISSUER`.
+JWT issuer claim; must not be empty. Written to ConfigMap as `CYODA_JWT_ISSUER`.
 
 **`jwt.expirySeconds`** — integer — default `3600`
-JWT token expiry in seconds. Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
+JWT token expiry in seconds, from 60 to 31622400 (366 days). Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
 
 **`cluster.hmacSecret.existingSecret`** — string — default `""`
 Name of an operator-managed Secret containing the HMAC secret. When empty, the chart auto-generates the Secret on first install using `lookup` to detect existing state. GitOps controllers (Argo CD) must set this to a pre-created Secret; the chart fails with an error if rendered without live cluster access (e.g. `helm template`, `--dry-run`) and no `existingSecret` is provided.
 
 **`cluster.hmacSecret.existingSecretKey`** — string — default `secret`
 Key within the HMAC Secret whose value is the hex-encoded HMAC secret. The binary reads it via `CYODA_HMAC_SECRET_FILE` and decodes hex to raw bytes.
-
-**`bootstrap.clientId`** — string — default `""`
-Bootstrap M2M client ID. Bootstrap provisioning is opt-in. When empty, no bootstrap Secret is rendered and no bootstrap credential is set. When non-empty, the chart provisions the bootstrap M2M client. The binary's coupled predicate (both ID and Secret set, or both empty) applies.
-
-**`bootstrap.clientSecret.existingSecret`** — string — default `""`
-Name of an operator-managed Secret containing the bootstrap client secret. When `bootstrap.clientId` is non-empty and this is empty, the chart auto-generates the Secret. GitOps safety guard applies (same pattern as HMAC).
-
-**`bootstrap.clientSecret.existingSecretKey`** — string — default `secret`
-Key within the bootstrap client Secret.
-
-**`bootstrap.tenantId`** — string — default `default-tenant`
-Bootstrap tenant ID. Written to ConfigMap as `CYODA_BOOTSTRAP_TENANT_ID`. Must match
-the tenant grammar `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`. `values.schema.json` expresses
-that as two constraints — the charset and first-byte rule as a `pattern`
-(`^[A-Za-z0-9][A-Za-z0-9._-]*$`), the 100-byte cap as `maxLength` — so a bad value
-fails at `helm install` with a message naming which half it broke, rather than at
-container start, where it stops the binary in jwt mode whenever a bootstrap client is
-configured.
-
-**`bootstrap.userId`** — string — default `admin`
-Bootstrap user ID. Written to ConfigMap as `CYODA_BOOTSTRAP_USER_ID`. Must pass the
-user-identifier rule in `config.auth`: 1 to 255 characters, with no control character,
-noncharacter or U+FFFD, and not beginning with the reserved word `oidc:` in any case.
-`values.schema.json` enforces the same rule with a `pattern`, a `not` pattern and a
-`maxLength` (a unit test keeps the two in step), so a bad value fails at `helm install`
-rather than at container start, where it stops the binary in jwt mode whenever a
-bootstrap client is configured.
-
-**`bootstrap.roles`** — string — default `ROLE_ADMIN,ROLE_M2M`
-Comma-separated roles for the bootstrap client. Written to ConfigMap as `CYODA_BOOTSTRAP_ROLES`.
 
 **`extraEnv`** — list — default `[]`
 Arbitrary additional env vars injected into the StatefulSet container. Each entry is `{name, value}` or `{name, valueFrom}`. Use for OTel configuration (`CYODA_OTEL_ENABLED`, `OTEL_EXPORTER_OTLP_ENDPOINT`, etc.), feature flags, and tuning knobs. Do not set `CYODA_*_FILE` credential vars or the four chart-managed credential env vars here — the chart sets those and Kubernetes rejects duplicates.
@@ -290,7 +261,7 @@ The chart renders the following Kubernetes objects. Conditional objects note the
 - `StatefulSet` (`apps/v1`) — the cyoda workload. `podManagementPolicy: Parallel`. `updateStrategy: RollingUpdate`. `terminationGracePeriodSeconds` from values (default `390`). No `volumeClaimTemplates` (cyoda is stateless vs. PostgreSQL). Mounts a projected Secret volume at `/etc/cyoda/secrets` (mode `0400`) and an `emptyDir` at `/tmp`. Runs as UID/GID 65532, non-root, `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, `seccompProfile: RuntimeDefault`.
 - `Service` (`v1`) — ClusterIP Service exposing ports `8080` (http), `9090` (grpc), `9091` (metrics).
 - `Service` (headless, `v1`) — `clusterIP: None`, `publishNotReadyAddresses: true`. Exposes port `7946` TCP and UDP for gossip (memberlist). Used as the `serviceName` for the StatefulSet.
-- `ConfigMap` (`v1`) — non-sensitive env vars loaded via `envFrom`. Contains: `CYODA_HTTP_PORT`, `CYODA_GRPC_PORT`, `CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_METRICS_REQUIRE_AUTH`, `CYODA_IAM_MODE`, `CYODA_REQUIRE_JWT`, `CYODA_STORAGE_BACKEND`, `CYODA_POSTGRES_AUTO_MIGRATE`, `CYODA_CLUSTER_ENABLED`, `CYODA_SEED_NODES`, `CYODA_LOG_LEVEL`, `CYODA_JWT_ISSUER`, `CYODA_JWT_EXPIRY_SECONDS`, `CYODA_BOOTSTRAP_TENANT_ID`, `CYODA_BOOTSTRAP_USER_ID`, `CYODA_BOOTSTRAP_ROLES`, and `CYODA_BOOTSTRAP_CLIENT_ID` (when `bootstrap.clientId` is set). Is a Helm pre-install/pre-upgrade hook with weight `-10`.
+- `ConfigMap` (`v1`) — non-sensitive env vars loaded via `envFrom`. Contains: `CYODA_HTTP_PORT`, `CYODA_GRPC_PORT`, `CYODA_ADMIN_PORT`, `CYODA_ADMIN_BIND_ADDRESS`, `CYODA_METRICS_REQUIRE_AUTH`, `CYODA_IAM_MODE`, `CYODA_REQUIRE_JWT`, `CYODA_STORAGE_BACKEND`, `CYODA_POSTGRES_AUTO_MIGRATE`, `CYODA_CLUSTER_ENABLED`, `CYODA_SEED_NODES`, `CYODA_LOG_LEVEL`, `CYODA_JWT_ISSUER`, and `CYODA_JWT_EXPIRY_SECONDS`. Is a Helm pre-install/pre-upgrade hook with weight `-10`.
 - `Job` (`batch/v1`) — migration Job running `cyoda migrate`. Helm pre-install/pre-upgrade hook (weight `0`, delete policy `before-hook-creation,hook-succeeded`). Mounts only the Postgres DSN Secret (principle of least privilege). Uses `restartPolicy: Never`.
 - `NetworkPolicy` (`networking.k8s.io/v1`) — rendered when `networkPolicy.enabled=true`. (Conditional.)
 - `Secret` (HMAC) — rendered when `cluster.hmacSecret.existingSecret=""`. Manages the hex-encoded HMAC secret. Auto-generates on first install; reuses on re-render via `lookup`. GitOps safety guard: fails if rendered without live cluster access. (Conditional.)
@@ -299,7 +270,6 @@ The chart renders the following Kubernetes objects. Conditional objects note the
 **Conditional:**
 
 - `ServiceAccount` (`v1`) — rendered when `serviceAccount.create=true`. Helm hook weight `-10`.
-- `Secret` (bootstrap) — rendered when `bootstrap.clientId != ""` and `bootstrap.clientSecret.existingSecret=""`. Auto-generates (48-char alphanumeric). GitOps safety guard applies.
 - `HorizontalPodAutoscaler` (`autoscaling/v2`) — rendered when `autoscaling.enabled=true`.
 - `PodDisruptionBudget` (`policy/v1`) — rendered when `podDisruptionBudget.enabled=true` and `replicas > 1` or `autoscaling.maxReplicas > 1`.
 - `HTTPRoute` (`gateway.networking.k8s.io/v1`) — rendered when `gateway.enabled=true`. Routes port 8080.
@@ -337,13 +307,12 @@ The chart never stores credentials in the ConfigMap. All credentials are mounted
 - `CYODA_JWT_SIGNING_KEY_FILE=/etc/cyoda/secrets/jwt-signing-key.pem` — sourced from `jwt.existingSecret` key `jwt.existingSecretKey`.
 - `CYODA_HMAC_SECRET_FILE=/etc/cyoda/secrets/hmac-secret` — sourced from the chart-managed or operator-provided HMAC Secret.
 - `CYODA_METRICS_BEARER_FILE=/etc/cyoda/secrets/metrics-bearer` — sourced from the chart-managed or operator-provided metrics bearer Secret.
-- `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE=/etc/cyoda/secrets/bootstrap-client-secret` — sourced from the chart-managed or operator-provided bootstrap Secret. Mounted only when `bootstrap.clientId` is non-empty.
 
 The projected volume `defaultMode` is `0400` (owner read-only). The pod `securityContext.fsGroup=65532` ensures mounted Secret files are readable by the non-root container user.
 
-The migration Job mounts only the Postgres DSN Secret (principle of least privilege). It does not receive JWT, HMAC, metrics bearer, or bootstrap credentials.
+The migration Job mounts only the Postgres DSN Secret (principle of least privilege). It does not receive JWT, HMAC or metrics bearer credentials.
 
-**GitOps safety guard (HMAC, metrics bearer, bootstrap secrets):** When `existingSecret` is empty, the chart uses `lookup` to detect whether the Secret already exists. On first install with live cluster access, it generates a random value. On subsequent renders, it reuses the existing value. When `lookup` returns no result (because Helm is run without live cluster access — `helm template`, `--dry-run`, Argo CD, first-time `--create-namespace`), the chart fails with an explicit error message. To avoid this: either pre-create the Secret and set `existingSecret`, use `external-secrets-operator`, or create the namespace first with `kubectl create namespace`.
+**GitOps safety guard (HMAC and metrics bearer secrets):** When `existingSecret` is empty, the chart uses `lookup` to detect whether the Secret already exists. On first install with live cluster access, it generates a random value. On subsequent renders, it reuses the existing value. When `lookup` returns no result (because Helm is run without live cluster access — `helm template`, `--dry-run`, Argo CD, first-time `--create-namespace`), the chart fails with an explicit error message. To avoid this: either pre-create the Secret and set `existingSecret`, use `external-secrets-operator`, or create the namespace first with `kubectl create namespace`.
 
 **CYODA_METRICS_REQUIRE_AUTH:** The ConfigMap always sets `CYODA_METRICS_REQUIRE_AUTH=true` on Helm deployments. This forces the binary's coupled-predicate validator to refuse startup if the metrics bearer Secret is absent or empty, providing a belt-and-braces guard against chart misconfiguration.
 
@@ -474,23 +443,15 @@ helm install cyoda ./deploy/helm/cyoda \
   --set monitoring.serviceMonitor.labels.release=prometheus
 ```
 
-**With bootstrap M2M client:**
+**First admin token:**
+
+The pods hold the signing key, so `cyoda token` in a pod signs the first admin token; the image's binary is `/cyoda`:
 
 ```
-kubectl create secret generic cyoda-bootstrap -n cyoda \
-  --from-literal=secret="$(openssl rand -base64 36)"
-
-helm install cyoda ./deploy/helm/cyoda \
-  --namespace cyoda \
-  --set postgres.existingSecret=cyoda-pg \
-  --set jwt.existingSecret=cyoda-jwt \
-  --set bootstrap.clientId=m2m-api-client \
-  --set bootstrap.clientSecret.existingSecret=cyoda-bootstrap \
-  --set bootstrap.tenantId=acme \
-  --set-string 'bootstrap.roles=ROLE_ADMIN\,ROLE_M2M'
+TOKEN=$(kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant acme)
 ```
 
-Helm treats commas in `--set` as array separators. Use `--set-string` with an escaped comma (`\,`) or provide the value via a `values.yaml` file to preserve the single string.
+Use it to create the M2M clients that applications and compute nodes use (`POST /api/clients`). The chart's NOTES print the same command. See `cli.token`.
 
 **With Gateway API (requires operator-provided Gateway):**
 

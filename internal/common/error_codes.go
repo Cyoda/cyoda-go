@@ -263,9 +263,9 @@ const (
 	// entity identifiers (matching the cyoda data model), and the canonical
 	// spelling specifically, because every other subsystem compares a tenant
 	// as raw text — accepting another spelling would alias two distinct
-	// tenants. Bootstrap deployments using the literal "default-tenant"
-	// string must migrate to real tenant UUIDs before registering OIDC
-	// providers.
+	// tenants. A tenant whose id is not a UUID (e.g. acme) cannot own OIDC
+	// providers; use a UUID tenant to register, list, update, invalidate,
+	// reactivate or delete one.
 	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
 	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
 	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"

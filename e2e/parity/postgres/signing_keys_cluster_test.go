@@ -16,9 +16,11 @@ import (
 // A node whose last successful re-read is older than 10 × this is stale.
 const reconcileInterval = time.Second
 
-// TestSigningKeys_OwnCluster revokes the bootstrap key and rotates with
-// invalidateCurrent, so it runs on its own cluster: the shared multi-node
-// cluster signs its fixture tokens with the bootstrap key.
+// TestSigningKeys_OwnCluster rotates with invalidateCurrent and later
+// deletes the bootstrap key directly by its key id, so it runs on its own
+// cluster: the shared multi-node cluster signs its fixture tokens with the
+// bootstrap key. Its one-second re-read interval also bounds how late a lost
+// change message arrives, which the grace-period case relies on.
 func TestSigningKeys_OwnCluster(t *testing.T) {
 	fix, cleanup := MustSetupMultiNodeWithEnv(t, 2, []string{
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL=" + reconcileInterval.String(),
@@ -40,7 +42,7 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	// Token path before touching the bootstrap key: an issued key and an
 	// admin M2M client on A, so later calls do not depend on the bootstrap
 	// key. Admin tokens come only from adminToken.
-	k1 := issueOn(t, a, false)
+	k1 := multinode.IssueClientKeyPair(t, a, false)
 	adminID, adminSecret := createAdminClient(t, a)
 	adminToken := func(t *testing.T) string { return fetchClientToken(t, urls[0], adminID, adminSecret) }
 	t1 := adminToken(t)
@@ -61,23 +63,79 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		return tok
 	}
 
-	t.Run("rotation on A ends the old key and the bootstrap key on B", func(t *testing.T) {
-		k2 = issueOn(t, client.NewClient(urls[0], t1), true)
+	t.Run("rotation on A ends the old key only; the signing key still verifies on B", func(t *testing.T) {
+		k2 = multinode.IssueClientKeyPair(t, client.NewClient(urls[0], t1), true)
 		t2 := k2Token(t)
 		waitStatus(t, urls[1], t1, http.StatusUnauthorized, "B refuses K1")
-		waitStatus(t, urls[1], tenant.Token, http.StatusUnauthorized, "B refuses the bootstrap key")
+		waitStatus(t, urls[1], tenant.Token, http.StatusOK, "B still accepts a token signed by the signing key")
 		waitStatus(t, urls[1], t2, http.StatusOK, "B accepts K2")
+		if code, body, err := client.NewClient(urls[1], t2).CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || !hasKeyID(body, k2) {
+			t.Fatalf("B's current key pair: %d %s %v, want %s", code, body, err, k2)
+		}
 	})
 
-	// admin does not require K2: a reactivated bootstrap key gets validFrom =
-	// now, so it signs on A (latest validFrom wins) until it is deleted.
+	t.Run("a key pair invalidated on A with a grace period verifies on B until its validTo", func(t *testing.T) {
+		const grace = 10 * time.Second
+		k3 := multinode.IssueClientKeyPair(t, client.NewClient(urls[0], adminToken(t)), false)
+		t3 := adminToken(t)
+		if got := client.TokenKID(t3); got != k3 {
+			t.Fatalf("A signs with %q, want K3 %q", got, k3)
+		}
+		waitStatus(t, urls[1], t3, http.StatusOK, "B accepts K3's token")
+		// The token under test (t3) is the one K3 signed; the invalidate call
+		// may use any admin token.
+		earliestValidTo := time.Now().Add(grace)
+		if code, _, err := client.NewClient(urls[0], adminToken(t)).InvalidateKeyPairWithGraceRaw(t, k3, grace); err != nil || code != http.StatusOK {
+			t.Fatalf("invalidate K3 on A with grace: %d %v", code, err)
+		}
+		latestValidTo := time.Now().Add(grace)
+
+		// B's current key pair moves off K3 only once B has the change; until
+		// then B would accept t3 for want of it. Re-reads run every second
+		// here, so even a lost change message arrives well inside the grace.
+		b := client.NewClient(urls[1], k2Token(t))
+		for {
+			code, body, err := b.CurrentKeyPairRaw(t, "client")
+			if err == nil && code == http.StatusOK && !hasKeyID(body, k3) {
+				break
+			}
+			if !time.Now().Before(earliestValidTo) {
+				t.Fatalf("B did not move its current key pair off K3 within the %s grace period (last: %d %v)", grace, code, err)
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+		if code := modelListStatus(t, urls[1], t3); code != http.StatusOK {
+			t.Errorf("B inside the grace period: %d, want 200", code)
+		}
+		if now := time.Now(); !now.Before(earliestValidTo) {
+			t.Fatalf("the in-grace check on B ended %s after the earliest end of the grace period; it proves nothing", now.Sub(earliestValidTo))
+		}
+
+		time.Sleep(time.Until(latestValidTo.Add(time.Second)))
+		if code := modelListStatus(t, urls[1], t3); code != http.StatusUnauthorized {
+			t.Errorf("B after the grace period: %d, want 401", code)
+		}
+		if code, body, err := b.CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || hasKeyID(body, k3) {
+			t.Errorf("B's current key pair after the grace period: %d %s %v, want 200 and not K3", code, body, err)
+		}
+	})
+
+	// admin does not require K2: Reactivate always sets a fresh validFrom, so
+	// once it is called the bootstrap key has the latest validFrom of the
+	// audience and signs on A again (latest validFrom wins) until it is
+	// deleted — true whether or not a rotation ever touched the bootstrap
+	// key, since it was never a rotation sibling to begin with.
 	admin := func(t *testing.T, node int) *client.Client { return client.NewClient(urls[node], adminToken(t)) }
 
 	t.Run("bootstrap reactivate, delete and terminal delete across nodes", func(t *testing.T) {
 		if code, _, err := admin(t, 0).ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
 			t.Fatalf("reactivate bootstrap on A: %d %v", code, err)
 		}
-		waitStatus(t, urls[1], tenant.Token, http.StatusOK, "B accepts the reactivated bootstrap key")
+		reactivated := adminToken(t)
+		if got := client.TokenKID(reactivated); got != bootKID {
+			t.Fatalf("A signs with %q after reactivate, want the bootstrap key %q", got, bootKID)
+		}
+		waitStatus(t, urls[1], reactivated, http.StatusOK, "B accepts the reactivated bootstrap key's token")
 		if code, _, err := admin(t, 0).DeleteKeyPairRaw(t, bootKID); err != nil || code != http.StatusOK {
 			t.Fatalf("delete bootstrap on A: %d %v", code, err)
 		}
@@ -135,23 +193,12 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	})
 }
 
-func issueOn(t *testing.T, c *client.Client, invalidateCurrent bool) string {
-	t.Helper()
-	body := map[string]any{"algorithm": "RS256", "audience": "client"}
-	if invalidateCurrent {
-		body["invalidateCurrent"] = true
-	}
-	code, b, err := c.IssueKeyPairRaw(t, body)
-	if err != nil || code != http.StatusOK {
-		t.Fatalf("issue: %d %v", code, err)
-	}
-	var kp struct {
+// hasKeyID reports whether body (a keypair response) carries keyId kid.
+func hasKeyID(body []byte, kid string) bool {
+	var v struct {
 		KeyID string `json:"keyId"`
 	}
-	if err := json.Unmarshal(b, &kp); err != nil || kp.KeyID == "" {
-		t.Fatalf("issue: no keyId in the response (decode error: %v)", err)
-	}
-	return kp.KeyID
+	return json.Unmarshal(body, &v) == nil && v.KeyID == kid
 }
 
 // createAdminClient creates an M2M client with the admin role on the node c

@@ -63,11 +63,3 @@ data:
   CYODA_LOG_LEVEL: {{ .Values.logLevel | quote }}
   CYODA_JWT_ISSUER: {{ .Values.jwt.issuer | quote }}
   CYODA_JWT_EXPIRY_SECONDS: {{ .Values.jwt.expirySeconds | quote }}
-
-  # Bootstrap identity.
-  {{- if .Values.bootstrap.clientId }}
-  CYODA_BOOTSTRAP_CLIENT_ID: {{ .Values.bootstrap.clientId | quote }}
-  {{- end }}
-  CYODA_BOOTSTRAP_TENANT_ID: {{ .Values.bootstrap.tenantId | quote }}
-  CYODA_BOOTSTRAP_USER_ID: {{ .Values.bootstrap.userId | quote }}
-  CYODA_BOOTSTRAP_ROLES: {{ .Values.bootstrap.roles | quote }}

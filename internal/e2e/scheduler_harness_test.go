@@ -26,7 +26,7 @@ import (
 // engine. A database per test makes "the only scheduler that can see this
 // task" true by construction.
 
-// harnessTenant is the tenant every harness stack bootstraps.
+// harnessTenant is the tenant every harness stack's default admin token uses.
 const harnessTenant = "test-tenant"
 
 // schedDB is one test's database: its URL for the stack, a pool for reads.

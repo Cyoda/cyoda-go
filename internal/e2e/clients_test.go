@@ -15,14 +15,55 @@ import (
 
 // --- Test cases for the /clients OpenAPI surface ---
 //
-// All requests go through the chi router via adminRequest (bootstrap
+// All requests go through the chi router via adminRequest (the suite's
 // admin token). The M2M-admin-role feature flag is enabled in TestMain
 // so withAdminRole=true is the happy path here; the flag-off case is
 // covered by the unit suite per spec D9.
 
+// TestE2E_Clients_HelpersDeleteTheirClients pins that createClient and
+// createM2MClient delete the client they create when the calling test ends,
+// so no test leaves a client behind in the suite tenant or in another one.
+func TestE2E_Clients_HelpersDeleteTheirClients(t *testing.T) {
+	const otherTenant, otherUser = "client-helper-cleanup", "cleanup-admin"
+	var suiteID, otherID string
+	t.Run("create", func(t *testing.T) {
+		suiteID, _ = createClient(t, false)
+		otherID, _ = createM2MClient(t, otherTenant, otherUser, false)
+	})
+	if listsClient(t, suiteToken(t), suiteID) {
+		t.Errorf("createClient left client %s behind in the suite tenant", suiteID)
+	}
+	if listsClient(t, adminTokenForTenant(t, otherTenant, otherUser), otherID) {
+		t.Errorf("createM2MClient left client %s behind in tenant %s", otherID, otherTenant)
+	}
+}
+
+// listsClient reports whether GET /clients, called with bearer, lists id.
+func listsClient(t *testing.T, bearer, id string) bool {
+	t.Helper()
+	resp := unauthRequest(t, http.MethodGet, "/api/clients", "Bearer "+bearer)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("list clients: %d: %s", resp.StatusCode, raw)
+	}
+	var list []genapi.TechnicalUserDto
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode client list: %v", err)
+	}
+	for _, c := range list {
+		if c.ClientId == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestE2E_Clients_ListEmpty(t *testing.T) {
-	// The bootstrap M2M client lives in the store too; List returns it.
-	// We only assert the response shape, not emptiness.
+	// We only assert the response shape and that a client this test creates
+	// is listed, not emptiness (other tests in the run may have left clients
+	// behind).
+	cid, _ := createClient(t, false)
 	resp := adminRequest(t, "GET", "/clients", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -33,16 +74,14 @@ func TestE2E_Clients_ListEmpty(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// The bootstrap client `testclient` should appear with roles
-	// including ROLE_ADMIN (set in TestMain via CYODA_BOOTSTRAP_ROLES default).
 	found := false
 	for _, c := range list {
-		if c.ClientId == "testclient" {
+		if c.ClientId == cid {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("bootstrap client testclient missing from list: %+v", list)
+		t.Errorf("created client %s missing from list: %+v", cid, list)
 	}
 }
 
@@ -243,8 +282,8 @@ func decodeJWTPayload(t *testing.T, tokenStr string) map[string]any {
 // mock the tenant context directly; this E2E case proves the JWT-claim
 // extraction in the auth middleware correctly gates the chi adapter.
 func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
-	// Seed tenant A: create a client via the standard admin path (bootstrap
-	// tenant). The bootstrap tenant is "test-tenant".
+	// Seed tenant A: create a client via the standard admin path (the suite
+	// tenant). The suite tenant is "test-tenant".
 	createResp := adminRequest(t, "POST", "/clients", nil)
 	defer createResp.Body.Close()
 	if createResp.StatusCode != http.StatusOK {
@@ -257,7 +296,7 @@ func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
 	}
 
 	// Seed tenant B with admin privileges via store-direct seeding.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", true)
 
 	// Tenant B attempts to delete tenant A's client.
 	delResp := adminRequestAs(t, clientBID, clientBSecret, "DELETE", "/clients/"+tenantAClient.ClientId, nil)

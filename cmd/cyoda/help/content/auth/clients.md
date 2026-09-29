@@ -6,6 +6,7 @@ version_added: 0.8.0
 see_also:
   - auth
   - auth.tokens
+  - cli.token
   - config.auth
   - errors.M2M_CLIENT_NOT_FOUND
   - errors.FEATURE_DISABLED
@@ -31,7 +32,7 @@ Use this path when you control both the service and its cyoda registration. For 
 
 - `CYODA_IAM_MODE=jwt` (mock mode bypasses auth entirely — fine for dev, never for prod)
 - `CYODA_JWT_SIGNING_KEY` (PEM RSA key; `_FILE` suffix supported)
-- Optionally: `CYODA_BOOTSTRAP_CLIENT_ID` + `CYODA_BOOTSTRAP_CLIENT_SECRET` provisions a single admin M2M at startup, useful for CI. See `config.auth`.
+- The first admin token: `cyoda token --tenant <tenantId>` signs one offline with `CYODA_JWT_SIGNING_KEY`, on any host or container that holds the key. Use it to create the first M2M clients. See `cli.token`.
 - For admin-scoped M2M creation (`withAdminRole=true`): `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`. Off by default; when off, the `withAdminRole=true` request shape returns `404 FEATURE_DISABLED`.
 
 **Client (you) needs:**
@@ -117,7 +118,7 @@ Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation,
 
 ## TOKEN
 
-Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `/oauth/token` endpoint) to mint JWTs from the `client_id` + `client_secret`. The JWT carries the client's tenant in `caas_org_id` and its roles in `user_roles`. Full claim shape is in `auth.tokens`.
+Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `/oauth/token` endpoint) to mint JWTs from the `client_id` + `client_secret`. The JWT carries the client's tenant in `caas_org_id` and its roles in `scopes`. Full claim shape is in `auth.tokens`.
 
 ## ERRORS
 
@@ -130,5 +131,6 @@ Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `
 ## SEE ALSO
 
 - `auth.tokens` — the `/oauth/token` endpoint and JWT claim contract
-- `config.auth` — `CYODA_BOOTSTRAP_*`, `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
+- `cli.token` — sign the first admin token with the signing key
+- `config.auth` — `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED`
 - `openapi` — `cyoda help openapi tags` and look for the `User, Machine` tag

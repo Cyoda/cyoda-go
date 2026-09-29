@@ -14,6 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -27,31 +30,66 @@ import (
 // restart, a bootstrap-key revocation survives a restart, a new bootstrap key
 // retires the issued pairs it did not mint, a broken (tampered) signer fails
 // closed rather than silently substituting another key, the stored KV record
-// never carries the private key, and gRPC honours the same key state as HTTP.
+// never carries the private key, gRPC honours the same key state as HTTP, the
+// signing key signs again once no issued key pair is active, and an
+// invalidated key pair verifies through its grace period and no longer.
+
+// keyStack pairs a callbackHarness with the one M2M client keyCall drives the
+// real /oauth/token endpoint with. Unlike the KV-persisted signing keys under
+// test here, the M2M client store is in-memory per process
+// (auth.InMemoryM2MClientStore) and does NOT survive a restart, and several
+// scenarios build a fresh harness only AFTER invalidating the very signing
+// key a self-signed seed bearer (h.token/h.fetchToken — see
+// callback_harness_test.go) would need. So each keyStack seeds its own client
+// directly through the store at construction — the same call POST /clients
+// makes internally, minus the HTTP round trip a brand-new process has no
+// other admin identity to authenticate — rather than through HTTP or by
+// sharing one client across restarts.
+type keyStack struct {
+	*callbackHarness
+	clientID, clientSecret string
+}
 
 // newKeyStackOn opens a stack on s's database with the given bootstrap key —
 // a restart of a node, or a node configured with another key.
-func newKeyStackOn(t *testing.T, s *schedDB, key *rsa.PrivateKey) *callbackHarness {
+func newKeyStackOn(t *testing.T, s *schedDB, key *rsa.PrivateKey) *keyStack {
 	t.Helper()
-	return newCalloutHarnessWithKey(t, key, func(cfg *app.Config) {
-		t.Setenv("CYODA_POSTGRES_URL", s.url)
-	})
+	return newKeyStackWith(t, s, key, nil)
 }
 
-// newKeyStackOnUnseeded is newKeyStackOn without seeding the cached bearer
-// token — for a stack whose signer is expected to be broken, where seeding
-// the token would itself fail.
-func newKeyStackOnUnseeded(t *testing.T, s *schedDB, key *rsa.PrivateKey) *callbackHarness {
+// newKeyStackWith is newKeyStackOn with configure applied to the stack's
+// config after the database is set; configure may be nil.
+func newKeyStackWith(t *testing.T, s *schedDB, key *rsa.PrivateKey, configure func(*app.Config)) *keyStack {
 	t.Helper()
-	return newCalloutHarnessUnseeded(t, key, func(cfg *app.Config) {
+	h := newCalloutHarnessWithKey(t, key, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_URL", s.url)
+		if configure != nil {
+			configure(cfg)
+		}
 	})
+	clientID := "keystack" + uuid.NewString()[:8]
+	secret, err := h.app.AuthService().M2MClientStore().Create(
+		clientID, spi.TenantID("test-tenant"), clientID, []string{"ROLE_ADMIN", "ROLE_M2M"},
+	)
+	if err != nil {
+		t.Fatalf("seed keyStack M2M client: %v", err)
+	}
+	return &keyStack{callbackHarness: h, clientID: clientID, clientSecret: secret}
 }
 
-func (h *callbackHarness) keyCall(t *testing.T, method, path, body string) (int, []byte) {
+// oauthToken fetches a fresh bearer through the real /oauth/token endpoint —
+// unlike h.token/h.fetchToken (self-signed), this exercises the server's own
+// signer selection, so a caller testing key-rotation/invalidation behaviour
+// observes whichever key the server currently signs with.
+func (ks *keyStack) oauthToken(t *testing.T) string {
 	t.Helper()
-	req, _ := http.NewRequest(method, h.baseURL+"/api"+path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+h.fetchToken(t))
+	return ks.fetchTokenFor(t, ks.clientID, ks.clientSecret)
+}
+
+func (ks *keyStack) keyCall(t *testing.T, method, path, body string) (int, []byte) {
+	t.Helper()
+	req, _ := http.NewRequest(method, ks.baseURL+"/api"+path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+ks.oauthToken(t))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -64,10 +102,10 @@ func (h *callbackHarness) keyCall(t *testing.T, method, path, body string) (int,
 	return resp.StatusCode, b
 }
 
-func (h *callbackHarness) issueKey(t *testing.T, aud string, invalidate bool) string {
+func (ks *keyStack) issueKey(t *testing.T, aud string, invalidate bool) string {
 	t.Helper()
 	body := `{"algorithm":"RS256","audience":"` + aud + `"` + map[bool]string{true: `,"invalidateCurrent":true`, false: ""}[invalidate] + `}`
-	code, b := h.keyCall(t, "POST", "/oauth/keys/keypair", body)
+	code, b := ks.keyCall(t, "POST", "/oauth/keys/keypair", body)
 	if code != http.StatusOK {
 		t.Fatalf("issue: %d %s", code, b)
 	}
@@ -83,9 +121,9 @@ func (h *callbackHarness) issueKey(t *testing.T, aud string, invalidate bool) st
 
 // currentKey fetches GET /oauth/keys/keypair/current?audience=aud, returning
 // the status and, on 200, the decoded keyId.
-func (h *callbackHarness) currentKey(t *testing.T, aud string) (int, string) {
+func (ks *keyStack) currentKey(t *testing.T, aud string) (int, string) {
 	t.Helper()
-	code, b := h.keyCall(t, "GET", "/oauth/keys/keypair/current?audience="+aud, "")
+	code, b := ks.keyCall(t, "GET", "/oauth/keys/keypair/current?audience="+aud, "")
 	if code != http.StatusOK {
 		return code, ""
 	}
@@ -142,13 +180,7 @@ func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 
 func bootstrapToken(t *testing.T, key *rsa.PrivateKey) string {
 	t.Helper()
-	kid, _ := auth.DeriveKID(&key.PublicKey)
-	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
-		"sub": "boot-user", "iss": "cyoda-callback-test", "caas_user_id": "boot-user",
-		"caas_org_id": "test-tenant", "scopes": []string{"ROLE_ADMIN"}, "caas_tier": "unlimited",
-		"exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "jti": "j-" + kid[:8],
-	}, auth.NewRSASigner(key), kid)
+	tok, err := signServiceToken(key, "cyoda-callback-test", "", "boot-user", "test-tenant", "boot-user", []string{"ROLE_ADMIN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +204,7 @@ func TestSigningKeys_IssuedPairSurvivesRestart(t *testing.T) {
 	h1 := newKeyStackOn(t, s, key)
 	kid := h1.issueKey(t, "client", false)
 	h2 := newKeyStackOn(t, s, key)
-	tok := h2.fetchToken(t)
+	tok := h2.oauthToken(t)
 	if tokenKID(t, tok) != kid {
 		t.Fatalf("restarted node signs with %s, want the issued %s", tokenKID(t, tok), kid)
 	}
@@ -225,7 +257,7 @@ func TestSigningKeys_AnotherBootstrapKeyRetiresIssuedPairs(t *testing.T) {
 	key2 := genKey(t)
 	h2 := newKeyStackOn(t, s, key2)
 	boot2, _ := auth.DeriveKID(&key2.PublicKey)
-	if got := tokenKID(t, h2.fetchToken(t)); got != boot2 {
+	if got := tokenKID(t, h2.oauthToken(t)); got != boot2 {
 		t.Fatalf("node with a new bootstrap key signs with %s, want its bootstrap %s", got, boot2)
 	}
 	kids := h2.jwksKIDs(t)
@@ -287,17 +319,20 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	if _, err := s.pool.Exec(ctx, `UPDATE kv_store SET value=$1 WHERE tenant_id='SYSTEM' AND namespace='signing-keys' AND key=$2`, tampered, kid); err != nil {
 		t.Fatal(err)
 	}
-	h2 := newKeyStackOnUnseeded(t, s, key)
+	h2 := newKeyStackOn(t, s, key)
 
 	// A response leaking the sealed bytes, the decryption failure, or the kid
 	// would hand an attacker exactly what they'd need next; the 5xx contract
 	// (Gate 3) is a generic message plus a ticket UUID, nothing internal.
 	forbidden := []string{"sealed", "decryption", kid}
 
+	// h2's own M2M client authenticates via Basic Auth (bcrypt secret check),
+	// no JWT needed for that, so it is unaffected by the tampered key below.
+
 	// /oauth/token must fail closed: the broken key is the selected signer.
 	req, _ := http.NewRequest("POST", h2.baseURL+"/api/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth("testclient", "testsecret")
+	req.SetBasicAuth(h2.clientID, h2.clientSecret)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -411,25 +446,207 @@ func TestSigningKeys_GRPCFollowsKeyState(t *testing.T) {
 	}
 	h := newKeyStackOn(t, newSchedDB(t), genKey(t))
 	kid := h.issueKey(t, "client", false)
-	tok := h.fetchToken(t)
+	tok := h.oauthToken(t)
 	if tokenKID(t, tok) != kid {
 		t.Fatal("token not signed with the issued key")
 	}
-	call := func() error {
-		ce, _ := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{"id": "sk", "entityId": "00000000-0000-0000-0000-000000000000"})
-		_, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearch(h.grpcCtxAs(tok, ""), ce)
-		return err
-	}
-	// A not-found lookup still answers with an EntityResponse envelope
-	// (Success=false), not a transport error, so an accepted call is a nil
-	// error — not merely "the error isn't Unauthenticated".
-	if err := call(); err != nil {
+	if err := grpcEntitySearch(h, tok); err != nil {
 		t.Fatalf("token from an issued key refused on gRPC: %v", err)
 	}
 	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+kid+"/invalidate", ""); code != http.StatusOK {
 		t.Fatalf("invalidate: %d %s", code, b)
 	}
-	if err := call(); status.Code(err) != codes.Unauthenticated {
+	if err := grpcEntitySearch(h, tok); status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("invalidated key accepted on gRPC: %v", err)
+	}
+}
+
+// grpcEntitySearch runs one unary gRPC call (EntitySearch for an absent
+// entity) under tok. A not-found lookup still answers with an EntityResponse
+// envelope (Success=false), not a transport error, so an accepted call
+// returns nil — not merely "an error other than Unauthenticated"; a refused
+// token returns Unauthenticated.
+func grpcEntitySearch(h *keyStack, tok string) error {
+	ce, err := internalgrpc.NewCloudEvent(internalgrpc.EntityGetRequest, map[string]any{"id": "sk", "entityId": "00000000-0000-0000-0000-000000000000"})
+	if err != nil {
+		return err
+	}
+	_, err = cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearch(h.grpcCtxAs(tok, ""), ce)
+	return err
+}
+
+// invalidateKey invalidates the key pair kid on ks with the given grace period.
+func (ks *keyStack) invalidateKey(t *testing.T, kid string, grace time.Duration) {
+	t.Helper()
+	body := fmt.Sprintf(`{"gracePeriodSec":%d}`, int64(grace/time.Second))
+	if code, b := ks.keyCall(t, "POST", "/oauth/keys/keypair/"+kid+"/invalidate", body); code != http.StatusOK {
+		t.Fatalf("invalidate %s: %d %s", kid, code, b)
+	}
+}
+
+// TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive: once no issued key
+// pair of the audience is active and in its window — here one invalidated
+// and one deleted — the signing key from configuration is the audience's
+// current key pair and /oauth/token signs with it.
+func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	key := genKey(t)
+	bootKID, err := auth.DeriveKID(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newKeyStackOn(t, newSchedDB(t), key)
+	k1 := h.issueKey(t, "client", false)
+	k2 := h.issueKey(t, "client", false)
+	h.invalidateKey(t, k2, 0)
+	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != k1 {
+		t.Fatalf("control: current with k2 invalidated: %d %s, want 200 %s", code, cur, k1)
+	}
+	if code, b := h.keyCall(t, "DELETE", "/oauth/keys/keypair/"+k1, ""); code != http.StatusOK {
+		t.Fatalf("delete %s: %d %s", k1, code, b)
+	}
+	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != bootKID {
+		t.Fatalf("current: %d %s, want 200 and the signing key %s", code, cur, bootKID)
+	}
+	tok := h.oauthToken(t)
+	if got := tokenKID(t, tok); got != bootKID {
+		t.Fatalf("/oauth/token signs with %s, want the signing key %s", got, bootKID)
+	}
+	if code := h.authedStatus(t, tok); code != http.StatusOK {
+		t.Fatalf("token signed by the signing key: %d, want 200", code)
+	}
+}
+
+// issueSigning issues a key pair of audience client on ks and fetches a
+// token it signs: the newest active key pair of the audience is the signer.
+func (ks *keyStack) issueSigning(t *testing.T) (kid, tok string) {
+	t.Helper()
+	kid = ks.issueKey(t, "client", false)
+	tok = ks.oauthToken(t)
+	if got := tokenKID(t, tok); got != kid {
+		t.Fatalf("the server signs with %s, want the key pair just issued %s", got, kid)
+	}
+	return kid, tok
+}
+
+// TestSigningKeys_InvalidatedKeyPairEndsEarly covers the cases that need no
+// time to pass: grace 0 refuses at once; during a grace period, invalidating
+// again with 0 or DELETE refuses at once; and a key pair in its grace period
+// verifies but is never the signer. The grace period is an hour, so nothing
+// here depends on timing.
+func TestSigningKeys_InvalidatedKeyPairEndsEarly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const grace = time.Hour
+	h := newKeyStackOn(t, newSchedDB(t), genKey(t))
+	kZero, tZero := h.issueSigning(t) // invalidated with grace 0
+	kCut, tCut := h.issueSigning(t)   // grace cut short by an invalidate with 0
+	kDel, tDel := h.issueSigning(t)   // grace cut short by DELETE
+	kAdmin := h.issueKey(t, "client", false)
+	kLong, tLong := h.issueSigning(t) // the newest, in grace: verifies, never signs
+
+	h.invalidateKey(t, kZero, 0)
+	if code := h.authedStatus(t, tZero); code != http.StatusUnauthorized {
+		t.Errorf("invalidated with grace 0: %d, want 401", code)
+	}
+
+	h.invalidateKey(t, kLong, grace)
+	if code := h.authedStatus(t, tLong); code != http.StatusOK {
+		t.Errorf("in its grace period: %d, want 200", code)
+	}
+	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kAdmin {
+		t.Errorf("current: %d %s, want 200 %s (a key pair in grace never signs)", code, cur, kAdmin)
+	}
+
+	h.invalidateKey(t, kCut, grace)
+	if code := h.authedStatus(t, tCut); code != http.StatusOK {
+		t.Fatalf("control: in its grace period: %d, want 200", code)
+	}
+	h.invalidateKey(t, kCut, 0)
+	if code := h.authedStatus(t, tCut); code != http.StatusUnauthorized {
+		t.Errorf("after invalidating again with grace 0: %d, want 401", code)
+	}
+
+	h.invalidateKey(t, kDel, grace)
+	if code := h.authedStatus(t, tDel); code != http.StatusOK {
+		t.Fatalf("control: in its grace period: %d, want 200", code)
+	}
+	if code, b := h.keyCall(t, "DELETE", "/oauth/keys/keypair/"+kDel, ""); code != http.StatusOK {
+		t.Fatalf("delete %s: %d %s", kDel, code, b)
+	}
+	if code := h.authedStatus(t, tDel); code != http.StatusUnauthorized {
+		t.Errorf("after DELETE during the grace period: %d, want 401", code)
+	}
+}
+
+// TestSigningKeys_GracePeriod: an invalidated key pair — issued, or the
+// signing key from configuration — verifies until the validTo its grace
+// period sets and is refused after it; one reactivated during its grace
+// period is active again and outlives it. The issued key pair's token is
+// checked over HTTP and over gRPC, which authenticate separately.
+//
+// The in-grace checks must finish before the earliest validTo the
+// invalidations can have set, or the test fails rather than passing on
+// nothing; they are kept to two HTTP reads, one unary gRPC call and one
+// reactivate. The after-grace checks run a margin after the latest validTo.
+func TestSigningKeys_GracePeriod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	const grace = 10 * time.Second
+	key := genKey(t)
+	bootKID, err := auth.DeriveKID(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newKeyStackOn(t, newSchedDB(t), key)
+	opTok := operatorToken(t, key, "cyoda-callback-test", "")
+	kReact, tReact := h.issueSigning(t) // reactivated during its grace
+	h.issueKey(t, "client", false)      // signs the admin calls once the others end
+	kGrace, tGrace := h.issueSigning(t) // grace runs out
+
+	earliestValidTo := time.Now().Add(grace)
+	h.invalidateKey(t, kGrace, grace)
+	h.invalidateKey(t, bootKID, grace)
+	h.invalidateKey(t, kReact, grace)
+	latestValidTo := time.Now().Add(grace)
+	if code := h.authedStatus(t, tGrace); code != http.StatusOK {
+		t.Errorf("inside the grace period, issued key pair: %d, want 200", code)
+	}
+	if code := h.authedStatus(t, opTok); code != http.StatusOK {
+		t.Errorf("inside the grace period, signing key: %d, want 200", code)
+	}
+	if err := grpcEntitySearch(h, tGrace); err != nil {
+		t.Errorf("inside the grace period, issued key pair on gRPC: %v, want accepted", err)
+	}
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+kReact+"/reactivate", `{"validTo":"`+future+`"}`); code != http.StatusOK {
+		t.Fatalf("reactivate %s: %d %s", kReact, code, b)
+	}
+	if now := time.Now(); !now.Before(earliestValidTo) {
+		t.Fatalf("the in-grace steps ended %s after the earliest end of the grace period; they prove nothing", now.Sub(earliestValidTo))
+	}
+	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kReact {
+		t.Errorf("current after the reactivate: %d %s, want 200 %s", code, cur, kReact)
+	}
+
+	time.Sleep(time.Until(latestValidTo.Add(time.Second)))
+	for _, c := range []struct {
+		name, tok string
+		want      int
+	}{
+		{"issued key pair", tGrace, http.StatusUnauthorized},
+		{"signing key", opTok, http.StatusUnauthorized},
+		{"reactivated key pair", tReact, http.StatusOK},
+	} {
+		if code := h.authedStatus(t, c.tok); code != c.want {
+			t.Errorf("after the grace period, %s: %d, want %d", c.name, code, c.want)
+		}
+	}
+	if err := grpcEntitySearch(h, tGrace); status.Code(err) != codes.Unauthenticated {
+		t.Errorf("after the grace period, issued key pair on gRPC: %v, want Unauthenticated", err)
 	}
 }

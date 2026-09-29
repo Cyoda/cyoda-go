@@ -17,7 +17,7 @@ package e2e_test
 //     OIDC SSRF/TLS enforcement (those are unit tests in internal/auth/oidc).
 //
 //   - registerOidcProvider requires a tenant identifier that is a UUID in its
-//     canonical lowercase form.  The bootstrap tenant ("test-tenant") is not
+//     canonical lowercase form.  The suite tenant ("test-tenant") is not
 //     UUID-shaped, so this test seeds a dedicated M2M client with a real UUID
 //     tenant via createM2MClient and drives every OIDC call with that client's
 //     token.
@@ -66,7 +66,7 @@ func TestOidcProviderLifecycle(t *testing.T) {
 	// Seed a client with a UUID-shaped tenant so registerOidcProvider does
 	// not fail with OIDC_INVALID_TENANT.  The roles include ROLE_ADMIN so
 	// all admin-gated OIDC ops are permitted.
-	clientID, clientSecret := createM2MClient(t, oidcTenantUUID, "oidc-e2e-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientID, clientSecret := createM2MClient(t, oidcTenantUUID, "oidc-e2e-user", true)
 
 	// oidcDo issues an authenticated HTTP request using the UUID-tenant client.
 	// path must NOT include the /api prefix (adminRequestAs adds it).
@@ -188,10 +188,8 @@ func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	victimID, victimSecret := createM2MClient(t, oidcVictimTenantUUID, "oidc-victim-user",
-		[]string{"ROLE_ADMIN", "ROLE_M2M"})
-	otherID, otherSecret := createM2MClient(t, oidcUUIDEqualTenantUUID, "oidc-uuid-equal-user",
-		[]string{"ROLE_ADMIN", "ROLE_M2M"})
+	victimID, victimSecret := createM2MClient(t, oidcVictimTenantUUID, "oidc-victim-user", true)
+	otherID, otherSecret := createM2MClient(t, oidcUUIDEqualTenantUUID, "oidc-uuid-equal-user", true)
 
 	do := func(t *testing.T, clientID, secret, method, path string, body []byte) (int, []byte) {
 		t.Helper()
@@ -276,15 +274,12 @@ func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 	}
 }
 
-// TestOidc_NonUUIDTenant_RejectedOnEveryOperation pins the behaviour change
-// that ships with the keying fix.
-//
-// A non-UUID tenant — here the bootstrap "test-tenant" behind
-// testclient/testsecret — used to get an empty 200 from the list endpoint,
-// because its prefix scan matched nothing, and a 404 from the id-addressed
-// ops.  Both implied a registration that could never have succeeded:
-// registration has always answered such a tenant with 400 OIDC_INVALID_TENANT.
-// Every provider operation now gives it that same answer.
+// TestOidc_NonUUIDTenant_RejectedOnEveryOperation guards that a non-UUID
+// tenant — here the suite tenant "test-tenant" — gets 400
+// OIDC_INVALID_TENANT from every provider operation, the same answer
+// registration gives it. An empty 200 from the list endpoint, or a 404 from
+// an id-addressed operation, would imply a registration that can never
+// succeed.
 //
 // reloadOidcProviders takes no tenant and is deliberately absent from this
 // table; registerOidcProvider is covered by
@@ -309,9 +304,10 @@ func TestOidc_NonUUIDTenant_RejectedOnEveryOperation(t *testing.T) {
 		{"deleteOidcProvider", http.MethodDelete, someProvider, nil},
 	} {
 		t.Run(op.name, func(t *testing.T) {
-			// testclient/testsecret belong to the bootstrap tenant "test-tenant",
-			// which is not UUID-shaped.
-			resp := adminRequestAs(t, "testclient", "testsecret", op.method, op.path, op.body)
+			// A fresh client in the suite tenant "test-tenant", which is not
+			// UUID-shaped.
+			cid, secret := createClient(t, true)
+			resp := adminRequestAs(t, cid, secret, op.method, op.path, op.body)
 			assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
 		})
 	}

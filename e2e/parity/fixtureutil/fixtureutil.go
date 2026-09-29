@@ -489,11 +489,6 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		fmt.Sprintf("CYODA_JWT_SIGNING_KEY=%s", ks.KeyPEM),
 		fmt.Sprintf("CYODA_JWT_ISSUER=%s", ks.Issuer),
 		"CYODA_LOG_LEVEL=info",
-		"CYODA_BOOTSTRAP_CLIENT_ID=compute-test",
-		"CYODA_BOOTSTRAP_CLIENT_SECRET=compute-secret",
-		"CYODA_BOOTSTRAP_TENANT_ID=system-tenant",
-		"CYODA_BOOTSTRAP_USER_ID=compute-admin",
-		"CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M",
 		// OIDC test overrides — allow http:// and skip SSRF DNS checks.
 		"CYODA_OIDC_REQUIRE_HTTPS=false",
 		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true",

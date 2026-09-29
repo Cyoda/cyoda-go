@@ -38,6 +38,14 @@ func (kp *KeyPair) InWindow(now time.Time) bool {
 	return !now.Before(kp.ValidFrom) && (kp.ValidTo == nil || now.Before(*kp.ValidTo))
 }
 
+// Verifies reports whether the key pair may verify a token at now: inside its
+// window, and active or in the grace period an invalidation gave it (an
+// inactive key pair with a validTo). An inactive key pair with no validTo
+// never verifies. Signing requires Active; verifying does not.
+func (kp *KeyPair) Verifies(now time.Time) bool {
+	return kp.InWindow(now) && (kp.Active || kp.ValidTo != nil)
+}
+
 // TrustedKey holds a trusted external public key.
 type TrustedKey struct {
 	KID       string
@@ -65,7 +73,7 @@ type M2MClient struct {
 	TenantID     spi.TenantID
 	UserID       string
 	Roles        []string
-	CreatedAt    time.Time // set at Create/CreateWithSecret, never advanced
+	CreatedAt    time.Time // set at Create, never advanced
 	UpdatedAt    time.Time // advanced on ResetSecret; equal to CreatedAt on fresh create
 }
 
@@ -130,7 +138,6 @@ type TrustedKeyStore interface {
 // M2MClientStore manages machine-to-machine clients.
 type M2MClientStore interface {
 	Create(clientID string, tenantID spi.TenantID, userID string, roles []string) (string, error)
-	CreateWithSecret(clientID string, tenantID spi.TenantID, userID, secret string, roles []string) error
 	Get(clientID string) (*M2MClient, error)
 	// List returns all M2M clients within the given tenant. The store is
 	// responsible for filtering — future persistent implementations can
@@ -201,9 +208,9 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 // Adapters should use errors.Is for classification.
 var ErrM2MClientNotFound = errors.New("m2m client not found")
 
-// ErrM2MClientExists is returned by M2MClientStore.Create / .CreateWithSecret
-// when the clientID is already present. The adapter's collision-retry loop
-// in CreateTechnicalUser detects this via errors.Is and regenerates.
+// ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
+// is already present. The adapter's collision-retry loop in
+// CreateTechnicalUser detects this via errors.Is and regenerates.
 var ErrM2MClientExists = errors.New("m2m client already exists")
 
 // dummyHash is a constant-time fallback compared against any unknown
@@ -265,34 +272,6 @@ func (s *InMemoryM2MClientStore) Create(clientID string, tenantID spi.TenantID, 
 		UpdatedAt:    now,
 	}
 	return secret, nil
-}
-
-// CreateWithSecret adds an M2M client with a caller-provided plaintext secret.
-func (s *InMemoryM2MClientStore) CreateWithSecret(clientID string, tenantID spi.TenantID, userID, secret string, roles []string) error {
-	hashed, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("failed to hash secret: %w", err)
-	}
-
-	rolesCopy := make([]string, len(roles))
-	copy(rolesCopy, roles)
-
-	now := time.Now().UTC()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, exists := s.clients[clientID]; exists {
-		return fmt.Errorf("%w: %s", ErrM2MClientExists, clientID)
-	}
-	s.clients[clientID] = &M2MClient{
-		ClientID:     clientID,
-		HashedSecret: string(hashed),
-		TenantID:     tenantID,
-		UserID:       userID,
-		Roles:        rolesCopy,
-		CreatedAt:    now,
-		UpdatedAt:    now,
-	}
-	return nil
 }
 
 // Get retrieves an M2M client by client ID.

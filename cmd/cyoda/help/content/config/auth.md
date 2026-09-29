@@ -11,7 +11,7 @@ see_also:
 
 ## NAME
 
-config.auth — IAM mode, JWT issuer, HMAC secret, and admin bootstrap controls.
+config.auth — IAM mode, JWT settings, identifier rules, HMAC secret, IAM features and signing-key rotation.
 
 ## SYNOPSIS
 
@@ -53,10 +53,17 @@ signal that requests are unauthenticated.
   the root secret. Replacing it retires every issued key pair sealed by the
   wrapped vault (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
-- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`) (default: `cyoda`)
-- `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs;
-  empty string disables the audience check (default: empty)
-- `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds (default: `3600`)
+- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`). Unset means the default; an
+  empty value stops the server at startup and makes `cyoda token` exit 1.
+  (default: `cyoda`)
+- `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs,
+  also set as `aud` on every token cyoda-go issues (`POST /oauth/token`, both
+  grants, and `cyoda token`); empty string disables the audience check and
+  issued tokens carry no `aud` (default: empty)
+- `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
+  of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
+  be an integer from 1 to 31622400 (366 days); any other value stops the
+  server at startup and makes `cyoda token` exit 1. (default: `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
   derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
   M2M token-issuance path (`POST /oauth/token`) always uses the
@@ -76,23 +83,20 @@ A tenant identifier must match:
 `.`, `_` and `-`. Case is preserved and significant — `Acme` and `acme` are two
 tenants.
 
-The rule is checked at the two places a tenant identifier enters the binary
-from outside it:
-
-- **The `caas_org_id` claim on an inbound JWT**, which covers every
-  authenticated HTTP request and every authenticated gRPC method. A claim
-  outside the grammar is rejected like any other bad token: `401` with the
-  uniform problem detail, and nothing in the response distinguishing it. The
-  server log records the rejection at request time — one warning per rejected
-  request, carrying the reason and a byte offset, never the offending value.
-  If you mint tokens from an external IdP, constrain the
-  claim there — an identifier outside this grammar is only diagnosable from
-  cyoda's own logs.
-- **`CYODA_BOOTSTRAP_TENANT_ID`** (below).
+The rule is checked at the one place a tenant identifier enters the binary
+from outside it: **the `caas_org_id` claim on an inbound JWT**, which covers
+every authenticated HTTP request and every authenticated gRPC method. A claim
+outside the grammar is rejected like any other bad token: `401` with the
+uniform problem detail, and nothing in the response distinguishing it. The
+server log records the rejection at request time — one warning per rejected
+request, carrying the reason and a byte offset, never the offending value. If
+you mint tokens from an external IdP, constrain the claim there — an
+identifier outside this grammar is only diagnosable from cyoda's own logs.
+`cyoda token --tenant` checks the same rule before it signs, and the claim is
+checked again when the token is used.
 
 Nothing downstream re-checks it: peer dispatch, scheduled tasks, search jobs
-and stored client records all carry a value already admitted at one of those
-two doors.
+and stored client records all carry a value already admitted at that door.
 
 ### User identifiers
 
@@ -124,11 +128,13 @@ from outside it:
   limit applies to `sub`.
 - **The `sub` of a token-exchange subject token**, which becomes the issued
   token's user id. A value outside the check is `400 invalid_grant`.
-- **`CYODA_BOOTSTRAP_USER_ID`** (below).
+
+`cyoda token --user` checks the same rule, the reserved word below included,
+before it signs.
 
 **`oidc:` is a reserved word.** The OIDC path builds every user id it creates
-as `oidc:<providerId>:<sub>`. Every other user id — the first-party claim, the
-token-exchange `sub` and `CYODA_BOOTSTRAP_USER_ID` — must not begin with
+as `oidc:<providerId>:<sub>`. Every other user id — the first-party claim and the
+token-exchange `sub` — must not begin with
 `oidc:`, in any case, so that it can never name the same user as an OIDC
 principal. Such a value is rejected at the door like any other bad user id.
 
@@ -137,26 +143,13 @@ principal. Such a value is rejected at the door like any other bad user id.
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch auth
 - `CYODA_HMAC_SECRET_FILE` — file path for `CYODA_HMAC_SECRET` (takes precedence)
 
-### Bootstrap M2M client
+### First admin token
 
-cyoda can provision a machine-to-machine client at startup for automation and CI.
-
-- `CYODA_BOOTSTRAP_CLIENT_ID` — bootstrap M2M client ID (optional)
-- `CYODA_BOOTSTRAP_CLIENT_SECRET` — bootstrap M2M client secret; must be set when
-  `CYODA_BOOTSTRAP_CLIENT_ID` is set (and vice versa)
-- `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` — file path for `CYODA_BOOTSTRAP_CLIENT_SECRET`
-  (takes precedence)
-- `CYODA_BOOTSTRAP_TENANT_ID` — tenant for the bootstrap client (default: `default-tenant`).
-  Must match the tenant grammar above. In jwt mode, when a bootstrap client is
-  configured and this value does not match, the binary refuses to start. A deployment
-  that configures no bootstrap client never reads the value and is unaffected, even when
-  it is set to the empty string — and mock mode ignores the whole bootstrap block, so
-  the value is not checked there either.
-- `CYODA_BOOTSTRAP_USER_ID` — user ID for the bootstrap client (default: `admin`).
-  Must pass the user-id check above. In jwt mode, when a bootstrap client is configured
-  and this value does not pass, the binary refuses to start.
-- `CYODA_BOOTSTRAP_ROLES` — comma-separated roles granted to the bootstrap client
-  (default: `ROLE_ADMIN,ROLE_M2M`)
+No credential is defined by configuration except the signing key. In jwt
+mode, the first admin token comes from `cyoda token`, which signs a
+short-lived token with `CYODA_JWT_SIGNING_KEY`; use it to create the M2M
+clients that applications and compute nodes use (`POST /clients`). See
+`cyoda help cli token`.
 
 ### IAM features
 
@@ -235,13 +228,58 @@ the same PEM (SHA-256 of the public key).
 
 Operators can rotate signing keys at runtime via
 `POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
-Of the active key pairs inside their window, the one with the latest
-`validFrom` signs new tokens (on a tie, the greater key id). Setting
-`invalidateCurrent: true` also invalidates the current key pair: cyoda stops
-accepting tokens it signed at once, and `invalidateGracePeriodSec: N` only
-keeps it published in JWKS for up to N more seconds (never past its
-`validTo`), for external verifiers that
-cache it. `invalidateCurrent` cannot be combined with a future `validFrom`,
+Of the active key pairs of an audience inside their window, the bootstrap
+key included, the one with the latest `validFrom` signs new tokens (on a tie,
+the greater key id). The bootstrap key takes part with a zero `validFrom`
+until a reactivation sets one. Until then, an active issued key pair inside
+its window signs before it, and the bootstrap key signs whenever no issued key
+pair of its audience is active and inside its window. A reactivation sets the
+bootstrap key's `validFrom` to the request's value, which defaults to now:
+from then on it signs before every issued key pair of its audience with an
+earlier `validFrom`.
+
+Setting `invalidateCurrent: true` also invalidates the issued key pairs of the
+audience whose window is open, the first rotation included. A rotation ends
+issued key pairs only: the bootstrap key is never one of them, stays active,
+keeps verifying, and `cyoda token` keeps working. Only an invalidate or a
+`DELETE` that names the bootstrap key's key id ends it.
+
+An invalidated key pair — issued, or the bootstrap key — never signs again
+unless reactivated. Tokens it signed keep verifying until the end of its grace period:
+`invalidateGracePeriodSec: N` on a rotation, or `gracePeriodSec: N` on
+`POST /oauth/keys/keypair/{keyId}/invalidate`, sets its `validTo` to N
+seconds from now, never later than its current `validTo`. The default is 0:
+it stops verifying at once. JWKS publishes a key pair from its issue
+(ahead of its window, if `validFrom` is in the future) until it can no
+longer verify.
+A node that has not yet applied an invalidation (see *Shared and persisted*
+below) can still sign with the key pair until it does; with a grace period,
+those tokens verify on every node until the key pair's `validTo`.
+
+**Emergency revocation of a leaked token:** revoke the key pair named by the
+`kid` in the token's header. A rotation is not enough: it never ends the
+bootstrap key, which signs every token from `cyoda token`, and every token
+from `POST /oauth/token` while it wins signer selection for its audience
+(before the first rotation, for example, or after a reactivation with the
+default `validFrom`; see above).
+
+- If the `kid` names an issued key pair, invalidate it with a grace period of
+  0 (or rotate with `invalidateGracePeriodSec: 0`), or `DELETE` it.
+- If the `kid` names the bootstrap key, invalidate it with a grace period of
+  0. If `cyoda token` is still wanted, reactivate the bootstrap key once
+  `CYODA_JWT_EXPIRY_SECONDS` has passed since every node applied the
+  invalidation (see *Shared and persisted* below): by then every token it
+  signed before has expired. Reactivating it sooner makes those tokens verify
+  again. Pass an early `validFrom` on the reactivation, for example
+  `1970-01-01T00:00:00Z`, so that the issued key pairs of its audience keep
+  signing `POST /oauth/token`. With the default `validFrom` (now), the
+  bootstrap key signs before them, and `POST /oauth/token` signs with it
+  again. `DELETE` also ends the bootstrap key, but permanently.
+
+A grace period already running is cut short by invalidating the key pair again
+with 0, or by `DELETE`; a deleted key pair never verifies.
+
+`invalidateCurrent` cannot be combined with a future `validFrom`,
 and `validTo` must be in the future; both are `400`. Reactivating a key pair
 also refuses a future `validFrom`. A `validFrom` or `validTo` (the default
 included) whose UTC year is outside 1–9999 is `400` on every key-pair and
@@ -273,7 +311,13 @@ new window has opened.
   or by issued key pairs stop verifying; clients fetch new tokens. Issue new
   key pairs if you use API rotation. Invalidating or deleting the bootstrap
   key through the API does not protect stored key pairs: the key still
-  decrypts them.
+  decrypts them. A rotation does not help either, for the same reason.
+- **Invalidating or deleting the bootstrap key** revokes the root key:
+  tokens from `cyoda token` are refused after the grace period, if one was
+  given, and the node that takes the call logs a WARN that says so. Admin
+  access then comes from an OIDC admin, or from an admin M2M client created
+  beforehand while an issued key pair signs its tokens; with neither, the
+  recovery is a new `CYODA_JWT_SIGNING_KEY` (see `cyoda help cli token`).
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
@@ -292,8 +336,8 @@ The fix depends on why:
 - It is owned by the configured bootstrap key but cannot be opened.
   Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
   it: the record is then retired (inert), not broken (blocking).
-- Authenticate with an unexpired admin token or an admin from a federated
-  OIDC provider.
+- Authenticate with a token from `cyoda token`, an unexpired admin token, or
+  an admin from a federated OIDC provider.
 
 **A stored record cannot be decoded at all.**
 
@@ -306,8 +350,9 @@ The fix depends on why:
 - A record at a KV key that is not 32 lowercase hex characters cannot be a
   key id: it is ignored (it does not block signing) and logged at ERROR.
 - At any id other than this node's bootstrap key id, the replacement is
-  inert. The bootstrap key is unaffected: authenticate the `DELETE` with an
-  unexpired admin token or an admin from a federated OIDC provider. Replacing
+  inert. The bootstrap key is unaffected: authenticate the `DELETE` with a
+  token from `cyoda token`, an unexpired admin token, or an admin from a
+  federated OIDC provider. Replacing
   `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does not depend
   on which key owns the record.
 - At this node's bootstrap key id, `DELETE` permanently deletes the bootstrap
@@ -317,7 +362,8 @@ The fix depends on why:
 never share one KID, so the record is refused as undecodable.
 
 - The bootstrap key is then unusable for signing and verifying. A
-  bootstrap-signed admin token does not verify on this node.
+  bootstrap-signed admin token, a token from `cyoda token` included, does not
+  verify on this node.
 - Authenticate with a token signed by an active issued key pair, or an admin
   from a federated OIDC provider.
 - Then replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new key changes
@@ -325,14 +371,17 @@ never share one KID, so the record is refused as undecodable.
 - Warning: `DELETE` at this id permanently deletes the bootstrap key (see
   above).
 
-**No signer.** The bootstrap key has no active state for the audience, and no
-issued key pair is active either.
+**No signer.** No key pair of the audience is active and inside its window.
+While the bootstrap key is active it signs whenever no issued key pair does,
+so for the bootstrap key's audience (`client` by default) this arises only
+when the bootstrap key itself has been invalidated or deleted by its key id,
+or a reactivation gave it a window that has since ended.
 
-- With the default `client` bootstrap audience and no other key pairs, no
-  first-party token verifies at all. An admin token minted earlier does not
-  help: its key no longer signs or verifies.
-- Recovery needs an admin from a federated OIDC provider, whose tokens do not
-  depend on cyoda's own signing key.
+- During a grace period, tokens signed by the invalidated key pairs still
+  verify, `cyoda token` tokens included. An admin token of that kind can
+  reactivate the bootstrap key or issue a new key pair.
+- Once every grace period has ended, recovery needs an admin from a federated
+  OIDC provider, whose tokens do not depend on cyoda's own signing key.
 - That admin can reactivate the bootstrap key if it was only invalidated. A
   deleted bootstrap key cannot be reactivated (see above).
 - That admin can issue a new key pair in either case.
@@ -370,12 +419,10 @@ CYODA_JWT_AUDIENCE=cyoda-api
 CYODA_JWT_EXPIRY_SECONDS=3600
 ```
 
-**With bootstrap client:**
+**First admin token (JWT auth, same environment as the server):**
 
 ```
-CYODA_BOOTSTRAP_CLIENT_ID=ci-client
-CYODA_BOOTSTRAP_CLIENT_SECRET_FILE=/etc/secrets/ci-secret
-CYODA_BOOTSTRAP_ROLES=ROLE_ADMIN,ROLE_M2M
+TOKEN=$(cyoda token --tenant acme)
 ```
 
 **With trusted-key registration enabled:**

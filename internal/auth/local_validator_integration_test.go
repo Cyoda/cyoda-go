@@ -26,10 +26,11 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 		ExpirySeconds: 3600,
 	})
 
-	if err := svc.M2MClientStore().CreateWithSecret(
-		"client-1", "tenant-1", "user-1", "secret-1", []string{"ROLE_USER"},
-	); err != nil {
-		t.Fatalf("CreateWithSecret: %v", err)
+	secret, err := svc.M2MClientStore().Create(
+		"client-1", "tenant-1", "user-1", []string{"ROLE_USER"},
+	)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
 	}
 
 	// Serve only the token endpoint. Crucially, no JWKS endpoint is exposed —
@@ -45,7 +46,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 		strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic "+
-		base64.StdEncoding.EncodeToString([]byte("client-1:secret-1")))
+		base64.StdEncoding.EncodeToString([]byte("client-1:"+secret)))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("token request failed: %v", err)

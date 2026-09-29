@@ -93,9 +93,10 @@ func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
 }
 
 // TestJWKS_GracePeriodKeyIncluded verifies that a grace-period key
-// (Active=false but ValidTo in the future) IS published in JWKS, so that
-// external verifiers can validate tokens signed before rotation. Only keys
-// whose ValidTo is in the past are excluded.
+// (Active=false but ValidTo in the future) IS published in JWKS: cyoda-go
+// verifies its tokens until ValidTo, and external verifiers need it for the
+// same period. Keys whose ValidTo is in the past, and inactive keys with no
+// ValidTo, are excluded.
 func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)

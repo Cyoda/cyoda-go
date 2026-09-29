@@ -77,40 +77,31 @@ This binary uses the in-memory backend by default. Run `cyoda init` for sqlite p
 
 ## First real call
 
-The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt — without leaking the bootstrap secret into your shell history or `ps` output — use the project's profile pattern:
+The 30-second example uses mock auth. To exercise the real auth chain end-to-end with sqlite + jwt, use the project's profile pattern. The only credential is the JWT signing key; `cyoda token` signs the first admin token with it, offline:
 
 ```bash
 # Generate a JWT signing key (openssl writes it 0600 by default; make it explicit)
 openssl genrsa -out /tmp/jwt.key 2048
 chmod 600 /tmp/jwt.key
 
-# Write a local profile with sqlite + jwt + bootstrap creds. .env.local is
-# gitignored; chmod 600 keeps the secret off other users' eyes on shared boxes.
+# Write a local profile with sqlite + jwt. .env.local is gitignored.
 cat > .env.local <<'EOF'
 CYODA_STORAGE_BACKEND=sqlite
 CYODA_IAM_MODE=jwt
 CYODA_JWT_SIGNING_KEY_FILE=/tmp/jwt.key
-CYODA_BOOTSTRAP_CLIENT_ID=demo
-CYODA_BOOTSTRAP_CLIENT_SECRET=demo-secret
 EOF
-chmod 600 .env.local
 
 # Start cyoda with the local profile (loads .env.local automatically)
 CYODA_PROFILES=local cyoda &
 
-# Read the secret from the file at the moment we need it — never `export` it
-SECRET=$(grep '^CYODA_BOOTSTRAP_CLIENT_SECRET=' .env.local | cut -d= -f2-)
-
-# Get an OAuth 2.0 token via client_credentials
-TOKEN=$(curl -sX POST http://localhost:8080/api/oauth/token \
-  -u "demo:$SECRET" \
-  -d "grant_type=client_credentials" | jq -r .access_token)
+# Sign a short-lived admin token for tenant "demo" with the same key
+TOKEN=$(CYODA_PROFILES=local cyoda token --tenant demo)
 
 # Make an authenticated call
 curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 ```
 
-The `/api/account` response confirms the bootstrap client's tenant and roles. From here, follow the **Build an app** link below to register an entity model and start creating entities.
+The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
 
 **Optional IAM feature flags** (all default `false`):
 

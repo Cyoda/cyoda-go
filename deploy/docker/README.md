@@ -55,12 +55,18 @@ Key elements to copy:
   stack, assume any sidecar can hit `/metrics` and `/readyz`
   without auth.
 - **Mock auth is the startup default.** `CYODA_IAM_MODE=mock` accepts
-  all requests. For production, set `CYODA_REQUIRE_JWT=true` AND
-  provide `CYODA_JWT_SIGNING_KEY` (multi-line PEM:
+  all requests. For production, set `CYODA_IAM_MODE=jwt` and
+  `CYODA_REQUIRE_JWT=true` AND provide `CYODA_JWT_SIGNING_KEY` (multi-line PEM:
   `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"` before
   `docker compose up`). A startup banner warns when running in mock
   mode; `CYODA_SUPPRESS_BANNER=true` silences it (CI only — not
-  production).
+  production). Once the container is up in jwt mode, get a first admin
+  token — the container already holds the key — and use it to create
+  M2M clients:
+  ```bash
+  docker compose exec cyoda /cyoda token --tenant <tenant>
+  ```
+  `POST /api/clients` with that token.
 
 ## For Kubernetes / production
 

@@ -139,11 +139,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":    strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
 		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
-		"CYODA_BOOTSTRAP_CLIENT_ID":                  c.Bootstrap.ClientID,
-		"CYODA_BOOTSTRAP_CLIENT_SECRET":              "", // secret
-		"CYODA_BOOTSTRAP_TENANT_ID":                  c.Bootstrap.TenantID,
-		"CYODA_BOOTSTRAP_USER_ID":                    c.Bootstrap.UserID,
-		"CYODA_BOOTSTRAP_ROLES":                      c.Bootstrap.Roles,
 		"CYODA_OIDC_REQUIRE_HTTPS":                   strconv.FormatBool(c.IAM.OIDC.RequireHTTPS),
 		"CYODA_OIDC_CONNECT_TIMEOUT_MS":              renderMillis(c.IAM.OIDC.ConnectTimeout),
 		"CYODA_OIDC_SOCKET_TIMEOUT_MS":               renderMillis(c.IAM.OIDC.SocketTimeout),

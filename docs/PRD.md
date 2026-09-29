@@ -557,7 +557,7 @@ for mode-specific semantics.
 | **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create, delete, reset secret for machine-to-machine clients |
 | **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs |
 | **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register external signing keys for cross-system trust |
-| **Bootstrap client** | `CYODA_BOOTSTRAP_CLIENT_ID` | Pre-configured M2M client at startup (solves chicken-and-egg) |
+| **First admin token** | `cyoda token` | Signs a short-lived admin token offline with `CYODA_JWT_SIGNING_KEY` (solves chicken-and-egg: the first M2M clients are created with it) |
 
 ### Token Claims
 
@@ -575,6 +575,8 @@ for mode-specific semantics.
 }
 
 ```
+
+`aud` is added, set to `CYODA_JWT_AUDIENCE`, when that variable is set.
 
 ### Per-Tenant OIDC Provider Registry
 

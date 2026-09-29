@@ -14,6 +14,7 @@ import (
 type AuthConfig struct {
 	SigningKeyPEM     string                 // PEM-encoded RSA private key: the bootstrap key
 	Issuer            string                 // e.g., "cyoda"
+	Audience          string                 // CYODA_JWT_AUDIENCE; set as aud on issued tokens when not empty
 	ExpirySeconds     int                    // e.g., 3600
 	IAMFeatures       IAMFeatures            // IAM feature surface for /oauth/keys/* and bootstrap key config
 	KV                spi.KeyValueStore      // SYSTEM-tenant KV store; required
@@ -89,7 +90,7 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	// answer asks the caller to retry after one re-read interval.
 	publicMux := http.NewServeMux()
 	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
-	publicMux.Handle("POST /oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.ExpirySeconds))
+	publicMux.Handle("POST /oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds))
 
 	return &AuthService{
 		keyStore:     keyStore,

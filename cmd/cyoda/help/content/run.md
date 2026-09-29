@@ -5,6 +5,7 @@ stability: stable
 see_also:
   - cli
   - cli.serve
+  - cli.token
   - cli.init
   - cli.health
   - quickstart
@@ -89,6 +90,8 @@ export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
 cyoda
 ```
 
+First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
+
 The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
 
 ### Docker
@@ -144,6 +147,8 @@ docker run --rm \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```
+
+First admin token: `docker exec <container> /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 ### Docker Compose
 
@@ -201,6 +206,8 @@ docker compose -f deploy/docker/compose.yaml up
 docker compose up
 ```
 
+First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+
 **Use a custom image (e.g. a local dev build):**
 
 ```
@@ -239,7 +246,7 @@ helm upgrade --install cyoda ./deploy/helm/cyoda \
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
 - `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
-- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. Generates a fresh JWT signing key and randomized bootstrap client secret per run. Intended for contributors testing local changes in a container before they land.
+- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. The compose file's defaults apply: sqlite storage and mock auth. Intended for contributors testing local changes in a container before they land.
 
 **Run with in-memory storage and mock auth (go run):**
 
@@ -331,6 +338,8 @@ export CYODA_JWT_AUDIENCE=cyoda-api
 ./bin/cyoda
 ```
 
+First admin token: `./bin/cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
+
 **Docker — in-memory + OTel tracing:**
 
 ```
@@ -377,10 +386,13 @@ echo $?   # 0 = ready, 1 = not ready or error
 docker compose up
 ```
 
+First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+
 ## SEE ALSO
 
 - cli
 - cli.serve
+- cli.token
 - cli.init
 - cli.health
 - quickstart

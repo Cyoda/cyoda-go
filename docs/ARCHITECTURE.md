@@ -227,9 +227,9 @@ Plugin authors never implement these — they are internal to the cyoda-go appli
 
 Multi-tenancy is intrinsic. Every request context carries a resolved `UserContext` with `TenantID`. All stores, across all plugins, partition by tenant.
 
-A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only two places a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method, and `CYODA_BOOTSTRAP_TENANT_ID` at startup (§9). Everything downstream — peer dispatch bodies, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at one of those two doors and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
+A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only place a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method. `cyoda token --tenant` applies the same check before it signs, and the claim is checked again when the token is used. Everything downstream — peer dispatch bodies, gossip envelopes, scheduled-task and search-job rows, OIDC provider records, the M2M client table — carries a value already admitted at that door and does not re-check it. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
 
-A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the first-party `caas_user_id` claim (or `sub` when `caas_user_id` is absent), the OIDC `sub`, the token-exchange subject `sub`, and `CYODA_BOOTSTRAP_USER_ID` at startup. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. The OIDC path builds its user ids as `oidc:<providerId>:<sub>`, so `oidc:` is a reserved word: `common.ValidateFirstPartyUserID` rejects it, in any case, at every other door. See `docs/cloud-parity/user-id-rule.md`.
+A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the first-party `caas_user_id` claim (or `sub` when `caas_user_id` is absent), the OIDC `sub`, and the token-exchange subject `sub`; `cyoda token --user` applies the same check before it signs. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. The OIDC path builds its user ids as `oidc:<providerId>:<sub>`, so `oidc:` is a reserved word: `common.ValidateFirstPartyUserID` rejects it, in any case, at every other door. See `docs/cloud-parity/user-id-rule.md`.
 
 ---
 
@@ -1864,6 +1864,8 @@ Full RS256 JWT authentication with JWKS discovery and M2M client support.
 
 Each issued signing key pair's private key is sealed at rest (AES-256-GCM under a key derived from the bootstrap key's RSA primes) — the KV store never holds an unwrapped private key. Loading a `signing-keys` record classifies it against this node's own bootstrap key: **owned** (this node can open and use it), **broken** (owned but does not open, or of an unrecognised vault kind — still a candidate in signer selection; if one wins the selection, signing fails rather than falling back to another key, and it never verifies), **retired** (sealed under a different, no-longer-configured bootstrap key — inert until that key is restored), **bootstrap state** (the stored active/window/deleted flags for this node's own bootstrap key), **foreign bootstrap state** (another node's bootstrap key — ignored), or **undecodable** (blocks signing for every audience, and the bootstrap key too if it sits at the bootstrap KID). Replacing `CYODA_JWT_SIGNING_KEY` therefore retires every key pair the old key owned; deleting the bootstrap key through the API is permanent for that key — replacing the PEM afterwards starts a fresh bootstrap key rather than undeleting the old one. See `cyoda help config auth` ("JWT signing keypair rotation") and `docs/cloud-parity/signing-key-pairs.md`.
 
+**Signing, rotation and grace.** The signer of an audience is the newest active key pair inside its window (latest `validFrom`, then greater KID; `selectSigner` in `internal/auth/kv_key_store.go`). The bootstrap key takes part too, with a zero `validFrom` until a reactivation sets one (`Reactivate`; the HTTP default is now). Until then it signs only when no issued key pair of its audience is active and inside its window; after a reactivation it signs before every issued key pair of its audience with an earlier `validFrom`. A rotation (`invalidateCurrent`, `siblingWrites` in `kv_key_store_admin.go`) ends only the issued key pairs of the audience whose window is open: the bootstrap key is never a sibling, and only an invalidate or delete that names its KID ends it. A key pair verifies when it is not deleted, is inside its window (`validFrom` ≤ now < `validTo`), and is active or has a `validTo` (`KeyPair.Verifies`). An invalidated key pair therefore keeps verifying until the end of its grace period — its `validTo` becomes now plus the grace, never later than its previous `validTo` (`graceExpiry`) — and never signs again unless reactivated, because signer selection requires `Active`. A grace of 0 (the HTTP default) ends verification at once; invalidating again with 0, or deleting, cuts a running grace short. JWKS publishes a key pair until its window ends, the grace period included, and not after (`publishable`). A node that has not yet applied an invalidation can still sign with the key pair until it does; with a grace period, those tokens verify on every node until the key pair's `validTo`. Invalidating or deleting the bootstrap key logs a WARN that tokens from `cyoda token` are refused once any grace period ends (`logRevokedBootstrap`).
+
 **Deterministic KID derivation:**
 
 ```go
@@ -1876,15 +1878,15 @@ This is critical for multi-node clusters: all nodes sharing the same RSA private
 
 **OBO (On-Behalf-Of) exchange:** An M2M client presents, with its own credentials, a subject token signed by a trusted key registered in the client's own tenant (grant `urn:ietf:params:oauth:grant-type:token-exchange`); a key registered by another tenant is not found. A key's tenant is the tenant that registered it, never a claim in the token it signs. The subject's `caas_org_id` must equal the client's tenant, and its `sub` must pass the user-identifier rule (§1). The issued token carries the subject's `sub` as its user id, the subject's roles, and an `act` claim naming the client, so calls made with it are attributed to that user.
 
-**Bootstrap M2M client:** Bootstrap M2M client creation is opt-in. In
-`jwt` mode, `CYODA_BOOTSTRAP_CLIENT_ID` and
-`CYODA_BOOTSTRAP_CLIENT_SECRET` must be set together (both present) or
-both left empty. Half-configured states are rejected at startup with an
-error naming the missing variable (see
-`app/app.go:validateBootstrapConfig`). When set, the bootstrap M2M
-client is created at startup and can be used to mint access tokens. In
-`mock` mode, both variables are ignored. The Helm chart provisions the
-secret via a chart-managed Kubernetes Secret with a GitOps-safety guard.
+**First admin token: `cyoda token`.** No credential is defined by
+configuration except the signing key. `cyoda token` (`cmd/cyoda/token.go`,
+`internal/auth/operator_token.go`) signs a short-lived person token
+(`user_roles`, default `ROLE_ADMIN`, tenant from `--tenant`) with
+`CYODA_JWT_SIGNING_KEY` under its derived KID, offline: it opens no store
+and makes no network call. It adds no capability, since whoever holds the
+signing key can already sign any token the validator accepts. Its tokens
+verify exactly as long as the bootstrap key does on the cluster; an operator
+uses them for the first admin calls, such as creating M2M clients.
 
 ### 7.3 OIDC Provider Registry
 
@@ -2040,8 +2042,7 @@ so multi-line PEM keys and DSN strings both round-trip cleanly. If
 fails at startup with the path and error.
 
 Applies to: `CYODA_POSTGRES_URL`, `CYODA_JWT_SIGNING_KEY`,
-`CYODA_HMAC_SECRET`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
-`CYODA_METRICS_BEARER`. Plugin-scoped credentials are documented in
+`CYODA_HMAC_SECRET`, `CYODA_METRICS_BEARER`. Plugin-scoped credentials are documented in
 the per-plugin reference.
 
 This is the canonical Docker / Kubernetes pattern for wiring
@@ -2144,6 +2145,7 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
 | `CYODA_JWT_SIGNING_KEY` (with `_FILE` variant) | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
+| `CYODA_JWT_AUDIENCE` | (empty) | Required `aud` on inbound first-party JWTs, and set as `aud` on every token cyoda-go issues (`/oauth/token`, both grants, and `cyoda token`); empty disables the check and issued tokens carry no `aud` |
 | `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
 | `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
@@ -2160,16 +2162,6 @@ These variables apply globally to all tenant-registered OIDC providers. Per-prov
 | `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` | `5000` | Timeout (ms) to acquire a connection from the HTTP client pool for OIDC requests. |
 | `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` | `false` | Allow OIDC provider URLs that resolve to private/loopback/link-local addresses. When `false`, registering such a URL returns `400 OIDC_SSRF_BLOCKED`. |
 | `CYODA_OIDC_ROLES_CLAIM` | `roles` | Default JWT claim name to extract roles from for externally-issued tokens. Overridable per-provider at registration time. |
-
-### Bootstrap
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CYODA_BOOTSTRAP_CLIENT_ID` | (none) | M2M client ID to create at startup. Must be set together with `CYODA_BOOTSTRAP_CLIENT_SECRET` or both left empty — half-configured rejected (jwt mode). |
-| `CYODA_BOOTSTRAP_CLIENT_SECRET` (with `_FILE` variant) | (none) | M2M client secret. Required when `CYODA_BOOTSTRAP_CLIENT_ID` is set in jwt mode; ignored in mock mode. |
-| `CYODA_BOOTSTRAP_TENANT_ID` | `default-tenant` | Tenant for bootstrap client. Must match the tenant grammar (§1); a value outside it refuses startup, but only in jwt mode with a bootstrap client configured — mock mode ignores bootstrap entirely, and a jwt deployment that configures no bootstrap client never reads the value, including when it is explicitly empty. |
-| `CYODA_BOOTSTRAP_USER_ID` | `admin` | User ID for bootstrap client. Must pass the user-identifier rule (§1); a value outside it refuses startup in jwt mode with a bootstrap client configured. |
-| `CYODA_BOOTSTRAP_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles |
 
 ### gRPC
 

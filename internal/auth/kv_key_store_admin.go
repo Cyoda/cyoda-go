@@ -43,15 +43,15 @@ func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, con
 	return context.WithTimeout(context.WithoutCancel(ctx), s.rep.cfg.interval)
 }
 
-// Issue creates a key pair and, with Invalidate, ends every sibling of its
-// audience (spec §5.7). The new record is written before the siblings; if a
-// sibling write fails, writeAll (replica.go) tries to undo every write
+// Issue creates a key pair and, with Invalidate, ends every issued sibling of
+// its audience: an owned or broken issued key pair whose window is open (see
+// siblingWrites). The new record is written before the siblings; if
+// a sibling write fails, writeAll (replica.go) tries to undo every write
 // already made — see its doc comment for what that guarantees and does not:
 // a failed undo is logged at ERROR with the keys left changed, and a crash
 // between writes can still leave a rotation half applied.
 func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, error) {
 	var issued *KeyPair
-	var bootstrapTouched bool
 	err := s.rep.mutate(func() (func(map[string]*signingEntry), bool, error) {
 		kid, err := newKID()
 		if err != nil {
@@ -74,11 +74,11 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 		}
 		writes := []kvWrite{{key: kid, value: data}}
 		if req.Invalidate {
-			sib, touched, err := s.siblingWrites(ctx, req.Audience, kid, req.GracePeriodSec)
+			sib, err := s.siblingWrites(ctx, req.Audience, kid, req.GracePeriodSec)
 			if err != nil {
 				return nil, false, err
 			}
-			writes, bootstrapTouched = append(writes, sib...), touched
+			writes = append(writes, sib...)
 		}
 		if err := s.rep.writeAll(ctx, writes); err != nil {
 			return nil, true, err
@@ -97,20 +97,18 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 	if err != nil {
 		return nil, err
 	}
-	if bootstrapTouched {
-		s.logRevokedBootstrap(slog.LevelWarn)
-	}
 	return issued, nil
 }
 
 // siblingWrites lists the stored records and returns the writes that end the
 // siblings of a rotation: owned and broken issued records of the audience
-// whose window is open, and the bootstrap key of that audience unless it is
-// deleted. Only the active flag and validTo change.
-func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string, grace int64) ([]kvWrite, bool, error) {
+// whose window is open. The signing key from configuration is never a
+// sibling; only an invalidate or delete that names its key id ends it. Only
+// the active flag and validTo change.
+func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string, grace int64) ([]kvWrite, error) {
 	all, err := s.kv.List(ctx, signingKeysNamespace)
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to list signing keys: %w", err)
+		return nil, fmt.Errorf("failed to list signing keys: %w", err)
 	}
 	now := time.Now()
 	end := func(r *signingRecord, validTo *time.Time) {
@@ -119,10 +117,14 @@ func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string,
 	}
 	var writes []kvWrite
 	for k, data := range all {
-		if k == newKID || k == s.boot.kid {
+		if k == newKID {
 			continue
 		}
 		e := s.cls.classify(ctx, k, data)
+		// classify never classifies the bootstrap key id as owned or broken
+		// (signing_records.go: an issued record there is classUndecodable,
+		// a bootstrap-kind record there is classBootstrapState), so it is
+		// never a sibling here regardless of this loop.
 		if (e.class != classOwned && e.class != classBroken) || e.pair.Audience != audience || !windowOpen(e.pair.ValidTo, now) {
 			continue
 		}
@@ -130,37 +132,12 @@ func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string,
 		end(&rec, e.pair.ValidTo)
 		b, err := encodeSigningRecord(rec)
 		if err != nil {
-			return nil, false, err
+			return nil, err
 		}
 		writes = append(writes, kvWrite{key: k, value: b, prev: data})
 	}
 	sort.Slice(writes, func(i, j int) bool { return writes[i].key < writes[j].key })
-	touched := false
-	if s.boot.audience == audience {
-		prev, present := all[s.boot.kid]
-		rec := defaultBootstrapRecord(s.boot.kid)
-		eligible := true
-		var validTo *time.Time
-		if present {
-			e := s.cls.classify(ctx, s.boot.kid, prev)
-			if e.class != classBootstrapState || e.deleted {
-				eligible = false
-			} else {
-				rec, _, _, _, _ = decodeSigningRecord(s.boot.kid, prev)
-				validTo = e.pair.ValidTo
-			}
-		}
-		if eligible && windowOpen(validTo, now) {
-			end(&rec, validTo)
-			b, err := encodeSigningRecord(rec)
-			if err != nil {
-				return nil, false, err
-			}
-			writes = append(writes, kvWrite{key: s.boot.kid, value: b, prev: prev})
-			touched = true
-		}
-	}
-	return writes, touched, nil
+	return writes, nil
 }
 
 func (s *KVKeyStore) classifyWrites(ctx context.Context, writes []kvWrite) map[string]*signingEntry {
@@ -228,6 +205,10 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 	return out, err
 }
 
+// Invalidate ends kid as a signer at once (Signer selection requires
+// Active). It keeps verifying for graceSec seconds from now, never past its
+// current validTo; 0 ends verification at once. A running grace period is
+// cut short by invalidating again with 0, or by Delete.
 func (s *KVKeyStore) Invalidate(ctx context.Context, kid string, graceSec int64) error {
 	_, err := s.updateState(ctx, kid, func(r *signingRecord, pair KeyPair) {
 		r.Active = false
@@ -247,7 +228,8 @@ func (s *KVKeyStore) Reactivate(ctx context.Context, kid string, from, to time.T
 	})
 }
 
-// deletedRecordFor marks rec's own KID deleted — terminal, verifies nothing.
+// deletedRecordFor marks rec's own KID deleted — terminal: it never signs or
+// verifies again.
 func deletedRecordFor(rec signingRecord) signingRecord {
 	rec.Deleted, rec.Active = true, false
 	return rec
@@ -280,7 +262,7 @@ func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, r
 // — at any key id — is instead replaced with a deleted bootstrap-state record,
 // never removed outright: if that KID is some node's bootstrap key it stays
 // revoked, and otherwise the record is a foreign bootstrap record every node
-// already ignores (spec §5.5). Deleting this node's own bootstrap key marks
+// already ignores (no node's bootstrap key has that KID). Deleting this node's own bootstrap key marks
 // its bootstrap state deleted — terminal: no API call removes that record. A
 // record at a key that cannot be a key id is ignored, and not found here.
 func (s *KVKeyStore) Delete(ctx context.Context, kid string) error {

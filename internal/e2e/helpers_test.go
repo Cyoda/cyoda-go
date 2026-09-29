@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
@@ -114,9 +118,109 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 	return token
 }
 
+// signServiceToken signs a token in the shape of a client_credentials token
+// (scopes → a service principal) with key, for the given issuer/audience/
+// sub/tenant/userID/roles; an empty audience omits the aud claim, which a
+// stack with CYODA_JWT_AUDIENCE set requires. Every "admin token for a stack"
+// helper in this package (suiteTokenRaw, callbackHarness.fetchToken/
+// adminTokenFor, adminTokenForTenant, newStandaloneApp, bootstrapToken) is a
+// thin wrapper over this one signing call. It never touches *testing.T.
+func signServiceToken(key *rsa.PrivateKey, issuer, audience, sub, tenant, userID string, roles []string) (string, error) {
+	kid, err := auth.DeriveKID(&key.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	claims := map[string]any{
+		"sub":          sub,
+		"iss":          issuer,
+		"caas_user_id": userID,
+		"caas_org_id":  tenant,
+		"scopes":       roles,
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+	if audience != "" {
+		claims["aud"] = audience
+	}
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(key), kid)
+}
+
+// suiteTokenRaw signs an admin token for the shared server in the shape of a
+// client_credentials token (scopes → a service principal), so attribution
+// assertions are unchanged. It never touches *testing.T.
+func suiteTokenRaw() (string, error) {
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+}
+
+// suiteToken is the test-goroutine form of suiteTokenRaw.
+func suiteToken(t *testing.T) string {
+	t.Helper()
+	tok, err := suiteTokenRaw()
+	if err != nil {
+		t.Fatalf("sign suite token: %v", err)
+	}
+	return tok
+}
+
+// deleteClientAtCleanup registers a t.Cleanup that deletes the M2M client id
+// through DELETE {baseURL}/api/clients/{id}, authenticated with the token
+// bearer returns when the cleanup runs. The request runs on a context of its
+// own (t.Context() is cancelled before cleanups run). A 404 is accepted: the
+// test may have deleted the client itself.
+func deleteClientAtCleanup(t *testing.T, baseURL, id string, bearer func() string) {
+	t.Helper()
+	t.Cleanup(func() {
+		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodDelete, baseURL+"/api/clients/"+url.PathEscape(id), nil)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+			b, _ := io.ReadAll(resp.Body)
+			t.Errorf("cleanup: delete client %s: %d %s", id, resp.StatusCode, b)
+		}
+	})
+}
+
+// createClient creates an M2M client in the suite tenant through POST
+// /clients and returns its id and secret (never log the secret). The client
+// is deleted when the test ends.
+func createClient(t *testing.T, withAdminRole bool) (string, string) {
+	t.Helper()
+	path := "/api/clients"
+	if withAdminRole {
+		path += "?withAdminRole=true"
+	}
+	resp := doAuth(t, http.MethodPost, path, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create client: %d %s", resp.StatusCode, b)
+	}
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("create client: no credentials in response (%v)", err)
+	}
+	deleteClientAtCleanup(t, serverURL, cred.ID, func() string { return suiteToken(t) })
+	return cred.ID, cred.Secret
+}
+
 // authRequestRaw creates an authenticated HTTP request.
 func authRequestRaw(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	token, err := getTokenRaw(ctx, "testclient", "testsecret")
+	token, err := suiteTokenRaw()
 	if err != nil {
 		return nil, err
 	}

@@ -13,6 +13,18 @@ import (
 	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
+// TestRegistry_NoBootstrapClientVariables verifies that no variable with the
+// prefix below is registered: the server reads none, no credential is defined
+// by configuration except the signing key, and `cyoda token` signs the first
+// admin token. A registry entry would document a variable nothing reads.
+func TestRegistry_NoBootstrapClientVariables(t *testing.T) {
+	for _, e := range rootConfigVars {
+		if strings.HasPrefix(e.Name, "CYODA_BOOTSTRAP_") {
+			t.Errorf("%s is still registered", e.Name)
+		}
+	}
+}
+
 func TestRootConfigVars_WellFormed(t *testing.T) {
 	vars := RootConfigVars()
 	if len(vars) < 40 {

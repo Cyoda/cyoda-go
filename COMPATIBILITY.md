@@ -162,15 +162,9 @@ predecessor) also calls `List`, but only to decide which sibling records to
 end — the write then patches just the records it touched into the node copy,
 never a full rebuild. `cyoda-go-cassandra` must include its fix for `List`
 returning a partial result on a per-key read failure to run this version:
-without it, a missing sibling in a rotation's `List` read would stay active. Worse
-for the bootstrap key specifically: if `List` omits its bootstrap-state
-record, a rotation treats it as absent, builds the default (active, no window)
-record in its place, and writes a fresh "ended" version of *that* over it — a
-real KV write, with the record's previous bytes recorded as absent — so a
-deleted bootstrap key can come back merely invalidated, or an existing window
-can be silently discarded, cluster-wide once other nodes reconcile.
+without it, a missing sibling in a rotation's `List` read would stay active.
 Separately, and more mildly: a missing bootstrap-state record in any node's
-own initial load or periodic re-read (not only a rotation's) only resets that
+own initial load or periodic re-read only resets that
 node's in-memory view of the bootstrap key to its default until the next
 successful `List` — no write, and self-healing. The fixed plugin is required
 to rule out both. The fix is cyoda-go-cassandra#103 (merged to its `main` as
@@ -181,7 +175,7 @@ release that contains it is the minimum for this version.
 
 | Chart `version:` | Chart `appVersion:` | Default binary | Notes |
 |---|---|---|---|
-| **`0.9.0`** (in progress) | `0.8.4` until the release cut, then `0.9.0` | `cyoda-go v0.8.4`, then `v0.9.0` | **Unreleased, not tagged.** Adds `terminationGracePeriodSeconds` (default `390`, schema minimum `1`) so a node can finish its scheduled runs before Kubernetes kills the pod — the worst case from `SIGTERM` to exit is `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s`, 375 s at the binary's defaults; see `cyoda help run` (SHUTDOWN TIMING). Adds `values.schema.json` validation for `bootstrap.tenantId` and `bootstrap.userId` (pattern, maxLength, and the `oidc:` exclusion on `userId`), matching the binary's own rule. `appVersion` moves at the release by `bump-chart-appversion.yml`; the chart tag is cut with it. |
+| **`0.9.0`** (in progress) | `0.8.4` until the release cut, then `0.9.0` | `cyoda-go v0.8.4`, then `v0.9.0` | **Unreleased, not tagged.** Adds `terminationGracePeriodSeconds` (default `390`, schema minimum `1`) so a node can finish its scheduled runs before Kubernetes kills the pod — the worst case from `SIGTERM` to exit is `max(CYODA_SCHEDULER_SHUTDOWN_DRAIN + 10s, callout deadline) + 100s`, 375 s at the binary's defaults; see `cyoda help run` (SHUTDOWN TIMING). Removes the `bootstrap.*` values, the bootstrap Secret and its mount: the binary defines no M2M client from configuration, and `NOTES.txt` shows how to get the first admin token with `kubectl exec <pod> -- /cyoda token --tenant <tenant>`. A leftover `bootstrap.*` value is ignored (the schema admits unknown top-level keys). The schema caps `jwt.expirySeconds` at `31622400` (366 days), the largest value the binary accepts, and refuses an empty `jwt.issuer`, which the binary refuses at startup. `appVersion` moves at the release by `bump-chart-appversion.yml`; the chart tag is cut with it. |
 | `0.8.4` | `0.8.4` | `cyoda-go v0.8.4` | Chart tag `cyoda-0.8.4`. |
 | `0.8.3` | `0.8.3` | `cyoda-go v0.8.3` | Chart tag `cyoda-0.8.3`. |
 | `0.8.2` | `0.8.2` | `cyoda-go v0.8.2` | Chart tag `cyoda-0.8.2`. |

@@ -179,7 +179,7 @@ func countEntitiesInModel(t *testing.T, entityName string, modelVersion int) int
 	return len(results)
 }
 
-// legacyStorageTenantCtx builds a background context carrying the bootstrap
+// legacyStorageTenantCtx builds a background context carrying the suite
 // tenant's user context, matching the tenant the HTTP client's M2M token
 // authenticates as, so a workflow saved directly through this context is
 // visible to a subsequent HTTP-driven save against the same model.

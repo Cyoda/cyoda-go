@@ -46,21 +46,16 @@ export CYODA_STORAGE_BACKEND=sqlite
 export CYODA_SQLITE_PATH=$(mktemp -t cyoda-stubs-XXXXXX.db)
 export CYODA_IAM_MODE=jwt
 export CYODA_JWT_SIGNING_KEY="$(openssl genrsa 2048 2>/dev/null)"
-export CYODA_BOOTSTRAP_CLIENT_ID=stub-probe
-export CYODA_BOOTSTRAP_CLIENT_SECRET=stub-probe-secret
 export CYODA_HTTP_PORT=18080
 export CYODA_ADMIN_PORT=18081
 export CYODA_GRPC_PORT=18082          # avoid the default 9090 clashing with a parallel instance
 export CYODA_SUPPRESS_BANNER=true
-bin/cyoda serve &
+bin/cyoda &
 CYODA_PID=$!
 sleep 3
 
-# 2. Acquire a bootstrap token.
-TOKEN=$(curl -fsS -u "$CYODA_BOOTSTRAP_CLIENT_ID:$CYODA_BOOTSTRAP_CLIENT_SECRET" \
-  -d "grant_type=client_credentials" \
-  http://127.0.0.1:18080/api/oauth/token \
-  | python3 -c 'import json,sys;print(json.load(sys.stdin)["access_token"])')
+# 2. Sign an admin token with the same signing key.
+TOKEN=$(bin/cyoda token --tenant stub-probe --roles ROLE_ADMIN,ROLE_M2M)
 
 # 3. Probe every (method, path) tuple in the spec and record those returning 501.
 TOKEN="$TOKEN" python3 - <<'PYEOF'

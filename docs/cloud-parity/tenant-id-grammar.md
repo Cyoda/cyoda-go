@@ -53,23 +53,27 @@ Cloud; capping at the same figure keeps the two tiers telling the caller the
 same thing. The longest value either tier ships today is 48 bytes
 (`conformance-<uuid>`).
 
-Everything in use is admitted: `SYSTEM`, `CYODA`, `default-tenant`,
+Everything in use is admitted: `SYSTEM`, `CYODA`,
 `mock-tenant`, `system-tenant`, `riskblocs`, `tenant-abc-123`,
 `conformance-<uuid>`, canonical UUIDs, 32-character hex ids, and bare numerics.
 
 ## Where it is enforced
 
-A tenant id enters cyoda-go from outside cyoda-go in exactly two places, and the
-grammar is checked at exactly those two:
+A tenant id enters cyoda-go from outside cyoda-go in exactly one place, and
+the grammar is checked there:
 
 | Door | Surface | Failure |
 | --- | --- | --- |
 | The `caas_org_id` JWT claim | Every authenticated HTTP request and every authenticated gRPC method — gRPC delegates to the same authenticator | `401`, the uniform RFC 9457 problem detail |
-| `CYODA_BOOTSTRAP_TENANT_ID` | Process startup, **only** when a bootstrap client is configured | Non-zero exit |
+
+`cyoda token --tenant`, which signs an admin token offline with the signing
+key, checks the same grammar before it signs (exit code `2`); the claim is
+checked again at the door when the token is used. No configuration variable
+carries a tenant id.
 
 Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
 search-job rows, OIDC provider records, the stored M2M client table — carries a
-value this cluster already admitted at one of those two doors. Re-checking there
+value this cluster already admitted at that door. Re-checking there
 would guard against a corrupted store or a compromised peer, a threat model in
 which tenant-id spelling is not what saves you.
 
@@ -82,9 +86,9 @@ grammar, so a later change to the literal cannot quietly produce a binary whose
 own default tenant is unrepresentable.
 
 Two consequences look like gaps and are not. The token endpoint needs no check:
-it mints `caas_org_id` from a stored client row whose tenant came through door 1
-or door 2, and any token it mints is presented back through door 1 before it can
-do anything. The federated OIDC path needs no check: its tenant is a
+it mints `caas_org_id` from a stored client row whose tenant is the tenant of
+the admin who created the client, admitted at the door, and any token it mints
+is presented back through the door before it can do anything. The federated OIDC path needs no check: its tenant is a
 `uuid.UUID`, structurally incapable of failing the grammar.
 
 ## Response
@@ -99,11 +103,6 @@ A structured `slog.Warn` records the rejection with `reason=token-invalid`. The
 detail carries the *reason* and a byte offset or length — **never the rejected
 value**. An implementer must hold to that: the claim is attacker-chosen, and
 echoing it into a log record is the log-injection the grammar exists to prevent.
-
-A bad `CYODA_BOOTSTRAP_TENANT_ID` refuses to start, but only inside the branch
-that actually provisions a bootstrap client. A deployment that configures no
-bootstrap client is unaffected even when the variable is explicitly set to the
-empty string.
 
 ## What the grammar is and is not for
 
@@ -306,8 +305,8 @@ assumption.
   value reaches neither a log field nor a response body.
 - `internal/e2e/auth_failures_test.go` — `401` over real HTTP for a claim outside
   the grammar, and the accepted set still authenticating.
-- `app/app_bootstrap_test.go` — door 2: a bad `CYODA_BOOTSTRAP_TENANT_ID` refuses
-  to start; an empty one with no bootstrap client starts.
+- `cmd/cyoda/token_test.go` — `cyoda token` refuses a tenant outside the
+  grammar with exit code `2` and signs nothing.
 - `internal/e2e/oidc_providers_test.go`, `internal/domain/account/oidc_adapter_test.go`
   — a canonically-spelled UUID tenant registers, lists, updates, invalidates,
   reactivates and deletes the same provider; a non-canonically-spelled or

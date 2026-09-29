@@ -14,7 +14,7 @@ func TestValidateTenantID_Accepts(t *testing.T) {
 	accepted := []string{
 		"SYSTEM",         // spi.SystemTenantID
 		"CYODA",          // Cloud's local-issuer fallback
-		"default-tenant", // CYODA_BOOTSTRAP_TENANT_ID default
+		"acme-corp",      // hyphenated word, e.g. `cyoda token --tenant acme-corp`
 		"mock-tenant",    // IAM mock mode
 		"system-tenant",  // parity fixtures
 		"riskblocs",      // scripts/multi-node-docker

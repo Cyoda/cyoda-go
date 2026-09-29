@@ -184,7 +184,37 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 	}
 }
 
-func TestKVKeyStore_RotationInvalidatesSiblingsAndBootstrap(t *testing.T) {
+// A rotation ends the issued siblings of its audience only. The signing key
+// from configuration is never a sibling: it is not written, stays active and
+// keeps verifying.
+func TestKVKeyStore_RotationLeavesTheSigningKey(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	boot := newBootstrap(t)
+	ks := newKeyStore(t, kv, boot, "client")
+	old := issueWindow(t, ks, "client", time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+	neu, err := ks.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ks.VerificationKey(old.KID); err == nil {
+		t.Error("the issued sibling still verifies")
+	}
+	if _, err := ks.VerificationKey(bootKID(t, boot)); err != nil {
+		t.Errorf("the signing key stopped verifying: %v", err)
+	}
+	cur, err := ks.Current("client")
+	if err != nil || cur.KID != neu.KID {
+		t.Fatalf("current = %v %v, want the new key pair", cur, err)
+	}
+	if _, err := kv.Get(ctx, "signing-keys", bootKID(t, boot)); !errors.Is(err, spi.ErrNotFound) {
+		t.Errorf("the rotation wrote the signing key's state: err = %v", err)
+	}
+}
+
+// Review focus: a rotation never touches an issued key pair of another
+// audience.
+func TestKVKeyStore_RotationLeavesOtherAudienceIssuedKey(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
@@ -194,9 +224,6 @@ func TestKVKeyStore_RotationInvalidatesSiblingsAndBootstrap(t *testing.T) {
 	nw := issue(t, s, "client", true)
 	if _, err := s.VerificationKey(old.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("old client key still verifies after rotation")
-	}
-	if _, err := s.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatal("bootstrap key (audience client) still verifies after rotation")
 	}
 	if _, err := s.VerificationKey(humanKey.KID); err != nil {
 		t.Fatal("a key of another audience was invalidated")
@@ -217,67 +244,81 @@ func TestKVKeyStore_RotationLeavesOtherAudienceBootstrap(t *testing.T) {
 }
 
 // commitThenFailKV commits the Put to the underlying store and only then
-// reports failure — the case writeAll's own doc names ("the failing write
-// can itself have partially or fully committed before reporting failure").
-// A KV that rejects the write before it ever lands (failPutKV, the earlier
-// shape of this test) makes "restore the bootstrap key to absent" vacuous:
-// deleting a key that was never written is a no-op regardless of whether the
-// restore loop is even correct. Only a KV that actually commits first can
-// prove the restore loop undoes real, already-stored state.
+// reports failure, on its FIRST call for failKey only — the shape writeAll's
+// own doc names ("the failing write can itself have partially or fully
+// committed before reporting failure"). A KV that rejects the write before
+// it ever lands makes a restore-to-absent assertion vacuous: deleting a key
+// that was never written is a no-op regardless of whether the restore loop
+// is even correct. Only a KV that actually commits first proves the restore
+// loop undoes real, already-stored state. Failing only the first call means
+// writeAll's own restore Put for failKey (issued once, right after the
+// failure) succeeds, so a test can assert genuine full compensation — no
+// "could not be fully undone" ERROR — rather than merely correct final bytes
+// despite a logged failure.
 type commitThenFailKV struct {
 	spi.KeyValueStore
 	failKey string
+	failed  bool
 }
 
 func (f *commitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
 	if err := f.KeyValueStore.Put(ctx, ns, key, v); err != nil {
 		return err
 	}
-	if key == f.failKey {
+	if key == f.failKey && !f.failed {
+		f.failed = true
 		return errors.New("injected failure after commit")
 	}
 	return nil
 }
 
-// Two siblings are ended by this rotation: the old client key (an existing
-// stored record) and the bootstrap key itself (bootstrap audience "client",
-// never before touched — absent state). siblingWrites always appends the
-// bootstrap sibling last, so failing its Put fails the SECOND sibling: the
-// restore must both put the old key's original bytes back (a write that had
-// already landed) and remove the bootstrap sibling's record entirely (a
-// write that took it from absent to written and must go back to absent, not
-// to some placeholder value) — and that removal must undo a write that
-// genuinely committed, not one commitThenFailKV merely rejected up front.
+// Two siblings are ended by this rotation: two already-issued key pairs of
+// the audience. siblingWrites sorts sibling writes by key ascending, so
+// failing the Put of the greater KID fails the SECOND sibling: the restore
+// must put both siblings' original bytes back (writes that had already
+// landed) and remove the new key pair's record entirely (a write that took
+// it from absent to written and must go back to absent) — and the failing
+// write must be one that genuinely committed, not one commitThenFailKV
+// merely rejected up front.
 func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
 	pre := newKeyStore(t, mem, boot, "client")
-	old := issue(t, pre, "client", false)
-	before, _ := mem.Get(ctx, "signing-keys", old.KID)
-	kid := bootKID(t, boot)
-	if _, err := mem.Get(ctx, "signing-keys", kid); !errors.Is(err, spi.ErrNotFound) {
-		t.Fatal("bootstrap key already has a stored record before the rotation")
+	a := issue(t, pre, "client", false)
+	b := issue(t, pre, "client", false)
+	beforeA, _ := mem.Get(ctx, "signing-keys", a.KID)
+	beforeB, _ := mem.Get(ctx, "signing-keys", b.KID)
+	failKey := a.KID
+	if b.KID > a.KID {
+		failKey = b.KID
 	}
 	bc := newFakeBroadcaster()
 	var pings int
 	bc.Subscribe("auth.signingkeys", func([]byte) { pings++ })
-	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: kid},
+	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: failKey},
 		auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", Broadcaster: bc})
+	var buf bytes.Buffer
+	prevLog := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prevLog)
 	now := time.Now()
 	_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
 	if err == nil {
 		t.Fatal("expected the sibling failure")
 	}
+	if strings.Contains(buf.String(), "could not be fully undone") {
+		t.Fatalf("compensation was not full: %s", buf.String())
+	}
 	entries, _ := mem.List(ctx, "signing-keys")
-	if len(entries) != 1 {
-		t.Fatalf("store holds %d records after a failed rotation, want only the old key", len(entries))
+	if len(entries) != 2 {
+		t.Fatalf("store holds %d records after a failed rotation, want only the two original keys", len(entries))
 	}
-	if after, _ := mem.Get(ctx, "signing-keys", old.KID); !bytes.Equal(before, after) {
-		t.Fatal("sibling changed by a failed rotation")
+	if after, _ := mem.Get(ctx, "signing-keys", a.KID); !bytes.Equal(beforeA, after) {
+		t.Fatal("sibling a changed by a failed rotation")
 	}
-	if _, err := mem.Get(ctx, "signing-keys", kid); !errors.Is(err, spi.ErrNotFound) {
-		t.Fatal("bootstrap sibling left behind: its committed write was not restored to absent")
+	if after, _ := mem.Get(ctx, "signing-keys", b.KID); !bytes.Equal(beforeB, after) {
+		t.Fatal("sibling b changed by a failed rotation")
 	}
 	if pings == 0 {
 		t.Fatal("no change message after a failed rotation that wrote the store")
@@ -387,7 +428,10 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
+// The issued-key-pair part of the WARN ("still unseals") stays conditional
+// on there being an owned key pair; the general "cyoda token" part does not
+// (TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs covers that).
+func TestKVKeyStore_NoUnsealsWarnWithoutOwnedPairs(t *testing.T) {
 	ctx := systemCtx()
 	boot := newBootstrap(t)
 	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
@@ -399,7 +443,43 @@ func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "still unseals") {
-		t.Fatal("WARN logged with no owned key pairs")
+		t.Fatal("issued-key-pair WARN logged with no owned key pairs")
+	}
+}
+
+// Invalidating or deleting the signing key logs, at WARN, that `cyoda token`
+// stops granting access, even when the signing key owns no issued key pair.
+func TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		revoke func(ks *auth.KVKeyStore, kid string) error
+	}{
+		{"invalidate", func(ks *auth.KVKeyStore, kid string) error { return ks.Invalidate(systemCtx(), kid, 0) }},
+		{"delete", func(ks *auth.KVKeyStore, kid string) error { return ks.Delete(systemCtx(), kid) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			boot := newBootstrap(t)
+			ks := newTestKeyStore(t, boot)
+			bootKID, _ := auth.DeriveKID(&boot.PublicKey)
+			if err := tc.revoke(ks, bootKID); err != nil {
+				t.Fatal(err)
+			}
+			var warned bool
+			for _, line := range strings.Split(buf.String(), "\n") {
+				warned = warned || (strings.Contains(line, "level=WARN") && strings.Contains(line, "cyoda token"))
+			}
+			if !warned {
+				t.Fatalf("no WARN naming cyoda token: %q", buf.String())
+			}
+			if strings.Contains(buf.String(), "ownedKeyPairs") {
+				t.Fatalf("the issued-key-pair part must stay conditional: %q", buf.String())
+			}
+		})
 	}
 }
 
@@ -419,23 +499,6 @@ func TestKVKeyStore_InvalidateBootstrapWithOwnedPairWarns(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "still unseals") || !strings.Contains(buf.String(), "level=WARN") {
 		t.Fatalf("missing WARN on bootstrap invalidate with an owned pair; log: %s", buf.String())
-	}
-}
-
-// A client rotation that also ends the bootstrap key (bootstrap audience
-// "client") must warn, exactly as a direct Invalidate of the bootstrap key
-// does.
-func TestKVKeyStore_RotationEndingBootstrapWarns(t *testing.T) {
-	ctx := systemCtx()
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "client")
-	issue(t, s, "client", false) // an owned pair, so the WARN has something to report
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	defer slog.SetDefault(prev)
-	issue(t, s, "client", true) // rotation ends the bootstrap key too
-	if !strings.Contains(buf.String(), "still unseals") || !strings.Contains(buf.String(), "level=WARN") {
-		t.Fatalf("missing WARN on a rotation that ends the bootstrap key; log: %s", buf.String())
 	}
 }
 
@@ -549,7 +612,7 @@ func TestKVKeyStore_RotationSeesSiblingIssuedElsewhere(t *testing.T) {
 }
 
 // Deleting an undecodable record away from the bootstrap KID replaces it with
-// a deleted bootstrap-state record (spec §5.5) rather than removing it: the
+// a deleted bootstrap-state record rather than removing it: the
 // KID could be some other node's bootstrap key, and fail-closed means it
 // stays revoked rather than silently reappearing usable if that key is ever
 // reintroduced.

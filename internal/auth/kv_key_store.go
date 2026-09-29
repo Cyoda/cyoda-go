@@ -138,7 +138,7 @@ func (s *KVKeyStore) bootstrapView(recs map[string]*signingEntry) bootstrapView 
 	return bootstrapView{usable: true, pair: pair}
 }
 
-// selectSigner applies the signing rule (spec §5.8): among owned and broken
+// selectSigner applies the signing rule: among owned and broken
 // issued key pairs and the bootstrap key of the audience that are active and
 // inside their window, the latest validFrom wins, then the greater KID. A
 // broken winner, or any undecodable record, fails; another key is never
@@ -201,8 +201,10 @@ func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
 }
 
 // VerificationKey returns the public key a token's KID names, if that key
-// pair may verify on this node now: owned or the bootstrap key, active and
-// inside its window. There is no store read on this path.
+// pair may verify on this node now: owned or the signing key from
+// configuration, not deleted, and Verifies(now) — an invalidated key pair
+// verifies until the end of its grace period. There is no store read on this
+// path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	if s.rep.Stale() {
 		return nil, fmt.Errorf("%w: %s (store stale)", ErrKeyPairNotFound, kid)
@@ -211,12 +213,12 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	var pub *rsa.PublicKey
 	s.rep.read(func(recs map[string]*signingEntry) {
 		if kid == s.boot.kid {
-			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Active && bv.pair.InWindow(now) {
+			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Verifies(now) {
 				pub = bv.pair.PublicKey
 			}
 			return
 		}
-		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Active && e.pair.InWindow(now) {
+		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Verifies(now) {
 			pub = e.pair.PublicKey
 		}
 	})
@@ -224,6 +226,17 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 		return nil, fmt.Errorf("%w: %s", ErrKeyPairNotFound, kid)
 	}
 	return pub, nil
+}
+
+// publishable reports whether a key pair belongs in JWKS: its window has not
+// ended (a future validFrom is fine — JWKS publishes a key ahead of its
+// window opening), and it is not the one shape Verifies(now) always refuses,
+// active or not: an inactive record with no validTo. That shape is not
+// reachable through the admin API (Invalidate always sets validTo via
+// graceExpiry), but Published must not publish a key that can never verify,
+// regardless of how the record arrived.
+func publishable(kp *KeyPair, now time.Time) bool {
+	return windowOpen(kp.ValidTo, now) && (kp.Active || kp.ValidTo != nil)
 }
 
 // Published returns the key pairs for JWKS: owned ones and the bootstrap key
@@ -236,12 +249,12 @@ func (s *KVKeyStore) Published() ([]*KeyPair, error) {
 	var out []*KeyPair
 	s.rep.read(func(recs map[string]*signingEntry) {
 		for _, e := range recs {
-			if e.class == classOwned && windowOpen(e.pair.ValidTo, now) {
+			if e.class == classOwned && publishable(&e.pair, now) {
 				p := e.pair
 				out = append(out, &p)
 			}
 		}
-		if bv := s.bootstrapView(recs); bv.usable && windowOpen(bv.pair.ValidTo, now) {
+		if bv := s.bootstrapView(recs); bv.usable && publishable(&bv.pair, now) {
 			p := bv.pair
 			out = append(out, &p)
 		}
@@ -332,22 +345,30 @@ func (s *KVKeyStore) ownedIssuedCount() int {
 	return n
 }
 
-// logRevokedBootstrap warns that revoking the bootstrap key through the API
-// does not protect the key pairs sealed under it (spec §4).
+// logRevokedBootstrap reports that the signing key from configuration has
+// been invalidated or deleted through the API: tokens from `cyoda token`
+// stop verifying (after any grace period). When the key also owns issued key
+// pairs, it adds that CYODA_JWT_SIGNING_KEY still unseals them: invalidating
+// or deleting the key through the API does not protect them, and only
+// replacing CYODA_JWT_SIGNING_KEY does.
 func (s *KVKeyStore) logRevokedBootstrap(level slog.Level) {
-	if s.vault.Owner() != s.boot.kid {
-		return
-	}
 	var revoked bool
 	s.rep.read(func(recs map[string]*signingEntry) {
 		bv := s.bootstrapView(recs)
 		revoked = !bv.usable || !bv.pair.Active
 	})
-	n := s.ownedIssuedCount()
-	if !revoked || n == 0 {
+	if !revoked {
 		return
 	}
 	slog.Log(context.Background(), level,
-		"the bootstrap signing key no longer signs, but CYODA_JWT_SIGNING_KEY still unseals the issued key pairs it owns; replace it if it may be exposed",
-		"pkg", "auth", "ownedKeyPairs", n)
+		"the signing key from CYODA_JWT_SIGNING_KEY is invalidated or deleted: tokens from cyoda token are refused once any grace period ends",
+		"pkg", "auth")
+	if s.vault.Owner() != s.boot.kid {
+		return
+	}
+	if n := s.ownedIssuedCount(); n > 0 {
+		slog.Log(context.Background(), level,
+			"the signing key no longer signs, but CYODA_JWT_SIGNING_KEY still unseals the issued key pairs it owns; replace it if it may be exposed",
+			"pkg", "auth", "ownedKeyPairs", n)
+	}
 }

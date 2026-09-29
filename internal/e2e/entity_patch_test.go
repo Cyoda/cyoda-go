@@ -31,7 +31,7 @@ import (
 // Content-Type, If-Match (non-empty), and body. It never touches *testing.T,
 // so it is safe to call from a goroutine.
 func patchEntityRaw(ctx context.Context, path, contentType, ifMatch, body string) (*http.Response, error) {
-	token, err := getTokenRaw(ctx, "testclient", "testsecret")
+	token, err := suiteTokenRaw()
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +63,7 @@ func patchEntity(t *testing.T, path, contentType, ifMatch, body string) *http.Re
 // If-Match header, used to exercise the 428 precondition-required path.
 func patchEntityNoIfMatch(t *testing.T, path, contentType, body string) *http.Response {
 	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, http.MethodPatch, serverURL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("patchEntityNoIfMatch newRequest: %v", err)

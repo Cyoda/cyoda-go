@@ -8,6 +8,7 @@ see_also:
   - auth.clients
   - auth.oidc
   - auth.trusted-keys
+  - cli.token
   - config.auth
   - errors.UNAUTHORIZED
   - errors.FORBIDDEN
@@ -31,8 +32,8 @@ This is the single home for the JWT claim contract. `auth.oidc` and `auth.truste
 
 - `CYODA_IAM_MODE=jwt`
 - `CYODA_JWT_SIGNING_KEY` (PEM RSA private key; tokens cyoda issues are signed with this)
-- `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim)
-- `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens)
+- `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim; must not be empty)
+- `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens, and no `aud` on issued tokens)
 - `CYODA_JWT_EXPIRY_SECONDS` (default `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` (default `client`; controls which key signs M2M tokens)
 
@@ -102,20 +103,21 @@ Key constraints:
 
 ## TOKEN
 
-**Cyoda-minted tokens** (issued via `client_credentials` or token-exchange/OBO at `/oauth/token`) carry the following claim shape. **Federated OIDC tokens** (`auth.oidc`) are *not* re-minted; they carry the upstream IdP's claim shape, and tenant + user identity are bound server-side from the registered provider's `OwnerLegalEntityID` — claims like `caas_org_id`, `caas_user_id`, `tid` on a federated token are explicitly ignored to prevent attacker-controlled tenant routing.
+**Cyoda-minted tokens** (issued via `client_credentials` or token-exchange/OBO at `/oauth/token`, or signed offline by `cyoda token`) carry the following claim shape. **Federated OIDC tokens** (`auth.oidc`) are *not* re-minted; they carry the upstream IdP's claim shape, and tenant + user identity are bound server-side from the registered provider's `OwnerLegalEntityID` — claims like `caas_org_id`, `caas_user_id`, `tid` on a federated token are explicitly ignored to prevent attacker-controlled tenant routing.
 
 Claim shape for cyoda-minted tokens:
 
-- `sub` (string) — Principal. `client_id` for M2M, user ID for OBO and federated tokens.
+- `sub` (string) — Principal. `client_id` for M2M, user ID for OBO, `cyoda token` and federated tokens.
 - `iss` (string) — Issuer. Cyoda-minted tokens use `CYODA_JWT_ISSUER`. Federated tokens use the upstream IdP's issuer.
-- `aud` (string or string array) — Audience. Checked against `CYODA_JWT_AUDIENCE` if set; against `expectedAudiences` for federated providers.
+- `aud` (string or string array) — Audience. Cyoda-minted tokens carry `CYODA_JWT_AUDIENCE` when it is set, and no `aud` otherwise. Checked against `CYODA_JWT_AUDIENCE` if set; against `expectedAudiences` for federated providers.
 - `exp` (int unix) — Expiry.
 - `iat` (int unix) — Issued-at.
 - `jti` (string UUID) — Unique token ID.
-- `caas_org_id` (string UUID) — Tenant scope. Every API call is constrained to this tenant.
+- `caas_org_id` (string) — Tenant scope: a tenant id matching the tenant grammar in `config.auth` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`), or the token is rejected with `401`. Every API call is constrained to this tenant.
 - `caas_user_id` (string) — User identifier. For M2M tokens this duplicates `sub` (= `client_id`). When it is absent, `sub` is the user identifier instead; when it is present, it must be a non-empty string and `sub` is not consulted. Either way the value must pass the user-identifier rule (1 to 255 characters; no control character, noncharacter or U+FFFD; not beginning with the reserved word `oidc:`), or the token is rejected with `401`; see `config.auth`.
-- `user_roles` (string array) — Roles granted (e.g. `ROLE_ADMIN`, `ROLE_M2M`). Federated OIDC tokens carry roles from the provider's configured `rolesClaim` (default `roles`; per-provider override available — see `auth.oidc`).
-- `caas_tier` (string) — Tier label. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers.
+- `scopes` (string array) — **`client_credentials` only.** The M2M client's roles (e.g. `ROLE_M2M`, `ROLE_ADMIN`); a token that carries `scopes` and no `user_roles` is a service principal.
+- `user_roles` (string array) — Roles of a person token: OBO and `cyoda token`. Its presence marks a user principal. Federated OIDC tokens carry roles from the provider's configured `rolesClaim` (default `roles`; per-provider override available — see `auth.oidc`).
+- `caas_tier` (string) — Tier label, on tokens from `/oauth/token`. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers. `cyoda token` tokens carry none.
 - `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens.
 
 Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap key from `CYODA_JWT_SIGNING_KEY`, or an issued key pair if one is active for the audience and wins selection. The `kid` header points at that signing key pair, shared by every node of the cluster (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
@@ -133,5 +135,6 @@ Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap ke
 - `auth.clients` — provision the M2M client used by `client_credentials` and OBO
 - `auth.oidc` — federate an external IdP whose JWTs cyoda will accept directly
 - `auth.trusted-keys` — register a public key whose JWTs can be exchanged for cyoda tokens
-- `config.auth` — `CYODA_JWT_*`, `CYODA_BOOTSTRAP_*`
+- `cli.token` — sign an admin token offline with the signing key
+- `config.auth` — `CYODA_JWT_*`
 - `openapi` — `cyoda help openapi tags` and look for the `IAM` tag

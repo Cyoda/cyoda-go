@@ -319,7 +319,7 @@ func TestJWKSValidator_PrincipalKind(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsTenantOutsideGrammar pins door 1: the caas_org_id claim
+// TestValidator_RejectsTenantOutsideGrammar pins the tenant door: the caas_org_id claim
 // is the one place a tenant id enters cyoda-go on a request, covering HTTP and
 // gRPC alike, so a claim outside the grammar must not produce a UserContext.
 func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
@@ -374,7 +374,7 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 
 	for _, org := range []string{
 		"SYSTEM",
-		"default-tenant",
+		"plain-tenant",
 		"mock-tenant",
 		"tenant-abc-123",
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",

@@ -400,8 +400,10 @@ func TestKeyStore_Issue_RotateInvalidatesSiblings(t *testing.T) {
 	if !fresh.Active {
 		t.Error("the new key pair must stay active")
 	}
-	if _, err := s.VerificationKey(existing.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Errorf("expected the sibling inactive, VerificationKey err = %v", err)
+	// The sibling stops signing at once (Active flips, checked via
+	// `published` below), but keeps verifying through its 60s grace period.
+	if _, err := s.VerificationKey(existing.KID); err != nil {
+		t.Errorf("expected the sibling still verifying inside its grace period, VerificationKey err = %v", err)
 	}
 	old, ok := published(t, s, existing.KID)
 	if !ok || old.Active || old.ValidTo == nil || old.ValidTo.After(time.Now().Add(61*time.Second)) {
@@ -439,12 +441,16 @@ func TestKeyStore_Issue_ConcurrentRotateExactlyOneActive(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+	// Active (not VerificationKey) is the right check here: with a grace
+	// period a just-invalidated sibling still verifies, so more than one key
+	// can legitimately answer VerificationKey at once. Active never does —
+	// exactly one key pair may sign at a time.
 	active := 0
 	for _, kid := range kids {
 		if kid == "" {
 			t.Fatal("a concurrent issue failed")
 		}
-		if _, err := s.VerificationKey(kid); err == nil {
+		if kp, ok := published(t, s, kid); ok && kp.Active {
 			active++
 		}
 	}
@@ -713,27 +719,6 @@ func TestInMemoryM2MClientStore_Create_StampsCreatedAndUpdatedAt(t *testing.T) {
 	}
 	if !c.UpdatedAt.Equal(c.CreatedAt) {
 		t.Errorf("Create: UpdatedAt (%v) should equal CreatedAt (%v) on fresh create", c.UpdatedAt, c.CreatedAt)
-	}
-}
-
-func TestInMemoryM2MClientStore_CreateWithSecret_StampsCreatedAndUpdatedAt(t *testing.T) {
-	store := auth.NewInMemoryM2MClientStore()
-	before := time.Now()
-	err := store.CreateWithSecret("client-b", spi.TenantID("tenant-b"), "user-b", "secret-b", []string{"ROLE_M2M"})
-	if err != nil {
-		t.Fatalf("CreateWithSecret: %v", err)
-	}
-	after := time.Now()
-
-	c, err := store.Get("client-b")
-	if err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	if c.CreatedAt.Before(before) || c.CreatedAt.After(after) {
-		t.Errorf("CreatedAt %v outside [%v, %v]", c.CreatedAt, before, after)
-	}
-	if !c.UpdatedAt.Equal(c.CreatedAt) {
-		t.Errorf("CreateWithSecret: UpdatedAt should equal CreatedAt on fresh create")
 	}
 }
 

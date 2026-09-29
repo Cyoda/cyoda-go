@@ -57,7 +57,7 @@ func TestOIDC_RegisterDuplicate_Returns409(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	cid, secret := createM2MClient(t, oidcTenantUUID, "dup-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	cid, secret := createM2MClient(t, oidcTenantUUID, "dup-user", true)
 	token := getToken(t, cid, secret)
 
 	first := registerOIDCProvider(t, token, "dupprov")
@@ -94,7 +94,7 @@ func TestOIDC_ActiveOnly_BooleanFilter(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	cid, secret := createM2MClient(t, oidcTenantUUID, "ao-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	cid, secret := createM2MClient(t, oidcTenantUUID, "ao-user", true)
 	token := getToken(t, cid, secret)
 
 	// Truthy "1" must now filter (previously silently false under string=="true").
@@ -118,7 +118,7 @@ func TestOIDC_List_NonAdmin_Returns200Not403(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	cid, secret := createM2MClient(t, oidcTenantUUID, "nonadmin-user", []string{"ROLE_M2M"}) // no ROLE_ADMIN
+	cid, secret := createM2MClient(t, oidcTenantUUID, "nonadmin-user", false) // no ROLE_ADMIN
 	token := getToken(t, cid, secret)
 
 	req, _ := e2eNewRequest(t, "GET", serverURL+"/api/oauth/oidc/providers", nil)
@@ -168,7 +168,7 @@ func TestOIDC_Delete_NotFound_ProblemDetail(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	cid, secret := createM2MClient(t, oidcTenantUUID, "del-nf-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	cid, secret := createM2MClient(t, oidcTenantUUID, "del-nf-user", true)
 	token := getToken(t, cid, secret)
 	req, _ := e2eNewRequest(t, "DELETE", serverURL+"/api/oauth/oidc/providers/00000000-0000-0000-0000-0000000000ff", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -181,14 +181,14 @@ func TestOIDC_Delete_NotFound_ProblemDetail(t *testing.T) {
 
 // TestOIDC_Register_InvalidTenant_ProblemDetail asserts the server emits
 // application/problem+json with OIDC_INVALID_TENANT when the caller's tenant
-// is not UUID-shaped. The bootstrap "testclient"/"testsecret" credentials
-// belong to the non-UUID "test-tenant", triggering this guard.
+// is not UUID-shaped. The suite's admin token belongs to the non-UUID
+// "test-tenant", triggering this guard.
 func TestOIDC_Register_InvalidTenant_ProblemDetail(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	token := getToken(t, "testclient", "testsecret") // bootstrap tenant = "test-tenant" (non-UUID)
+	token := suiteToken(t) // suite tenant = "test-tenant" (non-UUID)
 	resp := registerOIDCProvider(t, token, "badtenant")
 	assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
 }

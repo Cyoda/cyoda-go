@@ -49,21 +49,15 @@ helm install cyoda cyoda/cyoda -n cyoda \
   --set gateway.grpc.hostnames[0]=grpc.cyoda.example.com
 ```
 
-### Enabling the bootstrap M2M client (optional)
+### First admin token
 
-By default the chart does NOT provision a bootstrap M2M client
-(`bootstrap.clientId=""`). The binary runs cleanly in jwt mode via
-JWKS / external signing keys alone.
-
-To enable bootstrap, set `bootstrap.clientId`:
+The pod holds the signing key, so it can mint the first admin token:
 
 ```bash
-helm upgrade cyoda cyoda/cyoda -n cyoda --reuse-values \
-  --set bootstrap.clientId=cyoda-bootstrap
+kubectl exec -n cyoda cyoda-0 -- /cyoda token --tenant <tenant>
 ```
 
-The chart auto-generates the secret (or use
-`bootstrap.clientSecret.existingSecret` for GitOps).
+Use it to create M2M clients: `POST /api/clients`.
 
 ### Separate migration DSN (optional, two-role DB model)
 
@@ -189,8 +183,7 @@ error message. To fix:
 
 **Option A: pre-create the Secrets and pass `existingSecret`.**
 Do this for every chart-managed Secret you want to keep stable across
-GitOps reconciles — HMAC, the metrics bearer, and (if you set
-`bootstrap.clientId`) the bootstrap client secret.
+GitOps reconciles — HMAC and the metrics bearer.
 
 ```bash
 kubectl -n cyoda create secret generic cyoda-hmac \
@@ -206,21 +199,6 @@ cluster:
 monitoring:
   metricsBearer:
     existingSecret: cyoda-metrics-bearer
-```
-
-If you also need the bootstrap M2M client (`bootstrap.clientId` set),
-pre-create that Secret too:
-
-```bash
-kubectl -n cyoda create secret generic cyoda-bootstrap \
-  --from-literal=secret=$(openssl rand -hex 32)
-```
-
-```yaml
-bootstrap:
-  clientId: cyoda-bootstrap
-  clientSecret:
-    existingSecret: cyoda-bootstrap
 ```
 
 **Option B: use external-secrets-operator** to sync from a real secret
@@ -297,6 +275,6 @@ serving — investigate before retrying.
 
 ### `CYODA_*_FILE` in `extraEnv` causes install to fail with duplicate env
 
-Remove it. The chart sets all five credential env vars (postgres DSN,
-JWT signing key, HMAC, bootstrap client secret, metrics bearer); to
-change a credential, change the referenced `existingSecret`.
+Remove it. The chart sets all four credential env vars (postgres DSN,
+JWT signing key, HMAC, metrics bearer); to change a credential, change
+the referenced `existingSecret`.

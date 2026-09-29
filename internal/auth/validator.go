@@ -135,11 +135,11 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 		return nil, fmt.Errorf("missing caas_org_id claim")
 	}
 
-	// Door 1. The caas_org_id claim is one of only two places a tenant id
-	// enters cyoda-go from outside it (the other is CYODA_BOOTSTRAP_TENANT_ID),
-	// and it covers every HTTP and gRPC request — the gRPC interceptor
-	// delegates to this same authenticator. Validating here is what lets every
-	// downstream consumer treat the tenant as well-formed without rechecking.
+	// The tenant door. The caas_org_id claim is the only place a tenant id
+	// enters cyoda-go from outside it, and it covers every HTTP and gRPC
+	// request — the gRPC interceptor delegates to this same authenticator.
+	// Validating here is what lets every downstream consumer treat the tenant
+	// as well-formed without rechecking.
 	//
 	// The error deliberately carries no part of the claim: it reaches slog via
 	// logAuthFailure's detail field, and the claim is attacker-chosen.

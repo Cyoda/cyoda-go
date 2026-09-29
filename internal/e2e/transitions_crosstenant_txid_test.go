@@ -32,7 +32,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}`
 	setupModelWithWorkflow(t, model, wf)
 
-	// Tenant A (the bootstrap tenant) creates an entity, capturing the txID.
+	// Tenant A (the suite tenant) creates an entity, capturing the txID.
 	entityID, txIDA := createEntityE2EWithTxID(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 	if txIDA == "" {
 		t.Fatal("create returned empty transactionId")
@@ -46,7 +46,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}
 
 	// Tenant B: a second M2M client in a different tenant.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b-transitions", "user-b", true)
 
 	getTransitionsAsB := func(txID string) (int, string) {
 		t.Helper()

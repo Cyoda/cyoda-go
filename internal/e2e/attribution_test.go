@@ -35,12 +35,12 @@ import (
 const (
 	// attrTestIssuer matches newCallbackHarnessConfigured's cfg.IAM.JWTIssuer.
 	attrTestIssuer = "cyoda-callback-test"
-	// attrTenant matches the harness bootstrap TenantID.
+	// attrTenant matches the harness's default (self-signed) admin tenant.
 	attrTenant = "test-tenant"
 	// attrServiceID is the service principal id the harness's client-credentials
-	// token carries (caas_user_id == bootstrap client.UserID). It is the executor
-	// id of every joined callback the member makes, and the attributed id when a
-	// detached service callback records itself (§4.3).
+	// token carries (caas_user_id, per callback_harness_test.go's fetchToken).
+	// It is the executor id of every joined callback the member makes, and the
+	// attributed id when a detached service callback records itself (§4.3).
 	attrServiceID = "test-admin"
 )
 

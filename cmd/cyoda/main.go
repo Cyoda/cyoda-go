@@ -75,6 +75,8 @@ func main() {
 			os.Exit(runHealth(os.Args[2:]))
 		case "migrate":
 			os.Exit(runMigrate(os.Args[2:]))
+		case "token":
+			os.Exit(runToken(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 

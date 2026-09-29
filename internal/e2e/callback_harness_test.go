@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -159,6 +158,10 @@ type callbackHarness struct {
 	// M2M client-credentials token (scopes claim → Kind=service). Both validate
 	// against the same local key source (deterministic KID). Never logged.
 	signKey *rsa.PrivateKey
+	// audience is this stack's CYODA_JWT_AUDIENCE (cfg.IAM.JWTAudience), empty
+	// when unset. The harness's own signed tokens carry it as aud: a stack
+	// that checks the audience refuses a token without one.
+	audience string
 
 	mu    sync.Mutex
 	procs map[string]callbackProc
@@ -199,19 +202,6 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 // so a test can restart a stack with the same bootstrap key.
 func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
-	h := newCalloutHarnessUnseeded(t, rsaKey, configure)
-	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
-	// read it from other goroutines and cannot fetch it themselves.
-	h.token(t)
-	return h
-}
-
-// newCalloutHarnessUnseeded is newCalloutHarnessWithKey without seeding the
-// cached bearer token at the end of construction. A stack whose signer is
-// broken cannot mint that seed token, so a test proving a broken signer fails
-// closed must build the stack without it.
-func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
-	t.Helper()
 
 	keyBytes, err := x509.MarshalPKCS8PrivateKey(rsaKey)
 	if err != nil {
@@ -226,13 +216,11 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-callback-test"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "testclient",
-		ClientSecret: "testsecret",
-		TenantID:     "test-tenant",
-		UserID:       "test-admin",
-		Roles:        "ROLE_ADMIN,ROLE_M2M",
-	}
+	// M2MAdminRoleEnabled so a test can create ROLE_ADMIN clients on this
+	// stack through POST /clients?withAdminRole=true (provisionTenant, in
+	// callback_txjoin_errors_test.go), rather than reaching into the store
+	// directly.
+	cfg.IAM.M2MAdminRoleEnabled = true
 	// IMPORTANT: do NOT set cfg.ExternalProcessing — leaving it nil selects the
 	// owner's loop over the real dispatcher, which mints and attaches the cyodatxtoken.
 
@@ -264,6 +252,7 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	if configure != nil {
 		configure(&cfg)
 	}
+	h.audience = cfg.IAM.JWTAudience
 
 	a := app.New(cfg)
 	h.app = a
@@ -286,6 +275,9 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	h.apiConn = apiConn
 	t.Cleanup(func() { _ = apiConn.Close() })
 
+	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
+	// read it from other goroutines and cannot fetch it themselves.
+	h.token(t)
 	return h
 }
 
@@ -347,7 +339,9 @@ func (h *callbackHarness) lookupFunc(name string) (callbackFunc, bool) {
 	return fn, ok
 }
 
-// token returns a cached client-credentials bearer for this stack.
+// token returns a cached admin bearer for this stack — a signed admin token
+// in the shape of a client_credentials token (self-signed with h.signKey, not
+// fetched through /oauth/token; see fetchToken).
 func (h *callbackHarness) token(t *testing.T) string {
 	t.Helper()
 	h.bearerOnce.Do(func() { h.bearerVal.Store(h.fetchToken(t)) })
@@ -358,29 +352,18 @@ func (h *callbackHarness) token(t *testing.T) string {
 	return tok
 }
 
+// fetchToken signs an admin token for this stack directly with h.signKey, in
+// the shape of a client_credentials token (scopes ROLE_ADMIN,ROLE_M2M;
+// tenant test-tenant; caas_user_id test-admin) — the same claims suiteTokenRaw
+// uses for the shared server. It never calls /oauth/token: a caller that
+// specifically needs the real endpoint's own signer selection (e.g. proving
+// which key it currently signs with) uses fetchTokenFor instead.
 func (h *callbackHarness) fetchToken(t *testing.T) string {
 	t.Helper()
-	form := url.Values{"grant_type": {"client_credentials"}}
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
-		t.Fatalf("token request: %v", err)
+		t.Fatalf("sign admin token: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth("testclient", "testsecret")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("token endpoint returned %d: %s", resp.StatusCode, body)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("decode token: %v", err)
-	}
-	tok, _ := out["access_token"].(string)
 	return tok
 }
 
