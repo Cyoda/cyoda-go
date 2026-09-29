@@ -3,7 +3,6 @@ package e2e_test
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
 )
 
@@ -44,29 +42,12 @@ func (ks *keyStack) resetSecret(t *testing.T, id string) string {
 	return decodeCredential(t, "reset secret", raw).secret
 }
 
-// deleteClient deletes id through ks and returns the status and body.
-func (ks *keyStack) deleteClient(t *testing.T, id string) (int, []byte) {
+// deleteClient runs DELETE /clients/{id} on h as bearer and returns the
+// status and body.
+func (h *callbackHarness) deleteClient(t *testing.T, bearer, id string) (int, string) {
 	t.Helper()
-	return ks.keyCall(t, http.MethodDelete, "/clients/"+id, "")
-}
-
-// clientIDs lists the ids GET /clients returns for bearer's tenant on h.
-func (h *callbackHarness) clientIDs(t *testing.T, bearer string) map[string]bool {
-	t.Helper()
-	resp := h.doAuthBearer(t, bearer, http.MethodGet, "/api/clients", "", "")
-	raw := h.readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list clients: %d %s", resp.StatusCode, raw)
-	}
-	var list []genapi.TechnicalUserDto
-	if err := json.Unmarshal([]byte(raw), &list); err != nil {
-		t.Fatalf("decode client list %s: %v", raw, err)
-	}
-	ids := map[string]bool{}
-	for _, c := range list {
-		ids[c.ClientId] = true
-	}
-	return ids
+	resp := h.doAuthBearer(t, bearer, http.MethodDelete, "/api/clients/"+id, "", "")
+	return resp.StatusCode, h.readBody(t, resp)
 }
 
 // postClient runs POST /clients on h as bearer and returns the status and body.
@@ -123,7 +104,7 @@ func TestClientsStore_CrossNodeAtOnce(t *testing.T) {
 	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusOK {
 		t.Fatalf("new secret on B right after the reset on A: %d, want 200", code)
 	}
-	if code, raw := a.deleteClient(t, c.id); code != http.StatusOK {
+	if code, raw := a.deleteClient(t, a.oauthToken(t), c.id); code != http.StatusOK {
 		t.Fatalf("delete on A: %d %s", code, raw)
 	}
 	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusUnauthorized {
@@ -141,7 +122,7 @@ func TestClientsStore_SurvivesRestart(t *testing.T) {
 	reset := createKeyStackClient(t, a.callbackHarness)
 	gone := createKeyStackClient(t, a.callbackHarness)
 	newSecret := a.resetSecret(t, reset.id)
-	if code, raw := a.deleteClient(t, gone.id); code != http.StatusOK {
+	if code, raw := a.deleteClient(t, a.oauthToken(t), gone.id); code != http.StatusOK {
 		t.Fatalf("delete: %d %s", code, raw)
 	}
 
@@ -158,22 +139,20 @@ func TestClientsStore_SurvivesRestart(t *testing.T) {
 	if code := tokenStatusOn(t, r.baseURL, gone.id, gone.secret); code != http.StatusUnauthorized {
 		t.Fatalf("deleted client after restart: %d, want 401", code)
 	}
-	ids := r.clientIDs(t, r.oauthToken(t))
+	ids := clientIDsOn(t, r.baseURL, r.oauthToken(t))
 	if !ids[created.id] || !ids[reset.id] || ids[gone.id] {
 		t.Fatalf("GET /clients after restart: created listed %v, reset listed %v, deleted listed %v; want true, true, false",
 			ids[created.id], ids[reset.id], ids[gone.id])
 	}
 }
 
-// capStack opens a stack on a new database with the given per-tenant cap. It
-// is not a keyStack: no tenant holds a client until the test creates one.
+// capStack opens a stack on a new database with the given per-tenant cap.
+// test-tenant holds the keyStack's client; cap-tenant starts empty.
 func capStack(t *testing.T, maxPerTenant int) *callbackHarness {
 	t.Helper()
-	s := newSchedDB(t)
-	return newCalloutHarnessWithKey(t, genKey(t), func(cfg *app.Config) {
-		t.Setenv("CYODA_POSTGRES_URL", s.url)
+	return newKeyStackWith(t, newSchedDB(t), genKey(t), func(cfg *app.Config) {
 		cfg.IAM.M2MClientMaxPerTenant = maxPerTenant
-	})
+	}).callbackHarness
 }
 
 func TestClientsStore_Cap(t *testing.T) {
@@ -196,17 +175,16 @@ func TestClientsStore_Cap(t *testing.T) {
 	if code != http.StatusBadRequest || problemErrorCode(string(raw)) != "M2M_CLIENT_CAP_REACHED" {
 		t.Fatalf("create at the cap: %d %s, want 400 M2M_CLIENT_CAP_REACHED", code, withheld(code, raw))
 	}
-	if n := len(h.clientIDs(t, bearer)); n != 2 {
+	if n := len(clientIDsOn(t, h.baseURL, bearer)); n != 2 {
 		t.Fatalf("clients after the refused create: %d, want 2", n)
 	}
-	// The cap is per tenant: test-tenant still creates.
+	// The cap is per tenant: test-tenant, holding one client, still creates.
 	if code, raw := h.postClient(t, h.token(t)); code != http.StatusOK {
 		t.Fatalf("create in another tenant while cap-tenant is at the cap: %d %s, want 200", code, raw)
 	}
 	// A delete frees a slot.
-	resp := h.doAuthBearer(t, bearer, http.MethodDelete, "/api/clients/"+first.id, "", "")
-	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
-		t.Fatalf("delete: %d %s", resp.StatusCode, body)
+	if code, body := h.deleteClient(t, bearer, first.id); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
 	}
 	if code, raw := h.postClient(t, bearer); code != http.StatusOK {
 		t.Fatalf("create after a delete freed a slot: %d %s, want 200", code, raw)
@@ -285,7 +263,7 @@ func TestClientsStore_ConcurrentCreatesStopAtCap(t *testing.T) {
 	if created != limit || refused != attempts-limit {
 		t.Fatalf("concurrent creates: %d created, %d refused; want %d and %d", created, refused, limit, attempts-limit)
 	}
-	if n := len(h.clientIDs(t, bearer)); n != limit {
+	if n := len(clientIDsOn(t, h.baseURL, bearer)); n != limit {
 		t.Fatalf("clients stored: %d, want %d", n, limit)
 	}
 }
@@ -318,32 +296,27 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	h := newKeyStackOn(t, s, genKey(t))
 	const tenantNS, indexNS = "m2m-clients:test-tenant", "m2m-client-ids"
 	admin := h.token(t)
-	status := func(method, path string) (int, string) {
-		t.Helper()
-		resp := h.doAuthBearer(t, admin, method, "/api"+path, "", "")
-		body := h.readBody(t, resp)
-		return resp.StatusCode, body
-	}
 
 	t.Run("undecodable record", func(t *testing.T) {
 		s.putRawKV(t, tenantNS, "BADREC1", "{")
 		s.putRawKV(t, indexNS, "BADREC1", `{"tenantId":"test-tenant"}`)
 		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
 			http.StatusInternalServerError, "server_error")
-		ids := h.clientIDs(t, admin)
+		ids := clientIDsOn(t, h.baseURL, admin)
 		if ids["BADREC1"] || !ids[h.clientID] {
 			t.Fatalf("GET /clients: undecodable listed %v, the keyStack's client listed %v; want false, true", ids["BADREC1"], ids[h.clientID])
 		}
-		if code, body := status(http.MethodPut, "/clients/BADREC1/secret"); code != http.StatusInternalServerError {
+		resp := h.doAuthBearer(t, admin, http.MethodPut, "/api/clients/BADREC1/secret", "", "")
+		if code, body := resp.StatusCode, h.readBody(t, resp); code != http.StatusInternalServerError {
 			t.Fatalf("reset of an undecodable record: %d %s, want 500", code, withheld(code, []byte(body)))
 		}
-		if code, body := status(http.MethodDelete, "/clients/BADREC1"); code != http.StatusOK {
+		if code, body := h.deleteClient(t, admin, "BADREC1"); code != http.StatusOK {
 			t.Fatalf("delete of an undecodable record: %d %s, want 200", code, body)
 		}
 		if s.hasRawKV(t, tenantNS, "BADREC1") || s.hasRawKV(t, indexNS, "BADREC1") {
 			t.Fatal("delete left the undecodable record or its index entry behind")
 		}
-		if code, body := status(http.MethodDelete, "/clients/BADREC1"); code != http.StatusNotFound {
+		if code, body := h.deleteClient(t, admin, "BADREC1"); code != http.StatusNotFound {
 			t.Fatalf("second delete: %d %s, want 404", code, body)
 		}
 	})
@@ -358,7 +331,7 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	t.Run("record without its index entry", func(t *testing.T) {
 		c := createKeyStackClient(t, h.callbackHarness)
 		s.deleteRawKV(t, indexNS, c.id)
-		if code, body := status(http.MethodDelete, "/clients/"+c.id); code != http.StatusOK {
+		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusOK {
 			t.Fatalf("delete of a record without its index entry: %d %s, want 200", code, body)
 		}
 		if s.hasRawKV(t, tenantNS, c.id) {
@@ -370,7 +343,7 @@ func TestClientsStore_RawRecords(t *testing.T) {
 		otherID, otherSecret := h.provisionTenant(t, "other-tenant", "other-admin")
 		// A stray record under test-tenant with other-tenant's client id.
 		s.putRawKV(t, tenantNS, otherID, "{")
-		if code, body := status(http.MethodDelete, "/clients/"+otherID); code != http.StatusOK {
+		if code, body := h.deleteClient(t, admin, otherID); code != http.StatusOK {
 			t.Fatalf("test-tenant's delete of its stray record: %d %s, want 200", code, body)
 		}
 		if s.hasRawKV(t, tenantNS, otherID) {

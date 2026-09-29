@@ -30,33 +30,41 @@ func TestE2E_Clients_HelpersDeleteTheirClients(t *testing.T) {
 		suiteID, _ = createClient(t, false)
 		otherID, _ = createM2MClient(t, otherTenant, otherUser, []string{"ROLE_M2M"})
 	})
-	if listsClient(t, suiteToken(t), suiteID) {
+	if clientIDsOn(t, serverURL, suiteToken(t))[suiteID] {
 		t.Errorf("createClient left client %s behind in the suite tenant", suiteID)
 	}
-	if listsClient(t, adminTokenForTenant(t, otherTenant, otherUser), otherID) {
+	if clientIDsOn(t, serverURL, adminTokenForTenant(t, otherTenant, otherUser))[otherID] {
 		t.Errorf("createM2MClient left client %s behind in tenant %s", otherID, otherTenant)
 	}
 }
 
-// listsClient reports whether GET /clients, called with bearer, lists id.
-func listsClient(t *testing.T, bearer, id string) bool {
+// clientIDsOn returns the ids GET /clients lists for bearer's tenant on the
+// server at baseURL — the shared server or a harness stack.
+func clientIDsOn(t *testing.T, baseURL, bearer string) map[string]bool {
 	t.Helper()
-	resp := unauthRequest(t, http.MethodGet, "/api/clients", "Bearer "+bearer)
+	req, err := e2eNewRequest(t, http.MethodGet, baseURL+"/api/clients", nil)
+	if err != nil {
+		t.Fatalf("list clients: new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
 	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("list clients: %d: %s", resp.StatusCode, raw)
 	}
 	var list []genapi.TechnicalUserDto
-	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
-		t.Fatalf("decode client list: %v", err)
+	if err := json.Unmarshal(raw, &list); err != nil {
+		t.Fatalf("decode client list %s: %v", raw, err)
 	}
+	ids := map[string]bool{}
 	for _, c := range list {
-		if c.ClientId == id {
-			return true
-		}
+		ids[c.ClientId] = true
 	}
-	return false
+	return ids
 }
 
 func TestE2E_Clients_ListEmpty(t *testing.T) {
@@ -309,7 +317,7 @@ func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
 		}
 	}
 
-	if listsClient(t, adminTokenForTenant(t, "tenant-b", "user-b"), clientA) {
+	if clientIDsOn(t, serverURL, adminTokenForTenant(t, "tenant-b", "user-b"))[clientA] {
 		t.Errorf("tenant B's GET /clients lists tenant A's client %s", clientA)
 	}
 	// B's attempts left A's client as it was.
@@ -335,4 +343,3 @@ func containsAnyString(haystack []any, needle string) bool {
 	}
 	return false
 }
-

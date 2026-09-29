@@ -79,18 +79,9 @@ func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.R
 // getTokenRaw obtains a JWT token via client_credentials grant. The token
 // endpoint uses HTTP Basic Auth for client authentication.
 func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, error) {
-	data := url.Values{
-		"grant_type": {"client_credentials"},
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", serverURL+"/api/oauth/token", strings.NewReader(data.Encode()))
+	resp, err := postTokenRaw(ctx, serverURL, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	if err != nil {
-		return "", fmt.Errorf("create token request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("token request: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
