@@ -107,7 +107,7 @@ func oidcTenantFromCtx(w http.ResponseWriter, r *http.Request) (spi.TenantID, uu
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
 			common.ErrCodeOidcInvalidTenant,
-			"OIDC providers can be registered only by a tenant whose id is a UUID, in its canonical lowercase form",
+			"OIDC provider operations require a tenant whose id is a UUID, in its canonical lowercase form",
 		))
 		return "", uuid.Nil, false
 	}

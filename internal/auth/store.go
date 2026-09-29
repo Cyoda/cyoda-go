@@ -209,8 +209,8 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 var ErrM2MClientNotFound = errors.New("m2m client not found")
 
 // ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
-// is already present. The adapter's collision-retry loop
-// in CreateTechnicalUser detects this via errors.Is and regenerates.
+// is already present. The adapter's collision-retry loop in
+// CreateTechnicalUser detects this via errors.Is and regenerates.
 var ErrM2MClientExists = errors.New("m2m client already exists")
 
 // dummyHash is a constant-time fallback compared against any unknown

@@ -2869,8 +2869,8 @@ func RunOidcE2E_MultiNodeEviction(t *testing.T, _ BackendFixture) {
 //
 // Covered by: internal/domain/account unit test
 // TestOidcAdapter_NonUUIDTenantRejected — that test constructs a request with a
-// non-UUID tenant context ("default-tenant"), calls RegisterOidcProvider, and
-// asserts 400 + OIDC_INVALID_TENANT. The rejection is not registration-only:
+// non-UUID (plain hyphenated-word) tenant context, calls RegisterOidcProvider,
+// and asserts 400 + OIDC_INVALID_TENANT. The rejection is not registration-only:
 // TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere asserts the same 400 from
 // list, update, invalidate, reactivate and delete, and
 // internal/e2e's TestOidc_NonUUIDTenant_RejectedOnEveryOperation drives that

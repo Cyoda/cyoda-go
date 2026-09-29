@@ -265,7 +265,8 @@ const (
 	// as raw text — accepting another spelling would alias two distinct
 	// tenants. A tenant whose id is not a UUID (e.g. one created with a
 	// hyphenated-word `cyoda token --tenant`) must migrate to a UUID tenant
-	// before registering OIDC providers.
+	// before it can register, list, update, invalidate, reactivate or delete
+	// an OIDC provider.
 	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
 	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
 	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"

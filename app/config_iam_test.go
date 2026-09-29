@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // Mock IAM defaults must grant ROLE_M2M so the gRPC streaming service accepts
@@ -101,6 +104,35 @@ func TestDefaultConfig_MockRolesValidOverrideDoesNotWarn(t *testing.T) {
 
 	if strings.Contains(buf.String(), "CYODA_IAM_MOCK_ROLES") {
 		t.Errorf("unexpected log output for valid override:\n%s", buf.String())
+	}
+}
+
+// TestShippedUserIDConstantsPassCheck stops a later change to a default from
+// producing a binary that cannot start, or a mock mode whose user fails the
+// check every door applies.
+func TestShippedUserIDConstantsPassCheck(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]string{
+		"IAM.MockUserID": cfg.IAM.MockUserID,
+	} {
+		if err := common.ValidateFirstPartyUserID(id); err != nil {
+			t.Errorf("%s (%q) fails the user-id check: %v", name, id, err)
+		}
+	}
+}
+
+// TestShippedTenantConstantsSatisfyGrammar stops a later change to a default
+// from producing a binary that cannot start, or a mock mode that cannot
+// authenticate.
+func TestShippedTenantConstantsSatisfyGrammar(t *testing.T) {
+	cfg := DefaultConfig()
+	for name, id := range map[string]spi.TenantID{
+		"spi.SystemTenantID": spi.SystemTenantID,
+		"IAM.MockTenantID":   spi.TenantID(cfg.IAM.MockTenantID),
+	} {
+		if err := common.ValidateTenantID(id); err != nil {
+			t.Errorf("%s (%q) fails the tenant grammar: %v", name, id, err)
+		}
 	}
 }
 

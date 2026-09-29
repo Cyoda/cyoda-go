@@ -374,7 +374,7 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 
 	for _, org := range []string{
 		"SYSTEM",
-		"default-tenant",
+		"plain-tenant",
 		"mock-tenant",
 		"tenant-abc-123",
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",

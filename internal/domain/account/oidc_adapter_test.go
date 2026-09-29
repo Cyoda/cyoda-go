@@ -806,8 +806,11 @@ func TestOidcAdapter_NonUUIDTenantRejected(t *testing.T) {
 	}
 	// The message no longer names the removed bootstrap client or its
 	// "default-tenant" literal: `cyoda token` replaced it, and there is no
-	// bootstrap deployment shape left to call out.
-	const wantDetail = "OIDC_INVALID_TENANT: OIDC providers can be registered only by a tenant whose id is a UUID, in its canonical lowercase form"
+	// bootstrap deployment shape left to call out. It is also
+	// operation-agnostic: oidcTenantFromCtx gates all six OIDC operations
+	// (register, list, update, invalidate, reactivate, delete), not just
+	// registration — see TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere.
+	const wantDetail = "OIDC_INVALID_TENANT: OIDC provider operations require a tenant whose id is a UUID, in its canonical lowercase form"
 	if detail := decodeErrDetail(t, rr.Body.Bytes()); detail != wantDetail {
 		t.Errorf("detail: got %q want %q", detail, wantDetail)
 	}
