@@ -135,7 +135,8 @@ Clients are stored in the cluster's database. A stored client holds a bcrypt has
 
 The store has no compare-and-set. So when two admin calls for one tenant run at the same moment, on one node or on two:
 
-- Two changes to one client: the later write wins. After two resets, only the secret of the later one works.
+- Two changes to one client: the later write wins. After two resets that both answer `200`, only the secret of the later one works.
+- A failed reset and a successful one: a reset that answers `500` writes the client back as it was before that reset. If another reset succeeds in the meantime, the write-back can land after it. The secret that the successful reset returned then stops working, and the secret from before both resets works again. The fix is to reset again.
 - A reset and a delete of one client: the reset can write the client back after the delete removed it. The client then appears in `GET /clients` but cannot get a token, and a reset of it answers `404 M2M_CLIENT_NOT_FOUND`. `DELETE` removes it.
 - Two creates on two different nodes: each node checks the cap before the other's client is written, so a tenant can exceed the cap by at most one client per node. Creates on one node run one at a time and never exceed it.
 

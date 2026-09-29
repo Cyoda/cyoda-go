@@ -127,7 +127,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - The store has no compare-and-set. Two changes to one client at the same
     moment resolve by the later write. A reset racing a delete of one client
     can leave it listed by `GET /clients` but unable to get a token; a reset
-    of it answers `404`, and `DELETE` removes it.
+    of it answers `404`, and `DELETE` removes it. A reset that answers `500`
+    writes the client back as it was before that reset. If another reset
+    succeeds in the meantime, the write-back can land after it: the secret
+    that reset returned stops working, and the older secret works again.
+    Reset again to fix it.
 
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute

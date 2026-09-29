@@ -458,9 +458,13 @@ Documented, not prevented (no compare-and-set): concurrent admin changes to
 one client, on one node or on two — `Delete` and `ResetSecret` take no lock,
 so the later write wins. A reset racing a delete can write the record back
 after the delete removed it, leaving a record without an index entry: listed,
-unable to authenticate, removable by `DELETE`. And the cap overshoot of §5.5,
-the one race that needs two nodes: creates on one node are serialised by the
-per-node mutex.
+unable to authenticate, removable by `DELETE`. A reset whose write commits but
+reports an error writes back the record it read (§5.4); if another reset
+succeeds in between, the write-back can land after it, so the secret the
+successful reset returned with `200` stops working and the secret from
+before both resets works again. The fix is another reset. And the cap
+overshoot of §5.5, the one race that needs two nodes: creates on one node are
+serialised by the per-node mutex.
 
 On cassandra, a write adds a version row and a delete keeps earlier data
 (`cyoda-go-cassandra internal/store/data_store.go:90-97,166-168`): hashes of
