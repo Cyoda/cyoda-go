@@ -501,3 +501,32 @@ func TestKVKeyStore_LogRevokedBootstrapExcludesUnknownVaultKind(t *testing.T) {
 		t.Fatalf("expected no revoked-bootstrap INFO when the only issued record is unknown-vault-kind; log: %s", buf.String())
 	}
 }
+
+// With no issued key pair of the audience active and in its window, the
+// signing key from configuration signs: it is an active key pair of that
+// audience with a zero validFrom.
+func TestKVKeyStore_SigningKeySignsWhenNoIssuedPairActive(t *testing.T) {
+	boot := loadFixtureKey(t)
+	s := newTestKeyStore(t, boot)
+	bootKID, err := DeriveKID(&boot.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kp, err := s.Issue(replicaSystemCtx(), IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur, _ := s.Current("client"); cur.KID != kp.KID {
+		t.Fatalf("current = %s, want the issued pair", cur.KID)
+	}
+	if err := s.Invalidate(replicaSystemCtx(), kp.KID, 0); err != nil {
+		t.Fatal(err)
+	}
+	cur, err := s.Current("client")
+	if err != nil || cur.KID != bootKID {
+		t.Fatalf("current = %v %v, want the signing key", cur, err)
+	}
+	if _, sg, err := s.Signer("client"); err != nil || sg == nil {
+		t.Fatalf("no signer: %v", err)
+	}
+}
