@@ -599,20 +599,26 @@ func TestKVM2M_IgnoresCallerTransaction(t *testing.T) {
 	}
 }
 
-// cancelThenFailKV commits a Put into ns, then cancels the caller's context
-// and reports an error — a caller that gave up while the write landed. Its
-// Delete fails once the context it is given is done.
+// cancelThenFailKV commits the first Put into ns, then cancels the caller's
+// context and reports an error — a caller that gave up while the write
+// landed. Its Put and Delete fail, writing nothing, once the context they are
+// given is done.
 type cancelThenFailKV struct {
 	spi.KeyValueStore
 	ns     string
 	cancel context.CancelFunc
+	fired  bool
 }
 
 func (k *cancelThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := k.KeyValueStore.Put(ctx, ns, key, v); err != nil {
 		return err
 	}
-	if ns == k.ns {
+	if ns == k.ns && !k.fired {
+		k.fired = true
 		k.cancel()
 		return errors.New("injected: committed, then the caller went away")
 	}
@@ -657,5 +663,44 @@ func TestKVM2M_CreateRecordUndoSurvivesCallerCancel(t *testing.T) {
 		if _, err := mem.Get(systemCtx(), ns, "C1"); !errors.Is(err, spi.ErrNotFound) {
 			t.Errorf("%s/C1 left behind", ns)
 		}
+	}
+}
+
+// An ambiguous reset write — committed, then reported as failed — does not
+// end the old secret: the record read before the change is restored, and the
+// caller still gets the error.
+func TestKVM2M_ResetSecretRestoresTheRecordAfterAnAmbiguousWrite(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	good := auth.NewKVM2MClientStore(mem, 0)
+	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := auth.NewKVM2MClientStore(&nsCommitThenFailKV{KeyValueStore: mem, ns: "m2m-clients:acme"}, 0)
+	if _, _, err := s.ResetSecret(systemCtx(), "acme", "C1"); err == nil {
+		t.Fatal("want error")
+	}
+	if _, err := good.Authenticate(systemCtx(), "C1", sec); err != nil {
+		t.Fatalf("old secret refused after a failed reset: %v", err)
+	}
+}
+
+// The restore runs on a context the caller cannot cancel: a caller that went
+// away does not leave the client without a usable secret.
+func TestKVM2M_ResetSecretRestoreSurvivesCallerCancel(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	good := auth.NewKVM2MClientStore(mem, 0)
+	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(systemCtx())
+	defer cancel()
+	s := auth.NewKVM2MClientStore(&cancelThenFailKV{KeyValueStore: mem, ns: "m2m-clients:acme", cancel: cancel}, 0)
+	if _, _, err := s.ResetSecret(ctx, "acme", "C1"); err == nil {
+		t.Fatal("want error")
+	}
+	if _, err := good.Authenticate(systemCtx(), "C1", sec); err != nil {
+		t.Fatalf("old secret refused after a failed reset: %v", err)
 	}
 }

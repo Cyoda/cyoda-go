@@ -19,7 +19,7 @@ import (
 // onto a fixed set of mutexes.
 const createLockStripes = 64
 
-// undoTimeout bounds the compensation of a failed create.
+// undoTimeout bounds the compensation of a failed create or reset.
 const undoTimeout = 30 * time.Second
 
 // KVM2MClientStore stores M2M clients in the SYSTEM-tenant KV store: one
@@ -73,21 +73,22 @@ func (s *KVM2MClientStore) getIndex(ctx context.Context, id string) (spi.TenantI
 	return t, true, nil
 }
 
-// getRecord reads and decodes id's record in tenant's namespace.
-func (s *KVM2MClientStore) getRecord(ctx context.Context, t spi.TenantID, id string) (*M2MClient, bool, error) {
+// getRecord reads and decodes id's record in tenant's namespace, and returns
+// the stored bytes with it.
+func (s *KVM2MClientStore) getRecord(ctx context.Context, t spi.TenantID, id string) (*M2MClient, []byte, bool, error) {
 	data, err := s.kv.Get(ctx, m2mTenantNamespace(t), id)
 	if errors.Is(err, spi.ErrNotFound) {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if err != nil {
-		return nil, false, fmt.Errorf("failed to read m2m client: %w", err)
+		return nil, nil, false, fmt.Errorf("failed to read m2m client: %w", err)
 	}
 	c, err := decodeClientRecord(t, id, data)
 	if err != nil {
 		slog.Error("m2m client record does not decode", "pkg", "auth", "tenant", string(t), "kvKey", id)
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return c, true, nil
+	return c, data, true, nil
 }
 
 // burnBcrypt compares against the dummy hash so a request with no usable
@@ -112,7 +113,7 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	}
 	var c *M2MClient
 	if found {
-		c, _, err = s.getRecord(ctx, tenant, clientID)
+		c, _, _, err = s.getRecord(ctx, tenant, clientID)
 	} else {
 		_, err = s.kv.Get(ctx, m2mClientIndexNamespace, m2mDecoyKey)
 		if errors.Is(err, spi.ErrNotFound) {
@@ -195,10 +196,16 @@ func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clie
 	return secret, nil
 }
 
+// undoContext derives the context of a compensating write: one the caller
+// cannot cancel, bounded by undoTimeout.
+func undoContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
+}
+
 // undoCreate deletes id from each of namespaces, in order, on a context the
 // caller cannot cancel. A delete that fails is logged at ERROR.
 func (s *KVM2MClientStore) undoCreate(ctx context.Context, id string, namespaces ...string) {
-	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
+	uctx, cancel := undoContext(ctx)
 	defer cancel()
 	for _, ns := range namespaces {
 		if err := s.kv.Delete(uctx, ns, id); err != nil {
@@ -280,8 +287,10 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 
 // ResetSecret gives an existing client of tenant a new secret and returns it,
 // once, with the client. The secret is hashed before the store is read, so
-// the gap between read and write is one round trip. The caller has checked
-// clientID against the client-id grammar.
+// the gap between read and write is one round trip. A failed write may have
+// committed, so it restores the record it read, on a context the caller
+// cannot cancel: a failed reset leaves the old secret in force. The caller
+// has checked clientID against the client-id grammar.
 func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
 	ctx = noTx(ctx)
 	secret, err := GenerateSecret()
@@ -292,7 +301,7 @@ func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID,
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to hash secret: %w", err)
 	}
-	c, found, err := s.getRecord(ctx, tenant, clientID)
+	c, prev, found, err := s.getRecord(ctx, tenant, clientID)
 	if err != nil {
 		return "", nil, err
 	}
@@ -309,7 +318,18 @@ func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID,
 		return "", nil, err
 	}
 	if err := s.kv.Put(ctx, m2mTenantNamespace(tenant), clientID, rec); err != nil {
+		s.undoReset(ctx, tenant, clientID, prev)
 		return "", nil, fmt.Errorf("failed to write m2m client: %w", err)
 	}
 	return secret, c, nil
+}
+
+// undoReset writes back prev, the record a failed reset read, on a context
+// the caller cannot cancel. A write that fails is logged at ERROR.
+func (s *KVM2MClientStore) undoReset(ctx context.Context, t spi.TenantID, id string, prev []byte) {
+	uctx, cancel := undoContext(ctx)
+	defer cancel()
+	if err := s.kv.Put(uctx, m2mTenantNamespace(t), id, prev); err != nil {
+		slog.Error("m2m client secret reset could not be undone", "pkg", "auth", "tenant", string(t), "kvKey", id, "error", err.Error())
+	}
 }
