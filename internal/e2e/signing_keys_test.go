@@ -585,12 +585,13 @@ func TestSigningKeys_InvalidatedKeyPairEndsEarly(t *testing.T) {
 // TestSigningKeys_GracePeriod: an invalidated key pair — issued, or the
 // signing key from configuration — verifies until the validTo its grace
 // period sets and is refused after it; one reactivated during its grace
-// period is active again and outlives it.
+// period is active again and outlives it. The issued key pair's token is
+// checked over HTTP and over gRPC, which authenticate separately.
 //
 // The in-grace checks must finish before the earliest validTo the
 // invalidations can have set, or the test fails rather than passing on
-// nothing; they are kept to four token grants and two reads. The
-// after-grace checks run a margin after the latest validTo.
+// nothing; they are kept to two HTTP reads, one unary gRPC call and one
+// reactivate. The after-grace checks run a margin after the latest validTo.
 func TestSigningKeys_GracePeriod(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -618,6 +619,9 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 	if code := h.authedStatus(t, opTok); code != http.StatusOK {
 		t.Errorf("inside the grace period, signing key: %d, want 200", code)
 	}
+	if err := grpcEntitySearch(h, tGrace); err != nil {
+		t.Errorf("inside the grace period, issued key pair on gRPC: %v, want accepted", err)
+	}
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	if code, b := h.keyCall(t, "POST", "/oauth/keys/keypair/"+kReact+"/reactivate", `{"validTo":"`+future+`"}`); code != http.StatusOK {
 		t.Fatalf("reactivate %s: %d %s", kReact, code, b)
@@ -641,5 +645,8 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 		if code := h.authedStatus(t, c.tok); code != c.want {
 			t.Errorf("after the grace period, %s: %d, want %d", c.name, code, c.want)
 		}
+	}
+	if err := grpcEntitySearch(h, tGrace); status.Code(err) != codes.Unauthenticated {
+		t.Errorf("after the grace period, issued key pair on gRPC: %v, want Unauthenticated", err)
 	}
 }
