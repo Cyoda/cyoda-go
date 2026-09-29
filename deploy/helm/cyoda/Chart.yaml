@@ -24,3 +24,4 @@ annotations:
     - terminationGracePeriodSeconds defaults to 390, so a node can finish its scheduled runs before it is killed
     - Removed the `bootstrap.*` values and the bootstrap Secret; the first admin token comes from `cyoda token` (see NOTES)
     - `jwt.expirySeconds` is capped at 31622400 (366 days), the largest value the server accepts
+    - `jwt.issuer` must not be empty; the server refuses to start with an empty issuer

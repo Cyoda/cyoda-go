@@ -66,7 +66,7 @@ func TestOidcProviderLifecycle(t *testing.T) {
 	// Seed a client with a UUID-shaped tenant so registerOidcProvider does
 	// not fail with OIDC_INVALID_TENANT.  The roles include ROLE_ADMIN so
 	// all admin-gated OIDC ops are permitted.
-	clientID, clientSecret := createM2MClient(t, oidcTenantUUID, "oidc-e2e-user", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientID, clientSecret := createM2MClient(t, oidcTenantUUID, "oidc-e2e-user", true)
 
 	// oidcDo issues an authenticated HTTP request using the UUID-tenant client.
 	// path must NOT include the /api prefix (adminRequestAs adds it).
@@ -188,10 +188,8 @@ func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	victimID, victimSecret := createM2MClient(t, oidcVictimTenantUUID, "oidc-victim-user",
-		[]string{"ROLE_ADMIN", "ROLE_M2M"})
-	otherID, otherSecret := createM2MClient(t, oidcUUIDEqualTenantUUID, "oidc-uuid-equal-user",
-		[]string{"ROLE_ADMIN", "ROLE_M2M"})
+	victimID, victimSecret := createM2MClient(t, oidcVictimTenantUUID, "oidc-victim-user", true)
+	otherID, otherSecret := createM2MClient(t, oidcUUIDEqualTenantUUID, "oidc-uuid-equal-user", true)
 
 	do := func(t *testing.T, clientID, secret, method, path string, body []byte) (int, []byte) {
 		t.Helper()

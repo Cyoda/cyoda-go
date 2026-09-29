@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -23,7 +24,8 @@ type JWTSettings struct {
 }
 
 // LoadJWTSettings resolves CYODA_JWT_SIGNING_KEY (or _FILE; PEM or
-// base64-encoded PEM), CYODA_JWT_ISSUER (default "cyoda"), CYODA_JWT_AUDIENCE
+// base64-encoded PEM), CYODA_JWT_ISSUER (default "cyoda" when unset; an
+// explicitly empty value is an error), CYODA_JWT_AUDIENCE
 // (default empty) and CYODA_JWT_EXPIRY_SECONDS (default 3600; an integer from
 // 1 to MaxJWTExpirySeconds). Errors name the variable, never its value. The
 // server (DefaultConfig) and `cyoda token` both read these variables here, so
@@ -41,9 +43,13 @@ func LoadJWTSettings() (JWTSettings, error) {
 		}
 		expiry = n
 	}
+	issuer := envString("CYODA_JWT_ISSUER", "cyoda")
+	if issuer == "" {
+		return JWTSettings{}, errors.New("CYODA_JWT_ISSUER must not be empty")
+	}
 	return JWTSettings{
 		SigningKeyPEM: pemText,
-		Issuer:        envString("CYODA_JWT_ISSUER", "cyoda"),
+		Issuer:        issuer,
 		Audience:      envString("CYODA_JWT_AUDIENCE", ""),
 		ExpirySeconds: expiry,
 	}, nil

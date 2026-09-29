@@ -36,12 +36,17 @@ must always work.
 
 The bootstrap signing key (from configuration) has no window unless the
 key-pair API gave it one: reactivating it through the API gives it the window
-the request names, invalidating it ends it as a signer and gives it a grace
-period like any key pair, and both states are stored and shared by the
-cluster (see `signing-key-pairs.md`). It takes part in signer selection with
-no `validFrom`, so it signs whenever no issued key pair of its audience is
-active and inside its window: invalidating the last issued key pair of the
-bootstrap key's audience makes the bootstrap key sign again. A rotation
+the request names (`validFrom` defaults to now), invalidating it ends it as a
+signer and gives it a grace period like any key pair, and both states are
+stored and shared by the cluster (see `signing-key-pairs.md`). It takes part
+in signer selection like any key pair, with a zero `validFrom` until a
+reactivation sets one. Until then it signs whenever no issued key pair of its
+audience is active and inside its window: invalidating the last issued key
+pair of the bootstrap key's audience makes the bootstrap key sign again. After
+a reactivation its `validFrom` ranks it like any key pair: with the default
+(now) it signs before every issued key pair of its audience with an earlier
+`validFrom`; an early `validFrom`, such as `1970-01-01T00:00:00Z`, keeps it
+behind them. A rotation
 (`invalidateCurrent`) never ends it; only an invalidate or `DELETE` that names
 its key id does. To end a leaked token, the operator revokes the key pair
 named by the `kid` in its header; a rotation does not end tokens the bootstrap

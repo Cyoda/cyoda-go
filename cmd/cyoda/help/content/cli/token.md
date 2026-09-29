@@ -36,6 +36,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - Rotating key pairs (`POST /oauth/keys/keypair` with `invalidateCurrent`) does not affect it.
 - Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require `ROLE_ADMIN`.
 - Reactivating the signing key gives it a window that ends at the reactivation's `validTo`; tokens from `cyoda token` are refused from that time.
+- Reactivating the signing key also sets its `validFrom`, which defaults to now. From then on it signs `POST /oauth/token` tokens before every issued key pair of the `client` audience with an earlier `validFrom`. To keep the issued key pairs signing, pass an early `validFrom`, for example `1970-01-01T00:00:00Z` (see `cyoda help config auth`).
 - After that, admin access comes from an OIDC admin, or from an admin M2M client created beforehand while an issued key pair signs its tokens (`/oauth/token` signs with the `client` audience's key pair; creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`). With neither, the recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Tokens from a federated OIDC provider are unaffected.
 
 ## OPTIONS
@@ -43,20 +44,20 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - `--tenant <tenantId>` — required. The tenant the token acts in. A tenant that will register OIDC providers must be a UUID in its canonical lowercase form (see `cyoda help errors OIDC_INVALID_TENANT`).
 - `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
 - `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`.
-- `--ttl <duration>` — lifetime, greater than 0 and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s). Default `15m`.
+- `--ttl <duration>` — lifetime, at least `1s` and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s); a value outside that range is a flag error (exit 2). Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
 
 ## ENVIRONMENT VARIABLES
 
 - `CYODA_JWT_SIGNING_KEY` / `CYODA_JWT_SIGNING_KEY_FILE` — the signing key (PEM, or base64-encoded PEM).
-- `CYODA_JWT_ISSUER` — `iss` (default `cyoda`).
+- `CYODA_JWT_ISSUER` — `iss` (default `cyoda` when unset). An empty value makes the command exit 1.
 - `CYODA_JWT_AUDIENCE` — `aud`, when set.
-- `CYODA_JWT_EXPIRY_SECONDS` — the upper bound of `--ttl`. Must be a whole
-  number of seconds from 1 to 31622400 (366 days), default 3600; any other
-  value makes the command exit 1.
+- `CYODA_JWT_EXPIRY_SECONDS` — the upper bound of `--ttl`. Unset or empty:
+  3600. Otherwise it must be a whole number of seconds from 1 to 31622400
+  (366 days); any other value makes the command exit 1.
 
 ## OUTPUT
 
-The token and a newline on stdout, nothing else. Errors go to stderr and never contain the token or key material.
+The token and a newline on stdout, nothing else, so `TOKEN=$(cyoda token …)` captures only the token. Errors go to stderr and never contain the token or key material. Informational log lines may also appear on stderr, for example which env files were loaded (see `cyoda help config`).
 
 ## EXIT CODES
 

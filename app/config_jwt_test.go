@@ -50,10 +50,13 @@ func TestLoadJWTSettings_Base64PEMIsDecoded(t *testing.T) {
 	}
 }
 
-func TestLoadJWTSettings_BadExpiryIsAnError(t *testing.T) {
-	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "soon")
-	if _, err := LoadJWTSettings(); err == nil {
-		t.Fatal("want error")
+// An empty CYODA_JWT_EXPIRY_SECONDS means the default, as unset does.
+func TestLoadJWTSettings_EmptyExpiryIsTheDefault(t *testing.T) {
+	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
+	s, err := LoadJWTSettings()
+	if err != nil || s.ExpirySeconds != 3600 {
+		t.Fatalf("settings = %+v, err = %v; want expiry 3600", s, err)
 	}
 }
 
@@ -93,6 +96,33 @@ func TestDefaultConfig_RefusesBadJWTExpiry(t *testing.T) {
 			_ = DefaultConfig()
 		})
 	}
+}
+
+// An explicitly empty CYODA_JWT_ISSUER is refused, not replaced by the
+// default: tokens would carry an empty iss. Unset still means the default.
+func TestLoadJWTSettings_EmptyIssuerIsAnError(t *testing.T) {
+	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	_, err := LoadJWTSettings()
+	if err == nil || !strings.Contains(err.Error(), "CYODA_JWT_ISSUER") {
+		t.Fatalf("err = %v, want one naming CYODA_JWT_ISSUER", err)
+	}
+}
+
+// TestDefaultConfig_RefusesEmptyJWTIssuer pins that the server refuses the
+// empty issuer `cyoda token` refuses.
+func TestDefaultConfig_RefusesEmptyJWTIssuer(t *testing.T) {
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("DefaultConfig accepted an empty CYODA_JWT_ISSUER")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "CYODA_JWT_ISSUER") {
+			t.Fatalf("panic %q does not name CYODA_JWT_ISSUER", msg)
+		}
+	}()
+	_ = DefaultConfig()
 }
 
 // TestDefaultConfig_JWTSettingsMatchLoadJWTSettings pins that the server's

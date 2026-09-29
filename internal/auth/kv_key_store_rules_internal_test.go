@@ -89,13 +89,22 @@ func unknownVaultKindRecord(t *testing.T, v KeyVault, kid, aud string) []byte {
 // Every table test below issues records for the "human" audience while the
 // store's bootstrap audience is "client" (newReplicaKV/NewKVKeyStore calls
 // throughout this file), so the always-present bootstrap key never becomes a
-// candidate and each case's outcome depends only on the records under test.
+// candidate and each case's outcome depends only on the records under test —
+// except the signer-selection cases that set bootInAudience, which put the
+// bootstrap key in the "human" audience on purpose.
+
+// bootWant is the wantKID placeholder for "the bootstrap key signs": its KID
+// is derived from the fixture key inside each subtest.
+const bootWant = "<bootstrap>"
 
 func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 	almostNow := time.Now().Add(-time.Minute)
 	earlier := almostNow.Add(-time.Hour)
 	future := time.Now().Add(time.Hour)
 	past := time.Now().Add(-time.Hour)
+
+	early := time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)
+	now := time.Now()
 
 	type rec struct {
 		kid    string
@@ -105,11 +114,36 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 		broken bool
 	}
 	cases := []struct {
-		name    string
-		recs    []rec
-		wantKID string
-		wantErr error
+		name string
+		recs []rec
+		// bootInAudience puts the bootstrap key in the "human" audience, so
+		// it is a candidate. reactivateFrom, if set, reactivates it with that
+		// validFrom first; unset, it takes part with a zero validFrom.
+		bootInAudience bool
+		reactivateFrom *time.Time
+		wantKID        string
+		wantErr        error
 	}{
+		{
+			name:           "bootstrap key never reactivated: an issued key pair in its window signs before it",
+			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
+			bootInAudience: true,
+			wantKID:        testKID("aaa"),
+		},
+		{
+			name:           "bootstrap key reactivated with the default validFrom (now) outranks an older issued key pair",
+			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
+			bootInAudience: true,
+			reactivateFrom: &now,
+			wantKID:        bootWant,
+		},
+		{
+			name:           "bootstrap key reactivated with an early validFrom does not outrank an issued key pair",
+			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
+			bootInAudience: true,
+			reactivateFrom: &early,
+			wantKID:        testKID("aaa"),
+		},
 		{
 			name: "latest validFrom wins",
 			recs: []rec{
@@ -182,9 +216,22 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+			bootAudience := "client"
+			if tc.bootInAudience {
+				bootAudience = "human"
+			}
+			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: bootAudience})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.reactivateFrom != nil {
+				if _, err := s.Reactivate(ctx, bootKID, *tc.reactivateFrom, time.Now().Add(time.Hour)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := tc.wantKID
+			if want == bootWant {
+				want = bootKID
 			}
 			kp, _, err := s.Signer("human")
 			if tc.wantErr != nil {
@@ -196,8 +243,8 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if kp.KID != tc.wantKID {
-				t.Fatalf("kid = %q, want %q", kp.KID, tc.wantKID)
+			if kp.KID != want {
+				t.Fatalf("kid = %q, want %q", kp.KID, want)
 			}
 		})
 	}

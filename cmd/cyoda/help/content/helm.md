@@ -97,7 +97,7 @@ Name of the Kubernetes Secret containing the PEM-encoded RSA private key for JWT
 Key within `jwt.existingSecret` whose value is the PEM-encoded RSA private key.
 
 **`jwt.issuer`** — string — default `cyoda`
-JWT issuer claim. Written to ConfigMap as `CYODA_JWT_ISSUER`.
+JWT issuer claim; must not be empty. Written to ConfigMap as `CYODA_JWT_ISSUER`.
 
 **`jwt.expirySeconds`** — integer — default `3600`
 JWT token expiry in seconds, from 60 to 31622400 (366 days). Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.

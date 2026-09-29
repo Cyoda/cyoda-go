@@ -59,8 +59,12 @@ func TestRunToken_StdoutIsOnlyTheToken(t *testing.T) {
 	if p.Claims["caas_org_id"] != "acme" || p.Claims["caas_user_id"] != "operator" || p.Claims["iss"] != "cyoda-test" {
 		t.Fatalf("claims = %v", p.Claims)
 	}
+	// runToken itself writes nothing to its stderr writer on success. Log
+	// lines from app.LoadEnvFiles (which env files were loaded) go to the
+	// process's stderr through slog's default handler, not to errOut, so this
+	// check does not see them; cli/token.md documents that they may appear.
 	if errOut.Len() != 0 {
-		t.Fatalf("stderr not empty: %q", errOut.String())
+		t.Fatalf("runToken wrote to its stderr writer on success: %q", errOut.String())
 	}
 }
 
@@ -78,6 +82,66 @@ func TestRunToken_AudienceFromConfig(t *testing.T) {
 	}
 }
 
+// Without --ttl the lifetime is 15 minutes, or CYODA_JWT_EXPIRY_SECONDS when
+// that is shorter: the default never exceeds a valid configured cap.
+func TestRunToken_DefaultTTL(t *testing.T) {
+	for _, tc := range []struct {
+		expiry  string
+		wantSec float64
+	}{
+		{expiry: "3600", wantSec: 900},
+		{expiry: "900", wantSec: 900},
+		{expiry: "300", wantSec: 300},
+	} {
+		t.Run(tc.expiry, func(t *testing.T) {
+			_, pemText := tokenTestKey(t)
+			setTokenEnv(t, pemText)
+			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", tc.expiry)
+			var out, errOut bytes.Buffer
+			if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d, want 0 (stderr %q)", code, errOut.String())
+			}
+			p, err := auth.Parse(strings.TrimSpace(out.String()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			exp, _ := p.Claims["exp"].(float64)
+			iat, _ := p.Claims["iat"].(float64)
+			if got := exp - iat; got != tc.wantSec {
+				t.Fatalf("exp - iat = %v, want %v", got, tc.wantSec)
+			}
+		})
+	}
+}
+
+// An explicit --ttl above CYODA_JWT_EXPIRY_SECONDS is refused, also when the
+// cap is shorter than the default lifetime.
+func TestRunToken_ExplicitTTLAboveShortExpiryExit2(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "300")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme", "--ttl", "301s"}, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2 (stderr %q)", code, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout must be empty on error: %q", out.String())
+	}
+}
+
+// The --ttl flag error states both bounds, so a sub-second value is told why.
+func TestRunToken_TTLErrorStatesTheBounds(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme", "--ttl", "1ns"}, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2 (stderr %q)", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "at least 1s and at most 3600s") {
+		t.Fatalf("stderr %q does not state the bounds", errOut.String())
+	}
+}
+
 func TestRunToken_FlagErrorsExit2(t *testing.T) {
 	_, pemText := tokenTestKey(t)
 	setTokenEnv(t, pemText)
@@ -87,6 +151,8 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 		"oidc user":    {"--tenant", "acme", "--user", "oidc:x"},
 		"empty role":   {"--tenant", "acme", "--roles", "ROLE_ADMIN,,ROLE_M2M"},
 		"zero ttl":     {"--tenant", "acme", "--ttl", "0s"},
+		"1ns ttl":      {"--tenant", "acme", "--ttl", "1ns"},
+		"999ms ttl":    {"--tenant", "acme", "--ttl", "999ms"},
 		"ttl too long": {"--tenant", "acme", "--ttl", "61m"},
 		"unknown flag": {"--tenant", "acme", "--nope"},
 		"positional":   {"--tenant", "acme", "extra"},
@@ -154,6 +220,21 @@ func TestRunToken_ExpiryOutOfRangeExit1(t *testing.T) {
 				t.Fatalf("stdout %q, stderr %q", out.String(), errOut.String())
 			}
 		})
+	}
+}
+
+// An empty CYODA_JWT_ISSUER is a configuration error (exit 1), as it is for
+// the server, not a flag error.
+func TestRunToken_EmptyIssuerExit1(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 1 {
+		t.Fatalf("exit %d, want 1 (stderr %q)", code, errOut.String())
+	}
+	if out.Len() != 0 || !strings.Contains(errOut.String(), "CYODA_JWT_ISSUER") {
+		t.Fatalf("stdout %q, stderr %q", out.String(), errOut.String())
 	}
 }
 

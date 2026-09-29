@@ -587,12 +587,13 @@ func adminTokenForTenant(t *testing.T, tenant, user string) string {
 
 // createM2MClient provisions a new M2M client belonging to tenantID, through
 // POST /clients authenticated with a seed admin token minted for that tenant
-// (adminTokenForTenant) rather than reaching into the store directly.
+// and seedUser (adminTokenForTenant) rather than reaching into the store
+// directly. withAdmin asks for ROLE_ADMIN (?withAdminRole=true); the client's
+// roles and user id are what POST /clients assigns, not chosen here.
 // Returns (clientID, clientSecret). The client is deleted when the test ends.
-func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (string, string) {
+func createM2MClient(t *testing.T, tenantID, seedUser string, withAdmin bool) (string, string) {
 	t.Helper()
-	withAdmin := containsString(roles, "ROLE_ADMIN")
-	seed := adminTokenForTenant(t, tenantID, userID)
+	seed := adminTokenForTenant(t, tenantID, seedUser)
 	path := "/clients"
 	if withAdmin {
 		path += "?withAdminRole=true"
@@ -604,7 +605,7 @@ func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (str
 		t.Fatalf("createM2MClient: seed POST /clients: %d: %s", resp.StatusCode, raw)
 	}
 	cred := decodeCredential(t, "createM2MClient", raw)
-	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return adminTokenForTenant(t, tenantID, userID) })
+	deleteClientAtCleanup(t, serverURL, cred.id, func() string { return adminTokenForTenant(t, tenantID, seedUser) })
 	return cred.id, cred.secret
 }
 
@@ -637,7 +638,7 @@ func adminRequestAs(t *testing.T, clientID, clientSecret, method, path string, b
 // exists at TestRegisterTrustedKey_CrossTenantCollision_409.
 func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	// Provision a second M2M client at a different tenant.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", true)
 
 	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
 	deleteTrustedKeyOnCleanup(t, kid)

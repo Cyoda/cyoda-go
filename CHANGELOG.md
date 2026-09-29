@@ -28,7 +28,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   days).** The server used to replace a non-numeric value with 3600 and
   accept 0 or a negative value, issuing tokens that had already expired; it
   now refuses to start, and `cyoda token` exits 1, for any value outside that
-  range. The Helm chart's `jwt.expirySeconds` has the same upper bound.
+  range; unset or empty still means 3600. The Helm chart's
+  `jwt.expirySeconds` has the same upper bound.
+
+- **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
+  it and issue tokens with an empty `iss`; it now refuses to start, and
+  `cyoda token` exits 1. Unset still means the default `cyoda`. The Helm
+  chart's schema refuses an empty `jwt.issuer`.
 
 - **A rotation no longer ends the signing key from `CYODA_JWT_SIGNING_KEY`,
   and an invalidated key pair verifies until the end of its grace period.**
@@ -519,7 +525,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`cyoda token` signs a short-lived admin token offline.**
   `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
   signs a person token (`user_roles`, default `ROLE_ADMIN`; user `operator`;
-  lifetime `15m`, at most `CYODA_JWT_EXPIRY_SECONDS`) with
+  lifetime `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter; an
+  explicit `--ttl` is at most `CYODA_JWT_EXPIRY_SECONDS`) with
   `CYODA_JWT_SIGNING_KEY` and prints it, and nothing else, on stdout. It opens
   no store and makes no network call. The token carries `aud` when
   `CYODA_JWT_AUDIENCE` is set, serves HTTP and unary gRPC calls, and verifies

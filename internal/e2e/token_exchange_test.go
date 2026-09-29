@@ -132,7 +132,7 @@ func TestToken_TokenExchange_InvalidatedKeyGracePeriod(t *testing.T) {
 func TestToken_TokenExchange_KeyFromAnotherTenant_400(t *testing.T) {
 	priv, kid := registerTrustedSigner(t) // registered in test-tenant
 	otherTenant := fmt.Sprintf("e2e-tx-other-%d", time.Now().UnixNano())
-	clientID, secret := createM2MClient(t, otherTenant, "other-m2m", []string{"ROLE_M2M"})
+	clientID, secret := createM2MClient(t, otherTenant, "other-m2m", false)
 
 	resp := postToken(t, exchangeForm(t, priv, kid, "ext-user-1", otherTenant, []string{"ROLE_ADMIN"}), clientID, secret)
 	defer resp.Body.Close()

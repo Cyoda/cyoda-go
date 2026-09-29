@@ -32,7 +32,7 @@ This is the single home for the JWT claim contract. `auth.oidc` and `auth.truste
 
 - `CYODA_IAM_MODE=jwt`
 - `CYODA_JWT_SIGNING_KEY` (PEM RSA private key; tokens cyoda issues are signed with this)
-- `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim)
+- `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim; must not be empty)
 - `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens, and no `aud` on issued tokens)
 - `CYODA_JWT_EXPIRY_SECONDS` (default `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` (default `client`; controls which key signs M2M tokens)

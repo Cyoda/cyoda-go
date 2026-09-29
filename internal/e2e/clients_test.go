@@ -30,7 +30,7 @@ func TestE2E_Clients_HelpersDeleteTheirClients(t *testing.T) {
 	var suiteID, otherID string
 	t.Run("create", func(t *testing.T) {
 		suiteID, _ = createClient(t, false)
-		otherID, _ = createM2MClient(t, otherTenant, otherUser, []string{"ROLE_M2M"})
+		otherID, _ = createM2MClient(t, otherTenant, otherUser, false)
 	})
 	if clientIDsOn(t, serverURL, suiteToken(t))[suiteID] {
 		t.Errorf("createClient left client %s behind in the suite tenant", suiteID)
@@ -370,7 +370,7 @@ func decodeJWTPayload(t *testing.T, tokenStr string) map[string]any {
 func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
 	// Tenant A is the suite tenant, "test-tenant".
 	clientA, secretA := createClient(t, false)
-	clientB, secretB := createM2MClient(t, "tenant-b", "user-b", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	clientB, secretB := createM2MClient(t, "tenant-b", "user-b", true)
 	absent := "ABSENT" + strings.ToUpper(randSuffix(t))
 
 	for _, op := range []struct{ method, suffix string }{

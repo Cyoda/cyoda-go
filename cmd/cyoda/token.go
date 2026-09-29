@@ -14,6 +14,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
+// defaultTokenTTL is the lifetime without --ttl, capped by
+// CYODA_JWT_EXPIRY_SECONDS when that is shorter.
+const defaultTokenTTL = 15 * time.Minute
+
 // runToken is `cyoda token`: sign a short-lived admin token offline with
 // CYODA_JWT_SIGNING_KEY and print it, and nothing else, on stdout. It opens no
 // store and makes no network call. Exit codes: 0 success (or -h/--help); 1
@@ -25,7 +29,7 @@ func runToken(args []string, stdout, stderr io.Writer) int {
 	tenant := fs.String("tenant", "", "tenant id the token acts in (required)")
 	user := fs.String("user", "operator", "user id recorded for calls made with the token")
 	roles := fs.String("roles", "ROLE_ADMIN", "comma-separated roles")
-	ttl := fs.Duration("ttl", 15*time.Minute, "token lifetime; at most CYODA_JWT_EXPIRY_SECONDS")
+	ttl := fs.Duration("ttl", defaultTokenTTL, "token lifetime; at most CYODA_JWT_EXPIRY_SECONDS, which also caps the default")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0 // -h/--help: the flag package printed the usage to stderr
@@ -51,8 +55,14 @@ func runToken(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "cyoda token: %v\n", err)
 		return 1
 	}
-	if *ttl <= 0 || *ttl > time.Duration(settings.ExpirySeconds)*time.Second {
-		fmt.Fprintf(stderr, "cyoda token: --ttl must be greater than 0 and at most %ds (CYODA_JWT_EXPIRY_SECONDS)\n", settings.ExpirySeconds)
+	maxTTL := time.Duration(settings.ExpirySeconds) * time.Second
+	ttlSet := false
+	fs.Visit(func(f *flag.Flag) { ttlSet = ttlSet || f.Name == "ttl" })
+	if !ttlSet && *ttl > maxTTL {
+		*ttl = maxTTL
+	}
+	if *ttl < time.Second || *ttl > maxTTL {
+		fmt.Fprintf(stderr, "cyoda token: --ttl must be at least 1s and at most %ds (CYODA_JWT_EXPIRY_SECONDS)\n", settings.ExpirySeconds)
 		return 2
 	}
 	req := auth.OperatorTokenRequest{

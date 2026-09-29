@@ -53,15 +53,17 @@ signal that requests are unauthenticated.
   the root secret. Replacing it retires every issued key pair sealed by the
   wrapped vault (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
-- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`) (default: `cyoda`)
+- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`). Unset means the default; an
+  empty value stops the server at startup and makes `cyoda token` exit 1.
+  (default: `cyoda`)
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs,
   also set as `aud` on every token cyoda-go issues (`POST /oauth/token`, both
   grants, and `cyoda token`); empty string disables the audience check and
   issued tokens carry no `aud` (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
-  of `cyoda token --ttl`. Must be an integer from 1 to 31622400 (366 days);
-  any other value stops the server at startup and makes `cyoda token` exit 1.
-  (default: `3600`)
+  of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
+  be an integer from 1 to 31622400 (366 days); any other value stops the
+  server at startup and makes `cyoda token` exit 1. (default: `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
   derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
   M2M token-issuance path (`POST /oauth/token`) always uses the
@@ -235,11 +237,15 @@ the same PEM (SHA-256 of the public key).
 
 Operators can rotate signing keys at runtime via
 `POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
-Of the active key pairs of an audience inside their window, the one with the
-latest `validFrom` signs new tokens (on a tie, the greater key id). The
-bootstrap key takes part with no `validFrom`, so an active issued key pair
-inside its window always signs before it, and the bootstrap key signs
-whenever no issued key pair of its audience is active and inside its window.
+Of the active key pairs of an audience inside their window, the bootstrap
+key included, the one with the latest `validFrom` signs new tokens (on a tie,
+the greater key id). The bootstrap key takes part with a zero `validFrom`
+until a reactivation sets one. Until then, an active issued key pair inside
+its window signs before it, and the bootstrap key signs whenever no issued key
+pair of its audience is active and inside its window. A reactivation sets the
+bootstrap key's `validFrom` to the request's value, which defaults to now:
+from then on it signs before every issued key pair of its audience with an
+earlier `validFrom`.
 
 Setting `invalidateCurrent: true` also invalidates the issued key pairs of the
 audience whose window is open, the first rotation included. A rotation ends
@@ -262,8 +268,9 @@ those tokens verify on every node until the key pair's `validTo`.
 **Emergency revocation of a leaked token:** revoke the key pair named by the
 `kid` in the token's header. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
-from `POST /oauth/token` while no issued key pair of its audience is active
-and inside its window (before the first rotation, for example).
+from `POST /oauth/token` while it wins signer selection for its audience
+(before the first rotation, for example, or after a reactivation with the
+default `validFrom`; see above).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0 (or rotate with `invalidateGracePeriodSec: 0`), or `DELETE` it.
@@ -272,6 +279,10 @@ and inside its window (before the first rotation, for example).
   `CYODA_JWT_EXPIRY_SECONDS` has passed since every node applied the
   invalidation (see *Shared and persisted* below): by then every token it
   signed before has expired. Reactivating it sooner makes those tokens verify
+  again. Pass an early `validFrom` on the reactivation, for example
+  `1970-01-01T00:00:00Z`, so that the issued key pairs of its audience keep
+  signing `POST /oauth/token`. With the default `validFrom` (now), the
+  bootstrap key signs before them, and `POST /oauth/token` signs with it
   again. `DELETE` also ends the bootstrap key, but permanently.
 
 A grace period already running is cut short by invalidating the key pair again

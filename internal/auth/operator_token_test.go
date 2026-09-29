@@ -75,7 +75,11 @@ func TestMintOperatorToken_Refusals(t *testing.T) {
 		"no roles":   func(r *auth.OperatorTokenRequest) { r.Roles = nil },
 		"empty role": func(r *auth.OperatorTokenRequest) { r.Roles = []string{"ROLE_ADMIN", ""} },
 		"zero ttl":   func(r *auth.OperatorTokenRequest) { r.TTL = 0 },
-		"no issuer":  func(r *auth.OperatorTokenRequest) { r.Issuer = "" },
+		// iat and exp are whole seconds: a sub-second lifetime would give a
+		// token that has expired when it is issued.
+		"1ns ttl":        func(r *auth.OperatorTokenRequest) { r.TTL = time.Nanosecond },
+		"sub-second ttl": func(r *auth.OperatorTokenRequest) { r.TTL = time.Second - time.Nanosecond },
+		"no issuer":      func(r *auth.OperatorTokenRequest) { r.Issuer = "" },
 	}
 	for name, mut := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -95,6 +99,11 @@ func TestMintOperatorToken_Refusals(t *testing.T) {
 		if err := auth.ValidateOperatorTokenRequest(r); err == nil {
 			t.Errorf("ValidateOperatorTokenRequest(%s): want error", name)
 		}
+	}
+	oneSecond := ok
+	oneSecond.TTL = time.Second
+	if err := auth.ValidateOperatorTokenRequest(oneSecond); err != nil {
+		t.Errorf("1s ttl refused: %v", err)
 	}
 	if err := auth.ValidateOperatorTokenRequest(ok); err != nil {
 		t.Errorf("valid request refused: %v", err)
