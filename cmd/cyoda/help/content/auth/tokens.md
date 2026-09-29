@@ -8,6 +8,7 @@ see_also:
   - auth.clients
   - auth.oidc
   - auth.trusted-keys
+  - cli.token
   - config.auth
   - errors.UNAUTHORIZED
   - errors.FORBIDDEN
@@ -32,7 +33,7 @@ This is the single home for the JWT claim contract. `auth.oidc` and `auth.truste
 - `CYODA_IAM_MODE=jwt`
 - `CYODA_JWT_SIGNING_KEY` (PEM RSA private key; tokens cyoda issues are signed with this)
 - `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim)
-- `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens)
+- `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens, and no `aud` on issued tokens)
 - `CYODA_JWT_EXPIRY_SECONDS` (default `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` (default `client`; controls which key signs M2M tokens)
 
@@ -108,7 +109,7 @@ Claim shape for cyoda-minted tokens:
 
 - `sub` (string) — Principal. `client_id` for M2M, user ID for OBO and federated tokens.
 - `iss` (string) — Issuer. Cyoda-minted tokens use `CYODA_JWT_ISSUER`. Federated tokens use the upstream IdP's issuer.
-- `aud` (string or string array) — Audience. Checked against `CYODA_JWT_AUDIENCE` if set; against `expectedAudiences` for federated providers.
+- `aud` (string or string array) — Audience. Cyoda-minted tokens carry `CYODA_JWT_AUDIENCE` when it is set, and no `aud` otherwise. Checked against `CYODA_JWT_AUDIENCE` if set; against `expectedAudiences` for federated providers.
 - `exp` (int unix) — Expiry.
 - `iat` (int unix) — Issued-at.
 - `jti` (string UUID) — Unique token ID.
@@ -133,5 +134,6 @@ Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap ke
 - `auth.clients` — provision the M2M client used by `client_credentials` and OBO
 - `auth.oidc` — federate an external IdP whose JWTs cyoda will accept directly
 - `auth.trusted-keys` — register a public key whose JWTs can be exchanged for cyoda tokens
-- `config.auth` — `CYODA_JWT_*`, `CYODA_BOOTSTRAP_*`
+- `cli.token` — sign an admin token offline with the signing key
+- `config.auth` — `CYODA_JWT_*`
 - `openapi` — `cyoda help openapi tags` and look for the `IAM` tag

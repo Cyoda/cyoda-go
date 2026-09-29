@@ -18,10 +18,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestConfig_NoBootstrapClient verifies that app.Config no longer carries a
-// Bootstrap field: `cyoda token` replaces the config-defined bootstrap M2M
-// client, and no credential is defined by configuration except the signing
-// key. A leftover CYODA_BOOTSTRAP_CLIENT_ID creates nothing and is not read.
+// TestConfig_NoBootstrapClient verifies that app.Config carries no Bootstrap
+// field: no credential is defined by configuration except the signing key,
+// and `cyoda token` signs the first admin token. The leftover variables set
+// below create nothing and are not read.
 func TestConfig_NoBootstrapClient(t *testing.T) {
 	t.Setenv("CYODA_BOOTSTRAP_CLIENT_ID", "leftover")
 	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET", "leftover-secret")

@@ -13,10 +13,10 @@ import (
 	_ "github.com/cyoda-platform/cyoda-go/plugins/sqlite"
 )
 
-// TestRegistry_NoBootstrapClientVariables verifies that the bootstrap M2M
-// client's env vars (CYODA_BOOTSTRAP_CLIENT_ID and friends) are no longer
-// registered: `cyoda token` replaces the bootstrap client, and a leftover
-// registry entry would document a variable the server no longer reads.
+// TestRegistry_NoBootstrapClientVariables verifies that no variable with the
+// prefix below is registered: the server reads none, no credential is defined
+// by configuration except the signing key, and `cyoda token` signs the first
+// admin token. A registry entry would document a variable nothing reads.
 func TestRegistry_NoBootstrapClientVariables(t *testing.T) {
 	for _, e := range rootConfigVars {
 		if strings.HasPrefix(e.Name, "CYODA_BOOTSTRAP_") {

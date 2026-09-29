@@ -9,9 +9,10 @@ services:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
-      # For production: uncomment BOTH lines below and set CYODA_JWT_SIGNING_KEY
-      # in your shell before `docker compose up`.
+      # For production: uncomment the three lines below and set
+      # CYODA_JWT_SIGNING_KEY in your shell before `docker compose up`.
       # Multi-line PEM: `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"`
+      # CYODA_IAM_MODE: jwt
       # CYODA_REQUIRE_JWT: "true"
       # CYODA_JWT_SIGNING_KEY: ${CYODA_JWT_SIGNING_KEY:?set CYODA_JWT_SIGNING_KEY before compose up}
     volumes:

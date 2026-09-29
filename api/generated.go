@@ -2418,7 +2418,7 @@ type GroupedStatsRequest_Condition struct {
 
 // InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
 type InvalidateKeyRequestDto struct {
-	// GracePeriodSec Number of seconds to keep the key valid after invalidation, at most, and never past its current validTo. Default is 0 (immediate invalidation).
+	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once.
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
 }
 
@@ -2428,10 +2428,10 @@ type IssueJwtKeyPairRequestDto struct {
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
 	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
-	// InvalidateCurrent If true, invalidates the currently active key-pair for this audience.
+	// InvalidateCurrent If true, invalidates the issued key-pairs of this audience whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair of its audience is active and inside its window. An invalidated key-pair never signs again.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
-	// InvalidateGracePeriodSec Number of seconds to keep the old key valid after invalidation, at most, and never past its current validTo. Only applicable when invalidateCurrent is true.
+	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true.
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// ValidFrom When the key-pair becomes valid. Defaults to current date-time if not specified.

@@ -342,7 +342,7 @@ func TestKVKeyStore_PublishedIncludesGraceExcludesExpiredSorted(t *testing.T) {
 // record with no validTo is not reachable through the admin API (Invalidate
 // always sets validTo via graceExpiry), but a hand-written or foreign-node
 // record could still take this shape, and JWKS must not publish a key that
-// verifies nothing.
+// can never verify.
 func TestKVKeyStore_PublishedExcludesInactiveNoValidTo(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)

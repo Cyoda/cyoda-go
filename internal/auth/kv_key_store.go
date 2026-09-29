@@ -233,7 +233,7 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 // window opening), and it is not the one shape Verifies(now) always refuses,
 // active or not: an inactive record with no validTo. That shape is not
 // reachable through the admin API (Invalidate always sets validTo via
-// graceExpiry), but Published must not publish a key that verifies nothing
+// graceExpiry), but Published must not publish a key that can never verify,
 // regardless of how the record arrived.
 func publishable(kp *KeyPair, now time.Time) bool {
 	return windowOpen(kp.ValidTo, now) && (kp.Active || kp.ValidTo != nil)

@@ -21,6 +21,15 @@ across a restart, and when its issuing bootstrap key is replaced.
   reactivates a deleted bootstrap key, and replacing
   `CYODA_JWT_SIGNING_KEY` afterwards mints a fresh KID with no stored
   state — the old, deleted key stays deleted.
+- **A rotation never ends the bootstrap key.** `invalidateCurrent` on
+  `POST /oauth/keys/keypair` ends the issued key pairs of the audience whose
+  window is open, the first rotation included; the bootstrap key is not one
+  of them. It stays active, keeps verifying, and signs again whenever no
+  issued key pair of its audience is active and inside its window. Only an
+  invalidate or `DELETE` that names its key id ends it, after the grace
+  period if one is given. Cloud's configured key
+  (`KeyPairStrategy.LOCAL_FILE`, `JwtSigningKeyProvider.kt`) is not stored
+  and is never a rotation sibling either, so the tiers agree.
 - **Replacing the bootstrap key retires every key pair it owned.** A key pair
   is sealed under the bootstrap key configured at the time it was issued.
   Once `CYODA_JWT_SIGNING_KEY` is replaced, those key pairs stop signing,
@@ -113,3 +122,6 @@ Tracked in CP-3979. Confirm, or record where Cloud differs:
 6. A malformed key-pair `keyId`, and a `validFrom`/`validTo` outside UTC
    years 1..9999 on the key-pair and trusted-key endpoints, answer `400
    BAD_REQUEST`, and nothing is stored.
+7. A rotation (`invalidateCurrent`) ends stored key pairs only, never the
+   configured signing key. The grace-period rules — verify until the end of
+   the grace period, never sign again — are in `signing-key-window.md`.

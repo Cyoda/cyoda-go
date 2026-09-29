@@ -35,8 +35,8 @@ func NewLocalKeySource(ks KeyStore) KeySource {
 // GetKey returns the public key of kid if the store lets it verify now:
 // inside its window, and active or still in the grace period an
 // invalidation gave it (an invalidated key pair verifies until the end of
-// its grace period; one whose window has ended, or that was deleted,
-// verifies nothing). Every refusal wraps ErrKeyNotFound.
+// its grace period; one whose window has ended, or that was deleted, never
+// verifies). Every refusal wraps ErrKeyNotFound.
 func (s *localKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 	pub, err := s.ks.VerificationKey(kid)
 	if err != nil {

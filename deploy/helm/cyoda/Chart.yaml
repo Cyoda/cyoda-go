@@ -22,4 +22,4 @@ maintainers:
 annotations:
   artifacthub.io/changes: |
     - terminationGracePeriodSeconds defaults to 390, so a node can finish its scheduled runs before it is killed
-    - Removed the bootstrap client values; use `cyoda token`
+    - Removed the `bootstrap.*` values and the bootstrap Secret; the first admin token comes from `cyoda token` (see NOTES)

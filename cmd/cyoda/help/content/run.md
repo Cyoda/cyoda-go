@@ -239,7 +239,7 @@ helm upgrade --install cyoda ./deploy/helm/cyoda \
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
 - `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
-- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. Generates a fresh JWT signing key and randomized bootstrap client secret per run. Intended for contributors testing local changes in a container before they land.
+- `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. The compose file's defaults apply: sqlite storage and mock auth. Intended for contributors testing local changes in a container before they land.
 
 **Run with in-memory storage and mock auth (go run):**
 

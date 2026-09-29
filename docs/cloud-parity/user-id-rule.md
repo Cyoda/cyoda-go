@@ -44,7 +44,11 @@ unlike a tenant id, it has no charset grammar.
 | First-party user claim: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
 | OIDC `sub` | Federated tokens | `401`, as before |
 | Token-exchange subject token `sub`, which becomes the issued token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_grant` |
-| `CYODA_BOOTSTRAP_USER_ID` | Process startup, only when a bootstrap client is configured | Non-zero exit; the chart's `values.schema.json` rejects it at `helm install`, and a unit test checks that its pattern agrees with the rule on every character |
+
+`cyoda token --user`, which signs an admin token offline with the signing key,
+checks the same rule, the reserved word below included, before it signs (exit
+code `2`); the claim is checked again at the first door when the token is
+used. No configuration variable carries a user id.
 
 A `caas_user_id` that is present names the user. If it is empty, not a string,
 or outside the rule, the token is rejected. It never falls back to `sub`, which
@@ -56,8 +60,8 @@ to `sub`, so the full id can be longer than 255 characters.
 
 ### `oidc:` is a reserved word
 
-Every user id that does not come from the OIDC path — the first-party claim, the
-token-exchange `sub` and `CYODA_BOOTSTRAP_USER_ID` — must also not begin with
+Every user id that does not come from the OIDC path — the first-party claim and the
+token-exchange `sub` — must also not begin with
 `oidc:`, compared without case. Without this, a first-party token could carry
 `oidc:<providerId>:alice`, the exact user id of the OIDC principal `alice`, and
 the audit trail could not tell the two apart. The check is

@@ -76,7 +76,7 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_JWT_SIGNING_KEY` — RSA private key, PEM-encoded (required in jwt mode)
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY`; takes precedence
 - `CYODA_JWT_ISSUER` = `cyoda` (default; set to your issuer URI)
-- `CYODA_JWT_AUDIENCE` = `` (default empty; set to require audience claim validation)
+- `CYODA_JWT_AUDIENCE` = `` (default empty; set to require the audience claim on inbound tokens and to set it on issued tokens)
 - `CYODA_JWT_EXPIRY_SECONDS` = `3600` (default)
 
 **Inter-node dispatch auth (cluster mode):**
@@ -84,16 +84,20 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_HMAC_SECRET` — hex-encoded HMAC secret for inter-node dispatch authentication
 - `CYODA_HMAC_SECRET_FILE` — file path for `CYODA_HMAC_SECRET`; takes precedence
 
-**Bootstrap M2M client (optional):**
+**First admin token (jwt mode):**
 
-- `CYODA_BOOTSTRAP_CLIENT_ID` — M2M client ID to provision at startup
-- `CYODA_BOOTSTRAP_CLIENT_SECRET` — M2M client secret (required when client ID is set)
-- `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE` — file path for `CYODA_BOOTSTRAP_CLIENT_SECRET`; takes precedence
-- `CYODA_BOOTSTRAP_TENANT_ID` = `default-tenant` (default) — must match
-  `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`; in jwt mode with a bootstrap client
-  configured, a value outside it stops startup (mock mode ignores bootstrap)
-- `CYODA_BOOTSTRAP_USER_ID` = `admin` (default)
-- `CYODA_BOOTSTRAP_ROLES` = `ROLE_ADMIN,ROLE_M2M` (default)
+No credential is configured besides the signing key. Once the server runs in
+jwt mode, sign the first admin token with the same key and use it to create
+the M2M clients that applications and compute nodes use:
+
+```
+TOKEN=$(cyoda token --tenant acme)
+curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
+```
+
+In Kubernetes, `kubectl exec <pod> -- /cyoda token --tenant acme`; in Docker
+Compose, `docker compose exec <service> /cyoda token --tenant acme`. See
+`cli.token`.
 
 **Admin metrics auth (optional):**
 

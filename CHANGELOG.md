@@ -6,6 +6,43 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The bootstrap M2M client is removed; `cyoda token` signs the first admin
+  token.** `CYODA_BOOTSTRAP_CLIENT_ID`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
+  `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`, `CYODA_BOOTSTRAP_TENANT_ID`,
+  `CYODA_BOOTSTRAP_USER_ID` and `CYODA_BOOTSTRAP_ROLES` are gone, and so are
+  the Helm chart's `bootstrap.*` values, its bootstrap Secret and the
+  matching ConfigMap keys. A leftover variable is ignored like any unknown
+  one; a token request that relied on the client it created fails with
+  `401`. Whoever holds `CYODA_JWT_SIGNING_KEY` can already sign any admin
+  token, so the client was a second root credential, weaker than the first.
+  Use `cyoda token --tenant <tenant>` instead: it signs a short-lived admin
+  token offline with the signing key. In Kubernetes run
+  `kubectl exec <pod> -- /cyoda token --tenant <tenant>`, in Docker Compose
+  `docker compose exec <service> /cyoda token --tenant <tenant>`; the
+  container already holds the key. Create the M2M clients that applications
+  and compute nodes use with that token (`POST /clients`). With the variables
+  gone, the `caas_org_id` claim is the only place a tenant id enters
+  cyoda-go from outside it. See `cyoda help cli token`.
+
+- **A rotation no longer ends the signing key from `CYODA_JWT_SIGNING_KEY`,
+  and an invalidated key pair verifies until the end of its grace period.**
+  `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs
+  only, the first rotation included; it used to invalidate the bootstrap key
+  too. The bootstrap key stays active and signs again whenever no issued key
+  pair of its audience is active and inside its window, so `cyoda token`
+  keeps working through routine key management. Only an invalidate or
+  `DELETE` that names its key id ends it, and the node that takes the call
+  logs a WARN that tokens from `cyoda token` are refused once any grace
+  period ends. An invalidated key pair, issued or the bootstrap key, never
+  signs again, but tokens it signed keep verifying until the end of its grace
+  period (`gracePeriodSec`, or `invalidateGracePeriodSec` on a rotation;
+  never past its `validTo`). Before, it stopped verifying at once and the
+  grace period only kept its public key in JWKS. The default grace period is
+  still 0, which ends verification at once; invalidating again with 0, or
+  `DELETE`, cuts a running grace period short. See `cyoda help config auth`
+  ("JWT signing keypair rotation") and
+  `docs/cloud-parity/signing-key-window.md`.
+
 - **Signing key pairs are shared and persisted by the cluster.** See
   `cyoda help config auth` ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-pairs.md`.
@@ -101,18 +138,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
   letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
-  preserved and significant. It is enforced at the two places a tenant id
-  enters cyoda-go from outside it, and only those: the `caas_org_id` JWT
-  claim — which covers every authenticated HTTP request and every
-  authenticated gRPC method, since gRPC delegates to the same authenticator
-  — and `CYODA_BOOTSTRAP_TENANT_ID` at startup. A token whose claim falls
+  preserved and significant. It is enforced at the one place a tenant id
+  enters cyoda-go from outside it: the `caas_org_id` JWT claim, which covers
+  every authenticated HTTP request and every authenticated gRPC method,
+  since gRPC delegates to the same authenticator. `cyoda token --tenant`
+  checks it too before it signs. A token whose claim falls
   outside the grammar is an **ordinary `401`** with the uniform RFC 9457
   problem detail, indistinguishable from any other bad token; over gRPC it
-  is `codes.Unauthenticated`. A `CYODA_BOOTSTRAP_TENANT_ID` outside it
-  **refuses to start**, but only when a bootstrap client is configured — a
-  deployment that configures none is unaffected even when the variable is
-  explicitly empty. Every tenant either tier ships or uses today is
-  admitted: `SYSTEM`, `CYODA`, `default-tenant`, `mock-tenant`,
+  is `codes.Unauthenticated`. Every tenant either tier ships or uses today is
+  admitted: `SYSTEM`, `CYODA`, `mock-tenant`,
   `riskblocs`, `tenant-abc-123`, canonical UUIDs, 32-character hex ids and
   bare numerics. One further operator-facing tenant value, the non-JWT IAM
   mode's `MockTenantID`, is covered by a test rather than by the check: it
@@ -136,8 +170,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   noncharacters and U+FFFD are new for it too. The rule now applies at every
   place a principal's user id enters cyoda-go from outside it, through one
   check. **`oidc:` is a reserved word:** a user id that does not come from
-  the OIDC path — the first-party claim, the token-exchange `sub` and
-  `CYODA_BOOTSTRAP_USER_ID` — must not begin with it, in any case, because
+  the OIDC path — the first-party claim and the token-exchange `sub` —
+  must not begin with it, in any case, because
   the OIDC path builds its user ids as `oidc:<providerId>:<sub>` and a
   first-party principal could otherwise carry an OIDC principal's user id.
   The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
@@ -147,9 +181,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   not a string, or outside the rule is rejected; it no longer falls back to
   `sub`. A token-exchange subject token whose `sub` is outside the rule is
   **`400 invalid_grant`** — before, it was exchanged for a token that every
-  later request rejected. A `CYODA_BOOTSTRAP_USER_ID` outside the rule
-  **refuses to start** in jwt mode when a bootstrap client is configured, and
-  the chart's `bootstrap.userId` fails `helm install`. No new error code. The
+  later request rejected. `cyoda token --user` checks the rule too before
+  it signs. No new error code. The
   contract and the Cloud comparison are in
   `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
 
@@ -440,6 +473,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help helm`.
 
 ### Added
+
+- **`cyoda token` signs a short-lived admin token offline.**
+  `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
+  signs a person token (`user_roles`, default `ROLE_ADMIN`; user `operator`;
+  lifetime `15m`, at most `CYODA_JWT_EXPIRY_SECONDS`) with
+  `CYODA_JWT_SIGNING_KEY` and prints it, and nothing else, on stdout. It opens
+  no store and makes no network call. The token carries `aud` when
+  `CYODA_JWT_AUDIENCE` is set, serves HTTP and unary gRPC calls, and verifies
+  while the signing key verifies on the cluster. Exit codes: `0` success, `1`
+  key or configuration error, `2` flag error. See `cyoda help cli token`.
 
 - **Callout failover: a processor, criterion or function request that is not
   delivered, or not answered, is given to another compute member.** The dividing
@@ -740,6 +783,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `cyoda help audit`.
 
 ### Fixed
+
+- **Tokens from `/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
+  set.** Both grants, `client_credentials` and token exchange, issued tokens
+  without an `aud` claim, while the validator requires it whenever
+  `CYODA_JWT_AUDIENCE` is set, so a server configured with an audience
+  refused its own tokens with `401`. Issued tokens now carry the configured
+  audience; with `CYODA_JWT_AUDIENCE` empty they carry no `aud`, as before.
 
 - **A runtime-issued signing key pair only worked on the node that issued
   it.** In a cluster, a token signed with one was rejected by every other

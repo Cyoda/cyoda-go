@@ -227,7 +227,8 @@ func (s *KVKeyStore) Reactivate(ctx context.Context, kid string, from, to time.T
 	})
 }
 
-// deletedRecordFor marks rec's own KID deleted — terminal, verifies nothing.
+// deletedRecordFor marks rec's own KID deleted — terminal: it never signs or
+// verifies again.
 func deletedRecordFor(rec signingRecord) signingRecord {
 	rec.Deleted, rec.Active = true, false
 	return rec

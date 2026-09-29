@@ -772,13 +772,13 @@ func TestHandler_OidcStub_Returns501_WhenAdapterNil(t *testing.T) {
 
 // withNonUUIDTenantAdminCtx puts a non-UUID tenant admin user in the request
 // context. This mimics a deployment whose tenant id was created as a plain
-// hyphenated word (e.g. via `cyoda token --tenant default-tenant`) rather
+// hyphenated word (e.g. via `cyoda token --tenant acme-corp`) rather
 // than a UUID.
 func withNonUUIDTenantAdminCtx(req *http.Request) *http.Request {
 	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
 		UserID:   "admin-user",
 		UserName: "Admin User",
-		Tenant:   spi.Tenant{ID: "default-tenant", Name: "default-tenant"},
+		Tenant:   spi.Tenant{ID: "acme-corp", Name: "acme-corp"},
 		Roles:    []string{"ROLE_ADMIN"},
 	}))
 }
@@ -804,9 +804,7 @@ func TestOidcAdapter_NonUUIDTenantRejected(t *testing.T) {
 	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeOidcInvalidTenant {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeOidcInvalidTenant)
 	}
-	// The message no longer names the removed bootstrap client or its
-	// "default-tenant" literal: `cyoda token` replaced it, and there is no
-	// bootstrap deployment shape left to call out. It is also
+	// The message names no deployment shape, only the rule. It is
 	// operation-agnostic: oidcTenantFromCtx gates all six OIDC operations
 	// (register, list, update, invalidate, reactivate, delete), not just
 	// registration — see TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere.
@@ -1088,12 +1086,12 @@ func TestOidcAdapter_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 
 // TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere records the behaviour
 // change that ships with the keying fix. A non-UUID tenant such as
-// default-tenant used to receive an empty 200 from the list endpoint, because
+// acme-corp used to receive an empty 200 from the list endpoint, because
 // its prefix scan matched nothing — a success implying a registration that
 // could never have happened. Every OIDC operation now gives it the same 400
 // registration always gave it.
 func TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere(t *testing.T) {
-	const tenant = "default-tenant"
+	const tenant = "acme-corp"
 	id := uuid.New()
 
 	for name, call := range map[string]func(*Handler, *httptest.ResponseRecorder, *http.Request){
