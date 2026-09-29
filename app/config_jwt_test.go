@@ -50,6 +50,16 @@ func TestLoadJWTSettings_Base64PEMIsDecoded(t *testing.T) {
 	}
 }
 
+// An empty CYODA_JWT_EXPIRY_SECONDS means the default, as unset does.
+func TestLoadJWTSettings_EmptyExpiryIsTheDefault(t *testing.T) {
+	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
+	s, err := LoadJWTSettings()
+	if err != nil || s.ExpirySeconds != 3600 {
+		t.Fatalf("settings = %+v, err = %v; want expiry 3600", s, err)
+	}
+}
+
 func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
 	for _, v := range []string{"soon", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1), "9300000000"} {
 		t.Run(v, func(t *testing.T) {

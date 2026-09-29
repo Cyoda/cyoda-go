@@ -28,7 +28,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   days).** The server used to replace a non-numeric value with 3600 and
   accept 0 or a negative value, issuing tokens that had already expired; it
   now refuses to start, and `cyoda token` exits 1, for any value outside that
-  range. The Helm chart's `jwt.expirySeconds` has the same upper bound.
+  range; unset or empty still means 3600. The Helm chart's
+  `jwt.expirySeconds` has the same upper bound.
 
 - **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
   it and issue tokens with an empty `iss`; it now refuses to start, and

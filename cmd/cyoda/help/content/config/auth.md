@@ -61,9 +61,9 @@ signal that requests are unauthenticated.
   grants, and `cyoda token`); empty string disables the audience check and
   issued tokens carry no `aud` (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
-  of `cyoda token --ttl`. Must be an integer from 1 to 31622400 (366 days);
-  any other value stops the server at startup and makes `cyoda token` exit 1.
-  (default: `3600`)
+  of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
+  be an integer from 1 to 31622400 (366 days); any other value stops the
+  server at startup and makes `cyoda token` exit 1. (default: `3600`)
 - `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
   derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
   M2M token-issuance path (`POST /oauth/token`) always uses the
