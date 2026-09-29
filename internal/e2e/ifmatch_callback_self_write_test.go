@@ -252,7 +252,7 @@ func TestIfMatch_StaleLoopbackPut412(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
-		req.Header.Set("Authorization", "Bearer "+getToken(t, "testclient", "testsecret"))
+		req.Header.Set("Authorization", "Bearer "+suiteToken(t))
 		req.Header.Set("Content-Type", "application/json")
 		if ifMatch != "" {
 			req.Header.Set("If-Match", ifMatch)

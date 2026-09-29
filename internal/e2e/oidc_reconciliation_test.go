@@ -181,14 +181,14 @@ func TestOIDC_Delete_NotFound_ProblemDetail(t *testing.T) {
 
 // TestOIDC_Register_InvalidTenant_ProblemDetail asserts the server emits
 // application/problem+json with OIDC_INVALID_TENANT when the caller's tenant
-// is not UUID-shaped. The bootstrap "testclient"/"testsecret" credentials
-// belong to the non-UUID "test-tenant", triggering this guard.
+// is not UUID-shaped. The suite's admin token belongs to the non-UUID
+// "test-tenant", triggering this guard.
 func TestOIDC_Register_InvalidTenant_ProblemDetail(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 
-	token := getToken(t, "testclient", "testsecret") // bootstrap tenant = "test-tenant" (non-UUID)
+	token := suiteToken(t) // suite tenant = "test-tenant" (non-UUID)
 	resp := registerOIDCProvider(t, token, "badtenant")
 	assertProblemJSON(t, resp, http.StatusBadRequest, "OIDC_INVALID_TENANT")
 }

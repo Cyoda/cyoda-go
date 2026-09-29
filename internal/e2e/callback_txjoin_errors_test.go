@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
 
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 )
 
@@ -58,26 +60,63 @@ func randSuffix(t *testing.T) string {
 	return hex.EncodeToString(b)
 }
 
-// provisionTenant creates an M2M client at tenantID on THIS stack (bypassing the
-// tenant-derived /clients HTTP surface) and returns its credentials.
+// adminTokenFor mints a self-signed M2M-shaped admin token for an arbitrary
+// tenant/user on this stack's signing key. POST /clients derives a new
+// client's tenant from the caller's own claims, so provisionTenant uses this
+// to seed a client belonging to tenantID without reaching into the store.
+func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) string {
+	t.Helper()
+	kid, err := auth.DeriveKID(&h.signKey.PublicKey)
+	if err != nil {
+		t.Fatalf("derive kid: %v", err)
+	}
+	now := time.Now()
+	tok, err := auth.Sign(context.Background(), map[string]any{
+		"sub":          user,
+		"iss":          "cyoda-callback-test",
+		"caas_user_id": user,
+		"caas_org_id":  tenant,
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}, auth.NewRSASigner(h.signKey), kid)
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
+	return tok
+}
+
+// provisionTenant creates an M2M client at tenantID on THIS stack, through
+// POST /clients authenticated with a seed admin token minted for that tenant
+// (adminTokenFor) rather than reaching into the store directly, and returns
+// its credentials.
 func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string) (clientID, secret string) {
 	t.Helper()
-	authSvc := h.app.AuthService()
-	if authSvc == nil {
-		t.Fatal("provisionTenant requires JWT IAM mode (AuthService() returned nil)")
+	seed := h.adminTokenFor(t, tenantID, userID)
+	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/clients?withAdminRole=true", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
 	}
-	rb := make([]byte, 12)
-	if _, err := rand.Read(rb); err != nil {
-		t.Fatalf("rand: %v", err)
+	req.Header.Set("Authorization", "Bearer "+seed)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("provisionTenant: %v", err)
 	}
-	clientID = "cbxclient" + hex.EncodeToString(rb[:6])
-	secret = hex.EncodeToString(rb[6:])
-	if err := authSvc.M2MClientStore().CreateWithSecret(
-		clientID, spi.TenantID(tenantID), userID, secret, []string{"ROLE_ADMIN", "ROLE_M2M"},
-	); err != nil {
-		t.Fatalf("CreateWithSecret: %v", err)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("provisionTenant: %d: %s", resp.StatusCode, raw)
 	}
-	return clientID, secret
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("provisionTenant: no credentials in response (%v)", err)
+	}
+	return cred.ID, cred.Secret
 }
 
 // fetchTokenFor obtains a client-credentials bearer for the given creds on this stack.
@@ -138,7 +177,7 @@ func (h *callbackHarness) doAuthBearer(t *testing.T, bearer, method, path, body,
 // one full stack (postgres + member) for speed; each uses isolated names.
 func TestCallbackErr_LoudFailCodes(t *testing.T) {
 	h := newCallbackHarness(t)
-	_ = h.token(t) // prime the bootstrap (tenant-A) bearer used by h.callback/DoAuth
+	_ = h.token(t) // prime the harness's admin (tenant-A) bearer used by h.callback/DoAuth
 
 	// A syntactically valid entity path; the token is rejected in the middleware
 	// before the handler runs, so the id need not resolve to a real entity.

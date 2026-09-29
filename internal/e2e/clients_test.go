@@ -15,14 +15,17 @@ import (
 
 // --- Test cases for the /clients OpenAPI surface ---
 //
-// All requests go through the chi router via adminRequest (bootstrap
+// All requests go through the chi router via adminRequest (the suite's
 // admin token). The M2M-admin-role feature flag is enabled in TestMain
 // so withAdminRole=true is the happy path here; the flag-off case is
 // covered by the unit suite per spec D9.
 
 func TestE2E_Clients_ListEmpty(t *testing.T) {
-	// The bootstrap M2M client lives in the store too; List returns it.
-	// We only assert the response shape, not emptiness.
+	// We only assert the response shape and that a client this test creates
+	// is listed, not emptiness (other tests in the run may have left clients
+	// behind).
+	cid, _ := createClient(t, false)
+	t.Cleanup(func() { adminRequest(t, "DELETE", "/clients/"+cid, nil).Body.Close() })
 	resp := adminRequest(t, "GET", "/clients", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -33,16 +36,14 @@ func TestE2E_Clients_ListEmpty(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	// The bootstrap client `testclient` should appear with roles
-	// including ROLE_ADMIN (set in TestMain via CYODA_BOOTSTRAP_ROLES default).
 	found := false
 	for _, c := range list {
-		if c.ClientId == "testclient" {
+		if c.ClientId == cid {
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("bootstrap client testclient missing from list: %+v", list)
+		t.Errorf("created client %s missing from list: %+v", cid, list)
 	}
 }
 
@@ -243,8 +244,8 @@ func decodeJWTPayload(t *testing.T, tokenStr string) map[string]any {
 // mock the tenant context directly; this E2E case proves the JWT-claim
 // extraction in the auth middleware correctly gates the chi adapter.
 func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
-	// Seed tenant A: create a client via the standard admin path (bootstrap
-	// tenant). The bootstrap tenant is "test-tenant".
+	// Seed tenant A: create a client via the standard admin path (the suite
+	// tenant). The suite tenant is "test-tenant".
 	createResp := adminRequest(t, "POST", "/clients", nil)
 	defer createResp.Body.Close()
 	if createResp.StatusCode != http.StatusOK {

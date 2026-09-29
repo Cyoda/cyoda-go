@@ -66,7 +66,7 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 
 	// Fetch the auth token in the test goroutine — calling t.Fatal from a
 	// spawned goroutine is unsafe per Go's testing contract.
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 
 	// Both goroutines race to create an entity with the SAME email value.
 	const sharedEmail = "concurrent@x.com"

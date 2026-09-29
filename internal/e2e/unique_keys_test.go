@@ -128,7 +128,7 @@ func updateEntityRaw(t *testing.T, entityID, payload string) (int, string) {
 // patchEntityMerge issues PATCH /entity/JSON/{entityId} with merge-patch+json.
 func patchEntityMerge(t *testing.T, entityID, ifMatch, patch string) (int, string) {
 	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, http.MethodPatch,
 		serverURL+fmt.Sprintf("/api/entity/JSON/%s", entityID),
 		strings.NewReader(patch))

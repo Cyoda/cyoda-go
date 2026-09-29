@@ -2,10 +2,10 @@ package e2e_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,16 +15,17 @@ import (
 	"testing"
 	"time"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/google/uuid"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
-// adminRequest issues an authenticated request using the bootstrap admin token.
+// adminRequest issues an authenticated request using the suite's admin token.
 // The path must start with "/" and is appended to serverURL+"/api".
 func adminRequest(t *testing.T, method, path string, body []byte) *http.Response {
 	t.Helper()
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	var br io.Reader
 	if body != nil {
 		br = bytes.NewReader(body)
@@ -66,7 +67,7 @@ func mustJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// deleteTrustedKeyOnCleanup deletes a trusted key the bootstrap tenant
+// deleteTrustedKeyOnCleanup deletes a trusted key the suite tenant
 // registered, when the test ends. The tenant's trusted-key cap is shared by
 // every test in the run, so a test must not leave keys behind. A key already
 // deleted by the test itself is fine.
@@ -151,7 +152,7 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 		del.Body.Close()
 	})
 
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	header, err := base64.RawURLEncoding.DecodeString(strings.SplitN(token, ".", 2)[0])
 	if err != nil {
 		t.Fatalf("decode token header: %v", err)
@@ -185,7 +186,7 @@ func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 
 	// The current key still signs: a token can be issued and used.
-	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+getToken(t, "testclient", "testsecret"))
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+suiteToken(t))
 	defer use.Body.Close()
 	if use.StatusCode == http.StatusUnauthorized {
 		body, _ := io.ReadAll(use.Body)
@@ -221,7 +222,7 @@ func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 
-	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+getToken(t, "testclient", "testsecret"))
+	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+suiteToken(t))
 	defer use.Body.Close()
 	if use.StatusCode == http.StatusUnauthorized {
 		body, _ := io.ReadAll(use.Body)
@@ -526,7 +527,7 @@ func TestE2E_KeypairBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
 	oversized := fmt.Sprintf(`{"algorithm":"RS256","audience":"client","_padding":"%s"}`, padding)
 
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/keypair", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -551,7 +552,7 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
 	oversized := fmt.Sprintf(`{"keyId":"e2e-size","audience":"human","_padding":"%s"}`, padding)
 
-	token := getToken(t, "testclient", "testsecret")
+	token := suiteToken(t)
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/trusted", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -574,37 +575,61 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 // Cross-tenant isolation + deferred cases
 // ─────────────────────────────────────────────────────────────────────────────
 
-// createM2MClient provisions a new M2M client by reaching into the M2M store
-// directly. The legacy POST /api/account/m2m HTTP surface was retired in favour
-// of /clients; /clients derives tenant from the caller's auth context, so seeding
-// cross-tenant clients requires bypassing HTTP.
+// adminTokenForTenant signs a self-contained M2M-shaped admin token
+// (scopes ROLE_ADMIN,ROLE_M2M) for an arbitrary tenant/user, directly with
+// the shared server's own signing key. POST /clients derives a new client's
+// tenant from the caller's own claims, so createM2MClient uses this to seed a
+// client belonging to tenantID without reaching into the store.
+func adminTokenForTenant(t *testing.T, tenant, user string) string {
+	t.Helper()
+	kid, err := auth.DeriveKID(&e2eSignKey.PublicKey)
+	if err != nil {
+		t.Fatalf("derive kid: %v", err)
+	}
+	now := time.Now()
+	tok, err := auth.Sign(context.Background(), map[string]any{
+		"sub":          user,
+		"iss":          e2eIssuer,
+		"caas_user_id": user,
+		"caas_org_id":  tenant,
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}, auth.NewRSASigner(e2eSignKey), kid)
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
+	return tok
+}
+
+// createM2MClient provisions a new M2M client belonging to tenantID, through
+// POST /clients authenticated with a seed admin token minted for that tenant
+// (adminTokenForTenant) rather than reaching into the store directly.
 // Returns (clientID, clientSecret).
 func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (string, string) {
 	t.Helper()
-	authSvc := testApp.AuthService()
-	if authSvc == nil {
-		t.Fatal("createM2MClient requires JWT IAM mode (testApp.AuthService() returned nil)")
+	withAdmin := containsString(roles, "ROLE_ADMIN")
+	seed := adminTokenForTenant(t, tenantID, userID)
+	path := "/clients"
+	if withAdmin {
+		path += "?withAdminRole=true"
 	}
-
-	// Generate clientID + secret with crypto/rand so the test creates a unique
-	// record per call (mirrors the 16-char alphanumeric shape used by /clients).
-	randBytes := make([]byte, 12)
-	if _, err := rand.Read(randBytes); err != nil {
-		t.Fatalf("rand: %v", err)
+	resp := unauthRequest(t, http.MethodPost, "/api"+path, "Bearer "+seed)
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("createM2MClient: seed POST /clients: %d: %s", resp.StatusCode, raw)
 	}
-	clientID := "e2etest" + hex.EncodeToString(randBytes[:6])
-	clientSecret := hex.EncodeToString(randBytes[6:])
-
-	if err := authSvc.M2MClientStore().CreateWithSecret(
-		clientID,
-		spi.TenantID(tenantID),
-		userID,
-		clientSecret,
-		roles,
-	); err != nil {
-		t.Fatalf("M2MClientStore.CreateWithSecret: %v", err)
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
 	}
-	return clientID, clientSecret
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("createM2MClient: no credentials in response (%v)", err)
+	}
+	return cred.ID, cred.Secret
 }
 
 // adminRequestAs issues an authenticated request using a specific M2M client's token.
@@ -630,7 +655,7 @@ func adminRequestAs(t *testing.T, clientID, clientSecret, method, path string, b
 	return resp
 }
 
-// TestE2E_CrossTenant_TrustedKey_409 registers a trusted key as the bootstrap
+// TestE2E_CrossTenant_TrustedKey_409 registers a trusted key as the suite
 // tenant, then attempts to register the same keyId from a second tenant and
 // expects 409 KEY_OWNED_BY_DIFFERENT_TENANT. Adapter-level coverage also
 // exists at TestRegisterTrustedKey_CrossTenantCollision_409.
@@ -641,7 +666,7 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
 	deleteTrustedKeyOnCleanup(t, kid)
 
-	// Register the key as the bootstrap tenant (tenant A = "test-tenant").
+	// Register the key as the suite tenant (tenant A = "test-tenant").
 	bodyA := mustJSON(t, map[string]any{
 		"keyId":    kid,
 		"jwk":      rsaJWK(t, kid),

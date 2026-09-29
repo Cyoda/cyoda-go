@@ -21,7 +21,7 @@ import (
 )
 
 // registerTrustedSigner generates an RSA key, registers its public half as a
-// trusted key for the bootstrap tenant, and returns the private half and kid
+// trusted key for the suite tenant, and returns the private half and kid
 // so a test can sign subject tokens the token-exchange grant will verify.
 func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 	t.Helper()
@@ -56,7 +56,9 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 }
 
 // exchangeSubject presents a subject token carrying sub and tenant, signed by
-// the trusted key, to the token-exchange grant as the bootstrap client.
+// the trusted key, to the token-exchange grant as a fresh M2M client of the
+// suite tenant (the exchanging client's own tenant referenced by the
+// TenantMismatch test below).
 func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string) *http.Response {
 	t.Helper()
 	now := time.Now()
@@ -76,7 +78,8 @@ func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string
 		"subject_token":      {subject},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
 	}
-	return postToken(t, form, "testclient", "testsecret")
+	id, secret := createClient(t, false)
+	return postToken(t, form, id, secret)
 }
 
 // TestToken_TokenExchange_InvalidatedKeyGracePeriod: a key invalidated with a

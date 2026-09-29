@@ -38,7 +38,7 @@ var (
 	procSvc         *localproc.LocalProcessingService // in-process processor/criteria for workflow tests
 	allOperationIds []string
 	markedOps       = map[string]string{} // operationId → x-cyoda-status value
-	testApp         *app.App              // exposed for test-mode store seeding (e.g. cross-tenant M2M client bootstrap)
+	testApp         *app.App              // exposed for test-mode store seeding
 	e2eSignKey      *rsa.PrivateKey       // the stack's JWT signing key, for tests that mint bespoke claims
 	e2eIssuer       string                // the stack's JWT issuer, for the same
 )
@@ -130,13 +130,6 @@ func TestMain(m *testing.M) {
 	cfg.IAM.JWTExpiry = 3600
 	e2eSignKey = rsaKey
 	e2eIssuer = cfg.IAM.JWTIssuer
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "testclient",
-		ClientSecret: "testsecret",
-		TenantID:     "test-tenant",
-		UserID:       "test-admin",
-		Roles:        "ROLE_ADMIN,ROLE_M2M",
-	}
 	// Enable trusted-key feature for E2E coverage. The KV store backing the
 	// trusted-key store is wired in app.New, so this must be set before that call.
 	cfg.IAM.TrustedKeyRegistrationEnabled = true

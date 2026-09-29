@@ -45,7 +45,7 @@ import (
 
 const intxTrackingTenant = "test-tenant"
 
-// intxTenantCtx builds a background context carrying the bootstrap tenant's
+// intxTenantCtx builds a background context carrying the suite tenant's
 // user context, matching the tenant that createEntityE2E writes under so the
 // in-process store/search sees the same rows.
 func intxTenantCtx() context.Context {

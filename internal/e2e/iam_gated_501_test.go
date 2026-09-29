@@ -25,8 +25,8 @@ var all21GatedOps = []gatedOp{
 	// 4 M2M ops (requireM2MStore → 501)
 	{http.MethodGet, "/api/clients", "listTechnicalUsers"},
 	{http.MethodPost, "/api/clients", "createTechnicalUser"},
-	{http.MethodDelete, "/api/clients/testclient", "deleteTechnicalUser"},
-	{http.MethodPut, "/api/clients/testclient/secret", "resetTechnicalUserSecret"},
+	{http.MethodDelete, "/api/clients/someclient", "deleteTechnicalUser"},
+	{http.MethodPut, "/api/clients/someclient/secret", "resetTechnicalUserSecret"},
 	// 5 keypair ops (requireKeyStore → 501)
 	{http.MethodPost, "/api/oauth/keys/keypair", "issueJwtKeyPair"},
 	{http.MethodGet, "/api/oauth/keys/keypair/current?audience=human", "getCurrentJwtKeyPair"},

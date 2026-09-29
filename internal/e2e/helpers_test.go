@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
@@ -114,9 +117,70 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 	return token
 }
 
+// suiteClaims are the claims the shared server's former bootstrap client
+// carried, so every assertion on principal, tenant and roles is unchanged.
+func suiteClaims(now time.Time) map[string]any {
+	return map[string]any{
+		"sub":          "suite-admin",
+		"iss":          e2eIssuer,
+		"caas_user_id": "test-admin",
+		"caas_org_id":  "test-tenant",
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+}
+
+// suiteTokenRaw signs an admin token for the shared server in the shape of a
+// client_credentials token (scopes → a service principal), so attribution
+// assertions are unchanged. It never touches *testing.T.
+func suiteTokenRaw() (string, error) {
+	kid, err := auth.DeriveKID(&e2eSignKey.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	return auth.Sign(context.Background(), suiteClaims(time.Now()), auth.NewRSASigner(e2eSignKey), kid)
+}
+
+// suiteToken is the test-goroutine form of suiteTokenRaw.
+func suiteToken(t *testing.T) string {
+	t.Helper()
+	tok, err := suiteTokenRaw()
+	if err != nil {
+		t.Fatalf("sign suite token: %v", err)
+	}
+	return tok
+}
+
+// createClient creates an M2M client in the suite tenant through POST
+// /clients and returns its id and secret (never log the secret).
+func createClient(t *testing.T, withAdminRole bool) (string, string) {
+	t.Helper()
+	path := "/api/clients"
+	if withAdminRole {
+		path += "?withAdminRole=true"
+	}
+	resp := doAuth(t, http.MethodPost, path, "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("create client: %d %s", resp.StatusCode, b)
+	}
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		t.Fatalf("create client: no credentials in response (%v)", err)
+	}
+	return cred.ID, cred.Secret
+}
+
 // authRequestRaw creates an authenticated HTTP request.
 func authRequestRaw(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	token, err := getTokenRaw(ctx, "testclient", "testsecret")
+	token, err := suiteTokenRaw()
 	if err != nil {
 		return nil, err
 	}

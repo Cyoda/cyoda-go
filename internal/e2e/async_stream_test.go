@@ -174,6 +174,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -875,8 +876,8 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 // indistinguishable from one a real submit produced; what is missing is only
 // the executor, which is the point.
 //
-// The row is written under the callback harness's bootstrap tenant, so it is
-// visible to that stack's authenticated status reads. Returns the job id.
+// The row is written under the callback harness's tenant, so it is visible
+// to that stack's authenticated status reads. Returns the job id.
 func insertOrphanRunningJob(t *testing.T, model string) string {
 	t.Helper()
 	return insertRunningJobRow(t, model, 0)
@@ -901,7 +902,7 @@ func insertOrphanRunningJob(t *testing.T, model string) string {
 // column can be NULL/zero.
 func insertRunningJobRow(t *testing.T, model string, staleClaims int64) string {
 	t.Helper()
-	const tenantID = "test-tenant" // callbackHarness's cfg.Bootstrap.TenantID
+	const tenantID = "test-tenant" // callbackHarness's default admin token tenant
 	jobID := uuid.NewString()
 
 	pit := time.Now().Add(time.Minute).UTC()
@@ -1037,37 +1038,6 @@ func persistedJobReleased(t *testing.T, jobID string) bool {
 	return released
 }
 
-// fetchClientToken obtains a JWT via client_credentials grant against an
-// arbitrary base URL — the package-level getTokenRaw hardcodes the shared
-// TestMain serverURL, which the standalone shutdown-drain app does not use.
-func fetchClientToken(t *testing.T, baseURL, clientID, clientSecret string) string {
-	t.Helper()
-	form := "grant_type=client_credentials"
-	req, err := http.NewRequest(http.MethodPost, baseURL+"/api/oauth/token", strings.NewReader(form))
-	if err != nil {
-		t.Fatalf("new token request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("token request: %v", err)
-	}
-	body := readHTTPBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("token request: %d %s", resp.StatusCode, body)
-	}
-	var result map[string]any
-	if err := json.Unmarshal([]byte(body), &result); err != nil {
-		t.Fatalf("decode token response: %v; body=%s", err, body)
-	}
-	token, _ := result["access_token"].(string)
-	if token == "" {
-		t.Fatalf("no access_token in response: %s", body)
-	}
-	return token
-}
-
 // doAuthAgainst issues an authenticated request against an arbitrary base
 // URL with a caller-supplied bearer token.
 func doAuthAgainst(t *testing.T, baseURL, token, method, path, body string) *http.Response {
@@ -1167,10 +1137,6 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-standalone-test"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID: "standalone-client-" + uuid.NewString(), ClientSecret: "standalone-secret",
-		TenantID: "test-tenant", UserID: "standalone-admin", Roles: "ROLE_ADMIN,ROLE_M2M",
-	}
 
 	srv := httptest.NewUnstartedServer(nil)
 	srv.Start()
@@ -1193,7 +1159,28 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	closeNow := func() { once.Do(func() { _ = a.Close() }) }
 	t.Cleanup(closeNow)
 
-	token := fetchClientToken(t, srv.URL, cfg.Bootstrap.ClientID, cfg.Bootstrap.ClientSecret)
+	// A self-signed admin token in the shape of a client_credentials token —
+	// this stack has no M2M client of its own; signing directly with rsaKey
+	// (registered as this stack's default signing key) needs no round trip.
+	kid, err := auth.DeriveKID(&rsaKey.PublicKey)
+	if err != nil {
+		t.Fatalf("derive kid: %v", err)
+	}
+	now := time.Now()
+	token, err := auth.Sign(context.Background(), map[string]any{
+		"sub":          "suite-admin",
+		"iss":          cfg.IAM.JWTIssuer,
+		"caas_user_id": "standalone-admin",
+		"caas_org_id":  "test-tenant",
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}, auth.NewRSASigner(rsaKey), kid)
+	if err != nil {
+		t.Fatalf("sign admin token: %v", err)
+	}
 	doAuth := func(method, path, body string) *http.Response {
 		return doAuthAgainst(t, srv.URL, token, method, path, body)
 	}

@@ -32,7 +32,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 	}`
 	setupModelWithWorkflow(t, model, wf)
 
-	// Tenant A (the bootstrap tenant) creates an entity, capturing the txID.
+	// Tenant A (the suite tenant) creates an entity, capturing the txID.
 	entityID, txIDA := createEntityE2EWithTxID(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 	if txIDA == "" {
 		t.Fatal("create returned empty transactionId")

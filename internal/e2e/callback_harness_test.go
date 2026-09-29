@@ -12,13 +12,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -26,6 +26,7 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -207,9 +208,9 @@ func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure fu
 }
 
 // newCalloutHarnessUnseeded is newCalloutHarnessWithKey without seeding the
-// cached bearer token at the end of construction. A stack whose signer is
-// broken cannot mint that seed token, so a test proving a broken signer fails
-// closed must build the stack without it.
+// cached bearer at the end of construction — an internal building block so
+// newCalloutHarnessWithKey can seed it (h.token(t), self-signed — see token
+// below) as a separate, clearly-labelled step.
 func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
 
@@ -226,13 +227,10 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	cfg.IAM.JWTSigningKey = keyPEM
 	cfg.IAM.JWTIssuer = "cyoda-callback-test"
 	cfg.IAM.JWTExpiry = 3600
-	cfg.Bootstrap = app.BootstrapConfig{
-		ClientID:     "testclient",
-		ClientSecret: "testsecret",
-		TenantID:     "test-tenant",
-		UserID:       "test-admin",
-		Roles:        "ROLE_ADMIN,ROLE_M2M",
-	}
+	// M2MAdminRoleEnabled so a test can create ROLE_ADMIN clients on this
+	// stack through POST /clients?withAdminRole=true (createClient below),
+	// rather than reaching into the store directly.
+	cfg.IAM.M2MAdminRoleEnabled = true
 	// IMPORTANT: do NOT set cfg.ExternalProcessing — leaving it nil selects the
 	// owner's loop over the real dispatcher, which mints and attaches the cyodatxtoken.
 
@@ -347,7 +345,9 @@ func (h *callbackHarness) lookupFunc(name string) (callbackFunc, bool) {
 	return fn, ok
 }
 
-// token returns a cached client-credentials bearer for this stack.
+// token returns a cached admin bearer for this stack — a signed admin token
+// in the shape of a client_credentials token (self-signed with h.signKey, not
+// fetched through /oauth/token; see fetchToken).
 func (h *callbackHarness) token(t *testing.T) string {
 	t.Helper()
 	h.bearerOnce.Do(func() { h.bearerVal.Store(h.fetchToken(t)) })
@@ -358,29 +358,33 @@ func (h *callbackHarness) token(t *testing.T) string {
 	return tok
 }
 
+// fetchToken signs an admin token for this stack directly with h.signKey, in
+// the shape of a client_credentials token (scopes ROLE_ADMIN,ROLE_M2M;
+// tenant test-tenant; caas_user_id test-admin) — the same claims suiteClaims
+// uses for the shared server. It never calls /oauth/token: a caller that
+// specifically needs the real endpoint's own signer selection (e.g. proving
+// which key it currently signs with) uses fetchTokenFor instead.
 func (h *callbackHarness) fetchToken(t *testing.T) string {
 	t.Helper()
-	form := url.Values{"grant_type": {"client_credentials"}}
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+	kid, err := auth.DeriveKID(&h.signKey.PublicKey)
 	if err != nil {
-		t.Fatalf("token request: %v", err)
+		t.Fatalf("derive kid: %v", err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth("testclient", "testsecret")
-	resp, err := http.DefaultClient.Do(req)
+	now := time.Now()
+	tok, err := auth.Sign(context.Background(), map[string]any{
+		"sub":          "suite-admin",
+		"iss":          "cyoda-callback-test",
+		"caas_user_id": "test-admin",
+		"caas_org_id":  "test-tenant",
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}, auth.NewRSASigner(h.signKey), kid)
 	if err != nil {
-		t.Fatalf("token request failed: %v", err)
+		t.Fatalf("sign admin token: %v", err)
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("token endpoint returned %d: %s", resp.StatusCode, body)
-	}
-	var out map[string]any
-	if err := json.Unmarshal(body, &out); err != nil {
-		t.Fatalf("decode token: %v", err)
-	}
-	tok, _ := out["access_token"].(string)
 	return tok
 }
 
