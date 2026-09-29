@@ -181,22 +181,26 @@ func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clie
 	} else if !errors.Is(err, spi.ErrNotFound) {
 		return "", fmt.Errorf("failed to read m2m client index: %w", err)
 	}
+	// A failed write may have committed, so each failure undoes what this
+	// call may have written. A failed record write leaves the index entry
+	// alone: this call did not write it, and it may name another tenant.
 	if err := s.kv.Put(ctx, m2mTenantNamespace(tenant), clientID, rec); err != nil {
+		s.undoCreate(ctx, clientID, m2mTenantNamespace(tenant))
 		return "", fmt.Errorf("failed to write m2m client: %w", err)
 	}
 	if err := s.kv.Put(ctx, m2mClientIndexNamespace, clientID, idx); err != nil {
-		s.undoCreate(ctx, tenant, clientID)
+		s.undoCreate(ctx, clientID, m2mClientIndexNamespace, m2mTenantNamespace(tenant))
 		return "", fmt.Errorf("failed to write m2m client index: %w", err)
 	}
 	return secret, nil
 }
 
-// undoCreate removes the index entry (the failed write may have committed)
-// and then the record, on a context the caller cannot cancel.
-func (s *KVM2MClientStore) undoCreate(ctx context.Context, t spi.TenantID, id string) {
+// undoCreate deletes id from each of namespaces, in order, on a context the
+// caller cannot cancel. A delete that fails is logged at ERROR.
+func (s *KVM2MClientStore) undoCreate(ctx context.Context, id string, namespaces ...string) {
 	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
 	defer cancel()
-	for _, ns := range []string{m2mClientIndexNamespace, m2mTenantNamespace(t)} {
+	for _, ns := range namespaces {
 		if err := s.kv.Delete(uctx, ns, id); err != nil {
 			slog.Error("m2m client create could not be undone", "pkg", "auth", "namespace", ns, "kvKey", id, "error", err.Error())
 		}

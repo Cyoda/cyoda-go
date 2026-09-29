@@ -414,10 +414,12 @@ func TestKVM2M_CreateUndoesARecordWhenTheIndexWriteFails(t *testing.T) {
 }
 
 // nsCommitThenFailKV commits every Put into one namespace and then reports
-// an error (a timeout after commit).
+// an error (a timeout after commit). If then is set, it runs between the
+// commit and the error, keyed by the written key.
 type nsCommitThenFailKV struct {
 	spi.KeyValueStore
-	ns string
+	ns   string
+	then func(key string)
 }
 
 func (k *nsCommitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
@@ -425,9 +427,35 @@ func (k *nsCommitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) 
 		return err
 	}
 	if ns == k.ns {
+		if k.then != nil {
+			k.then(key)
+		}
 		return errors.New("injected: committed, then failed")
 	}
 	return nil
+}
+
+// An ambiguous record write — committed, then reported as failed — leaves
+// nothing behind: the record is removed. The index entry is not this call's
+// to remove: it never wrote one, and an entry written meanwhile by another
+// node's create of the same id in another tenant must survive.
+func TestKVM2M_CreateUndoesAnAmbiguousRecordWrite(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	otherIdx := []byte(`{"tenantId":"other"}`)
+	s := auth.NewKVM2MClientStore(&nsCommitThenFailKV{KeyValueStore: mem, ns: "m2m-clients:acme", then: func(key string) {
+		if err := mem.Put(systemCtx(), "m2m-client-ids", key, otherIdx); err != nil {
+			t.Error(err)
+		}
+	}}, 0)
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+		t.Fatal("want error")
+	}
+	if _, err := mem.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
+		t.Error("record left behind")
+	}
+	if got, err := mem.Get(systemCtx(), "m2m-client-ids", "C1"); err != nil || string(got) != string(otherIdx) {
+		t.Errorf("index entry touched: %q %v", got, err)
+	}
 }
 
 func TestKVM2M_CreateUndoesAnAmbiguousIndexWrite(t *testing.T) {
@@ -609,6 +637,23 @@ func TestKVM2M_CreateUndoSurvivesCallerCancel(t *testing.T) {
 		t.Fatal("want error")
 	}
 	for _, ns := range []string{"m2m-client-ids", "m2m-clients:acme"} {
+		if _, err := mem.Get(systemCtx(), ns, "C1"); !errors.Is(err, spi.ErrNotFound) {
+			t.Errorf("%s/C1 left behind", ns)
+		}
+	}
+}
+
+// The undo of an ambiguous record write runs on a context the caller cannot
+// cancel: a caller that went away does not leave the record behind.
+func TestKVM2M_CreateRecordUndoSurvivesCallerCancel(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	ctx, cancel := context.WithCancel(systemCtx())
+	defer cancel()
+	s := auth.NewKVM2MClientStore(&cancelThenFailKV{KeyValueStore: mem, ns: "m2m-clients:acme", cancel: cancel}, 0)
+	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+		t.Fatal("want error")
+	}
+	for _, ns := range []string{"m2m-clients:acme", "m2m-client-ids"} {
 		if _, err := mem.Get(systemCtx(), ns, "C1"); !errors.Is(err, spi.ErrNotFound) {
 			t.Errorf("%s/C1 left behind", ns)
 		}
