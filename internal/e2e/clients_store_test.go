@@ -3,6 +3,7 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/cyoda-platform/cyoda-go/app"
 )
@@ -75,6 +78,22 @@ func (s *schedDB) deleteRawKV(t *testing.T, namespace, key string) {
 		`DELETE FROM kv_store WHERE tenant_id = 'SYSTEM' AND namespace = $1 AND key = $2`, namespace, key); err != nil {
 		t.Fatalf("raw KV delete %s/%s: %v", namespace, key, err)
 	}
+}
+
+// rawKV returns the value of a SYSTEM-tenant KV row in s's database, and
+// whether the row exists.
+func (s *schedDB) rawKV(t *testing.T, namespace, key string) (string, bool) {
+	t.Helper()
+	var v []byte
+	err := s.pool.QueryRow(context.Background(),
+		`SELECT value FROM kv_store WHERE tenant_id = 'SYSTEM' AND namespace = $1 AND key = $2`, namespace, key).Scan(&v)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false
+	}
+	if err != nil {
+		t.Fatalf("raw KV read %s/%s: %v", namespace, key, err)
+	}
+	return string(v), true
 }
 
 // hasRawKV reports whether s's database holds the SYSTEM-tenant KV row.
@@ -326,6 +345,25 @@ func TestClientsStore_RawRecords(t *testing.T) {
 		s.putRawKV(t, indexNS, c.id, "{")
 		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, c.id, c.secret),
 			http.StatusInternalServerError, "server_error")
+		// The owner holds the record, so its reset reads the damaged entry:
+		// 500, and neither the entry nor the record changes.
+		resp := h.doAuthBearer(t, admin, http.MethodPut, "/api/clients/"+c.id+"/secret", "", "")
+		if code, body := resp.StatusCode, h.readBody(t, resp); code != http.StatusInternalServerError {
+			t.Fatalf("owner's reset with a damaged index entry: %d %s, want 500", code, withheld(code, []byte(body)))
+		}
+		if v, ok := s.rawKV(t, indexNS, c.id); !ok || v != "{" {
+			t.Fatalf("owner's reset changed the damaged index entry: %q (present %v)", v, ok)
+		}
+		if !s.hasRawKV(t, tenantNS, c.id) {
+			t.Fatal("owner's reset removed the record")
+		}
+		// Another tenant holds no record for the id, so its reset is 404
+		// before the index entry is read.
+		other := h.adminTokenFor(t, "other-reset-tenant", "other-admin")
+		resp = h.doAuthBearer(t, other, http.MethodPut, "/api/clients/"+c.id+"/secret", "", "")
+		if code, body := resp.StatusCode, h.readBody(t, resp); code != http.StatusNotFound {
+			t.Fatalf("another tenant's reset of an id with a damaged index entry: %d %s, want 404", code, withheld(code, []byte(body)))
+		}
 	})
 
 	t.Run("undecodable index entry, own record present", func(t *testing.T) {

@@ -563,6 +563,7 @@ Fixture constraints:
 | delete removes an undecodable index entry when the caller's own tenant holds a record for the id → 200, both gone; with no own record → 500, index entry untouched; a mere index read failure (not undecodable) with an own record present → 500, nothing touched | ✓ | ✓ (raw KV write) | | |
 | reset of a record without its index entry → 404 | ✓ | | | |
 | undecodable index entry or record: token → 500; list skips with ERROR | ✓ | ✓ (raw KV write) | | |
+| undecodable index entry: the owner's reset (own record present) → 500, index entry and record unchanged; a reset by a tenant with no record for the id → 404, the index entry not read | ✓ | ✓ (raw KV write) | | |
 | failing KV on every method → store error, never not-found / invalid-client; adapter → 500 / 503; token → 500 | ✓ (faulty KV) | | | |
 | a caller's transaction in the context is not joined by the store | ✓ | | | |
 | codec: round trip; each decode refusal; the encoder refuses what decode rejects | ✓ | | | |
@@ -575,6 +576,10 @@ Waivers:
   paused, and the adapter passes errors through `common.Internal`, whose 503
   mapping is tested (`internal/common/errors.go:169-177`); a unit row asserts
   the adapter reaches it.
+- A store-failure 500 on `GET /clients` and `POST /clients` is not tested end
+  to end: it cannot be reproduced on the shared container.
+  `TestM2MAdapter_StoreFailure_Returns500WithTicket` covers it for all four
+  operations.
 - Cassandra multi-node: no fixture yet (cyoda-go-cassandra#35).
 
 ## 6. Documentation, comments and exit checks
