@@ -63,7 +63,9 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.CALLOUT_SUPERSEDED` — `410` — not retryable — request carrying a transaction token belongs to a compute node that was replaced, or to a callout that has ended
 - `errors.CLUSTER_NODE_NOT_REGISTERED` — `503` — retryable — target cluster node is not present in the gossip registry
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — not retryable — a write made under a transaction token ran a workflow that reached a `COMMIT_BEFORE_DISPATCH` processor, which would commit the transaction the request joined; refused before that transaction is flushed or committed and before the processor is dispatched
+- `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — not retryable — the storage backend does not enforce composite unique keys
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — not retryable — a search condition's operand parses into none of the field's declared data types
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
 - `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted
 - `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — a callout was handed over to another cluster node and no usable answer came back; the work may have run
@@ -80,15 +82,20 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.HELP_TOPIC_NOT_FOUND` — `404` — not retryable — help topic path does not resolve to any topic in the tree
 - `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
 - `errors.INCOMPATIBLE_TYPE` — `400` — not retryable — entity payload's leaf value type is not assignable to the schema's declared DataType for that path; carries `fieldPath`, `expectedType`, `actualType` in `properties` (Cloud's `FoundIncompatibleTypeWithEntityModelException` equivalent)
-- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
-- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
-- `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
 - `errors.INVALID_AGGREGATION_FIELD` — `400` — not retryable — grouped-stats aggregation `field` is outside the scalar JSONPath grammar (most often a missing `$.` leader)
 - `errors.INVALID_AGGREGATION_OP` — `400` — not retryable — grouped-stats aggregation `op` is not one of `sum`, `avg`, `min`, `max`, `stdev`
+- `errors.INVALID_CHANGE_LEVEL` — `400` — not retryable — `POST /model/{name}/{version}/changeLevel/{changeLevel}` supplied a value that is not one of `ARRAY_LENGTH`, `ARRAY_ELEMENTS`, `TYPE`, `STRUCTURAL`
+- `errors.INVALID_CONDITION` — `400` — not retryable — a request condition is malformed, or is well formed but carries a leaf no backend can evaluate
 - `errors.INVALID_FIELD_PATH` — `400` — not retryable — search condition references one or more JSONPath field paths absent from the target model's locked schema; bounded refresh did not surface the path
 - `errors.INVALID_GROUP_BY_PATH` — `400` — not retryable — grouped-stats `groupBy` entry is neither the reserved `state` token nor a JSONPath denoting a single scalar
 - `errors.INVALID_LIMIT` — `400` — not retryable — grouped-stats `limit` is non-positive or greater than `CYODA_STATS_GROUP_MAX`
+- `errors.INVALID_UNIQUE_KEY` — `422` — not retryable — a complete composite unique key cannot be computed: a key field is null or of an unsupported type
+- `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — not retryable — the answer to a request made under a transaction token is larger than `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; nothing is sent, page the read
+- `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
+- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
+- `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients
+- `errors.M2M_CLIENT_NOT_FOUND` — `404` — not retryable — `/clients` delete or reset: the `clientId` does not exist in the caller's tenant (another tenant's client included)
 - `errors.MALFORMED_REQUEST` — `400` — not retryable — grouped-stats request body could not be read or decoded (invalid JSON, unknown top-level field, non-RFC 3339 `pointInTime`)
 - `errors.MISSING_GROUP_BY` — `400` — not retryable — grouped-stats request omitted `groupBy` or sent it empty
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — not retryable — a request carrying a transaction token asked to change a model or its workflows (import, delete, change level, lock, unlock, unique keys, workflow import); model and workflow administration never runs inside a transaction, and the refusal precedes the token's verification
@@ -97,8 +104,15 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_HAS_ENTITIES` — `409` — not retryable — unlock or delete blocked because at least one entity of the model exists
 - `errors.MODEL_NOT_FOUND` — `404` — not retryable — referenced entity model does not exist in the tenant's model registry
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
+- `errors.OIDC_INVALID_TENANT` — `400` — not retryable — an OIDC provider operation was called by a tenant whose id is not a UUID in canonical lowercase form
+- `errors.OIDC_PROVIDER_DUPLICATE` — `400` — not retryable — a provider with the same `wellKnownConfigUri` is already registered for this tenant
+- `errors.OIDC_PROVIDER_INACTIVE` — `409` — not retryable — the OIDC provider is invalidated and cannot be updated
+- `errors.OIDC_PROVIDER_NOT_FOUND` — `404` — not retryable — the OIDC provider id does not exist for this tenant
+- `errors.OIDC_SSRF_BLOCKED` — `400` — not retryable — the `wellKnownConfigUri` resolves to a private or link-local address blocked by the SSRF policy
+- `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header
+- `errors.SCHEDULE_FUNCTION_INVALID_RESULT` — `500` — not retryable — a scheduled transition's arm-time function answered, but its result cannot be read as a schedule
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
 - `errors.SEARCH_QUEUE_FULL` — `503` — retryable — async-search worker pool has no free worker and its submit queue is at capacity
@@ -120,11 +134,14 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID
 - `errors.TX_REQUIRED` — `400` — not retryable — operation requires a transaction context but none was provided
 - `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, signature is invalid, or issuer is untrusted
+- `errors.UNIQUE_VIOLATION` — `409` — not retryable — a write would duplicate a declared composite unique key
 - `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.
 - `errors.UNSUPPORTED_KEY_TYPE` — `400` — not retryable — JWK `kty` not supported in this version.
+- `errors.UNSUPPORTED_MEDIA_TYPE` — `415` — not retryable — a PATCH request used a format or `Content-Type` that is not supported
 - `errors.VALIDATION_FAILED` — `400` — not retryable — payload is structurally valid JSON but fails the model's schema or workflow validation rules
 - `errors.WORKFLOW_FAILED` — `400` — retryable only when the compute member said so — a workflow processor, criterion or schedule function returned a failure, or the workflow configuration cannot be evaluated
 - `errors.WORKFLOW_NOT_FOUND` — `404` — not retryable — workflow definition referenced by the entity model does not exist
+- `errors.WORKFLOW_SCHEMA_VERSION_UNSUPPORTED` — `400` — not retryable — a workflow definition uses a schema version this server does not accept
 
 ## SEE ALSO
 
