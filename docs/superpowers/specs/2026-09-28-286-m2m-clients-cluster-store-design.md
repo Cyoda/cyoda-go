@@ -519,8 +519,9 @@ of documentation and comments against this section.
 
 - `cyoda help` (`cmd/cyoda/help/content/`):
   - new `cli/token.md` (usage, claims, exit codes, the Kubernetes and Docker
-    forms, the signing-key revocation consequence and the advice of §4.1,
-    compute nodes need an M2M client); `cli.md`;
+    forms, what revoking the signing key means for it and the recovery paths
+    of §4.1, that rotations do not affect it (§4.4), compute nodes need an M2M
+    client); `cli.md`;
   - `auth.md`; `auth/clients.md:34,133`; `auth/tokens.md:136` (and `aud`);
     `auth/oidc.md:44,197` (`default-tenant`);
   - `config.md:48`; `config/auth.md:79` ("the two places"), `:91,127,131`,
