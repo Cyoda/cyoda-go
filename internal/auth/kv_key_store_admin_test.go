@@ -447,25 +447,39 @@ func TestKVKeyStore_NoUnsealsWarnWithoutOwnedPairs(t *testing.T) {
 	}
 }
 
-// Invalidating or deleting the signing key logs that `cyoda token` stops
-// granting access, even when the signing key owns no issued key pair.
+// Invalidating or deleting the signing key logs, at WARN, that `cyoda token`
+// stops granting access, even when the signing key owns no issued key pair.
 func TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs(t *testing.T) {
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	for _, tc := range []struct {
+		name   string
+		revoke func(ks *auth.KVKeyStore, kid string) error
+	}{
+		{"invalidate", func(ks *auth.KVKeyStore, kid string) error { return ks.Invalidate(systemCtx(), kid, 0) }},
+		{"delete", func(ks *auth.KVKeyStore, kid string) error { return ks.Delete(systemCtx(), kid) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
 
-	boot := newBootstrap(t)
-	ks := newTestKeyStore(t, boot)
-	bootKID, _ := auth.DeriveKID(&boot.PublicKey)
-	if err := ks.Invalidate(systemCtx(), bootKID, 0); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), "cyoda token") {
-		t.Fatalf("no WARN naming cyoda token: %q", buf.String())
-	}
-	if strings.Contains(buf.String(), "ownedKeyPairs") {
-		t.Fatalf("the issued-key-pair part must stay conditional: %q", buf.String())
+			boot := newBootstrap(t)
+			ks := newTestKeyStore(t, boot)
+			bootKID, _ := auth.DeriveKID(&boot.PublicKey)
+			if err := tc.revoke(ks, bootKID); err != nil {
+				t.Fatal(err)
+			}
+			var warned bool
+			for _, line := range strings.Split(buf.String(), "\n") {
+				warned = warned || (strings.Contains(line, "level=WARN") && strings.Contains(line, "cyoda token"))
+			}
+			if !warned {
+				t.Fatalf("no WARN naming cyoda token: %q", buf.String())
+			}
+			if strings.Contains(buf.String(), "ownedKeyPairs") {
+				t.Fatalf("the issued-key-pair part must stay conditional: %q", buf.String())
+			}
+		})
 	}
 }
 
