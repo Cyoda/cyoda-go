@@ -202,19 +202,6 @@ func newCalloutHarness(t *testing.T, configure func(*app.Config)) *callbackHarne
 // so a test can restart a stack with the same bootstrap key.
 func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
 	t.Helper()
-	h := newCalloutHarnessUnseeded(t, rsaKey, configure)
-	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
-	// read it from other goroutines and cannot fetch it themselves.
-	h.token(t)
-	return h
-}
-
-// newCalloutHarnessUnseeded is newCalloutHarnessWithKey without seeding the
-// cached bearer at the end of construction — an internal building block so
-// newCalloutHarnessWithKey can seed it (h.token(t), self-signed — see token
-// below) as a separate, clearly-labelled step.
-func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure func(*app.Config)) *callbackHarness {
-	t.Helper()
 
 	keyBytes, err := x509.MarshalPKCS8PrivateKey(rsaKey)
 	if err != nil {
@@ -230,8 +217,9 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	cfg.IAM.JWTIssuer = "cyoda-callback-test"
 	cfg.IAM.JWTExpiry = 3600
 	// M2MAdminRoleEnabled so a test can create ROLE_ADMIN clients on this
-	// stack through POST /clients?withAdminRole=true (createClient below),
-	// rather than reaching into the store directly.
+	// stack through POST /clients?withAdminRole=true (provisionTenant, in
+	// callback_txjoin_errors_test.go), rather than reaching into the store
+	// directly.
 	cfg.IAM.M2MAdminRoleEnabled = true
 	// IMPORTANT: do NOT set cfg.ExternalProcessing — leaving it nil selects the
 	// owner's loop over the real dispatcher, which mints and attaches the cyodatxtoken.
@@ -287,6 +275,9 @@ func newCalloutHarnessUnseeded(t *testing.T, rsaKey *rsa.PrivateKey, configure f
 	h.apiConn = apiConn
 	t.Cleanup(func() { _ = apiConn.Close() })
 
+	// Seed the cached bearer on the test goroutine: callback() and grpcCtx()
+	// read it from other goroutines and cannot fetch it themselves.
+	h.token(t)
 	return h
 }
 
