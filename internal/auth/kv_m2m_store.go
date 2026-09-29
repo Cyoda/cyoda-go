@@ -143,15 +143,12 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	return c, nil
 }
 
-// Create adds a client and returns its plaintext secret, once. An id outside
-// the grammar is ErrInvalidClient; an id that is taken, in any tenant, or
-// whose index entry does not decode, is ErrM2MClientExists; a tenant at the
-// cap is ErrM2MClientCapReached.
+// Create adds a client and returns its plaintext secret, once. An id that is
+// taken, in any tenant, or whose index entry does not decode, is
+// ErrM2MClientExists; a tenant at the cap is ErrM2MClientCapReached. The
+// caller passes a generated id; the encoder refuses one outside the grammar.
 func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID, userID string, roles []string) (string, error) {
 	ctx = noTx(ctx)
-	if !ValidClientID(clientID) {
-		return "", ErrInvalidClient
-	}
 	secret, err := GenerateSecret()
 	if err != nil {
 		return "", err

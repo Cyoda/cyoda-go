@@ -135,8 +135,8 @@ type TrustedKeyStore interface {
 }
 
 // ErrInvalidClient is returned by M2MClientStore.Authenticate when there is
-// no such client or the secret is wrong, and by Create for an id outside the
-// client-id grammar. The token endpoint answers it with 401 invalid_client.
+// no such client or the secret is wrong. The token endpoint answers it with
+// 401 invalid_client.
 var ErrInvalidClient = errors.New("invalid client")
 
 // ErrM2MClientCapReached is returned by M2MClientStore.Create when the tenant

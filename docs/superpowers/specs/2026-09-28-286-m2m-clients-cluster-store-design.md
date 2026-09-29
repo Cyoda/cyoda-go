@@ -339,8 +339,8 @@ authenticate, removable by `DELETE`.
 
 Unchanged: `^[A-Za-z0-9]{1,100}$` (`internal/domain/account/m2m_adapter.go:21`,
 `api/openapi.yaml:761,835,9705,11775`). Generated ids are 16-character
-base32-hex (`m2m_adapter.go:30`). The codec, `Create` and the token endpoint
-apply it too.
+base32-hex (`m2m_adapter.go:30`). The codec and the token endpoint apply it
+too.
 
 ### 5.3 Interface (package `internal/auth`)
 
@@ -387,8 +387,10 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   A store failure, or an undecodable entry or record, returns that error
   without bcrypt and is logged at ERROR with the KV key (an id that passed
   §5.2).
-- **Create(tenant, id, user, roles)**: id outside §5.2 → `ErrInvalidClient`
-  (the adapter only passes generated ids). Generate and hash the secret. Under
+- **Create(tenant, id, user, roles)**: the adapter is the only caller and
+  passes only generated ids, so `Create` does not check the id itself; the
+  encoder refuses one outside §5.2 before anything is written. Generate and
+  hash the secret. Under
   a per-node, per-tenant mutex: `List` the tenant's namespace; at
   `maxPerTenant` or more records → `ErrM2MClientCapReached` (`maxPerTenant`
   ≤ 0: no cap); `Get` the index entry; present or undecodable →
