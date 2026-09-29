@@ -36,6 +36,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - Rotating key pairs (`POST /oauth/keys/keypair` with `invalidateCurrent`) does not affect it.
 - Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require `ROLE_ADMIN`.
 - Reactivating the signing key gives it a window that ends at the reactivation's `validTo`; tokens from `cyoda token` are refused from that time.
+- Reactivating the signing key also sets its `validFrom`, which defaults to now. From then on it signs `POST /oauth/token` tokens before every issued key pair of the `client` audience with an earlier `validFrom`. To keep the issued key pairs signing, pass an early `validFrom`, for example `1970-01-01T00:00:00Z` (see `cyoda help config auth`).
 - After that, admin access comes from an OIDC admin, or from an admin M2M client created beforehand while an issued key pair signs its tokens (`/oauth/token` signs with the `client` audience's key pair; creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`). With neither, the recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Tokens from a federated OIDC provider are unaffected.
 
 ## OPTIONS
