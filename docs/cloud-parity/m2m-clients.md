@@ -49,6 +49,6 @@ technical users.
 
 ## Cloud action
 
-Add a per-tenant cap on technical users. At the cap, `POST /clients` answers
+Tracked in CP-3980. Add a per-tenant cap on technical users. At the cap, `POST /clients` answers
 `400` with `errorCode` `M2M_CLIENT_CAP_REACHED` and creates nothing. Choose a
 default that suits Cloud's tiers, or record here where Cloud differs.
