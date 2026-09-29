@@ -67,17 +67,6 @@ Chart-managed HMAC Secret name (used when no existingSecret is provided).
 {{- end }}
 
 {{/*
-Chart-managed bootstrap client Secret name.
-*/}}
-{{- define "cyoda.bootstrapSecretName" -}}
-{{- if .Values.bootstrap.clientSecret.existingSecret -}}
-{{ .Values.bootstrap.clientSecret.existingSecret }}
-{{- else -}}
-{{ printf "%s-bootstrap" (include "cyoda.fullname" .) }}
-{{- end }}
-{{- end }}
-
-{{/*
 Chart-managed metrics bearer-token Secret name.
 */}}
 {{- define "cyoda.metricsBearerSecretName" -}}

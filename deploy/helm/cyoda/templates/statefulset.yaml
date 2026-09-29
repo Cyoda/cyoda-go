@@ -95,10 +95,6 @@ spec:
               value: /etc/cyoda/secrets/hmac-secret
             - name: CYODA_METRICS_BEARER_FILE
               value: /etc/cyoda/secrets/metrics-bearer
-            {{- if .Values.bootstrap.clientId }}
-            - name: CYODA_BOOTSTRAP_CLIENT_SECRET_FILE
-              value: /etc/cyoda/secrets/bootstrap-client-secret
-            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -162,13 +158,6 @@ spec:
                   items:
                     - key: {{ .Values.monitoring.metricsBearer.existingSecretKey }}
                       path: metrics-bearer
-              {{- if .Values.bootstrap.clientId }}
-              - secret:
-                  name: {{ include "cyoda.bootstrapSecretName" . }}
-                  items:
-                    - key: {{ .Values.bootstrap.clientSecret.existingSecretKey }}
-                      path: bootstrap-client-secret
-              {{- end }}
         - name: tmp
           emptyDir: {}
       {{- with .Values.nodeSelector }}

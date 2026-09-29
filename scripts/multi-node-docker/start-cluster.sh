@@ -91,20 +91,12 @@ fi
 # Resolve each with full precedence chain: overlay CYODA_* > persisted > default/generate.
 JWT_KEY_B64="${CYODA_JWT_SIGNING_KEY:-${JWT_KEY_B64:-$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null | base64 | tr -d '\n')}}"
 HMAC_SECRET="${CYODA_HMAC_SECRET:-${HMAC_SECRET:-$(openssl rand -hex 32)}}"
-BOOTSTRAP_CLIENT_ID="${CYODA_BOOTSTRAP_CLIENT_ID:-${BOOTSTRAP_CLIENT_ID:-m2m.user}}"
-BOOTSTRAP_CLIENT_SECRET="${CYODA_BOOTSTRAP_CLIENT_SECRET:-${BOOTSTRAP_CLIENT_SECRET:-$(openssl rand -hex 32)}}"
-BOOTSTRAP_TENANT_ID="${CYODA_BOOTSTRAP_TENANT_ID:-${BOOTSTRAP_TENANT_ID:-riskblocs}}"
-BOOTSTRAP_ROLES="${CYODA_BOOTSTRAP_ROLES:-${BOOTSTRAP_ROLES:-ROLE_ADMIN,ROLE_M2M}}"
 
 # Persist for next run
 cat > "$ENV_FILE" <<ENVEOF
 # Auto-generated cluster config — stable across restarts. Delete this file to regenerate.
 JWT_KEY_B64=${JWT_KEY_B64}
 HMAC_SECRET=${HMAC_SECRET}
-BOOTSTRAP_CLIENT_ID=${BOOTSTRAP_CLIENT_ID}
-BOOTSTRAP_CLIENT_SECRET=${BOOTSTRAP_CLIENT_SECRET}
-BOOTSTRAP_TENANT_ID=${BOOTSTRAP_TENANT_ID}
-BOOTSTRAP_ROLES=${BOOTSTRAP_ROLES}
 ENVEOF
 
 # ── Ports (from env, falling back to single-node defaults) ───────────
@@ -341,10 +333,6 @@ x-minicyoda-env: &minicyoda-env
 ${BACKEND_ENV}
   CYODA_IAM_MODE: "jwt"
   CYODA_JWT_SIGNING_KEY: "${JWT_KEY_B64}"
-  CYODA_BOOTSTRAP_CLIENT_ID: "${BOOTSTRAP_CLIENT_ID}"
-  CYODA_BOOTSTRAP_CLIENT_SECRET: "${BOOTSTRAP_CLIENT_SECRET}"
-  CYODA_BOOTSTRAP_TENANT_ID: "${BOOTSTRAP_TENANT_ID}"
-  CYODA_BOOTSTRAP_ROLES: "${BOOTSTRAP_ROLES}"
   CYODA_OTEL_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-backend:4318"
 
@@ -464,6 +452,7 @@ if [[ "$NUM_NODES" -gt 1 ]]; then
     log_info "  Seed nodes: $(seq -f 'node-%.0f' -s ', ' 1 "$SEED_COUNT")"
     log_info "  HMAC secret: ${HMAC_SECRET:0:8}..."
 fi
+log_info "First admin token: docker exec minicyoda-node1 /cyoda token --tenant <tenant>"
 
 cd "$SCRIPT_DIR"
 docker compose -f docker-compose.generated.yml up "${EXTRA_ARGS[@]}"

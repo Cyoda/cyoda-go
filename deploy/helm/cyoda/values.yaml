@@ -55,41 +55,9 @@ cluster:
     existingSecret: ""
     existingSecretKey: secret
 
-bootstrap:
-  # -- Bootstrap M2M client is OPT-IN. When clientId is empty, the
-  # chart renders no bootstrap Secret and the pod runs with no
-  # bootstrap M2M credential — the binary starts cleanly in jwt mode
-  # via its coupled predicate (both-empty is legitimate). Set clientId
-  # to enable bootstrap; the chart will auto-generate the secret via
-  # the lookup+GitOps-safety pattern, or use clientSecret.existingSecret
-  # if operator-provided.
-  clientId: ""
-  clientSecret:
-    existingSecret: ""
-    existingSecretKey: secret
-  # -- Tenant for the bootstrap client. Must match the tenant grammar
-  # ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$. values.schema.json enforces it at
-  # install time as a pattern for the charset and first-byte rule plus a
-  # maxLength for the cap; the binary re-checks it in jwt mode and refuses
-  # to start on a value outside it whenever clientId is set.
-  # The two halves agree only because the charset is ASCII: maxLength
-  # counts runes and the binary counts bytes. Widening the charset to
-  # non-ASCII here without changing maxLength would let helm install accept
-  # a value the binary then rejects.
-  tenantId: default-tenant
-  # -- User id for the bootstrap client: 1 to 255 characters, with no control
-  # character (U+0000–U+001F, U+007F–U+009F), noncharacter or U+FFFD, and
-  # not beginning with the reserved word "oidc:" in any case.
-  # values.schema.json enforces it at install time; the binary re-checks it
-  # in jwt mode and refuses to start on a value outside it whenever clientId
-  # is set. Both count characters, not bytes, and a unit test keeps the
-  # schema's pattern in step with the binary's rule.
-  userId: admin
-  roles: "ROLE_ADMIN,ROLE_M2M"
-
 # -- Arbitrary additional env vars. Each entry is {name, value} OR
 # {name, valueFrom}. Use this for OTel configuration, feature flags, etc.
-# DO NOT set CYODA_*_FILE or the four credential env vars via this knob —
+# DO NOT set CYODA_*_FILE or the credential env vars via this knob —
 # they are set by the chart and duplicates are rejected by Kubernetes.
 extraEnv: []
 

@@ -22,4 +22,4 @@ maintainers:
 annotations:
   artifacthub.io/changes: |
     - terminationGracePeriodSeconds defaults to 390, so a node can finish its scheduled runs before it is killed
-    - bootstrap.tenantId and bootstrap.userId are validated by values.schema.json (pattern, maxLength, and the oidc: exclusion on userId), matching the binary's own rule
+    - Removed the bootstrap client values; use `cyoda token`
