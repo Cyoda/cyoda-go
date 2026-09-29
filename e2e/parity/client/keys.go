@@ -91,6 +91,27 @@ func (c *Client) CreateClientRaw(t *testing.T, withAdminRole bool) (int, []byte,
 	return c.DoJSONBodyRaw(t, http.MethodPost, path, nil)
 }
 
+// ListClientsRaw issues GET /api/clients — the caller's tenant's M2M
+// clients.
+func (c *Client) ListClientsRaw(t *testing.T) (int, []byte, error) {
+	t.Helper()
+	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/clients", nil)
+}
+
+// DeleteClientRaw issues DELETE /api/clients/{clientId}.
+func (c *Client) DeleteClientRaw(t *testing.T, clientID string) (int, []byte, error) {
+	t.Helper()
+	return c.DoJSONBodyRaw(t, http.MethodDelete, "/api/clients/"+url.PathEscape(clientID), nil)
+}
+
+// ResetClientSecretRaw issues PUT /api/clients/{clientId}/secret. The
+// response body carries the freshly issued plaintext secret exactly once
+// (field client_secret) — callers must not log it.
+func (c *Client) ResetClientSecretRaw(t *testing.T, clientID string) (int, []byte, error) {
+	t.Helper()
+	return c.DoJSONBodyRaw(t, http.MethodPut, "/api/clients/"+url.PathEscape(clientID)+"/secret", nil)
+}
+
 // FetchClientCredentialsToken runs the client_credentials grant against
 // baseURL and returns the bearer token. The token is a credential: never
 // log it, never include it in test-failure messages.

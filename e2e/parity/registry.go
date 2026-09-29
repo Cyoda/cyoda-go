@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 298 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 300 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -554,6 +554,12 @@ var allTests = []NamedTest{
 	// scenarios must not issue human-audience key pairs or rotate/invalidate
 	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
+
+	// M2M client lifecycle and per-tenant cap (design §5.11): the KV-backed
+	// store shared across the cluster, exercised per backend's own
+	// spi.KeyValueStore implementation.
+	{"M2MClientLifecycle", RunM2MClientLifecycle},
+	{"M2MClientCap", RunM2MClientCap},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.
