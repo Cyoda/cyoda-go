@@ -581,6 +581,7 @@ Fixture constraints:
 | a caller's transaction in the context is not joined by the store | ✓ | | | |
 | codec: round trip; each decode refusal; the encoder refuses what decode rejects | ✓ | | | |
 | no plaintext secret in any stored value | ✓ | ✓ (raw KV read) | | |
+| `Cache-Control: no-store` and `Pragma: no-cache`: token success (client_credentials and token exchange), token error (`401 invalid_client`), create, reset | ✓ (all) | ✓ (client_credentials success, create, reset) | | |
 | SPI: absent-key `Delete` (KV, message, workflow) and `DeleteBatch` → nil | spitest, every backend | | ✓ (`DELETE /message` batch with an absent id → 200) | |
 | every `/clients` and `/oauth/token` response conforms to the OpenAPI (enforce-mode validator) | | ✓ | | |
 
