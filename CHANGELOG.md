@@ -30,6 +30,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   now refuses to start, and `cyoda token` exits 1, for any value outside that
   range. The Helm chart's `jwt.expirySeconds` has the same upper bound.
 
+- **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
+  it and issue tokens with an empty `iss`; it now refuses to start, and
+  `cyoda token` exits 1. Unset still means the default `cyoda`. The Helm
+  chart's schema refuses an empty `jwt.issuer`.
+
 - **A rotation no longer ends the signing key from `CYODA_JWT_SIGNING_KEY`,
   and an invalidated key pair verifies until the end of its grace period.**
   `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs

@@ -85,7 +85,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_MOCK_ROLES", Topic: "auth", Type: "csv", Default: "ROLE_ADMIN,ROLE_M2M", Description: "Comma-separated default user roles assigned to all requests in mock mode."},
 	{Name: "CYODA_IAM_MOCK_KIND", Topic: "auth", Type: "string", Default: "user", Description: "Principal kind (user|service|system) assigned to the default UserContext in mock mode."},
 	{Name: "CYODA_JWT_SIGNING_KEY", Topic: "auth", Type: "string", Default: "", Description: "RSA private key in PEM format; required in jwt mode; also encrypts stored signing key pairs. Supports _FILE suffix."},
-	{Name: "CYODA_JWT_ISSUER", Topic: "auth", Type: "string", Default: "cyoda", Description: "JWT issuer claim (iss)."},
+	{Name: "CYODA_JWT_ISSUER", Topic: "auth", Type: "string", Default: "cyoda", Description: "JWT issuer claim (iss). An empty value is a startup error."},
 	{Name: "CYODA_JWT_AUDIENCE", Topic: "auth", Type: "string", Default: "", Description: "Expected JWT audience (aud), and set as aud on issued tokens; empty disables the audience check."},
 	{Name: "CYODA_JWT_EXPIRY_SECONDS", Topic: "auth", Type: "int", Default: "3600", Description: "Token lifetime in seconds, and the upper bound of cyoda token --ttl. An integer from 1 to 31622400 (366 days); any other value is a startup error."},
 	{Name: "CYODA_REQUIRE_JWT", Topic: "auth", Type: "bool", Default: "false", Description: "Production safety floor; refuses to start unless IAM mode is jwt and a signing key is set."},

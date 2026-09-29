@@ -49,7 +49,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 ## ENVIRONMENT VARIABLES
 
 - `CYODA_JWT_SIGNING_KEY` / `CYODA_JWT_SIGNING_KEY_FILE` — the signing key (PEM, or base64-encoded PEM).
-- `CYODA_JWT_ISSUER` — `iss` (default `cyoda`).
+- `CYODA_JWT_ISSUER` — `iss` (default `cyoda` when unset). An empty value makes the command exit 1.
 - `CYODA_JWT_AUDIENCE` — `aud`, when set.
 - `CYODA_JWT_EXPIRY_SECONDS` — the upper bound of `--ttl`. Must be a whole
   number of seconds from 1 to 31622400 (366 days), default 3600; any other

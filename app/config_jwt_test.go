@@ -95,6 +95,33 @@ func TestDefaultConfig_RefusesBadJWTExpiry(t *testing.T) {
 	}
 }
 
+// An explicitly empty CYODA_JWT_ISSUER is refused, not replaced by the
+// default: tokens would carry an empty iss. Unset still means the default.
+func TestLoadJWTSettings_EmptyIssuerIsAnError(t *testing.T) {
+	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	_, err := LoadJWTSettings()
+	if err == nil || !strings.Contains(err.Error(), "CYODA_JWT_ISSUER") {
+		t.Fatalf("err = %v, want one naming CYODA_JWT_ISSUER", err)
+	}
+}
+
+// TestDefaultConfig_RefusesEmptyJWTIssuer pins that the server refuses the
+// empty issuer `cyoda token` refuses.
+func TestDefaultConfig_RefusesEmptyJWTIssuer(t *testing.T) {
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("DefaultConfig accepted an empty CYODA_JWT_ISSUER")
+		}
+		if msg := fmt.Sprint(r); !strings.Contains(msg, "CYODA_JWT_ISSUER") {
+			t.Fatalf("panic %q does not name CYODA_JWT_ISSUER", msg)
+		}
+	}()
+	_ = DefaultConfig()
+}
+
 // TestDefaultConfig_JWTSettingsMatchLoadJWTSettings pins that the server's
 // config carries the values LoadJWTSettings resolves.
 func TestDefaultConfig_JWTSettingsMatchLoadJWTSettings(t *testing.T) {

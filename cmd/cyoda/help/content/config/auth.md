@@ -53,7 +53,9 @@ signal that requests are unauthenticated.
   the root secret. Replacing it retires every issued key pair sealed by the
   wrapped vault (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
-- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`) (default: `cyoda`)
+- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`). Unset means the default; an
+  empty value stops the server at startup and makes `cyoda token` exit 1.
+  (default: `cyoda`)
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs,
   also set as `aud` on every token cyoda-go issues (`POST /oauth/token`, both
   grants, and `cyoda token`); empty string disables the audience check and

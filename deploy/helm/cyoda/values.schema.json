@@ -43,7 +43,7 @@
       "properties": {
         "existingSecret": {"type": "string", "minLength": 1},
         "existingSecretKey": {"type": "string", "minLength": 1},
-        "issuer": {"type": "string"},
+        "issuer": {"type": "string", "minLength": 1},
         "expirySeconds": {"type": "integer", "minimum": 60, "maximum": 31622400}
       }
     },

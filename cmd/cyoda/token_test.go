@@ -219,6 +219,21 @@ func TestRunToken_ExpiryOutOfRangeExit1(t *testing.T) {
 	}
 }
 
+// An empty CYODA_JWT_ISSUER is a configuration error (exit 1), as it is for
+// the server, not a flag error.
+func TestRunToken_EmptyIssuerExit1(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_ISSUER", "")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 1 {
+		t.Fatalf("exit %d, want 1 (stderr %q)", code, errOut.String())
+	}
+	if out.Len() != 0 || !strings.Contains(errOut.String(), "CYODA_JWT_ISSUER") {
+		t.Fatalf("stdout %q, stderr %q", out.String(), errOut.String())
+	}
+}
+
 func TestRunToken_MissingKeyExit1(t *testing.T) {
 	setTokenEnv(t, "")
 	var out, errOut bytes.Buffer
