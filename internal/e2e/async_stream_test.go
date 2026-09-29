@@ -174,7 +174,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // ---------------------------------------------------------------------------
@@ -1162,22 +1161,7 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	// A self-signed admin token in the shape of a client_credentials token —
 	// this stack has no M2M client of its own; signing directly with rsaKey
 	// (registered as this stack's default signing key) needs no round trip.
-	kid, err := auth.DeriveKID(&rsaKey.PublicKey)
-	if err != nil {
-		t.Fatalf("derive kid: %v", err)
-	}
-	now := time.Now()
-	token, err := auth.Sign(context.Background(), map[string]any{
-		"sub":          "suite-admin",
-		"iss":          cfg.IAM.JWTIssuer,
-		"caas_user_id": "standalone-admin",
-		"caas_org_id":  "test-tenant",
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}, auth.NewRSASigner(rsaKey), kid)
+	token, err := signServiceToken(rsaKey, cfg.IAM.JWTIssuer, "suite-admin", "test-tenant", "standalone-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}

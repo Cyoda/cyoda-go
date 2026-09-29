@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
@@ -26,7 +25,6 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -366,22 +364,7 @@ func (h *callbackHarness) token(t *testing.T) string {
 // which key it currently signs with) uses fetchTokenFor instead.
 func (h *callbackHarness) fetchToken(t *testing.T) string {
 	t.Helper()
-	kid, err := auth.DeriveKID(&h.signKey.PublicKey)
-	if err != nil {
-		t.Fatalf("derive kid: %v", err)
-	}
-	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
-		"sub":          "suite-admin",
-		"iss":          "cyoda-callback-test",
-		"caas_user_id": "test-admin",
-		"caas_org_id":  "test-tenant",
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}, auth.NewRSASigner(h.signKey), kid)
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}

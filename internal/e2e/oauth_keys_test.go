@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -15,10 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // adminRequest issues an authenticated request using the suite's admin token.
@@ -582,22 +578,7 @@ func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 // client belonging to tenantID without reaching into the store.
 func adminTokenForTenant(t *testing.T, tenant, user string) string {
 	t.Helper()
-	kid, err := auth.DeriveKID(&e2eSignKey.PublicKey)
-	if err != nil {
-		t.Fatalf("derive kid: %v", err)
-	}
-	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
-		"sub":          user,
-		"iss":          e2eIssuer,
-		"caas_user_id": user,
-		"caas_org_id":  tenant,
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}, auth.NewRSASigner(e2eSignKey), kid)
+	tok, err := signServiceToken(e2eSignKey, e2eIssuer, user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}

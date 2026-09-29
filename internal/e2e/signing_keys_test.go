@@ -168,13 +168,7 @@ func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 
 func bootstrapToken(t *testing.T, key *rsa.PrivateKey) string {
 	t.Helper()
-	kid, _ := auth.DeriveKID(&key.PublicKey)
-	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
-		"sub": "boot-user", "iss": "cyoda-callback-test", "caas_user_id": "boot-user",
-		"caas_org_id": "test-tenant", "scopes": []string{"ROLE_ADMIN"}, "caas_tier": "unlimited",
-		"exp": now.Add(time.Hour).Unix(), "iat": now.Unix(), "jti": "j-" + kid[:8],
-	}, auth.NewRSASigner(key), kid)
+	tok, err := signServiceToken(key, "cyoda-callback-test", "boot-user", "test-tenant", "boot-user", []string{"ROLE_ADMIN"})
 	if err != nil {
 		t.Fatal(err)
 	}

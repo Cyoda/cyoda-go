@@ -281,9 +281,9 @@ func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 //
 // A non-UUID tenant — here the suite tenant "test-tenant" — used to get an
 // empty 200 from the list endpoint, because its prefix scan matched nothing,
-// and a 404 from the id-addressed
-// ops.  Both implied a registration that could never have succeeded:
-// registration has always answered such a tenant with 400 OIDC_INVALID_TENANT.
+// and a 404 from the id-addressed ops.  Both implied a registration that
+// could never have succeeded: registration has always answered such a
+// tenant with 400 OIDC_INVALID_TENANT.
 // Every provider operation now gives it that same answer.
 //
 // reloadOidcProviders takes no tenant and is deliberately absent from this

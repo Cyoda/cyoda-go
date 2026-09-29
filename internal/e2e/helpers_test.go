@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -117,31 +118,36 @@ func getToken(t *testing.T, clientID, clientSecret string) string {
 	return token
 }
 
-// suiteClaims are the claims the shared server's former bootstrap client
-// carried, so every assertion on principal, tenant and roles is unchanged.
-func suiteClaims(now time.Time) map[string]any {
-	return map[string]any{
-		"sub":          "suite-admin",
-		"iss":          e2eIssuer,
-		"caas_user_id": "test-admin",
-		"caas_org_id":  "test-tenant",
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
+// signServiceToken signs a token in the shape of a client_credentials token
+// (scopes → a service principal) with key, for the given issuer/sub/tenant/
+// userID/roles. Every "admin token for a stack" helper in this package
+// (suiteTokenRaw, callbackHarness.fetchToken/adminTokenFor,
+// adminTokenForTenant, newStandaloneApp, bootstrapToken) is a thin wrapper
+// over this one signing call. It never touches *testing.T.
+func signServiceToken(key *rsa.PrivateKey, issuer, sub, tenant, userID string, roles []string) (string, error) {
+	kid, err := auth.DeriveKID(&key.PublicKey)
+	if err != nil {
+		return "", err
+	}
+	now := time.Now()
+	return auth.Sign(context.Background(), map[string]any{
+		"sub":          sub,
+		"iss":          issuer,
+		"caas_user_id": userID,
+		"caas_org_id":  tenant,
+		"scopes":       roles,
 		"caas_tier":    "unlimited",
 		"exp":          now.Add(time.Hour).Unix(),
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
-	}
+	}, auth.NewRSASigner(key), kid)
 }
 
 // suiteTokenRaw signs an admin token for the shared server in the shape of a
 // client_credentials token (scopes → a service principal), so attribution
 // assertions are unchanged. It never touches *testing.T.
 func suiteTokenRaw() (string, error) {
-	kid, err := auth.DeriveKID(&e2eSignKey.PublicKey)
-	if err != nil {
-		return "", err
-	}
-	return auth.Sign(context.Background(), suiteClaims(time.Now()), auth.NewRSASigner(e2eSignKey), kid)
+	return signServiceToken(e2eSignKey, e2eIssuer, "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 }
 
 // suiteToken is the test-goroutine form of suiteTokenRaw.

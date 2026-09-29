@@ -1,7 +1,6 @@
 package e2e_test
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -13,9 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 )
 
@@ -66,22 +62,7 @@ func randSuffix(t *testing.T) string {
 // to seed a client belonging to tenantID without reaching into the store.
 func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) string {
 	t.Helper()
-	kid, err := auth.DeriveKID(&h.signKey.PublicKey)
-	if err != nil {
-		t.Fatalf("derive kid: %v", err)
-	}
-	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
-		"sub":          user,
-		"iss":          "cyoda-callback-test",
-		"caas_user_id": user,
-		"caas_org_id":  tenant,
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}, auth.NewRSASigner(h.signKey), kid)
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", user, tenant, user, []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}
