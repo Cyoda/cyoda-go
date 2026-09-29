@@ -97,8 +97,13 @@ func burnBcrypt(secret string) { _ = bcrypt.CompareHashAndPassword(dummyHash, []
 
 // Authenticate returns the client whose id and secret match. Every request
 // that reaches a decision makes two KV reads and one bcrypt comparison, so
-// timing does not reveal whether an id exists; an id outside the grammar
-// makes no read, so it never reaches the store or its error text.
+// the server's own work does not depend on whether the id exists. A backend
+// can take longer to read a present key than a missing one (on cassandra a
+// hit is two queries and a miss one), which can let a caller who already
+// holds an id confirm that it exists. Client ids are not secret (a token's
+// sub) and generated ids are 80-bit random, so this does not allow
+// enumeration. An id outside the grammar makes no read, so it never reaches
+// the store or its error text.
 // ErrInvalidClient: no such client or wrong secret. Any other error is the
 // store failing.
 func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error) {

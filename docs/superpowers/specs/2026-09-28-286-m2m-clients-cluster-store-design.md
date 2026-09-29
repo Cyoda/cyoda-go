@@ -58,9 +58,10 @@ when the call returns 2xx, and survives a restart on a persistent backend.
 6. Tenant isolation holds at the storage layer: a tenant's admin operations
    read and write only that tenant's namespace, and touch the global index
    only for entries naming that tenant.
-7. The token endpoint's timing does not reveal whether a client id exists:
-   every request that reaches a decision makes the same store reads and one
-   bcrypt comparison.
+7. The token endpoint's own work does not depend on whether a client id
+   exists: every request that reaches a decision makes the same store reads
+   and one bcrypt comparison. A backend's cost for a present and a missing
+   key can differ (§5.8).
 8. No plaintext secret is stored or logged.
 9. A store failure is reported as a store failure (5xx), never as an absent or
    invalid client (401 / 404).
@@ -461,9 +462,19 @@ until compaction. They are bcrypt hashes of 256-bit random secrets.
 
 ### 5.8 Token endpoint cost
 
-Two KV point reads per `POST /oauth/token` (on cassandra each is a metadata
-and a data read at the configured level), next to ~100 ms of bcrypt. Tokens
-live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
+Two KV point reads per `POST /oauth/token`, next to ~100 ms of bcrypt. On
+cassandra a read of a present key is a metadata and a data query at the
+configured level, and a read of a missing key is the metadata query alone
+(`cyoda-go-cassandra internal/store/data_store.go:125-160`). Tokens live
+`CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
+
+Every request that reaches a decision makes the same KV reads and one bcrypt
+comparison, so the server's own work does not depend on whether the id
+exists. A backend's cost for reading a present key and a missing key can
+differ: on cassandra an existing id costs four queries and an unknown one two.
+That can let a caller who already holds an id confirm that it exists. Client
+ids are not secret (a token's `sub`), and generated ids are 80-bit random, so
+this does not allow enumeration; the secret is still needed.
 
 ### 5.9 Errors
 
