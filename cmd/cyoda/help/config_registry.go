@@ -96,6 +96,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", Topic: "auth", Type: "int", Default: "20", Description: "Caps the number of properties in a registered JWK."},
 	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity of a keypair issued via POST /oauth/keys/keypair without validTo. The bootstrap signing key has no window unless the key-pair API gave it one."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
+	{Name: "CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "100", Description: "Per-tenant cap on M2M clients; 0 means unbounded."},
 	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key, signing-key and OIDC-provider caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 	{Name: "CYODA_OIDC_REQUIRE_HTTPS", Topic: "auth", Type: "bool", Default: "true", Description: "Reject federated OIDC provider registration when the well-known config URI is not https."},
 	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "TCP connect timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},

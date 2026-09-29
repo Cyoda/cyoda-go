@@ -1854,7 +1854,7 @@ Full RS256 JWT authentication with JWKS discovery and M2M client support.
 | `AuthService` | Wires all auth components, exposes HTTP handlers |
 | `KVKeyStore` | Signing key pairs and the bootstrap key's revocation state: KV-backed, shared by the cluster (see below) |
 | `TrustedKeyStore` | Interface for trusted external public keys, KV-backed over a per-node cache |
-| `InMemoryM2MClientStore` | Machine-to-machine client credentials |
+| `KVM2MClientStore` | Machine-to-machine client credentials: KV-backed, shared by the cluster, no node copy; a per-tenant cap |
 | `JWKSHandler` | `GET /.well-known/jwks.json` -- standard JWKS endpoint |
 | `NewTokenHandler` | `POST /oauth/token` -- issues JWTs (client_credentials, OBO exchange) |
 | `JWKSValidator` | Validates JWTs against a `KeySource`: `NewLocalKeySource` in-process by default (no HTTP fetch), or `NewHTTPJWKSSource` (TLS 1.3 pinned, JSON content-type validated) for external-IdP wiring |

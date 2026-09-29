@@ -1,0 +1,297 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"hash/fnv"
+	"log/slog"
+	"sort"
+	"sync"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+)
+
+// createLockStripes bounds the per-tenant create locks' memory: tenants hash
+// onto a fixed set of mutexes.
+const createLockStripes = 64
+
+// undoTimeout bounds the compensation of a failed create.
+const undoTimeout = 30 * time.Second
+
+// KVM2MClientStore stores M2M clients in the SYSTEM-tenant KV store: one
+// namespace per tenant for the records, one global namespace mapping a
+// client id to its tenant. There is no node copy: every call reads or writes
+// the store, so a change is visible to every node when the call returns.
+// Every call strips any transaction from its context: the postgres KV store
+// joins a transaction it finds there, and a client change must never ride on
+// a caller's entity transaction.
+//
+// A client exists when its record exists and the index entry for its id
+// names its tenant. Create writes the record, then the index entry; Delete
+// removes the index entry, then the record. The KV SPI has no
+// compare-and-set: two admin changes to one client on two nodes at the same
+// moment resolve by last write, and the cap can be exceeded by one record per
+// node. Both are documented (cyoda help auth clients).
+type KVM2MClientStore struct {
+	kv           spi.KeyValueStore
+	maxPerTenant int
+	createLocks  [createLockStripes]sync.Mutex
+}
+
+// NewKVM2MClientStore returns a store over kv. maxPerTenant <= 0: no cap.
+func NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int) *KVM2MClientStore {
+	return &KVM2MClientStore{kv: kv, maxPerTenant: maxPerTenant}
+}
+
+// noTx removes any transaction from ctx.
+func noTx(ctx context.Context) context.Context { return spi.WithTransaction(ctx, nil) }
+
+func (s *KVM2MClientStore) createLock(t spi.TenantID) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(t))
+	return &s.createLocks[h.Sum32()%createLockStripes]
+}
+
+// getIndex reads the index entry of id. found=false: absent.
+func (s *KVM2MClientStore) getIndex(ctx context.Context, id string) (spi.TenantID, bool, error) {
+	data, err := s.kv.Get(ctx, m2mClientIndexNamespace, id)
+	if errors.Is(err, spi.ErrNotFound) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("failed to read m2m client index: %w", err)
+	}
+	t, err := decodeIndexEntry(data)
+	if err != nil {
+		slog.Error("m2m client index entry does not decode", "pkg", "auth", "kvKey", id)
+		return "", false, err
+	}
+	return t, true, nil
+}
+
+// getRecord reads and decodes id's record in tenant's namespace.
+func (s *KVM2MClientStore) getRecord(ctx context.Context, t spi.TenantID, id string) (*M2MClient, bool, error) {
+	data, err := s.kv.Get(ctx, m2mTenantNamespace(t), id)
+	if errors.Is(err, spi.ErrNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to read m2m client: %w", err)
+	}
+	c, err := decodeClientRecord(t, id, data)
+	if err != nil {
+		slog.Error("m2m client record does not decode", "pkg", "auth", "tenant", string(t), "kvKey", id)
+		return nil, false, err
+	}
+	return c, true, nil
+}
+
+// burnBcrypt compares against the dummy hash so a request with no usable
+// client costs what a wrong secret costs.
+func burnBcrypt(secret string) { _ = bcrypt.CompareHashAndPassword(dummyHash, []byte(secret)) }
+
+// Authenticate returns the client whose id and secret match. Every request
+// that reaches a decision makes two KV reads and one bcrypt comparison, so
+// timing does not reveal whether an id exists; an id outside the grammar
+// makes no read, so it never reaches the store or its error text.
+// ErrInvalidClient: no such client or wrong secret. Any other error is the
+// store failing.
+func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error) {
+	ctx = noTx(ctx)
+	if !ValidClientID(clientID) {
+		burnBcrypt(secret)
+		return nil, ErrInvalidClient
+	}
+	tenant, found, err := s.getIndex(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	var c *M2MClient
+	if found {
+		c, _, err = s.getRecord(ctx, tenant, clientID)
+	} else {
+		_, err = s.kv.Get(ctx, m2mClientIndexNamespace, m2mDecoyKey)
+		if errors.Is(err, spi.ErrNotFound) {
+			err = nil
+		} else if err != nil {
+			err = fmt.Errorf("failed to read m2m client index: %w", err)
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if c == nil {
+		burnBcrypt(secret)
+		return nil, ErrInvalidClient
+	}
+	if bcrypt.CompareHashAndPassword([]byte(c.HashedSecret), []byte(secret)) != nil {
+		return nil, ErrInvalidClient
+	}
+	return c, nil
+}
+
+// Create adds a client and returns its plaintext secret, once. An id outside
+// the grammar is ErrInvalidClient; an id that is taken, in any tenant, or
+// whose index entry does not decode, is ErrM2MClientExists; a tenant at the
+// cap is ErrM2MClientCapReached.
+func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID, userID string, roles []string) (string, error) {
+	ctx = noTx(ctx)
+	if !ValidClientID(clientID) {
+		return "", ErrInvalidClient
+	}
+	secret, err := GenerateSecret()
+	if err != nil {
+		return "", err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("failed to hash secret: %w", err)
+	}
+	now := time.Now().UTC()
+	rec, err := encodeClientRecord(&M2MClient{ClientID: clientID, HashedSecret: string(hash), TenantID: tenant, UserID: userID, Roles: append([]string(nil), roles...), CreatedAt: now, UpdatedAt: now})
+	if err != nil {
+		return "", err
+	}
+	idx, err := encodeIndexEntry(tenant)
+	if err != nil {
+		return "", err
+	}
+	mu := s.createLock(tenant)
+	mu.Lock()
+	defer mu.Unlock()
+	if s.maxPerTenant > 0 {
+		existing, err := s.kv.List(ctx, m2mTenantNamespace(tenant))
+		if err != nil {
+			return "", fmt.Errorf("failed to list m2m clients: %w", err)
+		}
+		if len(existing) >= s.maxPerTenant {
+			return "", ErrM2MClientCapReached
+		}
+	}
+	if _, err := s.kv.Get(ctx, m2mClientIndexNamespace, clientID); err == nil {
+		return "", fmt.Errorf("%w: %s", ErrM2MClientExists, clientID)
+	} else if !errors.Is(err, spi.ErrNotFound) {
+		return "", fmt.Errorf("failed to read m2m client index: %w", err)
+	}
+	if err := s.kv.Put(ctx, m2mTenantNamespace(tenant), clientID, rec); err != nil {
+		return "", fmt.Errorf("failed to write m2m client: %w", err)
+	}
+	if err := s.kv.Put(ctx, m2mClientIndexNamespace, clientID, idx); err != nil {
+		s.undoCreate(ctx, tenant, clientID)
+		return "", fmt.Errorf("failed to write m2m client index: %w", err)
+	}
+	return secret, nil
+}
+
+// undoCreate removes the index entry (the failed write may have committed)
+// and then the record, on a context the caller cannot cancel.
+func (s *KVM2MClientStore) undoCreate(ctx context.Context, t spi.TenantID, id string) {
+	uctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), undoTimeout)
+	defer cancel()
+	for _, ns := range []string{m2mClientIndexNamespace, m2mTenantNamespace(t)} {
+		if err := s.kv.Delete(uctx, ns, id); err != nil {
+			slog.Error("m2m client create could not be undone", "pkg", "auth", "namespace", ns, "kvKey", id, "error", err.Error())
+		}
+	}
+}
+
+// List returns tenant's clients, sorted by id. Undecodable records are
+// skipped and logged at ERROR with their keys.
+func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2MClient, error) {
+	entries, err := s.kv.List(noTx(ctx), m2mTenantNamespace(tenant))
+	if err != nil {
+		return nil, fmt.Errorf("failed to list m2m clients: %w", err)
+	}
+	out := make([]*M2MClient, 0, len(entries))
+	var bad []string
+	for k, data := range entries {
+		c, err := decodeClientRecord(tenant, k, data)
+		if err != nil {
+			bad = append(bad, k)
+			continue
+		}
+		out = append(out, c)
+	}
+	if len(bad) > 0 {
+		sort.Strings(bad)
+		slog.Error("m2m client records do not decode and are not listed", "pkg", "auth", "tenant", string(tenant), "kvKeys", bad)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ClientID < out[j].ClientID })
+	return out, nil
+}
+
+// Delete removes tenant's client id: the index entry if it names tenant,
+// then the record if present — decodable or not; tenant's namespace proves
+// ownership. An index entry naming another tenant is never touched.
+func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
+	ctx = noTx(ctx)
+	if !ValidClientID(clientID) {
+		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	_, err := s.kv.Get(ctx, m2mTenantNamespace(tenant), clientID)
+	recPresent := err == nil
+	if err != nil && !errors.Is(err, spi.ErrNotFound) {
+		return fmt.Errorf("failed to read m2m client: %w", err)
+	}
+	idxTenant, idxFound, err := s.getIndex(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	idxOurs := idxFound && idxTenant == tenant
+	if !recPresent && !idxOurs {
+		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	if idxOurs {
+		if err := s.kv.Delete(ctx, m2mClientIndexNamespace, clientID); err != nil {
+			return fmt.Errorf("failed to delete m2m client index entry: %w", err)
+		}
+	}
+	if recPresent {
+		if err := s.kv.Delete(ctx, m2mTenantNamespace(tenant), clientID); err != nil {
+			return fmt.Errorf("failed to delete m2m client: %w", err)
+		}
+	}
+	return nil
+}
+
+// ResetSecret gives an existing client of tenant a new secret and returns it,
+// once, with the client. The secret is hashed before the store is read, so
+// the gap between read and write is one round trip.
+func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
+	ctx = noTx(ctx)
+	if !ValidClientID(clientID) {
+		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	secret, err := GenerateSecret()
+	if err != nil {
+		return "", nil, err
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to hash secret: %w", err)
+	}
+	c, found, err := s.getRecord(ctx, tenant, clientID)
+	if err != nil {
+		return "", nil, err
+	}
+	idxTenant, idxFound, err := s.getIndex(ctx, clientID)
+	if err != nil {
+		return "", nil, err
+	}
+	if !found || !idxFound || idxTenant != tenant {
+		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	c.HashedSecret, c.UpdatedAt = string(hash), time.Now().UTC()
+	rec, err := encodeClientRecord(c)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := s.kv.Put(ctx, m2mTenantNamespace(tenant), clientID, rec); err != nil {
+		return "", nil, fmt.Errorf("failed to write m2m client: %w", err)
+	}
+	return secret, c, nil
+}

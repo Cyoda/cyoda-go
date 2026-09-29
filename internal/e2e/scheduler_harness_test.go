@@ -34,7 +34,13 @@ type schedDB struct {
 	name string
 	url  string
 	pool *pgxpool.Pool
+	// keyClient is the M2M client the keyStacks on this database share (see
+	// newKeyStackWith); nil until the first keyStack creates it.
+	keyClient *m2mCredential
 }
+
+// m2mCredential is an M2M client id and its secret (never logged).
+type m2mCredential struct{ id, secret string }
 
 // newSchedDB creates an empty database in the shared container. The stack
 // that opens it migrates it (CYODA_POSTGRES_AUTO_MIGRATE is set by TestMain).

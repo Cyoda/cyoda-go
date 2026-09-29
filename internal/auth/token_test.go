@@ -26,7 +26,7 @@ import (
 type testTokenEnv struct {
 	keyStore        *auth.KVKeyStore
 	trustedKeyStore *auth.KVTrustedKeyStore
-	m2mStore        *auth.InMemoryM2MClientStore
+	m2mStore        *auth.KVM2MClientStore
 	handler         http.Handler
 	clientID        string
 	clientSecret    string
@@ -44,7 +44,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	signingKey := newBootstrap(t)
 	keyStore := newTestKeyStore(t, signingKey)
 	trustedKeyStore := newTestTrustedStore(t)
-	m2mStore := auth.NewInMemoryM2MClientStore()
+	m2mStore := auth.NewKVM2MClientStore(mustNewMemoryKV(t, systemCtx()), 0)
 
 	// Generate trusted external key (simulates an external IdP).
 	trustedKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -65,8 +65,8 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	if err != nil {
 		t.Fatalf("failed to register trusted key: %v", err)
 	}
-	clientID := "test-m2m-client"
-	clientSecret, err := m2mStore.Create(clientID, spi.TenantID(tenantID), "user-123", []string{"admin", "reader"})
+	clientID := "TESTM2MCLIENT"
+	clientSecret, err := m2mStore.Create(systemCtx(), spi.TenantID(tenantID), clientID, "user-123", []string{"admin", "reader"})
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
@@ -123,6 +123,34 @@ func TestTokenEndpoint_NoAudienceConfiguredOmitsAud(t *testing.T) {
 	}
 	if _, present := p.Claims["aud"]; present {
 		t.Fatalf("aud present without a configured audience: %v", p.Claims["aud"])
+	}
+}
+
+// A store failure is the server failing, never the client's credentials
+// being wrong: 500 server_error with a ticket, not 401 invalid_client.
+func TestTokenEndpoint_StoreFailureIs500NotInvalidClient(t *testing.T) {
+	env := setupTokenEnv(t)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0), "cyoda", "", 3600)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	if rr.Code != http.StatusInternalServerError || decodeResponse(t, rr)["error"] != "server_error" {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+// An id outside the client-id grammar is 401 invalid_client and never
+// reaches the store: the store here fails every call, so a read would
+// answer 500.
+func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
+	env := setupTokenEnv(t)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0), "cyoda", "", 3600)
+	for _, raw := range []string{"a%00b", "%FF", strings.Repeat("A", 101), "a%3Ab"} {
+		req := makeTokenRequest("client_credentials", "Basic "+base64.StdEncoding.EncodeToString([]byte(raw+":x")), nil)
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized || decodeResponse(t, rr)["error"] != "invalid_client" {
+			t.Fatalf("%q: %d %s", raw, rr.Code, rr.Body.String())
+		}
 	}
 }
 

@@ -7,18 +7,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"regexp"
 	"strings"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
-
-// clientIDPattern enforces the OpenAPI schema for path-param + generated
-// clientId: ^[A-Za-z0-9]+$, length 1..100.
-var clientIDPattern = regexp.MustCompile(`^[A-Za-z0-9]{1,100}$`)
 
 // clientIDLen is the number of base32-hex characters in a generated clientId.
 // 16 chars × 5 bits/char = 80 bits of entropy. Comfortably inside the
@@ -65,9 +59,10 @@ func (h *Handler) gateM2MAdminRole(w http.ResponseWriter, r *http.Request) bool 
 }
 
 // validateClientID writes 400 BAD_REQUEST and returns false when the
-// path-param clientId is empty or violates the OpenAPI pattern.
+// path-param clientId is outside the client-id grammar (auth.ValidClientID,
+// the OpenAPI pattern ^[A-Za-z0-9]{1,100}$).
 func validateClientID(w http.ResponseWriter, r *http.Request, clientID string) bool {
-	if clientID == "" || !clientIDPattern.MatchString(clientID) {
+	if !auth.ValidClientID(clientID) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
 			common.ErrCodeBadRequest, "invalid clientId"))
 		return false
@@ -103,11 +98,18 @@ func toTechnicalUserCredentialsDto(clientID, plaintextSecret string, roles []str
 	}
 }
 
-// clientBelongsToTenant returns true iff the store record's TenantID matches
-// the caller's tenant. After Task 2 promoted M2MClient.TenantID to spi.TenantID,
-// the comparison is type-direct.
-func clientBelongsToTenant(c *auth.M2MClient, callerTenant spi.TenantID) bool {
-	return c.TenantID == callerTenant
+// writeM2MClientError answers a Delete or ResetSecret failure. The store
+// enforces tenant isolation, so an absent client and another tenant's client
+// are the same ErrM2MClientNotFound and get the same 404 — no cross-tenant
+// existence oracle. Anything else is the store failing: 503 when it reports
+// itself unavailable, otherwise 500 with a ticket.
+func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err error) {
+	if errors.Is(err, auth.ErrM2MClientNotFound) {
+		common.WriteError(w, r, common.Operational(http.StatusNotFound,
+			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+		return
+	}
+	common.WriteError(w, r, common.Internal(op, err))
 }
 
 // CreateTechnicalUser implements POST /clients?withAdminRole=<bool>.
@@ -144,7 +146,7 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 			common.WriteError(w, r, common.Internal("generateClientID", err))
 			return
 		}
-		sec, createErr := h.m2mClientStore.Create(cid, tID, cid, roles)
+		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, cid, roles)
 		if createErr == nil {
 			clientID = cid
 			secret = sec
@@ -153,6 +155,11 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		if errors.Is(createErr, auth.ErrM2MClientExists) {
 			// Astronomical-probability collision; loop once more.
 			continue
+		}
+		if errors.Is(createErr, auth.ErrM2MClientCapReached) {
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+				common.ErrCodeM2MClientCapReached, "M2M client cap reached for tenant"))
+			return
 		}
 		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))
 		return
@@ -194,18 +201,8 @@ func (h *Handler) DeleteTechnicalUser(w http.ResponseWriter, r *http.Request, cl
 	}
 
 	tID := tenantFromCtx(r)
-	existing, err := h.m2mClientStore.Get(clientID)
-	if err != nil || !clientBelongsToTenant(existing, tID) {
-		// Identical 404 for "no such client" and "owned by another tenant"
-		// — no cross-tenant existence oracle (Gate 3).
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
-		return
-	}
-	if err := h.m2mClientStore.Delete(clientID); err != nil {
-		// Race with concurrent delete: same 404 shape.
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
+	if err := h.m2mClientStore.Delete(r.Context(), tID, clientID); err != nil {
+		writeM2MClientError(w, r, "m2mClientStore.Delete", err)
 		return
 	}
 
@@ -235,21 +232,9 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 	}
 
 	tID := tenantFromCtx(r)
-	existing, err := h.m2mClientStore.Get(clientID)
-	if err != nil || !clientBelongsToTenant(existing, tID) {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound,
-			common.ErrCodeM2MClientNotFound, "M2M client not found"))
-		return
-	}
-	secret, err := h.m2mClientStore.ResetSecret(clientID)
+	secret, client, err := h.m2mClientStore.ResetSecret(r.Context(), tID, clientID)
 	if err != nil {
-		// Race with concurrent delete: 404. Other failures: 500.
-		if errors.Is(err, auth.ErrM2MClientNotFound) {
-			common.WriteError(w, r, common.Operational(http.StatusNotFound,
-				common.ErrCodeM2MClientNotFound, "M2M client not found"))
-			return
-		}
-		common.WriteError(w, r, common.Internal("m2mClientStore.ResetSecret", err))
+		writeM2MClientError(w, r, "m2mClientStore.ResetSecret", err)
 		return
 	}
 
@@ -259,7 +244,7 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 		"clientId", clientID,
 	)
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, existing.Roles))
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, client.Roles))
 }
 
 // ListTechnicalUsers implements GET /clients.
@@ -271,7 +256,11 @@ func (h *Handler) ListTechnicalUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tID := tenantFromCtx(r)
-	clients := h.m2mClientStore.List(tID)
+	clients, err := h.m2mClientStore.List(r.Context(), tID)
+	if err != nil {
+		common.WriteError(w, r, common.Internal("m2mClientStore.List", err))
+		return
+	}
 	out := make([]genapi.TechnicalUserDto, 0, len(clients))
 	for _, c := range clients {
 		out = append(out, toTechnicalUserDto(c))

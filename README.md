@@ -103,12 +103,13 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 
 The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
 
-**Optional IAM feature flags** (all default `false`):
+**Optional IAM settings:**
 
 | Env var | Default | Effect |
 |---------|---------|--------|
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
+| `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded. |
 
 In mock mode, `CYODA_IAM_MOCK_KIND` (default `user`) sets the principal kind
 (`user`/`service`/`system`) on the mock default UserContext, so local/CI setups

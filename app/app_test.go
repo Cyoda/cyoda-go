@@ -31,8 +31,11 @@ func TestConfig_NoBootstrapClient(t *testing.T) {
 	t.Setenv("CYODA_BOOTSTRAP_USER_ID", "leftover-user")
 	t.Setenv("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M")
 	a := jwtApp(t)
-	if _, err := a.AuthService().M2MClientStore().Get("leftover"); !errors.Is(err, auth.ErrM2MClientNotFound) {
-		t.Fatalf("M2MClientStore().Get(leftover) err = %v, want ErrM2MClientNotFound", err)
+	if _, err := a.AuthService().M2MClientStore().Authenticate(context.Background(), "leftover", "leftover-secret"); !errors.Is(err, auth.ErrInvalidClient) {
+		t.Fatalf("M2MClientStore().Authenticate(leftover) err = %v, want ErrInvalidClient", err)
+	}
+	if l, err := a.AuthService().M2MClientStore().List(context.Background(), "leftover-tenant"); err != nil || len(l) != 0 {
+		t.Fatalf("leftover-tenant clients: %v %v, want none", l, err)
 	}
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()

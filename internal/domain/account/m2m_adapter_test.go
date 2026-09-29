@@ -1,7 +1,10 @@
 package account
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // --- fixture helpers ---
@@ -20,11 +24,65 @@ const (
 	tenantB = "tenant-b"
 )
 
+func m2mSysCtx() context.Context {
+	return spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Tenant: spi.Tenant{ID: spi.SystemTenantID, Name: "System"},
+	})
+}
+
+// newM2MStore is the shipped store over a fresh in-memory KV store.
+func newM2MStore(t *testing.T, maxPerTenant int) *auth.KVM2MClientStore {
+	t.Helper()
+	kv, err := memory.NewStoreFactory().KeyValueStore(m2mSysCtx())
+	if err != nil {
+		t.Fatalf("memory KV: %v", err)
+	}
+	return auth.NewKVM2MClientStore(kv, maxPerTenant)
+}
+
 func newM2MAdapterFixture(t *testing.T, flagOn bool) *Handler {
 	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.M2MAdminRoleEnabled = flagOn
-	return New(nil, nil, nil, nil, auth.NewInMemoryM2MClientStore(), feats)
+	return New(nil, nil, nil, nil, newM2MStore(t, feats.M2MClientMaxPerTenant), feats)
+}
+
+// seedClient creates clientID in tenant directly in the handler's store and
+// returns its secret.
+func seedClient(t *testing.T, h *Handler, tenant, clientID string) string {
+	t.Helper()
+	sec, err := h.m2mClientStore.Create(m2mSysCtx(), spi.TenantID(tenant), clientID, clientID, []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("seed %s/%s: %v", tenant, clientID, err)
+	}
+	return sec
+}
+
+// storedClient returns tenant's client clientID from the store, nil when
+// absent.
+func storedClient(t *testing.T, h *Handler, tenant, clientID string) *auth.M2MClient {
+	t.Helper()
+	for _, c := range listStored(t, h, tenant) {
+		if c.ClientID == clientID {
+			return c
+		}
+	}
+	return nil
+}
+
+func listStored(t *testing.T, h *Handler, tenant string) []*auth.M2MClient {
+	t.Helper()
+	l, err := h.m2mClientStore.List(m2mSysCtx(), spi.TenantID(tenant))
+	if err != nil {
+		t.Fatalf("list %s: %v", tenant, err)
+	}
+	return l
+}
+
+// authenticates reports whether clientID and secret authenticate.
+func authenticates(h *Handler, clientID, secret string) bool {
+	_, err := h.m2mClientStore.Authenticate(m2mSysCtx(), clientID, secret)
+	return err == nil
 }
 
 func withTenantAdminCtx(req *http.Request, tenantID string) *http.Request {
@@ -93,16 +151,9 @@ func TestListTechnicalUsers_AdminEmpty_Returns200EmptyArray(t *testing.T) {
 
 func TestListTechnicalUsers_AdminMixedTenant_FiltersOnCallerTenant(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	store := h.m2mClientStore.(*auth.InMemoryM2MClientStore)
-	if _, err := store.Create("CLIENTAONE", spi.TenantID(tenantA), "CLIENTAONE", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed A1: %v", err)
-	}
-	if _, err := store.Create("CLIENTATWO", spi.TenantID(tenantA), "CLIENTATWO", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed A2: %v", err)
-	}
-	if _, err := store.Create("CLIENTBONE", spi.TenantID(tenantB), "CLIENTBONE", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed B1: %v", err)
-	}
+	seedClient(t, h, tenantA, "CLIENTAONE")
+	seedClient(t, h, tenantA, "CLIENTATWO")
+	seedClient(t, h, tenantB, "CLIENTBONE")
 
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA)
 	rr := httptest.NewRecorder()
@@ -249,7 +300,7 @@ func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T)
 	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !clientIDPattern.MatchString(creds.ClientId) || len(creds.ClientId) != 16 {
+	if !auth.ValidClientID(creds.ClientId) || len(creds.ClientId) != 16 {
 		t.Errorf("clientId %q: want 16-char [A-Za-z0-9]", creds.ClientId)
 	}
 	if creds.ClientSecret == "" {
@@ -263,9 +314,9 @@ func TestCreateTechnicalUser_AdminNoFlag_Returns200WithM2MRoleOnly(t *testing.T)
 	}
 
 	// Store side: roles == ["ROLE_M2M"], CreatedAt == UpdatedAt, tenant == caller.
-	stored, err := h.m2mClientStore.Get(creds.ClientId)
-	if err != nil {
-		t.Fatalf("Get(%s): %v", creds.ClientId, err)
+	stored := storedClient(t, h, tenantA, creds.ClientId)
+	if stored == nil {
+		t.Fatalf("%s not stored in the caller's tenant", creds.ClientId)
 	}
 	if len(stored.Roles) != 1 || stored.Roles[0] != "ROLE_M2M" {
 		t.Errorf("stored roles: got %v want [ROLE_M2M]", stored.Roles)
@@ -295,9 +346,9 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOn_AddsAdminRole(t *testing.T
 	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	stored, err := h.m2mClientStore.Get(creds.ClientId)
-	if err != nil {
-		t.Fatalf("Get: %v", err)
+	stored := storedClient(t, h, tenantA, creds.ClientId)
+	if stored == nil {
+		t.Fatalf("%s not stored", creds.ClientId)
 	}
 	want := map[string]bool{"ROLE_M2M": true, "ROLE_ADMIN": true}
 	got := map[string]bool{}
@@ -328,8 +379,8 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFlagOff_Returns404FeatureDisabled
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeFeatureDisabled)
 	}
 	// No store record should have been created.
-	if len(h.m2mClientStore.List(spi.TenantID(tenantA))) != 0 {
-		t.Errorf("store should remain empty on FEATURE_DISABLED, got %d records", len(h.m2mClientStore.List(spi.TenantID(tenantA))))
+	if n := len(listStored(t, h, tenantA)); n != 0 {
+		t.Errorf("store should remain empty on FEATURE_DISABLED, got %d records", n)
 	}
 }
 
@@ -348,7 +399,10 @@ func TestCreateTechnicalUser_AdminWithAdminRoleFalse_NoAdminRole(t *testing.T) {
 	}
 	var creds genapi.TechnicalUserCredentialsDto
 	_ = json.Unmarshal(rr.Body.Bytes(), &creds)
-	stored, _ := h.m2mClientStore.Get(creds.ClientId)
+	stored := storedClient(t, h, tenantA, creds.ClientId)
+	if stored == nil {
+		t.Fatalf("%s not stored", creds.ClientId)
+	}
 	for _, r := range stored.Roles {
 		if r == "ROLE_ADMIN" {
 			t.Errorf("ROLE_ADMIN must NOT be present when withAdminRole=false; got %v", stored.Roles)
@@ -397,8 +451,8 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 		}
 		seen[creds.ClientId] = true
 	}
-	if len(h.m2mClientStore.List(spi.TenantID(tenantA))) != n {
-		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", len(h.m2mClientStore.List(spi.TenantID(tenantA))), n)
+	if got := len(listStored(t, h, tenantA)); got != n {
+		t.Errorf("store size: got %d want %d (some Create silently overwrote?)", got, n)
 	}
 }
 
@@ -406,9 +460,7 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 
 func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	if _, err := h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	seedClient(t, h, tenantA, "CLIENT1")
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENT1", nil), tenantA)
 	rr := httptest.NewRecorder()
 
@@ -427,7 +479,7 @@ func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
 	if resp.Message == "" {
 		t.Error("message empty")
 	}
-	if _, err := h.m2mClientStore.Get("CLIENT1"); err == nil {
+	if storedClient(t, h, tenantA, "CLIENT1") != nil {
 		t.Error("store record still present after Delete")
 	}
 }
@@ -436,9 +488,7 @@ func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
 
 func TestDeleteTechnicalUser_AdminCrossTenant_Returns404AndPreservesRecord(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	if _, err := h.m2mClientStore.Create("CLIENTB", spi.TenantID(tenantB), "CLIENTB", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	secB := seedClient(t, h, tenantB, "CLIENTB")
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENTB", nil), tenantA)
 	rr := httptest.NewRecorder()
 
@@ -450,9 +500,17 @@ func TestDeleteTechnicalUser_AdminCrossTenant_Returns404AndPreservesRecord(t *te
 	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientNotFound {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientNotFound)
 	}
-	// Tenant B's record must remain untouched.
-	if _, err := h.m2mClientStore.Get("CLIENTB"); err != nil {
-		t.Errorf("tenant B record removed by cross-tenant DELETE: %v", err)
+	// Tenant B's client must remain untouched.
+	if !authenticates(h, "CLIENTB", secB) {
+		t.Error("tenant B client removed by cross-tenant DELETE")
+	}
+	// The body is the absent client's body: no cross-tenant existence oracle.
+	absent := httptest.NewRecorder()
+	newM2MAdapterFixture(t, false).DeleteTechnicalUser(absent,
+		withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENTB", nil), tenantA), "CLIENTB")
+	if absent.Code != rr.Code || absent.Body.String() != rr.Body.String() {
+		t.Errorf("another tenant's client answers differently from an absent one:\n%d %s\n%d %s",
+			rr.Code, rr.Body.String(), absent.Code, absent.Body.String())
 	}
 }
 
@@ -508,9 +566,7 @@ func TestDeleteTechnicalUser_AdminEmptyId_Returns400(t *testing.T) {
 
 func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	if _, err := h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	seedClient(t, h, tenantA, "CLIENT1")
 	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENT1", nil), tenantA)
 	rr := httptest.NewRecorder()
 
@@ -525,10 +581,7 @@ func TestDeleteTechnicalUser_NonAdmin_Returns403(t *testing.T) {
 
 func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	plaintextOld, err := h.m2mClientStore.Create("CLIENTR", spi.TenantID(tenantA), "CLIENTR", []string{"ROLE_M2M"})
-	if err != nil {
-		t.Fatalf("seed: %v", err)
-	}
+	plaintextOld := seedClient(t, h, tenantA, "CLIENTR")
 
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTR/secret", nil), tenantA)
 	rr := httptest.NewRecorder()
@@ -548,17 +601,18 @@ func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testi
 	if creds.ClientSecret == plaintextOld {
 		t.Error("new client_secret equals old (reset did not rotate)")
 	}
-	// VerifySecret accepts the new and rejects the old.
-	okNew, _ := h.m2mClientStore.VerifySecret("CLIENTR", creds.ClientSecret)
-	if !okNew {
-		t.Error("new secret does not verify against store")
+	// The new secret authenticates; the old one does not.
+	if !authenticates(h, "CLIENTR", creds.ClientSecret) {
+		t.Error("new secret does not authenticate")
 	}
-	okOld, _ := h.m2mClientStore.VerifySecret("CLIENTR", plaintextOld)
-	if okOld {
-		t.Error("old secret still verifies after reset")
+	if authenticates(h, "CLIENTR", plaintextOld) {
+		t.Error("old secret still authenticates after reset")
+	}
+	if len(creds.Roles) != 1 || creds.Roles[0] != "ROLE_M2M" {
+		t.Errorf("roles: got %v want [ROLE_M2M]", creds.Roles)
 	}
 	// UpdatedAt advanced.
-	stored, _ := h.m2mClientStore.Get("CLIENTR")
+	stored := storedClient(t, h, tenantA, "CLIENTR")
 	if !stored.UpdatedAt.After(stored.CreatedAt) {
 		t.Errorf("UpdatedAt did not advance past CreatedAt (created=%v updated=%v)", stored.CreatedAt, stored.UpdatedAt)
 	}
@@ -568,7 +622,7 @@ func TestResetTechnicalUserSecret_AdminOwned_Returns200AndRotatesSecret(t *testi
 
 func TestResetTechnicalUserSecret_AdminCrossTenant_Returns404AndPreservesSecret(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	plaintextB, _ := h.m2mClientStore.Create("CLIENTB", spi.TenantID(tenantB), "CLIENTB", []string{"ROLE_M2M"})
+	plaintextB := seedClient(t, h, tenantB, "CLIENTB")
 
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTB/secret", nil), tenantA)
 	rr := httptest.NewRecorder()
@@ -581,9 +635,16 @@ func TestResetTechnicalUserSecret_AdminCrossTenant_Returns404AndPreservesSecret(
 	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientNotFound {
 		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientNotFound)
 	}
-	okB, _ := h.m2mClientStore.VerifySecret("CLIENTB", plaintextB)
-	if !okB {
+	if !authenticates(h, "CLIENTB", plaintextB) {
 		t.Error("tenant B's secret was rotated by cross-tenant reset")
+	}
+	// The body is the absent client's body: no cross-tenant existence oracle.
+	absent := httptest.NewRecorder()
+	newM2MAdapterFixture(t, false).ResetTechnicalUserSecret(absent,
+		withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENTB/secret", nil), tenantA), "CLIENTB")
+	if absent.Code != rr.Code || absent.Body.String() != rr.Body.String() {
+		t.Errorf("another tenant's client answers differently from an absent one:\n%d %s\n%d %s",
+			rr.Code, rr.Body.String(), absent.Code, absent.Body.String())
 	}
 }
 
@@ -630,7 +691,7 @@ func TestResetTechnicalUserSecret_AdminEmptyId_Returns400(t *testing.T) {
 
 func TestResetTechnicalUserSecret_NonAdmin_Returns403(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	_, _ = h.m2mClientStore.Create("CLIENT1", spi.TenantID(tenantA), "CLIENT1", []string{"ROLE_M2M"})
+	seedClient(t, h, tenantA, "CLIENT1")
 
 	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENT1/secret", nil), tenantA)
 	rr := httptest.NewRecorder()
@@ -696,5 +757,132 @@ func assertNoHashedSecretLeak(t *testing.T, op string, body []byte) {
 		if strings.Contains(s, bad) {
 			t.Errorf("%s response contains forbidden token %q: %s", op, bad, body)
 		}
+	}
+}
+
+// --- Cap ---
+
+func TestCreateTechnicalUser_AtCap_Returns400CapReached(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	h := New(nil, nil, nil, nil, newM2MStore(t, 1), feats)
+	for i, want := range []int{http.StatusOK, http.StatusBadRequest} {
+		rr := httptest.NewRecorder()
+		h.CreateTechnicalUser(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA), genapi.CreateTechnicalUserParams{})
+		if rr.Code != want {
+			t.Fatalf("create %d: status %d want %d, body=%s", i, rr.Code, want, rr.Body.String())
+		}
+		if want == http.StatusBadRequest {
+			if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeM2MClientCapReached {
+				t.Errorf("errorCode: got %q want %q", code, common.ErrCodeM2MClientCapReached)
+			}
+		}
+	}
+	if n := len(listStored(t, h, tenantA)); n != 1 {
+		t.Errorf("tenant holds %d clients, want 1", n)
+	}
+}
+
+// --- Store failures ---
+
+// storeOutage stands in for the connection detail a real KV backend error
+// carries; the response must never show it.
+const storeOutage = "postgres://u:p@db/cyoda"
+
+type m2mUnavailableErr struct{}
+
+func (m2mUnavailableErr) Error() string            { return "acquire timed out: " + storeOutage }
+func (m2mUnavailableErr) StorageUnavailable() bool { return true }
+
+// failingM2MStore fails every call with err, as the shipped store does when
+// the KV store fails: the cause is wrapped.
+type failingM2MStore struct{ err error }
+
+func (s failingM2MStore) wrap(op string) error {
+	return fmt.Errorf("failed to %s m2m client: %w", op, s.err)
+}
+
+func (s failingM2MStore) Create(context.Context, spi.TenantID, string, string, []string) (string, error) {
+	return "", s.wrap("write")
+}
+func (s failingM2MStore) Authenticate(context.Context, string, string) (*auth.M2MClient, error) {
+	return nil, s.wrap("read")
+}
+func (s failingM2MStore) List(context.Context, spi.TenantID) ([]*auth.M2MClient, error) {
+	return nil, s.wrap("list")
+}
+func (s failingM2MStore) Delete(context.Context, spi.TenantID, string) error {
+	return s.wrap("delete")
+}
+func (s failingM2MStore) ResetSecret(context.Context, spi.TenantID, string) (string, *auth.M2MClient, error) {
+	return "", nil, s.wrap("reset")
+}
+
+// m2mOperations drives the four /clients handlers.
+func m2mOperations(h *Handler) map[string]func() *httptest.ResponseRecorder {
+	return map[string]func() *httptest.ResponseRecorder{
+		"Create": func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			h.CreateTechnicalUser(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA), genapi.CreateTechnicalUserParams{})
+			return rr
+		},
+		"List": func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			h.ListTechnicalUsers(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA))
+			return rr
+		},
+		"Delete": func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			h.DeleteTechnicalUser(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/CLIENT1", nil), tenantA), "CLIENT1")
+			return rr
+		},
+		"ResetSecret": func() *httptest.ResponseRecorder {
+			rr := httptest.NewRecorder()
+			h.ResetTechnicalUserSecret(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/CLIENT1/secret", nil), tenantA), "CLIENT1")
+			return rr
+		},
+	}
+}
+
+// A store that reports itself unavailable is 503 STORAGE_UNAVAILABLE on all
+// four operations — never 404 "client not found" — and the response carries
+// none of the storage error's text.
+func TestM2MAdapter_StorageUnavailable_Returns503(t *testing.T) {
+	h := New(nil, nil, nil, nil, failingM2MStore{err: m2mUnavailableErr{}}, auth.DefaultIAMFeatures())
+	for name, call := range m2mOperations(h) {
+		t.Run(name, func(t *testing.T) {
+			rr := call()
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status %d want 503, body=%s", rr.Code, rr.Body.String())
+			}
+			if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeStorageUnavailable {
+				t.Errorf("errorCode: got %q want %q", code, common.ErrCodeStorageUnavailable)
+			}
+			if strings.Contains(rr.Body.String(), storeOutage) {
+				t.Errorf("response leaked storage internals: %s", rr.Body.String())
+			}
+		})
+	}
+}
+
+// Any other store failure is 500 with a ticket and a generic message.
+func TestM2MAdapter_StoreFailure_Returns500WithTicket(t *testing.T) {
+	h := New(nil, nil, nil, nil, failingM2MStore{err: errors.New("disk on fire at " + storeOutage)}, auth.DefaultIAMFeatures())
+	for name, call := range m2mOperations(h) {
+		t.Run(name, func(t *testing.T) {
+			rr := call()
+			if rr.Code != http.StatusInternalServerError {
+				t.Fatalf("status %d want 500, body=%s", rr.Code, rr.Body.String())
+			}
+			var pd common.ProblemDetail
+			if err := json.Unmarshal(rr.Body.Bytes(), &pd); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if pd.Ticket == "" {
+				t.Errorf("no ticket: %s", rr.Body.String())
+			}
+			if strings.Contains(rr.Body.String(), "disk on fire") || strings.Contains(rr.Body.String(), storeOutage) {
+				t.Errorf("response leaked internals: %s", rr.Body.String())
+			}
+		})
 	}
 }

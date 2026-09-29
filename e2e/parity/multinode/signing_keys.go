@@ -53,8 +53,7 @@ func modelListStatus(t *testing.T, baseURL, token string) int {
 	return resp.StatusCode
 }
 
-// newM2MClient creates an M2M client on the node c targets. M2M clients are
-// per node, so the client's tokens must be fetched from that node.
+// newM2MClient creates an M2M client through the node c targets.
 func newM2MClient(t *testing.T, c *client.Client) (id, secret string) {
 	t.Helper()
 	code, body, err := c.CreateClientRaw(t, false)
