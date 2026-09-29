@@ -160,6 +160,10 @@ func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clie
 	if err != nil {
 		return "", err
 	}
+	// The stripe lock is held through undoCreate too: a hung store can block
+	// the creates of every tenant on this stripe for up to undoTimeout. That
+	// is accepted — creates are rare admin calls, and a store that hangs
+	// fails them anyway.
 	mu := s.createLock(tenant)
 	mu.Lock()
 	defer mu.Unlock()
@@ -226,12 +230,10 @@ func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2
 
 // Delete removes tenant's client id: the index entry if it names tenant,
 // then the record if present — decodable or not; tenant's namespace proves
-// ownership. An index entry naming another tenant is never touched.
+// ownership. An index entry naming another tenant is never touched. The
+// caller has checked clientID against the client-id grammar.
 func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
 	ctx = noTx(ctx)
-	if !ValidClientID(clientID) {
-		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
 	_, err := s.kv.Get(ctx, m2mTenantNamespace(tenant), clientID)
 	recPresent := err == nil
 	if err != nil && !errors.Is(err, spi.ErrNotFound) {
@@ -260,12 +262,10 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 
 // ResetSecret gives an existing client of tenant a new secret and returns it,
 // once, with the client. The secret is hashed before the store is read, so
-// the gap between read and write is one round trip.
+// the gap between read and write is one round trip. The caller has checked
+// clientID against the client-id grammar.
 func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
 	ctx = noTx(ctx)
-	if !ValidClientID(clientID) {
-		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
-	}
 	secret, err := GenerateSecret()
 	if err != nil {
 		return "", nil, err

@@ -35,7 +35,9 @@ type schedDB struct {
 	url  string
 	pool *pgxpool.Pool
 	// keyClient is the M2M client the keyStacks on this database share (see
-	// newKeyStackWith); nil until the first keyStack creates it.
+	// newKeyStackWith); nil until the first keyStack creates it. It is
+	// written without synchronisation, which is safe because the keyStacks
+	// on one database are built sequentially, on the test goroutine.
 	keyClient *m2mCredential
 }
 

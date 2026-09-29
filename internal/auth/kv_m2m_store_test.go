@@ -225,8 +225,23 @@ func TestKVM2M_CapZeroIsUnbounded(t *testing.T) {
 	}
 }
 
+// slowListKV makes List — the cap read — slow after it has read, so the
+// count it returns is stale by the time the caller writes: concurrent creates
+// overlap between the cap read and their writes unless something serialises
+// them.
+type slowListKV struct {
+	spi.KeyValueStore
+	delay time.Duration
+}
+
+func (k *slowListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	out, err := k.KeyValueStore.List(ctx, ns)
+	time.Sleep(k.delay)
+	return out, err
+}
+
 func TestKVM2M_CapHoldsUnderConcurrentCreatesOnOneNode(t *testing.T) {
-	s, _ := newM2M(t, 3)
+	s := auth.NewKVM2MClientStore(&slowListKV{KeyValueStore: mustNewMemoryKV(t, systemCtx()), delay: 30 * time.Millisecond}, 3)
 	var wg sync.WaitGroup
 	var ok atomic.Int32
 	for i := 0; i < 20; i++ {
@@ -241,6 +256,9 @@ func TestKVM2M_CapHoldsUnderConcurrentCreatesOnOneNode(t *testing.T) {
 	wg.Wait()
 	if ok.Load() != 3 {
 		t.Fatalf("%d creates passed the cap of 3", ok.Load())
+	}
+	if l, err := s.List(systemCtx(), "acme"); err != nil || len(l) != 3 {
+		t.Fatalf("tenant holds %d clients (%v), want 3", len(l), err)
 	}
 }
 
@@ -388,14 +406,124 @@ func TestKVM2M_AuthenticateRefusesMalformedIDsWithoutReading(t *testing.T) {
 	}
 }
 
+// txProbeKV records every call whose context carries a transaction: the
+// postgres KV store would join it.
+type txProbeKV struct {
+	spi.KeyValueStore
+	mu   sync.Mutex
+	seen []string
+}
+
+func (k *txProbeKV) probe(ctx context.Context, op, ns string) {
+	if spi.GetTransaction(ctx) == nil {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.seen = append(k.seen, op+" "+ns)
+}
+
+func (k *txProbeKV) calls() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.seen...)
+}
+
+func (k *txProbeKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	k.probe(ctx, "Put", ns)
+	return k.KeyValueStore.Put(ctx, ns, key, v)
+}
+
+func (k *txProbeKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
+	k.probe(ctx, "Get", ns)
+	return k.KeyValueStore.Get(ctx, ns, key)
+}
+
+func (k *txProbeKV) Delete(ctx context.Context, ns, key string) error {
+	k.probe(ctx, "Delete", ns)
+	return k.KeyValueStore.Delete(ctx, ns, key)
+}
+
+func (k *txProbeKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	k.probe(ctx, "List", ns)
+	return k.KeyValueStore.List(ctx, ns)
+}
+
+// No KV call made by the store carries the caller's transaction: not from
+// any method, and not from the undo of a failed create.
 func TestKVM2M_IgnoresCallerTransaction(t *testing.T) {
-	s, _ := newM2M(t, 0)
-	ctx := spi.WithTransaction(systemCtx(), &spi.TransactionState{}) // a caller's transaction
-	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"})
+	txCtx := spi.WithTransaction(systemCtx(), &spi.TransactionState{ID: "caller-tx"})
+
+	probe := &txProbeKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
+	s := auth.NewKVM2MClientStore(probe, 10) // a cap, so Create lists too
+	sec, err := s.Create(txCtx, "acme", "C1", "C1", []string{"ROLE_M2M"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(systemCtx(), "C1", sec); err != nil {
-		t.Fatal("a write made under a caller's transaction is not visible outside it")
+	if _, err := s.Authenticate(txCtx, "C1", sec); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = s.Authenticate(txCtx, "NOPE", "x") // the decoy read
+	if _, err := s.List(txCtx, "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.ResetSecret(txCtx, "acme", "C1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Delete(txCtx, "acme", "C1"); err != nil {
+		t.Fatal(err)
+	}
+
+	undoProbe := &txProbeKV{KeyValueStore: &failNSKV{KeyValueStore: mustNewMemoryKV(t, systemCtx()), ns: "m2m-client-ids"}}
+	if _, err := auth.NewKVM2MClientStore(undoProbe, 0).Create(txCtx, "acme", "C2", "C2", []string{"ROLE_M2M"}); err == nil {
+		t.Fatal("create with a failing index write: want error")
+	}
+
+	if seen := append(probe.calls(), undoProbe.calls()...); len(seen) != 0 {
+		t.Fatalf("KV calls made under the caller's transaction: %v", seen)
+	}
+}
+
+// cancelThenFailKV commits a Put into ns, then cancels the caller's context
+// and reports an error — a caller that gave up while the write landed. Its
+// Delete fails once the context it is given is done.
+type cancelThenFailKV struct {
+	spi.KeyValueStore
+	ns     string
+	cancel context.CancelFunc
+}
+
+func (k *cancelThenFailKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	if err := k.KeyValueStore.Put(ctx, ns, key, v); err != nil {
+		return err
+	}
+	if ns == k.ns {
+		k.cancel()
+		return errors.New("injected: committed, then the caller went away")
+	}
+	return nil
+}
+
+func (k *cancelThenFailKV) Delete(ctx context.Context, ns, key string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return k.KeyValueStore.Delete(ctx, ns, key)
+}
+
+// The undo of a failed create runs on a context the caller cannot cancel: a
+// caller that went away does not leave the index entry or the record behind.
+func TestKVM2M_CreateUndoSurvivesCallerCancel(t *testing.T) {
+	mem := mustNewMemoryKV(t, systemCtx())
+	ctx, cancel := context.WithCancel(systemCtx())
+	defer cancel()
+	s := auth.NewKVM2MClientStore(&cancelThenFailKV{KeyValueStore: mem, ns: "m2m-client-ids", cancel: cancel}, 0)
+	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+		t.Fatal("want error")
+	}
+	for _, ns := range []string{"m2m-client-ids", "m2m-clients:acme"} {
+		if _, err := mem.Get(systemCtx(), ns, "C1"); !errors.Is(err, spi.ErrNotFound) {
+			t.Errorf("%s/C1 left behind", ns)
+		}
 	}
 }
