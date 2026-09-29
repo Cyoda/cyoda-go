@@ -20,12 +20,50 @@ import (
 // so withAdminRole=true is the happy path here; the flag-off case is
 // covered by the unit suite per spec D9.
 
+// TestE2E_Clients_HelpersDeleteTheirClients pins that createClient and
+// createM2MClient delete the client they create when the calling test ends,
+// so no test leaves a client behind in the suite tenant or in another one.
+func TestE2E_Clients_HelpersDeleteTheirClients(t *testing.T) {
+	const otherTenant, otherUser = "client-helper-cleanup", "cleanup-admin"
+	var suiteID, otherID string
+	t.Run("create", func(t *testing.T) {
+		suiteID, _ = createClient(t, false)
+		otherID, _ = createM2MClient(t, otherTenant, otherUser, []string{"ROLE_M2M"})
+	})
+	if listsClient(t, suiteToken(t), suiteID) {
+		t.Errorf("createClient left client %s behind in the suite tenant", suiteID)
+	}
+	if listsClient(t, adminTokenForTenant(t, otherTenant, otherUser), otherID) {
+		t.Errorf("createM2MClient left client %s behind in tenant %s", otherID, otherTenant)
+	}
+}
+
+// listsClient reports whether GET /clients, called with bearer, lists id.
+func listsClient(t *testing.T, bearer, id string) bool {
+	t.Helper()
+	resp := unauthRequest(t, http.MethodGet, "/api/clients", "Bearer "+bearer)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("list clients: %d: %s", resp.StatusCode, raw)
+	}
+	var list []genapi.TechnicalUserDto
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		t.Fatalf("decode client list: %v", err)
+	}
+	for _, c := range list {
+		if c.ClientId == id {
+			return true
+		}
+	}
+	return false
+}
+
 func TestE2E_Clients_ListEmpty(t *testing.T) {
 	// We only assert the response shape and that a client this test creates
 	// is listed, not emptiness (other tests in the run may have left clients
 	// behind).
 	cid, _ := createClient(t, false)
-	t.Cleanup(func() { adminRequest(t, "DELETE", "/clients/"+cid, nil).Body.Close() })
 	resp := adminRequest(t, "GET", "/clients", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

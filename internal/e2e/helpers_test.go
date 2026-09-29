@@ -165,8 +165,36 @@ func suiteToken(t *testing.T) string {
 	return tok
 }
 
+// deleteClientAtCleanup registers a t.Cleanup that deletes the M2M client id
+// through DELETE {baseURL}/api/clients/{id}, authenticated with the token
+// bearer returns when the cleanup runs. The request runs on a context of its
+// own (t.Context() is cancelled before cleanups run). A 404 is accepted: the
+// test may have deleted the client itself.
+func deleteClientAtCleanup(t *testing.T, baseURL, id string, bearer func() string) {
+	t.Helper()
+	t.Cleanup(func() {
+		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodDelete, baseURL+"/api/clients/"+url.PathEscape(id), nil)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		req.Header.Set("Authorization", "Bearer "+bearer())
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Errorf("cleanup: delete client %s: %v", id, err)
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotFound {
+			b, _ := io.ReadAll(resp.Body)
+			t.Errorf("cleanup: delete client %s: %d %s", id, resp.StatusCode, b)
+		}
+	})
+}
+
 // createClient creates an M2M client in the suite tenant through POST
-// /clients and returns its id and secret (never log the secret).
+// /clients and returns its id and secret (never log the secret). The client
+// is deleted when the test ends.
 func createClient(t *testing.T, withAdminRole bool) (string, string) {
 	t.Helper()
 	path := "/api/clients"
@@ -186,6 +214,7 @@ func createClient(t *testing.T, withAdminRole bool) (string, string) {
 	if err := json.NewDecoder(resp.Body).Decode(&cred); err != nil || cred.ID == "" || cred.Secret == "" {
 		t.Fatalf("create client: no credentials in response (%v)", err)
 	}
+	deleteClientAtCleanup(t, serverURL, cred.ID, func() string { return suiteToken(t) })
 	return cred.ID, cred.Secret
 }
 

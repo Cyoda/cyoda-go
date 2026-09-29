@@ -598,7 +598,7 @@ func TestKVKeyStore_RotationSeesSiblingIssuedElsewhere(t *testing.T) {
 }
 
 // Deleting an undecodable record away from the bootstrap KID replaces it with
-// a deleted bootstrap-state record (spec §5.5) rather than removing it: the
+// a deleted bootstrap-state record rather than removing it: the
 // KID could be some other node's bootstrap key, and fail-closed means it
 // stays revoked rather than silently reappearing usable if that key is ever
 // reintroduced.

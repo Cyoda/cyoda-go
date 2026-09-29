@@ -588,7 +588,7 @@ func adminTokenForTenant(t *testing.T, tenant, user string) string {
 // createM2MClient provisions a new M2M client belonging to tenantID, through
 // POST /clients authenticated with a seed admin token minted for that tenant
 // (adminTokenForTenant) rather than reaching into the store directly.
-// Returns (clientID, clientSecret).
+// Returns (clientID, clientSecret). The client is deleted when the test ends.
 func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (string, string) {
 	t.Helper()
 	withAdmin := containsString(roles, "ROLE_ADMIN")
@@ -610,6 +610,7 @@ func createM2MClient(t *testing.T, tenantID, userID string, roles []string) (str
 	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
 		t.Fatalf("createM2MClient: no credentials in response (%v)", err)
 	}
+	deleteClientAtCleanup(t, serverURL, cred.ID, func() string { return adminTokenForTenant(t, tenantID, userID) })
 	return cred.ID, cred.Secret
 }
 

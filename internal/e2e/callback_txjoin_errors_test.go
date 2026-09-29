@@ -72,7 +72,8 @@ func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) strin
 // provisionTenant creates an M2M client at tenantID on THIS stack, through
 // POST /clients authenticated with a seed admin token minted for that tenant
 // (adminTokenFor) rather than reaching into the store directly, and returns
-// its credentials.
+// its credentials. The client is deleted when the test ends, before the stack
+// shuts down (cleanups run last-registered first).
 func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string) (clientID, secret string) {
 	t.Helper()
 	seed := h.adminTokenFor(t, tenantID, userID)
@@ -97,6 +98,7 @@ func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string)
 	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
 		t.Fatalf("provisionTenant: no credentials in response (%v)", err)
 	}
+	deleteClientAtCleanup(t, h.baseURL, cred.ID, func() string { return h.adminTokenFor(t, tenantID, userID) })
 	return cred.ID, cred.Secret
 }
 

@@ -7,28 +7,45 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestConfig_NoBootstrapClient verifies that app.Config carries no Bootstrap
-// field: no credential is defined by configuration except the signing key,
-// and `cyoda token` signs the first admin token. The leftover variables set
-// below create nothing and are not read.
+// TestConfig_NoBootstrapClient verifies that no credential is defined by
+// configuration except the signing key (`cyoda token` signs the first admin
+// token): a jwt-mode app started with the former bootstrap-client variables
+// set creates no client from them, and a client_credentials grant with them
+// is refused.
 func TestConfig_NoBootstrapClient(t *testing.T) {
 	t.Setenv("CYODA_BOOTSTRAP_CLIENT_ID", "leftover")
 	t.Setenv("CYODA_BOOTSTRAP_CLIENT_SECRET", "leftover-secret")
-	cfg := app.DefaultConfig()
-	v := reflect.ValueOf(cfg)
-	if _, ok := v.Type().FieldByName("Bootstrap"); ok {
-		t.Fatal("app.Config still has a Bootstrap field")
+	t.Setenv("CYODA_BOOTSTRAP_TENANT_ID", "leftover-tenant")
+	t.Setenv("CYODA_BOOTSTRAP_USER_ID", "leftover-user")
+	t.Setenv("CYODA_BOOTSTRAP_ROLES", "ROLE_ADMIN,ROLE_M2M")
+	a := jwtApp(t)
+	if _, err := a.AuthService().M2MClientStore().Get("leftover"); !errors.Is(err, auth.ErrM2MClientNotFound) {
+		t.Fatalf("M2MClientStore().Get(leftover) err = %v, want ErrM2MClientNotFound", err)
+	}
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("leftover", "leftover-secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("client_credentials with the leftover client: status %d, want 401", resp.StatusCode)
 	}
 }
 
