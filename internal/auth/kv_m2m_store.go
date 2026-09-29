@@ -305,11 +305,16 @@ func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID,
 	if err != nil {
 		return "", nil, err
 	}
+	// Without a record in tenant's namespace no reset can succeed, so the
+	// index entry — which may name another tenant — is not read.
+	if !found {
+		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
 	idxTenant, idxFound, err := s.getIndex(ctx, clientID)
 	if err != nil {
 		return "", nil, err
 	}
-	if !found || !idxFound || idxTenant != tenant {
+	if !idxFound || idxTenant != tenant {
 		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	c.HashedSecret, c.UpdatedAt = string(hash), time.Now().UTC()

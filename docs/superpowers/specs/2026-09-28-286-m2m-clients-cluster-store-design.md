@@ -407,9 +407,12 @@ Removed: `InMemoryM2MClientStore`, `NewInMemoryM2MClientStore`, `Get`,
   entry naming another tenant is never touched.
 - **ResetSecret(tenant, id)**: generate and hash the secret first, so the gap
   between read and write is one round trip, not a bcrypt. `Get` the record in
-  the tenant's namespace and the index entry; the client does not exist
-  (§5.1) → `ErrM2MClientNotFound`; `Put` the record with the new hash and
-  `updatedAt` now.
+  the tenant's namespace; no record → `ErrM2MClientNotFound` without reading
+  the index entry: no reset can succeed without that record, and the entry
+  may name another tenant, so another tenant's undecodable index entry is
+  not a store error for this caller. Then `Get` the index entry; absent or
+  naming another tenant → `ErrM2MClientNotFound`; undecodable → the store
+  error. `Put` the record with the new hash and `updatedAt` now.
 
 The token handler (`internal/auth/token.go:59-80,141`) calls `Authenticate`
 once and uses the returned client for both grants: `ErrInvalidClient` →
@@ -469,7 +472,7 @@ live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 | | 500 | `server_error` | store failure; undecodable entry or record | yes (was 401) |
 | | 400 / 500 | | grant validation; signer failure | no |
 | all four `/clients` operations | 401 / 403 / 501 | | unauthenticated; not admin; not jwt mode | no |
-| | 500 | | store failure (ticket, generic message); for reset also an undecodable index entry; for delete, an undecodable index entry naming a client absent from the caller's tenant (ownership unproven) | yes (list: new; delete, reset: was 404) |
+| | 500 | | store failure (ticket, generic message); for reset also an undecodable index entry of an id whose record the caller's tenant holds; for delete, an undecodable index entry naming a client absent from the caller's tenant (ownership unproven) | yes (list: new; delete, reset: was 404) |
 | | 503 | `STORAGE_UNAVAILABLE` | the store reports itself unavailable | yes; add to OpenAPI for all four |
 | `POST /clients` | 200 | | created | stored now |
 | | 400 | `M2M_CLIENT_CAP_REACHED` | the tenant is at the cap | yes; new code |
@@ -480,7 +483,7 @@ live `CYODA_JWT_EXPIRY_SECONDS` (default 3600, `app/config.go:431`).
 | | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's | no |
 | `PUT /clients/{clientId}/secret` | 200 | | new secret | stored now |
 | | 400 | `BAD_REQUEST` | id outside §5.2 | no |
-| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's; a record without its index entry | no |
+| | 404 | `M2M_CLIENT_NOT_FOUND` | absent; another tenant's; a record without its index entry; no record in the caller's tenant, whatever the index entry (read only when the record exists) | no |
 | | 500 | | an undecodable record | yes |
 
 No gRPC surface manages clients (a search of `internal/grpc` and `api/grpc` for

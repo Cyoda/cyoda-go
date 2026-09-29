@@ -184,9 +184,11 @@ func TestKVM2M_UndecodableRecord(t *testing.T) {
 }
 
 // An undecodable index entry is the store failing, never "no such client":
-// Authenticate and ResetSecret return a store error. Delete does too, unless
-// the caller's own tenant namespace holds a record for the id — see
-// TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient.
+// Authenticate returns a store error, and so does ResetSecret when the
+// caller's namespace holds a record for the id (without one, see
+// TestKVM2M_ResetSecretWithoutAnOwnRecordIsNotFoundBeforeTheIndexIsRead).
+// Delete does too, unless the caller's own tenant namespace holds a record
+// for the id — see TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient.
 func TestKVM2M_UndecodableIndexEntry(t *testing.T) {
 	s, kv := newM2M(t, 0)
 	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
@@ -196,6 +198,20 @@ func TestKVM2M_UndecodableIndexEntry(t *testing.T) {
 	}
 	if _, _, err := s.ResetSecret(systemCtx(), "acme", "C1"); err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
 		t.Fatalf("reset: %v, want a store error", err)
+	}
+}
+
+// A reset needs a record in the caller's own namespace, so without one it is
+// "no such client" before the index entry is read: another tenant's damaged
+// index entry is not visible to the caller as a store error.
+func TestKVM2M_ResetSecretWithoutAnOwnRecordIsNotFoundBeforeTheIndexIsRead(t *testing.T) {
+	s, kv := newM2M(t, 0)
+	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
+	if _, _, err := s.ResetSecret(systemCtx(), "acme", "C1"); !errors.Is(err, auth.ErrM2MClientNotFound) {
+		t.Fatalf("reset: %v, want ErrM2MClientNotFound", err)
+	}
+	if got, err := kv.Get(systemCtx(), "m2m-client-ids", "C1"); err != nil || string(got) != "{" {
+		t.Fatalf("index entry touched: %q %v", got, err)
 	}
 }
 

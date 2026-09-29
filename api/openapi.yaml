@@ -887,7 +887,10 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable record or index entry.
+            generic message), including an undecodable record, or an
+            undecodable index entry of a client whose record the caller's
+            tenant holds. An id with no record in the caller's tenant answers
+            `404`, whatever its index entry.
           content:
             application/problem+json:
               schema:
