@@ -263,10 +263,9 @@ const (
 	// entity identifiers (matching the cyoda data model), and the canonical
 	// spelling specifically, because every other subsystem compares a tenant
 	// as raw text — accepting another spelling would alias two distinct
-	// tenants. A tenant whose id is not a UUID (e.g. one created with a
-	// hyphenated-word `cyoda token --tenant`) must migrate to a UUID tenant
-	// before it can register, list, update, invalidate, reactivate or delete
-	// an OIDC provider.
+	// tenants. A tenant whose id is not a UUID (e.g. acme) cannot own OIDC
+	// providers; use a UUID tenant to register, list, update, invalidate,
+	// reactivate or delete one.
 	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
 	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
 	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"

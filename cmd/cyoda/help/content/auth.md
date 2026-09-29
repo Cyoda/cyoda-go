@@ -35,7 +35,7 @@ Every cyoda API call needs an `Authorization: Bearer <jwt>` header. This page he
 
 ## TOKEN PRESENTATION
 
-All cyoda APIs accept the JWT via `Authorization: Bearer <token>`. The token claim shape — `sub`, `iss`, `caas_org_id`, `caas_user_id`, `user_roles`, `caas_tier`, `exp`, `iat`, `jti`, optionally `aud` and `act` — is documented in `auth.tokens`.
+All cyoda APIs accept the JWT via `Authorization: Bearer <token>`. The token claim shape — `sub`, `iss`, `caas_org_id`, `caas_user_id`, `user_roles` or `scopes`, `caas_tier`, `exp`, `iat`, `jti`, optionally `aud` and `act` — is documented in `auth.tokens`.
 
 ## SEE ALSO
 

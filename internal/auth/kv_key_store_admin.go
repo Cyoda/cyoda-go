@@ -44,7 +44,8 @@ func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, con
 }
 
 // Issue creates a key pair and, with Invalidate, ends every issued sibling of
-// its audience (spec §5.7). The new record is written before the siblings; if
+// its audience: an owned or broken issued key pair whose window is open (see
+// siblingWrites). The new record is written before the siblings; if
 // a sibling write fails, writeAll (replica.go) tries to undo every write
 // already made — see its doc comment for what that guarantees and does not:
 // a failed undo is logged at ERROR with the keys left changed, and a crash
@@ -261,7 +262,7 @@ func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, r
 // — at any key id — is instead replaced with a deleted bootstrap-state record,
 // never removed outright: if that KID is some node's bootstrap key it stays
 // revoked, and otherwise the record is a foreign bootstrap record every node
-// already ignores (spec §5.5). Deleting this node's own bootstrap key marks
+// already ignores (no node's bootstrap key has that KID). Deleting this node's own bootstrap key marks
 // its bootstrap state deleted — terminal: no API call removes that record. A
 // record at a key that cannot be a key id is ignored, and not found here.
 func (s *KVKeyStore) Delete(ctx context.Context, kid string) error {

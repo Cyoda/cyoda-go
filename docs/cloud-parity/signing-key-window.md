@@ -24,7 +24,9 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
 `POST /oauth/keys/keypair` refuses, with `400 BAD_REQUEST`:
 
 - `invalidateCurrent: true` together with a `validFrom` in the future — it
-  would leave the audience without a signing key until the new window opens;
+  can leave the audience without a signing key until the new window opens
+  (for example an audience other than the bootstrap key's, or once the
+  bootstrap key is revoked);
 - a `validTo` that is not in the future — the key pair could never sign.
 
 `POST /oauth/keys/keypair/{keyId}/reactivate` refuses a `validFrom` in the

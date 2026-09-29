@@ -276,15 +276,12 @@ func TestOidc_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 	}
 }
 
-// TestOidc_NonUUIDTenant_RejectedOnEveryOperation pins the behaviour change
-// that ships with the keying fix.
-//
-// A non-UUID tenant — here the suite tenant "test-tenant" — used to get an
-// empty 200 from the list endpoint, because its prefix scan matched nothing,
-// and a 404 from the id-addressed ops.  Both implied a registration that
-// could never have succeeded: registration has always answered such a
-// tenant with 400 OIDC_INVALID_TENANT.
-// Every provider operation now gives it that same answer.
+// TestOidc_NonUUIDTenant_RejectedOnEveryOperation guards that a non-UUID
+// tenant — here the suite tenant "test-tenant" — gets 400
+// OIDC_INVALID_TENANT from every provider operation, the same answer
+// registration gives it. An empty 200 from the list endpoint, or a 404 from
+// an id-addressed operation, would imply a registration that can never
+// succeed.
 //
 // reloadOidcProviders takes no tenant and is deliberately absent from this
 // table; registerOidcProvider is covered by

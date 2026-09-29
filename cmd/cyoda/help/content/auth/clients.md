@@ -118,7 +118,7 @@ Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation,
 
 ## TOKEN
 
-Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `/oauth/token` endpoint) to mint JWTs from the `client_id` + `client_secret`. The JWT carries the client's tenant in `caas_org_id` and its roles in `user_roles`. Full claim shape is in `auth.tokens`.
+Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `/oauth/token` endpoint) to mint JWTs from the `client_id` + `client_secret`. The JWT carries the client's tenant in `caas_org_id` and its roles in `scopes`. Full claim shape is in `auth.tokens`.
 
 ## ERRORS
 

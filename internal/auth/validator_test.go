@@ -319,7 +319,7 @@ func TestJWKSValidator_PrincipalKind(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsTenantOutsideGrammar pins door 1: the caas_org_id claim
+// TestValidator_RejectsTenantOutsideGrammar pins the tenant door: the caas_org_id claim
 // is the one place a tenant id enters cyoda-go on a request, covering HTTP and
 // gRPC alike, so a claim outside the grammar must not produce a UserContext.
 func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {

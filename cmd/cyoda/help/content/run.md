@@ -5,6 +5,7 @@ stability: stable
 see_also:
   - cli
   - cli.serve
+  - cli.token
   - cli.init
   - cli.health
   - quickstart
@@ -89,6 +90,8 @@ export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
 cyoda
 ```
 
+First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
+
 The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
 
 ### Docker
@@ -145,6 +148,8 @@ docker run --rm \
   ghcr.io/cyoda/cyoda:latest
 ```
 
+First admin token: `docker exec <container> /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+
 ### Docker Compose
 
 The repository ships a bundled compose file at `deploy/docker/compose.yaml`.
@@ -200,6 +205,8 @@ docker compose -f deploy/docker/compose.yaml up
 # 3. Launch:
 docker compose up
 ```
+
+First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 **Use a custom image (e.g. a local dev build):**
 
@@ -331,6 +338,8 @@ export CYODA_JWT_AUDIENCE=cyoda-api
 ./bin/cyoda
 ```
 
+First admin token: `./bin/cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
+
 **Docker — in-memory + OTel tracing:**
 
 ```
@@ -377,10 +386,13 @@ echo $?   # 0 = ready, 1 = not ready or error
 docker compose up
 ```
 
+First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+
 ## SEE ALSO
 
 - cli
 - cli.serve
+- cli.token
 - cli.init
 - cli.health
 - quickstart

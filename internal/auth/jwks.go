@@ -55,10 +55,11 @@ func (h *JWKSHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Published already leaves out key pairs whose window has ended. It does
-	// NOT filter by Active: grace-period keys (Active=false, ValidTo
-	// in the future) are intentionally published so external verifiers can
-	// validate tokens that were signed before a rotation.
+	// Published already leaves out key pairs whose window has ended, and
+	// inactive key pairs with no ValidTo, which can never verify. It does NOT
+	// filter by Active: a key pair in its grace period (Active=false, ValidTo
+	// in the future) still verifies its tokens here until ValidTo
+	// (KeyPair.Verifies), so it is published for external verifiers too.
 	entries := make([]jwkEntry, 0, len(allKeys))
 	for _, kp := range allKeys {
 		entries = append(entries, jwkEntry{

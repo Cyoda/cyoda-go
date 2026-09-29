@@ -72,12 +72,12 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if req.InvalidateGracePeriodSec != nil {
 		grace = *req.InvalidateGracePeriodSec
 		if grace < 0 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
+			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalidateGracePeriodSec must be >= 0"))
 			return
 		}
 		if grace > MaxGracePeriodSec {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
+				fmt.Sprintf("invalidateGracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
 			return
 		}
 	}
@@ -87,10 +87,11 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	}
 	// Invalidating the current key stops it signing at once (it may still
 	// verify through its grace period, but that is not signing), while a key
-	// issued ahead of time cannot sign until its validFrom: the audience
-	// would have no signing key in between. Issue ahead of time without
-	// invalidating, then invalidate the old key once the new one's window
-	// has opened.
+	// issued ahead of time cannot sign until its validFrom. The combination
+	// can leave the audience without a signing key until the new window
+	// opens: for example an audience other than the bootstrap key's, or once
+	// the bootstrap key is revoked. Issue ahead of time without invalidating,
+	// then invalidate the old key once the new one's window has opened.
 	if invalidate && validFrom.After(now) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			"invalidateCurrent cannot be combined with a validFrom in the future"))

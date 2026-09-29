@@ -481,8 +481,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_JWT_SIGNING_KEY` and prints it, and nothing else, on stdout. It opens
   no store and makes no network call. The token carries `aud` when
   `CYODA_JWT_AUDIENCE` is set, serves HTTP and unary gRPC calls, and verifies
-  while the signing key verifies on the cluster. Exit codes: `0` success, `1`
-  key or configuration error, `2` flag error. See `cyoda help cli token`.
+  while the signing key verifies on the cluster. Exit codes: `0` success (and
+  `-h`/`--help`), `1` key or configuration error, `2` flag error. See
+  `cyoda help cli token`.
 
 - **Callout failover: a processor, criterion or function request that is not
   delivered, or not answered, is given to another compute member.** The dividing
@@ -784,6 +785,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **An out-of-range grace period on issue or register names the field the
+  request carries.** `POST /oauth/keys/keypair` and
+  `POST /oauth/keys/trusted` answered `400` with "gracePeriodSec must be …"
+  for an out-of-range `invalidateGracePeriodSec`; the detail now names
+  `invalidateGracePeriodSec`. The invalidate endpoints, whose field is
+  `gracePeriodSec`, are unchanged.
+
 - **Tokens from `/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
   set.** Both grants, `client_credentials` and token exchange, issued tokens
   without an `aud` claim, while the validator requires it whenever
@@ -914,8 +922,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token whose key pair is outside it is an ordinary `401`. JWKS still
   publishes a key pair ahead of its window. Issuing a key pair is now
   `400 BAD_REQUEST` for a future `validFrom` together with
-  `invalidateCurrent` (it would leave the audience without a signing key
-  until the new window opens) and for a `validTo` that is not in the future
+  `invalidateCurrent` (it can leave the audience without a signing key
+  until the new window opens, for example an audience other than the
+  bootstrap key's, or once the bootstrap key is revoked) and for a `validTo` that is not in the future
   (the key pair could never sign). Reactivating a key pair with a future
   `validFrom` is `400` too: it would put the key pair outside its own window
   at once. Invalidating the last key pair that can sign stays allowed, since

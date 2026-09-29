@@ -142,3 +142,22 @@ func TestRunToken_KeyFromFile(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
 }
+
+// -h and --help print the usage to stderr and succeed: asking for help is not
+// a flag error. stdout stays empty, so a script capturing it gets no token.
+func TestRunToken_HelpExit0(t *testing.T) {
+	for _, arg := range []string{"-h", "--help"} {
+		t.Run(arg, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if code := runToken([]string{arg}, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d, want 0 (stderr %q)", code, errOut.String())
+			}
+			if out.Len() != 0 {
+				t.Fatalf("stdout must be empty for help: %q", out.String())
+			}
+			if !strings.Contains(errOut.String(), "-tenant") {
+				t.Fatalf("usage not printed to stderr: %q", errOut.String())
+			}
+		})
+	}
+}

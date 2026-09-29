@@ -5475,7 +5475,7 @@ paths:
         Deletes a JWT signing key-pair. It stops signing and verifying at
         once, a running grace period included, and leaves JWKS. An issued
         key-pair is removed from storage; the signing key from
-        `CYODA_JWT_SIGNING_KEY` is marked deleted, which is permanent for that
+        `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is marked deleted, which is permanent for that
         key and ends the tokens `cyoda token` signs.
       operationId: deleteJwtKeyPair
       x-cyoda-iam-mode: jwt
@@ -5537,7 +5537,7 @@ paths:
       summary: Invalidate JWT signing key-pair
       description: >
         Invalidates a specific JWT signing key-pair, an issued one or the
-        signing key from `CYODA_JWT_SIGNING_KEY`.
+        signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key).
 
         An invalidated key pair never signs again. Tokens it signed keep
         verifying until the end of its grace period: `gracePeriodSec` sets its
@@ -10714,7 +10714,7 @@ components:
           type: boolean
           description: If true, invalidates the issued key-pairs of this audience whose
             window is open, the first rotation included. The signing key from
-            `CYODA_JWT_SIGNING_KEY` is never invalidated by a rotation; it stays
+            `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays
             active and signs again whenever no issued key-pair of its audience is
             active and inside its window. An invalidated key-pair never signs
             again.

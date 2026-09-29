@@ -1084,12 +1084,10 @@ func TestOidcAdapter_UUIDEqualTenantsCannotReachEachOther(t *testing.T) {
 	}
 }
 
-// TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere records the behaviour
-// change that ships with the keying fix. A non-UUID tenant such as
-// acme-corp used to receive an empty 200 from the list endpoint, because
-// its prefix scan matched nothing — a success implying a registration that
-// could never have happened. Every OIDC operation now gives it the same 400
-// registration always gave it.
+// TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere guards that a non-UUID
+// tenant such as acme-corp gets the same 400 from every OIDC operation that
+// registration gives it. An empty 200 from the list endpoint would be a
+// success implying a registration that can never happen.
 func TestOidcAdapter_NonUUIDTenantIsRejectedEverywhere(t *testing.T) {
 	const tenant = "acme-corp"
 	id := uuid.New()

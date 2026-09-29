@@ -138,7 +138,7 @@ func (s *KVKeyStore) bootstrapView(recs map[string]*signingEntry) bootstrapView 
 	return bootstrapView{usable: true, pair: pair}
 }
 
-// selectSigner applies the signing rule (spec §5.8): among owned and broken
+// selectSigner applies the signing rule: among owned and broken
 // issued key pairs and the bootstrap key of the audience that are active and
 // inside their window, the latest validFrom wins, then the greater KID. A
 // broken winner, or any undecodable record, fails; another key is never
@@ -348,7 +348,9 @@ func (s *KVKeyStore) ownedIssuedCount() int {
 // logRevokedBootstrap reports that the signing key from configuration has
 // been invalidated or deleted through the API: tokens from `cyoda token`
 // stop verifying (after any grace period). When the key also owns issued key
-// pairs, it adds that CYODA_JWT_SIGNING_KEY still unseals them (spec §4).
+// pairs, it adds that CYODA_JWT_SIGNING_KEY still unseals them: invalidating
+// or deleting the key through the API does not protect them, and only
+// replacing CYODA_JWT_SIGNING_KEY does.
 func (s *KVKeyStore) logRevokedBootstrap(level slog.Level) {
 	var revoked bool
 	s.rep.read(func(recs map[string]*signingEntry) {

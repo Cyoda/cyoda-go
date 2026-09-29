@@ -206,7 +206,7 @@ func mintFirstPartyToken(t *testing.T, user, tenant string) string {
 	return tok
 }
 
-// TestAuth_TenantClaimOutsideGrammar_401 proves door 1 holds through the full
+// TestAuth_TenantClaimOutsideGrammar_401 proves the tenant door holds through the full
 // HTTP stack, on a token this server itself would accept but for the claim.
 // The rejection must be indistinguishable from any other bad token.
 func TestAuth_TenantClaimOutsideGrammar_401(t *testing.T) {

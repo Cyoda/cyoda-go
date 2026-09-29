@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -15,8 +16,8 @@ import (
 
 // runToken is `cyoda token`: sign a short-lived admin token offline with
 // CYODA_JWT_SIGNING_KEY and print it, and nothing else, on stdout. It opens no
-// store and makes no network call. Exit codes: 0 success; 1 key or
-// configuration error; 2 flag error. It never calls logging.Init (which
+// store and makes no network call. Exit codes: 0 success (or -h/--help); 1
+// key or configuration error; 2 flag error. It never calls logging.Init (which
 // writes to stdout) and never writes the token or key material to stderr.
 func runToken(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("token", flag.ContinueOnError)
@@ -26,6 +27,9 @@ func runToken(args []string, stdout, stderr io.Writer) int {
 	roles := fs.String("roles", "ROLE_ADMIN", "comma-separated roles")
 	ttl := fs.Duration("ttl", 15*time.Minute, "token lifetime; at most CYODA_JWT_EXPIRY_SECONDS")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0 // -h/--help: the flag package printed the usage to stderr
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
