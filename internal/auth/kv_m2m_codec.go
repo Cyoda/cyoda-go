@@ -33,6 +33,13 @@ var errM2MUndecodable = errors.New("stored m2m client data does not decode")
 
 var clientIDGrammar = regexp.MustCompile(`^[A-Za-z0-9]{1,100}$`)
 
+// bcryptHashShape is the exact shape of a bcrypt hash: a 2a, 2b or 2y
+// version, a two-digit cost, and 53 characters of salt and hash in the
+// bcrypt alphabet — 60 characters in all. bcrypt.Cost reads only the header,
+// so a hash with a damaged body would pass it and then fail every comparison
+// as if the secret were wrong.
+var bcryptHashShape = regexp.MustCompile(`^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$`)
+
 // ValidClientID reports whether id matches the client-id grammar.
 func ValidClientID(id string) bool { return clientIDGrammar.MatchString(id) }
 
@@ -71,6 +78,9 @@ func validateM2MClient(c *M2MClient) error {
 		if r == "" {
 			return errors.New("empty role")
 		}
+	}
+	if !bcryptHashShape.MatchString(c.HashedSecret) {
+		return errors.New("hashedSecret is not a bcrypt hash")
 	}
 	cost, err := bcrypt.Cost([]byte(c.HashedSecret))
 	if err != nil {

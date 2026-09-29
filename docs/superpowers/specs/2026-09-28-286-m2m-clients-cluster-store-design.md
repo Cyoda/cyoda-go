@@ -314,6 +314,9 @@ A record is **undecodable** when the JSON does not parse, `clientId` differs
 from its key or is outside §5.2, `tenantId` differs from its namespace or fails
 `common.ValidateTenantID`, `userId` fails `common.ValidateFirstPartyUserID`,
 `roles` is empty or holds an empty role, `hashedSecret` is not a bcrypt hash
+— exactly 60 characters: `$2a$`, `$2b$` or `$2y$`, a two-digit cost, `$`, and
+53 characters from `[./A-Za-z0-9]` (`bcrypt.Cost` reads only the header, and a
+damaged body would fail every comparison as a wrong secret) —
 or its cost is outside `[bcrypt.DefaultCost, bcrypt.DefaultCost+4]` (a stored
 cost bounds the CPU an unauthenticated token request can burn), or a timestamp is outside `StorableTime`. An index entry is undecodable when it
 does not parse or its tenant fails `ValidateTenantID`. The encoder refuses to

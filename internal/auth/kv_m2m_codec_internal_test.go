@@ -36,6 +36,11 @@ func hashAtCost(t *testing.T, cost int) string {
 	return string(h)
 }
 
+// corruptBodyHash has a valid bcrypt header at bcrypt.DefaultCost and a body
+// outside the bcrypt alphabet. bcrypt.Cost accepts it; every comparison
+// against it fails with a decoding error, not a mismatch.
+var corruptBodyHash = "$2a$10$" + strings.Repeat("!", 53)
+
 func validClient(t *testing.T) *M2MClient {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Millisecond)
@@ -98,13 +103,14 @@ func TestM2MCodec_RoundTrip(t *testing.T) {
 
 func TestM2MCodec_EncoderRefuses(t *testing.T) {
 	for name, mut := range map[string]func(c *M2MClient){
-		"bad id":     func(c *M2MClient) { c.ClientID = "a-b" },
-		"bad tenant": func(c *M2MClient) { c.TenantID = spi.TenantID("a:b") },
-		"bad user":   func(c *M2MClient) { c.UserID = "oidc:x" },
-		"no roles":   func(c *M2MClient) { c.Roles = nil },
-		"empty role": func(c *M2MClient) { c.Roles = []string{""} },
-		"not a hash": func(c *M2MClient) { c.HashedSecret = "plaintext" },
-		"year 10000": func(c *M2MClient) { c.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"bad id":            func(c *M2MClient) { c.ClientID = "a-b" },
+		"bad tenant":        func(c *M2MClient) { c.TenantID = spi.TenantID("a:b") },
+		"bad user":          func(c *M2MClient) { c.UserID = "oidc:x" },
+		"no roles":          func(c *M2MClient) { c.Roles = nil },
+		"empty role":        func(c *M2MClient) { c.Roles = []string{""} },
+		"not a hash":        func(c *M2MClient) { c.HashedSecret = "plaintext" },
+		"corrupt hash body": func(c *M2MClient) { c.HashedSecret = corruptBodyHash },
+		"year 10000":        func(c *M2MClient) { c.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validClient(t)
@@ -158,10 +164,13 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		// validateM2MClient inside decodeClientRecord itself, rather than
 		// being rejected by encodeClientRecord before ever hitting the
 		// wire (which is all TestM2MCodec_EncoderRefuses exercises).
-		"bad user":   {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.UserID = "oidc:x" })},
-		"no roles":   {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{} })},
-		"empty role": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{""} })},
-		"not a hash": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = "plaintext" })},
+		"bad user":                              {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.UserID = "oidc:x" })},
+		"no roles":                              {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{} })},
+		"empty role":                            {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{""} })},
+		"not a hash":                            {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = "plaintext" })},
+		"hash body outside the bcrypt alphabet": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = corruptBodyHash })},
+		"hash version outside 2a, 2b, 2y":       {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = "$2x$" + testHash()[4:] })},
+		"hash longer than 60":                   {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = testHash() + "a" })},
 		"timestamp out of range": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) {
 			r.CreatedAt = "0000-01-01T00:00:00Z"
 		})},
