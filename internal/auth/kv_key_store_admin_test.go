@@ -428,7 +428,10 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	}
 }
 
-func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
+// The issued-key-pair part of the WARN ("still unseals") stays conditional
+// on there being an owned key pair; the general "cyoda token" part does not
+// (TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs covers that).
+func TestKVKeyStore_NoUnsealsWarnWithoutOwnedPairs(t *testing.T) {
 	ctx := systemCtx()
 	boot := newBootstrap(t)
 	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
@@ -440,7 +443,29 @@ func TestKVKeyStore_NoWarnWithoutOwnedPairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "still unseals") {
-		t.Fatal("WARN logged with no owned key pairs")
+		t.Fatal("issued-key-pair WARN logged with no owned key pairs")
+	}
+}
+
+// Invalidating or deleting the signing key logs that `cyoda token` stops
+// granting access, even when the signing key owns no issued key pair.
+func TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
+	bootKID, _ := auth.DeriveKID(&boot.PublicKey)
+	if err := ks.Invalidate(systemCtx(), bootKID, 0); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "cyoda token") {
+		t.Fatalf("no WARN naming cyoda token: %q", buf.String())
+	}
+	if strings.Contains(buf.String(), "ownedKeyPairs") {
+		t.Fatalf("the issued-key-pair part must stay conditional: %q", buf.String())
 	}
 }
 

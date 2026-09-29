@@ -490,7 +490,10 @@ func TestKVKeyStore_LogRevokedBootstrapWhenOwnedPairsExist(t *testing.T) {
 	}
 }
 
-func TestKVKeyStore_NoLogRevokedBootstrapWhenNoOwnedPairs(t *testing.T) {
+// The issued-key-pair part of the revoked-bootstrap log ("no longer
+// signs") stays conditional on there being an owned key pair; the general
+// "cyoda token" part does not (kv_key_store_admin_test.go covers that one).
+func TestKVKeyStore_NoUnsealsLogRevokedBootstrapWhenNoOwnedPairs(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
 	boot := loadFixtureKey(t)
@@ -516,7 +519,7 @@ func TestKVKeyStore_NoLogRevokedBootstrapWhenNoOwnedPairs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "no longer signs") {
-		t.Fatalf("expected no revoked-bootstrap INFO with zero owned pairs; log: %s", buf.String())
+		t.Fatalf("expected no issued-key-pair INFO with zero owned pairs; log: %s", buf.String())
 	}
 }
 
@@ -557,7 +560,7 @@ func TestKVKeyStore_LogRevokedBootstrapExcludesUnknownVaultKind(t *testing.T) {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "no longer signs") {
-		t.Fatalf("expected no revoked-bootstrap INFO when the only issued record is unknown-vault-kind; log: %s", buf.String())
+		t.Fatalf("expected no issued-key-pair INFO when the only issued record is unknown-vault-kind; log: %s", buf.String())
 	}
 }
 

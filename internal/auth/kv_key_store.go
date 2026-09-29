@@ -345,22 +345,28 @@ func (s *KVKeyStore) ownedIssuedCount() int {
 	return n
 }
 
-// logRevokedBootstrap warns that revoking the bootstrap key through the API
-// does not protect the key pairs sealed under it (spec §4).
+// logRevokedBootstrap reports that the signing key from configuration has
+// been invalidated or deleted through the API: tokens from `cyoda token`
+// stop verifying (after any grace period). When the key also owns issued key
+// pairs, it adds that CYODA_JWT_SIGNING_KEY still unseals them (spec §4).
 func (s *KVKeyStore) logRevokedBootstrap(level slog.Level) {
-	if s.vault.Owner() != s.boot.kid {
-		return
-	}
 	var revoked bool
 	s.rep.read(func(recs map[string]*signingEntry) {
 		bv := s.bootstrapView(recs)
 		revoked = !bv.usable || !bv.pair.Active
 	})
-	n := s.ownedIssuedCount()
-	if !revoked || n == 0 {
+	if !revoked {
 		return
 	}
 	slog.Log(context.Background(), level,
-		"the bootstrap signing key no longer signs, but CYODA_JWT_SIGNING_KEY still unseals the issued key pairs it owns; replace it if it may be exposed",
-		"pkg", "auth", "ownedKeyPairs", n)
+		"the signing key from CYODA_JWT_SIGNING_KEY is invalidated or deleted: tokens from cyoda token are refused once any grace period ends",
+		"pkg", "auth")
+	if s.vault.Owner() != s.boot.kid {
+		return
+	}
+	if n := s.ownedIssuedCount(); n > 0 {
+		slog.Log(context.Background(), level,
+			"the signing key no longer signs, but CYODA_JWT_SIGNING_KEY still unseals the issued key pairs it owns; replace it if it may be exposed",
+			"pkg", "auth", "ownedKeyPairs", n)
+	}
 }
