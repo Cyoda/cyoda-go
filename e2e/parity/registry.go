@@ -559,9 +559,10 @@ var allTests = []NamedTest{
 	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 
-	// M2M client lifecycle and per-tenant cap (design §5.11): the KV-backed
-	// store shared across the cluster, exercised per backend's own
-	// spi.KeyValueStore implementation.
+	// M2M clients in each backend's own spi.KeyValueStore: create, token,
+	// list, reset and delete, with another tenant's id answering 404 on
+	// delete and reset and never listed; and the per-tenant cap — refused
+	// at the cap with 400 M2M_CLIENT_CAP_REACHED, a delete freeing a slot.
 	{"M2MClientLifecycle", RunM2MClientLifecycle},
 	{"M2MClientCap", RunM2MClientCap},
 }
