@@ -33,9 +33,12 @@ const undoTimeout = 30 * time.Second
 // A client exists when its record exists and the index entry for its id
 // names its tenant. Create writes the record, then the index entry; Delete
 // removes the index entry, then the record. The KV SPI has no
-// compare-and-set: two admin changes to one client on two nodes at the same
-// moment resolve by last write, and the cap can be exceeded by one record per
-// node. Both are documented (cyoda help auth clients).
+// compare-and-set: two admin changes to one client at the same moment, on one
+// node or on two, resolve by last write; a failed reset's write-back can land
+// after a later successful reset, so the secret that reset returned stops
+// working and the one from before both resets works again; and the cap can be
+// exceeded by one record per node. All are documented (cyoda help auth
+// clients).
 type KVM2MClientStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int
@@ -294,8 +297,11 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 // once, with the client. The secret is hashed before the store is read, so
 // the gap between read and write is one round trip. A failed write may have
 // committed, so it restores the record it read, on a context the caller
-// cannot cancel: a failed reset leaves the old secret in force. The caller
-// has checked clientID against the client-id grammar.
+// cannot cancel: a failed reset leaves the old secret in force, unless the
+// restore itself fails (the stored secret may then be the new one, never
+// returned) or lands after a later successful reset (the old secret then
+// replaces that reset's). The caller has checked clientID against the
+// client-id grammar.
 func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
 	ctx = noTx(ctx)
 	secret, err := GenerateSecret()
