@@ -32,7 +32,7 @@ A tenant admin cannot get a principal in another tenant:
 | Token source | Tenant comes from | Evidence |
 |---|---|---|
 | OIDC provider | the provider's owner; tenant claims are ignored | `oidc/usercontext.go:23-25,57-59` |
-| M2M `client_credentials` | the client's stored tenant = the creating admin's tenant | `token.go:106`, `m2m_adapter.go:130` |
+| M2M `client_credentials` | the client's stored tenant = the creating admin's tenant | `token.go:106`, `m2m_adapter.go:131` |
 | Trusted-key token exchange | `caas_org_id` must equal the exchanging client's tenant | `token.go:153-157,222-225` |
 | First-party JWT signed by cyoda's keys | `caas_org_id`; minted only by `/oauth/token` (rows above) or by the signing-key holder | `validator.go:133-147` |
 | Cluster dispatch callout | request body, but only after cluster-key AEAD; never reaches an admin handler | `cluster/dispatch/handler.go:52,140-148` |
@@ -77,7 +77,7 @@ the tenant-scoped admin endpoints.
 
 | Endpoint | Handler | Why it is platform-wide |
 |---|---|---|
-| `POST /oauth/keys/keypair` | `account.IssueJwtKeyPair` | key pairs sign every tenant's tokens (`kv_key_store.go:66-68`) |
+| `POST /oauth/keys/keypair` | `account.IssueJwtKeyPair` | key pairs sign every tenant's tokens (`kv_key_store.go:67-69`) |
 | `GET /oauth/keys/keypair/current` | `account.GetCurrentJwtKeyPair` | same key set (public key only; gated for a uniform surface) |
 | `POST /oauth/keys/keypair/{keyId}/invalidate` | `account.InvalidateJwtKeyPair` | can end the bootstrap key for the cluster |
 | `POST /oauth/keys/keypair/{keyId}/reactivate` | `account.ReactivateJwtKeyPair` | same |
@@ -86,8 +86,11 @@ the tenant-scoped admin endpoints.
 | `GET` / `POST /admin/log-level` | `internal/api` admin handlers | process-wide log level of the node |
 | `GET` / `POST /admin/trace-sampler` | `internal/api` admin handlers | process-wide trace sampler of the node |
 
-The guard runs where `RequireAdmin` runs today, before every other check, so
-each endpoint's other responses keep their order.
+The guard runs where `RequireAdmin` runs today, first in each handler, so each
+endpoint's other responses keep their order. Checks that run before the
+handler are unchanged: the auth middleware's 401, and the generated wrapper's
+400 for a missing `audience` on `GET .../current`. So a 403 test on that
+endpoint sends `?audience=human`.
 
 Tenant-scoped admin endpoints stay on `RequireAdmin`: trusted keys, M2M
 clients, OIDC provider register / update / invalidate / reactivate / delete,
@@ -99,28 +102,45 @@ gap in service (`oidc/service.go:143-146`).
 
 ### 4.3 Wiring
 
-- `account.New` takes an `auth.OperatorGuard`. The key-pair adapters and the
-  OIDC reload adapter call it in place of `RequireAdmin`.
+`app/app.go` builds one guard early in `New`, before the OIDC subsystem is
+wired, and passes the same value to three consumers:
+- `account.New` takes the guard; the five key-pair adapters call it in place
+  of `RequireAdmin`.
+- `account.NewOidcAdapter` (`app/app.go:324`, built before `account.New` at
+  `:582`) takes the guard; `oidcAdapter.ReloadOidcProviders`
+  (`oidc_adapter.go:434`) calls it in place of `RequireAdmin`. The guard does
+  not go in the `Handler.ReloadOidcProviders` dispatch (`handler.go:121-127`),
+  so the unwired stub still answers 501 before any auth check.
 - The four `/admin/*` handlers in `internal/api/admin.go` become methods of a
   small constructed type holding the guard. `app/app.go` builds it and
   registers its methods (`app/app.go:625-628`). Their inline check, which
   answers 403 when no `UserContext` is present, is removed; the guard answers
   401.
-- `app/app.go` builds the guard from `cfg.IAM.Mode` and passes the same value
-  to both.
+
+`auth.RequireAdmin`'s doc comment (`admin_guard.go:10-11`) and the reload
+adapter's comment (`oidc_adapter.go:433`) are updated to match.
 
 ### 4.4 Mock IAM mode
 
 Mock mode has one fixed principal, in tenant `mock-tenant`, with roles from
 `CYODA_IAM_MOCK_ROLES` (`app/config.go:410-412`). In mock mode the guard
-applies only the `ROLE_ADMIN` check. The mode is chosen at wiring time from
-`cfg.IAM.Mode`, never by comparing a tenant id with `mock-tenant`. Effects:
+applies only the `ROLE_ADMIN` check. The guard uses the mock rule if and only
+if `cfg.IAM.Mode == "mock"`; it never compares a tenant id with `mock-tenant`.
+Effects:
 - the key-pair endpoints still answer 501 (the guard passes, then
   `requireKeyStore` answers), as `TestGated_MockIAM_All21Return501` requires;
 - OIDC reload still answers 501 from the unwired stub, before any auth check
-  (`account/handler.go:41-50`);
+  (`account/handler.go:121-127`);
 - `/admin/*` keeps working for a mock principal that holds `ROLE_ADMIN`,
   and answers 403 for one that does not, as today.
+
+**The IAM mode must be `mock` or `jwt`.** Today any other value, for example
+`CYODA_IAM_MODE=JWT`, passes `ValidateIAM` (`app/config.go:1000-1023`, which
+special-cases only `"mock"`), wires mock authentication (`app/app.go:256`
+tests `== "jwt"`), and skips the mock-mode warning (`cmd/cyoda/main.go:296`
+tests `!= "mock"`). Every request is then a mock admin. `ValidateIAM` rejects
+any other value, so startup fails. This keeps the two-way guard rule exact and
+closes that fail-open.
 
 ### 4.5 Response codes
 
@@ -179,7 +199,8 @@ cell of its own.
 | Tenant admin refused, each of the ten operator endpoint/method pairs → 403 `FORBIDDEN` | — | one test per endpoint | key-pair endpoints + reload | n/a |
 | `PLATFORM` principal without `ROLE_ADMIN` refused → 403 | — | one representative endpoint per handler family (key pairs, reload, `/admin/*`) | — | n/a |
 | Platform operator (`cyoda token`-shaped token, tenant `PLATFORM`) allowed on each endpoint | — | one test per endpoint | key-pair lifecycle + reload | n/a |
-| Platform operator through a `PLATFORM` admin M2M client allowed (the recovery route) | — | issue a key pair with its `/oauth/token` token | — | n/a |
+| Platform operator through a `PLATFORM` admin M2M client allowed (the recovery route) | — | issue a key pair with its `/oauth/token` token; `TestSigningKeys_OwnCluster` (`e2e/parity/postgres/signing_keys_cluster_test.go`) keeps key-pair control through such a client after the bootstrap key is gone | — | n/a |
+| `ValidateIAM` refuses an IAM mode other than `mock` or `jwt` (for example `JWT`, `""`, `none`) and accepts both | `app` | — | — | n/a |
 | An OIDC principal with `ROLE_ADMIN` refused on an operator endpoint (the self-grant route) | — | — | reload and issue → 403 | n/a |
 | No token → 401 on each endpoint | — | one test per endpoint | — | n/a |
 | Mock mode: key-pair endpoints 501, `/admin/log-level` works for the mock admin | — | existing `TestGated_MockIAM_All21Return501` + one `/admin` test | — | n/a |
@@ -191,65 +212,120 @@ Concurrency: not applicable; the guard is stateless.
 
 ## 7. Test fixtures
 
+### 7.1 Fixture contract
+
 - `fixtureutil` gets `MintPlatformOperatorJWT(t, keySet)`: `ROLE_ADMIN` in
   tenant `PLATFORM`.
-- `parity.BackendFixture` gets a **required** method `PlatformOperator(t)
-  Tenant`. An optional capability with `t.Skip` would drop key-pair coverage
-  silently on a backend that does not implement it. Every in-tree fixture
-  (memory, sqlite, postgres, postgres multinode) implements it with the
-  `fixtureutil` helper.
-- `PLATFORM` is one shared tenant, which differs from `NewTenant`'s "fresh per
-  call" contract. Scenarios use the operator token only on operator endpoints,
-  never for tenant data.
-- `RunSigningKeyPairLifecycle` (`e2e/parity/signing_keys.go:21`) and the
-  multinode `RunSigningKeyPairFollowsTheCluster`
-  (`e2e/parity/multinode/signing_keys.go:115`) switch to the operator token.
-- `RunOidcD23_PerProviderRolesClaim` (`e2e/parity/oidc.go:2316-2350`) uses
-  reload to probe that an OIDC `ROLE_ADMIN` is honoured. The probe moves to a
-  tenant-scoped admin endpoint, as `RunOidcD23_RolesParsingMultiFormat`
-  already does.
-- `internal/e2e`: the tests that call operator endpoints with `suiteToken`,
-  `bootstrapToken`, `operatorToken` or the key stack's M2M client switch to
-  `PLATFORM` tokens (`oauth_keys_test.go`, `signing_keys_test.go`,
-  `admin_loglevel_test.go`, `cyoda_token_test.go`, `auth_failures_test.go`,
-  `cors_e2e_test.go`, `keys_trusted_reconciliation_test.go`, plus any other
-  caller the plan's grep finds).
-- Cassandra (`../cyoda-go-cassandra/e2e/fixture.go`): a matching PR adds
-  `PlatformOperator`. It lands with cassandra's v0.9.0 pin bump (cassandra#108).
+- `parity.BackendFixture` and `multinode.MultiNodeFixture` (a separate
+  interface, `e2e/parity/multinode/fixture.go:14`) each get a **required**
+  method `PlatformOperator(t) parity.Tenant`. An optional capability with
+  `t.Skip` would drop key-pair coverage silently on a backend that does not
+  implement it. The in-tree fixtures (memory, sqlite, postgres, postgres
+  multinode `pgMultiNode`) implement it with the `fixtureutil` helper.
+- `PLATFORM` is one shared tenant, unlike `NewTenant`'s "fresh per call". A
+  scenario uses the operator token only on operator endpoints, never for tenant
+  data. The `parity.Tenant.ID` doc, which says the id is a UUID, is corrected.
+- Cassandra (`../cyoda-go-cassandra/e2e/fixture.go`) implements only
+  `BackendFixture`; a matching PR adds `PlatformOperator`. Cassandra `main` pins
+  cyoda-go v0.8.3, so nothing breaks there until its v0.9.0 pin bump; the PR
+  lands with that bump (cassandra#108).
+
+### 7.2 Callers that switch to an operator token
+
+A scenario that sets up tenant state (a provider, an M2M client, a model)
+keeps its tenant-admin token for that and uses the operator token only for
+the operator call.
+
+Parity (`e2e/parity`):
+- `RunSigningKeyPairLifecycle` (`signing_keys.go:21`): operator for every call.
+- `multinode.RunSigningKeyPairFollowsTheCluster` (`multinode/signing_keys.go`):
+  tenant for `newM2MClient` and `modelListStatus`; operator for issue,
+  invalidate, reactivate and delete (`:113-175`).
+- Reload from a tenant admin: `RunOidcD18_ReloadInvalidateSerializeLocally`
+  (`oidc.go:1839`), `RunOidcD18_ReloadAllSerializesWithReloadOne` (`:1910`),
+  `RunOidcReload_PreservesTokenAcceptance` (`:3192`),
+  `RunOidcReload_AfterReactivateKeepsTokenAcceptance` (`:3235`): the tenant
+  admin registers, the operator reloads. `RunOidcNonAdminReload` (`:479`) keeps
+  its 403.
+- `RunOidcD23_PerProviderRolesClaim` (`oidc.go:2316-2350`) probes an OIDC
+  `ROLE_ADMIN` through reload. The probe moves to a tenant-scoped admin
+  endpoint, as `RunOidcD23_RolesParsingMultiFormat` already does.
+- `postgres/signing_keys_cluster_test.go` `TestSigningKeys_OwnCluster`: key-pair
+  calls and its admin M2M client (`:30`, `:45`) move to `PLATFORM`. Its later
+  calls run after the bootstrap key is gone, so this is the recovery-route test.
+
+E2E (`internal/e2e`):
+- `oauth_keys_test.go`: `adminRequest` (`:22`) stays for tenant endpoints; a new
+  `operatorRequest` serves the key-pair tests.
+- `keys_trusted_reconciliation_test.go`: its key-pair calls use
+  `operatorRequest` (they would otherwise get 403 where they assert 400/404).
+- `signing_keys_test.go`: `createKeyStackClient` (`:74`) creates the key
+  stack's admin M2M client with a `PLATFORM` token, not the harness tenant's
+  `h.token`; `bootstrapToken` (`:187`) mints for `PLATFORM`.
+- `cyoda_token_test.go`: `operatorToken` (`:28`) mints for `PLATFORM` where the
+  test calls an operator endpoint.
+- `oidc_providers_test.go:119`: reload with an operator token.
+- `admin_loglevel_test.go` and any trace-sampler test: operator token.
+- `auth_failures_test.go`, `cors_e2e_test.go`: checked by the plan's grep for
+  operator-endpoint calls with a tenant token.
+
+Unit tests:
+- `internal/api/admin_test.go`: package functions become methods; the
+  nil-context tests (`:50`, `:96`, `:109`, `:134`, `:230`, `:400`) expect 401.
+- Key-pair adapter tests with tenant `t1`/`t`: `account/keys_adapter_test.go:28`,
+  `keys_adapter_errors_test.go:42`, `grace_field_name_test.go`,
+  `internal/auth/keypair_signing_test.go:18,38`.
+- Reload adapter tests: `account/oidc_adapter_test.go:696-760`,
+  `handler_test.go:88`.
+- Every `account.New(...)` and `account.NewOidcAdapter(...)` call site takes
+  the guard (about 35, all in `internal/domain/account/*_test.go` and
+  `internal/auth/keypair_signing_test.go`).
 
 ## 8. Documentation
 
 - `cmd/cyoda/help/content/cli/token.md`: key-pair management needs
   `--tenant PLATFORM`; the recovery text of §4.7; an example.
 - `cmd/cyoda/help/content/config/auth.md`: the key-pair section names the
-  platform operator; the recovery text (`:325-329`, `:397-409`) as in §4.7.
+  platform operator; the recovery text (`:325-329`, `:387`, `:397-409`) as in
+  §4.7; `CYODA_IAM_MODE` accepts only `mock` or `jwt`, and any other value
+  fails startup.
 - `cmd/cyoda/help/content/auth.md` and `auth/tokens.md`: where they name who
   may manage key pairs.
-- `cmd/cyoda/help/content/admin.md:28`: `/admin/*` needs a platform operator.
-- `cmd/cyoda/help/content/errors/FORBIDDEN.md`: the platform-operator cause.
-- `cmd/cyoda/help/content/auth/oidc.md`: reload needs a platform operator; a
-  tenant refreshes its own provider with a no-op `PATCH`.
+- `cmd/cyoda/help/content/admin.md:28` and `telemetry.md:233`: `/admin/*`
+  needs a platform operator.
+- `cmd/cyoda/help/content/errors/FORBIDDEN.md` (including `:24`, "role claims
+  determine access"): the platform-operator cause.
+- `cmd/cyoda/help/content/auth/oidc.md`: reload needs a platform operator;
+  `:76` and `:187` tell tenants to use reload, and become the no-op `PATCH`.
 - `api/openapi.yaml`:
   - the six operator operations' descriptions and 403 texts;
   - `:126` and `:147` say M2M client creation needs `SUPER_USER`; it needs
     `ROLE_ADMIN`, and cyoda-go has no `SUPER_USER`.
   - Run `go generate ./api` after the edits.
-- `README.md`: the endpoint table (`:128-134`) and any key-pair rows.
-- `docs/ARCHITECTURE.md`: the trace-sampler (`:2318`) and `cyoda token`
-  (`:1886`) passages, audited as a whole on touch.
+- `README.md`: the endpoint table (`:128-134`), any key-pair rows, and `:136`,
+  which says reload refetches "for the tenant" (it reloads every tenant).
+- `docs/ARCHITECTURE.md`: the OIDC endpoints (`:1914`), `:1897`, `:2095`, the
+  trace-sampler (`:2318`) and `cyoda token` (`:1886`) passages; the document is
+  audited as a whole on touch.
 - `CHANGELOG.md` `### Breaking`: the operator endpoints need `ROLE_ADMIN` in
-  tenant `PLATFORM`; a tenant admin now gets 403.
+  tenant `PLATFORM`, and a tenant admin now gets 403; `CYODA_IAM_MODE` other
+  than `mock` or `jwt` now fails startup.
+- `COMPATIBILITY.md` (v0.9.0 obligations, `:139-165`): an out-of-tree plugin's
+  parity fixture must implement `PlatformOperator`.
 - `docs/cloud-parity/platform-operator.md` and its row in
   `docs/cloud-parity/README.md` (§9).
 
-No env var changes, so `DefaultConfig()` and the config registry are
-untouched.
+No new env var and no default changes, so `DefaultConfig()` and the config
+registry are untouched; `CYODA_IAM_MODE`'s accepted values are documented in
+its help topic.
 
 ## 9. Cloud parity
 
 The contract Cloud follows:
-- The ten operator endpoint/method pairs (§4.2) require `ROLE_ADMIN` in the
-  tenant (legal entity) `PLATFORM`. A tenant admin gets `403`.
+- The six OpenAPI operations (the five key-pair operations and OIDC reload)
+  require `ROLE_ADMIN` in the tenant (legal entity) `PLATFORM`. A tenant admin
+  gets `403`. `/admin/log-level` and `/admin/trace-sampler` are cyoda-go only;
+  Cloud has no such endpoints.
 - The rule depends on tenant binding. Cloud does not bind tenants today: it
   takes the legal entity of any JWT, including one from an external OIDC
   provider or a trusted key, from its `caas_org_id` claim
