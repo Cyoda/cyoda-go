@@ -675,9 +675,12 @@ paths:
         receive ROLE_ADMIN in its own tenant,
 
         opening that tenant's admin endpoints (e.g., trusted key
-        registration). An admin client in the tenant `PLATFORM` is also a
-        platform operator, with access to the platform-operator endpoints
-        (e.g., key-pair management, reload).
+        registration, which also requires
+        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`). Since the client is
+        created in the caller's own tenant, only a caller who is already a
+        platform operator (`ROLE_ADMIN` in `PLATFORM`) can create one there;
+        that client is then itself a platform operator, with access to the
+        platform-operator endpoints (e.g., key-pair management, reload).
 
         This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
         flag to be set to `true`;
