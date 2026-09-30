@@ -19,7 +19,7 @@ HTTP: `403` `Forbidden`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The request was authenticated successfully but the caller does not have the role or tenant required by the endpoint. Tenant mismatch — where the caller's tenant does not match the resource — also produces this error.
+The request was authenticated successfully but the caller does not have the role or tenant required by the endpoint. Joining a transaction owned by another tenant also produces this error.
 
 One cause: the endpoint needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM` (signing key pairs, OIDC reload, `/admin/*`). An admin of any other tenant gets this error with the detail "platform operator required".
 
