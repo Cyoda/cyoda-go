@@ -86,9 +86,7 @@ curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client
 TOKEN=$(cyoda token --tenant PLATFORM)
 # A private directory: no other user can plant a symlink at the file name.
 cd "$(mktemp -d)" || exit
-# rm -f first: curl keeps the mode of a file that already exists.
 # --fail: an error answer is not saved as if it were the credential.
-rm -f platform-client.json
 (umask 077; curl --fail -H @- -X POST \
   'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json \
   <<<"Authorization: Bearer $TOKEN")

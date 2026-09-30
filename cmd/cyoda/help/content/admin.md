@@ -59,32 +59,36 @@ TOKEN=$(cyoda token --tenant PLATFORM)
 
 ```
 # Read current log level
-curl -H "Authorization: Bearer $TOKEN" \
-  http://localhost:8080/api/admin/log-level
+curl -H @- http://localhost:8080/api/admin/log-level \
+  <<<"Authorization: Bearer $TOKEN"
 
 # Switch to debug
-curl -X POST -H "Authorization: Bearer $TOKEN" \
+curl -X POST -H @- \
   -H "Content-Type: application/json" \
   -d '{"level":"debug"}' \
-  http://localhost:8080/api/admin/log-level
+  http://localhost:8080/api/admin/log-level \
+  <<<"Authorization: Bearer $TOKEN"
 
 # Sample 10% of traces
-curl -X POST -H "Authorization: Bearer $TOKEN" \
+curl -X POST -H @- \
   -H "Content-Type: application/json" \
   -d '{"sampler":"ratio","ratio":0.1}' \
-  http://localhost:8080/api/admin/trace-sampler
+  http://localhost:8080/api/admin/trace-sampler \
+  <<<"Authorization: Bearer $TOKEN"
 
 # Force 100% sampling on this node regardless of upstream
-curl -X POST -H "Authorization: Bearer $TOKEN" \
+curl -X POST -H @- \
   -H "Content-Type: application/json" \
   -d '{"sampler":"always","parent_based":false}' \
-  http://localhost:8080/api/admin/trace-sampler
+  http://localhost:8080/api/admin/trace-sampler \
+  <<<"Authorization: Bearer $TOKEN"
 
 # Disable local sampling (still honors upstream-sampled traceparent; set parent_based:false to override)
-curl -X POST -H "Authorization: Bearer $TOKEN" \
+curl -X POST -H @- \
   -H "Content-Type: application/json" \
   -d '{"sampler":"never"}' \
-  http://localhost:8080/api/admin/trace-sampler
+  http://localhost:8080/api/admin/trace-sampler \
+  <<<"Authorization: Bearer $TOKEN"
 ```
 
 ## NOTES

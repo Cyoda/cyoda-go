@@ -42,7 +42,7 @@ A trusted-key JWT is used **only** as a subject token in that grant. cyoda does 
 **Client (you) needs:**
 
 - A keypair you generated yourself. cyoda-go accepts `kty: "RSA"` only. Cloud also supports `kty: "EC"` and `kty: "OKP"`; cyoda-go parity is tracked for a future release.
-- A `ROLE_ADMIN` cyoda token to register / delete / lifecycle the entry.
+- A `ROLE_ADMIN` cyoda token to register, list, delete and lifecycle the entry.
 - An M2M client in the same tenant (`auth.clients`) to perform the exchange.
 
 ## REQUEST FLOW
@@ -56,13 +56,14 @@ openssl rsa -in signing.pem -pubout -out signing.pub
 # Convert the public key to a JWK with your tooling of choice.
 
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H @- \
   -H "Content-Type: application/json" \
   -d '{
         "keyId":    "my-signing-key-2026-06",
         "audience": "human",
         "jwk":      { "kty": "RSA", "n": "<base64url-modulus>", "e": "AQAB" }
-      }'
+      }' \
+  <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 `audience` is required (`human` or `client`). Optional fields: `issuers` (when set, the subject token's `iss` must be one of them), `validFrom`, `validTo`, `invalidatePrevious` and `invalidateGracePeriodSec`. Response (`200 OK`) echoes the registered key shape plus lifecycle metadata.
@@ -73,7 +74,7 @@ The key belongs to the tenant of the admin who registers it. Pick a stable, desc
 
 ```bash
 curl -X GET https://cyoda.example.com/api/oauth/keys/trusted \
-  -H "Authorization: Bearer ${TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Returns the tenant's keys with status (active / invalidated) and validity window.
@@ -85,13 +86,14 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 # Optional body: {"gracePeriodSec": 3600} keeps it verifying for up to that
 # many seconds more, never past its validTo; without it, it stops at once.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 
 # Re-enable. validTo is required; validFrom defaults to now.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/reactivate \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H @- \
   -H "Content-Type: application/json" \
-  -d '{ "validTo": "2027-06-01T00:00:00Z" }'
+  -d '{ "validTo": "2027-06-01T00:00:00Z" }' \
+  <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 "At once" means on the node that takes the call. Other nodes apply an
@@ -106,7 +108,7 @@ clock, so the clock offset between nodes adds to the delay.
 
 ```bash
 curl -X DELETE https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID} \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 ### Sign a subject token and exchange it
