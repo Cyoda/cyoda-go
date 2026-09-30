@@ -281,7 +281,9 @@ func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, opts R
 // wrapping ErrTrustedKeyNotFound for absence or cross-tenant; any other error
 // is a store failure.
 func (s *KVTrustedKeyStore) Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	ctx = noTx(ctx) // see Register's comment: the read-through fallback must not run inside the caller's transaction
+	// No noTx(ctx) strip here: the only KV access below is loadOne, which
+	// already strips the caller's transaction at its own kv.Get call
+	// (replica.go).
 	if !s.rep.Stale() {
 		var hit *TrustedKey
 		s.rep.read(func(m map[string]*TrustedKey) {
