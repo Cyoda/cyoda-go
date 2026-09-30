@@ -585,9 +585,9 @@ In JWT mode, each tenant can register one or more external Identity Providers (I
 **What you can do with OIDC providers:**
 
 - **Register** a provider by supplying its URL, accepted issuer values, expected audiences, and (optionally) a custom roles claim name.
-- **List, register, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
+- **List, register, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints; 6 need `ROLE_ADMIN` — reload needs a platform operator, see below).
 - **Invalidate** a provider to suspend JWT acceptance without removing the record; **reactivate** to restore it.
-- **Reload** to force a fresh JWKS fetch and evict the node-local cache — useful after an IdP rotates its signing keys outside the normal TTL window.
+- **Reload** (platform operator only) to force a fresh JWKS fetch and reload every tenant's providers on every node — useful after an IdP rotates its signing keys outside the normal TTL window.
 
 Provider records are per-tenant; a tenant's OIDC configuration is invisible to other tenants.
 
