@@ -524,6 +524,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   it when you raise those settings. See `cyoda help run` and
   `cyoda help helm`.
 
+- **Platform-wide admin endpoints need a platform operator.** The signing
+  key-pair endpoints (`/oauth/keys/keypair*`), `POST
+  /oauth/oidc/providers/reload`, `/admin/log-level` and
+  `/admin/trace-sampler` accept only `ROLE_ADMIN` in the tenant `PLATFORM`;
+  an admin of any other tenant gets `403 FORBIDDEN`. Get an operator token
+  with `cyoda token --tenant PLATFORM`, or create an admin M2M client in
+  `PLATFORM`. A tenant refreshes its own OIDC provider with an empty
+  `PATCH`. Before this, any tenant's admin could revoke the signing key for
+  the whole cluster. See `cyoda help cli token`.
+
 ### Added
 
 - **`cyoda token` signs a short-lived admin token offline.**

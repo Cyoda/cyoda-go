@@ -236,6 +236,11 @@ The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
 `POST /oauth/token` flow. Its KID is deterministic across nodes sharing
 the same PEM (SHA-256 of the public key).
 
+The key-pair endpoints (`/oauth/keys/keypair*`) need a platform operator:
+`ROLE_ADMIN` in the tenant `PLATFORM`. An admin of any other tenant gets
+`403 FORBIDDEN`. Get an operator token with `cyoda token --tenant PLATFORM`
+(see `cyoda help cli token`), or create an admin M2M client in `PLATFORM`.
+
 Operators can rotate signing keys at runtime via
 `POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
 Of the active key pairs of an audience inside their window, the bootstrap
@@ -324,10 +329,10 @@ new window has opened.
   decrypts them. A rotation does not help either, for the same reason.
 - **Invalidating or deleting the bootstrap key** revokes the root key:
   tokens from `cyoda token` are refused after the grace period, if one was
-  given, and the node that takes the call logs a WARN that says so. Admin
-  access then comes from an OIDC admin, or from an admin M2M client created
-  beforehand while an issued key pair signs its tokens; with neither, the
-  recovery is a new `CYODA_JWT_SIGNING_KEY` (see `cyoda help cli token`).
+  given, and the node that takes the call logs a WARN that says so. The
+  platform operator's ways back are then an admin M2M client in `PLATFORM`
+  created beforehand while an issued key pair signs its tokens, or a new
+  `CYODA_JWT_SIGNING_KEY` on every node (see `cyoda help cli token`).
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
@@ -357,8 +362,8 @@ The fix depends on why:
 - It is owned by the configured bootstrap key but cannot be opened.
   Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
   it: the record is then retired (inert), not broken (blocking).
-- Authenticate with a token from `cyoda token`, an unexpired admin token, or
-  an admin from a federated OIDC provider.
+- Authenticate with a token from `cyoda token --tenant PLATFORM`, an
+  unexpired platform-operator token, or an admin M2M client in `PLATFORM`.
 
 **A stored record cannot be decoded at all.**
 
@@ -372,8 +377,8 @@ The fix depends on why:
   key id: it is ignored (it does not block signing) and logged at ERROR.
 - At any id other than this node's bootstrap key id, the replacement is
   inert. The bootstrap key is unaffected: authenticate the `DELETE` with a
-  token from `cyoda token`, an unexpired admin token, or an admin from a
-  federated OIDC provider. Replacing
+  token from `cyoda token --tenant PLATFORM`, an unexpired platform-operator
+  token, or an admin M2M client in `PLATFORM`. Replacing
   `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does not depend
   on which key owns the record.
 - At this node's bootstrap key id, `DELETE` permanently deletes the bootstrap
@@ -385,8 +390,8 @@ never share one KID, so the record is refused as undecodable.
 - The bootstrap key is then unusable for signing and verifying. A
   bootstrap-signed admin token, a token from `cyoda token` included, does not
   verify on this node.
-- Authenticate with a token signed by an active issued key pair, or an admin
-  from a federated OIDC provider.
+- Authenticate with a token from an admin M2M client in `PLATFORM`: its
+  `/oauth/token` call is signed by an active issued key pair.
 - Then replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new key changes
   the bootstrap key id, and the record then decodes normally.
 - Warning: `DELETE` at this id permanently deletes the bootstrap key (see
@@ -399,15 +404,12 @@ when the bootstrap key itself has been invalidated or deleted by its key id,
 or a reactivation gave it a window that has since ended.
 
 - During a grace period, tokens signed by the invalidated key pairs still
-  verify, `cyoda token` tokens included. An admin token of that kind can
-  reactivate the bootstrap key or issue a new key pair.
-- Once every grace period has ended, recovery needs an admin from a federated
-  OIDC provider, whose tokens do not depend on cyoda's own signing key.
-- That admin can reactivate the bootstrap key if it was only invalidated. A
-  deleted bootstrap key cannot be reactivated (see above).
-- That admin can issue a new key pair in either case.
-- Or replace `CYODA_JWT_SIGNING_KEY`. This starts a fresh, active bootstrap
-  key with no stored state.
+  verify, `cyoda token` tokens included. A platform-operator token of that
+  kind can reactivate the bootstrap key or issue a new key pair.
+- Once every grace period has ended, no token can reach these endpoints
+  independently of cyoda's own signing key: `PLATFORM` cannot own an OIDC
+  provider. Recovery is a new `CYODA_JWT_SIGNING_KEY` on every node. This
+  starts a fresh, active bootstrap key with no stored state.
 
 #### Upgrading from v0.7.x
 

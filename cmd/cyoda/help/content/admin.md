@@ -25,7 +25,7 @@ POST /api/admin/trace-sampler
 
 ## DESCRIPTION
 
-Both endpoint families require `ROLE_ADMIN` on the JWT and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately.
+Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`) and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately.
 
 ## ENDPOINTS
 

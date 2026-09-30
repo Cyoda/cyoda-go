@@ -19,9 +19,11 @@ HTTP: `403` `Forbidden`. Retryable: `no`.
 
 ## DESCRIPTION
 
-The request was authenticated successfully but the caller's JWT claims do not include the role required by the endpoint (for example, `admin` is required for administrative operations). Tenant mismatch — where the caller's tenant does not match the resource — also produces this error.
+The request was authenticated successfully but the caller does not have the role or tenant required by the endpoint. Tenant mismatch — where the caller's tenant does not match the resource — also produces this error.
 
-Not retryable with the same token. The token's role claims determine access.
+One cause: the endpoint needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM` (signing key pairs, OIDC reload, `/admin/*`). An admin of any other tenant gets this error with the detail "platform operator required".
+
+Not retryable with the same token. Access depends on the token's role claims and, for some endpoints, its tenant.
 
 ## SEE ALSO
 

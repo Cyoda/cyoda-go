@@ -29,15 +29,17 @@ The token names a person: `sub` and `caas_user_id` are `--user`, `caas_org_id` i
 
 The token serves HTTP calls and unary gRPC calls. With the default roles it does not open a compute-node stream: that needs `ROLE_M2M`. A compute node should use an M2M client, which can fetch new tokens itself.
 
+The key-pair endpoints, OIDC reload and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
+
 ## WHEN THE TOKEN IS REFUSED
 
 A token from `cyoda token` verifies while the signing key verifies on the cluster:
 
 - Rotating key pairs (`POST /oauth/keys/keypair` with `invalidateCurrent`) does not affect it.
-- Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require `ROLE_ADMIN`.
+- Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require a platform operator (`--tenant PLATFORM`).
 - Reactivating the signing key gives it a window that ends at the reactivation's `validTo`; tokens from `cyoda token` are refused from that time.
 - Reactivating the signing key also sets its `validFrom`, which defaults to now. From then on it signs `POST /oauth/token` tokens before every issued key pair of the `client` audience with an earlier `validFrom`. To keep the issued key pairs signing, pass an early `validFrom`, for example `1970-01-01T00:00:00Z` (see `cyoda help config auth`).
-- After that, admin access comes from an OIDC admin, or from an admin M2M client created beforehand while an issued key pair signs its tokens (`/oauth/token` signs with the `client` audience's key pair; creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`). With neither, the recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Tokens from a federated OIDC provider are unaffected.
+- After that, the platform operator's ways back to the key-pair endpoints are a token from `cyoda token --tenant PLATFORM` while the bootstrap key verifies (including its grace period); an admin M2M client in `PLATFORM`, created before the bootstrap key is revoked, while an issued `client` key pair signs its tokens (creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`); or a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Create an admin M2M client in `PLATFORM` before revoking the signing key.
 
 ## OPTIONS
 
@@ -71,6 +73,10 @@ The token and a newline on stdout, nothing else, so `TOKEN=$(cyoda token …)` c
 # Local
 TOKEN=$(cyoda token --tenant acme)
 curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
+
+# Platform operator (key-pair, OIDC reload, /admin/* endpoints)
+TOKEN=$(cyoda token --tenant PLATFORM)
+curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/oauth/keys/keypair
 
 # Kubernetes (the image's binary is /cyoda; the pod already holds the key)
 TOKEN=$(kubectl exec <pod> -- /cyoda token --tenant acme)

@@ -183,6 +183,9 @@ successful `List` — no write, and self-healing. The fixed plugin is required
 to rule out both. The fix is cyoda-go-cassandra#103 (merged to its `main` as
 `77bad8d`, closing cyoda-go-cassandra#102); the first cyoda-go-cassandra
 release that contains it is the minimum for this version.
+Also for `v0.9.0`: an out-of-tree plugin's parity fixture implements
+`PlatformOperator(t)` (a required `parity.BackendFixture` method);
+`fixtureutil.MintPlatformOperatorJWT` does it in one line.
 
 ## Helm chart × binary
 

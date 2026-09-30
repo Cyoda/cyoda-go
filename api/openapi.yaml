@@ -123,7 +123,7 @@ info:
     ### Getting Started
 
     1. **Create a machine-to-machine (M2M) user** through the client management
-    API (requires SUPER_USER role)
+    API (requires ROLE_ADMIN)
 
     2. **Obtain an access token** using the client credentials via the OAuth
     token endpoint
@@ -144,7 +144,7 @@ info:
     valid JWT bearer token
 
     - **Role-Based Access Control**: Different endpoints require specific roles
-    (USER, ADMIN, M2M, SUPER_USER)
+    (USER, ADMIN, M2M)
 
 
     ### User Account Management
@@ -5378,6 +5378,9 @@ paths:
         signing and validating OAuth 2.0 JWT
 
         access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: issueJwtKeyPair
       x-cyoda-iam-mode: jwt
       requestBody:
@@ -5406,7 +5409,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5435,6 +5438,9 @@ paths:
       description: >
         Retrieves information about the currently active JWT signing key-pair
         for the specified audience.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: getCurrentJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5466,7 +5472,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5504,6 +5510,9 @@ paths:
         key-pair is removed from storage; the signing key from
         `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is marked deleted, which is permanent for that
         key and ends the tokens `cyoda token` signs.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: deleteJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5530,7 +5539,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5580,6 +5589,9 @@ paths:
         To end a leaked token, invalidate the key pair named by the `kid` in
         its header with a grace period of zero. A rotation is not enough when
         that is the bootstrap key: a rotation never invalidates it.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: invalidateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5611,7 +5623,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5649,6 +5661,9 @@ paths:
         signed verify again while it is inside that window. It signs new tokens
         only if it is also the active key-pair with the latest validFrom for its
         audience. Reactivating an active key-pair replaces its window.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: reactivateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5684,7 +5699,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -6246,7 +6261,7 @@ paths:
 
         configurations and that any revoked keys are no longer trusted.
 
-        **Authorization Required:** ROLE_ADMIN role.
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: reloadOidcProviders
       x-cyoda-iam-mode: jwt
       responses:
@@ -6262,9 +6277,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:

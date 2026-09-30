@@ -1889,12 +1889,14 @@ and makes no network call. It adds no capability, since whoever holds the
 signing key can already sign any token the validator accepts. Its tokens
 verify exactly as long as the bootstrap key does on the cluster; an operator
 uses them for the first admin calls, such as creating M2M clients.
+`--tenant PLATFORM` makes it a platform operator, needed for the signing
+key-pair endpoints, OIDC reload and the runtime controls (§7.6).
 
 ### 7.3 OIDC Provider Registry
 
 When `CYODA_IAM_MODE=jwt` is active, tenants can register external Identity Providers (IdPs) that issue JWTs which cyoda-go should accept alongside its own locally-issued tokens. Each provider record is stored in the KV store under a single namespace (`oidc-providers`) with composite keys of the form `<tenantID>:<providerID>`, giving per-tenant isolation without a separate table.
 
-The `<tenantID>` half is a **canonical lowercase UUID**, and the adapter — the single entry point to the OIDC service — requires the caller's tenant to already be spelled that way rather than normalising it. `uuid.Parse` accepts forms `uuid.UUID.String()` folds away, and folding them here would alias tenants that every other subsystem keys apart by raw text, letting one reach another's providers. A tenant that is not a canonically-spelled UUID has no key it may address and gets `400 OIDC_INVALID_TENANT` from every provider operation, including the list one; `POST /oauth/oidc/providers/reload` takes no tenant and is exempt.
+The `<tenantID>` half is a **canonical lowercase UUID**, and the adapter — the single entry point to the OIDC service — requires the caller's tenant to already be spelled that way rather than normalising it. `uuid.Parse` accepts forms `uuid.UUID.String()` folds away, and folding them here would alias tenants that every other subsystem keys apart by raw text, letting one reach another's providers. A tenant that is not a canonically-spelled UUID has no key it may address and gets `400 OIDC_INVALID_TENANT` from every provider operation, including the list one; `POST /oauth/oidc/providers/reload` takes no tenant and is exempt — it acts on every tenant's providers at once, so it is gated on the caller being a platform operator instead.
 
 **Chained multi-issuer validation.** The `DelegatingAuthenticator` from §7.2 is the outer shell; inside it the request's `iss` claim determines which validator handles the token:
 
@@ -1911,7 +1913,7 @@ The `<tenantID>` half is a **canonical lowercase UUID**, and the adapter — the
 
 **JWKS caching and cache eviction.** Each node caches the JWKS response for a provider. When a provider record is updated, deleted, or reloaded via the REST API, the owning node evicts its local cache entry and broadcasts on the `oidc.providers` topic via `spi.ClusterBroadcaster`; peers that receive it evict their copy. The broadcast is best-effort and fire-and-forget; behind it, the same reconcile backstop as the trusted-key cache (`CYODA_AUTH_CACHE_RECONCILE_INTERVAL`, default 60s, jittered ±10%) periodically rebuilds the provider map from KV, so a dropped message costs at most one interval of staleness rather than persisting until an explicit reload. Warm JWKS sources are carried over on reconcile — the backstop never causes IdP re-fetch traffic; key freshness stays governed by the per-source JWKS cache TTL. If reconciliation has not succeeded for 10× the interval, `ResolveKey` fails closed and OIDC-issued tokens are rejected with the uniform 401 until a reconcile succeeds. A provider whose JWKS URL is unreachable at validation time is treated as an auth failure, not a 5xx.
 
-**REST API.** Seven endpoints under `/oauth/oidc/providers` implement the full lifecycle: register, list, update, invalidate (suspend without delete), reactivate, delete, and reload-cache. These endpoints require `ROLE_ADMIN` and are documented in the OpenAPI spec.
+**REST API.** Seven endpoints under `/oauth/oidc/providers` implement the full lifecycle: register, list, update, invalidate (suspend without delete), reactivate, delete, and reload-cache. Register, update, invalidate, reactivate and delete require `ROLE_ADMIN` in the caller's own tenant. Reload-cache rebuilds every tenant's providers on every node, so it requires a platform operator instead: `ROLE_ADMIN` in the tenant `PLATFORM`. All seven are documented in the OpenAPI spec.
 
 **Security controls.** The JWKS fetch URL is validated at registration time against SSRF rules: HTTPS is required by default (`CYODA_OIDC_REQUIRE_HTTPS`), and private/loopback/link-local network ranges are blocked by default (`CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`). Violations surface as `400 OIDC_SSRF_BLOCKED`. See §9 for the six `CYODA_OIDC_*` env vars.
 
@@ -1954,6 +1956,40 @@ chart-managed bearer secret projected into the pod via a
 projected-volume `_FILE` mount. Defense in depth: bind-address +
 bearer + NetworkPolicy restricting :9091 ingress to the monitoring
 namespace.
+
+### 7.6 Platform operator
+
+Some endpoints change state every tenant shares: the signing key-pair
+endpoints (`/oauth/keys/keypair*`), `POST /oauth/oidc/providers/reload`, and
+`GET`/`POST /api/admin/log-level` and `/api/admin/trace-sampler` (main API
+listener, §11 — distinct from the admin listener in §7.5). Only a **platform
+operator** may call them: a caller whose `UserContext` carries `ROLE_ADMIN`
+and whose tenant is exactly `PLATFORM` (bytewise, case-sensitive). `auth.OperatorGuard`
+(`internal/auth`) implements the check: no `UserContext` is `401 UNAUTHORIZED`;
+`ROLE_ADMIN` missing, or present in any tenant other than `PLATFORM`, is
+`403 FORBIDDEN` with the detail "platform operator required". Its zero value
+applies this rule, so a guard built but not wired fails closed. In mock IAM
+mode the check is `ROLE_ADMIN` alone, since mock mode has one fixed tenant.
+
+The rule rests on tenant binding: every token source other than the signing
+key fixes a token's tenant to the tenant that set the source up — an OIDC
+provider's owner, an M2M client's creating tenant, a trusted key's registering
+tenant. A tenant admin can grant their own principals any role, but cannot
+mint a principal in another tenant. Since an OIDC provider needs a canonical
+UUID tenant, `PLATFORM` cannot own one, so a `PLATFORM` principal comes only
+from `cyoda token --tenant PLATFORM` (§7.2), an admin M2M client that a
+`PLATFORM` admin creates in `PLATFORM`, or a trusted key a `PLATFORM` admin
+registers in `PLATFORM`. A role-based rule instead of a tenant-based one would
+need every token source to filter a reserved role, and one missed source
+would let any tenant admin grant it to themselves.
+
+`PLATFORM` is not `SYSTEM`: `SYSTEM` is the internal machinery's tenant (the
+system principal and the store holding the cluster's auth state) and gets no
+rights from this rule.
+
+Tenant-scoped admin endpoints — trusted keys, M2M clients, OIDC provider
+register/update/invalidate/reactivate/delete, and model and workflow
+administration — stay on `auth.RequireAdmin`: any tenant's `ROLE_ADMIN`.
 
 ---
 
@@ -2093,7 +2129,8 @@ See §7.5 for the authentication policy on admin endpoints.
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (OTel SDK default) | Standard OTel environment variable — honored directly, no cyoda-specific alias. |
 
 The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler`
-(see §11). The initial sampler honors `OTEL_TRACES_SAMPLER` and
+(see §11), which needs a platform operator (`ROLE_ADMIN` in the tenant
+`PLATFORM`). The initial sampler honors `OTEL_TRACES_SAMPLER` and
 `OTEL_TRACES_SAMPLER_ARG` at startup.
 
 ### Storage — plugin selection
@@ -2315,7 +2352,7 @@ hot-path semantics warrant.
 
 **Exporter endpoint:** `OTEL_EXPORTER_OTLP_ENDPOINT` (standard OTel env var). `examples/compose-with-observability/` brings up a Grafana / Prometheus / Tempo stack via `grafana/otel-lgtm` with a dashboard provider registered for cyoda-go.
 
-**Runtime sampler control.** The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler` (requires `ROLE_ADMIN`), mirroring `/api/admin/log-level`. Operators can toggle between 100% sampling, probabilistic sampling, and off without restarting the service. The initial sampler honors the standard OTel env vars `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` at startup.
+**Runtime sampler control.** The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler` (requires a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`), mirroring `/api/admin/log-level`. A platform operator can toggle between 100% sampling, probabilistic sampling, and off without restarting the service. The initial sampler honors the standard OTel env vars `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG` at startup.
 
 Trace context does not reach the search pipeline or outbound
 external-processor calls — see §12.

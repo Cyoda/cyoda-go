@@ -230,7 +230,7 @@ The `/livez` and `/readyz` probe endpoints stay unauthenticated regardless of bi
 
 The trace sampler is runtime-configurable via:
 
-- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires `Authorization: Bearer <token>`
+- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)
 - `GET :8080/api/admin/trace-sampler` — returns the current sampler config
 
 Request and response body:
