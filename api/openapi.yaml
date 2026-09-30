@@ -144,7 +144,7 @@ info:
     valid JWT bearer token
 
     - **Role-Based Access Control**: Different endpoints require specific roles
-    (USER, ADMIN, M2M)
+    (ROLE_USER, ROLE_ADMIN, ROLE_M2M)
 
 
     ### User Account Management
