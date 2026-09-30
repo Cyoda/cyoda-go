@@ -94,9 +94,8 @@ func Init(ctx context.Context, serviceName, nodeID string, otelEnabled bool) (fu
 
 			initialCfg := SamplerConfigFromEnv()
 			if err := Sampler.SetSampler(initialCfg); err != nil {
-				slog.Error("failed to set initial trace sampler, using default",
-					"pkg", "observability", "error", err)
-				_ = Sampler.SetSampler(SamplerConfig{Sampler: "always", ParentBased: true})
+				initErr = fmt.Errorf("set initial trace sampler: %w", err)
+				return
 			}
 			tp = sdktrace.NewTracerProvider(
 				sdktrace.WithBatcher(traceExporter),
