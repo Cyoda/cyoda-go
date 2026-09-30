@@ -28,8 +28,8 @@ func boundedJSONDecode(w http.ResponseWriter, r *http.Request, dst any) error {
 }
 
 // acceptedLogLevels is the LookupLevel-recognised set, in the order the
-// 400 response names them.
-var acceptedLogLevels = []string{"debug", "info", "warn", "error"}
+// 400 response names them. "warning" is an alias of "warn".
+var acceptedLogLevels = []string{"debug", "info", "warn", "warning", "error"}
 
 // AdminHandlers serves the node's runtime controls: log level and trace
 // sampler. They change process-wide state, so only a platform operator may
@@ -164,7 +164,7 @@ func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
 	level, ok := logging.LookupLevel(req.Level)
 	if !ok {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-			fmt.Sprintf("unknown level %q: accepted values are %s", req.Level, strings.Join(acceptedLogLevels, ", "))))
+			fmt.Sprintf("unknown level: accepted values are %s", strings.Join(acceptedLogLevels, ", "))))
 		return
 	}
 

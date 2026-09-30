@@ -65,6 +65,19 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 	return fmt.Sprintf("%v", pd.Properties["errorCode"])
 }
 
+// problemDetail decodes the RFC 9457 ProblemDetail body and returns its
+// detail field.
+func problemDetail(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var pd struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode ProblemDetail: %v; body=%s", err, rec.Body.String())
+	}
+	return pd.Detail
+}
+
 func TestHandleGetLogLevel(t *testing.T) {
 	// Set a known level
 	logging.Level.Set(slog.LevelInfo)
@@ -301,6 +314,15 @@ func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
 	}
 	if got := logging.LevelString(logging.Level.Level()); got != "warn" {
 		t.Fatalf("level substituted on an unknown value: got %q, want unchanged \"warn\"", got)
+	}
+	detail := problemDetail(t, rec)
+	if strings.Contains(detail, "verbose") {
+		t.Fatalf("detail echoes the submitted value: %q", detail)
+	}
+	for _, level := range []string{"debug", "info", "warn", "warning", "error"} {
+		if !strings.Contains(detail, level) {
+			t.Fatalf("detail %q does not list accepted value %q", detail, level)
+		}
 	}
 
 	logging.Level.Set(slog.LevelInfo)
