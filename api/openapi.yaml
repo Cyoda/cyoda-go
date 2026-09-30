@@ -143,9 +143,9 @@ info:
     - **Bearer Token Authentication**: All protected API endpoints require a
     valid JWT bearer token
 
-    - **Role-Based Access Control**: Different endpoints require `ROLE_ADMIN`
-    or `ROLE_M2M`; platform-wide operations also require the caller's tenant
-    to be `PLATFORM`
+    - **Role-Based Access Control**: Admin endpoints require `ROLE_ADMIN`;
+    platform-wide operations also require the caller's tenant to be
+    `PLATFORM`
 
 
     ### User Account Management
