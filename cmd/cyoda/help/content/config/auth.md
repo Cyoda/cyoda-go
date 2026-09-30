@@ -362,8 +362,10 @@ The fix depends on why:
 - It is owned by the configured bootstrap key but cannot be opened.
   Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
   it: the record is then retired (inert), not broken (blocking).
-- Authenticate with a token from `cyoda token --tenant PLATFORM`, an
-  unexpired platform-operator token, or an admin M2M client in `PLATFORM`.
+- Authenticate with a token from `cyoda token --tenant PLATFORM` or an
+  unexpired platform-operator token. `/oauth/token` cannot sign while the
+  record is there, so an admin M2M client's own token request fails the
+  same way.
 
 **A stored record cannot be decoded at all.**
 
@@ -377,10 +379,11 @@ The fix depends on why:
   key id: it is ignored (it does not block signing) and logged at ERROR.
 - At any id other than this node's bootstrap key id, the replacement is
   inert. The bootstrap key is unaffected: authenticate the `DELETE` with a
-  token from `cyoda token --tenant PLATFORM`, an unexpired platform-operator
-  token, or an admin M2M client in `PLATFORM`. Replacing
-  `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does not depend
-  on which key owns the record.
+  token from `cyoda token --tenant PLATFORM` or an unexpired
+  platform-operator token. `/oauth/token` cannot sign while the record is
+  there, so an admin M2M client's own token request fails the same way.
+  Replacing `CYODA_JWT_SIGNING_KEY` does not help: the decode failure does
+  not depend on which key owns the record.
 - At this node's bootstrap key id, `DELETE` permanently deletes the bootstrap
   key (see above).
 
@@ -390,10 +393,15 @@ never share one KID, so the record is refused as undecodable.
 - The bootstrap key is then unusable for signing and verifying. A
   bootstrap-signed admin token, a token from `cyoda token` included, does not
   verify on this node.
-- Authenticate with a token from an admin M2M client in `PLATFORM`: its
-  `/oauth/token` call is signed by an active issued key pair.
-- Then replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new key changes
-  the bootstrap key id, and the record then decodes normally.
+- `/oauth/token` cannot sign while the record is there, so neither `cyoda
+  token` nor an admin M2M client in `PLATFORM` can get a fresh token. The
+  route is an unexpired platform-operator token that an issued key pair
+  signed earlier — for example one an admin M2M client in `PLATFORM`
+  obtained before the record appeared.
+- With that token, replace `CYODA_JWT_SIGNING_KEY`, or call `DELETE`. A new
+  key changes the bootstrap key id, and the record then decodes normally.
+  Without such a token, replace `CYODA_JWT_SIGNING_KEY` on every node
+  instead: it needs no token.
 - Warning: `DELETE` at this id permanently deletes the bootstrap key (see
   above).
 
