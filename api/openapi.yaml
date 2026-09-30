@@ -5733,7 +5733,7 @@ paths:
       summary: List registered trusted keys
       description: |
         Returns all trusted public keys registered for the caller's tenant.
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: listTrustedKeys
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -5814,7 +5814,7 @@ paths:
         during which the old keys continue to be accepted.
 
 
-        Requires ADMIN or ROLE_ADMIN role. Disabled by default — enable via
+        Requires ROLE_ADMIN. Disabled by default — enable via
 
         `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
       operationId: registerTrustedKey
@@ -5888,7 +5888,7 @@ paths:
         Deletes a registered trusted public key. The key must belong to the
         caller's tenant.
 
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: deleteTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -5955,7 +5955,7 @@ paths:
         corresponding private key will no longer be accepted for validation
         (after the grace period). If `gracePeriodSec` is omitted or zero, invalidation is immediate.
 
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: invalidateTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -6026,7 +6026,7 @@ paths:
         future. Subject tokens signed with it are accepted again inside that
         window. Reactivating an active key replaces its window.
 
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: reactivateTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
