@@ -297,6 +297,8 @@ func TestHandleSetLogLevel_EmptyLevel(t *testing.T) {
 // is refused with 400 rather than silently substituted with info, and that
 // the level itself is left unchanged.
 func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
+	prev := logging.Level.Level()
+	t.Cleanup(func() { logging.Level.Set(prev) })
 	logging.Level.Set(slog.LevelWarn)
 
 	payload := `{"level":"verbose"}`
@@ -324,8 +326,6 @@ func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
 			t.Fatalf("detail %q does not list accepted value %q", detail, level)
 		}
 	}
-
-	logging.Level.Set(slog.LevelInfo)
 }
 
 // TestHandleSetLogLevel_OversizeBody_400 asserts the request body is bounded
@@ -335,6 +335,8 @@ func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
 // well-formed, accepted request except for size — so the 400 can only come
 // from the size bound, not from an unrelated validation error.
 func TestHandleSetLogLevel_OversizeBody_400(t *testing.T) {
+	prev := logging.Level.Level()
+	t.Cleanup(func() { logging.Level.Set(prev) })
 	logging.Level.Set(slog.LevelInfo)
 
 	oversized := `{"level":"debug","padding":"` + strings.Repeat("x", 2<<20) + `"}`
