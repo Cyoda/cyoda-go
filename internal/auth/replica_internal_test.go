@@ -653,9 +653,10 @@ func (k *replicaTxProbeKV) List(ctx context.Context, ns string) (map[string][]by
 // TestKVReplica_IgnoresCallerTransaction proves that no KV call a kvReplica
 // makes — construction's initial List, a re-read's List (Reconcile), a
 // single-record load (loadOne) or an admin write (writeAll/put) — carries a
-// transaction found in the caller's context. Both KVKeyStore and the
-// trusted-key store route every store read and write through this type, so
-// fixing it here covers both in one place instead of per call site.
+// transaction found in the caller's context. That covers every call the
+// replica itself makes; KVKeyStore and the trusted-key store also issue
+// direct decision reads against the underlying kv (not through the replica),
+// and those strip the transaction at method entry instead.
 func TestKVReplica_IgnoresCallerTransaction(t *testing.T) {
 	txCtx := spi.WithTransaction(replicaSystemCtx(), &spi.TransactionState{ID: "caller-tx"})
 

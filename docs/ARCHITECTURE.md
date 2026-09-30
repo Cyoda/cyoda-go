@@ -1987,9 +1987,9 @@ would let any tenant admin grant it to themselves.
 system principal and the store holding the cluster's auth state) and gets no
 rights from this rule.
 
-Tenant-scoped admin endpoints — trusted keys, M2M clients, OIDC provider
-register/update/invalidate/reactivate/delete, and model and workflow
-administration — stay on `auth.RequireAdmin`: any tenant's `ROLE_ADMIN`.
+Tenant-scoped admin endpoints — trusted keys, M2M clients, and OIDC provider
+register/update/invalidate/reactivate/delete — stay on `auth.RequireAdmin`:
+any tenant's `ROLE_ADMIN`.
 
 ---
 
