@@ -92,7 +92,7 @@ func (d *DynamicSampler) Inner() sdktrace.Sampler {
 }
 
 // BuildSampler constructs an sdktrace.Sampler from a SamplerConfig.
-// Used by SetSampler, SamplerConfigFromEnv, and the admin handler's
+// Used by NewDynamicSampler, SetSampler, and the admin handler's
 // validation path — one place for all construction logic.
 func BuildSampler(cfg SamplerConfig) (sdktrace.Sampler, error) {
 	var inner sdktrace.Sampler
