@@ -539,7 +539,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **`POST /admin/log-level` silently substituted `info` for an unrecognised
   level.** It now answers `400 BAD_REQUEST` naming the accepted values
-  (`debug`, `info`, `warn`, `error`), and the level is left unchanged. Both
+  (`debug`, `info`, `warn` (alias `warning`), `error`), and the level is left
+  unchanged. Both
   `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
   1 MiB.
 

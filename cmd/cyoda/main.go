@@ -85,12 +85,10 @@ func main() {
 	cfg.Version = version
 	logging.Init(cfg.LogLevel)
 
-	// Every check app.New itself runs via cfg.Validate() at its own top —
-	// GRPC keep-alive, search-async sizing, search-job heartbeat/stale-after/
-	// max-attempts, callout, dispatch, scheduler, HTTP, IAM, CORS. Running it
-	// again here means an invalid config exits before the banner or listener
-	// starts, rather than surfacing only once app.New (called from runServe)
-	// is reached.
+	// Config.Validate runs the same checks app.New itself runs at its own
+	// top; see that function for the full list. Running it again here means
+	// an invalid config exits before the banner or listener starts, rather
+	// than surfacing only once app.New (called from runServe) is reached.
 	if err := cfg.Validate(); err != nil {
 		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
 		os.Exit(1)

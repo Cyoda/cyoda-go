@@ -757,9 +757,10 @@ func isASCII(s string) bool {
 // guard. Config is a QA'd artefact rather than untrusted input, so this is
 // an invariant held where it is relied on, not input hardening.
 //
-// The binary keeps its own per-setting calls so its startup diagnostics
-// name the offending setting; it exits before New is ever reached, so the
-// same error is never reported twice.
+// The binary calls Validate once, in cmd/cyoda/main.go, before printing the
+// startup banner. It exits before New is ever reached, so the same error is
+// never reported twice. Each validator's error names its offending
+// CYODA_* setting.
 func (c Config) Validate() error {
 	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
 		return err
