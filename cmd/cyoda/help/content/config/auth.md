@@ -255,21 +255,23 @@ earlier `validFrom`.
 
 Setting `invalidateCurrent: true` also invalidates the issued key pairs of the
 audience that have not ended (including one issued ahead of time), the first
-rotation included. A rotation ends issued key pairs only: the bootstrap key is never one of them, stays active,
-keeps verifying, and `cyoda token` keeps working. Only an invalidate or a
-`DELETE` that names the bootstrap key's key id ends it.
+rotation included. A rotation invalidates issued key pairs only: the
+bootstrap key is never one of them, stays active, keeps verifying, and
+`cyoda token` keeps working. Only an invalidate or a `DELETE` that names the
+bootstrap key's key id ends it.
 
 An invalidated key pair — issued, or the bootstrap key — never signs again
-unless reactivated. Tokens it signed keep verifying until the end of its grace period:
-`invalidateGracePeriodSec: N` on a rotation, or `gracePeriodSec: N` on
-`POST /oauth/keys/keypair/{keyId}/invalidate`, sets its `validTo` to N
-seconds from now, never later than its current `validTo`. The default is 0:
-it stops verifying at once. JWKS publishes a key pair from its issue
-(ahead of its window, if `validFrom` is in the future) until it can no
-longer verify.
-A node that has not yet applied an invalidation (see *Shared and persisted*
-below) can still sign with the key pair until it does; with a grace period,
-those tokens verify on every node until the key pair's `validTo`.
+unless reactivated. Tokens it signed keep verifying until the end of its
+grace period: `invalidateGracePeriodSec: N` on a rotation, or
+`gracePeriodSec: N` on `POST /oauth/keys/keypair/{keyId}/invalidate`, sets
+its `validTo` to N seconds from now, never later than its current
+`validTo`. The default is 0: it stops verifying at once on the node that
+takes the call, and on each other node once that node applies the change
+(see *Shared and persisted* below). JWKS publishes a key pair from its
+issue (ahead of its window, if `validFrom` is in the future) until it can
+no longer verify. A node that has not yet applied an invalidation can still
+sign with the key pair until it does; with a grace period, those tokens
+verify on every node until the key pair's `validTo`.
 
 **Emergency revocation of a leaked token:** revoke the key pair named by the
 `kid` in the token's header. A rotation is not enough: it never ends the
@@ -279,20 +281,28 @@ from `POST /oauth/token` while it wins signer selection for its audience
 default `validFrom`; see above).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
-  0 (or rotate with `invalidateGracePeriodSec: 0`), or `DELETE` it.
+  0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
+  `invalidateGracePeriodSec: 0`. If it signs and no other key pair of its
+  audience is active and inside its window (with the bootstrap key revoked,
+  it may be the only one), invalidating or deleting it leaves no signer (see
+  *No signer* below), so use the rotation instead.
 - If the `kid` names the bootstrap key, invalidate it with a grace period of
   0. If `cyoda token` is still wanted, reactivate the bootstrap key once the
-  longest token lifetime in use has passed since every node applied the
-  invalidation (see *Shared and persisted* below): the largest
-  `CYODA_JWT_EXPIRY_SECONDS` among the servers and among every place
+  longest token lifetime in use has passed since the later of two times:
+  every node having applied the invalidation (see *Shared and persisted*
+  below), and the last `cyoda token` run. A token signed after the
+  invalidation also verifies again on reactivation. The wait is the
+  largest `CYODA_JWT_EXPIRY_SECONDS` among the servers and among every place
   `cyoda token` ran (its `--ttl` is capped by the value where it ran), plus
-  30 seconds for the clock-skew allowance token validation applies. By then
-  every token it signed before has expired. Reactivating it sooner makes
+  30 seconds for the clock-skew allowance token validation applies, plus a
+  margin for the clock offset between hosts: `exp` comes from the signing
+  host's clock and is checked on the verifying node's clock. By then every
+  token the bootstrap key signed has expired. Reactivating it sooner makes
   those tokens verify again. Pass an early `validFrom` on the reactivation,
-  for example `1970-01-01T00:00:00Z`, so that the issued key pairs of its audience keep
-  signing `POST /oauth/token`. With the default `validFrom` (now), the
-  bootstrap key signs before them, and `POST /oauth/token` signs with it
-  again. `DELETE` also ends the bootstrap key, but permanently.
+  for example `1970-01-01T00:00:00Z`, so that the issued key pairs of its
+  audience keep signing `POST /oauth/token`. With the default `validFrom`
+  (now), the bootstrap key signs before them, and `POST /oauth/token` signs
+  with it again. `DELETE` also ends the bootstrap key, but permanently.
 
 A grace period already running is cut short by invalidating the key pair again
 with 0, or by `DELETE`; a deleted key pair never verifies.
@@ -337,21 +347,63 @@ new window has opened.
   created beforehand while an issued key pair signs its tokens, or a new
   `CYODA_JWT_SIGNING_KEY` on every node (see `cyoda help cli token`). Store
   that client's secret like `CYODA_JWT_SIGNING_KEY`. If it may have leaked,
-  rotate it with `PUT /clients/{clientId}/secret` or remove the client with
-  `DELETE /clients/{clientId}`; either way, tokens it already obtained keep
-  verifying until they expire, since verification does not check that the
-  client still exists, so also revoke the key pair named by the leaked
-  token's `kid` (see *Emergency revocation of a leaked token*) to end them
-  sooner — this also ends every other token that key pair signed. Then, with
-  a platform-operator token, list `PLATFORM`'s M2M clients (`GET /clients`)
-  and trusted keys (`GET /oauth/keys/trusted`) and delete any you did not
-  create.
+  follow *A leaked platform admin-client secret* below.
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
 - **No exportable signing key:** a KMS-backed key vault for issued key pairs,
   with the bootstrap key deleted once an issued key signs, is supported by the
   design; no KMS vault ships yet.
+
+#### A leaked platform admin-client secret
+
+This applies while the bootstrap key is revoked, so issued `client` key
+pairs sign every `/oauth/token` token. Until the procedure ends, whoever
+holds the secret is a platform operator. Resetting the secret is not
+enough: verification does not check that a client still exists, so a token
+the attacker holds verifies until it expires, and with it they can reset
+the secret again and read the new one. Revoking one key pair by id is not
+enough either: the attacker can hold tokens from several key pairs, and
+invalidating or deleting the pair that signs leaves no signer (see *No
+signer* below), so `/oauth/token` fails for every tenant, your replacement
+client included.
+
+1. With a platform-operator token, create a replacement admin client in
+   `PLATFORM` (`POST /clients?withAdminRole=true`, which needs
+   `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`) and store its `client_id` and
+   `client_secret`. If the tenant is at its client cap
+   (`400 M2M_CLIENT_CAP_REACHED`), do step 3 first.
+2. `DELETE /clients/{clientId}` the leaked client.
+3. List `PLATFORM`'s M2M clients (`GET /clients`) and trusted keys
+   (`GET /oauth/keys/trusted`; `404 FEATURE_DISABLED` means there are none),
+   and delete each one you did not create. A trusted key and any client of
+   the tenant are enough to exchange for a `PLATFORM` admin token.
+4. End every outstanding token with a rotation: `POST /oauth/keys/keypair`
+   with `algorithm: RS256`, `audience: client`, `invalidateCurrent: true`
+   and `invalidateGracePeriodSec: 0`. This invalidates every issued `client`
+   key pair that has not ended, including one issued ahead of time, and the
+   new pair signs. Every tenant's M2M and token-exchange tokens stop
+   verifying, yours included, and clients fetch new ones.
+5. Once every node has applied the rotation (see *Shared and persisted*
+   above), get a token with the replacement client.
+   `GET /oauth/keys/keypair/current?audience=client` must name the new pair;
+   if it does not, repeat from step 3. Invalidate with `gracePeriodSec: 0`
+   every other key id that `/.well-known/jwks.json` lists, for example the
+   bootstrap key if it was reactivated: none of them signs `client` tokens,
+   so the new pair keeps signing. Once every node has applied that too, list
+   as in step 3. If anything new appears, delete it and repeat steps 4
+   and 5.
+6. Look for what the attacker did in the INFO logs `M2M client created` and
+   `M2M client secret rotated` with `tenantId=PLATFORM`. The key-pair and
+   trusted-key endpoints log no such line; step 5 shows their result.
+
+Until the rotation applies on every node, the attacker can also delete or
+reset your replacement client. If that happens, or the loop does not end,
+use the route that needs no token: do steps 2 and 3 if you can, set a new
+`CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair
+and ends every token cyoda-go signed, then list and delete as in step 3
+with a token from `cyoda token --tenant PLATFORM`. If that list shows
+anything you did not create, delete it and replace the key again.
 
 #### Recovering from a `/oauth/token` 500
 
@@ -399,8 +451,8 @@ why:
   are unaffected. A rotation with `invalidateCurrent: true` also ends the
   pair, and also invalidates the audience's other issued key pairs that have
   not ended, including one issued ahead of time; tokens they signed stop
-  verifying at once, or when the `invalidateGracePeriodSec` grace period
-  ends.
+  verifying as each node applies the change, or when the
+  `invalidateGracePeriodSec` grace period ends.
   With neither token: set a new `CYODA_JWT_SIGNING_KEY` on every node, get
   a token from `cyoda token --tenant PLATFORM`, then invalidate or `DELETE`
   the pair. This retires every issued key pair the old key sealed.
@@ -481,8 +533,8 @@ or a reactivation gave it a window that has since ended.
   the audience's other issued key pairs unaffected, unless
   `invalidateCurrent: true` is set, which also invalidates them (a running
   grace period included), including one issued ahead of time; tokens they
-  signed stop verifying at once, or when the `invalidateGracePeriodSec`
-  grace period ends.
+  signed stop verifying as each node applies the change, or when the
+  `invalidateGracePeriodSec` grace period ends.
   Reactivation works only if the bootstrap key was invalidated or its
   window ended: a deleted bootstrap key cannot be reactivated (`404`). It
   makes the tokens the bootstrap key signed earlier verify again until they

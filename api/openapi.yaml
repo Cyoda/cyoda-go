@@ -844,7 +844,8 @@ paths:
         one.
 
         Any applications using the old secret will need to be updated with the
-        new credentials.
+        new credentials. Tokens it was already issued stay valid until their
+        `exp`.
 
 
         **Authorization Required:** ROLE_ADMIN role
