@@ -159,7 +159,7 @@ func SamplerConfigFromEnv() SamplerConfig {
 	}
 }
 
-// parseRatioOrDefault parses s as a float in [0, 1]. On parse failure or
+// parseRatioOrDefault parses s as a float in (0, 1]. On parse failure or
 // out-of-range, logs WARN and returns fallback.
 func parseRatioOrDefault(s string, fallback float64) float64 {
 	if s == "" {
