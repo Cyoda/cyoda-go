@@ -332,7 +332,9 @@ new window has opened.
   given, and the node that takes the call logs a WARN that says so. The
   platform operator's ways back are then an admin M2M client in `PLATFORM`
   created beforehand while an issued key pair signs its tokens, or a new
-  `CYODA_JWT_SIGNING_KEY` on every node (see `cyoda help cli token`).
+  `CYODA_JWT_SIGNING_KEY` on every node (see `cyoda help cli token`). Store
+  that client's secret like `CYODA_JWT_SIGNING_KEY`; rotate it with
+  `PUT /clients/{clientId}/secret` if it may have leaked.
 - **Deleting the bootstrap key is permanent** for that key: it cannot be
   reactivated; replacing `CYODA_JWT_SIGNING_KEY` starts a fresh bootstrap key
   with no stored state — it does not undelete the old one.
@@ -381,9 +383,11 @@ why:
 
 - Its vault kind is unrecognised. This check runs before the ownership
   check, so the pair stays broken whatever `CYODA_JWT_SIGNING_KEY` is set to.
-  Invalidate it (a rotation with `invalidateCurrent: true` also does) or
-  `DELETE` it, with `cyoda token --tenant PLATFORM` while the bootstrap key
-  verifies, or with an earlier token. Issued key pairs are unaffected.
+  Invalidate it or `DELETE` it, with `cyoda token --tenant PLATFORM` while
+  the bootstrap key verifies, or with an earlier token. Issued key pairs
+  are unaffected. A rotation with `invalidateCurrent: true` also ends the
+  pair, but also ends the audience's other issued key pairs whose window is
+  open, unless `invalidateGracePeriodSec` gives them a grace period.
   With neither token: set a new `CYODA_JWT_SIGNING_KEY` on every node, get
   a token from `cyoda token --tenant PLATFORM`, then invalidate or `DELETE`
   the pair. This retires every issued key pair the old key sealed.
@@ -417,8 +421,8 @@ why:
   bootstrap key's state, so whatever that state was, a token from
   `cyoda token` does not verify on this node (the bootstrap key is unusable)
   and `/oauth/token` cannot sign. Two routes remain. Both permanently delete
-  the old bootstrap key (see above); prefer route 1 when the token it needs
-  exists.
+  the old bootstrap key (see *Deleting the bootstrap key is permanent*);
+  prefer route 1 when the token it needs exists.
   1. An earlier token, used to `DELETE` the record. Issued key pairs are
      unaffected.
   2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
@@ -438,7 +442,8 @@ never share one KID, so the record is refused as undecodable.
   M2M client in `PLATFORM` cannot get a fresh token either. Two routes
   remain; prefer route 1 when the token it needs exists.
   1. An earlier token — for example one an admin M2M client in `PLATFORM`
-     obtained before the record appeared — used to `DELETE` the record. The
+     obtained while an issued key pair signed its tokens — used to `DELETE`
+     the record. The
      `DELETE` writes a deleted bootstrap-state record at the id, which ends
      the old bootstrap key for good. Issued key pairs are unaffected.
   2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
@@ -459,9 +464,16 @@ or a reactivation gave it a window that has since ended.
 - While a grace period runs, tokens signed by the invalidated key pairs
   still verify, `cyoda token` tokens included while the bootstrap key's
   grace period runs. A platform-operator token of that kind can issue a new
-  key pair, or reactivate the bootstrap key. Reactivation works only if the
-  bootstrap key was invalidated or its window ended: a deleted bootstrap key
-  cannot be reactivated (`404`). Issued key pairs are unaffected.
+  key pair, or reactivate the bootstrap key. Issuing a new key pair leaves
+  the audience's other issued key pairs unaffected, unless
+  `invalidateCurrent: true` is set, which also ends them (a running grace
+  period included) unless `invalidateGracePeriodSec` gives them one.
+  Reactivation works only if the bootstrap key was invalidated or its
+  window ended: a deleted bootstrap key cannot be reactivated (`404`). It
+  makes the tokens the bootstrap key signed earlier verify again until they
+  expire: if it was invalidated because a token leaked, wait for the
+  longest token lifetime first (see *Emergency revocation of a leaked
+  token*), or issue a new key pair instead.
 - Once every grace period has ended, no token can reach these endpoints
   independently of cyoda's own signing key: `PLATFORM` cannot own an OIDC
   provider. Recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, needing
