@@ -81,6 +81,8 @@ curl -H "Authorization: Bearer $TOKEN" 'http://localhost:8080/api/oauth/keys/key
 # Create the recommended PLATFORM admin M2M client
 # (server started with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true)
 TOKEN=$(cyoda token --tenant PLATFORM)
+# A private directory: no other user can plant a symlink at the file name.
+cd "$(mktemp -d)"
 # rm -f first: curl keeps the mode of a file that already exists.
 # --fail: an error answer is not saved as if it were the credential.
 rm -f platform-client.json
