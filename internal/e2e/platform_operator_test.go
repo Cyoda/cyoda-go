@@ -2,7 +2,10 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -95,5 +98,52 @@ func TestPlatformOperator_TraceSamplerRoundTrip(t *testing.T) {
 	resp = operatorRequest(t, http.MethodPost, "/admin/trace-sampler", []byte(cfg))
 	if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST trace-sampler as operator: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestAdminTraceSampler_UnknownSampler asserts the wired route answers 400
+// for a sampler value outside the accepted set, that the body does not echo
+// the submitted value back to the caller, and that a subsequent GET shows
+// the sampler was left unchanged. Mirrors TestAdminLogLevel_UnknownLevel for
+// the log-level endpoint.
+func TestAdminTraceSampler_UnknownSampler(t *testing.T) {
+	getResp := operatorRequest(t, http.MethodGet, "/admin/trace-sampler", nil)
+	original := readBody(t, getResp)
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET trace-sampler as operator: %d %s", getResp.StatusCode, original)
+	}
+
+	postResp := operatorRequest(t, http.MethodPost, "/admin/trace-sampler", []byte(`{"sampler":"bogus"}`))
+	defer postResp.Body.Close()
+	body, err := io.ReadAll(postResp.Body)
+	if err != nil {
+		t.Fatalf("read POST body: %v", err)
+	}
+	if postResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST unknown sampler: status=%d, want 400; body=%s", postResp.StatusCode, body)
+	}
+	if ct := postResp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q, want application/problem+json", ct)
+	}
+	var pd struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("unmarshal ProblemDetail: %v; body=%s", err, body)
+	}
+	if got := fmt.Sprintf("%v", pd.Properties["errorCode"]); got != "BAD_REQUEST" {
+		t.Fatalf("errorCode: got %q, want BAD_REQUEST; body=%s", got, body)
+	}
+	if strings.Contains(string(body), "bogus") {
+		t.Fatalf("400 body echoes the submitted value: %s", body)
+	}
+
+	getResp2 := operatorRequest(t, http.MethodGet, "/admin/trace-sampler", nil)
+	now := readBody(t, getResp2)
+	if getResp2.StatusCode != http.StatusOK {
+		t.Fatalf("GET trace-sampler after refused POST: %d %s", getResp2.StatusCode, now)
+	}
+	if now != original {
+		t.Errorf("GET after a refused unknown sampler: %s, want unchanged %s", now, original)
 	}
 }

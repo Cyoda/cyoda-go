@@ -47,7 +47,7 @@ Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `
 {"sampler": "ratio", "ratio": 0.1, "parent_based": true}
 ```
 
-`POST /api/admin/trace-sampler` changes the sampler atomically. Body shape mirrors the GET response. Valid `sampler` values: `always`, `never`, `ratio`. When `sampler` is `ratio`, `ratio` must be a float in `(0, 1]`. Use `sampler: never` for zero sampling — `ratio: 0` is rejected.
+`POST /api/admin/trace-sampler` changes the sampler atomically. Body shape mirrors the GET response. Valid `sampler` values: `always`, `never`, `ratio`. When `sampler` is `ratio`, `ratio` must be a float in `(0, 1]`. Use `sampler: never` for zero sampling — `ratio: 0` is rejected. An unrecognised `sampler` value answers `400 BAD_REQUEST` naming the accepted values (`always`, `never`, `ratio`); the sampler is left unchanged.
 
 ## EXAMPLES
 
