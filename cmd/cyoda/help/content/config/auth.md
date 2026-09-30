@@ -353,21 +353,46 @@ proven and `DELETE` still answers `500` — the fix is then a direct edit of
 the storage backend: remove the key named by the client id from the
 `m2m-client-ids` namespace. See `auth.clients`.
 
+The signing-key incidents below leave `/oauth/token` unable to sign, so an
+admin M2M client in `PLATFORM` cannot get a fresh token. The routes use one
+of three ways in. Verification looks up only the token's own key id:
+
+- **`cyoda token --tenant PLATFORM`** verifies only while the bootstrap key
+  does: its stored state is readable and not deleted, it is inside the
+  window a reactivation gave it (if any), and it is active or inside the
+  grace period of an invalidation.
+- **An earlier token:** an unexpired platform-operator token that an issued
+  key pair signed verifies while that key pair verifies, whatever else is
+  stored.
+- **A new `CYODA_JWT_SIGNING_KEY` on every node** needs no token. The new
+  bootstrap key id has no stored state, so a fresh `cyoda token --tenant
+  PLATFORM` then verifies. It retires every issued key pair the old key
+  sealed: their tokens stop verifying and clients fetch new ones. Prefer a
+  route that needs no new key whenever you hold a token that verifies.
+
+After a fix, `/oauth/token` signs only if a key pair of its audience is active
+and inside its window; otherwise see *No signer* below.
+
 **The selected key pair is broken.** The log names the KID and the reason.
-The fix depends on why:
+`/oauth/token` cannot sign while the pair wins signer selection for its
+audience: until it is invalidated or deleted, or a newer key pair outranks it.
+A token signed by the broken pair itself does not verify. The fix depends on
+why:
 
 - Its vault kind is unrecognised. This check runs before the ownership
   check, so the pair stays broken whatever `CYODA_JWT_SIGNING_KEY` is set to.
-  Invalidate it or `DELETE` it.
+  Invalidate it (a rotation with `invalidateCurrent: true` also does) or
+  `DELETE` it, with `cyoda token --tenant PLATFORM` while the bootstrap key
+  verifies, or with an earlier token. Issued key pairs are unaffected.
+  With neither token: set a new `CYODA_JWT_SIGNING_KEY` on every node, get
+  a token from `cyoda token --tenant PLATFORM`, then invalidate or `DELETE`
+  the pair. This retires every issued key pair the old key sealed.
 - It is owned by the configured bootstrap key but cannot be opened.
-  Invalidate it or `DELETE` it. Replacing `CYODA_JWT_SIGNING_KEY` also fixes
-  it: the record is then retired (inert), not broken (blocking) — and it
-  retires every other issued key pair the old key sealed.
-- Authenticate with a token from `cyoda token --tenant PLATFORM` or an
-  unexpired platform-operator token signed by a key that still verifies — a
-  token signed by the broken key pair itself does not verify. `/oauth/token`
-  cannot sign while the record is there, so an admin M2M client's own token
-  request fails the same way.
+  Invalidate it or `DELETE` it, with either token as above. Issued key pairs
+  are unaffected. A new `CYODA_JWT_SIGNING_KEY` on every node also fixes it,
+  with no token: the record is then retired (inert), not broken (blocking),
+  and invalidate and `DELETE` answer `404` for it. This retires every other
+  issued key pair the old key sealed.
 
 **A stored record cannot be decoded at all.**
 
@@ -380,45 +405,50 @@ The fix depends on why:
 - A record at a KV key that is not 32 lowercase hex characters cannot be a
   key id: it is ignored (it does not block signing) and logged at ERROR.
 - At any id other than this node's bootstrap key id, the replacement is
-  inert. The bootstrap key is unaffected: authenticate the `DELETE` with a
-  token from `cyoda token --tenant PLATFORM` or an unexpired
-  platform-operator token. `/oauth/token` cannot sign while the record is
-  there, so an admin M2M client's own token request fails the same way.
-  Replacing `CYODA_JWT_SIGNING_KEY` does not help a record at another id: the
-  decode failure does not depend on which key owns the record.
-- At this node's bootstrap key id, a token from `cyoda token` does not verify
-  on this node (the bootstrap key is unusable) and `/oauth/token` cannot
-  sign, so two routes remain. Both permanently delete the old bootstrap key
-  (see above); prefer route 1 when the token it needs exists.
-  1. An unexpired platform-operator token that an issued key pair still
-     verifying signed earlier, used to `DELETE` the record. Issued key pairs
-     are unaffected.
+  inert and the bootstrap key is unaffected. `DELETE` the record with
+  `cyoda token --tenant PLATFORM` while the bootstrap key verifies, or with
+  an earlier token. Issued key pairs are unaffected. Replacing
+  `CYODA_JWT_SIGNING_KEY` does not make the record decodable: the decode
+  failure does not depend on which key owns the record. With neither token:
+  set a new `CYODA_JWT_SIGNING_KEY` on every node, get a token from
+  `cyoda token --tenant PLATFORM`, then `DELETE` the record. This retires
+  every issued key pair the old key sealed.
+- At this node's bootstrap key id, the record takes the place of the
+  bootstrap key's state, so whatever that state was, a token from
+  `cyoda token` does not verify on this node (the bootstrap key is unusable)
+  and `/oauth/token` cannot sign. Two routes remain. Both permanently delete
+  the old bootstrap key (see above); prefer route 1 when the token it needs
+  exists.
+  1. An earlier token, used to `DELETE` the record. Issued key pairs are
+     unaffected.
   2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
      node, get a token from `cyoda token --tenant PLATFORM`, then `DELETE`
      the old key id with it. This also retires every issued key pair the old
-     key sealed: their tokens stop verifying and clients fetch new ones.
+     key sealed.
 
 **An issued record is stored at this node's bootstrap key id.** Two keys can
 never share one KID, so the record is refused as undecodable.
 
-- The bootstrap key is then unusable for signing and verifying. A
-  bootstrap-signed admin token, a token from `cyoda token` included, does not
-  verify on this node.
+- The bootstrap key is then unusable for signing and verifying, whatever its
+  state was. A bootstrap-signed admin token, a token from `cyoda token`
+  included, does not verify on this node.
 - `cyoda token` still signs offline — it needs no store access — but the
   token it produces does not verify here, for the same reason above.
   `/oauth/token` cannot sign at all while the record is there, so an admin
   M2M client in `PLATFORM` cannot get a fresh token either. Two routes
-  remain. Both permanently delete the old bootstrap key; prefer route 1 when
-  the token it needs exists.
-  1. An unexpired platform-operator token that an issued key pair still
-     verifying signed earlier — for example one an admin M2M client in
-     `PLATFORM` obtained before the record appeared — used to `DELETE` the
-     record. Issued key pairs are unaffected.
+  remain; prefer route 1 when the token it needs exists.
+  1. An earlier token — for example one an admin M2M client in `PLATFORM`
+     obtained before the record appeared — used to `DELETE` the record. The
+     `DELETE` writes a deleted bootstrap-state record at the id, which ends
+     the old bootstrap key for good. Issued key pairs are unaffected.
   2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
      node. This changes the bootstrap key id, so the record then decodes
-     normally, as retired (its owner no longer matches). It also retires
-     every other issued key pair the old key sealed: their tokens stop
-     verifying and clients fetch new ones.
+     normally, as retired (its owner no longer matches). Nothing is written
+     at the old id: the record stays there, `DELETE` answers `404` for it,
+     and restoring the old key brings the incident back. This also retires
+     every other issued key pair the old key sealed. If the record's vault
+     kind is unrecognised, it is broken instead of retired: see *The
+     selected key pair is broken*.
 
 **No signer.** No key pair of the audience is active and inside its window.
 While the bootstrap key is active it signs whenever no issued key pair does,
@@ -426,9 +456,12 @@ so for the bootstrap key's audience (`client` by default) this arises only
 when the bootstrap key itself has been invalidated or deleted by its key id,
 or a reactivation gave it a window that has since ended.
 
-- During a grace period, tokens signed by the invalidated key pairs still
-  verify, `cyoda token` tokens included. A platform-operator token of that
-  kind can reactivate the bootstrap key or issue a new key pair.
+- While a grace period runs, tokens signed by the invalidated key pairs
+  still verify, `cyoda token` tokens included while the bootstrap key's
+  grace period runs. A platform-operator token of that kind can issue a new
+  key pair, or reactivate the bootstrap key. Reactivation works only if the
+  bootstrap key was invalidated or its window ended: a deleted bootstrap key
+  cannot be reactivated (`404`). Issued key pairs are unaffected.
 - Once every grace period has ended, no token can reach these endpoints
   independently of cyoda's own signing key: `PLATFORM` cannot own an OIDC
   provider. Recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, needing
