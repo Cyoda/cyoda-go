@@ -59,9 +59,10 @@ func TestKVKeyStore_IgnoresCallerTransaction(t *testing.T) {
 
 // TestKVTrustedKeyStore_IgnoresCallerTransaction mirrors
 // TestKVKeyStore_IgnoresCallerTransaction for the trusted-key store: Register
-// with Invalidate exercises storedKeys (the sibling-read decision), Get
-// exercises loadOne on a copy miss, Reactivate/Invalidate exercise
-// storedKey via update, and Delete exercises its own storedKey read.
+// with Invalidate exercises storedKeys (the sibling-read decision), Get reads
+// the node's copy that Register just populated (a copy hit; it reaches no
+// KV), Reactivate/Invalidate exercise storedKey via update, and Delete
+// exercises its own storedKey read.
 func TestKVTrustedKeyStore_IgnoresCallerTransaction(t *testing.T) {
 	probe := &txProbeKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
 	s, err := auth.NewKVTrustedKeyStore(systemCtx(), probe)

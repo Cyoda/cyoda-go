@@ -11,10 +11,10 @@ import (
 
 // TestNew_InvalidSearchAsyncConfigExits asserts app.New itself refuses a
 // config whose async-search sizing it cannot honour, instead of building the
-// pool from it. Before this, the checks lived only in cmd/cyoda/main.go, so
-// any in-process embedder of app.New reached make(chan jobFunc, -1) and
-// panicked — a startup crash with a runtime stack instead of a named,
-// actionable configuration error.
+// pool from it. app.New refuses the config itself, so an in-process embedder
+// that never calls the cmd/cyoda validators — one that reaches
+// make(chan jobFunc, -1) directly — still gets a named, actionable
+// configuration error instead of a startup crash with a runtime stack.
 //
 // Subprocess re-exec (same pattern as TestNew_StorageFactoryFailureExits) so
 // the os.Exit(1) path is observable without killing the parent test binary.
@@ -48,13 +48,12 @@ func TestNew_InvalidSearchAsyncConfigExits(t *testing.T) {
 }
 
 // TestNew_UnknownIAMModeExits asserts app.New itself refuses an unrecognised
-// CYODA_IAM_MODE instead of silently wiring mock auth for it. Config.Validate
-// (called unconditionally by every app.New caller, not only
-// cmd/cyoda/main.go's own startup checks) is what guarantees this: an
-// in-process embedder of app.New (the cyoda-go-cassandra binary, any other
-// host built on app.New) gets the same guard, so a typo'd mode such as "JWT"
-// cannot reach app.New's `if mode == "jwt" { ... } else { mock }` branch and
-// run every request as the mock admin.
+// CYODA_IAM_MODE instead of silently wiring mock auth for it. app.New itself
+// calls Config.Validate, so every binary built on app.New gets the same
+// guard: an in-process embedder of app.New (the cyoda-go-cassandra binary,
+// any other host built on app.New) gets it too, so a typo'd mode such as
+// "JWT" cannot reach app.New's `if mode == "jwt" { ... } else { mock }`
+// branch and run every request as the mock admin.
 func TestNew_UnknownIAMModeExits(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
 		cfg := app.DefaultConfig()

@@ -537,6 +537,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `PATCH`. Before this, any tenant's admin could revoke the signing key for
   the whole cluster. See `cyoda help cli token`.
 
+- **`POST /admin/log-level` silently substituted `info` for an unrecognised
+  level.** It now answers `400 BAD_REQUEST` naming the accepted values
+  (`debug`, `info`, `warn`, `error`), and the level is left unchanged. Both
+  `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
+  1 MiB.
+
 ### Added
 
 - **`cyoda token` signs a short-lived admin token offline.**
@@ -1479,12 +1485,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-positive `delayMs` as "absent", so it saw only the function and
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
-
-- **`POST /admin/log-level` silently substituted `info` for an unrecognised
-  level.** It now answers `400 BAD_REQUEST` naming the accepted values
-  (`debug`, `info`, `warn`, `error`), and the level is left unchanged. Both
-  `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
-  1 MiB.
 
 ## [0.8.4] — 2026-09-09
 
