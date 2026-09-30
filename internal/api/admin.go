@@ -2,14 +2,34 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
+
+// maxAdminBodyBytes bounds the two admin POST bodies, matching the 1 MiB
+// bound internal/domain/account uses for its POST bodies.
+const maxAdminBodyBytes = 1 << 20
+
+// boundedJSONDecode wraps http.MaxBytesReader + json.Decoder.Decode so
+// neither admin POST handler accepts an unbounded body.
+func boundedJSONDecode(w http.ResponseWriter, r *http.Request, dst any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		return fmt.Errorf("decode body: %w", err)
+	}
+	return nil
+}
+
+// acceptedLogLevels is the LookupLevel-recognised set, in the order the
+// 400 response names them.
+var acceptedLogLevels = []string{"debug", "info", "warn", "error"}
 
 // AdminHandlers serves the node's runtime controls: log level and trace
 // sampler. They change process-wide state, so only a platform operator may
@@ -71,7 +91,7 @@ func (a *AdminHandlers) SetTraceSampler(w http.ResponseWriter, r *http.Request) 
 		Ratio       *float64 `json:"ratio,omitempty"`
 		ParentBased *bool    `json:"parent_based,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := boundedJSONDecode(w, r, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -132,7 +152,7 @@ func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level string `json:"level"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := boundedJSONDecode(w, r, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -141,8 +161,15 @@ func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	level, ok := logging.LookupLevel(req.Level)
+	if !ok {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
+			fmt.Sprintf("unknown level %q: accepted values are %s", req.Level, strings.Join(acceptedLogLevels, ", "))))
+		return
+	}
+
 	previous := logging.LevelString(logging.Level.Level())
-	logging.Level.Set(logging.ParseLevel(req.Level))
+	logging.Level.Set(level)
 	current := logging.LevelString(logging.Level.Level())
 
 	slog.Info("log level changed", "previous", previous, "current", current)

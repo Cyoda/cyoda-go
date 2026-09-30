@@ -280,6 +280,78 @@ func TestHandleSetLogLevel_EmptyLevel(t *testing.T) {
 	}
 }
 
+// TestHandleSetLogLevel_UnknownLevel_400 asserts that an unrecognised level
+// is refused with 400 rather than silently substituted with info (the
+// previous ParseLevel-in-the-handler behaviour) — the level itself is left
+// unchanged.
+func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
+	logging.Level.Set(slog.LevelWarn)
+
+	payload := `{"level":"verbose"}`
+	req := operatorContext(httptest.NewRequest(http.MethodPost, "/admin/log-level", strings.NewReader(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.NewAdminHandlers(auth.OperatorGuard{}).SetLogLevel(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if code := errorCode(t, rec); code != "BAD_REQUEST" {
+		t.Fatalf("expected errorCode BAD_REQUEST, got %q", code)
+	}
+	if got := logging.LevelString(logging.Level.Level()); got != "warn" {
+		t.Fatalf("level substituted on an unknown value: got %q, want unchanged \"warn\"", got)
+	}
+
+	logging.Level.Set(slog.LevelInfo)
+}
+
+// TestHandleSetLogLevel_OversizeBody_400 asserts the request body is bounded
+// (1 MiB), matching the pattern internal/domain/account uses for its POST
+// bodies, rather than an admin endpoint accepting an unbounded body. The
+// padding sits in a field the request struct doesn't declare — an otherwise
+// well-formed, accepted request except for size — so the 400 can only come
+// from the size bound, not from an unrelated validation error.
+func TestHandleSetLogLevel_OversizeBody_400(t *testing.T) {
+	logging.Level.Set(slog.LevelInfo)
+
+	oversized := `{"level":"debug","padding":"` + strings.Repeat("x", 2<<20) + `"}`
+	req := operatorContext(httptest.NewRequest(http.MethodPost, "/admin/log-level", strings.NewReader(oversized)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.NewAdminHandlers(auth.OperatorGuard{}).SetLogLevel(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an oversize body, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := logging.LevelString(logging.Level.Level()); got != "info" {
+		t.Fatalf("level changed on a refused oversize request: got %q, want unchanged \"info\"", got)
+	}
+}
+
+// TestHandleSetTraceSampler_OversizeBody_400 mirrors
+// TestHandleSetLogLevel_OversizeBody_400 for the sibling admin endpoint.
+func TestHandleSetTraceSampler_OversizeBody_400(t *testing.T) {
+	prev := observability.Sampler.Config()
+	t.Cleanup(func() { _ = observability.Sampler.SetSampler(prev) })
+
+	oversized := `{"sampler":"always","padding":"` + strings.Repeat("x", 2<<20) + `"}`
+	req := operatorContext(httptest.NewRequest(http.MethodPost, "/admin/trace-sampler", strings.NewReader(oversized)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.NewAdminHandlers(auth.OperatorGuard{}).SetTraceSampler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an oversize body, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Fatalf("sampler changed on a refused oversize request: got %+v, want unchanged %+v", got, prev)
+	}
+}
+
 func TestHandleGetTraceSampler(t *testing.T) {
 	prev := observability.Sampler.Config()
 	t.Cleanup(func() { _ = observability.Sampler.SetSampler(prev) })

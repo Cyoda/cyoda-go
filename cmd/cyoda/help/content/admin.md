@@ -37,7 +37,7 @@ Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `
 {"level": "info"}
 ```
 
-`POST /api/admin/log-level` changes the level atomically. Request body: `{"level": "<level>"}`. Response: `{"level": "<new>", "previous": "<old>"}`. Valid values: `debug`, `info`, `warn`, `error`.
+`POST /api/admin/log-level` changes the level atomically. Request body: `{"level": "<level>"}`. Response: `{"level": "<new>", "previous": "<old>"}`. Valid values: `debug`, `info`, `warn`, `error`. An unrecognised value answers `400 BAD_REQUEST` naming the accepted values; the level is left unchanged.
 
 ### trace-sampler
 
