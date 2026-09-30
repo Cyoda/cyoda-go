@@ -86,6 +86,21 @@ func TestGated_MockIAM_All21Return501(t *testing.T) {
 	}
 }
 
+// TestMockIAM_AdminLogLevelWorks: in mock mode the mock admin is the
+// operator, so the runtime controls keep working for local development.
+func TestMockIAM_AdminLogLevelWorks(t *testing.T) {
+	base, cleanup := newMockIAMServer(t)
+	defer cleanup()
+	resp, err := http.Get(base + "/api/admin/log-level")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mock mode GET /api/admin/log-level: %d, want 200", resp.StatusCode)
+	}
+}
+
 // TestGated_Trusted_FeatureOff_Return404 verifies that the 5 trusted-key ops
 // return 404 FEATURE_DISABLED when the trusted-key feature gate is disabled
 // (CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false, the default).

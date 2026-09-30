@@ -632,10 +632,11 @@ func New(cfg Config) *App {
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
-	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleGetLogLevel)))
-	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(internalapi.HandleSetLogLevel)))
-	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleGetTraceSampler)))
-	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(internalapi.HandleSetTraceSampler)))
+	adminHandlers := internalapi.NewAdminHandlers(operatorGuard)
+	mux.Handle("GET /admin/log-level", authMW(http.HandlerFunc(adminHandlers.GetLogLevel)))
+	mux.Handle("POST /admin/log-level", authMW(http.HandlerFunc(adminHandlers.SetLogLevel)))
+	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.GetTraceSampler)))
+	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.SetTraceSampler)))
 
 	// Entity transition routes (with auth, outside generated API mux).
 	// TxJoin is nested inside authMW so UserContext is available for tenant checks.

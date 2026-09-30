@@ -21,6 +21,10 @@ func operatorEndpoints() []struct{ name, method, path, body string } {
 		{"reactivate", http.MethodPost, "/oauth/keys/keypair/" + kid + "/reactivate", `{"validTo":"` + validTo + `"}`},
 		{"delete", http.MethodDelete, "/oauth/keys/keypair/" + kid, ""},
 		{"reload", http.MethodPost, "/oauth/oidc/providers/reload", ""},
+		{"get log-level", http.MethodGet, "/admin/log-level", ""},
+		{"set log-level", http.MethodPost, "/admin/log-level", `{"level":"info"}`},
+		{"get trace-sampler", http.MethodGet, "/admin/trace-sampler", ""},
+		{"set trace-sampler", http.MethodPost, "/admin/trace-sampler", `{"sampler":"always"}`},
 	}
 }
 
@@ -78,4 +82,18 @@ func TestPlatformOperator_AdminM2MClientInPlatform(t *testing.T) {
 		t.Fatalf("no keyId: %s", body)
 	}
 	t.Cleanup(func() { operatorRequest(t, http.MethodDelete, "/oauth/keys/keypair/"+kp.KeyID, nil).Body.Close() })
+}
+
+// TestPlatformOperator_TraceSamplerRoundTrip: the operator reads the sampler
+// and writes the same configuration back.
+func TestPlatformOperator_TraceSamplerRoundTrip(t *testing.T) {
+	resp := operatorRequest(t, http.MethodGet, "/admin/trace-sampler", nil)
+	cfg := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET trace-sampler as operator: %d %s", resp.StatusCode, cfg)
+	}
+	resp = operatorRequest(t, http.MethodPost, "/admin/trace-sampler", []byte(cfg))
+	if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST trace-sampler as operator: %d %s", resp.StatusCode, body)
+	}
 }

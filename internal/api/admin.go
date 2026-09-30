@@ -5,17 +5,28 @@ import (
 	"log/slog"
 	"net/http"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
-// HandleGetLogLevel returns the current log level as JSON.
-func HandleGetLogLevel(w http.ResponseWriter, r *http.Request) {
-	uc := spi.GetUserContext(r.Context())
-	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
-		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
+// AdminHandlers serves the node's runtime controls: log level and trace
+// sampler. They change process-wide state, so only a platform operator may
+// call them.
+type AdminHandlers struct {
+	operator auth.OperatorGuard
+}
+
+// NewAdminHandlers returns the runtime-control handlers behind operator.
+func NewAdminHandlers(operator auth.OperatorGuard) *AdminHandlers {
+	return &AdminHandlers{operator: operator}
+}
+
+// GetLogLevel returns the current log level as JSON.
+// Requires a platform operator.
+func (a *AdminHandlers) GetLogLevel(w http.ResponseWriter, r *http.Request) {
+	if !a.operator.Require(w, r) {
 		return
 	}
 
@@ -27,12 +38,10 @@ func HandleGetLogLevel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleGetTraceSampler returns the current OTel trace sampler configuration.
-// Requires ROLE_ADMIN. The response is round-trippable via POST.
-func HandleGetTraceSampler(w http.ResponseWriter, r *http.Request) {
-	uc := spi.GetUserContext(r.Context())
-	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
-		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
+// GetTraceSampler returns the current OTel trace sampler configuration.
+// Requires a platform operator. The response is round-trippable via POST.
+func (a *AdminHandlers) GetTraceSampler(w http.ResponseWriter, r *http.Request) {
+	if !a.operator.Require(w, r) {
 		return
 	}
 
@@ -44,17 +53,15 @@ func HandleGetTraceSampler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleSetTraceSampler changes the runtime OTel trace sampler configuration.
-// Requires ROLE_ADMIN. Returns the new configuration on success.
+// SetTraceSampler changes the runtime OTel trace sampler configuration.
+// Requires a platform operator. Returns the new configuration on success.
 //
 // Note: when parent_based is true (the default), upstream traceparent
 // sampling decisions are honored — "sampler: always" does NOT force 100%
 // capture of all spans if upstream has already decided "do not sample".
 // Set parent_based: false to override upstream decisions locally.
-func HandleSetTraceSampler(w http.ResponseWriter, r *http.Request) {
-	uc := spi.GetUserContext(r.Context())
-	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
-		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
+func (a *AdminHandlers) SetTraceSampler(w http.ResponseWriter, r *http.Request) {
+	if !a.operator.Require(w, r) {
 		return
 	}
 
@@ -115,11 +122,10 @@ func HandleSetTraceSampler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// HandleSetLogLevel changes the runtime log level and returns the previous and current levels.
-func HandleSetLogLevel(w http.ResponseWriter, r *http.Request) {
-	uc := spi.GetUserContext(r.Context())
-	if uc == nil || !spi.HasRole(uc.Roles, "ROLE_ADMIN") {
-		common.WriteError(w, r, common.Operational(http.StatusForbidden, common.ErrCodeForbidden, "admin role required"))
+// SetLogLevel changes the runtime log level and returns the previous and
+// current levels. Requires a platform operator.
+func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
+	if !a.operator.Require(w, r) {
 		return
 	}
 
