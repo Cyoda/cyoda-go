@@ -133,7 +133,7 @@ cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, K
 | `DELETE` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
 | `POST` | `/oauth/oidc/providers/reload` | platform operator |
 
-The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from every active provider in every tenant — useful after a key rotation at an IdP. It needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. A tenant refreshes only its own provider's keys with a `PATCH .../{id}` whose body is `{}`.
+The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from every active provider in every tenant — useful after a key rotation at an IdP. It needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. A tenant refreshes only its own provider's keys with a `PATCH .../{id}` whose body is `{}`, and only while the provider is active.
 
 **Register a provider:**
 

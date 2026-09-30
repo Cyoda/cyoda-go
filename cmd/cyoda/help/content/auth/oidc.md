@@ -73,7 +73,7 @@ Response (`200 OK`) carries the full provider DTO:
 }
 ```
 
-Registration succeeds even when the IdP's discovery / JWKS endpoints are unreachable — cyoda warms them asynchronously after the response and retries failed warm-ups every 30 seconds until the IdP becomes reachable. Tokens issued by an un-warmed provider fail with `401 UNAUTHORIZED` until a warm-up succeeds, or until the tenant force-warms it with a `PATCH /oauth/oidc/providers/{id}` whose body is `{}`. See **DIAGNOSTICS** below for the operator path.
+Registration succeeds even when the IdP's discovery / JWKS endpoints are unreachable — cyoda warms them asynchronously after the response and retries failed warm-ups every 30 seconds until the IdP becomes reachable. Tokens issued by an un-warmed provider fail with `401 UNAUTHORIZED` until a warm-up succeeds, or until the tenant force-warms it with a `PATCH /oauth/oidc/providers/{id}` whose body is `{}`. An invalidated provider rejects that PATCH with `OIDC_PROVIDER_INACTIVE` — reactivate it first. See **DIAGNOSTICS** below for the operator path.
 
 Behaviour on `expectedAudiences`:
 
@@ -130,7 +130,9 @@ curl -X DELETE https://cyoda.example.com/api/oauth/oidc/providers/${PROVIDER_ID}
 Needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. An admin of
 any other tenant gets `403 FORBIDDEN`; refresh a single tenant's own provider
 with a `PATCH .../${PROVIDER_ID}` whose body is `{}` instead — an empty PATCH
-changes nothing but still reloads that provider's keys.
+changes nothing but still reloads that provider's keys. That only works on an
+active provider: an invalidated one rejects the PATCH with
+`OIDC_PROVIDER_INACTIVE`.
 
 ```bash
 curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/reload \
@@ -189,7 +191,7 @@ The diagnostic path for every failure mode is **server-side logs**, not the HTTP
 
 Symptom → cause map for the common cases:
 
-- **"I get 401 but my token looks valid":** check `oidc.registry` resolve logs. The most common cause is the provider's JWKS hasn't warmed yet (registration succeeds before discovery completes); force-warm it with a `PATCH /oauth/oidc/providers/{id}` whose body is `{}` (a tenant refreshes only its own provider's keys this way — `POST /oauth/oidc/providers/reload`, which rebuilds every tenant's providers, needs a platform operator), or wait for the automatic warm-up retry (every 30 seconds).
+- **"I get 401 but my token looks valid":** check `oidc.registry` resolve logs. The most common cause is the provider's JWKS hasn't warmed yet (registration succeeds before discovery completes); force-warm it with a `PATCH /oauth/oidc/providers/{id}` whose body is `{}` (a tenant refreshes only its own provider's keys this way, and only while it is active — an invalidated provider rejects the PATCH with `OIDC_PROVIDER_INACTIVE`; `POST /oauth/oidc/providers/reload`, which rebuilds every tenant's providers, needs a platform operator), or wait for the automatic warm-up retry (every 30 seconds).
 - **"After re-registering, valid tokens are rejected":** the second-most-common case — two tenants registered the same IdP with overlapping or empty `expectedAudiences`. Internally `ErrAmbiguousProvider` (`internal/auth/oidc/registry.go`) wraps to `ErrUnknownKID`. To resolve, pick disjoint `expectedAudiences` per tenant.
 - **"Tokens reject for the right tenant but the IdP is up":** verify the JWT `iss` claim matches either an explicit `issuers` entry or the discovery document's `issuer` byte-for-byte. Trailing slashes count.
 
