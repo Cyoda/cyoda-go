@@ -97,9 +97,10 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/reactiva
 "At once" means on the node that takes the call. Other nodes apply an
 invalidation, a reactivation or a delete when the change reaches them (see
 *Auth cache reconciliation* in `cyoda help config auth`). The node that
-takes the call stamps the new `validTo` from its own clock, and each node
-checks it against its own, so the clock offset between nodes adds to the
-delay.
+takes the call stamps an invalidation's new `validTo` from its own clock. A
+reactivation's `validTo` comes from the request, but its default
+`validFrom` is that node's clock. Each node checks both against its own
+clock, so the clock offset between nodes adds to the delay.
 
 ### Delete
 

@@ -72,22 +72,26 @@ The token and a newline on stdout, nothing else, so `TOKEN=$(cyoda token …)` c
 ```
 # Local
 TOKEN=$(cyoda token --tenant acme)
-curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
+curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $TOKEN"
 
 # Platform operator (key-pair, OIDC reload, /admin/* endpoints)
 TOKEN=$(cyoda token --tenant PLATFORM)
-curl -H "Authorization: Bearer $TOKEN" 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client'
+curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client' \
+  <<<"Authorization: Bearer $TOKEN"
 
 # Create the recommended PLATFORM admin M2M client
 # (server started with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true)
 TOKEN=$(cyoda token --tenant PLATFORM)
 # A private directory: no other user can plant a symlink at the file name.
-cd "$(mktemp -d)"
+cd "$(mktemp -d)" || exit
 # rm -f first: curl keeps the mode of a file that already exists.
 # --fail: an error answer is not saved as if it were the credential.
 rm -f platform-client.json
-(umask 077; curl --fail -H "Authorization: Bearer $TOKEN" -X POST \
-  'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json)
+(umask 077; curl --fail -H @- -X POST \
+  'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json \
+  <<<"Authorization: Bearer $TOKEN")
 # Move client_id and client_secret into a secret store kept like
 # CYODA_JWT_SIGNING_KEY (the secret is shown only once), then delete the file.
 # Consider setting CYODA_IAM_M2M_ADMIN_ROLE_ENABLED back to false: it applies

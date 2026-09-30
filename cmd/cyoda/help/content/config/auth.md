@@ -309,7 +309,9 @@ default `validFrom`; see above).
 Revoking a key pair ends no open connection. A compute-node gRPC stream is
 authenticated only when it opens, so a stream opened with the leaked token
 (it needs `ROLE_M2M`) keeps running: restart every node to end open
-streams. On the memory backend a restart loses all data.
+streams. On the memory backend a restart loses all data, an invalidation
+of the bootstrap key included: if you revoked the bootstrap key, give every
+node a new `CYODA_JWT_SIGNING_KEY` at that restart.
 
 A grace period already running is cut short by invalidating the key pair again
 with 0, or by `DELETE`; a deleted key pair never verifies.
@@ -373,16 +375,33 @@ Verification does not check that a client still exists, so deleting the
 client or resetting its secret does not end a token they hold. Contain
 first, then clean up, verify and restore.
 
-**1. Contain.** Block client traffic to the HTTP and gRPC APIs at the load
-balancer or network edge, leaving the traffic between nodes open, so that
-only you can reach the nodes (for example from inside the cluster). This
-stops service for every tenant. Keep the block until step 6. Once it is
-in place, restart every node: a block often leaves established
-connections running, and a gRPC stream is authenticated only when it
-opens, so it outlives any change to keys or clients. The restart ends
-every connection and stream, and
-resets each node's log level and trace sampler to their configuration. On
-the memory backend a restart loses all data.
+On the memory backend a restart loses all data, an invalidation of the
+bootstrap key included, and the key then verifies again every unexpired
+token it signed. There, give every node a new `CYODA_JWT_SIGNING_KEY` at
+every restart in this procedure (see *Alternative to step 4*), and create
+the clients and trusted keys you need after the last restart.
+
+**1. Contain.** Stop client requests to the HTTP and gRPC APIs, on
+connections already open too, and leave the traffic between nodes open, so
+that only you reach the APIs. This stops service for every tenant. Keep the
+block until step 6.
+
+- Remove the Ingress or Gateway route of both APIs, or stop the proxy in
+  front of the nodes. A firewall rule in front of the proxy is not enough:
+  it usually lets established connections continue, and requests on them
+  still reach the nodes.
+- Block every other source inside your network too, tenant compute nodes
+  included. The Helm chart's NetworkPolicy (on by default) admits any
+  source to ports 8080 and 9090, and another policy cannot narrow it,
+  because policies add up. Edit it so that those ports admit only the
+  cyoda-go pods and the pod you work from; a `helm upgrade` restores it.
+  With the chart's policy off, apply one with the same effect. Either
+  needs a network plugin that enforces NetworkPolicy.
+- Once the block is in place, restart every node (on the memory backend,
+  see above). A block can leave connections to the nodes running, and a
+  gRPC stream is authenticated only when it opens, so it outlives any
+  change to keys or clients. The restart ends every connection and
+  stream.
 
 **2. Get in** with a platform-operator token: `cyoda token --tenant
 PLATFORM` while the bootstrap key verifies, an unexpired operator token
@@ -392,9 +411,6 @@ signing key below.
 
 **3. Clean `PLATFORM`.**
 
-- On every node where `GET /admin/log-level` is above `info`, set it to
-  `info` (`POST /admin/log-level`): at a higher level, the lines step 5
-  reads are not written.
 - Delete every M2M client you do not need (`DELETE /clients/{clientId}`).
 - Reset the secret of every client you keep
   (`PUT /clients/{clientId}/secret`), the leaked one too if you keep it.
@@ -412,10 +428,10 @@ signing key below.
   then answer `404 FEATURE_DISABLED`. Registration replaces the key
   material, issuers and window of an existing key id, so a key id you
   recognise proves nothing. If registration is on for any node, or was on
-  at any time since the secret could have leaked, turn it on for the node
-  you call (it is read at startup), list the keys
-  (`GET /oauth/keys/trusted`), delete every one, and register again the
-  keys you need from your own copies.
+  at any time since the secret could have leaked (if you cannot tell,
+  treat it as on), turn it on for the node you call (it is read at
+  startup), list the keys (`GET /oauth/keys/trusted`), delete every one,
+  and register again the keys you need from your own copies.
 
 **4. End every outstanding token.**
 
@@ -427,29 +443,34 @@ signing key below.
   instead: that can leave no signer when no other `client` key pair is
   active and inside its window (see *No signer* below).
 - Once every node has applied the rotation (see *Shared and persisted*
-  above), get a token from `/oauth/token` with your admin client.
-  `GET /oauth/keys/keypair/current?audience=client` must name the new
-  pair. If it names the bootstrap key (a reactivation stamped by a node
-  whose clock runs ahead can give it a later `validFrom`), invalidate
-  the bootstrap key with `gracePeriodSec: 0`, get a new token with your
-  admin client, and check again.
-- Invalidate with `gracePeriodSec: 0` every key id that
-  `/.well-known/jwks.json` lists, except the new pair. This includes the
-  bootstrap key if its audience is `client`, which ends `cyoda token` (to
-  bring it back later, see *Emergency revocation of a leaked token*
-  above). You may keep `human` key pairs you issued yourself, and the
-  bootstrap key if its audience is `human`, since nothing signs a
-  `/oauth/token` token with a `human` key; JWKS does not show a key's
-  audience, so keep only key ids you know.
+  above), invalidate with `gracePeriodSec: 0` every key id that
+  `/.well-known/jwks.json` lists, except the new pair and the `human` key
+  pairs you issued yourself. JWKS does not show a key's audience, so keep
+  only key ids you know.
+- This always includes the bootstrap key, whatever its audience:
+  verification does not check a key's audience, and the bootstrap
+  audience is each node's configuration, read at startup and not stored,
+  so a token it signed while its audience was `client` still verifies.
+  `cyoda token` then stops working (to bring it back later, see
+  *Emergency revocation of a leaked token* above). The way in is your
+  admin client's new secret, or a new signing key (see *Alternative to
+  step 4*). With `CYODA_JWT_BOOTSTRAP_AUDIENCE=human`, `/oauth/token`
+  signs with the `client` pair the rotation created.
+- A `401` means your own token was signed by a key you invalidated: get
+  a new one from `/oauth/token` with your admin client.
 - Every tenant's M2M and token-exchange tokens stop verifying, and
   clients fetch new ones.
 
-**5. Verify on every node,** once every change has applied everywhere (see
-*Shared and persisted* above), plus the clock offset between nodes (see
-the grace-period paragraph under *JWT signing keypair rotation*):
+**5. Restart and verify.** Wait until every change has applied on every
+node (see *Shared and persisted* above), plus the clock offset between
+nodes (see the grace-period paragraph under *JWT signing keypair
+rotation*). Then read `GET /admin/log-level` on every node, and restart
+every node (on the memory backend, see above). The restart ends any stream
+opened before the tokens were ended, and resets each node's log level and
+trace sampler to their configuration. Then check on every node:
 
-- JWKS lists only the new pair, the `human` key pairs you kept, and the
-  bootstrap key if its audience is `human`.
+- JWKS lists only the new pair and the `human` key pairs you issued
+  yourself.
 - `/current?audience=client` names the new pair.
 - `GET /clients` shows only the clients you kept or created, each with a
   `lastUpdateDate` from your own change.
@@ -457,7 +478,8 @@ the grace-period paragraph under *JWT signing keypair rotation*):
   registered again. It reads the copy of the node you call, only a node
   where registration is on can list, and other nodes' copies follow like
   key pairs do.
-- `GET /admin/log-level` is `info` or `debug`.
+- `GET /admin/log-level` is the node's configured level
+  (`CYODA_LOG_LEVEL`).
 
 If anything is off, go back to step 3. A node that cannot read its
 database is the exception: it lists the old keys in JWKS until its copy
@@ -468,18 +490,29 @@ Then read the logs of every node since the secret could have leaked. The
 INFO lines `M2M client created`, `M2M client deleted` and `M2M client
 secret rotated` with `tenantId=PLATFORM`, `member joined` with
 `tenantId=PLATFORM` (a compute-node stream), `log level changed` and
-`trace sampler changed` show what was done. None of them names who acted:
-tell your own actions from others by the timestamp and your own record.
-Setting a level above `info` writes no line, and no INFO line is written
-while it stays there; a `log level changed` line whose `previous` is
-`warn` or `error` ends such a period. The key-pair and trusted-key
-endpoints log no INFO line; the checks above show their result. A line
-written after step 1 that you did not cause means someone still reaches
-the API: fix the block (a connection it did not end, or a path around
-it), restart every node, and start again from step 2.
+`trace sampler changed` show what was done. So does the WARN `the signing
+key from CYODA_JWT_SIGNING_KEY is invalidated or deleted`, which the node
+that takes the call writes when the bootstrap key is invalidated or
+deleted: step 4 writes one, and another is the only trace left by someone
+who deleted that key. A node that starts with the bootstrap key ended
+writes the same line at INFO. None of these lines names who acted: tell
+your own actions from others by the timestamp and your own record. The
+other key-pair and trusted-key calls log nothing; the checks above show
+their result. No INFO line is written while a node's level is above
+`info`, configured or set. Setting such a level writes no line; a `log
+level changed` line whose `previous` is `warn` or `error` ends such a
+period.
+
+Someone still reaches the API if a node's level differed from its
+configuration before the restart in step 5, or if a line was written
+after step 1 that you did not cause, such as a `log level changed` line
+that ends a period at `warn` or `error`. Then fix the block (a connection
+it did not end, or a path around it), restart every node (on the memory
+backend, see above), and start again from step 2.
 
 **6. Restore.** Give the new secrets to their owners, turn off again what
-you turned on in step 3, and lift the block.
+you turned on in step 3 (it is read at startup, so this is a restart; on
+the memory backend, see above), and lift the block.
 
 **Alternative to step 4.** During the block, set a new
 `CYODA_JWT_SIGNING_KEY` on every node and restart every node (this can be
