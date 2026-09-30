@@ -677,6 +677,12 @@ func TestKVReplica_IgnoresCallerTransaction(t *testing.T) {
 	if err := r.Reconcile(txCtx); err != nil {
 		t.Fatal(err)
 	}
+	// value: nil takes put's Delete branch — writeAll above never exercised
+	// it, so removing noTx from that branch alone would not have failed
+	// this test.
+	if err := r.writeAll(txCtx, []kvWrite{{key: "k1", value: nil, prev: []byte("v1")}}); err != nil {
+		t.Fatal(err)
+	}
 
 	if seen := probe.calls(); len(seen) != 0 {
 		t.Fatalf("KV calls made under the caller's transaction: %v", seen)
