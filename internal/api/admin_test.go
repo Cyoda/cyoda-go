@@ -541,6 +541,9 @@ func TestHandleSetTraceSampler_InvalidSamplerType(t *testing.T) {
 	if ct != "application/problem+json" {
 		t.Errorf("expected Content-Type application/problem+json, got %q", ct)
 	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Errorf("config changed after invalid sampler was refused: got %+v, want %+v", got, prev)
+	}
 }
 
 // TestHandleSetTraceSampler_UnknownType_400 asserts the 400 does not echo
@@ -571,6 +574,9 @@ func TestHandleSetTraceSampler_UnknownType_400(t *testing.T) {
 			t.Fatalf("detail %q does not list accepted value %q", detail, sampler)
 		}
 	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Errorf("config changed after invalid sampler was refused: got %+v, want %+v", got, prev)
+	}
 }
 
 func TestHandleSetTraceSampler_RatioOnNonRatio(t *testing.T) {
@@ -586,6 +592,9 @@ func TestHandleSetTraceSampler_RatioOnNonRatio(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Errorf("config changed after invalid sampler was refused: got %+v, want %+v", got, prev)
 	}
 }
 
@@ -603,6 +612,9 @@ func TestHandleSetTraceSampler_RatioOutOfRange(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)
 	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Errorf("config changed after invalid sampler was refused: got %+v, want %+v", got, prev)
+	}
 }
 
 func TestHandleSetTraceSampler_RatioZero(t *testing.T) {
@@ -618,6 +630,9 @@ func TestHandleSetTraceSampler_RatioZero(t *testing.T) {
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 (ratio=0 should be rejected; use sampler=never for zero sampling), got %d", rec.Code)
+	}
+	if got := observability.Sampler.Config(); got != prev {
+		t.Errorf("config changed after invalid sampler was refused: got %+v, want %+v", got, prev)
 	}
 }
 
