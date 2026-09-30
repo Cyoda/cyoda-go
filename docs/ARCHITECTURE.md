@@ -23,6 +23,7 @@ For product-level context, see the [PRD](PRD.md).
    - 7.3 [OIDC Provider Registry](#73-oidc-provider-registry)
    - 7.4 [Authorization](#74-authorization)
    - 7.5 [Admin listener authentication](#75-admin-listener-authentication)
+   - 7.6 [Platform operator](#76-platform-operator)
 8. [Error Model](#8-error-model)
 9. [Configuration Reference](#9-configuration-reference)
 10. [Deployment Architecture](#10-deployment-architecture)
