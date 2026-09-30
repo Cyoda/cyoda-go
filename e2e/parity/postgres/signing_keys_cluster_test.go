@@ -23,9 +23,9 @@ const reconcileInterval = time.Second
 // change message arrives, which the grace-period case relies on.
 //
 // The admin M2M client is created by the platform operator, so it lives in
-// PLATFORM: its tokens are signed with the rotatable "client"-audience key,
-// not the bootstrap key, so it is the route an operator keeps once the
-// bootstrap key is deleted.
+// PLATFORM: its tokens are signed by whichever "client"-audience key wins
+// signer selection (the bootstrap key is itself one), so the client keeps
+// working once the bootstrap key is deleted.
 func TestSigningKeys_OwnCluster(t *testing.T) {
 	fix, cleanup := MustSetupMultiNodeWithEnv(t, 2, []string{
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL=" + reconcileInterval.String(),
