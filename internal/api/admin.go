@@ -102,15 +102,6 @@ func (a *AdminHandlers) SetTraceSampler(w http.ResponseWriter, r *http.Request) 
 		cfg.Ratio = *req.Ratio
 	}
 
-	// BuildSampler validates the config (ratio range, ratio-vs-type, etc.)
-	// and returns an error for any invalid combination. SetSampler runs
-	// BuildSampler again internally; the double-check is cheap and keeps
-	// the handler logic symmetric with the Init path.
-	if _, err := observability.BuildSampler(cfg); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
-		return
-	}
-
 	previous := observability.Sampler.Config()
 	if err := observability.Sampler.SetSampler(cfg); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
