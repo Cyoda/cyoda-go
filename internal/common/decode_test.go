@@ -1,4 +1,4 @@
-package account_test
+package common_test
 
 import (
 	"bytes"
@@ -6,17 +6,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-func TestBoundedJSONDecode_Happy(t *testing.T) {
+func TestDecodeBoundedJSON_Happy(t *testing.T) {
 	type dst struct {
 		X int `json:"x"`
 	}
 	r := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"x":7}`)))
 	w := httptest.NewRecorder()
 	var d dst
-	if err := account.BoundedJSONDecodeForTesting(w, r, 1<<10, &d); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<10, &d); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
 	if d.X != 7 {
@@ -24,7 +24,7 @@ func TestBoundedJSONDecode_Happy(t *testing.T) {
 	}
 }
 
-func TestBoundedJSONDecode_OverSize(t *testing.T) {
+func TestDecodeBoundedJSON_OverSize(t *testing.T) {
 	type dst struct {
 		X string `json:"x"`
 	}
@@ -32,17 +32,17 @@ func TestBoundedJSONDecode_OverSize(t *testing.T) {
 	r := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"x":"`+big+`"}`)))
 	w := httptest.NewRecorder()
 	var d dst
-	if err := account.BoundedJSONDecodeForTesting(w, r, 1<<20, &d); err == nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &d); err == nil {
 		t.Fatal("expected error")
 	}
 }
 
-func TestBoundedJSONDecode_BadJSON(t *testing.T) {
+func TestDecodeBoundedJSON_BadJSON(t *testing.T) {
 	type dst struct{}
 	r := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`not-json`)))
 	w := httptest.NewRecorder()
 	var d dst
-	if err := account.BoundedJSONDecodeForTesting(w, r, 1<<10, &d); err == nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<10, &d); err == nil {
 		t.Fatal("expected error")
 	}
 }

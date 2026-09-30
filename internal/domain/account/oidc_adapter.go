@@ -128,7 +128,7 @@ func (a *oidcAdapter) RegisterOidcProvider(w http.ResponseWriter, r *http.Reques
 	// logic to optional fields even on registration. Issuers is optional on
 	// register (may be absent, null, or a non-empty array).
 	var raw map[string]json.RawMessage
-	if err := boundedJSONDecode(w, r, 1<<20, &raw); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &raw); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -268,7 +268,7 @@ func (a *oidcAdapter) UpdateOidcProvider(w http.ResponseWriter, r *http.Request,
 	}
 
 	var raw map[string]json.RawMessage
-	if err := boundedJSONDecode(w, r, 1<<20, &raw); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &raw); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -376,7 +376,7 @@ func (a *oidcAdapter) ReactivateOidcProvider(w http.ResponseWriter, r *http.Requ
 
 	var req genapi.ReactivateOidcProviderRequestDto
 	if r.ContentLength != 0 {
-		if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+		if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 			return
 		}

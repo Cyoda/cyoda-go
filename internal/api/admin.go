@@ -17,16 +17,6 @@ import (
 // bound internal/domain/account uses for its POST bodies.
 const maxAdminBodyBytes = 1 << 20
 
-// boundedJSONDecode wraps http.MaxBytesReader + json.Decoder.Decode so
-// neither admin POST handler accepts an unbounded body.
-func boundedJSONDecode(w http.ResponseWriter, r *http.Request, dst any) error {
-	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
-		return fmt.Errorf("decode body: %w", err)
-	}
-	return nil
-}
-
 // acceptedLogLevels is the LookupLevel-recognised set, in the order the
 // 400 response names them. "warning" is an alias of "warn".
 var acceptedLogLevels = []string{"debug", "info", "warn", "warning", "error"}
@@ -91,7 +81,7 @@ func (a *AdminHandlers) SetTraceSampler(w http.ResponseWriter, r *http.Request) 
 		Ratio       *float64 `json:"ratio,omitempty"`
 		ParentBased *bool    `json:"parent_based,omitempty"`
 	}
-	if err := boundedJSONDecode(w, r, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, maxAdminBodyBytes, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -152,7 +142,7 @@ func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Level string `json:"level"`
 	}
-	if err := boundedJSONDecode(w, r, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, maxAdminBodyBytes, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}

@@ -63,7 +63,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req genapi.RegisterTrustedKeyRequestDto
-	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -241,7 +241,7 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	var grace int64
 	if r.ContentLength != 0 {
 		var req genapi.InvalidateKeyRequestDto
-		if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+		if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 			return
 		}
@@ -281,7 +281,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	var req genapi.ReactivateKeyRequestDto
-	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
