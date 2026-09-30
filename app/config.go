@@ -1003,6 +1003,12 @@ func ValidateIAM(iam IAMConfig) error {
 	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
+	// Only these two modes exist. app.New wires JWT auth for "jwt" and mock
+	// auth for anything else, so an unrecognised value (a typo, a different
+	// case) would otherwise run every request as the mock admin.
+	if iam.Mode != "mock" && iam.Mode != "jwt" {
+		return fmt.Errorf("CYODA_IAM_MODE=%q is not supported (expected \"mock\" or \"jwt\")", iam.Mode)
+	}
 	// Unconditional: a bad explicit interval is a config error in any mode.
 	if iam.AuthCacheReconcileInterval < time.Second {
 		return fmt.Errorf("CYODA_AUTH_CACHE_RECONCILE_INTERVAL must be >= 1s, got %s", iam.AuthCacheReconcileInterval)

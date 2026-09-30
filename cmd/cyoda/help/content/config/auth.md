@@ -23,7 +23,8 @@ startup unless JWT mode is properly configured.
 
 ### IAM mode
 
-- `CYODA_IAM_MODE` — authentication mode: `mock` or `jwt` (default: `mock`)
+- `CYODA_IAM_MODE` — authentication mode: `mock` or `jwt` (default: `mock`). Any
+  other value, including a different case, fails startup.
 - `CYODA_REQUIRE_JWT` — production safety floor. When `true`, the binary refuses to
   start unless `CYODA_IAM_MODE=jwt` *and* `CYODA_JWT_SIGNING_KEY` are both set.
   Prevents accidentally deploying with mock auth enabled. The canonical Helm chart
