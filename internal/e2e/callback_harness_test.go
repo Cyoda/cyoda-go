@@ -25,6 +25,7 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -363,6 +364,18 @@ func (h *callbackHarness) fetchToken(t *testing.T) string {
 	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
+	}
+	return tok
+}
+
+// platformToken signs a platform-operator token (ROLE_ADMIN, ROLE_M2M in the
+// PLATFORM tenant) for this stack with h.signKey.
+func (h *callbackHarness) platformToken(t *testing.T) string {
+	t.Helper()
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "platform-operator",
+		string(auth.PlatformTenantID), "platform-operator", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("sign platform token: %v", err)
 	}
 	return tok
 }

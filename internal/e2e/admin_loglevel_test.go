@@ -13,7 +13,7 @@ import (
 
 func getLogLevelE2E(t *testing.T) string {
 	t.Helper()
-	resp := doAuth(t, http.MethodGet, "/api/admin/log-level", "")
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodGet, "/api/admin/log-level", "")
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET log-level: status=%d body=%s", resp.StatusCode, body)
@@ -43,11 +43,11 @@ func TestAdminLogLevel_SetRoundTrip(t *testing.T) {
 	// Restore the level so this test cannot leak verbosity into the rest of
 	// the suite (the level is process-global).
 	defer func() {
-		resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"`+original+`"}`)
+		resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"`+original+`"}`)
 		readBody(t, resp)
 	}()
 
-	resp := doAuth(t, http.MethodPost, "/api/admin/log-level", `{"level":"`+target+`"}`)
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"`+target+`"}`)
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("POST log-level: status=%d body=%s", resp.StatusCode, body)
@@ -85,7 +85,7 @@ func TestAdminLogLevel_BadRequests(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			resp := doAuth(t, http.MethodPost, "/api/admin/log-level", tc.body)
+			resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", tc.body)
 			body := readBody(t, resp)
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status=%d, want 400; body: %s", resp.StatusCode, body)

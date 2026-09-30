@@ -156,6 +156,24 @@ func suiteToken(t *testing.T) string {
 	return tok
 }
 
+// platformTokenRaw signs a token for the shared server in the PLATFORM tenant
+// with roles. With ROLE_ADMIN it is a platform operator, the only principal
+// the platform-wide admin endpoints accept. It never touches *testing.T.
+func platformTokenRaw(roles ...string) (string, error) {
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "platform-operator",
+		string(auth.PlatformTenantID), "platform-operator", roles)
+}
+
+// platformToken is a platform-operator token for the shared server.
+func platformToken(t *testing.T) string {
+	t.Helper()
+	tok, err := platformTokenRaw("ROLE_ADMIN", "ROLE_M2M")
+	if err != nil {
+		t.Fatalf("sign platform token: %v", err)
+	}
+	return tok
+}
+
 // deleteClientAtCleanup registers a t.Cleanup that deletes the M2M client id
 // through DELETE {baseURL}/api/clients/{id}, authenticated with the token
 // bearer returns when the cleanup runs. The request runs on a context of its

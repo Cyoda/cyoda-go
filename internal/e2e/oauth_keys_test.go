@@ -17,11 +17,9 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// adminRequest issues an authenticated request using the suite's admin token.
-// The path must start with "/" and is appended to serverURL+"/api".
-func adminRequest(t *testing.T, method, path string, body []byte) *http.Response {
+// requestAs issues a request to serverURL+"/api"+path with token as bearer.
+func requestAs(t *testing.T, token, method, path string, body []byte) *http.Response {
 	t.Helper()
-	token := suiteToken(t)
 	var br io.Reader
 	if body != nil {
 		br = bytes.NewReader(body)
@@ -39,6 +37,19 @@ func adminRequest(t *testing.T, method, path string, body []byte) *http.Response
 		t.Fatalf("do %s %s: %v", method, path, err)
 	}
 	return resp
+}
+
+// adminRequest issues a request as the suite's tenant admin.
+func adminRequest(t *testing.T, method, path string, body []byte) *http.Response {
+	t.Helper()
+	return requestAs(t, suiteToken(t), method, path, body)
+}
+
+// operatorRequest issues a request as a platform operator: the platform-wide
+// admin endpoints (key pairs, OIDC reload, /admin/*) accept only this.
+func operatorRequest(t *testing.T, method, path string, body []byte) *http.Response {
+	t.Helper()
+	return requestAs(t, platformToken(t), method, path, body)
 }
 
 // rsaJWK builds a minimal public-key JWK from a freshly generated RSA key.
@@ -81,7 +92,7 @@ func deleteTrustedKeyOnCleanup(t *testing.T, kid string) {
 
 func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
 	body := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair", body)
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -105,13 +116,13 @@ func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
 func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair first so there is an active one.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human"})
-	issueResp := adminRequest(t, "POST", "/oauth/keys/keypair", issueBody)
+	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	issueResp.Body.Close()
 	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue prerequisite keypair: got %d", issueResp.StatusCode)
 	}
 
-	resp := adminRequest(t, "GET", "/oauth/keys/keypair/current?audience=human", nil)
+	resp := operatorRequest(t, "GET", "/oauth/keys/keypair/current?audience=human", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -131,7 +142,7 @@ func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 // signed by a key already in its window, and they authenticate.
 func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair",
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair",
 		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client", "validFrom": from}))
 	var issued genapi.JwtKeyPairResponseDto
 	raw, _ := io.ReadAll(resp.Body)
@@ -144,7 +155,7 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 	}
 	// Every other test signs with the "client" audience; remove the key.
 	t.Cleanup(func() {
-		del := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+		del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
 		del.Body.Close()
 	})
 
@@ -176,7 +187,7 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 // audience with no signing key until the new window opens, so it is refused.
 func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing.T) {
 	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
 		"algorithm": "RS256", "audience": "client", "validFrom": from, "invalidateCurrent": true,
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
@@ -193,7 +204,7 @@ func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing
 // TestE2E_IssueJwtKeyPair_ValidToInPast_400: a key pair whose window has
 // already ended could never sign, so issuing one is refused.
 func TestE2E_IssueJwtKeyPair_ValidToInPast_400(t *testing.T) {
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
 		"algorithm": "RS256", "audience": "client",
 		"validFrom": "2020-01-01T00:00:00Z", "validTo": "2020-01-02T00:00:00Z",
 	}))
@@ -204,7 +215,7 @@ func TestE2E_IssueJwtKeyPair_ValidToInPast_400(t *testing.T) {
 // signs now with a future validFrom would leave the audience with no signing
 // key, so it is refused, and tokens keep working.
 func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
-	cur := adminRequest(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
+	cur := operatorRequest(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
 	var current genapi.JwtKeyPairResponseDto
 	raw, _ := io.ReadAll(cur.Body)
 	cur.Body.Close()
@@ -213,7 +224,7 @@ func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
 	}
 
 	from := time.Now().Add(time.Hour).UTC()
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+current.KeyId+"/reactivate", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+current.KeyId+"/reactivate", mustJSON(t, map[string]any{
 		"validFrom": from.Format(time.RFC3339), "validTo": from.Add(24 * time.Hour).Format(time.RFC3339),
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
@@ -229,7 +240,7 @@ func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
 func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to delete.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
-	issueResp := adminRequest(t, "POST", "/oauth/keys/keypair", issueBody)
+	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
@@ -237,7 +248,7 @@ func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
-	resp := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+	resp := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -248,7 +259,7 @@ func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to invalidate.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
-	issueResp := adminRequest(t, "POST", "/oauth/keys/keypair", issueBody)
+	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
@@ -256,7 +267,7 @@ func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/invalidate", nil)
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/invalidate", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -267,7 +278,7 @@ func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	// Issue then invalidate then reactivate.
 	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
-	issueResp := adminRequest(t, "POST", "/oauth/keys/keypair", issueBody)
+	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
 	issueResp.Body.Close()
@@ -275,7 +286,7 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 		t.Fatalf("issue: got %d", issueResp.StatusCode)
 	}
 
-	invResp := adminRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/invalidate", nil)
+	invResp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/invalidate", nil)
 	invResp.Body.Close()
 	if invResp.StatusCode != http.StatusOK {
 		t.Fatalf("invalidate: got %d", invResp.StatusCode)
@@ -284,7 +295,7 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	reactivateBody := mustJSON(t, map[string]any{
 		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 	})
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/reactivate", reactivateBody)
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/reactivate", reactivateBody)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -470,7 +481,7 @@ func fetchJWKSKIDs(t *testing.T) map[string]bool {
 func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	// Step 1: issue keypair A.
 	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
-	respA := adminRequest(t, "POST", "/oauth/keys/keypair", bodyA)
+	respA := operatorRequest(t, "POST", "/oauth/keys/keypair", bodyA)
 	var kpA genapi.JwtKeyPairResponseDto
 	json.NewDecoder(respA.Body).Decode(&kpA)
 	respA.Body.Close()
@@ -485,7 +496,7 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 		"invalidateCurrent":        true,
 		"invalidateGracePeriodSec": int64(2),
 	})
-	respB := adminRequest(t, "POST", "/oauth/keys/keypair", bodyB)
+	respB := operatorRequest(t, "POST", "/oauth/keys/keypair", bodyB)
 	var kpB genapi.JwtKeyPairResponseDto
 	json.NewDecoder(respB.Body).Decode(&kpB)
 	respB.Body.Close()
@@ -523,7 +534,7 @@ func TestE2E_KeypairBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
 	oversized := fmt.Sprintf(`{"algorithm":"RS256","audience":"client","_padding":"%s"}`, padding)
 
-	token := suiteToken(t)
+	token := platformToken(t)
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/keypair", strings.NewReader(oversized))
 	if err != nil {
 		t.Fatalf("new request: %v", err)

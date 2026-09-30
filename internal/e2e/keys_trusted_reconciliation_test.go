@@ -20,7 +20,7 @@ func TestKeys_IssueNonRS256_400UnsupportedAlgorithm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
 		"algorithm": "ES256",
 		"audience":  "client",
 	}))
@@ -52,7 +52,7 @@ func TestKeys_KeyPair_MalformedId_400(t *testing.T) {
 		{"POST", "/oauth/keys/keypair/not-a-kid/reactivate", validTo},
 	} {
 		t.Run(c.method+" "+c.path, func(t *testing.T) {
-			assertProblemJSON(t, adminRequest(t, c.method, c.path, c.body), http.StatusBadRequest, "BAD_REQUEST")
+			assertProblemJSON(t, operatorRequest(t, c.method, c.path, c.body), http.StatusBadRequest, "BAD_REQUEST")
 		})
 	}
 }
@@ -63,7 +63,7 @@ func TestKeys_DeleteKeyPair_UnknownId_404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "DELETE", "/oauth/keys/keypair/"+unknownKeyPairID, nil)
+	resp := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+unknownKeyPairID, nil)
 	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
 }
 
@@ -78,7 +78,7 @@ func TestKeys_InvalidateKeyPair_BadGrace_400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", mustJSON(t, map[string]any{
 		"gracePeriodSec": int64(-1),
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
@@ -90,7 +90,7 @@ func TestKeys_InvalidateKeyPair_UnknownId_404(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", nil)
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", nil)
 	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
 }
 
@@ -106,7 +106,7 @@ func TestKeys_ReactivateKeyPair_BadBody_400(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	// {} decodes to zero ValidTo; handler returns 400 "validTo required".
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{}))
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }
 
@@ -119,7 +119,7 @@ func TestKeys_ReactivateKeyPair_UnknownId_404(t *testing.T) {
 	body := mustJSON(t, map[string]any{
 		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
 	})
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", body)
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", body)
 	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
 }
 
@@ -292,7 +292,7 @@ func TestKeys_IssueKeyPair_ValidToOutOfRange_400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
 		"algorithm": "RS256",
 		"audience":  "human",
 		"validTo":   year10000,
@@ -306,7 +306,7 @@ func TestKeys_ReactivateKeyPair_ValidToOutOfRange_400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp := adminRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{
 		"validTo": year10000,
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")

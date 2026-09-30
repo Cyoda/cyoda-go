@@ -22,13 +22,14 @@ import (
 // CYODA_JWT_AUDIENCE set — accepts it and the server's own issued tokens only
 // when they carry that audience.
 
-// operatorToken signs a token the way `cyoda token` does (auth.MintOperatorToken,
-// its defaults: user operator, ROLE_ADMIN, 15 minutes) for tenant test-tenant.
-// audience "" omits aud.
+// operatorToken signs a token the way `cyoda token --tenant PLATFORM` does
+// (auth.MintOperatorToken, its defaults: user operator, ROLE_ADMIN, 15
+// minutes) for the PLATFORM tenant — a platform operator. audience "" omits
+// aud.
 func operatorToken(t *testing.T, key *rsa.PrivateKey, issuer, audience string) string {
 	t.Helper()
 	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
-		Tenant: "test-tenant", UserID: "operator", Roles: []string{"ROLE_ADMIN"},
+		Tenant: auth.PlatformTenantID, UserID: "operator", Roles: []string{"ROLE_ADMIN"},
 		TTL: 15 * time.Minute, Issuer: issuer, Audience: audience,
 	})
 	if err != nil {
@@ -144,22 +145,26 @@ func TestIssuedTokens_AcceptedWithConfiguredAudience(t *testing.T) {
 		t.Errorf("client_credentials token: %d, want 200", code)
 	}
 
-	// The trusted key is registered with the harness's own admin token, which
+	// The trusted key is registered with a platform-operator token, which
 	// carries the audience; that keeps the registration independent of what
-	// /oauth/token issues.
+	// /oauth/token issues. It must be registered under h.clientID's own
+	// tenant (PLATFORM, since createKeyStackClient provisions it there) —
+	// the exchanging client's tenant is where the token-exchange grant looks
+	// up the trusted key, and must also match the subject token's claimed
+	// tenant (see TestToken_TokenExchange_TenantMismatch_403).
 	priv := genKey(t)
 	const trustedKID = "e2e-aud-trusted"
 	body, err := json.Marshal(trustedKeyBody(priv, trustedKID))
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp := h.DoAuth(t, http.MethodPost, "/api/oauth/keys/trusted", string(body), "")
+	resp := h.doAuthBearer(t, h.platformToken(t), http.MethodPost, "/api/oauth/keys/trusted", string(body), "")
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("register trusted key: %d %s", resp.StatusCode, raw)
 	}
-	exchanged := h.grantToken(t, exchangeForm(t, priv, trustedKID, "ext-user-1", "test-tenant", []string{"ROLE_USER"}), h.clientID, h.clientSecret)
+	exchanged := h.grantToken(t, exchangeForm(t, priv, trustedKID, "ext-user-1", string(auth.PlatformTenantID), []string{"ROLE_USER"}), h.clientID, h.clientSecret)
 	if code := h.authedStatus(t, exchanged); code != http.StatusOK {
 		t.Errorf("token-exchange token: %d, want 200", code)
 	}

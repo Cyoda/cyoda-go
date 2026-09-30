@@ -68,12 +68,12 @@ func newKeyStackWith(t *testing.T, s *schedDB, key *rsa.PrivateKey, configure fu
 	return &keyStack{callbackHarness: h, clientID: s.keyClient.id, clientSecret: s.keyClient.secret}
 }
 
-// createKeyStackClient creates an admin M2M client in the harness tenant
-// through POST /clients?withAdminRole=true, with h's own admin token. The
-// client lives as long as the test's database.
+// createKeyStackClient creates an admin M2M client in the PLATFORM tenant
+// through POST /clients?withAdminRole=true, with h's platform-operator token.
+// The client lives as long as the test's database.
 func createKeyStackClient(t *testing.T, h *callbackHarness) *m2mCredential {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodPost, "/api/clients?withAdminRole=true", "", "")
+	resp := doAuthAgainst(t, h.baseURL, h.platformToken(t), http.MethodPost, "/api/clients?withAdminRole=true", "")
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -184,9 +184,13 @@ func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 	return out
 }
 
+// bootstrapToken signs a token for the signing key itself (the node's
+// configured bootstrap key, before any key pair is issued) in the PLATFORM
+// tenant, so it is a platform operator — the same principal `cyoda token
+// --tenant PLATFORM` models (see operatorToken in cyoda_token_test.go).
 func bootstrapToken(t *testing.T, key *rsa.PrivateKey) string {
 	t.Helper()
-	tok, err := signServiceToken(key, "cyoda-callback-test", "", "boot-user", "test-tenant", "boot-user", []string{"ROLE_ADMIN"})
+	tok, err := signServiceToken(key, "cyoda-callback-test", "", "boot-user", string(auth.PlatformTenantID), "boot-user", []string{"ROLE_ADMIN"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -116,7 +116,10 @@ func TestOidcProviderLifecycle(t *testing.T) {
 	}
 
 	// ── Step 3: reloadOidcProviders ───────────────────────────────────────────
-	reloadResp := oidcDo(t, http.MethodPost, "/oauth/oidc/providers/reload", nil)
+	// reloadOidcProviders is platform-wide (not tenant-scoped), so it takes a
+	// platform-operator token rather than the UUID-tenant client oidcDo uses
+	// for the tenant-scoped provider ops.
+	reloadResp := operatorRequest(t, http.MethodPost, "/oauth/oidc/providers/reload", nil)
 	reloadRaw, _ := io.ReadAll(reloadResp.Body)
 	reloadResp.Body.Close()
 	if reloadResp.StatusCode != http.StatusOK {

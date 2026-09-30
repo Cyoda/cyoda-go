@@ -172,7 +172,9 @@ func TestAuth_RejectionCarriesNoEnumerationSignal(t *testing.T) {
 // TestAuth_ValidCredentialsStillPass guards against the 401 tests above
 // passing for the wrong reason (e.g. a route that 401s unconditionally).
 func TestAuth_ValidCredentialsStillPass(t *testing.T) {
-	resp := doAuth(t, http.MethodGet, "/api/admin/log-level", "")
+	// /admin/log-level is platform-wide, so a platform-operator token exercises
+	// it, not the suite's tenant-admin token.
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodGet, "/api/admin/log-level", "")
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("authenticated GET /api/admin/log-level: status=%d, want 200; body: %s", resp.StatusCode, body)
