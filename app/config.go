@@ -640,10 +640,9 @@ func (c CORSConfig) Mode() string {
 	}
 }
 
-// ValidateCORS verifies the CORS configuration. It is called once at startup
-// (from cmd/cyoda/main.go after slog initialisation) and returns an error
-// for any invalid origin or mode combination. A non-nil return causes the
-// binary to slog the error and os.Exit(1).
+// ValidateCORS verifies the CORS configuration. Checked by Config.Validate at
+// startup, and returns an error for any invalid origin or mode combination.
+// A non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Validation rules (full set):
 //   - Wildcard==true and AllowedOrigins non-empty is a programming error
@@ -670,7 +669,7 @@ func ValidateCORS(c CORSConfig) error {
 
 // validateCORSOrigin returns nil iff o is a well-formed origin acceptable
 // in the allowlist. Rejection rules per spec §"Allowlist normalization
-// and validation". Run once at startup, never on the hot path.
+// and validation". Checked by Config.Validate at startup, never on the hot path.
 func validateCORSOrigin(o string) error {
 	if strings.TrimSpace(o) == "" {
 		return fmt.Errorf("origin %q: empty entry not allowed", o)
@@ -757,10 +756,10 @@ func isASCII(s string) bool {
 // guard. Config is a QA'd artefact rather than untrusted input, so this is
 // an invariant held where it is relied on, not input hardening.
 //
-// The binary calls Validate once, in cmd/cyoda/main.go, before printing the
-// startup banner. It exits before New is ever reached, so the same error is
-// never reported twice. Each validator's error names its offending
-// CYODA_* setting.
+// The binary calls Validate in cmd/cyoda/main.go, before printing the
+// startup banner, and app.New calls it again. An invalid config exits in
+// main before New is ever reached, so the error is reported once. Each
+// validator's error names its offending CYODA_* setting.
 func (c Config) Validate() error {
 	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
 		return err
@@ -810,9 +809,8 @@ func ValidateGRPCKeepAlive(c GRPCConfig) error {
 }
 
 // ValidateSearchAsync enforces startup-time correctness for the
-// async-search worker pool sizing. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// async-search worker pool sizing. Checked by Config.Validate at startup;
+// a non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: an invalid value is a hard
 // error here rather than silently clamped to the default the way
@@ -836,9 +834,9 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 }
 
 // ValidateSearchJobHeartbeat enforces startup-time correctness for
-// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Checked by Config.Validate at
+// startup; a non-nil return causes the binary to slog the error and
+// os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: a non-positive interval is a
 // hard startup error rather than silently clamped to the default, matching
@@ -861,9 +859,9 @@ const staleAfterMinMultiple = 4
 
 // ValidateSearchJobStaleAfter enforces startup-time correctness for
 // CYODA_SEARCH_JOB_STALE_AFTER against CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL.
-// Called once at startup (from cmd/cyoda/main.go), after both
-// ValidateSearchJobHeartbeat has already rejected a non-positive interval;
-// a non-nil return causes the binary to slog the error and os.Exit(1).
+// Checked by Config.Validate at startup, after ValidateSearchJobHeartbeat
+// has already rejected a non-positive interval; a non-nil return causes
+// the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact: the interval « staleAfter invariant
 // (spi.AsyncSearchStore.ClaimStale's doc comment) is made mechanically
