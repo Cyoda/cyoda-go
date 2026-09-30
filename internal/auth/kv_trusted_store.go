@@ -220,6 +220,13 @@ func (s *KVTrustedKeyStore) storedKey(ctx context.Context, tenantID spi.TenantID
 // key committed alongside a stale or half-flipped sibling, for the admin to
 // repeat.
 func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error {
+	// Strip any caller transaction up front: the decision read (storedKeys —
+	// cross-tenant collision, cap check, which siblings to flip) and every
+	// write (writeAll) must see the same non-transactional, committed view.
+	// A caller's REPEATABLE READ transaction could otherwise hide a sibling
+	// key committed after that snapshot, or a cross-tenant KID collision
+	// committed after it, and let this call through incorrectly.
+	ctx = noTx(ctx)
 	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
 		entries, stored, err := s.storedKeys(ctx)
 		if err != nil {
@@ -274,6 +281,7 @@ func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, opts R
 // wrapping ErrTrustedKeyNotFound for absence or cross-tenant; any other error
 // is a store failure.
 func (s *KVTrustedKeyStore) Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
+	ctx = noTx(ctx) // see Register's comment: the read-through fallback must not run inside the caller's transaction
 	if !s.rep.Stale() {
 		var hit *TrustedKey
 		s.rep.read(func(m map[string]*TrustedKey) {
@@ -340,6 +348,7 @@ func (s *KVTrustedKeyStore) GetForVerification(tenantID spi.TenantID, kid string
 // delete stays within tenantID. The copy loses kid only if it holds that
 // tenant's key there.
 func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, kid string) error {
+	ctx = noTx(ctx) // see Register's comment: the storedKey decision read must not run inside the caller's transaction
 	return s.rep.mutate(func() (func(map[string]*TrustedKey), bool, error) {
 		data, _, err := s.storedKey(ctx, tenantID, kid)
 		if err != nil && !errors.Is(err, errTrustedKeyUndecodable) {
@@ -363,6 +372,7 @@ func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, k
 // alone is never grounds to invalidate, and never grounds to report the key
 // missing when it is not.
 func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error {
+	ctx = noTx(ctx) // see Register's comment: update's storedKey decision read must not run inside the caller's transaction
 	return s.update(ctx, tenantID, kid, func(tk *TrustedKey, _ map[string]*TrustedKey) error {
 		tk.Active = false
 		tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), gracePeriodSec)
@@ -375,6 +385,7 @@ func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantI
 // different tenant. validTo is required (non-zero), must be strictly in the
 // future, and must be after validFrom.
 func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
+	ctx = noTx(ctx) // see Register's comment: update's storedKeys/storedKey decision reads must not run inside the caller's transaction
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")
 	}
