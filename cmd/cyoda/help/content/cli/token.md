@@ -76,7 +76,7 @@ curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
 
 # Platform operator (key-pair, OIDC reload, /admin/* endpoints)
 TOKEN=$(cyoda token --tenant PLATFORM)
-curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/oauth/keys/keypair
+curl -H "Authorization: Bearer $TOKEN" 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client'
 
 # Kubernetes (the image's binary is /cyoda; the pod already holds the key)
 TOKEN=$(kubectl exec <pod> -- /cyoda token --tenant acme)

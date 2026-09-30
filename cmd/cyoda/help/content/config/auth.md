@@ -385,16 +385,17 @@ The fix depends on why:
   there, so an admin M2M client's own token request fails the same way.
   Replacing `CYODA_JWT_SIGNING_KEY` does not help a record at another id: the
   decode failure does not depend on which key owns the record.
-- At this node's bootstrap key id, `cyoda token` does not verify there (the
-  bootstrap key is unusable) and `/oauth/token` cannot sign, so two routes
-  remain:
+- At this node's bootstrap key id, a token from `cyoda token` does not verify
+  on this node (the bootstrap key is unusable) and `/oauth/token` cannot
+  sign, so two routes remain. Both permanently delete the old bootstrap key
+  (see above); prefer route 1 when the token it needs exists.
   1. An unexpired platform-operator token that an issued key pair still
-     verifying signed earlier, used to `DELETE` the record. This permanently
-     deletes the bootstrap key (see above).
-  2. Non-destructive: set a new `CYODA_JWT_SIGNING_KEY` on every node, get a
-     token from `cyoda token --tenant PLATFORM`, then `DELETE` the old key
-     id with it. The old record becomes a foreign, inert record — it no
-     longer blocks signing, and no bootstrap key is lost.
+     verifying signed earlier, used to `DELETE` the record. Issued key pairs
+     are unaffected.
+  2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
+     node, get a token from `cyoda token --tenant PLATFORM`, then `DELETE`
+     the old key id with it. This also retires every issued key pair the old
+     key sealed: their tokens stop verifying and clients fetch new ones.
 
 **An issued record is stored at this node's bootstrap key id.** Two keys can
 never share one KID, so the record is refused as undecodable.
