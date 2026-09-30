@@ -188,7 +188,7 @@ func TestHandleSetLogLevel_TenantAdmin_403(t *testing.T) {
 	}
 }
 
-func TestHandleGetLogLevel_Forbidden_RFC9457(t *testing.T) {
+func TestHandleGetLogLevel_NoUserContext_401_RFC9457(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/log-level", nil)
 	rec := httptest.NewRecorder()
 
@@ -213,7 +213,7 @@ func TestHandleGetLogLevel_Forbidden_RFC9457(t *testing.T) {
 	}
 }
 
-func TestHandleSetLogLevel_Forbidden_RFC9457(t *testing.T) {
+func TestHandleSetLogLevel_NoUserContext_401_RFC9457(t *testing.T) {
 	payload := `{"level":"debug"}`
 	req := httptest.NewRequest(http.MethodPost, "/admin/log-level", strings.NewReader(payload))
 	req.Header.Set("Content-Type", "application/json")
