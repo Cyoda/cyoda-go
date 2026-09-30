@@ -1968,7 +1968,7 @@ and whose tenant is exactly `PLATFORM` (bytewise, case-sensitive). `auth.Operato
 (`internal/auth`) implements the check: no `UserContext` is `401 UNAUTHORIZED`;
 `ROLE_ADMIN` missing, or present in any tenant other than `PLATFORM`, is
 `403 FORBIDDEN` with the detail "platform operator required". Its zero value
-applies this rule, so a guard built but not wired fails closed. In mock IAM
+applies this rule, so a guard left at its zero value fails closed. In mock IAM
 mode the check is `ROLE_ADMIN` alone, since mock mode has one fixed tenant.
 
 The rule rests on tenant binding: every token source other than the signing
