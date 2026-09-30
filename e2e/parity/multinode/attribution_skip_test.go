@@ -18,6 +18,9 @@ func (stubNoAttrFixture) NewTenant(*testing.T) parity.Tenant { return parity.Ten
 func (stubNoAttrFixture) ComputeTenant(*testing.T) parity.Tenant {
 	return parity.Tenant{}
 }
+func (stubNoAttrFixture) PlatformOperator(*testing.T) parity.Tenant {
+	return parity.Tenant{ID: "PLATFORM"}
+}
 
 // Compile-time proof the stub is a MultiNodeFixture but NOT AttributionCapable.
 var _ MultiNodeFixture = stubNoAttrFixture{}

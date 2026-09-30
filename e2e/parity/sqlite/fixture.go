@@ -45,6 +45,12 @@ func (f *sqliteFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// PlatformOperator implements parity.BackendFixture.
+func (f *sqliteFixture) PlatformOperator(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
+}
+
 // NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
 // fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
 func (f *sqliteFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {

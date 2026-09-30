@@ -1835,8 +1835,10 @@ func RunOidcD18_ReloadInvalidateSerializeLocally(t *testing.T, fix BackendFixtur
 
 	// Trigger a reload_all — this re-reads KV and rebuilds the in-memory registry.
 	// Since the provider is invalidated in KV, the registry should reflect that
-	// after the reload.
-	if err := adminC.ReloadOidcProviders(t); err != nil {
+	// after the reload. Reload is a platform-wide admin endpoint: the tenant
+	// admin registers and invalidates, the operator reloads.
+	opC := client.NewClient(fix.BaseURL(), fix.PlatformOperator(t).Token)
+	if err := opC.ReloadOidcProviders(t); err != nil {
 		t.Fatalf("ReloadOidcProviders: %v", err)
 	}
 
@@ -1906,8 +1908,11 @@ func RunOidcD18_ReloadAllSerializesWithReloadOne(t *testing.T, fix BackendFixtur
 		t.Fatalf("InvalidateOidcProvider A: %v", err)
 	}
 
-	// Trigger reload_all (D18: takes write lock, rebuilds from KV).
-	if err := adminC.ReloadOidcProviders(t); err != nil {
+	// Trigger reload_all (D18: takes write lock, rebuilds from KV). Reload is
+	// a platform-wide admin endpoint: the tenant admin registers and
+	// invalidates, the operator reloads.
+	opC := client.NewClient(fix.BaseURL(), fix.PlatformOperator(t).Token)
+	if err := opC.ReloadOidcProviders(t); err != nil {
 		t.Fatalf("ReloadOidcProviders: %v", err)
 	}
 
@@ -2313,19 +2318,21 @@ func RunOidcD23_CrossIdPSubCollisionDistinctUserIDs(t *testing.T, fix BackendFix
 // "cognito:groups":["c","d"]. With rolesClaim="cognito:groups", the
 // effective roles are ["c","d"]. We verify via the ROLE_ADMIN pathway: a JWT
 // with "cognito:groups":["ROLE_ADMIN"] and an empty "roles" claim must be
-// accepted by ROLE_ADMIN-gated endpoints. We use the ReloadOidcProviders
-// endpoint (POST /api/oauth/oidc/providers/reload) as a lightweight ROLE_ADMIN
-// probe.
+// accepted by ROLE_ADMIN-gated endpoints. The probe is a no-op PATCH
+// (UpdateOidcProvider with no changed fields), which requires ROLE_ADMIN in
+// the provider's tenant — a tenant-scoped admin endpoint, unlike
+// ReloadOidcProviders which is platform-wide and would need an operator token.
 func RunOidcD23_PerProviderRolesClaim(t *testing.T, fix BackendFixture) {
 	admin := fix.NewTenant(t)
 	adminC := client.NewClient(fix.BaseURL(), admin.Token)
 
 	idp := NewParityFixtureIdP(t)
 	// Register with rolesClaim="cognito:groups".
-	if _, err := adminC.RegisterOidcProvider(t, map[string]any{
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
 		"wellKnownConfigUri": idp.WellKnownURI(),
 		"rolesClaim":         "cognito:groups",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("RegisterOidcProvider: %v", err)
 	}
 
@@ -2338,15 +2345,19 @@ func RunOidcD23_PerProviderRolesClaim(t *testing.T, fix BackendFixture) {
 	})
 	probeC := client.NewClient(fix.BaseURL(), tokenWithCustomRoles)
 
-	// Use POST /api/oauth/oidc/providers/reload which requires ROLE_ADMIN.
-	status, body, err := probeC.ReloadOidcProvidersRaw(t)
-	if err != nil {
-		t.Fatalf("ReloadOidcProvidersRaw transport: %v", err)
+	// Warm the JWKS cache with a probe that doesn't require ROLE_ADMIN.
+	if status, body, err := probeC.ProbeAuthRaw(t); err != nil {
+		t.Fatalf("warm ProbeAuthRaw transport: %v", err)
+	} else if status != http.StatusOK {
+		t.Fatalf("warm probe: status %d, want 200 (body: %s)", status, body)
 	}
-	// If rolesClaim override is respected, roles=["ROLE_ADMIN"] (from cognito:groups)
-	// → 200. If the server uses the default "roles" claim, roles=[] → 403 FORBIDDEN.
-	if status != http.StatusOK {
-		t.Errorf("status: got %d, want 200 — rolesClaim override 'cognito:groups' not respected (body: %s)", status, body)
+
+	// Use UpdateOidcProvider (PATCH, no-field-change) as the ROLE_ADMIN probe.
+	// If rolesClaim override is respected, roles=["ROLE_ADMIN"] (from
+	// cognito:groups) → no error. If the server uses the default "roles"
+	// claim, roles=[] → 403 FORBIDDEN.
+	if _, err := probeC.UpdateOidcProvider(t, p.ID, map[string]any{}); err != nil {
+		t.Errorf("rolesClaim override 'cognito:groups' not respected: UpdateOidcProvider: %v", err)
 	}
 }
 
@@ -3189,7 +3200,10 @@ func RunOidcReload_PreservesTokenAcceptance(t *testing.T, fix BackendFixture) {
 	}
 	assertProbeStatus(t, http.StatusOK, status, body)
 
-	if err := adminC.ReloadOidcProviders(t); err != nil {
+	// Reload is a platform-wide admin endpoint: the tenant admin registers,
+	// the operator reloads.
+	opC := client.NewClient(fix.BaseURL(), fix.PlatformOperator(t).Token)
+	if err := opC.ReloadOidcProviders(t); err != nil {
 		t.Fatalf("ReloadOidcProviders: %v", err)
 	}
 
@@ -3232,7 +3246,10 @@ func RunOidcReload_AfterReactivateKeepsTokenAcceptance(t *testing.T, fix Backend
 	if _, err := adminC.ReactivateOidcProviderWithKeys(t, p.ID, true); err != nil {
 		t.Fatalf("ReactivateOidcProviderWithKeys: %v", err)
 	}
-	if err := adminC.ReloadOidcProviders(t); err != nil {
+	// Reload is a platform-wide admin endpoint: the tenant admin registers,
+	// invalidates and reactivates; the operator reloads.
+	opC := client.NewClient(fix.BaseURL(), fix.PlatformOperator(t).Token)
+	if err := opC.ReloadOidcProviders(t); err != nil {
 		t.Fatalf("ReloadOidcProviders: %v", err)
 	}
 

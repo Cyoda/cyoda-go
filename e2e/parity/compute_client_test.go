@@ -10,6 +10,9 @@ func (stubNoComputeClients) BaseURL() string                 { return "http://12
 func (stubNoComputeClients) GRPCEndpoint() string            { return "127.0.0.1:1" }
 func (stubNoComputeClients) NewTenant(*testing.T) Tenant     { return Tenant{ID: "t"} }
 func (stubNoComputeClients) ComputeTenant(*testing.T) Tenant { return Tenant{ID: "t"} }
+func (stubNoComputeClients) PlatformOperator(*testing.T) Tenant {
+	return Tenant{ID: "PLATFORM"}
+}
 
 var _ BackendFixture = stubNoComputeClients{}
 

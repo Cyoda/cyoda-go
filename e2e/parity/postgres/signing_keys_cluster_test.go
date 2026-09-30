@@ -21,6 +21,11 @@ const reconcileInterval = time.Second
 // cluster: the shared multi-node cluster signs its fixture tokens with the
 // bootstrap key. Its one-second re-read interval also bounds how late a lost
 // change message arrives, which the grace-period case relies on.
+//
+// The admin M2M client is created by the platform operator, so it lives in
+// PLATFORM: its tokens are signed with the rotatable "client"-audience key,
+// not the bootstrap key, so it is the route an operator keeps once the
+// bootstrap key is deleted.
 func TestSigningKeys_OwnCluster(t *testing.T) {
 	fix, cleanup := MustSetupMultiNodeWithEnv(t, 2, []string{
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL=" + reconcileInterval.String(),
@@ -33,7 +38,8 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	if bootKID == "" {
 		t.Fatal("the fixture's tenant token carries no kid")
 	}
-	a := client.NewClient(urls[0], tenant.Token)
+	op := fix.PlatformOperator(t)
+	opA := client.NewClient(urls[0], op.Token)
 
 	// Positive control: B accepts the bootstrap-signed tenant token on the
 	// probe, so a later 401 is the key under test, not the probe.
@@ -42,8 +48,8 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	// Token path before touching the bootstrap key: an issued key and an
 	// admin M2M client on A, so later calls do not depend on the bootstrap
 	// key. Admin tokens come only from adminToken.
-	k1 := multinode.IssueClientKeyPair(t, a, false)
-	adminID, adminSecret := createAdminClient(t, a)
+	k1 := multinode.IssueClientKeyPair(t, opA, false)
+	adminID, adminSecret := createAdminClient(t, opA)
 	adminToken := func(t *testing.T) string { return fetchClientToken(t, urls[0], adminID, adminSecret) }
 	t1 := adminToken(t)
 	if got := client.TokenKID(t1); got != k1 {
@@ -64,28 +70,28 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	}
 
 	t.Run("rotation on A ends the old key only; the signing key still verifies on B", func(t *testing.T) {
-		k2 = multinode.IssueClientKeyPair(t, client.NewClient(urls[0], t1), true)
+		k2 = multinode.IssueClientKeyPair(t, opA, true)
 		t2 := k2Token(t)
 		waitStatus(t, urls[1], t1, http.StatusUnauthorized, "B refuses K1")
 		waitStatus(t, urls[1], tenant.Token, http.StatusOK, "B still accepts a token signed by the signing key")
 		waitStatus(t, urls[1], t2, http.StatusOK, "B accepts K2")
-		if code, body, err := client.NewClient(urls[1], t2).CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || !hasKeyID(body, k2) {
+		if code, body, err := client.NewClient(urls[1], op.Token).CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || !hasKeyID(body, k2) {
 			t.Fatalf("B's current key pair: %d %s %v, want %s", code, body, err, k2)
 		}
 	})
 
 	t.Run("a key pair invalidated on A with a grace period verifies on B until its validTo", func(t *testing.T) {
 		const grace = 10 * time.Second
-		k3 := multinode.IssueClientKeyPair(t, client.NewClient(urls[0], adminToken(t)), false)
+		k3 := multinode.IssueClientKeyPair(t, opA, false)
 		t3 := adminToken(t)
 		if got := client.TokenKID(t3); got != k3 {
 			t.Fatalf("A signs with %q, want K3 %q", got, k3)
 		}
 		waitStatus(t, urls[1], t3, http.StatusOK, "B accepts K3's token")
 		// The token under test (t3) is the one K3 signed; the invalidate call
-		// may use any admin token.
+		// may use any operator token.
 		earliestValidTo := time.Now().Add(grace)
-		if code, _, err := client.NewClient(urls[0], adminToken(t)).InvalidateKeyPairWithGraceRaw(t, k3, grace); err != nil || code != http.StatusOK {
+		if code, _, err := opA.InvalidateKeyPairWithGraceRaw(t, k3, grace); err != nil || code != http.StatusOK {
 			t.Fatalf("invalidate K3 on A with grace: %d %v", code, err)
 		}
 		latestValidTo := time.Now().Add(grace)
@@ -93,7 +99,7 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		// B's current key pair moves off K3 only once B has the change; until
 		// then B would accept t3 for want of it. Re-reads run every second
 		// here, so even a lost change message arrives well inside the grace.
-		b := client.NewClient(urls[1], k2Token(t))
+		b := client.NewClient(urls[1], op.Token)
 		for {
 			code, body, err := b.CurrentKeyPairRaw(t, "client")
 			if err == nil && code == http.StatusOK && !hasKeyID(body, k3) {

@@ -113,6 +113,7 @@ func clientToken(t *testing.T, baseURL, id, secret string) string {
 func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) {
 	urls := fixture.BaseURLs()
 	tenant := fixture.NewTenant(t)
+	op := client.NewClient(urls[0], fixture.PlatformOperator(t).Token)
 	a := client.NewClient(urls[0], tenant.Token)
 	b := client.NewClient(urls[1], tenant.Token)
 
@@ -127,8 +128,8 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 		t.Fatalf("control: B with an M2M token signed before the issue: %d, want 200", code)
 	}
 
-	kid := IssueClientKeyPair(t, a, false)
-	a.DeleteKeyPairOnCleanup(t, kid)
+	kid := IssueClientKeyPair(t, op, false)
+	op.DeleteKeyPairOnCleanup(t, kid)
 
 	tok := clientToken(t, urls[0], id, secret)
 	if got := client.TokenKID(tok); got != kid {
@@ -147,7 +148,7 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 		return err == nil && code == http.StatusOK && client.TokenKID(tokB) == kid
 	})
 
-	if code, _, err := a.InvalidateKeyPairRaw(t, kid); err != nil || code != http.StatusOK {
+	if code, _, err := op.InvalidateKeyPairRaw(t, kid); err != nil || code != http.StatusOK {
 		t.Fatalf("invalidate on A: %d %v", code, err)
 	}
 	eventually(t, "B refuses the invalidated key", func() bool {
@@ -157,14 +158,14 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 		t.Fatalf("control: B refuses the token signed before the issue too: %d, want 200", code)
 	}
 
-	if code, _, err := a.ReactivateKeyPairRaw(t, kid, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
+	if code, _, err := op.ReactivateKeyPairRaw(t, kid, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
 		t.Fatalf("reactivate on A: %d %v", code, err)
 	}
 	eventually(t, "B accepts the reactivated key", func() bool {
 		return modelListStatus(t, urls[1], tok) == http.StatusOK
 	})
 
-	if code, _, err := a.DeleteKeyPairRaw(t, kid); err != nil || code != http.StatusOK {
+	if code, _, err := op.DeleteKeyPairRaw(t, kid); err != nil || code != http.StatusOK {
 		t.Fatalf("delete on A: %d %v", code, err)
 	}
 	eventually(t, "B refuses the deleted key", func() bool {

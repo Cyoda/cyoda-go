@@ -47,6 +47,13 @@ type BackendFixture interface {
 	// Tests that do NOT need processor/criteria dispatch should use
 	// NewTenant for full tenant isolation.
 	ComputeTenant(t *testing.T) Tenant
+
+	// PlatformOperator returns a platform-operator token: ROLE_ADMIN in the
+	// PLATFORM tenant. The platform-wide admin endpoints (signing key pairs,
+	// OIDC reload) accept only this principal. PLATFORM is one shared tenant,
+	// unlike NewTenant: use it only on those endpoints, never for tenant data.
+	// Implementations MUST call t.Helper() and t.Fatal on failure.
+	PlatformOperator(t *testing.T) Tenant
 }
 
 // NonAdminTenantFixture is an OPTIONAL capability interface that
@@ -86,12 +93,13 @@ func NonAdminTenantOrSkip(t *testing.T, fixture BackendFixture) Tenant {
 // Tenant identifies a fresh tenant scope for a single test, plus the JWT
 // the test uses to authenticate API calls within that scope.
 type Tenant struct {
-	// ID is the canonical string form of the tenant UUID, as it appears in
-	// the "tenant_id" claim of the JWT. Kept as string (not uuid.UUID) so
-	// the parity package does not pull github.com/google/uuid into its
-	// import graph beyond what the generated OpenAPI client already requires.
-	// Cyoda's generated API types use the string form for tenant IDs on the
-	// wire, so the parity types match the wire shape.
+	// ID is the tenant id the token carries in the "caas_org_id" claim: a
+	// fresh UUID for NewTenant/ComputeTenant, or "PLATFORM" for
+	// PlatformOperator. Kept as string (not uuid.UUID) so the parity package
+	// does not pull github.com/google/uuid into its import graph beyond what
+	// the generated OpenAPI client already requires. Cyoda's generated API
+	// types use the string form for tenant IDs on the wire, so the parity
+	// types match the wire shape.
 	ID string
 
 	// Token is the signed JWT used in the Authorization header. Never log

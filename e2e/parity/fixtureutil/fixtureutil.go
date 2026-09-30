@@ -199,6 +199,31 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	}
 }
 
+// MintPlatformOperatorJWT mints a platform-operator token: ROLE_ADMIN in the
+// PLATFORM tenant, in the shape `cyoda token --tenant PLATFORM` signs (a
+// person token, roles in user_roles). PLATFORM is one shared tenant: use the
+// token only on the platform-wide admin endpoints, never for tenant data.
+func MintPlatformOperatorJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
+	t.Helper()
+	now := time.Now()
+	claims := map[string]any{
+		"sub":          "platform-operator",
+		"iss":          ks.Issuer,
+		"caas_user_id": "platform-operator",
+		"caas_org_id":  string(auth.PlatformTenantID),
+		"user_roles":   []string{"ROLE_ADMIN"},
+		"caas_tier":    "unlimited",
+		"exp":          now.Add(1 * time.Hour).Unix(),
+		"iat":          now.Unix(),
+		"jti":          uuid.NewString(),
+	}
+	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
+	if err != nil {
+		t.Fatalf("failed to mint platform operator JWT: %v", err)
+	}
+	return parity.Tenant{ID: string(auth.PlatformTenantID), Token: token}
+}
+
 // ComputeTenantID is the tenant under which the compute-test-client
 // registers via its M2M JWT. Processor/criteria dispatch is tenant-scoped,
 // so tests exercising gRPC dispatch must use this tenant for entity

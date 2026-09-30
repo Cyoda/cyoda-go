@@ -87,6 +87,12 @@ func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// PlatformOperator implements multinode.MultiNodeFixture.
+func (f *pgMultiNode) PlatformOperator(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
+}
+
 // ComputeUser mints a USER-kind JWT (caas_user_id == userID) scoped to the
 // compute-test-client's tenant — a human origin whose cascades still dispatch
 // to the registered gRPC member. Used by cross-node attribution scenarios that

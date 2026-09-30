@@ -18,8 +18,7 @@ import (
 // current-key assertions below compare the returned keyId directly rather
 // than needing to tolerate another test's key also being current.
 func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	c := client.NewClient(fixture.BaseURL(), fixture.PlatformOperator(t).Token)
 
 	code, body, err := c.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256", "audience": "human"})
 	if err != nil || code != http.StatusOK {
