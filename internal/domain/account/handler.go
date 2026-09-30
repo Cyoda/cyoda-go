@@ -21,12 +21,13 @@ type Handler struct {
 	trustedKeyStore auth.TrustedKeyStore
 	m2mClientStore  auth.M2MClientStore
 	iam             auth.IAMFeatures
+	operator        auth.OperatorGuard
 	oidc            *oidcAdapter
 }
 
 func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
 	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClientStore auth.M2MClientStore,
-	iam auth.IAMFeatures) *Handler {
+	iam auth.IAMFeatures, operator auth.OperatorGuard) *Handler {
 	return &Handler{
 		authSvc:         authSvc,
 		authzSvc:        authzSvc,
@@ -34,6 +35,7 @@ func New(authSvc contract.AuthenticationService, authzSvc contract.Authorization
 		trustedKeyStore: trustedKeyStore,
 		m2mClientStore:  m2mClientStore,
 		iam:             iam,
+		operator:        operator,
 	}
 }
 

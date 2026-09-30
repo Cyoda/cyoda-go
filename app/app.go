@@ -253,6 +253,15 @@ func New(cfg Config) *App {
 	var pendingOIDCAdapter *account.OidcAdapter
 	var pendingWarmJWKS func()
 	var authSvc *auth.AuthService
+
+	// The platform-wide admin endpoints accept only a platform operator. Mock
+	// mode has one fixed principal, so there the operator check is the admin
+	// check. ValidateIAM admits only "mock" and "jwt".
+	operatorGuard := auth.OperatorGuard{}
+	if cfg.IAM.Mode == "mock" {
+		operatorGuard = auth.MockOperatorGuard()
+	}
+
 	if cfg.IAM.Mode == "jwt" {
 		if cfg.IAM.JWTSigningKey == "" {
 			slog.Error("startup failure",
@@ -326,6 +335,7 @@ func New(cfg Config) *App {
 			cfg.IAM.OIDC.DefaultRolesClaim,
 			cfg.IAM.OIDC.RequireHTTPS,
 			cfg.IAM.OIDC.AllowPrivateNetworks,
+			operatorGuard,
 		)
 		// Phase-2 warm-up is one-shot; the retry loop re-attempts any provider
 		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
@@ -579,7 +589,7 @@ func New(cfg Config) *App {
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
 		accountM2MStore = authSvc.M2MClientStore()
 	}
-	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures())
+	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
 	// Wire the OIDC HTTP adapter if the OIDC subsystem was bootstrapped (JWT
 	// IAM mode only). nil is safe — WithOIDCAdapter tolerates nil and leaves
 	// the 7 OIDC stub paths returning 501.

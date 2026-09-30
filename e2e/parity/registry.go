@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 301 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 302 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -558,6 +558,7 @@ var allTests = []NamedTest{
 	// scenarios must not issue human-audience key pairs or rotate/invalidate
 	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
+	{"PlatformOperatorGate", RunPlatformOperatorGate},
 
 	// M2M clients in each backend's own spi.KeyValueStore: create, token,
 	// list, reset and delete, with another tenant's id answering 404 on

@@ -15,14 +15,14 @@ import (
 )
 
 func TestNewHandler(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}
 }
 
 func TestAccountGet(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 
 	uc := &spi.UserContext{
 		UserID:   "user-1",
@@ -60,7 +60,7 @@ func TestAccountGet(t *testing.T) {
 }
 
 func TestAccountGetNoAuth(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/account", nil)
 	h.AccountGet(w, r)
@@ -70,7 +70,7 @@ func TestAccountGetNoAuth(t *testing.T) {
 }
 
 func TestHandlerReturns501(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 
 	tests := []struct {
 		name string
@@ -118,7 +118,7 @@ func TestHandlerReturns501(t *testing.T) {
 // defensive stub returns 500 (not 501): arriving here means the public mux
 // failed to intercept POST /oauth/token before chi could dispatch it.
 func TestGetTechnicalUserToken_Returns500_RoutingRegression(t *testing.T) {
-	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{})
+	h := account.New(nil, nil, nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/oauth/token", nil)
 	h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})

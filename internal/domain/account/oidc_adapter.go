@@ -36,16 +36,18 @@ type oidcAdapter struct {
 	defaultRolesClaim string
 	requireHTTPS      bool
 	allowPrivate      bool
+	operator          auth.OperatorGuard
 }
 
 // newOidcAdapter constructs an oidcAdapter. requireHTTPS and allowPrivate come
 // from CYODA_OIDC_REQUIRE_HTTPS and CYODA_OIDC_ALLOW_PRIVATE_NETWORKS.
-func newOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTPS, allowPrivate bool) *oidcAdapter {
+func newOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTPS, allowPrivate bool, operator auth.OperatorGuard) *oidcAdapter {
 	return &oidcAdapter{
 		service:           service,
 		defaultRolesClaim: defaultRolesClaim,
 		requireHTTPS:      requireHTTPS,
 		allowPrivate:      allowPrivate,
+		operator:          operator,
 	}
 }
 
@@ -64,9 +66,11 @@ type OidcAdapter struct {
 // `service` is the OIDC service (lifecycle ops). `defaultRolesClaim` is the
 // global default for the roles claim name (per-provider override exists).
 // `requireHTTPS` and `allowPrivate` come from CYODA_OIDC_REQUIRE_HTTPS and
-// CYODA_OIDC_ALLOW_PRIVATE_NETWORKS respectively.
-func NewOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTPS, allowPrivate bool) *OidcAdapter {
-	return &OidcAdapter{adapter: newOidcAdapter(service, defaultRolesClaim, requireHTTPS, allowPrivate)}
+// CYODA_OIDC_ALLOW_PRIVATE_NETWORKS respectively. `operator` gates
+// ReloadOidcProviders, the one OIDC endpoint that is platform-wide rather
+// than tenant-scoped.
+func NewOidcAdapter(service *oidc.Service, defaultRolesClaim string, requireHTTPS, allowPrivate bool, operator auth.OperatorGuard) *OidcAdapter {
+	return &OidcAdapter{adapter: newOidcAdapter(service, defaultRolesClaim, requireHTTPS, allowPrivate, operator)}
 }
 
 // oidcTenantFromCtx returns the caller's tenant, which must already be a UUID
@@ -430,9 +434,11 @@ func (a *oidcAdapter) DeleteOidcProvider(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusOK)
 }
 
-// ReloadOidcProviders implements POST /oauth/oidc/providers/reload. ROLE_ADMIN required per §5.6.
+// ReloadOidcProviders implements POST /oauth/oidc/providers/reload. It
+// reloads every tenant's providers on every node, so it requires a platform
+// operator.
 func (a *oidcAdapter) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	if !auth.RequireAdmin(w, r) {
+	if !a.operator.Require(w, r) {
 		return
 	}
 

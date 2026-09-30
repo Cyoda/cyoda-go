@@ -63,8 +63,8 @@ func (d *oidcFakeDiscovery) Fetch(_ context.Context, _ string) (*oidc.DiscoveryD
 func newOidcAdapterFixture(t *testing.T) *Handler {
 	t.Helper()
 	svc := newOidcTestService(t)
-	a := &OidcAdapter{adapter: newOidcAdapter(svc, "roles", false, true)}
-	h := New(nil, nil, nil, nil, nil, defaultFeatures())
+	a := &OidcAdapter{adapter: newOidcAdapter(svc, "roles", false, true, auth.OperatorGuard{})}
+	h := New(nil, nil, nil, nil, nil, defaultFeatures(), auth.OperatorGuard{})
 	h.WithOIDCAdapter(a)
 	return h
 }
@@ -77,6 +77,17 @@ func withOidcTenantAdminCtx(req *http.Request) *http.Request {
 		UserID:   "admin-user",
 		UserName: "Admin User",
 		Tenant:   spi.Tenant{ID: oidcTenantID, Name: "test-tenant"},
+		Roles:    []string{"ROLE_ADMIN"},
+	}))
+}
+
+// withPlatformOperatorCtx puts a platform operator (ROLE_ADMIN in
+// auth.PlatformTenantID) in the request context.
+func withPlatformOperatorCtx(req *http.Request) *http.Request {
+	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
+		UserID:   "operator-user",
+		UserName: "Operator User",
+		Tenant:   spi.Tenant{ID: auth.PlatformTenantID, Name: "PLATFORM"},
 		Roles:    []string{"ROLE_ADMIN"},
 	}))
 }
@@ -693,15 +704,25 @@ func TestDeleteOidcProvider_NotFound_Returns404(t *testing.T) {
 
 // ---------- ReloadOidcProviders handler tests ----------
 
-func TestReloadOidcProviders_AdminHappyPath_Returns200(t *testing.T) {
+func TestReloadOidcProviders_PlatformOperator_Returns200(t *testing.T) {
 	h := newOidcAdapterFixture(t)
-	req := withOidcTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers/reload", nil))
+	req := withPlatformOperatorCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers/reload", nil))
 	rr := httptest.NewRecorder()
 
 	h.ReloadOidcProviders(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestReloadOidcProviders_TenantAdmin_Returns403(t *testing.T) {
+	h := newOidcAdapterFixture(t)
+	req := withOidcTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers/reload", nil))
+	rr := httptest.NewRecorder()
+	h.ReloadOidcProviders(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d want 403, body=%s", rr.Code, rr.Body.String())
 	}
 }
 
@@ -734,7 +755,7 @@ func TestReloadOidcProviders_NoContext_Returns401(t *testing.T) {
 func TestHandler_OidcStub_Returns501_WhenAdapterNil(t *testing.T) {
 	// Handler with no oidc adapter installed → falls back to stub → 501.
 	feats := auth.DefaultIAMFeatures()
-	h := New(nil, nil, nil, nil, nil, feats) // no WithOIDCAdapter
+	h := New(nil, nil, nil, nil, nil, feats, auth.OperatorGuard{}) // no WithOIDCAdapter
 
 	cases := []struct {
 		name string

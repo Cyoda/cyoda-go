@@ -28,7 +28,7 @@ func (h *Handler) requireKeyStore(w http.ResponseWriter, r *http.Request) bool {
 }
 
 func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
-	if !auth.RequireAdmin(w, r) {
+	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {
@@ -165,7 +165,7 @@ func toJwtKeyPairResponse(kp *auth.KeyPair) genapi.JwtKeyPairResponseDto {
 }
 
 func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
-	if !auth.RequireAdmin(w, r) {
+	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {
@@ -189,7 +189,7 @@ func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, p
 }
 
 func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if !auth.RequireAdmin(w, r) {
+	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {
@@ -206,7 +206,7 @@ func (h *Handler) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId
 }
 
 func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if !auth.RequireAdmin(w, r) {
+	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {
@@ -243,7 +243,7 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 }
 
 func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
-	if !auth.RequireAdmin(w, r) {
+	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {

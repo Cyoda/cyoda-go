@@ -7,10 +7,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// RequireAdmin gates administrative endpoints: the key pair handler, the
-// trusted-key handler, and the M2M client handler. These routes are wrapped
-// by the auth middleware, so a missing UserContext here means the middleware
-// was bypassed or misconfigured — respond 401. A present UserContext lacking
+// RequireAdmin gates the tenant-scoped admin endpoints: trusted keys, M2M
+// clients, OIDC provider changes. These routes are wrapped by the auth
+// middleware, so a missing UserContext here means the middleware was
+// bypassed or misconfigured — respond 401. A present UserContext lacking
 // ROLE_ADMIN is a genuine authorization failure — respond 403.
 //
 // Both branches respond as RFC 9457 problem-detail JSON via common.WriteError

@@ -17,14 +17,14 @@ import (
 func TestGracePeriodRangeError_NamesInvalidateGracePeriodSec(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, feats)
+	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, feats, auth.OperatorGuard{})
 	jwkBytes, _ := json.Marshal(rsaJWK(t, "k"))
 
 	for _, grace := range []string{"-1", "9999999999"} {
 		t.Run("issue/"+grace, func(t *testing.T) {
 			body := []byte(`{"algorithm":"RS256","audience":"client","invalidateCurrent":true,"invalidateGracePeriodSec":` + grace + `}`)
 			w := httptest.NewRecorder()
-			h.IssueJwtKeyPair(w, adminReq(t, "POST", "/", body))
+			h.IssueJwtKeyPair(w, operatorReq(t, "POST", "/", body))
 			assertGraceFieldNamed(t, w)
 		})
 		t.Run("register/"+grace, func(t *testing.T) {

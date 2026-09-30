@@ -54,7 +54,7 @@ func handlerWithTrustedStore(t *testing.T, store auth.TrustedKeyStore) *account.
 	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	return account.New(nil, nil, newTestKeyStore(t), store, nil, feats)
+	return account.New(nil, nil, newTestKeyStore(t), store, nil, feats, auth.OperatorGuard{})
 }
 
 // trustedKeyMutations drives the three handlers whose only failure answer was
