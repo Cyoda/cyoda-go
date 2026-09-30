@@ -604,3 +604,81 @@ func TestReplica_AfterChangeDuringConstructionSeesOnlyRecs(t *testing.T) {
 		t.Fatal("replica unusable after construction-time gossip")
 	}
 }
+
+// replicaTxProbeKV records every call whose context carries a transaction:
+// the postgres KV store would join it, so a signing-key or trusted-key write
+// made under a caller's entity transaction (X-Tx-Token) would otherwise
+// commit or roll back with that transaction instead of independently.
+type replicaTxProbeKV struct {
+	spi.KeyValueStore
+	mu   sync.Mutex
+	seen []string
+}
+
+func (k *replicaTxProbeKV) probe(ctx context.Context, op, ns string) {
+	if spi.GetTransaction(ctx) == nil {
+		return
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.seen = append(k.seen, op+" "+ns)
+}
+
+func (k *replicaTxProbeKV) calls() []string {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	return append([]string(nil), k.seen...)
+}
+
+func (k *replicaTxProbeKV) Put(ctx context.Context, ns, key string, v []byte) error {
+	k.probe(ctx, "Put", ns)
+	return k.KeyValueStore.Put(ctx, ns, key, v)
+}
+
+func (k *replicaTxProbeKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
+	k.probe(ctx, "Get", ns)
+	return k.KeyValueStore.Get(ctx, ns, key)
+}
+
+func (k *replicaTxProbeKV) Delete(ctx context.Context, ns, key string) error {
+	k.probe(ctx, "Delete", ns)
+	return k.KeyValueStore.Delete(ctx, ns, key)
+}
+
+func (k *replicaTxProbeKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	k.probe(ctx, "List", ns)
+	return k.KeyValueStore.List(ctx, ns)
+}
+
+// TestKVReplica_IgnoresCallerTransaction proves that no KV call a kvReplica
+// makes — construction's initial List, a re-read's List (Reconcile), a
+// single-record load (loadOne) or an admin write (writeAll/put) — carries a
+// transaction found in the caller's context. Both KVKeyStore and the
+// trusted-key store route every store read and write through this type, so
+// fixing it here covers both in one place instead of per call site.
+func TestKVReplica_IgnoresCallerTransaction(t *testing.T) {
+	txCtx := spi.WithTransaction(replicaSystemCtx(), &spi.TransactionState{ID: "caller-tx"})
+
+	probe := &replicaTxProbeKV{KeyValueStore: newReplicaKV(t)}
+	r, err := newKVReplica(txCtx, probe, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := r.writeAll(txCtx, []kvWrite{{key: "k1", value: []byte("v1")}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.loadOne(txCtx, "k1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reconcile(txCtx); err != nil {
+		t.Fatal(err)
+	}
+
+	if seen := probe.calls(); len(seen) != 0 {
+		t.Fatalf("KV calls made under the caller's transaction: %v", seen)
+	}
+}

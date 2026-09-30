@@ -99,7 +99,7 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 		cfg.metrics = NopReconcileMetrics{}
 	}
 	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: context.WithoutCancel(ctx), epoch: time.Now()}
-	entries, err := kv.List(r.ctx, cfg.namespace)
+	entries, err := kv.List(noTx(r.ctx), cfg.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
 	}
@@ -156,7 +156,7 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 	defer r.reconcileMu.Unlock()
 	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
 		gen := r.gen.Load()
-		entries, err := r.kv.List(ctx, r.cfg.namespace)
+		entries, err := r.kv.List(noTx(ctx), r.cfg.namespace)
 		if err != nil {
 			n := r.failures.Add(1)
 			r.cfg.metrics.SetReconcileConsecutiveFailures(int(n))
@@ -313,7 +313,7 @@ func (r *kvReplica[R]) loadOne(ctx context.Context, kvKey string) (R, bool, erro
 	var zero R
 	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
 		gen := r.gen.Load()
-		data, err := r.kv.Get(ctx, r.cfg.namespace, kvKey)
+		data, err := r.kv.Get(noTx(ctx), r.cfg.namespace, kvKey)
 		if errors.Is(err, spi.ErrNotFound) {
 			return zero, false, nil
 		}
@@ -377,7 +377,7 @@ func (r *kvReplica[R]) writeAll(ctx context.Context, writes []kvWrite) error {
 
 func (r *kvReplica[R]) put(ctx context.Context, key string, value []byte) error {
 	if value == nil {
-		return r.kv.Delete(ctx, r.cfg.namespace, key)
+		return r.kv.Delete(noTx(ctx), r.cfg.namespace, key)
 	}
-	return r.kv.Put(ctx, r.cfg.namespace, key, value)
+	return r.kv.Put(noTx(ctx), r.cfg.namespace, key, value)
 }
