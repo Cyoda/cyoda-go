@@ -353,7 +353,11 @@ func TestReactivateJwtKeyPair_RequiresFreshValidTo(t *testing.T) {
 // Spec §3.2 #2.
 func TestRegression_RoleGate_RoleAdminOnly(t *testing.T) {
 	h, _, _ := newHandler(t)
-	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"SUPER_USER"}}
+	// Tenant must be auth.PlatformTenantID: the operator guard checks tenant
+	// AND role, so a non-PLATFORM tenant would refuse this caller before the
+	// role is ever considered, making the test vacuous for what it claims to
+	// prove (SUPER_USER is not treated as ROLE_ADMIN's equivalent).
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: auth.PlatformTenantID}, Roles: []string{"SUPER_USER"}}
 	req := httptest.NewRequest("GET", "/", nil).WithContext(spi.WithUserContext(httptest.NewRequest("GET", "/", nil).Context(), uc))
 	w := httptest.NewRecorder()
 	h.GetCurrentJwtKeyPair(w, req, genapi.GetCurrentJwtKeyPairParams{Audience: "client"})

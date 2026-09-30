@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
@@ -77,6 +78,7 @@ func TestKeyPairEndpoints_RefuseTenantAdmin(t *testing.T) {
 			if w.Code != http.StatusForbidden {
 				t.Fatalf("status = %d, want 403; body %s", w.Code, w.Body.String())
 			}
+			commontest.ExpectErrorCode(t, w.Result(), "FORBIDDEN")
 		})
 	}
 	// Nothing was issued: the only key is the bootstrap key.

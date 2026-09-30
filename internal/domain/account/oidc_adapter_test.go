@@ -102,6 +102,19 @@ func withOidcTenantUserCtx(req *http.Request) *http.Request {
 	}))
 }
 
+// withPlatformNonAdminCtx puts a non-admin user (ROLE_USER) in
+// auth.PlatformTenantID in the request context: a caller in the right
+// tenant but without the role, so a test using it exercises the guard's
+// role check specifically rather than its tenant check.
+func withPlatformNonAdminCtx(req *http.Request) *http.Request {
+	return req.WithContext(spi.WithUserContext(req.Context(), &spi.UserContext{
+		UserID:   "platform-user",
+		UserName: "Platform User",
+		Tenant:   spi.Tenant{ID: auth.PlatformTenantID, Name: "PLATFORM"},
+		Roles:    []string{"ROLE_USER"},
+	}))
+}
+
 // rawBody returns a buffer from a raw JSON string (for tri-state tests).
 func rawBody(s string) *bytes.Buffer { return bytes.NewBufferString(s) }
 
@@ -724,11 +737,17 @@ func TestReloadOidcProviders_TenantAdmin_Returns403(t *testing.T) {
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status: got %d want 403, body=%s", rr.Code, rr.Body.String())
 	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeForbidden {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeForbidden)
+	}
 }
 
 func TestReloadOidcProviders_NonAdmin_Returns403(t *testing.T) {
 	h := newOidcAdapterFixture(t)
-	req := withOidcTenantUserCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers/reload", nil))
+	// PLATFORM tenant, non-admin role: a non-PLATFORM tenant would be
+	// refused by the guard's tenant check alone, proving nothing about the
+	// role check this test targets.
+	req := withPlatformNonAdminCtx(httptest.NewRequest(http.MethodPost, "/oauth/oidc/providers/reload", nil))
 	rr := httptest.NewRecorder()
 
 	h.ReloadOidcProviders(rr, req)
