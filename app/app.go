@@ -98,8 +98,9 @@ type App struct {
 
 func New(cfg Config) *App {
 	// Invariants this function's own wiring depends on (worker-pool sizing,
-	// heartbeat/stale-after cadence). Checked here rather than only in the
-	// binary so an in-process embedder gets them too — see Config.Validate.
+	// heartbeat/stale-after cadence, IAM mode admitting only "mock" or
+	// "jwt"). Checked here rather than only in the binary so an in-process
+	// embedder gets them too — see Config.Validate.
 	if err := cfg.Validate(); err != nil {
 		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
 		os.Exit(1)
