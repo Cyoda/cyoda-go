@@ -113,7 +113,7 @@ func BuildSampler(cfg SamplerConfig) (sdktrace.Sampler, error) {
 		}
 		inner = sdktrace.TraceIDRatioBased(cfg.Ratio)
 	default:
-		return nil, fmt.Errorf("unknown sampler type: %q", cfg.Sampler)
+		return nil, fmt.Errorf("unknown sampler type: accepted values are always, never, ratio")
 	}
 	if cfg.ParentBased {
 		inner = sdktrace.ParentBased(inner)

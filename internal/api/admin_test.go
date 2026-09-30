@@ -543,6 +543,36 @@ func TestHandleSetTraceSampler_InvalidSamplerType(t *testing.T) {
 	}
 }
 
+// TestHandleSetTraceSampler_UnknownType_400 asserts the 400 does not echo
+// the submitted sampler value back to the client (it can be up to the 1 MiB
+// body bound, and would otherwise be logged), and instead names the
+// accepted values — matching TestHandleSetLogLevel_UnknownLevel_400's
+// pattern for the log-level endpoint.
+func TestHandleSetTraceSampler_UnknownType_400(t *testing.T) {
+	prev := observability.Sampler.Config()
+	t.Cleanup(func() { _ = observability.Sampler.SetSampler(prev) })
+
+	payload := `{"sampler":"bogus"}`
+	req := operatorContext(httptest.NewRequest(http.MethodPost, "/admin/trace-sampler", strings.NewReader(payload)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	api.NewAdminHandlers(auth.OperatorGuard{}).SetTraceSampler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d, body=%s", rec.Code, rec.Body.String())
+	}
+	detail := problemDetail(t, rec)
+	if strings.Contains(detail, "bogus") {
+		t.Fatalf("detail echoes the submitted value: %q", detail)
+	}
+	for _, sampler := range []string{"always", "never", "ratio"} {
+		if !strings.Contains(detail, sampler) {
+			t.Fatalf("detail %q does not list accepted value %q", detail, sampler)
+		}
+	}
+}
+
 func TestHandleSetTraceSampler_RatioOnNonRatio(t *testing.T) {
 	prev := observability.Sampler.Config()
 	t.Cleanup(func() { _ = observability.Sampler.SetSampler(prev) })
