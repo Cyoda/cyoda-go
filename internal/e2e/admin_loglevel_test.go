@@ -94,3 +94,21 @@ func TestAdminLogLevel_BadRequests(t *testing.T) {
 		})
 	}
 }
+
+// TestAdminLogLevel_UnknownLevel asserts the wired route answers 400 for a
+// level outside the accepted set, and that a subsequent GET shows the level
+// was left unchanged rather than silently set to info.
+func TestAdminLogLevel_UnknownLevel(t *testing.T) {
+	original := getLogLevelE2E(t)
+
+	resp := doAuthAgainst(t, serverURL, platformToken(t), http.MethodPost, "/api/admin/log-level", `{"level":"verbose"}`)
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d, want 400; body: %s", resp.StatusCode, body)
+	}
+	assertErrorCode(t, body, "BAD_REQUEST")
+
+	if now := getLogLevelE2E(t); now != original {
+		t.Errorf("GET after a refused unknown level: level=%q, want unchanged %q", now, original)
+	}
+}
