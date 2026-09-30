@@ -81,7 +81,10 @@ curl -H "Authorization: Bearer $TOKEN" 'http://localhost:8080/api/oauth/keys/key
 # Create the recommended PLATFORM admin M2M client
 # (server started with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true)
 TOKEN=$(cyoda token --tenant PLATFORM)
-(umask 077; curl -H "Authorization: Bearer $TOKEN" -X POST \
+# rm -f first: curl keeps the mode of a file that already exists.
+# --fail: an error answer is not saved as if it were the credential.
+rm -f platform-client.json
+(umask 077; curl --fail -H "Authorization: Bearer $TOKEN" -X POST \
   'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json)
 # Move client_id and client_secret into a secret store kept like
 # CYODA_JWT_SIGNING_KEY (the secret is shown only once), then delete the file.

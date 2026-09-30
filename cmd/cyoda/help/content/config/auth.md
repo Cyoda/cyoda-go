@@ -267,7 +267,9 @@ grace period: `invalidateGracePeriodSec: N` on a rotation, or
 its `validTo` to N seconds from now, never later than its current
 `validTo`. The default is 0: it stops verifying at once on the node that
 takes the call, and on each other node once that node applies the change
-(see *Shared and persisted* below). JWKS publishes a key pair from its
+(see *Shared and persisted* below), plus the clock offset between nodes: the
+node that takes the call stamps `validTo` from its own clock, and each node
+checks it against its own. JWKS publishes a key pair from its
 issue (ahead of its window, if `validFrom` is in the future) until it can
 no longer verify. A node that has not yet applied an invalidation can still
 sign with the key pair until it does; with a grace period, those tokens
@@ -357,53 +359,106 @@ new window has opened.
 
 #### A leaked platform admin-client secret
 
-This applies while the bootstrap key is revoked, so issued `client` key
-pairs sign every `/oauth/token` token. Until the procedure ends, whoever
-holds the secret is a platform operator. Resetting the secret is not
-enough: verification does not check that a client still exists, so a token
-the attacker holds verifies until it expires, and with it they can reset
-the secret again and read the new one. Revoking one key pair by id is not
-enough either: the attacker can hold tokens from several key pairs, and
-invalidating or deleting the pair that signs leaves no signer (see *No
-signer* below), so `/oauth/token` fails for every tenant, your replacement
-client included.
+Assume whoever holds the secret can act as a platform operator until this
+procedure has taken effect on every node: they can create, reset and delete
+`PLATFORM`'s M2M clients and trusted keys, issue, invalidate and reactivate
+key pairs, and change each node's log level and trace sampler. Verification
+does not check that a client still exists, so deleting the client or
+resetting its secret does not end a token they hold. Contain first, then
+clean up, verify and restore.
 
-1. With a platform-operator token, create a replacement admin client in
-   `PLATFORM` (`POST /clients?withAdminRole=true`, which needs
-   `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`) and store its `client_id` and
-   `client_secret`. If the tenant is at its client cap
-   (`400 M2M_CLIENT_CAP_REACHED`), do step 3 first.
-2. `DELETE /clients/{clientId}` the leaked client.
-3. List `PLATFORM`'s M2M clients (`GET /clients`) and trusted keys
-   (`GET /oauth/keys/trusted`; `404 FEATURE_DISABLED` means there are none),
-   and delete each one you did not create. A trusted key and any client of
-   the tenant are enough to exchange for a `PLATFORM` admin token.
-4. End every outstanding token with a rotation: `POST /oauth/keys/keypair`
-   with `algorithm: RS256`, `audience: client`, `invalidateCurrent: true`
-   and `invalidateGracePeriodSec: 0`. This invalidates every issued `client`
-   key pair that has not ended, including one issued ahead of time, and the
-   new pair signs. Every tenant's M2M and token-exchange tokens stop
-   verifying, yours included, and clients fetch new ones.
-5. Once every node has applied the rotation (see *Shared and persisted*
-   above), get a token with the replacement client.
-   `GET /oauth/keys/keypair/current?audience=client` must name the new pair;
-   if it does not, repeat from step 3. Invalidate with `gracePeriodSec: 0`
-   every other key id that `/.well-known/jwks.json` lists, for example the
-   bootstrap key if it was reactivated: none of them signs `client` tokens,
-   so the new pair keeps signing. Once every node has applied that too, list
-   as in step 3. If anything new appears, delete it and repeat steps 4
-   and 5.
-6. Look for what the attacker did in the INFO logs `M2M client created` and
-   `M2M client secret rotated` with `tenantId=PLATFORM`. The key-pair and
-   trusted-key endpoints log no such line; step 5 shows their result.
+**1. Contain.** Block client traffic to the HTTP and gRPC APIs at the load
+balancer or network edge, leaving the traffic between nodes open, so that
+only you can reach the nodes (for example from inside the cluster). This
+stops service for every tenant. Keep the block until step 6.
 
-Until the rotation applies on every node, the attacker can also delete or
-reset your replacement client. If that happens, or the loop does not end,
-use the route that needs no token: do steps 2 and 3 if you can, set a new
-`CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair
-and ends every token cyoda-go signed, then list and delete as in step 3
-with a token from `cyoda token --tenant PLATFORM`. If that list shows
-anything you did not create, delete it and replace the key again.
+**2. Get in** with a platform-operator token: `cyoda token --tenant
+PLATFORM` while the bootstrap key verifies, an unexpired operator token
+you hold, or `/oauth/token` with an admin client of `PLATFORM` whose
+secret you hold, the leaked one included. If none works, use the new
+signing key below.
+
+**3. Clean `PLATFORM`.**
+
+- On every node, check `GET /admin/log-level` and
+  `GET /admin/trace-sampler`, and undo any change you did not make. Both
+  are per node. At a level above `info`, the lines step 5 reads are not
+  written.
+- Delete every M2M client you do not need (`DELETE /clients/{clientId}`).
+- Reset the secret of every client you keep
+  (`PUT /clients/{clientId}/secret`), the leaked one too if you keep it.
+  A reset by the attacker shows only in `lastUpdateDate` and a log line.
+- After step 4 you need an admin client in `PLATFORM` whose new secret
+  you hold. If you keep none, create one
+  (`POST /clients?withAdminRole=true`, which needs
+  `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`; the tenant client cap applies)
+  and store its `client_id` and `client_secret`. If you cannot, use the
+  new signing key below.
+- Trusted keys. A trusted key of `PLATFORM` and any client of the tenant
+  exchange for a token with the roles the subject token names. Keys
+  registered while `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` was on
+  still verify exchanges when it is off, but the trusted-key endpoints
+  then answer `404 FEATURE_DISABLED`. If registration is on, or was on at
+  any time since the secret could have leaked, turn it on for the node you
+  call (it is read at startup), list the keys (`GET /oauth/keys/trusted`)
+  and delete every key you did not register.
+
+**4. End every outstanding token.**
+
+- Rotate: `POST /oauth/keys/keypair` with `algorithm: RS256`,
+  `audience: client`, `invalidateCurrent: true` and
+  `invalidateGracePeriodSec: 0`. This invalidates every issued `client`
+  key pair that has not ended, including one issued ahead of time, and
+  the new pair signs. Do not invalidate or delete the signing pair
+  instead: that can leave no signer when no other `client` key pair is
+  active and inside its window (see *No signer* below).
+- Once every node has applied the rotation (see *Shared and persisted*
+  above), get a token from `/oauth/token` with your admin client.
+  `GET /oauth/keys/keypair/current?audience=client` must name the new
+  pair.
+- Invalidate with `gracePeriodSec: 0` every other key id that
+  `/.well-known/jwks.json` lists. This includes the bootstrap key if it
+  is listed and its audience is `client`, which ends `cyoda token` (to
+  bring it back later, see *Emergency revocation of a leaked token*
+  above). You may keep `human` key pairs you issued yourself, since
+  nothing signs a `/oauth/token` token with a `human` key; JWKS does not
+  show a key's audience, so keep only key ids you know. Do not invalidate
+  the pair `/current` names.
+- Every tenant's M2M and token-exchange tokens stop verifying, and
+  clients fetch new ones.
+
+**5. Verify on every node,** once every change has applied everywhere (see
+*Shared and persisted* above), plus the clock offset between nodes (see
+the grace period above):
+
+- JWKS lists only the new pair and the `human` key pairs you kept.
+- `/current?audience=client` names the new pair.
+- `GET /clients` shows only the clients you kept or created, each with a
+  `lastUpdateDate` from your own change.
+- The trusted-key list, if you listed it, shows only your keys.
+- `GET /admin/log-level` is `info` or `debug`.
+
+If anything is off, go back to step 3. Then read the logs of every node
+since the secret could have leaked. The INFO lines `M2M client created`,
+`M2M client deleted` and `M2M client secret rotated` with
+`tenantId=PLATFORM`, `log level changed` and `trace sampler changed` show
+what was done. Setting a level above `info` writes no line, and no INFO
+line is written while it stays there. The key-pair and trusted-key
+endpoints log no INFO line; the checks above show their result. A line written after step 1 that you did not cause means someone
+still reaches the API: fix the block and start again from step 2.
+
+**6. Restore.** Give the new secrets to their owners, turn off again what
+you turned on in step 3, and lift the block.
+
+**Alternative to step 4.** During the block, set a new
+`CYODA_JWT_SIGNING_KEY` on every node and restart every node. Once every
+node runs with it, every token cyoda-go signed stops verifying and every
+issued key pair is retired (see *Replacing `CYODA_JWT_SIGNING_KEY`* above).
+`cyoda token --tenant PLATFORM` with the new key is then the way in, so
+step 3 needs no admin client. Steps 3 and 5 still apply: M2M clients and
+trusted keys survive the change. In step 5, JWKS and `/current` show the new
+bootstrap key, or a pair you issued since. The restart also resets each
+node's log level and trace sampler to their configuration.
 
 #### Recovering from a `/oauth/token` 500
 
@@ -451,8 +506,9 @@ why:
   are unaffected. A rotation with `invalidateCurrent: true` also ends the
   pair, and also invalidates the audience's other issued key pairs that have
   not ended, including one issued ahead of time; tokens they signed stop
-  verifying as each node applies the change, or when the
-  `invalidateGracePeriodSec` grace period ends.
+  verifying as each node applies the change (plus the clock offset between
+  nodes, see above), or when the `invalidateGracePeriodSec` grace period
+  ends.
   With neither token: set a new `CYODA_JWT_SIGNING_KEY` on every node, get
   a token from `cyoda token --tenant PLATFORM`, then invalidate or `DELETE`
   the pair. This retires every issued key pair the old key sealed.
@@ -533,8 +589,9 @@ or a reactivation gave it a window that has since ended.
   the audience's other issued key pairs unaffected, unless
   `invalidateCurrent: true` is set, which also invalidates them (a running
   grace period included), including one issued ahead of time; tokens they
-  signed stop verifying as each node applies the change, or when the
-  `invalidateGracePeriodSec` grace period ends.
+  signed stop verifying as each node applies the change (plus the clock
+  offset between nodes, see above), or when the `invalidateGracePeriodSec`
+  grace period ends.
   Reactivation works only if the bootstrap key was invalidated or its
   window ended: a deleted bootstrap key cannot be reactivated (`404`). It
   makes the tokens the bootstrap key signed earlier verify again until they
