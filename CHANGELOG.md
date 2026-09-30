@@ -9,6 +9,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **`CYODA_IAM_MODE` must be `mock` or `jwt`.** Any other value used to start
   the server with mock authentication, so every request ran as the mock
   admin, and without the mock-mode warning. The server now refuses to start.
+  This is enforced in `app.New` itself, so every binary built on it — not
+  only the `cyoda` binary's own startup checks — is covered. `CYODA_REQUIRE_JWT`
+  and the CORS allowlist settings are now enforced there too.
 
 - **The bootstrap M2M client is removed; `cyoda token` signs the first admin
   token.** `CYODA_BOOTSTRAP_CLIENT_ID`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,

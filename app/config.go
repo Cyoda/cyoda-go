@@ -785,7 +785,13 @@ func (c Config) Validate() error {
 	if err := ValidateScheduler(c.Scheduler); err != nil {
 		return err
 	}
-	return ValidateHTTP(c.HTTP)
+	if err := ValidateHTTP(c.HTTP); err != nil {
+		return err
+	}
+	if err := ValidateIAM(c.IAM); err != nil {
+		return err
+	}
+	return ValidateCORS(c.CORS)
 }
 
 // ValidateGRPCKeepAlive rejects a keep-alive interval or timeout that is not

@@ -18,6 +18,7 @@ func validConfig() Config {
 		Callout:                    validCalloutConfig(),
 		Cluster:                    validDispatchConfig(),
 		Scheduler:                  defaultSchedulerConfig(),
+		IAM:                        IAMConfig{Mode: "mock", AuthCacheReconcileInterval: time.Minute},
 	}
 }
 
@@ -46,6 +47,10 @@ func TestConfig_Validate(t *testing.T) {
 		{"negative patience", func(c *Config) { c.Cluster.DispatchWaitTimeout = -time.Second }},
 		{"zero pass allowance", func(c *Config) { c.Callout.PassAllowance = 0 }},
 		{"stale-after below its minimum", func(c *Config) { c.Scheduler.StaleAfter = 94 * time.Second }},
+		{"unknown IAM mode", func(c *Config) { c.IAM.Mode = "JWT" }},
+		{"invalid CORS config", func(c *Config) {
+			c.CORS = CORSConfig{Enabled: true, Wildcard: true, AllowedOrigins: []string{"https://example.com"}}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
