@@ -53,9 +53,50 @@ under the same ticket:
 - OIDC providers are not scoped to a tenant
   (`platform-service-iam/.../oidc/JWKOIDCService.kt:188-200`).
 
+## CaaS ticket to file
+
+**Title:** `[CaaS] Platform operator: only ROLE_ADMIN in tenant PLATFORM may manage signing key pairs and reload OIDC providers`
+
+**Description:**
+
+In cyoda-go, a tenant admin can no longer manage state that every tenant
+shares. Only a platform operator can: a caller with `ROLE_ADMIN` whose tenant
+(legal entity) is exactly `PLATFORM`. Cloud must follow the same contract
+(full contract: `docs/cloud-parity/platform-operator.md` in cyoda-go).
+
+Why: signing key pairs sign and verify the tokens of every tenant. Today an
+admin of any tenant can invalidate or delete them, which stops token
+verification for every tenant.
+
+Prerequisites. The rule is safe only if no tenant admin can obtain a
+principal in `PLATFORM`. Cloud does not guarantee that today:
+- Cloud takes the legal entity of any JWT from its `caas_org_id` claim,
+  including a token from a tenant-registered OIDC provider or trusted key
+  (`AbstractCaasOidcComponents.kt:47-54,158-168`). The legal entity of an
+  externally issued token must come from the provider's or key's owner.
+- An external token must not be able to claim `PLATFORM` or `SYSTEM`.
+  (`SYSTEM` also skips entitlement enforcement, `CyodaEntitlements.kt:72-73`.)
+
+Required behaviour, after the prerequisites:
+- `issueJwtKeyPair`, `getCurrentJwtKeyPair`, `invalidateJwtKeyPair`,
+  `reactivateJwtKeyPair`, `deleteJwtKeyPair` and `reloadOidcProviders`
+  require `ROLE_ADMIN` in tenant `PLATFORM`.
+- An authenticated caller who is not a platform operator gets `403`, not
+  `401`. Today a role denial answers `401` (`TdbRestControllerAdvice.kt:41-58`),
+  although Cloud's OpenAPI documents `403`.
+
+Defects found in Cloud during this work:
+- The key-pair invalidate, reactivate and delete endpoints find a key by
+  `keyId` only (`StoredJWKService.kt:587-596`). They also reach other tenants'
+  trusted keys and OIDC keys.
+- Cloud's Auth0 login action gives `SUPER_USER` to every user
+  (`scripts/auth0/action-setup-cyoda-token-claims.js:22`). `SUPER_USER` gives
+  no platform-level right in this contract.
+- OIDC providers are not scoped to a tenant (`JWKOIDCService.kt:188-200`).
+
 ## Cloud action
 
-CaaS ticket: pending.
+CaaS ticket: pending (see "CaaS ticket to file" above).
 
 1. Meet the two prerequisites above before adopting the rule: bind an
    externally issued token's legal entity to its provider's or key's owner,
