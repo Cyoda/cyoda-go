@@ -37,7 +37,7 @@ Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `
 {"level": "info"}
 ```
 
-`POST /api/admin/log-level` changes the level atomically. Request body: `{"level": "<level>"}`. Response: `{"level": "<new>", "previous": "<old>"}`. Valid values: `debug`, `info`, `warn`, `error`. An unrecognised value answers `400 BAD_REQUEST` naming the accepted values; the level is left unchanged.
+`POST /api/admin/log-level` changes the level atomically. Request body: `{"level": "<level>"}`. Response: `{"level": "<new>", "previous": "<old>"}`. Valid values: `debug`, `info`, `warn` (alias `warning`), `error`. An unrecognised value answers `400 BAD_REQUEST` naming the accepted values; the level is left unchanged. Both admin POST bodies are limited to 1 MiB; an oversize body is also refused with `400 BAD_REQUEST`.
 
 ### trace-sampler
 
@@ -50,6 +50,12 @@ Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `
 `POST /api/admin/trace-sampler` changes the sampler atomically. Body shape mirrors the GET response. Valid `sampler` values: `always`, `never`, `ratio`. When `sampler` is `ratio`, `ratio` must be a float in `(0, 1]`. Use `sampler: never` for zero sampling — `ratio: 0` is rejected.
 
 ## EXAMPLES
+
+Both endpoints need a platform operator token:
+
+```
+TOKEN=$(cyoda token --tenant PLATFORM)
+```
 
 ```
 # Read current log level
