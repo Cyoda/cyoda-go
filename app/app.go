@@ -256,9 +256,9 @@ func New(cfg Config) *App {
 
 	// The platform-wide admin endpoints accept only a platform operator. Mock
 	// mode has one fixed principal, so there the operator check is the admin
-	// check. Config.Validate (called above, and unconditionally on every
-	// app.New caller) runs ValidateIAM first, which admits only "mock" and
-	// "jwt" — no other value reaches the branch below.
+	// check. Config.Validate (run at the top of New, and unconditionally on
+	// every app.New caller) admits only "mock" and "jwt" — no other value
+	// reaches the branch below.
 	operatorGuard := auth.OperatorGuard{}
 	if cfg.IAM.Mode == "mock" {
 		operatorGuard = auth.MockOperatorGuard()

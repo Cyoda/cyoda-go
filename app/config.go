@@ -1001,8 +1001,8 @@ func ValidateHTTP(c HTTPConfig) error {
 // is set, mock mode is rejected and the signing key must be present. In JWT
 // mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
 // env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
-// etc. fail startup rather than being silently ignored.
-// Callers must invoke this before wiring auth in New().
+// etc. fail startup rather than being silently ignored. Called from
+// Config.Validate, which New runs before wiring auth.
 func ValidateIAM(iam IAMConfig) error {
 	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
 	// can never silently fall back to unauthenticated access.

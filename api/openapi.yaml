@@ -672,10 +672,10 @@ paths:
 
 
         When `withAdminRole` is set to `true`, the M2M client will additionally
-        receive the ADMIN role,
+        receive ROLE_ADMIN,
 
-        granting it full access to all ADMIN-level endpoints (e.g., trusted key
-        registration).
+        granting it full access to every ROLE_ADMIN-gated endpoint (e.g.,
+        trusted key registration).
 
         This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
         flag to be set to `true`;
@@ -689,8 +689,8 @@ paths:
       parameters:
         - name: withAdminRole
           in: query
-          description: "When true, the created M2M client will additionally receive the
-            ADMIN role. Requires the M2M admin role feature flag to be enabled.
+          description: "When true, the created M2M client will additionally receive
+            ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
             "
           required: false
           schema:

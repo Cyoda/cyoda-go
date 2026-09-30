@@ -281,9 +281,8 @@ func TestHandleSetLogLevel_EmptyLevel(t *testing.T) {
 }
 
 // TestHandleSetLogLevel_UnknownLevel_400 asserts that an unrecognised level
-// is refused with 400 rather than silently substituted with info (the
-// previous ParseLevel-in-the-handler behaviour) — the level itself is left
-// unchanged.
+// is refused with 400 rather than silently substituted with info, and that
+// the level itself is left unchanged.
 func TestHandleSetLogLevel_UnknownLevel_400(t *testing.T) {
 	logging.Level.Set(slog.LevelWarn)
 

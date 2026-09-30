@@ -96,11 +96,10 @@ type Tenant struct {
 	// ID is the tenant id the token carries in the "caas_org_id" claim: a
 	// fresh UUID for NewTenant, "system-tenant" for ComputeTenant, or
 	// "PLATFORM" for PlatformOperator. Kept as string (not uuid.UUID) so the
-	// parity package
-	// does not pull github.com/google/uuid into its import graph beyond what
-	// the generated OpenAPI client already requires. Cyoda's generated API
-	// types use the string form for tenant IDs on the wire, so the parity
-	// types match the wire shape.
+	// parity package does not pull github.com/google/uuid into its import
+	// graph beyond what the generated OpenAPI client already requires.
+	// Cyoda's generated API types use the string form for tenant IDs on the
+	// wire, so the parity types match the wire shape.
 	ID string
 
 	// Token is the signed JWT used in the Authorization header. Never log

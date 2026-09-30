@@ -48,12 +48,13 @@ func TestNew_InvalidSearchAsyncConfigExits(t *testing.T) {
 }
 
 // TestNew_UnknownIAMModeExits asserts app.New itself refuses an unrecognised
-// CYODA_IAM_MODE instead of silently wiring mock auth for it. Before this,
-// ValidateIAM was only called from cmd/cyoda/main.go, so an in-process
-// embedder of app.New (the cyoda-go-cassandra binary, any other host built
-// on app.New) that skipped that call would reach app.New's `if mode ==
-// "jwt" { ... } else { mock }` branch and run every request as the mock
-// admin for a typo'd mode such as "JWT".
+// CYODA_IAM_MODE instead of silently wiring mock auth for it. Config.Validate
+// (called unconditionally by every app.New caller, not only
+// cmd/cyoda/main.go's own startup checks) is what guarantees this: an
+// in-process embedder of app.New (the cyoda-go-cassandra binary, any other
+// host built on app.New) gets the same guard, so a typo'd mode such as "JWT"
+// cannot reach app.New's `if mode == "jwt" { ... } else { mock }` branch and
+// run every request as the mock admin.
 func TestNew_UnknownIAMModeExits(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
 		cfg := app.DefaultConfig()
@@ -86,8 +87,8 @@ func TestNew_UnknownIAMModeExits(t *testing.T) {
 // TestNew_RequireJWTWithMockModeExits asserts app.New itself refuses
 // CYODA_REQUIRE_JWT=true combined with CYODA_IAM_MODE=mock, rather than
 // silently starting in mock (unauthenticated-by-default) mode. Same
-// embedder-bypass rationale as TestNew_UnknownIAMModeExits: only
-// cmd/cyoda/main.go called ValidateIAM before this fix.
+// Config.Validate guarantee as TestNew_UnknownIAMModeExits, reaching every
+// app.New caller, not only cmd/cyoda/main.go's own startup checks.
 func TestNew_RequireJWTWithMockModeExits(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
 		cfg := app.DefaultConfig()

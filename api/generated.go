@@ -3506,7 +3506,7 @@ type GetStateMachineFinishedEventParams struct {
 
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
-	// WithAdminRole When true, the created M2M client will additionally receive the ADMIN role. Requires the M2M admin role feature flag to be enabled.
+	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
 }
 
