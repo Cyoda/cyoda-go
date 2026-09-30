@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -35,25 +36,36 @@ func guardErrorCode(t *testing.T, body []byte) string {
 	return code
 }
 
+// guardProblemDetail decodes an RFC 9457 body and returns its detail field.
+func guardProblemDetail(t *testing.T, body []byte) string {
+	t.Helper()
+	var pd common.ProblemDetail
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("decode problem detail %s: %v", body, err)
+	}
+	return pd.Detail
+}
+
 func TestOperatorGuard(t *testing.T) {
 	cases := []struct {
-		name     string
-		guard    auth.OperatorGuard
-		uc       *spi.UserContext
-		wantOK   bool
-		wantCode int
-		wantErr  string
+		name       string
+		guard      auth.OperatorGuard
+		uc         *spi.UserContext
+		wantOK     bool
+		wantCode   int
+		wantErr    string
+		wantDetail string
 	}{
-		{"jwt: no user context", auth.OperatorGuard{}, nil, false, 401, "UNAUTHORIZED"},
-		{"jwt: tenant admin", auth.OperatorGuard{}, guardUC("acme", "ROLE_ADMIN"), false, 403, "FORBIDDEN"},
-		{"jwt: PLATFORM admin", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_ADMIN"), true, 0, ""},
-		{"jwt: PLATFORM admin among other roles", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_M2M", "ROLE_ADMIN"), true, 0, ""},
-		{"jwt: PLATFORM without ROLE_ADMIN", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_M2M"), false, 403, "FORBIDDEN"},
-		{"jwt: lower-case platform admin", auth.OperatorGuard{}, guardUC("platform", "ROLE_ADMIN"), false, 403, "FORBIDDEN"},
-		{"jwt: SYSTEM admin", auth.OperatorGuard{}, guardUC("SYSTEM", "ROLE_ADMIN"), false, 403, "FORBIDDEN"},
-		{"mock: no user context", auth.MockOperatorGuard(), nil, false, 401, "UNAUTHORIZED"},
-		{"mock: admin in any tenant", auth.MockOperatorGuard(), guardUC("mock-tenant", "ROLE_ADMIN"), true, 0, ""},
-		{"mock: no ROLE_ADMIN", auth.MockOperatorGuard(), guardUC("mock-tenant", "ROLE_M2M"), false, 403, "FORBIDDEN"},
+		{"jwt: no user context", auth.OperatorGuard{}, nil, false, 401, "UNAUTHORIZED", "authentication failed"},
+		{"jwt: tenant admin", auth.OperatorGuard{}, guardUC("acme", "ROLE_ADMIN"), false, 403, "FORBIDDEN", "platform operator required"},
+		{"jwt: PLATFORM admin", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_ADMIN"), true, 0, "", ""},
+		{"jwt: PLATFORM admin among other roles", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_M2M", "ROLE_ADMIN"), true, 0, "", ""},
+		{"jwt: PLATFORM without ROLE_ADMIN", auth.OperatorGuard{}, guardUC("PLATFORM", "ROLE_M2M"), false, 403, "FORBIDDEN", "platform operator required"},
+		{"jwt: lower-case platform admin", auth.OperatorGuard{}, guardUC("platform", "ROLE_ADMIN"), false, 403, "FORBIDDEN", "platform operator required"},
+		{"jwt: SYSTEM admin", auth.OperatorGuard{}, guardUC("SYSTEM", "ROLE_ADMIN"), false, 403, "FORBIDDEN", "platform operator required"},
+		{"mock: no user context", auth.MockOperatorGuard(), nil, false, 401, "UNAUTHORIZED", "authentication failed"},
+		{"mock: admin in any tenant", auth.MockOperatorGuard(), guardUC("mock-tenant", "ROLE_ADMIN"), true, 0, "", ""},
+		{"mock: no ROLE_ADMIN", auth.MockOperatorGuard(), guardUC("mock-tenant", "ROLE_M2M"), false, 403, "FORBIDDEN", "platform operator required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,6 +85,9 @@ func TestOperatorGuard(t *testing.T) {
 			}
 			if got := guardErrorCode(t, w.Body.Bytes()); got != tc.wantErr {
 				t.Errorf("errorCode = %q, want %q", got, tc.wantErr)
+			}
+			if got := guardProblemDetail(t, w.Body.Bytes()); !strings.Contains(got, tc.wantDetail) {
+				t.Errorf("detail = %q, want it to contain %q", got, tc.wantDetail)
 			}
 		})
 	}
