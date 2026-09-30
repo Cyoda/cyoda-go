@@ -3261,3 +3261,64 @@ func RunOidcReload_AfterReactivateKeepsTokenAcceptance(t *testing.T, fix Backend
 	}
 	assertProbeStatus(t, http.StatusOK, status, body)
 }
+
+// RunOidcEmptyPatchRefreshesKeys verifies that a no-op PATCH (empty body) on
+// a tenant's own provider forces an immediate JWKS refresh, as README and
+// oidc.md document. This is not exercised by an unknown-kid probe: GetKey
+// already refetches on any cache miss on its own (httpJWKSSource.GetKey),
+// so a newly-rotated kid is picked up without any PATCH — see
+// RunOidcKeyRotation_NewKidAccepted. What the PATCH adds is forcing that
+// refetch on a kid the cache already holds fresh (not stale, not missing):
+// after DefaultKid is revoked upstream, the still-warm cache keeps accepting
+// it until something forces a refresh. The empty PATCH is that trigger
+// (Service.Update calls registry.reloadOne, which installs a fresh,
+// empty-cache key source) — without it, the revoked kid keeps validating.
+func RunOidcEmptyPatchRefreshesKeys(t *testing.T, fix BackendFixture) {
+	admin := fix.NewTenant(t)
+	adminC := client.NewClient(fix.BaseURL(), admin.Token)
+
+	idp := NewParityFixtureIdP(t)
+	p, err := adminC.RegisterOidcProvider(t, map[string]any{
+		"wellKnownConfigUri": idp.WellKnownURI(),
+	})
+	if err != nil {
+		t.Fatalf("RegisterOidcProvider: %v", err)
+	}
+
+	token := idp.MintTenantJWT(t, idp.DefaultKid, admin.ID)
+	probeC := client.NewClient(fix.BaseURL(), token)
+
+	// Baseline: accepted (warms the JWKS cache with DefaultKid).
+	status, body, err := probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("baseline ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// Revoke DefaultKid at the mock IdP. The registry's cache is still warm
+	// and not stale, so nothing has told it to look again yet.
+	idp.RevokeKey(t, idp.DefaultKid)
+
+	// Without a forced refresh, the still-warm cache keeps accepting the
+	// revoked kid — this is what distinguishes the PATCH's effect from an
+	// ordinary cache-miss refetch.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("pre-patch ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusOK, status, body)
+
+	// The empty PATCH: no field changes, but it forces reloadOne, which
+	// installs a fresh key source with an empty cache.
+	if _, err := adminC.UpdateOidcProvider(t, p.ID, map[string]any{}); err != nil {
+		t.Fatalf("UpdateOidcProvider (empty patch): %v", err)
+	}
+
+	// The fresh source's first GetKey call re-fetches the JWKS, which no
+	// longer contains DefaultKid → rejected.
+	status, body, err = probeC.ProbeAuthRaw(t)
+	if err != nil {
+		t.Fatalf("post-patch ProbeAuthRaw transport: %v", err)
+	}
+	assertProbeStatus(t, http.StatusUnauthorized, status, body)
+}

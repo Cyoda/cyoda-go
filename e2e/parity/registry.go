@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 302 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 303 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -315,6 +315,7 @@ var allTests = []NamedTest{
 	// Reload endpoint keeps warm key sources in service.
 	{"OidcReload_PreservesTokenAcceptance", RunOidcReload_PreservesTokenAcceptance},
 	{"OidcReload_AfterReactivateKeepsTokenAcceptance", RunOidcReload_AfterReactivateKeepsTokenAcceptance},
+	{"OidcEmptyPatchRefreshesKeys", RunOidcEmptyPatchRefreshesKeys},
 	// Key rotation/revocation (rows 22-26b).
 	{"OidcKeyRotation_NewKidAccepted", RunOidcKeyRotation_NewKidAccepted},
 	{"OidcKeyRotation_OldKidStillAccepted", RunOidcKeyRotation_OldKidStillAccepted},
