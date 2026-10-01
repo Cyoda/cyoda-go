@@ -309,12 +309,9 @@ default `validFrom`; see above).
   platform admin-client secret* below with the token in place of the
   secret: it can create clients and trusted keys, and verification does not
   check that a client still exists.
-- If it carries `ROLE_ADMIN` in another tenant, also clean that tenant.
-  Delete the M2M clients you do not need, and reset the secret of every
-  client you keep. Clean its trusted keys as step 3 of *A leaked platform
-  admin-client secret* does. Delete every OIDC provider of the tenant and
-  register again the ones you need from your own records: an admin can
-  also change or reactivate a provider.
+- If it carries `ROLE_ADMIN` in another tenant, follow *A leaked admin
+  token of another tenant* under *A leaked platform admin-client secret*
+  below.
 
 Revoking a key pair ends no open connection. A compute-node gRPC stream is
 authenticated only when it opens, so a stream opened with the leaked token
@@ -385,6 +382,29 @@ Verification does not check that a client still exists, so deleting the
 client or resetting its secret does not end a token they hold. Contain
 first, then clean up, verify and restore.
 
+**A leaked admin token of another tenant.** Follow this procedure with the
+token in place of the secret, and apply steps 2, 3 and 5 to that tenant as
+well as to `PLATFORM`. Its holder can create clients and trusted keys in
+the tenant as the flags allow, and, if the tenant id is a UUID, OIDC
+providers with no flag. Neither step 4 nor a new signing key ends a
+provider's tokens; deleting the provider does. The client, trusted-key and
+OIDC-provider endpoints act on the caller's own tenant, so you need an
+admin token of that tenant.
+
+- Step 2: `cyoda token --tenant <id>`. It stops verifying in step 4.
+- Step 3: first delete every OIDC provider of the tenant
+  (`GET /oauth/oidc/providers`, then `DELETE /oauth/oidc/providers/{id}`).
+  Then clean its clients and trusted keys as for `PLATFORM`, and register
+  again the providers you need from your own records. A provider
+  registered again refuses tokens whose `iat` is more than 30 seconds
+  before its registration; a token with no `iat` verifies again.
+- Step 5: use an admin client of the tenant whose new secret you hold, or,
+  after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
+  provider list shows only the providers you registered again.
+- A leaked token whose `iss` is not `CYODA_JWT_ISSUER` came from an OIDC
+  provider of the tenant. No key pair signs it; deleting the provider in
+  step 3 ends it.
+
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new
 `CYODA_JWT_SIGNING_KEY` at the restart in step 1: it removes every client,
@@ -393,7 +413,11 @@ and 4 have nothing to clean. Give every later restart a new key too. Create
 the clients and trusted keys you need after the last restart, once
 `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` and
 `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` are set the way they will
-stay.
+stay. In step 5, JWKS lists the bootstrap key of the latest
+`CYODA_JWT_SIGNING_KEY`, and `/current?audience=client` names it. With
+`CYODA_JWT_BOOTSTRAP_AUDIENCE=human`, issue a `client` key pair after the
+last restart, as the *Alternative to step 4* says: JWKS lists it too, and
+`/current` names it.
 
 **1. Contain.** Stop client requests to the HTTP and gRPC APIs, on
 connections already open too, and leave the traffic between nodes open, so
@@ -410,13 +434,17 @@ block until step 6.
   because policies add up. Edit it so that those ports admit only the
   cyoda-go pods and the pod you work from; a `helm upgrade` restores it.
   With the chart's policy off, apply one with the same effect.
-- Check the block: from outside the cluster, and from a pod the policy
-  does not admit, requests to ports 8080 and 9090 must fail on every pod
-  IP and on the Service.
+- Check the block. From outside the cluster, requests to the Ingress or
+  Gateway host names of both APIs must fail, and, when `service.type` is
+  `NodePort` or `LoadBalancer`, so must requests to the external IP and to
+  the NodePort on every node. From a pod the policy does not admit,
+  requests to ports 8080 and 9090 must fail on every pod IP and on the
+  Service. If a request succeeds, fix the block before step 2.
 - Where the network plugin does not enforce NetworkPolicy (the chart's
   values tell such clusters to turn the policy off), or where host-network
   pods can reach the nodes, stop every workload in the cluster that is not
-  yours before step 2.
+  yours before step 2. On such a plugin, this replaces the check from a
+  pod.
 - A request through the Service reaches any node. To reach one node, call
   it from the pod you work from by its pod DNS name,
   `<name>-<n>.<name>-headless.<namespace>.svc.cluster.local`, where
@@ -505,7 +533,7 @@ signing keypair rotation*). Then check on every node:
 - `GET /admin/log-level` is the level the node starts with.
 
 If anything is off, go back to step 3. A node that fails to start in step
-5 stays stopped until it starts and passes these checks.
+5 stays out of service until it starts and passes these checks.
 
 Then read the logs of every node since the secret could have leaked. The
 INFO lines `M2M client created`, `M2M client deleted` and `M2M client
@@ -536,9 +564,10 @@ backend, see above), and start again from step 2.
 you turned on in step 3 (it is read at startup, so this is a restart; on
 the memory backend, see above), and lift the block.
 
-After step 4 the new pair is the only `client` signer. Its `validTo` is
-`CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` days (365 by default) after the
-rotation. Once it passes, `/oauth/token` cannot sign for any tenant, and
+Whichever `client` key pair you issued in step 4 or in the *Alternative
+to step 4* is then the only `client` signer. Its `validTo` is
+`CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` days (365 by default) after its
+issue. Once it passes, `/oauth/token` cannot sign for any tenant, and
 only a new signing key brings it back (see *No signer* below). Rotate
 before then. With the bootstrap audience `client`, you can instead
 reactivate the bootstrap key once the wait under *Emergency revocation of

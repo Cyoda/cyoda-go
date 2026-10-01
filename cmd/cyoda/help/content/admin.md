@@ -58,6 +58,9 @@ TOKEN=$(cyoda token --tenant PLATFORM)
 ```
 
 ```
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
+
 # Read current log level
 curl -H @- http://localhost:8080/api/admin/log-level \
   <<<"Authorization: Bearer $TOKEN"
