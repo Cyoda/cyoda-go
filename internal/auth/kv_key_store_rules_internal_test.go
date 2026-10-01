@@ -264,7 +264,10 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 		to        *time.Time
 		broken    bool
 		deleted   bool
-		wantOK    bool
+		// other: "retired", "unknown vault", "foreign bootstrap",
+		// "undecodable", or "absent" (no record at the kid).
+		other  string
+		wantOK bool
 	}{
 		{name: "owned active in window verifies", active: true, from: almostPast, wantOK: true},
 		{name: "owned inactive does not verify", active: false, from: almostPast, wantOK: false},
@@ -277,6 +280,12 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 		{name: "bootstrap state inactive with no validTo does not verify", bootstrap: true, active: false, from: time.Time{}, wantOK: false},
 		{name: "bootstrap state inactive with future validTo verifies", bootstrap: true, active: false, from: time.Time{}, to: &future, wantOK: true},
 		{name: "bootstrap state deleted with future validTo does not verify", bootstrap: true, active: false, from: time.Time{}, to: &future, deleted: true, wantOK: false},
+		{name: "retired record does not verify", active: true, from: almostPast, other: "retired", wantOK: false},
+		{name: "unknown vault kind does not verify", other: "unknown vault", wantOK: false},
+		{name: "foreign bootstrap state does not verify", active: true, other: "foreign bootstrap", wantOK: false},
+		{name: "undecodable record does not verify", other: "undecodable", wantOK: false},
+		{name: "absent kid does not verify", other: "absent", wantOK: false},
+		{name: "record at a key that is not a key id does not verify", other: "ignored", wantOK: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,7 +301,37 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 				t.Fatal(err)
 			}
 			kid := testKID("kid1")
+			put := func(b []byte) {
+				t.Helper()
+				if err := kv.Put(ctx, signingKeysNamespace, kid, b); err != nil {
+					t.Fatal(err)
+				}
+			}
 			switch {
+			case tc.other == "retired":
+				otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other, err := NewWrappedVault(otherKey, "other-boot")
+				if err != nil {
+					t.Fatal(err)
+				}
+				put(issuedRecordFull(t, other, kid, "human", tc.active, tc.from, tc.to))
+			case tc.other == "unknown vault":
+				put(unknownVaultKindRecord(t, v, kid, "human"))
+			case tc.other == "foreign bootstrap":
+				b, err := encodeSigningRecord(signingRecord{Kind: recordKindBootstrap, KID: kid, Active: tc.active, ValidFrom: fmtTime(tc.from)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				put(b)
+			case tc.other == "undecodable":
+				put([]byte("not a record"))
+			case tc.other == "absent":
+			case tc.other == "ignored":
+				kid = "not-a-kid"
+				put(issuedRecordFull(t, v, testKID("kid1"), "human", true, almostPast, nil))
 			case tc.bootstrap:
 				kid = bootKID
 				b, err := encodeSigningRecord(signingRecord{
@@ -325,6 +364,11 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 			}
 			if !tc.wantOK && !errors.Is(err, ErrKeyPairNotFound) {
 				t.Fatalf("err = %v, want ErrKeyPairNotFound", err)
+			}
+			// A refusal for a kid the store holds a record for marks it
+			// ours, so the validator does not hand the token to OIDC.
+			if wantKnown := !tc.wantOK && tc.other != "absent" && tc.other != "ignored"; errors.Is(err, ErrKeyPairCannotVerify) != wantKnown {
+				t.Fatalf("err = %v, ErrKeyPairCannotVerify = %v, want %v", err, !wantKnown, wantKnown)
 			}
 		})
 	}

@@ -168,6 +168,7 @@ func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	issued := issueWindow(t, s, "human", time.Now().Add(time.Hour), time.Now().Add(2*time.Hour))
 	kv.fail.Store(true)
 	loop, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -187,8 +188,16 @@ func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
 	if !errors.As(auth.ErrStoreStale, &su) || !su.StorageUnavailable() {
 		t.Fatal("ErrStoreStale must carry the storage-unavailable marker")
 	}
-	if _, err := s.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatalf("verification while stale: err = %v", err)
+	// While stale nothing verifies, and a kid the last copy holds still
+	// marks the refusal as ours, so the token is not handed to OIDC.
+	for _, kid := range []string{bootKID(t, boot), issued.KID} {
+		_, err := s.VerificationKey(kid)
+		if !errors.Is(err, auth.ErrKeyPairNotFound) || !errors.Is(err, auth.ErrKeyPairCannotVerify) {
+			t.Fatalf("verification of a known kid while stale: err = %v", err)
+		}
+	}
+	if _, err := s.VerificationKey("0123456789abcdef0123456789abcdef"); errors.Is(err, auth.ErrKeyPairCannotVerify) {
+		t.Fatalf("verification of an unknown kid while stale: err = %v", err)
 	}
 	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrStoreStale) {
 		t.Fatalf("signer while stale: err = %v", err)

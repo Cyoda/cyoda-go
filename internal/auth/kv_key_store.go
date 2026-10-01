@@ -24,11 +24,12 @@ var ErrKeyPairNotFound = errors.New("key pair not found")
 // ErrKeyPairBroken: the key pair the rules select cannot be used → 500.
 var ErrKeyPairBroken = errors.New("key pair cannot be used")
 
-// ErrKeyPairCannotVerify: the kid names a key pair of this store (the
-// bootstrap key or a stored record) that may not verify now — ahead of its
-// window, invalidated past its grace period, retired or broken, or the
-// bootstrap key deleted. Deleting an issued key pair removes its record, so
-// its kid is unknown afterwards.
+// ErrKeyPairCannotVerify: the kid names a key pair this node knows — the
+// bootstrap key, or any record at a key id: owned, retired, broken,
+// undecodable, or another bootstrap key's state — that may not verify now,
+// or the copy is stale. Deleting an issued key pair removes its record, and
+// a node that has not yet applied a new key pair does not hold it, so
+// neither kid is known.
 // It always comes wrapped with ErrKeyPairNotFound.
 var ErrKeyPairCannotVerify = errors.New("key pair cannot verify now")
 
@@ -212,12 +213,11 @@ func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
 // pair may verify on this node now: owned or the signing key from
 // configuration, not deleted, and Verifies(now) — an invalidated key pair
 // verifies until the end of its grace period. A kid this store knows that
-// may not verify now also answers ErrKeyPairCannotVerify. Every refusal
+// may not verify now also answers ErrKeyPairCannotVerify; while the copy is
+// stale nothing verifies, and a kid it holds is still known. Every refusal
 // wraps ErrKeyPairNotFound. There is no store read on this path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
-	if s.rep.Stale() {
-		return nil, fmt.Errorf("%w: %s (store stale)", ErrKeyPairNotFound, kid)
-	}
+	stale := s.rep.Stale()
 	now := time.Now()
 	var (
 		pub   *rsa.PublicKey
@@ -237,13 +237,17 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 			pub = e.pair.PublicKey
 		}
 	})
+	var why string
+	if stale {
+		why = " (store stale)"
+	}
 	switch {
-	case pub != nil:
+	case pub != nil && !stale:
 		return pub, nil
 	case known:
-		return nil, fmt.Errorf("%w: %w: %s", ErrKeyPairCannotVerify, ErrKeyPairNotFound, kid)
+		return nil, fmt.Errorf("%w: %w: %q%s", ErrKeyPairCannotVerify, ErrKeyPairNotFound, kid, why)
 	default:
-		return nil, fmt.Errorf("%w: %s", ErrKeyPairNotFound, kid)
+		return nil, fmt.Errorf("%w: %q%s", ErrKeyPairNotFound, kid, why)
 	}
 }
 
