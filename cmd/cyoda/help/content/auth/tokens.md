@@ -51,8 +51,10 @@ See `config.auth` for the full env-var reference.
 Mint an M2M JWT with your client credentials:
 
 ```bash
+# -K- reads curl options from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -X POST https://cyoda.example.com/api/oauth/token \
-  -u "${CLIENT_ID}:${CLIENT_SECRET}" \
+  -K- <<<"user = \"${CLIENT_ID}:${CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"
 ```
@@ -74,12 +76,16 @@ Use the `access_token` as `Authorization: Bearer …` on every subsequent API ca
 You are an M2M actor (e.g. a backend service) and you want to call cyoda **on behalf of a user** whose token you already hold. The OBO grant re-signs the subject token so cyoda sees the user as the principal and your service as the actor (RFC 8693).
 
 ```bash
+# The client secret and the subject token go on stdin (-K-), not the
+# command line.
 curl -X POST https://cyoda.example.com/api/oauth/token \
-  -u "${CLIENT_ID}:${CLIENT_SECRET}" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-  -d "subject_token=${USER_TOKEN}" \
-  -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt"
+  -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+  -K- <<EOF
+user = "${CLIENT_ID}:${CLIENT_SECRET}"
+data = "subject_token=${USER_TOKEN}"
+EOF
 ```
 
 Response shape matches `client_credentials` plus a `issued_token_type` field:
@@ -124,7 +130,7 @@ Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap ke
 
 ## ERRORS
 
-- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not a usable key of this node or a registered OIDC provider's JWKS.
+- `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not a usable key of this node or a registered OIDC provider's JWKS. A `kid` that names a key pair this node holds is never resolved through a provider.
 - `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation.
 - `errors.BAD_REQUEST` (`400`) — malformed `grant_type`, missing form fields, invalid `subject_token` shape.
 - The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`) per RFC 6749 rather than the generic cyoda error envelope — `invalid_client`, `invalid_grant`, `access_denied`, `server_error`.

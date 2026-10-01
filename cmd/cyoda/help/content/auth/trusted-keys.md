@@ -55,6 +55,8 @@ openssl genrsa -out signing.pem 2048
 openssl rsa -in signing.pem -pubout -out signing.pub
 # Convert the public key to a JWK with your tooling of choice.
 
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
   -H @- \
   -H "Content-Type: application/json" \
@@ -124,11 +126,15 @@ Payload: { "sub": "<user id>", "caas_org_id": "<your tenant>",
 Your M2M client exchanges it:
 
 ```bash
+# The client secret and the subject token go on stdin (-K-), not the
+# command line.
 curl -X POST https://cyoda.example.com/api/oauth/token \
-  -u "${CLIENT_ID}:${CLIENT_SECRET}" \
   -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
   -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
-  -d subject_token="${SIGNED_JWT}"
+  -K- <<EOF
+user = "${CLIENT_ID}:${CLIENT_SECRET}"
+data = "subject_token=${SIGNED_JWT}"
+EOF
 ```
 
 cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is within its validity window (an invalidated key stays valid until its grace period ends), verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.

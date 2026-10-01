@@ -92,7 +92,8 @@ the M2M clients that applications and compute nodes use:
 
 ```
 TOKEN=$(cyoda token --tenant acme)
-curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
+# -H @- keeps the token off the command line, where other local users see it.
+curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $TOKEN"
 ```
 
 In Kubernetes, `kubectl exec <pod> -- /cyoda token --tenant acme`; in Docker

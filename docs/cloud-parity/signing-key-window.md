@@ -13,8 +13,10 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
   but does not sign until its window opens.
 - A token whose key pair is outside its window is rejected with the uniform
   `401`. This holds also when an OIDC provider publishes a key under the
-  same `kid`: a `kid` that names a key pair is never resolved through a
-  provider.
+  same `kid`: a `kid` that names a key pair the node holds is never
+  resolved through a provider. A node holds the bootstrap key and every
+  stored key pair from the moment it applies the issue until a `DELETE`
+  removes it.
 - An invalidated key pair never signs again unless reactivated. Its tokens
   keep verifying until the end of its grace period: invalidating sets
   `validTo` to now plus the grace period, never later than its current

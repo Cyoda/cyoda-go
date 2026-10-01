@@ -285,25 +285,30 @@ default `validFrom`; see above).
 
 A working token whose `kid` that list does not name came from an OIDC
 provider, whatever its `iss` (a provider can name the same issuer as
-`CYODA_JWT_ISSUER`). A provider cannot take a cyoda-go key pair's `kid`: a
-token under it is refused while the key pair cannot verify, on every node
-that has applied the key pair's issue (see *Shared and persisted*).
-Revoking a cyoda-go key pair does not end it. `GET /account` with the token
-names its tenant (`userAccountInfo.legalEntity.id`). The provider endpoints
-act on the caller's own tenant, so act with an admin token of that tenant:
-`cyoda token --tenant <id>` while the bootstrap key verifies, or an admin
-client of that tenant. Invalidate or delete the provider; a reactivation
-makes the token verify again, so bring the provider back by registering it
-again, as *A leaked admin token of another tenant* describes. Other nodes
-apply the change as *Auth cache reconciliation* describes.
+`CYODA_JWT_ISSUER`). A provider cannot take the `kid` of a key pair a node
+holds — the configured bootstrap key, and every stored key pair from the
+moment the node applies its issue until a `DELETE` removes it (see *Shared
+and persisted*): a token under that `kid` is refused while the key pair
+cannot verify. Revoking a cyoda-go key pair does not end it. `GET /account`
+with the token names its tenant (`userAccountInfo.legalEntity.id`). The
+provider endpoints act on the caller's own tenant, so act with an admin
+token of that tenant: `cyoda token --tenant <id>` while the bootstrap key
+verifies, or an admin client of that tenant.
 
-If another tenant registered the same IdP, the token can then resolve to
-that tenant's provider, as far as its settings allow. Treat that tenant's
-providers of the IdP the same way, or give each one `expectedAudiences` the
-token's `aud` is not in. The INFO line `oidc.cross_tenant_uri_registration`,
-written when a second tenant registers the same discovery URI, names such
-tenants; it does not name a provider of the same IdP registered under
-another URI.
+If another tenant registered the same IdP, removing this tenant's provider
+can make the token resolve to that tenant's provider, as far as its
+settings allow. So first invalidate or delete that tenant's providers of
+the IdP, or give each one `expectedAudiences` the token's `aud` is not in.
+The INFO line `oidc.cross_tenant_uri_registration`, written when a second
+tenant registers the same discovery URI, names such tenants; it does not
+name a provider of the same IdP registered under another URI.
+
+Then invalidate or delete this tenant's provider. A reactivation makes the
+token verify again, so bring the provider back by registering it again, as
+*A leaked admin token of another tenant* describes. Other nodes apply each
+change as *Auth cache reconciliation* describes. Once they have, `GET
+/account` with the token answers `401`; if it names another tenant, treat
+that tenant the same way.
 
 cyoda-go verifies these tokens itself, so ending the user's session at the
 IdP does not end an access token already issued. The token also stops
@@ -409,6 +414,8 @@ procedure has taken effect on every node: they can create, reset and delete
 `PLATFORM`'s M2M clients and trusted keys, issue, invalidate, reactivate and
 delete key pairs (deleting the bootstrap key is permanent), change each
 node's log level and trace sampler, and open a compute-node gRPC stream.
+They can also change any models, workflows and entities kept in
+`PLATFORM`; if you keep any there, check them in step 5.
 Verification does not check that a client still exists, so deleting the
 client or resetting its secret does not end a token they hold. Contain
 first, then clean up, verify and restore.
@@ -432,8 +439,9 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   one there the same way (the same flag and the tenant client cap apply):
   step 5 needs it, unless you use the *Alternative to step 4*. Deleting the
   providers can make a token from their IdP resolve to another tenant's
-  provider of the same IdP: treat that tenant as the paragraph after the
-  `kid` test under *Emergency revocation of a leaked token* says.
+  provider of the same IdP: treat that tenant as the paragraph beginning
+  *If another tenant registered the same IdP* under *Emergency revocation
+  of a leaked token* says.
 - Register again the providers you need from your own records. If the
   leaked token came from an IdP, first, at that IdP, end all of the
   principal's sessions, revoke its refresh tokens, and reset its
