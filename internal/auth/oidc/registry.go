@@ -387,8 +387,9 @@ func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss str
 //   - success → KeyResolution with ProviderRef populated
 //   - at least one iss-eligible candidate but all sources returned transient
 //     errors → ErrJWKSUnavailable
-//   - no iss-eligible candidates but at least one kid-matched candidate was
-//     rejected by iss → ErrIssuerMismatch
+//   - no key-eligible candidate but at least one active, discovered candidate
+//     was rejected by iss (checked before the kid lookup, so whether or not
+//     it publishes the kid) → ErrIssuerMismatch
 //   - ambiguous (multiple key-eligible, no unique aud match) → ErrAmbiguousProvider
 //   - otherwise → ErrUnknownKID
 func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud string) (*KeyResolution, error) {
@@ -445,7 +446,8 @@ func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud str
 			return nil, auth.ErrJWKSUnavailable
 		}
 		if hadIssRejected {
-			// Had kid-matched candidates but all were rejected by iss check.
+			// No candidate resolved the kid, and at least one was rejected by
+			// the iss check (which runs before the kid lookup).
 			return nil, auth.ErrIssuerMismatch
 		}
 		return nil, auth.ErrUnknownKID

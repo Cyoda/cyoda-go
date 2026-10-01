@@ -18,10 +18,13 @@ var (
 	// chain must not let a later validator resolve it.
 	ErrKIDCannotVerify = errors.New("auth: kid names a key pair that cannot verify now")
 
-	// ErrIssuerMismatch indicates the validator's KeySource resolved the
-	// token's `kid` but the `iss` claim does not match the validator's
-	// expected issuer (bytewise comparison per OIDC Core 1.0 §2). Hard-fail;
-	// the chain does NOT consult subsequent validators.
+	// ErrIssuerMismatch indicates the `iss` claim does not match the expected
+	// issuer (bytewise comparison per OIDC Core 1.0 §2). The first-party
+	// validator returns it after resolving the `kid`; the OIDC registry
+	// returns it when no provider resolves the token and at least one
+	// active, discovered provider was rejected by issuer, whether or not it
+	// publishes the `kid`. Hard-fail; the chain does NOT consult subsequent
+	// validators.
 	ErrIssuerMismatch = errors.New("auth: issuer mismatch")
 
 	// ErrSignatureFailure indicates signature verification failed after a
@@ -43,7 +46,8 @@ var (
 	ErrTokenPreTransition = errors.New("auth: token issued before provider creation")
 
 	// ErrJWKSUnavailable indicates a transient JWKS-endpoint failure during
-	// resolution. Surfaces to the bearer-auth caller as 503 + Retry-After.
-	// Hard-fail (does not silently fall through to subsequent validators).
+	// resolution. Surfaces to the bearer-auth caller as the uniform 401, like
+	// every other authentication failure. Hard-fail (does not silently fall
+	// through to subsequent validators).
 	ErrJWKSUnavailable = errors.New("auth: jwks unavailable")
 )
