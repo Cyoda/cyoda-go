@@ -206,7 +206,7 @@ docker compose -f deploy/docker/compose.yaml up
 docker compose up
 ```
 
-First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 **Use a custom image (e.g. a local dev build):**
 
@@ -386,7 +386,7 @@ echo $?   # 0 = ready, 1 = not ready or error
 docker compose up
 ```
 
-First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 ## SEE ALSO
 

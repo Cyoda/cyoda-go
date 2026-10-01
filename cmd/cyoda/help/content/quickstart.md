@@ -97,7 +97,7 @@ curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $
 ```
 
 In Kubernetes, `kubectl exec <pod> -- /cyoda token --tenant acme`; in Docker
-Compose, `docker compose exec <service> /cyoda token --tenant acme`. See
+Compose, `docker compose exec -T <service> /cyoda token --tenant acme`. See
 `cli.token`.
 
 **Admin metrics auth (optional):**

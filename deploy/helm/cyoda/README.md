@@ -130,7 +130,7 @@ operator wiring. To hand-scrape for a smoke check:
 kubectl -n cyoda port-forward svc/cyoda 9091:metrics &
 BEARER=$(kubectl -n cyoda get secret cyoda-metrics-bearer \
   -o jsonpath='{.data.bearer}' | base64 -d)
-curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+curl -H @- http://localhost:9091/metrics <<<"Authorization: Bearer $BEARER" | head
 ```
 
 Rotation: delete the Kubernetes Secret and `helm upgrade` — the chart's

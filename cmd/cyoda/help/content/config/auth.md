@@ -293,24 +293,37 @@ cannot verify. Revoking a cyoda-go key pair does not end it. `GET /account`
 with the token names its tenant (`userAccountInfo.legalEntity.id`). The
 provider endpoints act on the caller's own tenant, so act with an admin
 token of that tenant: `cyoda token --tenant <id>` while the bootstrap key
-verifies, or an admin client of that tenant.
+verifies, or an admin client of that tenant. Without either, set a new
+`CYODA_JWT_SIGNING_KEY` (see *Alternative to step 4*), or have that
+tenant's admins make the changes.
 
 If another tenant registered the same IdP, removing this tenant's provider
 can make the token resolve to that tenant's provider, as far as its
 settings allow. So first, with an admin token of that tenant, delete its
-providers of the IdP, and tell its admins why. Do not only invalidate them
-or narrow their `expectedAudiences`: that tenant's admins can reactivate or
-widen them, and a reactivated provider accepts the token again. The INFO
-line `oidc.cross_tenant_uri_registration`, written when a second tenant
+providers of the IdP. Tell its admins why, and that they register them
+again only as *A leaked admin token of another tenant* describes, after
+the changes at the IdP. Do not only invalidate the providers or narrow
+their `expectedAudiences`: that tenant's admins can reactivate or widen
+them, and a reactivated provider accepts the token again. The INFO line
+`oidc.cross_tenant_uri_registration`, written when a second tenant
 registers the same discovery URI, names such tenants; it does not name a
 provider of the same IdP registered under another URI.
 
 Then delete this tenant's provider. Every provider deleted here comes back
 only by registering it again, as *A leaked admin token of another tenant*
 describes, never by reactivation. Other nodes apply each change as *Auth
-cache reconciliation* describes. Once they have, `GET /account` with the
-token answers `401`; if it names another tenant, treat that tenant the same
-way.
+cache reconciliation* describes. Then send `GET /account` with the token to
+each node directly (step 1 of *A leaked platform admin-client secret* says
+how to reach one node), and read the WARN `authentication failed` line
+that node writes for it. Every authentication failure answers the same
+`401`, so only the line's `detail` shows why. The token is contained only
+if, on every node, the detail is an unknown `kid` and does not say
+`ambiguous provider`. `ambiguous provider` means providers in other tenants
+still accept the token: find them (the WARN
+`oidc.cross_tenant_audience_overlap`, or each tenant's provider list) and
+treat them the same way. A JWKS or registry failure in the detail proves
+nothing; check again later. A `200` names the tenant that still accepts
+the token: treat that tenant the same way.
 
 cyoda-go verifies these tokens itself, so ending the user's session at the
 IdP does not end an access token already issued. The token also stops
@@ -462,10 +475,11 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   provider list shows only the providers you registered again. Read the
   log lines step 5 names with the tenant's id in place of `PLATFORM`, and
   the INFO line `oidc provider registered` with the same `tenantId`. If the
-  leaked token came from an IdP and has not expired, check that it no
-  longer authenticates (`GET /account` with it answers `401`), so it
-  resolves in no other tenant. Then delete the admin client you created in
-  the tenant, or give it to the tenant.
+  leaked token came from an IdP and has not expired, check that it
+  resolves in no other tenant, with the `GET /account` check under
+  *Emergency revocation of a leaked token* (a `401` alone does not show
+  it). Then delete the admin client you created in the tenant, or give it
+  to the tenant.
 
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new
@@ -594,12 +608,17 @@ signing keypair rotation*). Then check on every node:
 - If you cleaned the trusted keys, the list shows only the keys you
   registered again (only a node where registration is on can list).
 - `GET /admin/log-level` is the level the node starts with.
-- The models, workflows, entities, scheduled tasks and messages kept in
-  `PLATFORM`, and in any other tenant this procedure covers, match your
-  own records. These checks are not tied to one node.
 
 If anything is off, go back to step 3. A node that fails to start in step
 5 stays out of service until it starts and passes these checks.
+
+Compare the models, workflows, entities, scheduled tasks and messages kept
+in `PLATFORM`, and in any other tenant this procedure covers, with your own
+records (`GET /entity/{entityId}/changes` and `GET /audit/entity/{entityId}`
+show who changed an entity and when), and restore what differs. A change
+made before step 1 is damage to repair, not a failed cleanup. A change made
+after step 1 that you did not make means someone still reaches the API
+(see below).
 
 Then read the logs of every node since the secret could have leaked. The
 INFO lines `M2M client created`, `M2M client deleted` and `M2M client

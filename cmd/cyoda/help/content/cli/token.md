@@ -100,5 +100,5 @@ fi
 TOKEN=$(kubectl exec <pod> -- /cyoda token --tenant acme)
 
 # Docker Compose
-TOKEN=$(docker compose exec <service> /cyoda token --tenant acme)
+TOKEN=$(docker compose exec -T <service> /cyoda token --tenant acme)
 ```

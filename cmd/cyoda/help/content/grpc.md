@@ -600,8 +600,10 @@ grpcurl -plaintext \
 **Connect as a compute member (JWT auth):**
 
 ```
+# With TOKEN exported, -expand-headers fills in ${TOKEN} from the
+# environment, so the token stays off the command line.
 grpcurl -plaintext \
-  -H "authorization: Bearer $TOKEN" \
+  -H 'authorization: Bearer ${TOKEN}' -expand-headers \
   -import-path ./proto \
   -proto cyoda/cyoda-cloud-api.proto \
   -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"],\"joinedLegalEntityId\":\"acme-corp\"}"}' \
