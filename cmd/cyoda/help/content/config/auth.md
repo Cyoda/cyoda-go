@@ -275,17 +275,23 @@ no longer verify. A node that has not yet applied an invalidation can still
 sign with the key pair until it does; with a grace period, those tokens
 verify on every node until the key pair's `validTo`.
 
-**Emergency revocation of a leaked token:** a token cyoda-go signed carries
-`CYODA_JWT_ISSUER` as its `iss`; revoke the key pair named by the `kid` in
-its header. A rotation is not enough: it never ends the
+**Emergency revocation of a leaked token:** a working token whose `kid`
+(in its header) is listed in `/.well-known/jwks.json` was signed by
+cyoda-go; revoke that key pair. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
 from `POST /oauth/token` while it wins signer selection for its audience
 (before the first rotation, for example, or after a reactivation with the
 default `validFrom`; see above).
 
-A working token with any other `iss` came from a tenant's OIDC provider, and
-revoking a cyoda-go key pair does not end it. End it at the IdP, or
-invalidate or delete the provider; a reactivation makes it verify again.
+A working token whose `kid` that list does not name came from an OIDC
+provider of its tenant, whatever its `iss` (a provider can name the same
+issuer as `CYODA_JWT_ISSUER`). Revoking a cyoda-go key pair does not end it.
+Invalidate or delete the provider; a reactivation makes it verify again.
+Other nodes apply the change as *Auth cache reconciliation* describes.
+cyoda-go verifies these tokens itself, so ending the user's session at the
+IdP does not end an access token already issued. The token also stops
+working once the IdP no longer publishes the key named by its `kid` and
+each node's cache of the IdP's keys has refreshed (up to 5 minutes).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -392,10 +398,9 @@ token in place of the secret, and apply steps 2, 3 and 5 to that tenant as
 well as to `PLATFORM`. Its holder can create clients and trusted keys in
 the tenant as the flags allow, and, if the tenant id is a UUID, OIDC
 providers with no flag. Step 4 and a new signing key do not end a token from
-the tenant's OIDC provider (see the `iss` test under *Emergency revocation
-of a leaked token*). The client, trusted-key and
-OIDC-provider endpoints act on the caller's own tenant, so you need an
-admin token of that tenant.
+the tenant's OIDC provider (see the `kid` test under *Emergency revocation
+of a leaked token*). The client, trusted-key and OIDC-provider endpoints
+act on the caller's own tenant, so you need an admin token of that tenant.
 
 - Step 2: `cyoda token --tenant <id>` while the bootstrap key verifies;
   otherwise use the *Alternative to step 4*. That token stops verifying
@@ -406,14 +411,19 @@ admin token of that tenant.
   in place of `PLATFORM`. If you keep no admin client in the tenant, create
   one there the same way (the same flag and the tenant client cap apply):
   step 5 needs it, unless you use the *Alternative to step 4*.
-- Before you register a provider again from your own records, end the
-  leaked principal's sessions at the IdP, or remove its admin role there
-  (the token's `sub` names the user); a refresh token or a live IdP session
-  otherwise gets a fresh token. A provider registered again refuses tokens
-  whose `iat` is more than 30 seconds before its registration. If the
-  leaked token has no `iat`, register again only once its `exp` is more
-  than 30 seconds past, plus the clock offset; with no `exp` either, only
-  once the IdP no longer publishes the key named by its `kid`.
+- Register again the providers you need from your own records, once. If
+  the leaked token came from one of them, first, at the IdP, end all of the
+  principal's sessions and revoke its refresh tokens (or disable the user),
+  and remove its admin role or reset its credentials; the token's `sub`
+  names it. Otherwise a refresh token or a live session gets a fresh token,
+  and without the admin role the principal still has every non-admin right
+  in the tenant. A provider registered again refuses tokens whose `iat` is
+  more than 30 seconds before its registration, so register it only once
+  30 seconds plus the clock offset between the IdP and the nodes have
+  passed since the sessions ended. If the leaked token has no `iat`,
+  register again only once its `exp` is more than 30 seconds past, plus
+  that clock offset; with no `exp` either, only once the IdP no longer
+  publishes the key named by its `kid`.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
   after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
   provider list shows only the providers you registered again. Read the
@@ -567,8 +577,9 @@ your own actions from others by the timestamp and your own record. The
 other key-pair and trusted-key calls log nothing, and neither does an OIDC
 provider update, invalidation, reactivation or deletion that changes the
 provider; the checks above show their result. No INFO line is written
-while a node's level is above `info`, configured or set. A level that matches proves nothing on its own:
-the `log level changed` line is written after the new level applies, so
+while a node's level is above `info`, configured or set. A level that
+matches proves nothing on its own: the `log level changed` line is
+written after the new level applies, so
 setting `warn` or `error` writes no line. Setting the level back writes one
 whose `previous` is `warn` or `error`, and that line ends such a period.
 
