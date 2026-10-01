@@ -193,6 +193,16 @@ func (r *Registry) addToProviderMap(p *OidcProvider) {
 	}
 	r.providers[tenant][p.WellKnownConfigURI] = p
 	r.mapGen.Add(1)
+	r.resetKidIndexLocked()
+}
+
+// resetKidIndexLocked empties kidIndex after a provider or its key source is
+// added or replaced. An index entry lists the providers that resolved a kid
+// when it was built; a provider added since would be missed by the hot path
+// and a token meant for it routed to an indexed one. The cold path rebuilds
+// the index on demand. Caller must hold the write lock.
+func (r *Registry) resetKidIndexLocked() {
+	r.kidIndex = map[string][]providerRef{}
 }
 
 // installForTest is a test-only helper that injects a provider + source +
@@ -283,10 +293,9 @@ func (r *Registry) ResolveKey(kid, iss, aud string) (*KeyResolution, error) {
 		}
 		res, err = r.disposeCandidates(candidates, kid, iss, aud)
 	}()
-	// The hot path sees only the providers an earlier resolution indexed for
-	// this kid, all of one issuer. An issuer mismatch there may mean another
-	// issuer's provider publishes the same kid, so it goes to the cold path
-	// too.
+	// The hot path sees only the refs earlier resolutions indexed for this
+	// kid. An issuer mismatch there may mean an unindexed provider of another
+	// issuer publishes the same kid, so it goes to the cold path too.
 	if err == nil || (!errors.Is(err, auth.ErrUnknownKID) && !errors.Is(err, auth.ErrIssuerMismatch)) {
 		return res, err
 	}
@@ -1041,6 +1050,7 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 				r.sources[tenant] = map[string]*providerSource{}
 			}
 			r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
+			r.resetKidIndexLocked()
 		}()
 		return
 	}
@@ -1066,6 +1076,7 @@ func (r *Registry) reloadOneInternal(ctx context.Context, tenant spi.TenantID, u
 			ks = buildFreshKeySource()
 		}
 		r.sources[tenant][uri] = &providerSource{keySource: ks, discoveryDoc: doc}
+		r.resetKidIndexLocked()
 	}()
 }
 

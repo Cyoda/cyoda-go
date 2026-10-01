@@ -1222,17 +1222,16 @@ func RunOidcD17_IatBindingPreTransition(t *testing.T, fix BackendFixture) {
 //
 // Implementation note on the "overlapping kid namespace" framing:
 //
-//	The registry's kidIndex hot-path returns ErrIssuerMismatch (hard fail, no
-//	retry) when a kid is cached for provider A but a JWT claims iss=B (≠ A).
-//	The cold path is only entered on ErrUnknownKID. Consequently, after
-//	provider A's kid is warmed into the kidIndex, a JWT for provider B with the
-//	same kid is rejected even if B's source would have accepted it.
+//	When a kid is indexed for provider A and a JWT claims iss=B (≠ A), the
+//	hot path's issuer mismatch sends the resolution to the cold path, which
+//	searches every provider of issuer B. A JWT under A's kid that B does not
+//	publish is still rejected there with ErrIssuerMismatch. A kid both
+//	issuers publish resolves for each (RunOidcKidSharedByTwoIssuers).
 //
-//	The row 32 spec invariant ("tokens route by iss") holds in a stricter sense:
-//	tokens with a foreign iss are REJECTED (not routed to the wrong provider).
-//	The scenario below demonstrates this: a cross-signed JWT (A's key, B's iss)
-//	is rejected; each provider's own tokens work independently when not competing
-//	for the same kidIndex entry.
+//	The row 32 spec invariant ("tokens route by iss") holds: tokens with a
+//	foreign iss are REJECTED, never routed to the wrong provider. The scenario
+//	below demonstrates this: a cross-signed JWT (A's key, B's iss) is
+//	rejected; each provider's own tokens work independently.
 //
 // Scenario:
 //  1. Register two independent IdPs (A and B) each with their own kid.

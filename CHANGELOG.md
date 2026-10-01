@@ -558,6 +558,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   publishes another tenant's IdP `kid` and so lock that tenant's users
   out. Each issuer's tokens now resolve.
 
+- **A provider registered on a node after its IdP's `kid` was in use is
+  seen at once.** The node kept matching that `kid` to the providers it
+  had already found, so when a second tenant registered the same IdP, a
+  token for that tenant could be accepted on the registering node as a
+  principal of the first tenant, with the first tenant's roles. Adding or
+  replacing a provider or its key source now drops those matches.
+
 ### Added
 
 - **`cyoda token` signs a short-lived admin token offline.**

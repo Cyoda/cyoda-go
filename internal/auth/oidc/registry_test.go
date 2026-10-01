@@ -680,3 +680,37 @@ func TestResolveKey_KidSharedByTwoIssuers_ResolvesEach(t *testing.T) {
 		t.Fatalf("issuer C: err=%v, want ErrIssuerMismatch", err)
 	}
 }
+
+// A provider registered on this node after its IdP's kid was indexed is seen
+// by the next resolution. Here tenant 1 registers an IdP with no audiences
+// and one token resolves, indexing the kid; tenant 2 then registers the same
+// IdP with its own audience. A tenant-2 token must resolve to tenant 2's
+// provider, not to tenant 1's through the stale index (which would accept it
+// as a tenant-1 principal on this node only).
+func TestResolveKey_ProviderRegisteredAfterKidIndexed_IsSeen(t *testing.T) {
+	idp := NewFixtureIdP(t)
+	uri := idp.Issuer + "/.well-known/openid-configuration"
+	store := newTestStore(t)
+	disc := &fakeDiscovery{docs: map[string]*DiscoveryDoc{uri: {Issuer: idp.Issuer, JWKSURI: idp.JWKSURI}}}
+	r := NewRegistry(store, disc, nil, NopMetrics{}, nil, RegistryConfig{AllowPrivateNetworks: true})
+	s := NewService(store, r, nil)
+	ctx := context.Background()
+
+	t1, t2 := uuid.New(), uuid.New()
+	p1, err := s.Register(ctx, RegisterInput{TenantID: spi.TenantID(t1.String()), WellKnownConfigURI: uri, OwnerLegalEntityID: t1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.ResolveKey("default", idp.Issuer, "aud-t2"); err != nil || res.Provider.ID != p1.ID {
+		t.Fatalf("before tenant 2 registers: res=%v err=%v", res, err)
+	}
+	p2, err := s.Register(ctx, RegisterInput{TenantID: spi.TenantID(t2.String()), WellKnownConfigURI: uri, OwnerLegalEntityID: t2, ExpectedAudiences: []string{"aud-t2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := r.ResolveKey("default", idp.Issuer, "aud-t2")
+	if err != nil || res.Provider.ID != p2.ID {
+		t.Fatalf("after tenant 2 registers: got provider of tenant 1=%v, err=%v; want tenant 2's provider",
+			res != nil && res.Provider.ID == p1.ID, err)
+	}
+}
