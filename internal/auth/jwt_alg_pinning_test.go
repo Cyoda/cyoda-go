@@ -58,11 +58,10 @@ func forgeTokenWithAlg(t *testing.T, alg, kid string, claims map[string]any, key
 // header with alg:"none" should be rejected explicitly — before the
 // verifier even runs — to match the JWT security best practice.
 func TestJWKSValidator_RejectsAlgNone(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -88,11 +87,10 @@ func TestJWKSValidator_RejectsAlgNone(t *testing.T) {
 // the RSA public key as the HMAC key; we don't even need to construct
 // that here because alg-pinning rejects the header long before.
 func TestJWKSValidator_RejectsAlgHS256(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -116,11 +114,10 @@ func TestJWKSValidator_RejectsAlgHS256(t *testing.T) {
 // alg claim is stripped entirely — equally dangerous because some naive
 // validators treat missing alg as permission to skip checks.
 func TestJWKSValidator_RejectsMissingAlg(t *testing.T) {
-	_, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -150,11 +147,10 @@ func TestJWKSValidator_RejectsMissingAlg(t *testing.T) {
 // TestJWKSValidator_AcceptsAlgRS256 is the happy path — alg pinning must
 // not regress the expected case.
 func TestJWKSValidator_AcceptsAlgRS256(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,

@@ -82,12 +82,9 @@ func TestAuthService_FullFlow(t *testing.T) {
 		t.Fatal("missing access_token in response")
 	}
 
-	// Validate the token using a JWKSValidator pointed at the test server.
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	// Validate the token in-process via the AuthService's own KeyStore —
+	// the production validator's path (no HTTP JWKS fetch).
+	validator := NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda")
 
 	uc, err := validator.Validate(accessToken)
 	if err != nil {
@@ -114,10 +111,6 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 		ExpirySeconds: 3600,
 	})
 
-	// Start test server for JWKS.
-	server := httptest.NewServer(svc.Handler())
-	defer server.Close()
-
 	// Get active key pair for signing.
 	kp, signer, err := svc.KeyStore().Signer("client")
 	if err != nil {
@@ -142,11 +135,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	}
 
 	// Create the DelegatingAuthenticator.
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	validator := NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	// Build an HTTP request with a Bearer token.
@@ -170,7 +159,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 }
 
 func TestDelegatingAuthenticator_NoToken(t *testing.T) {
-	validator := NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -191,22 +180,7 @@ func TestDelegatingAuthenticator_NoToken(t *testing.T) {
 }
 
 func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
-	pemKey := generateTestPEM(t)
-
-	svc := newTestAuthService(t, AuthConfig{
-		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda",
-		ExpirySeconds: 3600,
-	})
-
-	server := httptest.NewServer(svc.Handler())
-	defer server.Close()
-
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -227,7 +201,7 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 }
 
 func TestDelegatingAuthenticator_NonBearerScheme(t *testing.T) {
-	validator := NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)

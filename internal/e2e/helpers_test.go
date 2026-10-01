@@ -369,3 +369,29 @@ func queryDB(t *testing.T, tenantID, sql string, args ...any) int {
 	}
 	return count
 }
+
+// assertProblemJSON asserts that resp carries an RFC-9457 ProblemDetail envelope
+// with the expected HTTP status and errorCode in properties.errorCode.
+// It drains and closes the body.
+func assertProblemJSON(t *testing.T, resp *http.Response, wantStatus int, wantCode string) {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, raw)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q, want application/problem+json", ct)
+	}
+	var pd struct {
+		Status     int            `json:"status"`
+		Properties map[string]any `json:"properties"`
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("unmarshal ProblemDetail: %v; body=%s", err, raw)
+	}
+	if got := fmt.Sprintf("%v", pd.Properties["errorCode"]); got != wantCode {
+		t.Fatalf("errorCode: got %q, want %q; body=%s", got, wantCode, raw)
+	}
+}

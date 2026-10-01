@@ -48,7 +48,7 @@ func (s staticKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 }
 
 // newTestJWKSValidator returns a JWKSValidator with an empty key source (no
-// registered kids). Useful for tests that expect ErrUnknownKID or
+// registered kids). Useful for tests that expect a key-resolution failure or
 // ErrClaimsFailure (missing kid) without needing a valid signing key.
 func newTestJWKSValidator(t *testing.T, issuer string) *JWKSValidator {
 	t.Helper()
@@ -92,7 +92,7 @@ func signTokenWithKey(t *testing.T, kid string, priv *rsa.PrivateKey, iss, sub, 
 
 // signTokenWithEphemeralKey generates a fresh RSA key pair (not registered in
 // any validator), signs a token with the given kid, and returns the token.
-// Used to exercise the ErrUnknownKID path: the kid is present in the header
+// Used to exercise the unknown-kid path: the kid is present in the header
 // but the validator's source has no entry for it.
 func signTokenWithEphemeralKey(t *testing.T, kid, iss, sub, orgID string, expOffsetSec int) string {
 	t.Helper()

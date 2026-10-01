@@ -6,8 +6,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	openapi_types "github.com/oapi-codegen/runtime/types"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -78,27 +76,6 @@ func TestHandlerReturns501(t *testing.T) {
 	}{
 		{"AccountSubscriptionsGet", func(w http.ResponseWriter, r *http.Request) {
 			h.AccountSubscriptionsGet(w, r)
-		}},
-		{"ListOidcProviders", func(w http.ResponseWriter, r *http.Request) {
-			h.ListOidcProviders(w, r, genapi.ListOidcProvidersParams{})
-		}},
-		{"RegisterOidcProvider", func(w http.ResponseWriter, r *http.Request) {
-			h.RegisterOidcProvider(w, r)
-		}},
-		{"ReloadOidcProviders", func(w http.ResponseWriter, r *http.Request) {
-			h.ReloadOidcProviders(w, r)
-		}},
-		{"DeleteOidcProvider", func(w http.ResponseWriter, r *http.Request) {
-			h.DeleteOidcProvider(w, r, openapi_types.UUID{})
-		}},
-		{"UpdateOidcProvider", func(w http.ResponseWriter, r *http.Request) {
-			h.UpdateOidcProvider(w, r, openapi_types.UUID{})
-		}},
-		{"InvalidateOidcProvider", func(w http.ResponseWriter, r *http.Request) {
-			h.InvalidateOidcProvider(w, r, openapi_types.UUID{})
-		}},
-		{"ReactivateOidcProvider", func(w http.ResponseWriter, r *http.Request) {
-			h.ReactivateOidcProvider(w, r, openapi_types.UUID{})
 		}},
 	}
 

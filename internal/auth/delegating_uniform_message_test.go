@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
@@ -24,7 +23,7 @@ import (
 // The middleware translates this error into the response body verbatim, so
 // pinning err.Error() at this layer pins the client-visible string.
 func TestDelegatingAuthenticator_UniformClientMessage(t *testing.T) {
-	validator := auth.NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(staticKeySource{}, "cyoda")
 	authn := auth.NewDelegatingAuthenticator(validator)
 
 	cases := []struct {
@@ -80,7 +79,7 @@ func TestDelegatingAuthenticator_UniformClientMessage(t *testing.T) {
 // failure must emit exactly one slog.Warn record with a structured `reason`
 // field carrying the specific failure mode slug.
 func TestDelegatingAuthenticator_LogsStructuredReason(t *testing.T) {
-	validator := auth.NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(staticKeySource{}, "cyoda")
 	authn := auth.NewDelegatingAuthenticator(validator)
 
 	cases := []struct {

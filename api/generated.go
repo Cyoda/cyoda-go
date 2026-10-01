@@ -2551,30 +2551,6 @@ type NewMessageRequest struct {
 	Payload EdgeMessagePayload `json:"payload"`
 }
 
-// OidcProviderResponseDto defines model for OidcProviderResponseDto.
-type OidcProviderResponseDto struct {
-	// Active Whether this OIDC provider is currently active and used for JWT validation
-	Active bool `json:"active"`
-
-	// CreatedAt When this OIDC provider was registered
-	CreatedAt time.Time `json:"createdAt"`
-
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Id ID for this OIDC provider entity
-	Id openapi_types.UUID `json:"id"`
-
-	// Issuers List of allowed `iss` claim values for tokens from this provider. When present and non-empty, the JWT `iss` claim must match one of these values bytewise. When absent or empty, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
-}
-
 // PageMetadataDto defines model for PageMetadataDto.
 type PageMetadataDto struct {
 	// Number Current page number (zero-based)
@@ -2669,27 +2645,6 @@ type ReactivateKeyRequestDto struct {
 
 	// ValidTo Required. Must be > now and > validFrom.
 	ValidTo time.Time `json:"validTo"`
-}
-
-// ReactivateOidcProviderRequestDto defines model for ReactivateOidcProviderRequestDto.
-type ReactivateOidcProviderRequestDto struct {
-	// ReactivateKeys If true, also reactivates all related JWK keys that were invalidated with this provider
-	ReactivateKeys *bool `json:"reactivateKeys,omitempty"`
-}
-
-// RegisterOidcProviderRequestDto defines model for RegisterOidcProviderRequestDto.
-type RegisterOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
 }
 
 // RegisterTrustedKeyRequestDto defines model for RegisterTrustedKeyRequestDto.
@@ -3253,18 +3208,6 @@ type UniqueKeyDto struct {
 
 	// Id Unique identifier for this key definition.
 	Id string `json:"id"`
-}
-
-// UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
-type UpdateOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
 }
 
 // UserAccountInfoDto defines model for UserAccountInfoDto.
@@ -4095,12 +4038,6 @@ type GetCurrentJwtKeyPairParams struct {
 // GetCurrentJwtKeyPairParamsAudience defines parameters for GetCurrentJwtKeyPair.
 type GetCurrentJwtKeyPairParamsAudience string
 
-// ListOidcProvidersParams defines parameters for ListOidcProviders.
-type ListOidcProvidersParams struct {
-	// ActiveOnly When true, return only active (non-invalidated) providers.
-	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
-}
-
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
 type GetTechnicalUserTokenFormdataBody struct {
 	// GrantType The OAuth 2.0 grant type
@@ -4334,15 +4271,6 @@ type InvalidateTrustedKeyJSONRequestBody = InvalidateKeyRequestDto
 
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
-
-// RegisterOidcProviderJSONRequestBody defines body for RegisterOidcProvider for application/json ContentType.
-type RegisterOidcProviderJSONRequestBody = RegisterOidcProviderRequestDto
-
-// UpdateOidcProviderJSONRequestBody defines body for UpdateOidcProvider for application/json ContentType.
-type UpdateOidcProviderJSONRequestBody = UpdateOidcProviderRequestDto
-
-// ReactivateOidcProviderJSONRequestBody defines body for ReactivateOidcProvider for application/json ContentType.
-type ReactivateOidcProviderJSONRequestBody = ReactivateOidcProviderRequestDto
 
 // GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
 type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
@@ -5606,27 +5534,6 @@ type ServerInterface interface {
 	// Reactivate a trusted public key
 	// (POST /oauth/keys/trusted/{keyId}/reactivate)
 	ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string)
-	// List all registered OIDC providers
-	// (GET /oauth/oidc/providers)
-	ListOidcProviders(w http.ResponseWriter, r *http.Request, params ListOidcProvidersParams)
-	// Register a new trusted OIDC provider
-	// (POST /oauth/oidc/providers)
-	RegisterOidcProvider(w http.ResponseWriter, r *http.Request)
-	// Force to reload all OIDC providers and synchronize keys with remote JWKS
-	// (POST /oauth/oidc/providers/reload)
-	ReloadOidcProviders(w http.ResponseWriter, r *http.Request)
-	// Delete OIDC provider
-	// (DELETE /oauth/oidc/providers/{id})
-	DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Update OIDC provider
-	// (PATCH /oauth/oidc/providers/{id})
-	UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Invalidate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/invalidate)
-	InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Reactivate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/reactivate)
-	ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
 	// Obtain access token for M2M client
 	// (POST /oauth/token)
 	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params GetTechnicalUserTokenParams)
@@ -8729,213 +8636,6 @@ func (siw *ServerInterfaceWrapper) ReactivateTrustedKey(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
-// ListOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListOidcProvidersParams
-
-	// ------------- Optional query parameter "activeOnly" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "activeOnly"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "activeOnly", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListOidcProviders(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// RegisterOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.RegisterOidcProvider(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReloadOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReloadOidcProviders(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) DeleteOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// UpdateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) UpdateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// InvalidateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.InvalidateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReactivateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReactivateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // GetTechnicalUserToken operation middleware
 func (siw *ServerInterfaceWrapper) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request) {
 
@@ -9746,13 +9446,6 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}", wrapper.DeleteTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/invalidate", wrapper.InvalidateTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/reactivate", wrapper.ReactivateTrustedKey)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.ListOidcProviders)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.RegisterOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/reload", wrapper.ReloadOidcProviders)
-	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.DeleteOidcProvider)
-	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.UpdateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/invalidate", wrapper.InvalidateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/reactivate", wrapper.ReactivateOidcProvider)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/token", wrapper.GetTechnicalUserToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)

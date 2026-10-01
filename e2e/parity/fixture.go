@@ -49,9 +49,9 @@ type BackendFixture interface {
 	ComputeTenant(t *testing.T) Tenant
 
 	// PlatformOperator returns a platform-operator token: ROLE_ADMIN in the
-	// PLATFORM tenant. The platform-wide admin endpoints (signing key pairs,
-	// OIDC reload) accept only this principal. PLATFORM is one shared tenant,
-	// unlike NewTenant: use it only on those endpoints, never for tenant data.
+	// PLATFORM tenant. The platform-wide admin endpoints (signing key pairs)
+	// accept only this principal. PLATFORM is one shared tenant, unlike
+	// NewTenant: use it only on those endpoints, never for tenant data.
 	// Implementations MUST call t.Helper() and t.Fatal on failure.
 	PlatformOperator(t *testing.T) Tenant
 }
@@ -64,7 +64,7 @@ type BackendFixture interface {
 // call NewNonAdminTenant to get a token that authenticates but does not
 // carry ROLE_ADMIN. Backends that cannot mint arbitrary JWTs (e.g. an
 // out-of-tree backend that delegates auth to an external IdP) may leave
-// this interface unimplemented — the OIDC authz-negative scenarios will
+// this interface unimplemented — authz-negative scenarios that depend on it
 // skip automatically via t.Skip.
 //
 // All in-tree backends (memory, sqlite, postgres) implement this

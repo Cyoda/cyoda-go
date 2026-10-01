@@ -24,12 +24,11 @@ func baseAudClaims(issuer string) map[string]any {
 // whose aud claim is a string equal to the configured expected audience
 // passes validation.
 func TestJWKSValidator_AcceptsMatchingAudienceString(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
 	expectedAud := "cyoda-svc"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience(expectedAud)
 
 	claims := baseAudClaims(issuer)
@@ -45,12 +44,11 @@ func TestJWKSValidator_AcceptsMatchingAudienceString(t *testing.T) {
 // whose aud claim is a JSON array containing the expected audience passes.
 // RFC 7519 allows aud to be either a string or an array of strings.
 func TestJWKSValidator_AcceptsMatchingAudienceArray(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
 	expectedAud := "cyoda-svc"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience(expectedAud)
 
 	claims := baseAudClaims(issuer)
@@ -65,11 +63,10 @@ func TestJWKSValidator_AcceptsMatchingAudienceArray(t *testing.T) {
 // TestJWKSValidator_RejectsWrongAudience blocks a token minted for a
 // different relying party.
 func TestJWKSValidator_RejectsWrongAudience(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience("cyoda-svc")
 
 	claims := baseAudClaims(issuer)
@@ -89,11 +86,10 @@ func TestJWKSValidator_RejectsWrongAudience(t *testing.T) {
 // that has no aud claim at all, when the validator has been configured
 // with an expected audience.
 func TestJWKSValidator_RejectsMissingAudienceWhenConfigured(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience("cyoda-svc")
 
 	claims := baseAudClaims(issuer)
@@ -114,11 +110,10 @@ func TestJWKSValidator_RejectsMissingAudienceWhenConfigured(t *testing.T) {
 // configured does not reject tokens based on aud (current production
 // behaviour until the rollout lands).
 func TestJWKSValidator_NoAudienceCheckWhenUnconfigured(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	// No SetExpectedAudience call.
 
 	claims := baseAudClaims(issuer)

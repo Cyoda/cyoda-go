@@ -14,10 +14,9 @@ import (
 // "human" — nothing in the parity suite signs with it — and never
 // invalidateCurrent, so the shared server's own signing keys are untouched.
 // No other registered scenario leaves a "human" key pair active inside its
-// window (RunOidcCannotClaimCyodaKID issues one ahead of its window and one
-// it invalidates at once), so the current-key assertions below compare the
-// returned keyId directly rather than needing to tolerate another test's
-// key also being current.
+// window, so the current-key assertions below compare the returned keyId
+// directly rather than needing to tolerate another test's key also being
+// current.
 func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
 	c := client.NewClient(fixture.BaseURL(), fixture.PlatformOperator(t).Token)
 

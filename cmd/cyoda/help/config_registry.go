@@ -97,13 +97,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity of a keypair issued via POST /oauth/keys/keypair without validTo. The bootstrap signing key has no window unless the key-pair API gave it one."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
 	{Name: "CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "100", Description: "Per-tenant cap on M2M clients; 0 means unbounded."},
-	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key, signing-key and OIDC-provider caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
-	{Name: "CYODA_OIDC_REQUIRE_HTTPS", Topic: "auth", Type: "bool", Default: "true", Description: "Reject federated OIDC provider registration when the well-known config URI is not https."},
-	{Name: "CYODA_OIDC_CONNECT_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "TCP connect timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_SOCKET_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "HTTP read timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", Topic: "auth", Type: "int", Default: "5000", Description: "Connection-pool request timeout in milliseconds for OIDC discovery and JWKS endpoint fetches."},
-	{Name: "CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", Topic: "auth", Type: "bool", Default: "false", Description: "Bypass the SSRF blocklist so private-network OIDC providers can be registered; test/dev only, never in production."},
-	{Name: "CYODA_OIDC_ROLES_CLAIM", Topic: "auth", Type: "string", Default: "roles", Description: "JWT claim name from which role values are read for tokens issued by a federated OIDC provider."},
+	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the trusted-key and signing-key caches; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 
 	// --- cors ---
 	{Name: "CYODA_CORS_ENABLED", Topic: "cors", Type: "bool", Default: "true", Description: "Enable CORS middleware; false hands CORS handling to an upstream ingress."},

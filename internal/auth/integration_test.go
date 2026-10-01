@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
@@ -83,8 +82,9 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 		t.Fatalf("expected token_type Bearer, got %s", tokenResp.TokenType)
 	}
 
-	// Validate token using JWKSValidator pointed at our test server
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	// Validate the token in-process via the AuthService's own KeyStore —
+	// the production validator's path (no HTTP JWKS fetch).
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
 	uc, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate token: %v", err)
@@ -170,8 +170,6 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthService (node B): %v", err)
 	}
-	srvB := httptest.NewServer(svcB.Handler())
-	defer srvB.Close()
 
 	// Create M2M client on node A and issue a token
 	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
@@ -201,9 +199,9 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 		t.Fatalf("decode token response: %v", err)
 	}
 
-	// Validate the token issued by node A using node B's JWKS endpoint.
-	// This fails if KID is random per node (the original bug).
-	validatorB := auth.NewJWKSValidator(srvB.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	// Validate the token issued by node A using node B's own KeyStore (shared
+	// KV). This fails if KID is random per node (the original bug).
+	validatorB := auth.NewValidatorFromSource(auth.NewLocalKeySource(svcB.KeyStore()), "cyoda")
 	uc, err := validatorB.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Node B failed to validate token from node A: %v", err)
@@ -272,10 +270,7 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 		t.Fatalf("NewAuthService: %v", err)
 	}
 
-	srv := httptest.NewServer(svc.Handler())
-	defer srv.Close()
-
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request without auth header
@@ -299,10 +294,7 @@ func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 		t.Fatalf("NewAuthService: %v", err)
 	}
 
-	srv := httptest.NewServer(svc.Handler())
-	defer srv.Close()
-
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request with invalid token

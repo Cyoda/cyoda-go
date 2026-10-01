@@ -278,7 +278,7 @@ type IAMConfig struct {
 	BootstrapAudience             string
 
 	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
-	// interval for the per-node auth caches (trusted keys, OIDC providers).
+	// interval for the per-node auth caches (trusted keys, signing keys).
 	// Jittered ±10% per tick; the fail-closed staleness bound is fixed at
 	// 10× this value. CYODA_AUTH_CACHE_RECONCILE_INTERVAL, default 60s,
 	// floor 1s.
@@ -291,25 +291,6 @@ type IAMConfig struct {
 	// M2MClientMaxPerTenant — see auth.IAMFeatures.M2MClientMaxPerTenant.
 	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
 	M2MClientMaxPerTenant int
-
-	// OIDC holds the OIDC provider subsystem configuration.
-	// See OIDCConfig for per-field documentation.
-	OIDC OIDCConfig
-}
-
-// OIDCConfig holds the OIDC provider subsystem's configuration per spec §7.
-// All four timeouts are positive Durations; zero values inherit the 5s default
-// applied inside oidc.NewHTTPDiscovery. DefaultRolesClaim is the global default
-// for the roles claim name (per-provider override available via provider.RolesClaim).
-// AllowPrivateNetworks is a test/dev override of the SSRF blocklist; production
-// deployments leave it false.
-type OIDCConfig struct {
-	RequireHTTPS             bool
-	ConnectTimeout           time.Duration
-	SocketTimeout            time.Duration
-	ConnectionRequestTimeout time.Duration
-	AllowPrivateNetworks     bool
-	DefaultRolesClaim        string
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -425,14 +406,6 @@ func DefaultConfig() Config {
 			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
 			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
 			M2MClientMaxPerTenant:         envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
-			OIDC: OIDCConfig{
-				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
-				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
-				SocketTimeout:            envMillis("CYODA_OIDC_SOCKET_TIMEOUT_MS", 5*time.Second),
-				ConnectionRequestTimeout: envMillis("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", 5*time.Second),
-				AllowPrivateNetworks:     envBool("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", false),
-				DefaultRolesClaim:        envString("CYODA_OIDC_ROLES_CLAIM", "roles"),
-			},
 		},
 		Cluster: cluster.Config{
 			// Enabled defaults false for easier onboarding — NOT because multi-node is

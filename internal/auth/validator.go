@@ -1,7 +1,6 @@
 package auth
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -43,14 +42,6 @@ func NewValidatorFromSource(src KeySource, issuer string) *JWKSValidator {
 	return &JWKSValidator{source: src, issuer: issuer}
 }
 
-// NewJWKSValidator creates a validator backed by an HTTPS JWKS endpoint with
-// TLS 1.3 pinned, 10s request timeout, and the given cache TTL. Preserved as
-// a convenience for tests and for future external-IdP wiring; in-process
-// callers should use NewValidatorFromSource with NewLocalKeySource.
-func NewJWKSValidator(jwksURL, issuer string, cacheTTL time.Duration) *JWKSValidator {
-	return NewValidatorFromSource(NewHTTPJWKSSource(jwksURL, issuer, cacheTTL), issuer)
-}
-
 // Validate parses and validates a JWT token string, returning a UserContext on success.
 func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	parsed, err := Parse(tokenString)
@@ -68,12 +59,8 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	}
 
 	publicKey, err := v.source.GetKey(kid)
-	if errors.Is(err, ErrKeyPairCannotVerify) {
-		// The kid is ours: refuse, never fall through to a later validator.
-		return nil, fmt.Errorf("%w: kid %q: %w", ErrKIDCannotVerify, kid, err)
-	}
 	if err != nil {
-		return nil, fmt.Errorf("%w: kid %q: %w", ErrUnknownKID, kid, err)
+		return nil, fmt.Errorf("failed to resolve key %q: %w", kid, err)
 	}
 
 	if err := Verify(parsed.SigningInput, parsed.Signature, publicKey); err != nil {

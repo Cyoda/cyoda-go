@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -281,34 +282,46 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
-// TestOIDCSubsystemWired verifies that app.New succeeds with the full OIDC
-// subsystem wired in JWT IAM mode. It confirms startup hooks do not crash and
-// that the chained validator is active by sending a request with an invalid
-// token — if the chain is working, the response is 401 (not 500 or 404).
-func TestOIDCSubsystemWired(t *testing.T) {
-	a := jwtApp(t)
-	srv := httptest.NewServer(a.Handler())
-	defer srv.Close()
-
-	// Confirm the app started without panic (jwtApp would os.Exit on failure).
-	if a.AuthenticationService() == nil {
-		t.Fatal("AuthenticationService is nil — OIDC wiring failed")
-	}
-
-	// A request with a syntactically valid but unrecognised Bearer token should
-	// return 401 (chained validator falls through all validators → auth failure).
-	// 500 would indicate a panic in the chain; 404 would mean the route is
-	// missing entirely.
-	req, _ := http.NewRequest("GET", srv.URL+"/account", nil)
-	req.Header.Set("Authorization", "Bearer not.a.real.token")
-	resp, err := http.DefaultClient.Do(req)
+// jwtAppWithKey is jwtApp, also returning the signing key.
+func jwtAppWithKey(t *testing.T) (*app.App, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatal(err)
 	}
-	resp.Body.Close()
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	cfg.IAM.JWTIssuer = "cyoda"
+	cfg.IAM.JWTExpiry = 3600
+	return app.New(cfg), key
+}
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("want 401 for invalid token with OIDC chain, got %d", resp.StatusCode)
+// mintAppToken signs a token for tenant acme with the given roles.
+func mintAppToken(t *testing.T, key *rsa.PrivateKey, roles ...string) string {
+	t.Helper()
+	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
+		Tenant: "acme", UserID: "tester", Roles: roles, TTL: 5 * time.Minute, Issuer: "cyoda"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// TestJWTMode_NoOIDCRoutes: the provider endpoints do not exist.
+func TestJWTMode_NoOIDCRoutes(t *testing.T) {
+	a, key := jwtAppWithKey(t)
+	req := httptest.NewRequest(http.MethodGet, "/oauth/oidc/providers", nil)
+	req.Header.Set("Authorization", "Bearer "+mintAppToken(t, key, "ROLE_ADMIN", "ROLE_M2M"))
+	rr := httptest.NewRecorder()
+	a.Handler().ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("GET /oauth/oidc/providers: status %d, want 404/405", rr.Code)
 	}
 }
 

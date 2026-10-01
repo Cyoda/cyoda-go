@@ -6,6 +6,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **The OIDC provider endpoints (`/oauth/oidc/providers*`), their error codes
+  and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only
+  through an application's M2M client; see `auth.tokens`.
+
 - **`CYODA_IAM_MODE` must be `mock` or `jwt`.** Any other value used to start
   the server with mock authentication, so every request ran as the mock
   admin, and without the mock-mode warning. The server now refuses to start.

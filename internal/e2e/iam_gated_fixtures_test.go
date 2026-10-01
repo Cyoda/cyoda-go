@@ -9,7 +9,6 @@ import (
 
 // newMockIAMServer builds an in-process server using mock IAM mode with the
 // trusted-key feature gate enabled. In this configuration (F-a):
-//   - OIDC adapter is nil  → 7 OIDC ops return 501
 //   - keyStore is nil      → 5 keypair ops return 501
 //   - trustedKeyStore nil, feature gate ON → 5 trusted ops return 501
 //   - m2mClientStore nil   → 4 M2M ops return 501

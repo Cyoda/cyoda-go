@@ -23,7 +23,6 @@ func operatorEndpoints() []struct{ name, method, path, body string } {
 		{"invalidate", http.MethodPost, "/oauth/keys/keypair/" + kid + "/invalidate", ""},
 		{"reactivate", http.MethodPost, "/oauth/keys/keypair/" + kid + "/reactivate", `{"validTo":"` + validTo + `"}`},
 		{"delete", http.MethodDelete, "/oauth/keys/keypair/" + kid, ""},
-		{"reload", http.MethodPost, "/oauth/oidc/providers/reload", ""},
 		{"get log-level", http.MethodGet, "/admin/log-level", ""},
 		{"set log-level", http.MethodPost, "/admin/log-level", `{"level":"info"}`},
 		{"get trace-sampler", http.MethodGet, "/admin/trace-sampler", ""},

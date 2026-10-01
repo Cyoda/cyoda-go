@@ -46,7 +46,7 @@ func adminRequest(t *testing.T, method, path string, body []byte) *http.Response
 }
 
 // operatorRequest issues a request as a platform operator: the platform-wide
-// admin endpoints (key pairs, OIDC reload, /admin/*) accept only this.
+// admin endpoints (key pairs, /admin/*) accept only this.
 func operatorRequest(t *testing.T, method, path string, body []byte) *http.Response {
 	t.Helper()
 	return requestAs(t, platformToken(t), method, path, body)

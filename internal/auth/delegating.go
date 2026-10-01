@@ -32,14 +32,13 @@ const (
 )
 
 // DelegatingAuthenticator implements contract.AuthenticationService by delegating
-// token validation to a Validator. The concrete validator is typically a
-// *JWKSValidator (first-party-only mode) or a *ChainedValidator (OIDC mode).
+// token validation to a *JWKSValidator.
 type DelegatingAuthenticator struct {
-	validator Validator
+	validator *JWKSValidator
 }
 
 // NewDelegatingAuthenticator creates a new DelegatingAuthenticator.
-func NewDelegatingAuthenticator(validator Validator) *DelegatingAuthenticator {
+func NewDelegatingAuthenticator(validator *JWKSValidator) *DelegatingAuthenticator {
 	return &DelegatingAuthenticator{validator: validator}
 }
 

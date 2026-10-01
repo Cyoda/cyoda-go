@@ -2,14 +2,12 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 305 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 219 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
-// distributed-safety contracts + schema extensions + Phase 9.2 OIDC CRUD/authz
-// + Phase 9.3 OIDC JWT validation + Phase 9.4 OIDC divergences
-// + Phase 9.5 OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E
-// + Phase 9.6 Audit fixes + grouped stats + unknown-model 404 contract).
+// distributed-safety contracts + schema extensions + grouped stats +
+// unknown-model 404 contract).
 // ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
 // scheduled-transition-runtime scenarios registered via parity.Register()
 // in e2e/parity/scheduledtransition/, and scheduled-transition Function
@@ -277,137 +275,6 @@ var allTests = []NamedTest{
 	{"ModelKindBranchExtension", RunModelKindBranchExtension},
 	{"ModelSampleDataCollectionImport", RunModelSampleDataCollectionImport},
 
-	// Phase 9.2 — OIDC CRUD + authz
-	// Rows 1-6: CRUD happy-path.
-	{"OidcRegister", RunOidcRegister},
-	{"OidcListAll", RunOidcListAll},
-	{"OidcListActiveOnly", RunOidcListActiveOnly},
-	{"OidcUpdateIssuers", RunOidcUpdateIssuers},
-	{"OidcInvalidate", RunOidcInvalidate},
-	{"OidcDelete", RunOidcDelete},
-	// D7 — expectedAudiences + rolesClaim round-trip (response-mapper bug)
-	{"OidcRegisterAudiencesRoundTrip", RunOidcRegisterAudiencesRoundTrip},
-	{"OidcListAudiencesRoundTrip", RunOidcListAudiencesRoundTrip},
-	{"OidcUpdateAudiencesRoundTrip", RunOidcUpdateAudiencesRoundTrip},
-	{"OidcReactivateAudiencesRoundTrip", RunOidcReactivateAudiencesRoundTrip},
-	// Rows 7-10: CRUD negative (404 / duplicate).
-	{"OidcUpdateNonExistent", RunOidcUpdateNonExistent},
-	{"OidcInvalidateNonExistent", RunOidcInvalidateNonExistent},
-	{"OidcReactivateNonExistent", RunOidcReactivateNonExistent},
-	{"OidcDuplicateRegister", RunOidcDuplicateRegister},
-	// Rows 11-16: Authz negative — non-admin token → 403 FORBIDDEN.
-	{"OidcNonAdminRegister", RunOidcNonAdminRegister},
-	{"OidcNonAdminUpdate", RunOidcNonAdminUpdate},
-	{"OidcNonAdminInvalidate", RunOidcNonAdminInvalidate},
-	{"OidcNonAdminReactivate", RunOidcNonAdminReactivate},
-	{"OidcNonAdminDelete", RunOidcNonAdminDelete},
-	{"OidcNonAdminReload", RunOidcNonAdminReload},
-
-	// Phase 9.3 — OIDC validation + rotation + isolation (rows 17-27)
-	// JWT validation integration (rows 17-20): register mock IdP, sign JWT,
-	// assert accept/reject across lifecycle state changes.
-	{"OidcJWTValidation_RegisterAndAccept", RunOidcJWTValidation_RegisterAndAccept},
-	{"OidcJWTValidation_InvalidateRejects", RunOidcJWTValidation_InvalidateRejects},
-	{"OidcJWTValidation_ReactivateRecovers", RunOidcJWTValidation_ReactivateRecovers},
-	{"OidcJWTValidation_DeletePermanent", RunOidcJWTValidation_DeletePermanent},
-	// Issuer-list update affects validation (row 21).
-	{"OidcJWTValidation_IssuerListUpdate", RunOidcJWTValidation_IssuerListUpdate},
-	// Reload endpoint keeps warm key sources in service.
-	{"OidcReload_PreservesTokenAcceptance", RunOidcReload_PreservesTokenAcceptance},
-	{"OidcReload_AfterReactivateKeepsTokenAcceptance", RunOidcReload_AfterReactivateKeepsTokenAcceptance},
-	{"OidcEmptyPatchRefreshesKeys", RunOidcEmptyPatchRefreshesKeys},
-	// Key rotation/revocation (rows 22-26b).
-	{"OidcKeyRotation_NewKidAccepted", RunOidcKeyRotation_NewKidAccepted},
-	{"OidcKeyRotation_OldKidStillAccepted", RunOidcKeyRotation_OldKidStillAccepted},
-	{"OidcKeyRevocation_RevokedKidRejected", RunOidcKeyRevocation_RevokedKidRejected},
-	{"OidcKeyRotation_ColdStartReturnsErrUnknownKID", RunOidcKeyRotation_ColdStartReturnsErrUnknownKID},
-	{"OidcReactivate_RemoteRemovalSync", RunOidcReactivate_RemoteRemovalSync},
-	{"OidcReactivate_RemoteKeysPreservedSync", RunOidcReactivate_RemoteKeysPreservedSync},
-	// Multi-provider isolation (row 27).
-	{"OidcMultiProvider_Isolation", RunOidcMultiProvider_Isolation},
-
-	// Phase 9.4 — OIDC divergences (rows 28-46)
-	// D5 inactive-update (row 28).
-	{"OidcInactiveUpdate_Returns409Conflict", RunOidcInactiveUpdate_Returns409Conflict},
-	// Tenant isolation (rows 29-30).
-	{"OidcCrossTenantManagementIsolation", RunOidcCrossTenantManagementIsolation},
-	{"OidcTenantBindingViaOwnerLegalEntityID", RunOidcTenantBindingViaOwnerLegalEntityID},
-	// D17 iat-binding accidental (row 31).
-	{"OidcD17_IatBindingPreTransition", RunOidcD17_IatBindingPreTransition},
-	// D17 mandatory iss-validation (rows 32-33).
-	{"OidcD17_KidCollisionRoutesByIss", RunOidcD17_KidCollisionRoutesByIss},
-	{"OidcKidSharedByTwoIssuers", RunOidcKidSharedByTwoIssuers},
-	{"OidcD17_EmptyIssuersUsesDiscoveryDoc", RunOidcD17_EmptyIssuersUsesDiscoveryDoc},
-	// D17 iat skew (rows 34-35).
-	{"OidcD17_IatWithinSkewAccepted", RunOidcD17_IatWithinSkewAccepted},
-	{"OidcD17_IatOutsideSkewRejected", RunOidcD17_IatOutsideSkewRejected},
-	// D3 chain order (row 36).
-	{"OidcD3_ChainOrderJWKSValidatorFirst", RunOidcD3_ChainOrderJWKSValidatorFirst},
-	// D6 self-heal (rows 37, 37b).
-	{"OidcD6_MaliciousTenantPublishesFirstPartyKid", RunOidcD6_MaliciousTenantPublishesFirstPartyKid},
-	{"OidcD6_ColdPathTwoIssEligibleCandidates", RunOidcD6_ColdPathTwoIssEligibleCandidates},
-	// D11 register race (rows 38a, 38b, 39).
-	{"OidcD11_SequentialRegisterDeterministic", RunOidcD11_SequentialRegisterDeterministic},
-	{"OidcD11_ConcurrentRegisterFaultInjected", RunOidcD11_ConcurrentRegisterFaultInjected},
-	{"OidcD11_OrphanIndexCleanup", RunOidcD11_OrphanIndexCleanup},
-	// D8 two-phase warmup (rows 40-42).
-	{"OidcD8_ListenerBindsBeforeWarmup", RunOidcD8_ListenerBindsBeforeWarmup},
-	{"OidcD8_Phase2FailureNonFatal", RunOidcD8_Phase2FailureNonFatal},
-	{"OidcD8_Phase2PendingFallsThroughToErrUnknownKID", RunOidcD8_Phase2PendingFallsThroughToErrUnknownKID},
-	// D18 broadcast (rows 43-46).
-	{"OidcD18_HandlerPanicIsolation", RunOidcD18_HandlerPanicIsolation},
-	{"OidcD18_SingleflightDebounce", RunOidcD18_SingleflightDebounce},
-	{"OidcD18_ReloadInvalidateSerializeLocally", RunOidcD18_ReloadInvalidateSerializeLocally},
-	{"OidcD18_ReloadAllSerializesWithReloadOne", RunOidcD18_ReloadAllSerializesWithReloadOne},
-
-	// Phase 9.5 — OIDC SSRF/D19/D20/D23/D25/D21/I9/state/E2E (rows 47-68)
-	// D10 SSRF (rows 47-49).
-	{"OidcD10_SSRF_FetchTimeDNSRebind", RunOidcD10_SSRF_FetchTimeDNSRebind},
-	{"OidcD10_SSRF_IPv6BlockedRanges", RunOidcD10_SSRF_IPv6BlockedRanges},
-	{"OidcD10_SSRF_NoRedirectFollowing", RunOidcD10_SSRF_NoRedirectFollowing},
-	// D10 malicious jwks_uri in discovery doc (unit-level coverage; skipped at parity level).
-	{"OidcD10_MaliciousDiscoveryJWKSURI_Skip", RunOidcD10_MaliciousDiscoveryJWKSURI_Skip},
-	// Critical-2 fix — non-UUID tenant rejection (unit-level coverage; skipped at parity level).
-	{"OidcInvalidTenantUUIDRejected_Skip", RunOidcInvalidTenantUUIDRejected_Skip},
-	// D19 reactivate (rows 50-51).
-	{"OidcD19_ReactivateSuccessPath", RunOidcD19_ReactivateSuccessPath},
-	{"OidcD19_ReactivateWithFailedUpstreamPreservesCache", RunOidcD19_ReactivateWithFailedUpstreamPreservesCache},
-	// D20 audience (rows 52-53).
-	{"OidcD20_AudienceMismatchRejected", RunOidcD20_AudienceMismatchRejected},
-	{"OidcD20_EmptyExpectedAudiencesAcceptsAny", RunOidcD20_EmptyExpectedAudiencesAcceptsAny},
-	// D23 UserContext (rows 54-56).
-	{"OidcD23_CrossIdPSubCollisionDistinctUserIDs", RunOidcD23_CrossIdPSubCollisionDistinctUserIDs},
-	{"OidcD23_PerProviderRolesClaim", RunOidcD23_PerProviderRolesClaim},
-	{"OidcD23_RolesParsingMultiFormat", RunOidcD23_RolesParsingMultiFormat},
-	{"OidcD23_RolesParsingObjectKeys_Zitadel", RunOidcD23_RolesParsingObjectKeys_Zitadel},
-	// D23 sub bounds (rows 57-59).
-	{"OidcD23_SubControlCharRejected", RunOidcD23_SubControlCharRejected},
-	{"OidcD23_SubTooLong", RunOidcD23_SubTooLong},
-	{"OidcD23_SubContainingColonAccepted", RunOidcD23_SubContainingColonAccepted},
-	// D25 ownership transition (rows 60-62).
-	{"OidcD25_CrossTenantRegisterEmitsAuditLog", RunOidcD25_CrossTenantRegisterEmitsAuditLog},
-	{"OidcD25_RestartSurvivesInKV", RunOidcD25_RestartSurvivesInKV},
-	{"OidcD25_ReceivingNodeDoesNotReEmitAudit", RunOidcD25_ReceivingNodeDoesNotReEmitAudit},
-	// D21 list authz (row 63).
-	{"OidcD21_NonAdminTenantMemberCanList", RunOidcD21_NonAdminTenantMemberCanList},
-	// I9 broadcast (row 64).
-	{"OidcI9_BroadcastForUnknownProviderHandledGracefully", RunOidcI9_BroadcastForUnknownProviderHandledGracefully},
-	// State transitions (rows 65-66).
-	{"OidcStateTransitions_ActiveInvalidatedDeleted", RunOidcStateTransitions_ActiveInvalidatedDeleted},
-	{"OidcStateTransitions_InvalidatedReactivatedInvalidated", RunOidcStateTransitions_InvalidatedReactivatedInvalidated},
-	// E2E coverage (rows 67-68).
-	{"OidcE2E_TokenValidation", RunOidcE2E_TokenValidation},
-	{"OidcE2E_MultiNodeEviction", RunOidcE2E_MultiNodeEviction},
-
-	// Phase 9.6 — Audit fixes
-	// Critical: non-deterministic cross-tenant routing fix (audience disambiguation).
-	{"OidcCriticalAuditFix_AudienceDisambiguatesSharedIdP", RunOidcCriticalAuditFix_AudienceDisambiguatesSharedIdP},
-	{"OidcCriticalAuditFix_AmbiguousProviderRejected_Skip", RunOidcCriticalAuditFix_AmbiguousProviderRejected_Skip},
-
-	// Phase 9.7 — Audit fixes round 2
-	// I-1: reactivateKeys=false cache-preservation (unit-level coverage; skipped at parity level).
-	{"OidcReactivate_KeysFalse_PreservesCache_Skip", RunOidcReactivate_KeysFalse_PreservesCache_Skip},
-
 	// Entity PATCH (RFC 7386 merge-patch) — cross-backend contract matrix.
 	// Normal operation.
 	{"EntityPatchMergePreservesFields", RunEntityPatchMergePreservesFields},
@@ -562,7 +429,6 @@ var allTests = []NamedTest{
 	// their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 	{"PlatformOperatorGate", RunPlatformOperatorGate},
-	{"OidcCannotClaimCyodaKID", RunOidcCannotClaimCyodaKID},
 
 	// M2M clients in each backend's own spi.KeyValueStore: create, token,
 	// list, reset and delete, with another tenant's id answering 404 on

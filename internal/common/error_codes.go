@@ -256,37 +256,14 @@ const (
 	ErrCodeScheduleFunctionInvalidResult = "SCHEDULE_FUNCTION_INVALID_RESULT"
 )
 
-// OIDC provider management
-const (
-	// ErrCodeOidcInvalidTenant is returned from any OIDC provider operation
-	// whose tenant context carries an ID that is not a UUID in its canonical
-	// lowercase form. OIDC provider ownership requires UUID-shaped legal
-	// entity identifiers (matching the cyoda data model), and the canonical
-	// spelling specifically, because every other subsystem compares a tenant
-	// as raw text — accepting another spelling would alias two distinct
-	// tenants. A tenant whose id is not a UUID (e.g. acme) cannot own OIDC
-	// providers; use a UUID tenant to register, list, update, invalidate,
-	// reactivate or delete one.
-	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
-	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
-	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
-	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
-	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
-)
-
 // Token-validation failures (audience mismatch, claims invalid, iat
 // pre-transition, KID unknown, JWKS unavailable during key resolution) carry
-// no precise OIDC_* code. The bearer-auth middleware uniformly returns a
+// no precise per-cause code. The bearer-auth middleware uniformly returns a
 // problem-detail body with code UNAUTHORIZED and no per-cause distinction; a
-// precise code would enumerate IdP / audience / kid / claim-shape recognition
-// to an unauthenticated caller.
+// precise code would enumerate audience / kid / claim-shape recognition to an
+// unauthenticated caller.
 //
-// Discovery failures at registration time also carry no precise code.
-// Registry warm-up is non-fatal: the provider stays registered, discovery
-// errors log internally, and tokens 401 until the IdP becomes reachable.
-//
-// The per-cause diagnostic path is the server-side log stream — see the
-// auth.oidc help topic.
+// The per-cause diagnostic path is the server-side log stream.
 
 // knownErrorCodes is every error code this build defines. It exists because an
 // error code is part of the contract a client reads: a code arriving from
@@ -343,11 +320,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeModelNotLocked:                   {},
 	ErrCodeNoComputeMemberForTag:            {},
 	ErrCodeNotImplemented:                   {},
-	ErrCodeOidcInvalidTenant:                {},
-	ErrCodeOIDCProviderDuplicate:            {},
-	ErrCodeOIDCProviderInactive:             {},
-	ErrCodeOIDCProviderNotFound:             {},
-	ErrCodeOIDCSSRFBlocked:                  {},
 	ErrCodePreconditionRequired:             {},
 	ErrCodeScheduleFunctionInvalidResult:    {},
 	ErrCodeSearchJobAlreadyTerminal:         {},

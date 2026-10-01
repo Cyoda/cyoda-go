@@ -500,11 +500,6 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 // cyoda-go fixture. Callers append backend-specific vars (e.g.
 // CYODA_POSTGRES_URL for postgres).
 //
-// OIDC network-level overrides are set here for test isolation:
-//   - CYODA_OIDC_REQUIRE_HTTPS=false — parity tests register providers
-//     with http:// URIs (fake hostnames) so no external TLS is needed.
-//   - CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true — skips DNS-based SSRF
-//     checks so tests can use arbitrary hostnames without network I/O.
 //   - CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3 — low enough that the M2M
 //     client cap scenario (RunM2MClientCap) can exercise it directly,
 //     rather than creating 100 clients. Every other scenario that creates
@@ -519,9 +514,6 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		fmt.Sprintf("CYODA_JWT_SIGNING_KEY=%s", ks.KeyPEM),
 		fmt.Sprintf("CYODA_JWT_ISSUER=%s", ks.Issuer),
 		"CYODA_LOG_LEVEL=info",
-		// OIDC test overrides — allow http:// and skip SSRF DNS checks.
-		"CYODA_OIDC_REQUIRE_HTTPS=false",
-		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS=true",
 		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3",
 	)
 }

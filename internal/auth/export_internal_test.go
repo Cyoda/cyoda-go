@@ -3,9 +3,6 @@ package auth
 import (
 	"context"
 	"crypto/rsa"
-	"crypto/x509"
-	"net/http"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -45,21 +42,4 @@ func (c *coalescingRunner) busy() bool {
 // predict KV keys (e.g. for injection mocks).
 func TrustedKeyKVKeyForTesting(tenantID spi.TenantID, kid string) string {
 	return trustedKeyKey(tenantID, kid)
-}
-
-// NewHTTPJWKSSourceWithTransportForTesting returns a KeySource with a
-// caller-supplied transport, for tests that trust an httptest.Server's
-// self-signed certificate.
-func NewHTTPJWKSSourceWithTransportForTesting(jwksURL, issuer string, cacheTTL time.Duration, transport *http.Transport) KeySource {
-	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
-}
-
-// NewHTTPJWKSSourceWithRootCAsForTesting returns a KeySource built via the
-// production transport assembly (TLS 1.3 pinned, no InsecureSkipVerify) with
-// the given CertPool substituted as RootCAs. Tests use it to verify that the
-// production MinVersion is TLS 1.3 end-to-end against an httptest TLS server.
-func NewHTTPJWKSSourceWithRootCAsForTesting(jwksURL, issuer string, cacheTTL time.Duration, rootCAs *x509.CertPool) KeySource {
-	transport := defaultJWKSTransport()
-	transport.TLSClientConfig.RootCAs = rootCAs
-	return newHTTPJWKSSource(jwksURL, issuer, cacheTTL, transport)
 }

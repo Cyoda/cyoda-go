@@ -140,12 +140,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
 		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT":        strconv.Itoa(c.IAM.M2MClientMaxPerTenant),
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
-		"CYODA_OIDC_REQUIRE_HTTPS":                   strconv.FormatBool(c.IAM.OIDC.RequireHTTPS),
-		"CYODA_OIDC_CONNECT_TIMEOUT_MS":              renderMillis(c.IAM.OIDC.ConnectTimeout),
-		"CYODA_OIDC_SOCKET_TIMEOUT_MS":               renderMillis(c.IAM.OIDC.SocketTimeout),
-		"CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS":   renderMillis(c.IAM.OIDC.ConnectionRequestTimeout),
-		"CYODA_OIDC_ALLOW_PRIVATE_NETWORKS":          strconv.FormatBool(c.IAM.OIDC.AllowPrivateNetworks),
-		"CYODA_OIDC_ROLES_CLAIM":                     c.IAM.OIDC.DefaultRolesClaim,
 
 		// --- cors ---
 		"CYODA_CORS_ENABLED":         strconv.FormatBool(c.CORS.Enabled),

@@ -33,8 +33,8 @@ type MultiNodeFixture interface {
 
 	// PlatformOperator returns a platform-operator token: ROLE_ADMIN in the
 	// PLATFORM tenant. Valid against every node in the cluster. The
-	// platform-wide admin endpoints (signing key pairs, OIDC reload) accept
-	// only this principal; use it only on those endpoints, never for tenant
-	// data. Implementations MUST call t.Helper() and t.Fatal on failure.
+	// platform-wide admin endpoints (signing key pairs) accept only this
+	// principal; use it only on those endpoints, never for tenant data.
+	// Implementations MUST call t.Helper() and t.Fatal on failure.
 	PlatformOperator(t *testing.T) parity.Tenant
 }

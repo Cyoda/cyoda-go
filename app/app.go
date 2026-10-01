@@ -23,7 +23,6 @@ import (
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/auth/oidc"
 	"github.com/cyoda-platform/cyoda-go/internal/callout"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
@@ -90,7 +89,7 @@ type App struct {
 	// recovery middleware, the gRPC recovery interceptors, the async-search
 	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
 	// watchdog and runs). Notification-callback recoveries (member-registry
-	// onChange, OIDC broadcast) deliberately do not. Nothing resets it: a node
+	// onChange, auth key-store reconcile broadcast) deliberately do not. Nothing resets it: a node
 	// that has panicked has state nothing has verified. Read by
 	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
 	healthFlag *atomic.Bool
@@ -247,12 +246,6 @@ func New(cfg Config) *App {
 	}
 
 	// Auth service: JWT or mock mode
-	//
-	// pendingOIDCAdapter and pendingWarmJWKS are populated inside the JWT block
-	// and consumed after server.Account is constructed. They remain nil in mock
-	// IAM mode (OIDC requires real token validation).
-	var pendingOIDCAdapter *account.OidcAdapter
-	var pendingWarmJWKS func()
 	var authSvc *auth.AuthService
 
 	// The platform-wide admin endpoints accept only a platform operator. Mock
@@ -273,7 +266,7 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// The SYSTEM-tenant KV store holds the cluster's auth state: signing
-		// key pairs, trusted keys and OIDC providers.
+		// key pairs and trusted keys.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
@@ -288,65 +281,12 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
-		// enabled. Checked here (before OIDC subsystem init and the auth
-		// service) so neither the OIDC registry nor the key stores are ever
-		// constructed with a missing broadcaster in cluster mode.
+		// enabled. Checked here (before the auth service is constructed) so
+		// the key stores are never constructed with a missing broadcaster in
+		// cluster mode.
 		if cfg.Cluster.Enabled && gossipReg == nil {
-			slog.Error("startup failure", "phase", "oidc-broadcaster-missing")
+			slog.Error("startup failure", "phase", "auth-broadcaster-missing")
 			os.Exit(1)
-		}
-
-		// Phase 1: synchronous OIDC bootstrap — blocks until KV load completes.
-		// The HTTP listener must NOT bind before this phase finishes (D8).
-		oidcStore, err := oidc.NewKVProviderStore(systemCtx, kvStore)
-		if err != nil {
-			slog.Error("startup failure", "phase", "oidc-store-bootstrap", "error", err.Error())
-			os.Exit(1)
-		}
-
-		oidcDiscovery := oidc.NewHTTPDiscovery(oidc.DiscoveryConfig{
-			ConnectTimeout:           cfg.IAM.OIDC.ConnectTimeout,
-			SocketTimeout:            cfg.IAM.OIDC.SocketTimeout,
-			ConnectionRequestTimeout: cfg.IAM.OIDC.ConnectionRequestTimeout,
-			AllowPrivateNetworks:     cfg.IAM.OIDC.AllowPrivateNetworks,
-		})
-
-		var oidcBroadcaster spi.ClusterBroadcaster
-		if gossipReg != nil {
-			oidcBroadcaster = gossipReg
-		}
-		oidcMetrics, err := oidc.NewOTelMetrics(observability.Meter())
-		if err != nil {
-			slog.Error("startup failure", "phase", "oidc-metrics-init", "error", err.Error())
-			os.Exit(1)
-		}
-		oidcRegistry := oidc.NewRegistry(oidcStore, oidcDiscovery, oidcBroadcaster, oidcMetrics, slog.Default(), oidc.RegistryConfig{
-			AllowPrivateNetworks: cfg.IAM.OIDC.AllowPrivateNetworks,
-			ConnectTimeout:       cfg.IAM.OIDC.ConnectTimeout,
-			SocketTimeout:        cfg.IAM.OIDC.SocketTimeout,
-			ReconcileInterval:    cfg.IAM.AuthCacheReconcileInterval,
-		})
-
-		if err := oidcRegistry.LoadProvidersFromKV(systemCtx); err != nil {
-			slog.Error("startup failure", "phase", "oidc-registry-providers-load", "error", err.Error())
-			os.Exit(1)
-		}
-
-		oidcSvc := oidc.NewService(oidcStore, oidcRegistry, slog.Default())
-		pendingOIDCAdapter = account.NewOidcAdapter(
-			oidcSvc,
-			cfg.IAM.OIDC.DefaultRolesClaim,
-			cfg.IAM.OIDC.RequireHTTPS,
-			cfg.IAM.OIDC.AllowPrivateNetworks,
-			operatorGuard,
-		)
-		// Phase-2 warm-up is one-shot; the retry loop re-attempts any provider
-		// whose IdP was unreachable at that moment (e.g. cyoda boots ahead of
-		// the IdP), so federated auth recovers without a restart.
-		pendingWarmJWKS = func() {
-			oidcRegistry.WarmJWKS(systemCtx)
-			oidcRegistry.StartWarmupRetryLoop(systemCtx)
-			oidcRegistry.StartReconcileLoop(systemCtx)
 		}
 
 		trustedMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.trustedkeys")
@@ -384,8 +324,7 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// Periodic KV re-read of both key stores; systemCtx is
-		// process-lifetime, so the loops run until exit (same lifecycle as
-		// the OIDC warm-up retry loop).
+		// process-lifetime, so the loops run until exit.
 		authSvc.Start(systemCtx)
 		// The built-in IAM holds a copy of the cluster's signing keys on every
 		// node, so the validator reads public keys directly from that copy. No
@@ -394,14 +333,7 @@ func New(cfg Config) *App {
 		if cfg.IAM.JWTAudience != "" {
 			jwksValidator.SetExpectedAudience(cfg.IAM.JWTAudience)
 		}
-		// Build the OIDC validator and chain it after the first-party JWKS
-		// validator. Chain order is normative per spec D3 and §11 row 36:
-		// JWKSValidator FIRST, OIDCValidator SECOND. Reversing would cause a
-		// first-party kid with a foreign iss to reach OIDCValidator before
-		// JWKSValidator has a chance to hard-fail with ErrIssuerMismatch.
-		oidcValidator := oidc.NewValidator(oidcRegistry, cfg.IAM.OIDC.DefaultRolesClaim)
-		chainedValidator := auth.NewChainedValidator(jwksValidator, oidcValidator)
-		a.authService = auth.NewDelegatingAuthenticator(chainedValidator)
+		a.authService = auth.NewDelegatingAuthenticator(jwksValidator)
 		a.authSvc = authSvc
 	} else {
 		defaultUser := &spi.UserContext{
@@ -593,21 +525,7 @@ func New(cfg Config) *App {
 		accountM2MStore = authSvc.M2MClientStore()
 	}
 	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
-	// Wire the OIDC HTTP adapter if the OIDC subsystem was bootstrapped (JWT
-	// IAM mode only). nil is safe — WithOIDCAdapter tolerates nil and leaves
-	// the 7 OIDC stub paths returning 501.
-	if pendingOIDCAdapter != nil {
-		accountHandler.WithOIDCAdapter(pendingOIDCAdapter)
-	}
 	server.Account = accountHandler
-
-	// Phase 2: asynchronous OIDC warmup launched after all synchronous wiring
-	// is complete (D8). The goroutine fetches discovery + JWKS for every
-	// provider loaded in Phase 1. Tokens for not-yet-warmed providers fall
-	// through the chain as ErrUnknownKID → 401 during the cold-start window.
-	if pendingWarmJWKS != nil {
-		go pendingWarmJWKS()
-	}
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
@@ -619,8 +537,8 @@ func New(cfg Config) *App {
 	// nothing administrative leaks into the public surface:
 	//
 	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
-	//     These are the OAuth2/OIDC discovery + token-exchange endpoints
-	//     and must be reachable by unauthenticated callers by protocol.
+	//     These are the JWKS discovery + token-exchange endpoints and must
+	//     be reachable by unauthenticated callers by protocol.
 	//
 	//   ADMIN (authMW + ROLE_ADMIN): served via the chi router (account
 	//     handler). The /account/m2m* legacy mux entries were retired

@@ -5,8 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	openapi_types "github.com/oapi-codegen/runtime/types"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -22,7 +20,6 @@ type Handler struct {
 	m2mClientStore  auth.M2MClientStore
 	iam             auth.IAMFeatures
 	operator        auth.OperatorGuard
-	oidc            *oidcAdapter
 }
 
 func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
@@ -37,15 +34,6 @@ func New(authSvc contract.AuthenticationService, authzSvc contract.Authorization
 		iam:             iam,
 		operator:        operator,
 	}
-}
-
-// WithOIDCAdapter wires the OIDC HTTP adapter into the account handler.
-// nil is permitted; with nil, the 7 OIDC stub paths continue to return 501.
-func (h *Handler) WithOIDCAdapter(a *OidcAdapter) *Handler {
-	if a != nil {
-		h.oidc = a.adapter
-	}
-	return h
 }
 
 func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
@@ -102,60 +90,4 @@ func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, 
 	common.WriteError(w, r,
 		common.Internal("getTechnicalUserToken-unreachable",
 			errors.New("routing regression: chi served POST /oauth/token")))
-}
-
-func (h *Handler) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	if h.oidc != nil {
-		h.oidc.ListOidcProviders(w, r, params)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-	if h.oidc != nil {
-		h.oidc.RegisterOidcProvider(w, r)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	if h.oidc != nil {
-		h.oidc.ReloadOidcProviders(w, r)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if h.oidc != nil {
-		h.oidc.DeleteOidcProvider(w, r, id)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if h.oidc != nil {
-		h.oidc.UpdateOidcProvider(w, r, id)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if h.oidc != nil {
-		h.oidc.InvalidateOidcProvider(w, r, id)
-		return
-	}
-	h.stub(w, r)
-}
-
-func (h *Handler) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if h.oidc != nil {
-		h.oidc.ReactivateOidcProvider(w, r, id)
-		return
-	}
-	h.stub(w, r)
 }

@@ -790,8 +790,6 @@ func TestDefaultTree_AuthTopics(t *testing.T) {
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
 		{[]string{"auth", "tokens"}, "auth.tokens — /oauth/token grants and JWT claim contract",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "oidc"}, "auth.oidc — federated OIDC providers",
-			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## DIAGNOSTICS", "## ERRORS", "## SEE ALSO"}},
 		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for token-exchange subject tokens",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
 	}
@@ -909,7 +907,7 @@ func TestDefaultTree_AuthCurlExamplesMatchOpenAPI(t *testing.T) {
 		return false
 	}
 
-	for _, pageName := range []string{"auth.md", "auth/clients.md", "auth/tokens.md", "auth/oidc.md", "auth/trusted-keys.md"} {
+	for _, pageName := range []string{"auth.md", "auth/clients.md", "auth/tokens.md", "auth/trusted-keys.md"} {
 		t.Run(pageName, func(t *testing.T) {
 			body, err := os.ReadFile(filepath.Join("content", pageName))
 			if err != nil {
@@ -938,7 +936,7 @@ func TestDefaultTree_AuthLandingListsAllChildren(t *testing.T) {
 	if auth == nil {
 		t.Fatal("Find([auth]): topic missing")
 	}
-	want := map[string]bool{"clients": true, "tokens": true, "oidc": true, "trusted-keys": true}
+	want := map[string]bool{"clients": true, "tokens": true, "trusted-keys": true}
 	got := map[string]bool{}
 	for _, c := range auth.Children {
 		if len(c.Path) == 0 {

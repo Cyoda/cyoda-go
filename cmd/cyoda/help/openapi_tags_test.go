@@ -12,7 +12,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// TestSlugifyTag pins the tag-name → slug normalization for the 12
+// TestSlugifyTag pins the tag-name → slug normalization for the 11
 // canonical tags shipped with v0.6.2. The slug is the lookup key users
 // type on the CLI; any change to the slug rule breaks downstream
 // tooling, so these are contract-level.
@@ -21,7 +21,6 @@ func TestSlugifyTag(t *testing.T) {
 		in, want string
 	}{
 		{"Entity Management", "entity-management"},
-		{"OAuth, OIDC Providers", "oauth-oidc-providers"},
 		{"Entity Model, Workflow", "entity-model-workflow"},
 		{"OAuth, Keys", "oauth-keys"},
 		{"Entity, Audit", "entity-audit"},
@@ -70,12 +69,11 @@ func TestListOpenAPITags(t *testing.T) {
 			t.Errorf("tags not sorted by slug: %q >= %q", tags[i-1].Slug, tags[i].Slug)
 		}
 	}
-	// The 11 canonical names defined in the spec's tags section must all appear.
+	// The 10 canonical names defined in the spec's tags section must all appear.
 	// Note: CQL Execution Statistics is excluded — it was never in the spec's
 	// top-level tags declaration (only referenced as an exclude-tag in api/config.yaml).
 	want := []string{
 		"Entity Management",
-		"OAuth, OIDC Providers",
 		"Entity Model, Workflow",
 		"OAuth, Keys",
 		"Entity, Audit",

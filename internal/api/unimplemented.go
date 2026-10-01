@@ -235,34 +235,6 @@ func (u *Unimplemented) ReactivateTrustedKey(w http.ResponseWriter, r *http.Requ
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
-func (u *Unimplemented) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	u.stub(w, r)
-}
-
 func (u *Unimplemented) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
 	u.stub(w, r)
 }

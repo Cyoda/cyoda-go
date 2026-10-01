@@ -6,7 +6,6 @@ version_added: 0.8.0
 see_also:
   - auth
   - auth.clients
-  - auth.oidc
   - auth.trusted-keys
   - cli.token
   - config.auth
