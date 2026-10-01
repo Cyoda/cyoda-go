@@ -275,12 +275,17 @@ no longer verify. A node that has not yet applied an invalidation can still
 sign with the key pair until it does; with a grace period, those tokens
 verify on every node until the key pair's `validTo`.
 
-**Emergency revocation of a leaked token:** revoke the key pair named by the
-`kid` in the token's header. A rotation is not enough: it never ends the
+**Emergency revocation of a leaked token:** a token cyoda-go signed carries
+`CYODA_JWT_ISSUER` as its `iss`; revoke the key pair named by the `kid` in
+its header. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
 from `POST /oauth/token` while it wins signer selection for its audience
 (before the first rotation, for example, or after a reactivation with the
 default `validFrom`; see above).
+
+A working token with any other `iss` came from a tenant's OIDC provider, and
+revoking a cyoda-go key pair does not end it. End it at the IdP, or
+invalidate or delete the provider; a reactivation makes it verify again.
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -386,31 +391,44 @@ first, then clean up, verify and restore.
 token in place of the secret, and apply steps 2, 3 and 5 to that tenant as
 well as to `PLATFORM`. Its holder can create clients and trusted keys in
 the tenant as the flags allow, and, if the tenant id is a UUID, OIDC
-providers with no flag. Neither step 4 nor a new signing key ends a
-provider's tokens; deleting the provider does. The client, trusted-key and
+providers with no flag. Step 4 and a new signing key do not end a token from
+the tenant's OIDC provider (see the `iss` test under *Emergency revocation
+of a leaked token*). The client, trusted-key and
 OIDC-provider endpoints act on the caller's own tenant, so you need an
 admin token of that tenant.
 
-- Step 2: `cyoda token --tenant <id>`. It stops verifying in step 4.
+- Step 2: `cyoda token --tenant <id>` while the bootstrap key verifies;
+  otherwise use the *Alternative to step 4*. That token stops verifying
+  in step 4.
 - Step 3: first delete every OIDC provider of the tenant
   (`GET /oauth/oidc/providers`, then `DELETE /oauth/oidc/providers/{id}`).
-  Then clean its clients and trusted keys as for `PLATFORM`, and register
-  again the providers you need from your own records. A provider
-  registered again refuses tokens whose `iat` is more than 30 seconds
-  before its registration; a token with no `iat` verifies again.
+  Then clean its clients and trusted keys as step 3 says, with the tenant
+  in place of `PLATFORM`. If you keep no admin client in the tenant, create
+  one there the same way (the same flag and the tenant client cap apply):
+  step 5 needs it, unless you use the *Alternative to step 4*.
+- Before you register a provider again from your own records, end the
+  leaked principal's sessions at the IdP, or remove its admin role there
+  (the token's `sub` names the user); a refresh token or a live IdP session
+  otherwise gets a fresh token. A provider registered again refuses tokens
+  whose `iat` is more than 30 seconds before its registration. If the
+  leaked token has no `iat`, register again only once its `exp` is more
+  than 30 seconds past, plus the clock offset; with no `exp` either, only
+  once the IdP no longer publishes the key named by its `kid`.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
   after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
-  provider list shows only the providers you registered again.
-- A leaked token whose `iss` is not `CYODA_JWT_ISSUER` came from an OIDC
-  provider of the tenant. No key pair signs it; deleting the provider in
-  step 3 ends it.
+  provider list shows only the providers you registered again. Read the
+  log lines step 5 names with the tenant's id in place of `PLATFORM`, and
+  the INFO line `oidc provider registered` with the same `tenantId`. Then
+  delete the admin client you created in the tenant, or give it to the
+  tenant.
 
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new
 `CYODA_JWT_SIGNING_KEY` at the restart in step 1: it removes every client,
-trusted key and key pair and ends every token cyoda-go signed, so steps 3
-and 4 have nothing to clean. Give every later restart a new key too. Create
-the clients and trusted keys you need after the last restart, once
+trusted key, OIDC provider and key pair and ends every token cyoda-go
+signed, so steps 3 and 4 have nothing to clean. Give every later restart a
+new key too. Create the clients, trusted keys and OIDC providers you need
+after the last restart (providers as the list above says), once
 `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` and
 `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` are set the way they will
 stay. In step 5, JWKS lists the bootstrap key of the latest
@@ -546,9 +564,10 @@ deleted: step 4 writes one, and another is the only trace left by someone
 who deleted that key. A node that starts with the bootstrap key ended
 writes the same line at INFO. None of these lines names who acted: tell
 your own actions from others by the timestamp and your own record. The
-other key-pair and trusted-key calls log nothing; the checks above show
-their result. No INFO line is written while a node's level is above
-`info`, configured or set. A level that matches proves nothing on its own:
+other key-pair and trusted-key calls log nothing, and neither does an OIDC
+provider update, invalidation, reactivation or deletion that changes the
+provider; the checks above show their result. No INFO line is written
+while a node's level is above `info`, configured or set. A level that matches proves nothing on its own:
 the `log level changed` line is written after the new level applies, so
 setting `warn` or `error` writes no line. Setting the level back writes one
 whose `previous` is `warn` or `error`, and that line ends such a period.
