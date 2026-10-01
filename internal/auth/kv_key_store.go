@@ -24,6 +24,12 @@ var ErrKeyPairNotFound = errors.New("key pair not found")
 // ErrKeyPairBroken: the key pair the rules select cannot be used → 500.
 var ErrKeyPairBroken = errors.New("key pair cannot be used")
 
+// ErrKeyPairCannotVerify: the kid names a key pair of this store (the
+// bootstrap key or a stored record) that may not verify now — ahead of its
+// window, invalidated past its grace period, deleted, retired or broken.
+// It always comes wrapped with ErrKeyPairNotFound.
+var ErrKeyPairCannotVerify = errors.New("key pair cannot verify now")
+
 type storeStaleError struct{}
 
 func (storeStaleError) Error() string {
@@ -203,29 +209,40 @@ func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
 // VerificationKey returns the public key a token's KID names, if that key
 // pair may verify on this node now: owned or the signing key from
 // configuration, not deleted, and Verifies(now) — an invalidated key pair
-// verifies until the end of its grace period. There is no store read on this
-// path.
+// verifies until the end of its grace period. A kid this store knows that
+// may not verify now also answers ErrKeyPairCannotVerify. Every refusal
+// wraps ErrKeyPairNotFound. There is no store read on this path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	if s.rep.Stale() {
 		return nil, fmt.Errorf("%w: %s (store stale)", ErrKeyPairNotFound, kid)
 	}
 	now := time.Now()
-	var pub *rsa.PublicKey
+	var (
+		pub   *rsa.PublicKey
+		known bool
+	)
 	s.rep.read(func(recs map[string]*signingEntry) {
 		if kid == s.boot.kid {
+			known = true
 			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Verifies(now) {
 				pub = bv.pair.PublicKey
 			}
 			return
 		}
-		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Verifies(now) {
+		e, ok := recs[kid]
+		known = ok && e.class != classIgnored
+		if ok && e.class == classOwned && e.pair.Verifies(now) {
 			pub = e.pair.PublicKey
 		}
 	})
-	if pub == nil {
+	switch {
+	case pub != nil:
+		return pub, nil
+	case known:
+		return nil, fmt.Errorf("%w: %w: %s", ErrKeyPairCannotVerify, ErrKeyPairNotFound, kid)
+	default:
 		return nil, fmt.Errorf("%w: %s", ErrKeyPairNotFound, kid)
 	}
-	return pub, nil
 }
 
 // publishable reports whether a key pair belongs in JWKS: its window has not

@@ -36,7 +36,9 @@ func NewLocalKeySource(ks KeyStore) KeySource {
 // inside its window, and active or still in the grace period an
 // invalidation gave it (an invalidated key pair verifies until the end of
 // its grace period; one whose window has ended, or that was deleted, never
-// verifies). Every refusal wraps ErrKeyNotFound.
+// verifies). Every refusal wraps ErrKeyNotFound; a kid the store knows also
+// carries its ErrKeyPairCannotVerify, on which the validator refuses the
+// token rather than let a later validator resolve the same kid.
 func (s *localKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 	pub, err := s.ks.VerificationKey(kid)
 	if err != nil {

@@ -560,6 +560,7 @@ var allTests = []NamedTest{
 	// client keys on the shared server; use their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 	{"PlatformOperatorGate", RunPlatformOperatorGate},
+	{"OidcCannotClaimCyodaKID", RunOidcCannotClaimCyodaKID},
 
 	// M2M clients in each backend's own spi.KeyValueStore: create, token,
 	// list, reset and delete, with another tenant's id answering 404 on

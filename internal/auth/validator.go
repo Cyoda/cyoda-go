@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -67,6 +68,10 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
 	}
 
 	publicKey, err := v.source.GetKey(kid)
+	if errors.Is(err, ErrKeyPairCannotVerify) {
+		// The kid is ours: refuse, never fall through to a later validator.
+		return nil, fmt.Errorf("kid %q: %w", kid, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: kid %q: %w", ErrUnknownKID, kid, err)
 	}
