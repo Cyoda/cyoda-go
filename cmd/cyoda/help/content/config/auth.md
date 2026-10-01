@@ -301,9 +301,11 @@ key and retire every key it published before those changes, the one named
 by the token's `kid` included; this ends every token those keys signed,
 for every user of the IdP, in every tenant and at every other relying
 party. Each node drops a retired key once its cache of the IdP's keys has
-refreshed, within 5 minutes, or at once after `POST
-/oauth/oidc/providers/reload` (platform operator); a cache that cannot
-refresh serves no key. From then on no provider of that IdP, in any
+refreshed, within 5 minutes; a cache that cannot refresh serves no key.
+`POST /oauth/oidc/providers/reload` (platform operator) can shorten this,
+but its `200` does not show that it did: a node whose discovery fetch
+fails keeps its cached keys, and other nodes act when the broadcast
+arrives. So wait the 5 minutes. From then on no provider of that IdP, in any
 tenant, active or not, accepts the token. Where you cannot retire the
 IdP's keys (an IdP you do not run), the token ends at its `exp`, plus 30
 seconds and the clock offset between the IdP and the nodes; a token with
@@ -312,11 +314,11 @@ no `exp` ends only when the IdP no longer publishes the key named by its
 
 Until then, cut the token off. `GET /account` with the token names the
 tenant that accepts it (`userAccountInfo.legalEntity.id`). The provider
-endpoints act on the caller's own tenant, so use an admin token of that
-tenant: `cyoda token --tenant <id>` while the bootstrap key verifies, or an
-admin client of that tenant; without either, set a new
-`CYODA_JWT_SIGNING_KEY` (see *Alternative to step 4*), or have that
-tenant's admins act. Deleting one tenant's provider can make the token
+endpoints act on the caller's own tenant, so use an admin token of each
+tenant whose providers you delete: `cyoda token --tenant <id>` while the
+bootstrap key verifies, or an admin client of that tenant; without either,
+set a new `CYODA_JWT_SIGNING_KEY` (see *Alternative to step 4*), or have
+that tenant's admins act. Deleting one tenant's provider can make the token
 resolve to another tenant's provider of the same IdP, with that tenant's
 roles. So first delete the providers of that IdP in the other tenants you
 know of (the INFO line `oidc.cross_tenant_uri_registration`, written when a
@@ -483,9 +485,10 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   log lines step 5 names with the tenant's id in place of `PLATFORM`, and
   the INFO line `oidc provider registered` with the same `tenantId`. If the
   leaked token came from an IdP, check that the IdP no longer publishes
-  the keys you retired and that 5 minutes have passed since (or a reload
-  ran), or that the token's `exp` is more than 30 seconds plus the clock
-  offset past.
+  the key named by the token's `kid` and that 5 minutes have passed since,
+  or that the token's `exp` is more than 30 seconds plus the clock offset
+  past. A token with no `exp` from an IdP whose keys you cannot retire
+  keeps the block in place until the IdP stops publishing that key.
 - Step 6: delete the admin client you created in the tenant, or give it to
   the tenant.
 

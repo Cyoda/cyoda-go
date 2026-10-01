@@ -27,8 +27,11 @@ binary release by `bump-chart-appversion.yml`.
 ```bash
 kubectl create namespace cyoda
 
-kubectl -n cyoda create secret generic cyoda-dsn \
-  --from-literal=dsn='postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+# Secrets go through private files, not kubectl's command line, which
+# other local users can see. printf is a shell builtin.
+(umask 077; printf '%s' 'postgres://cyoda:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn)
+kubectl -n cyoda create secret generic cyoda-dsn --from-file=dsn=dsn
+rm dsn
 
 kubectl -n cyoda create secret generic cyoda-jwt \
   --from-file=signing-key.pem=./jwt-signing-key.pem
@@ -69,8 +72,9 @@ runtime StatefulSet connects as a non-owner **runtime** role. Set
 `dsn`) to a Secret holding the owner DSN:
 
 ```bash
-kubectl -n cyoda create secret generic cyoda-dsn-migrate \
-  --from-literal=dsn='postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require'
+(umask 077; printf '%s' 'postgres://cyoda_owner:REDACTED@pg.example.com:5432/cyoda?sslmode=require' > dsn-migrate)
+kubectl -n cyoda create secret generic cyoda-dsn-migrate --from-file=dsn=dsn-migrate
+rm dsn-migrate
 
 helm upgrade cyoda cyoda/cyoda -n cyoda \
   --set migrate.postgres.existingSecret=cyoda-dsn-migrate
@@ -186,10 +190,11 @@ Do this for every chart-managed Secret you want to keep stable across
 GitOps reconciles — HMAC and the metrics bearer.
 
 ```bash
-kubectl -n cyoda create secret generic cyoda-hmac \
-  --from-literal=secret=$(openssl rand -hex 32)
-kubectl -n cyoda create secret generic cyoda-metrics-bearer \
-  --from-literal=bearer=$(openssl rand -base64 36)
+(umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret
+  openssl rand -base64 36 | tr -d '\n' > metrics-bearer)
+kubectl -n cyoda create secret generic cyoda-hmac --from-file=secret=hmac-secret
+kubectl -n cyoda create secret generic cyoda-metrics-bearer --from-file=bearer=metrics-bearer
+rm hmac-secret metrics-bearer
 ```
 
 ```yaml

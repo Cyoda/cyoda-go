@@ -293,8 +293,11 @@ This key is also the root secret for issued signing key pairs; see `config.auth`
 **HMAC secret** — generate 32 bytes of entropy (64 hex chars) and load into a Kubernetes Secret:
 
 ```
-kubectl create secret generic cyoda-hmac -n cyoda \
-  --from-literal=secret="$(openssl rand -hex 32)"
+# The secret goes through a private file, not kubectl's command line,
+# which other local users can see.
+(umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret)
+kubectl create secret generic cyoda-hmac -n cyoda --from-file=secret=hmac-secret
+rm hmac-secret
 ```
 
 See `quickstart` for accepted key formats and format-specific `openssl` commands.
@@ -321,10 +324,12 @@ The migration Job mounts only the Postgres DSN Secret (principle of least privil
 **Install (pre-create secrets, then install):**
 
 ```
-kubectl create secret generic cyoda-pg \
-  --from-literal=dsn="postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+# Secrets go through private files, not kubectl's command line. printf is
+# a shell builtin, so the DSN is on no process's command line either.
+(umask 077; printf '%s' 'postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
@@ -338,10 +343,10 @@ Note: `--create-namespace` triggers the GitOps safety guard (namespace does not 
 
 ```
 kubectl create namespace cyoda
-kubectl create secret generic cyoda-pg -n cyoda \
-  --from-literal=dsn="postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt -n cyoda \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+(umask 077; printf '%s' 'postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
@@ -392,10 +397,10 @@ helm template cyoda ./deploy/helm/cyoda \
 
 ```
 kubectl create namespace cyoda
-kubectl create secret generic cyoda-pg -n cyoda \
-  --from-literal=dsn="postgres://cyoda:pass@db.example.com:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt -n cyoda \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+(umask 077; printf '%s' 'postgres://cyoda:pass@db.example.com:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
