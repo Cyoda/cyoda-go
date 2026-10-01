@@ -265,7 +265,8 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 		broken    bool
 		deleted   bool
 		// other: "retired", "unknown vault", "foreign bootstrap",
-		// "undecodable", or "absent" (no record at the kid).
+		// "undecodable", "absent" (no record at the kid), or "ignored" (a
+		// record at a key that is not a key id).
 		other  string
 		wantOK bool
 	}{

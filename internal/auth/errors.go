@@ -12,6 +12,12 @@ var (
 	// only after chain exhaustion.
 	ErrUnknownKID = errors.New("auth: unknown kid")
 
+	// ErrKIDCannotVerify indicates the token's `kid` names a key pair of this
+	// node's signing-key store that may not verify now (see
+	// ErrKeyPairCannotVerify). Hard-fail: the kid is cyoda-go's, so the
+	// chain must not let a later validator resolve it.
+	ErrKIDCannotVerify = errors.New("auth: kid names a key pair that cannot verify now")
+
 	// ErrIssuerMismatch indicates the validator's KeySource resolved the
 	// token's `kid` but the `iss` claim does not match the validator's
 	// expected issuer (bytewise comparison per OIDC Core 1.0 §2). Hard-fail;

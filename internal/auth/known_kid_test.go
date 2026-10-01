@@ -52,8 +52,8 @@ func TestChainedValidator_KnownKIDThatCannotVerifyDoesNotFallThrough(t *testing.
 			tok := signTokenWithEphemeralKey(t, kid, "cyoda", "u1", "org1", 60)
 			if _, err := chain.Validate(tok); err == nil {
 				t.Fatal("token under a cyoda-go kid that cannot verify was accepted")
-			} else if errors.Is(err, ErrUnknownKID) {
-				t.Fatalf("err = %v, want a hard failure, not ErrUnknownKID", err)
+			} else if errors.Is(err, ErrUnknownKID) || !errors.Is(err, ErrKIDCannotVerify) {
+				t.Fatalf("err = %v, want the hard failure ErrKIDCannotVerify, not ErrUnknownKID", err)
 			}
 			if next.calls != 0 {
 				t.Fatalf("next validator called %d times, want 0", next.calls)
