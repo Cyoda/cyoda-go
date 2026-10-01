@@ -551,6 +551,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   a tenant's IdP that published a key under that `kid` had its tokens
   accepted. Such a token now gets `401`.
 
+- **Two OIDC issuers that publish the same `kid` no longer block each
+  other.** Once a token from one issuer had been resolved, a token from
+  the other issuer under the same `kid` got `401` (issuer mismatch) until
+  the provider list changed. A tenant could register a provider that
+  publishes another tenant's IdP `kid` and so lock that tenant's users
+  out. Each issuer's tokens now resolve.
+
 ### Added
 
 - **`cyoda token` signs a short-lived admin token offline.**

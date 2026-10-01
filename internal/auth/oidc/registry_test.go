@@ -644,3 +644,39 @@ func TestRegistry_ReloadOne_AcceptsAnyDiscoveryIssuerWhenIssuersEmpty(t *testing
 		t.Error("source was not installed for provider with empty Issuers list — D17 fallback broken")
 	}
 }
+
+// A kid two issuers both publish resolves for each issuer in either order.
+// The hot path serves only the providers the first resolution indexed; a
+// token from the other issuer must reach the cold path rather than fail on
+// those providers' issuer check. Otherwise a tenant whose provider publishes
+// another tenant's IdP kid, resolved first, denies that tenant's tokens.
+func TestResolveKey_KidSharedByTwoIssuers_ResolvesEach(t *testing.T) {
+	r := newTestRegistry(t)
+	pa, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pb, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := &OidcProvider{ID: uuid.New(), WellKnownConfigURI: "https://a.example", CreatedAt: time.Now(), OwnerLegalEntityID: uuid.New()}
+	b := &OidcProvider{ID: uuid.New(), WellKnownConfigURI: "https://b.example", CreatedAt: time.Now(), OwnerLegalEntityID: uuid.New()}
+	r.installForTest(a, &fakeKeySource{kid: "k1", key: &pa.PublicKey}, &DiscoveryDoc{Issuer: "https://a.example", JWKSURI: "x"})
+	r.installForTest(b, &fakeKeySource{kid: "k1", key: &pb.PublicKey}, &DiscoveryDoc{Issuer: "https://b.example", JWKSURI: "y"})
+
+	if res, err := r.ResolveKey("k1", "https://b.example", ""); err != nil || res.Provider.ID != b.ID {
+		t.Fatalf("issuer B first: res=%v err=%v", res, err)
+	}
+	if res, err := r.ResolveKey("k1", "https://a.example", ""); err != nil || res.Provider.ID != a.ID {
+		t.Fatalf("issuer A after B was indexed: res=%v err=%v", res, err)
+	}
+	// Both are now indexed: each still resolves on the hot path.
+	if res, err := r.ResolveKey("k1", "https://b.example", ""); err != nil || res.Provider.ID != b.ID {
+		t.Fatalf("issuer B again: res=%v err=%v", res, err)
+	}
+	// A token from neither issuer still fails on the issuer check.
+	if _, err := r.ResolveKey("k1", "https://c.example", ""); !errors.Is(err, auth.ErrIssuerMismatch) {
+		t.Fatalf("issuer C: err=%v, want ErrIssuerMismatch", err)
+	}
+}

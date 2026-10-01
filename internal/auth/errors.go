@@ -21,10 +21,11 @@ var (
 	// ErrIssuerMismatch indicates the `iss` claim does not match the expected
 	// issuer (bytewise comparison per OIDC Core 1.0 §2). The first-party
 	// validator returns it after resolving the `kid`; the OIDC registry
-	// returns it when no provider resolves the token and at least one
-	// active, discovered provider was rejected by issuer, whether or not it
-	// publishes the `kid`. Hard-fail; the chain does NOT consult subsequent
-	// validators.
+	// returns it when, after a search of every provider, none resolves the
+	// token, none failed transiently (that is ErrJWKSUnavailable), and at
+	// least one active, discovered provider was rejected by issuer, whether
+	// or not it publishes the `kid`. Hard-fail; the chain does NOT consult
+	// subsequent validators.
 	ErrIssuerMismatch = errors.New("auth: issuer mismatch")
 
 	// ErrSignatureFailure indicates signature verification failed after a

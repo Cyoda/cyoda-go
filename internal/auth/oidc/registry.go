@@ -283,7 +283,11 @@ func (r *Registry) ResolveKey(kid, iss, aud string) (*KeyResolution, error) {
 		}
 		res, err = r.disposeCandidates(candidates, kid, iss, aud)
 	}()
-	if err == nil || !errors.Is(err, auth.ErrUnknownKID) {
+	// The hot path sees only the providers an earlier resolution indexed for
+	// this kid, all of one issuer. An issuer mismatch there may mean another
+	// issuer's provider publishes the same kid, so it goes to the cold path
+	// too.
+	if err == nil || (!errors.Is(err, auth.ErrUnknownKID) && !errors.Is(err, auth.ErrIssuerMismatch)) {
 		return res, err
 	}
 
@@ -387,9 +391,10 @@ func (r *Registry) collectKeyEligibleRefs(candidates []providerRef, kid, iss str
 //   - success → KeyResolution with ProviderRef populated
 //   - at least one iss-eligible candidate but all sources returned transient
 //     errors → ErrJWKSUnavailable
-//   - no key-eligible candidate but at least one active, discovered candidate
-//     was rejected by iss (checked before the kid lookup, so whether or not
-//     it publishes the kid) → ErrIssuerMismatch
+//   - no key-eligible candidate, no transient error, and at least one active,
+//     discovered candidate rejected by iss (checked before the kid lookup, so
+//     whether or not it publishes the kid) → ErrIssuerMismatch. ResolveKey
+//     retries this on the cold path when it came from the kidIndex subset.
 //   - ambiguous (multiple key-eligible, no unique aud match) → ErrAmbiguousProvider
 //   - otherwise → ErrUnknownKID
 func (r *Registry) disposeCandidates(candidates []providerRef, kid, iss, aud string) (*KeyResolution, error) {
