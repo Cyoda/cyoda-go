@@ -240,7 +240,7 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 	if err != nil {
 		t.Fatalf("memory KV: %v", err)
 	}
-	ks, err := auth.NewKVKeyStore(systemCtx, kv, auth.KVKeyStoreConfig{Bootstrap: priv, BootstrapAudience: "client"})
+	ks, err := auth.NewKVKeyStore(systemCtx, kv, auth.KVKeyStoreConfig{Bootstrap: priv})
 	if err != nil {
 		t.Fatalf("key store: %v", err)
 	}

@@ -23,10 +23,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
-func issue(t *testing.T, s *auth.KVKeyStore, aud string, invalidate bool) *auth.KeyPair {
+func issue(t *testing.T, s *auth.KVKeyStore, invalidate bool) *auth.KeyPair {
 	t.Helper()
 	now := time.Now()
-	kp, err := s.Issue(systemCtx(), auth.IssueRequest{Audience: aud, ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: invalidate})
+	kp, err := s.Issue(systemCtx(), auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: invalidate})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,10 +37,10 @@ func TestKVKeyStore_IssueSignsAndIsSharedThroughTheStore(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	a := newKeyStore(t, kv, boot, "client")
-	b := newKeyStore(t, kv, boot, "client")
-	kp := issue(t, a, "client", false)
-	signerKP, _, err := a.Signer("client")
+	a := newKeyStore(t, kv, boot)
+	b := newKeyStore(t, kv, boot)
+	kp := issue(t, a, false)
+	signerKP, _, err := a.Signer()
 	if err != nil || signerKP.KID != kp.KID {
 		t.Fatalf("A signs with %v, err %v; want %s", signerKP, err, kp.KID)
 	}
@@ -50,8 +50,8 @@ func TestKVKeyStore_IssueSignsAndIsSharedThroughTheStore(t *testing.T) {
 	if _, err := b.VerificationKey(kp.KID); err != nil {
 		t.Fatalf("B cannot verify: %v", err)
 	}
-	c := newKeyStore(t, kv, boot, "client") // a restart
-	if got, _, err := c.Signer("client"); err != nil || got.KID != kp.KID {
+	c := newKeyStore(t, kv, boot) // a restart
+	if got, _, err := c.Signer(); err != nil || got.KID != kp.KID {
 		t.Fatalf("after restart: %v, %v", got, err)
 	}
 }
@@ -61,8 +61,8 @@ func TestKVKeyStore_StoredValueHasNoPrivateKey(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
-	kp := issue(t, s, "client", false)
+	s := newKeyStore(t, kv, boot)
+	kp := issue(t, s, false)
 	raw, _ := kv.Get(ctx, "signing-keys", kp.KID)
 	var rec struct {
 		PublicKey string                         `json:"publicKey"`
@@ -147,11 +147,11 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	rv := &remoteVault{keys: map[string]*rsa.PrivateKey{}}
-	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t), BootstrapAudience: "human", Vault: rv})
+	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t), Vault: rv})
 	if err != nil {
 		t.Fatal(err)
 	}
-	kp := issue(t, s, "client", false)
+	kp := issue(t, s, false)
 	if _, ok := rv.keys[kp.KID]; !ok {
 		t.Fatal("the configured vault never generated the key: cfg.Vault was ignored")
 	}
@@ -163,7 +163,7 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 	if rec.Vault.Kind != "remote" {
 		t.Fatalf("stored vault kind = %q, want %q: cfg.Vault was ignored", rec.Vault.Kind, "remote")
 	}
-	got, signer, err := s.Signer("client")
+	got, signer, err := s.Signer()
 	if err != nil || got.KID != kp.KID {
 		t.Fatalf("%v %v", got, err)
 	}
@@ -184,16 +184,16 @@ func TestKVKeyStore_NonExportingVaultSigns(t *testing.T) {
 	}
 }
 
-// A rotation ends the issued siblings of its audience only. The signing key
-// from configuration is never a sibling: it is not written, stays active and
-// keeps verifying.
+// A rotation ends every other issued key pair (its siblings) only. The
+// signing key from configuration is never a sibling: it is not written,
+// stays active and keeps verifying.
 func TestKVKeyStore_RotationLeavesTheSigningKey(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	ks := newKeyStore(t, kv, boot, "client")
-	old := issueWindow(t, ks, "client", time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
-	neu, err := ks.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	ks := newKeyStore(t, kv, boot)
+	old := issueWindow(t, ks, time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+	neu, err := ks.Issue(ctx, auth.IssueRequest{ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,43 +203,12 @@ func TestKVKeyStore_RotationLeavesTheSigningKey(t *testing.T) {
 	if _, err := ks.VerificationKey(bootKID(t, boot)); err != nil {
 		t.Errorf("the signing key stopped verifying: %v", err)
 	}
-	cur, err := ks.Current("client")
+	cur, err := ks.Current()
 	if err != nil || cur.KID != neu.KID {
 		t.Fatalf("current = %v %v, want the new key pair", cur, err)
 	}
 	if _, err := kv.Get(ctx, "signing-keys", bootKID(t, boot)); !errors.Is(err, spi.ErrNotFound) {
 		t.Errorf("the rotation wrote the signing key's state: err = %v", err)
-	}
-}
-
-// Review focus: a rotation never touches an issued key pair of another
-// audience.
-func TestKVKeyStore_RotationLeavesOtherAudienceIssuedKey(t *testing.T) {
-	ctx := systemCtx()
-	kv := mustNewMemoryKV(t, ctx)
-	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
-	old := issue(t, s, "client", false)
-	humanKey := issue(t, s, "human", false)
-	nw := issue(t, s, "client", true)
-	if _, err := s.VerificationKey(old.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatal("old client key still verifies after rotation")
-	}
-	if _, err := s.VerificationKey(humanKey.KID); err != nil {
-		t.Fatal("a key of another audience was invalidated")
-	}
-	if got, _, _ := s.Signer("client"); got.KID != nw.KID {
-		t.Fatalf("signer = %s, want %s", got.KID, nw.KID)
-	}
-}
-
-// Review focus: bootstrap audience human; a client rotation leaves it alone.
-func TestKVKeyStore_RotationLeavesOtherAudienceBootstrap(t *testing.T) {
-	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "human")
-	issue(t, s, "client", true)
-	if _, err := s.VerificationKey(bootKID(t, boot)); err != nil {
-		t.Fatalf("human bootstrap key invalidated by a client rotation: %v", err)
 	}
 }
 
@@ -272,8 +241,8 @@ func (f *commitThenFailKV) Put(ctx context.Context, ns, key string, v []byte) er
 	return nil
 }
 
-// Two siblings are ended by this rotation: two already-issued key pairs of
-// the audience. siblingWrites sorts sibling writes by key ascending, so
+// Two siblings are ended by this rotation: two already-issued key pairs.
+// siblingWrites sorts sibling writes by key ascending, so
 // failing the Put of the greater KID fails the SECOND sibling: the restore
 // must put both siblings' original bytes back (writes that had already
 // landed) and remove the new key pair's record entirely (a write that took
@@ -284,9 +253,9 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	pre := newKeyStore(t, mem, boot, "client")
-	a := issue(t, pre, "client", false)
-	b := issue(t, pre, "client", false)
+	pre := newKeyStore(t, mem, boot)
+	a := issue(t, pre, false)
+	b := issue(t, pre, false)
 	beforeA, _ := mem.Get(ctx, "signing-keys", a.KID)
 	beforeB, _ := mem.Get(ctx, "signing-keys", b.KID)
 	failKey := a.KID
@@ -297,13 +266,13 @@ func TestKVKeyStore_RotationCompensatesOnSiblingFailure(t *testing.T) {
 	var pings int
 	bc.Subscribe("auth.signingkeys", func([]byte) { pings++ })
 	s, _ := auth.NewKVKeyStore(ctx, &commitThenFailKV{KeyValueStore: mem, failKey: failKey},
-		auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", Broadcaster: bc})
+		auth.KVKeyStoreConfig{Bootstrap: boot, Broadcaster: bc})
 	var buf bytes.Buffer
 	prevLog := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prevLog)
 	now := time.Now()
-	_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
+	_, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
 	if err == nil {
 		t.Fatal("expected the sibling failure")
 	}
@@ -347,15 +316,15 @@ func TestKVKeyStore_RotationWritesNewKeyBeforeSiblings(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	pre := newKeyStore(t, mem, boot, "client")
-	old := issue(t, pre, "client", false)
+	pre := newKeyStore(t, mem, boot)
+	old := issue(t, pre, false)
 	rec := &putOrderKV{KeyValueStore: mem}
-	s, err := auth.NewKVKeyStore(ctx, rec, auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := auth.NewKVKeyStore(ctx, rec, auth.KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now()
-	nw, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
+	nw, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,8 +352,8 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
-	issue(t, s, "client", false)
+	s := newKeyStore(t, kv, boot)
+	issue(t, s, false)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -395,7 +364,7 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	if !strings.Contains(buf.String(), "still unseals") || !strings.Contains(buf.String(), "level=WARN") {
 		t.Fatalf("missing WARN about the PEM; log: %s", buf.String())
 	}
-	r := newKeyStore(t, kv, boot, "client") // restart
+	r := newKeyStore(t, kv, boot) // restart
 	if _, err := r.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("deleted bootstrap key verifies after restart")
 	}
@@ -418,7 +387,7 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	issue(t, r, "client", true)
+	issue(t, r, true)
 	after, err := kv.Get(ctx, "signing-keys", bootKID(t, boot))
 	if err != nil {
 		t.Fatal(err)
@@ -434,7 +403,7 @@ func TestKVKeyStore_BootstrapDeleteIsTerminalAndSurvivesRestart(t *testing.T) {
 func TestKVKeyStore_NoUnsealsWarnWithoutOwnedPairs(t *testing.T) {
 	ctx := systemCtx()
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -488,8 +457,8 @@ func TestKVKeyStore_RevokingTheSigningKeyWarnsWithNoIssuedPairs(t *testing.T) {
 func TestKVKeyStore_InvalidateBootstrapWithOwnedPairWarns(t *testing.T) {
 	ctx := systemCtx()
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
-	issue(t, s, "client", false)
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot)
+	issue(t, s, false)
 	var buf bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -511,8 +480,8 @@ func TestKVKeyStore_InvalidateBootstrapWithOwnedPairWarns(t *testing.T) {
 func TestKVKeyStore_IssuedKeyInvalidateNeverWarns(t *testing.T) {
 	ctx := systemCtx()
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot, "client")
-	kp := issue(t, s, "client", false)
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), boot)
+	kp := issue(t, s, false)
 	if err := s.Invalidate(ctx, bootKID(t, boot), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -532,9 +501,9 @@ func TestKVKeyStore_BootstrapInvalidateReactivateAcrossRestart(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
+	s := newKeyStore(t, kv, boot)
 	_ = s.Invalidate(ctx, bootKID(t, boot), 0)
-	r := newKeyStore(t, kv, boot, "client")
+	r := newKeyStore(t, kv, boot)
 	if _, err := r.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatal("invalidated bootstrap key back after restart")
 	}
@@ -551,10 +520,10 @@ func TestKVKeyStore_RetiredAndForeignAreNotFound(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	bootA, bootB := newBootstrap(t), newBootstrap(t) // two different bootstrap keys
-	a := newKeyStore(t, kv, bootA, "client")
-	kp := issue(t, a, "client", false)
+	a := newKeyStore(t, kv, bootA)
+	kp := issue(t, a, false)
 	_ = a.Invalidate(ctx, bootKID(t, bootA), 60) // writes a bootstrap-state record
-	b := newKeyStore(t, kv, bootB, "client")
+	b := newKeyStore(t, kv, bootB)
 	for _, kid := range []string{kp.KID, bootKID(t, bootA)} {
 		if err := b.Invalidate(ctx, kid, 0); !errors.Is(err, auth.ErrKeyPairNotFound) {
 			t.Fatalf("invalidate %s: %v", kid, err)
@@ -566,7 +535,7 @@ func TestKVKeyStore_RetiredAndForeignAreNotFound(t *testing.T) {
 			t.Fatalf("reactivate %s: %v", kid, err)
 		}
 	}
-	if got, _, _ := b.Signer("client"); got.KID != bootKID(t, bootB) {
+	if got, _, _ := b.Signer(); got.KID != bootKID(t, bootB) {
 		t.Fatalf("retired key signs on another bootstrap key's node: %s", got.KID)
 	}
 	pub, _ := b.Published()
@@ -581,9 +550,9 @@ func TestKVKeyStore_StaleCopyCannotResurrectDeleted(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	a := newKeyStore(t, kv, boot, "client")
-	kp := issue(t, a, "client", false)
-	b := newKeyStore(t, kv, boot, "client")
+	a := newKeyStore(t, kv, boot)
+	kp := issue(t, a, false)
+	b := newKeyStore(t, kv, boot)
 	if err := a.Delete(ctx, kp.KID); err != nil {
 		t.Fatal(err)
 	}
@@ -599,10 +568,10 @@ func TestKVKeyStore_RotationSeesSiblingIssuedElsewhere(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	a := newKeyStore(t, kv, boot, "human")
-	b := newKeyStore(t, kv, boot, "human")
-	k1 := issue(t, a, "client", false)
-	issue(t, b, "client", true) // b has not re-read
+	a := newKeyStore(t, kv, boot)
+	b := newKeyStore(t, kv, boot)
+	k1 := issue(t, a, false)
+	issue(t, b, true) // b has not re-read
 	if err := a.ReconcileForTest(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -620,11 +589,11 @@ func TestKVKeyStore_UndecodableCanBeDeleted(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	_ = kv.Put(ctx, "signing-keys", undecodableKID, []byte("{"))
-	s := newKeyStore(t, kv, newBootstrap(t), "client")
+	s := newKeyStore(t, kv, newBootstrap(t))
 	if err := s.Delete(ctx, undecodableKID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := s.Signer("client"); err != nil {
+	if _, _, err := s.Signer(); err != nil {
 		t.Fatalf("signing still blocked after deleting the undecodable record: %v", err)
 	}
 	raw, err := kv.Get(ctx, "signing-keys", undecodableKID)
@@ -651,7 +620,7 @@ func TestKVKeyStore_UndecodableAtBootstrapKIDCanBeDeleted(t *testing.T) {
 	boot := newBootstrap(t)
 	kid, _ := auth.DeriveKID(&boot.PublicKey)
 	_ = kv.Put(ctx, "signing-keys", kid, []byte("{"))
-	s := newKeyStore(t, kv, boot, "client")
+	s := newKeyStore(t, kv, boot)
 	if err := s.Delete(ctx, kid); err != nil {
 		t.Fatal(err)
 	}
@@ -678,7 +647,7 @@ func TestKVKeyStore_UndecodableAtBootstrapKIDCanBeDeleted(t *testing.T) {
 // collected on a channel instead of reported inline.
 func TestKVKeyStore_ConcurrentIssueOnOneNode(t *testing.T) {
 	ctx := systemCtx()
-	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t), "human")
+	s := newKeyStore(t, mustNewMemoryKV(t, ctx), newBootstrap(t))
 	var wg sync.WaitGroup
 	kids := make([]string, 2)
 	errs := make(chan error, len(kids))
@@ -687,7 +656,7 @@ func TestKVKeyStore_ConcurrentIssueOnOneNode(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			now := time.Now()
-			kp, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour)})
+			kp, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour)})
 			if err != nil {
 				errs <- err
 				return
@@ -703,8 +672,8 @@ func TestKVKeyStore_ConcurrentIssueOnOneNode(t *testing.T) {
 	if kids[0] == kids[1] {
 		t.Fatal("duplicate KID")
 	}
-	first, _, _ := s.Signer("client")
-	second, _, _ := s.Signer("client")
+	first, _, _ := s.Signer()
+	second, _, _ := s.Signer()
 	if first.KID != second.KID {
 		t.Fatal("signer choice not deterministic")
 	}
@@ -740,16 +709,16 @@ func TestKVKeyStore_StoreFailureIsNotNotFound(t *testing.T) {
 	mem := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
 	kv := &toggleGetListKV{KeyValueStore: mem}
-	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
-	kp := issue(t, s, "client", false)
+	kp := issue(t, s, false)
 	kv.fail.Store(true)
 	now := time.Now()
 	checks := map[string]func() error{
 		"issue with invalidate": func() error {
-			_, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
+			_, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true})
 			return err
 		},
 		"invalidate":       func() error { return s.Invalidate(ctx, kp.KID, 0) },
@@ -769,7 +738,7 @@ func TestKVKeyStore_StoreFailureIsNotNotFound(t *testing.T) {
 // Signer, so it uses OpenPrivateKeyForTest from export_internal_test.go.
 func mustOpenPrivate(t *testing.T, boot *rsa.PrivateKey, owner, kid, recOwner string, spki, sealed []byte) *rsa.PrivateKey {
 	t.Helper()
-	k, err := auth.OpenPrivateKeyForTest(boot, owner, auth.KeyMeta{KID: kid, Audience: "client", Algorithm: "RS256", Owner: recOwner, SPKI: spki}, sealed)
+	k, err := auth.OpenPrivateKeyForTest(boot, owner, auth.KeyMeta{KID: kid, Algorithm: "RS256", Owner: recOwner, SPKI: spki}, sealed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,11 +777,11 @@ func TestKVKeyStore_IssueRefusesUnstorableTime(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
+	s := newKeyStore(t, kv, boot)
 	now := time.Now()
 	for name, req := range map[string]auth.IssueRequest{
-		"validTo year 10000": {Audience: "client", ValidFrom: now, ValidTo: year10000},
-		"validFrom year -1":  {Audience: "client", ValidFrom: yearMinus, ValidTo: now.Add(time.Hour)},
+		"validTo year 10000": {ValidFrom: now, ValidTo: year10000},
+		"validFrom year -1":  {ValidFrom: yearMinus, ValidTo: now.Add(time.Hour)},
 	} {
 		if _, err := s.Issue(ctx, req); err == nil {
 			t.Fatalf("%s: issued", name)
@@ -821,10 +790,10 @@ func TestKVKeyStore_IssueRefusesUnstorableTime(t *testing.T) {
 	if got := signingRecords(t, kv); len(got) != 0 {
 		t.Fatalf("%d records written", len(got))
 	}
-	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+	if kp, _, err := s.Signer(); err != nil || kp.KID != bootKID(t, boot) {
 		t.Fatalf("signing changed: %v %v", kp, err)
 	}
-	if _, err := newKeyStore(t, kv, boot, "client").VerificationKey(bootKID(t, boot)); err != nil {
+	if _, err := newKeyStore(t, kv, boot).VerificationKey(bootKID(t, boot)); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 }
@@ -833,8 +802,8 @@ func TestKVKeyStore_ReactivateRefusesUnstorableTime(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "human")
-	kp := issue(t, s, "client", false)
+	s := newKeyStore(t, kv, boot)
+	kp := issue(t, s, false)
 	if err := s.Invalidate(ctx, bootKID(t, boot), 60); err != nil {
 		t.Fatal(err)
 	}
@@ -848,7 +817,7 @@ func TestKVKeyStore_ReactivateRefusesUnstorableTime(t *testing.T) {
 		}
 	}
 	sameRecords(t, before, signingRecords(t, kv))
-	if _, err := newKeyStore(t, kv, boot, "human").VerificationKey(kp.KID); err != nil {
+	if _, err := newKeyStore(t, kv, boot).VerificationKey(kp.KID); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
 }
@@ -859,14 +828,14 @@ func TestKVKeyStore_ReactivateAbsentBootstrapRefusesUnstorableTime(t *testing.T)
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
+	s := newKeyStore(t, kv, boot)
 	if _, err := s.Reactivate(ctx, bootKID(t, boot), time.Now().Add(-time.Second), year10000); err == nil {
 		t.Fatal("reactivated with validTo in year 10000")
 	}
 	if got := signingRecords(t, kv); len(got) != 0 {
 		t.Fatalf("%d records written", len(got))
 	}
-	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+	if kp, _, err := s.Signer(); err != nil || kp.KID != bootKID(t, boot) {
 		t.Fatalf("signing changed: %v %v", kp, err)
 	}
 }
@@ -893,8 +862,8 @@ func TestStorableTime(t *testing.T) {
 // key-pair endpoints accept.
 func TestMatchesKeyPairIDPattern(t *testing.T) {
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
-	for _, kid := range []string{issue(t, s, "human", false).KID, bootKID(t, boot)} {
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot)
+	for _, kid := range []string{issue(t, s, false).KID, bootKID(t, boot)} {
 		if !auth.MatchesKeyPairIDPattern(kid) {
 			t.Errorf("store KID %q refused", kid)
 		}

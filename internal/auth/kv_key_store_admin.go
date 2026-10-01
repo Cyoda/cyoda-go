@@ -16,7 +16,6 @@ import (
 
 // IssueRequest is a validated POST /oauth/keys/keypair.
 type IssueRequest struct {
-	Audience       string
 	ValidFrom      time.Time
 	ValidTo        time.Time
 	Invalidate     bool
@@ -43,9 +42,9 @@ func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, con
 	return context.WithTimeout(context.WithoutCancel(ctx), s.rep.cfg.interval)
 }
 
-// Issue creates a key pair and, with Invalidate, ends every issued sibling of
-// its audience: an owned or broken issued key pair whose window is open (see
-// siblingWrites). The new record is written before the siblings; if
+// Issue creates a key pair and, with Invalidate, ends every issued sibling: an
+// owned or broken issued key pair whose window is open (see siblingWrites).
+// The new record is written before the siblings; if
 // a sibling write fails, writeAll (replica.go) tries to undo every write
 // already made — see its doc comment for what that guarantees and does not:
 // a failed undo is logged at ERROR with the keys left changed, and a crash
@@ -63,14 +62,14 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 		if err != nil {
 			return nil, false, err
 		}
-		meta := KeyMeta{KID: kid, Audience: req.Audience, Algorithm: "RS256", Owner: s.vault.Owner()}
+		meta := KeyMeta{KID: kid, Algorithm: "RS256", Owner: s.vault.Owner()}
 		spki, sealed, _, err := s.vault.Generate(ctx, meta)
 		if err != nil {
 			return nil, false, fmt.Errorf("failed to generate key pair: %w", err)
 		}
 		vt := req.ValidTo
 		data, err := encodeSigningRecord(signingRecord{
-			Kind: recordKindIssued, KID: kid, Audience: req.Audience, Algorithm: "RS256", Active: true,
+			Kind: recordKindIssued, KID: kid, Algorithm: "RS256", Active: true,
 			ValidFrom: fmtTime(req.ValidFrom), ValidTo: fmtTimePtr(&vt),
 			PublicKey: base64.StdEncoding.EncodeToString(spki),
 			Vault:     &vaultReference{Kind: s.vault.Kind(), Owner: s.vault.Owner(), Sealed: base64.StdEncoding.EncodeToString(sealed)},
@@ -80,7 +79,7 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 		}
 		writes := []kvWrite{{key: kid, value: data}}
 		if req.Invalidate {
-			sib, err := s.siblingWrites(ctx, req.Audience, kid, req.GracePeriodSec)
+			sib, err := s.siblingWrites(ctx, kid, req.GracePeriodSec)
 			if err != nil {
 				return nil, false, err
 			}
@@ -107,11 +106,11 @@ func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, err
 }
 
 // siblingWrites lists the stored records and returns the writes that end the
-// siblings of a rotation: owned and broken issued records of the audience
-// whose window is open. The signing key from configuration is never a
-// sibling; only an invalidate or delete that names its key id ends it. Only
-// the active flag and validTo change.
-func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string, grace int64) ([]kvWrite, error) {
+// siblings of a rotation: every other owned and broken issued record whose
+// window is open. The signing key from configuration is never a sibling;
+// only an invalidate or delete that names its key id ends it. Only the active
+// flag and validTo change.
+func (s *KVKeyStore) siblingWrites(ctx context.Context, newKID string, grace int64) ([]kvWrite, error) {
 	all, err := s.kv.List(ctx, signingKeysNamespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list signing keys: %w", err)
@@ -131,7 +130,7 @@ func (s *KVKeyStore) siblingWrites(ctx context.Context, audience, newKID string,
 		// (signing_records.go: an issued record there is classUndecodable,
 		// a bootstrap-kind record there is classBootstrapState), so it is
 		// never a sibling here regardless of this loop.
-		if (e.class != classOwned && e.class != classBroken) || e.pair.Audience != audience || !windowOpen(e.pair.ValidTo, now) {
+		if (e.class != classOwned && e.class != classBroken) || !windowOpen(e.pair.ValidTo, now) {
 			continue
 		}
 		rec, _, _, _, _ := decodeSigningRecord(k, data)
@@ -203,7 +202,7 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 		cancel()
 		p := e.pair
 		if kid == s.boot.kid {
-			p.Audience, p.PublicKey = s.boot.audience, s.boot.public
+			p.PublicKey = s.boot.public
 		}
 		out = &p
 		return func(recs map[string]*signingEntry) { recs[kid] = e }, true, nil

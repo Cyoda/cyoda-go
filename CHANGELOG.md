@@ -57,7 +57,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs
   only, the first rotation included; it used to invalidate the bootstrap key
   too. The bootstrap key stays active and signs again whenever no issued key
-  pair of its audience is active and inside its window, so `cyoda token`
+  pair is active and inside its window, so `cyoda token`
   keeps working through routine key management. Only an invalidate or
   `DELETE` that names its key id ends it, and the node that takes the call
   logs a WARN that tokens from `cyoda token` are refused once any grace
@@ -73,6 +73,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   running grace period short. See `cyoda help config auth`
   ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-window.md`.
+
+- **Signing key pairs have no audience: `audience` is removed from key-pair
+  issue and from `GET /oauth/keys/keypair/current`, and
+  `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed.** The newest active key pair
+  signs every token.
 
 - **Signing key pairs are shared and persisted by the cluster.** See
   `cyoda help config auth` ("JWT signing keypair rotation") and

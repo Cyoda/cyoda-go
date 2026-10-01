@@ -11,8 +11,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
-
-	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
 func ucReq(method, path string, body []byte, uc *spi.UserContext) *http.Request {
@@ -42,13 +40,12 @@ func keyPairCalls(h *account.Handler, uc *spi.UserContext) map[string]func() *ht
 	return map[string]func() *httptest.ResponseRecorder{
 		"issue": func() *httptest.ResponseRecorder {
 			return run(func(w http.ResponseWriter) {
-				h.IssueJwtKeyPair(w, ucReq("POST", "/oauth/keys/keypair", []byte(`{"algorithm":"RS256","audience":"human"}`), uc))
+				h.IssueJwtKeyPair(w, ucReq("POST", "/oauth/keys/keypair", []byte(`{"algorithm":"RS256"}`), uc))
 			})
 		},
 		"current": func() *httptest.ResponseRecorder {
 			return run(func(w http.ResponseWriter) {
-				h.GetCurrentJwtKeyPair(w, ucReq("GET", "/oauth/keys/keypair/current?audience=human", nil, uc),
-					genapiCurrentParams("human"))
+				h.GetCurrentJwtKeyPair(w, ucReq("GET", "/oauth/keys/keypair/current", nil, uc))
 			})
 		},
 		"invalidate": func() *httptest.ResponseRecorder {
@@ -65,10 +62,6 @@ func keyPairCalls(h *account.Handler, uc *spi.UserContext) map[string]func() *ht
 	}
 }
 
-func genapiCurrentParams(aud string) genapi.GetCurrentJwtKeyPairParams {
-	return genapi.GetCurrentJwtKeyPairParams{Audience: genapi.GetCurrentJwtKeyPairParamsAudience(aud)}
-}
-
 func TestKeyPairEndpoints_RefuseTenantAdmin(t *testing.T) {
 	ks := newTestKeyStore(t)
 	h := account.New(nil, nil, ks, newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
@@ -82,8 +75,8 @@ func TestKeyPairEndpoints_RefuseTenantAdmin(t *testing.T) {
 		})
 	}
 	// Nothing was issued: the only key is the bootstrap key.
-	if _, err := ks.Current("human"); err == nil {
-		t.Error("a tenant admin's refused issue left a human key pair behind")
+	if cur, err := ks.Current(); err != nil || !cur.Bootstrap {
+		t.Errorf("a tenant admin's refused issue left a key pair behind: current = %+v, err = %v", cur, err)
 	}
 }
 

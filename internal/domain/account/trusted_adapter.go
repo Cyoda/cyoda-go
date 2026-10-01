@@ -76,7 +76,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, errCode, jwkErr.Error()))
 		return
 	}
-	if !isValidKeyPairAudience(string(req.Audience)) {
+	if req.Audience != "human" && req.Audience != "client" {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
 		return
 	}

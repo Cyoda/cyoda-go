@@ -26,7 +26,6 @@ const (
 type signingRecord struct {
 	Kind      string          `json:"kind"`
 	KID       string          `json:"kid"`
-	Audience  string          `json:"audience,omitempty"`
 	Algorithm string          `json:"algorithm,omitempty"`
 	Active    bool            `json:"active"`
 	ValidFrom string          `json:"validFrom"`
@@ -148,9 +147,6 @@ func decodeSigningRecord(kvKey string, data []byte) (signingRecord, KeyPair, []b
 	default:
 		return rec, KeyPair{}, nil, nil, fmt.Errorf("unknown record kind %q", rec.Kind)
 	}
-	if rec.Audience != "client" && rec.Audience != "human" {
-		return rec, KeyPair{}, nil, nil, fmt.Errorf("invalid audience %q", rec.Audience)
-	}
 	if rec.Algorithm != "RS256" || rec.Vault == nil || rec.Vault.Kind == "" || rec.Vault.Owner == "" {
 		return rec, KeyPair{}, nil, nil, errors.New("incomplete issued record")
 	}
@@ -170,7 +166,7 @@ func decodeSigningRecord(kvKey string, data []byte) (signingRecord, KeyPair, []b
 	if err != nil {
 		return rec, KeyPair{}, nil, nil, errors.New("invalid sealed encoding")
 	}
-	pair.Audience, pair.Algorithm, pair.PublicKey = rec.Audience, rec.Algorithm, pub
+	pair.Algorithm, pair.PublicKey = rec.Algorithm, pub
 	return rec, pair, spki, sealed, nil
 }
 
@@ -180,15 +176,15 @@ type cachedSigner struct {
 }
 
 // signerFingerprint hashes every field bound to the sealed key (KID,
-// audience, algorithm, owner, SPKI — the same set the vault authenticates as
-// AEAD associated data, spec §5.2/§5.3) together with the sealed bytes
-// themselves, each length-prefixed to keep the concatenation unambiguous. A
-// record rewritten with the same sealed bytes but a different bound field —
-// or the same bound fields under new sealed bytes — must never be treated as
-// the same cached signer.
+// algorithm, owner, SPKI — the same set the vault authenticates as AEAD
+// associated data, spec §5.2/§5.3) together with the sealed bytes themselves,
+// each length-prefixed to keep the concatenation unambiguous. A record
+// rewritten with the same sealed bytes but a different bound field — or the
+// same bound fields under new sealed bytes — must never be treated as the
+// same cached signer.
 func signerFingerprint(meta KeyMeta, sealed []byte) [32]byte {
 	var b []byte
-	for _, f := range [][]byte{[]byte(meta.KID), []byte(meta.Audience), []byte(meta.Algorithm), []byte(meta.Owner), meta.SPKI, sealed} {
+	for _, f := range [][]byte{[]byte(meta.KID), []byte(meta.Algorithm), []byte(meta.Owner), meta.SPKI, sealed} {
 		b = binary.BigEndian.AppendUint32(b, uint32(len(f)))
 		b = append(b, f...)
 	}
@@ -277,7 +273,7 @@ func (c *classifier) classify(ctx context.Context, kvKey string, data []byte) *s
 	if rec.Vault.Owner != c.vault.Owner() {
 		return &signingEntry{class: classRetired, pair: pair}
 	}
-	signer, err := c.open(ctx, KeyMeta{KID: rec.KID, Audience: rec.Audience, Algorithm: rec.Algorithm, Owner: rec.Vault.Owner, SPKI: spki}, sealed)
+	signer, err := c.open(ctx, KeyMeta{KID: rec.KID, Algorithm: rec.Algorithm, Owner: rec.Vault.Owner, SPKI: spki}, sealed)
 	if err != nil {
 		reason := "cannot open"
 		if errors.Is(err, ErrUnseal) {

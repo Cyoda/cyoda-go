@@ -23,7 +23,7 @@ Returned by:
 - `DELETE /oauth/keys/keypair/{keyId}` — keyId not present.
 - `POST /oauth/keys/keypair/{keyId}/invalidate` — keyId not present.
 - `POST /oauth/keys/keypair/{keyId}/reactivate` — keyId not present.
-- `GET /oauth/keys/keypair/current?audience=X` — no active key for audience X.
+- `GET /oauth/keys/keypair/current` — no active signing key.
 
 Also returned when the keyId names:
 
@@ -37,7 +37,7 @@ Also returned when the keyId names:
   instead. At this node's bootstrap key id, a delete permanently deletes the
   bootstrap key.
 
-Verify the keyId, or check the bootstrap-key audience configuration via `CYODA_JWT_BOOTSTRAP_AUDIENCE`.
+Verify the keyId, or check whether any key pair is active and inside its window.
 
 ## SEE ALSO
 

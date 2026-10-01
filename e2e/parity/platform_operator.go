@@ -30,9 +30,9 @@ func RunPlatformOperatorGate(t *testing.T, fixture BackendFixture) {
 			do   func() (int, []byte, error)
 		}{
 			{"issue", func() (int, []byte, error) {
-				return c.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256", "audience": "human"})
+				return c.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256"})
 			}},
-			{"current", func() (int, []byte, error) { return c.CurrentKeyPairRaw(t, "human") }},
+			{"current", func() (int, []byte, error) { return c.CurrentKeyPairRaw(t) }},
 			{"invalidate", func() (int, []byte, error) { return c.InvalidateKeyPairRaw(t, bootKID) }},
 			{"reactivate", func() (int, []byte, error) { return c.ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)) }},
 			{"delete", func() (int, []byte, error) { return c.DeleteKeyPairRaw(t, bootKID) }},

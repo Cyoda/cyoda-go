@@ -580,24 +580,6 @@ func (e IssueJwtKeyPairRequestDtoAlgorithm) Valid() bool {
 	}
 }
 
-// Defines values for IssueJwtKeyPairRequestDtoAudience.
-const (
-	IssueJwtKeyPairRequestDtoAudienceClient IssueJwtKeyPairRequestDtoAudience = "client"
-	IssueJwtKeyPairRequestDtoAudienceHuman  IssueJwtKeyPairRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the IssueJwtKeyPairRequestDtoAudience enum.
-func (e IssueJwtKeyPairRequestDtoAudience) Valid() bool {
-	switch e {
-	case IssueJwtKeyPairRequestDtoAudienceClient:
-		return true
-	case IssueJwtKeyPairRequestDtoAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for JwtKeyPairResponseDtoAlgorithm.
 const (
 	JwtKeyPairResponseDtoAlgorithmES256 JwtKeyPairResponseDtoAlgorithm = "ES256"
@@ -1606,24 +1588,6 @@ func (e SetEntityModelChangeLevelParamsChangeLevel) Valid() bool {
 	}
 }
 
-// Defines values for GetCurrentJwtKeyPairParamsAudience.
-const (
-	GetCurrentJwtKeyPairParamsAudienceClient GetCurrentJwtKeyPairParamsAudience = "client"
-	GetCurrentJwtKeyPairParamsAudienceHuman  GetCurrentJwtKeyPairParamsAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the GetCurrentJwtKeyPairParamsAudience enum.
-func (e GetCurrentJwtKeyPairParamsAudience) Valid() bool {
-	switch e {
-	case GetCurrentJwtKeyPairParamsAudienceClient:
-		return true
-	case GetCurrentJwtKeyPairParamsAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for GetTechnicalUserTokenFormdataBodyGrantType.
 const (
 	GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials                        GetTechnicalUserTokenFormdataBodyGrantType = "client_credentials"
@@ -2426,9 +2390,8 @@ type InvalidateKeyRequestDto struct {
 type IssueJwtKeyPairRequestDto struct {
 	// Algorithm Signing algorithm. Only `RS256` is honoured in this version.
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
-	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
-	// InvalidateCurrent If true, invalidates the issued key-pairs of this audience whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair of its audience is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
+	// InvalidateCurrent If true, invalidates every issued key-pair whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
 	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true.
@@ -2443,9 +2406,6 @@ type IssueJwtKeyPairRequestDto struct {
 
 // IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
-
-// IssueJwtKeyPairRequestDtoAudience defines model for IssueJwtKeyPairRequestDto.Audience.
-type IssueJwtKeyPairRequestDtoAudience string
 
 // JsonNode defines model for JsonNode.
 type JsonNode = map[string]interface{}
@@ -4030,14 +3990,6 @@ type ValidateEntityModelJSONBody = map[string]interface{}
 // SetEntityModelChangeLevelParamsChangeLevel defines parameters for SetEntityModelChangeLevel.
 type SetEntityModelChangeLevelParamsChangeLevel string
 
-// GetCurrentJwtKeyPairParams defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParams struct {
-	Audience GetCurrentJwtKeyPairParamsAudience `form:"audience" json:"audience"`
-}
-
-// GetCurrentJwtKeyPairParamsAudience defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParamsAudience string
-
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
 type GetTechnicalUserTokenFormdataBody struct {
 	// GrantType The OAuth 2.0 grant type
@@ -5509,7 +5461,7 @@ type ServerInterface interface {
 	IssueJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Get current active JWT signing key-pair
 	// (GET /oauth/keys/keypair/current)
-	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params GetCurrentJwtKeyPairParams)
+	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Delete JWT signing key-pair
 	// (DELETE /oauth/keys/keypair/{keyId})
 	DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string)
@@ -8368,33 +8320,14 @@ func (siw *ServerInterfaceWrapper) IssueJwtKeyPair(w http.ResponseWriter, r *htt
 // GetCurrentJwtKeyPair operation middleware
 func (siw *ServerInterfaceWrapper) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 
-	var err error
-	_ = err
-
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetCurrentJwtKeyPairParams
-
-	// ------------- Required query parameter "audience" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "audience", r.URL.Query(), &params.Audience, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "audience"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "audience", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetCurrentJwtKeyPair(w, r, params)
+		siw.Handler.GetCurrentJwtKeyPair(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {

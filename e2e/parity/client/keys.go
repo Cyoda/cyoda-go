@@ -14,16 +14,16 @@ import (
 )
 
 // IssueKeyPairRaw issues POST /api/oauth/keys/keypair with the given body
-// (e.g. {"algorithm": "RS256", "audience": "human"}).
+// (e.g. {"algorithm": "RS256"}).
 func (c *Client) IssueKeyPairRaw(t *testing.T, body map[string]any) (int, []byte, error) {
 	t.Helper()
 	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/keypair", body)
 }
 
-// CurrentKeyPairRaw issues GET /api/oauth/keys/keypair/current?audience=....
-func (c *Client) CurrentKeyPairRaw(t *testing.T, audience string) (int, []byte, error) {
+// CurrentKeyPairRaw issues GET /api/oauth/keys/keypair/current.
+func (c *Client) CurrentKeyPairRaw(t *testing.T) (int, []byte, error) {
 	t.Helper()
-	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/keys/keypair/current?audience="+url.QueryEscape(audience), nil)
+	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/keys/keypair/current", nil)
 }
 
 // InvalidateKeyPairRaw issues POST /api/oauth/keys/keypair/{id}/invalidate.

@@ -76,7 +76,6 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	// same KID. Its stored state, if any, comes from the KV store.
 	keyStore, err := NewKVKeyStore(ctx, config.KV, KVKeyStoreConfig{
 		Bootstrap:         privateKey,
-		BootstrapAudience: config.IAMFeatures.BootstrapAudience,
 		Broadcaster:       config.Broadcaster,
 		ReconcileInterval: config.ReconcileInterval,
 		Metrics:           config.SigningKeyMetrics,

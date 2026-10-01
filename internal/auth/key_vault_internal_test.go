@@ -80,7 +80,7 @@ func TestWrappedVault_Golden(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		meta := KeyMeta{KID: "golden-kid", Audience: "client", Algorithm: "RS256", Owner: "owner-kid"}
+		meta := KeyMeta{KID: "golden-kid", Algorithm: "RS256", Owner: "owner-kid"}
 		spki, sealed, _, err := v.Generate(context.Background(), meta)
 		if err != nil {
 			t.Fatal(err)
@@ -167,7 +167,7 @@ func newTestVault(t *testing.T) (KeyVault, KeyMeta) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v, KeyMeta{KID: "k1", Audience: "client", Algorithm: "RS256", Owner: "owner-kid"}
+	return v, KeyMeta{KID: "k1", Algorithm: "RS256", Owner: "owner-kid"}
 }
 
 func TestWrappedVault_RoundTrip(t *testing.T) {
@@ -187,7 +187,7 @@ func TestWrappedVault_RoundTrip(t *testing.T) {
 }
 
 // Every bound field must stop the sealed key opening when it changes. All
-// four are authenticated as AEAD associated data, so any change fails
+// three are authenticated as AEAD associated data, so any change fails
 // decryption itself, before the key is ever parsed.
 func TestWrappedVault_AssociatedDataBindsEachField(t *testing.T) {
 	v, meta := newTestVault(t)
@@ -206,7 +206,6 @@ func TestWrappedVault_AssociatedDataBindsEachField(t *testing.T) {
 	}
 	cases := map[string]func(m *KeyMeta){
 		"kid":       func(m *KeyMeta) { m.KID = "k2" },
-		"audience":  func(m *KeyMeta) { m.Audience = "human" },
 		"algorithm": func(m *KeyMeta) { m.Algorithm = "RS512" },
 		"spki":      func(m *KeyMeta) { m.SPKI = otherSPKI },
 	}

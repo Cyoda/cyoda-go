@@ -16,11 +16,16 @@ import (
 
 // --- KeyStore Tests ---
 
-// newIssuedOnlyStore is a key store whose bootstrap key signs for "human",
-// so the "client" audience has only the key pairs a test issues.
+// newIssuedOnlyStore is a key store whose bootstrap key is invalidated right
+// away, so only the key pairs a test issues can ever be chosen as signer.
 func newIssuedOnlyStore(t *testing.T) *auth.KVKeyStore {
 	t.Helper()
-	return newKeyStore(t, mustNewMemoryKV(t, systemCtx()), newBootstrap(t), "human")
+	boot := newBootstrap(t)
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot)
+	if err := s.Invalidate(systemCtx(), bootKID(t, boot), 0); err != nil {
+		t.Fatalf("invalidate bootstrap: %v", err)
+	}
+	return s
 }
 
 // published reports whether kid is in the store's JWKS set.
@@ -41,10 +46,10 @@ func published(t *testing.T, s auth.KeyStore, kid string) (*auth.KeyPair, bool) 
 func TestKeyStore_IssueCurrentInvalidateReactivateDelete(t *testing.T) {
 	ctx := systemCtx()
 	store := newIssuedOnlyStore(t)
-	kp1 := issueWindow(t, store, "client", time.Now(), time.Now().Add(time.Hour))
+	kp1 := issueWindow(t, store, time.Now(), time.Now().Add(time.Hour))
 
 	// Current
-	got, err := store.Current("client")
+	got, err := store.Current()
 	if err != nil {
 		t.Fatalf("Current failed: %v", err)
 	}
@@ -59,8 +64,9 @@ func TestKeyStore_IssueCurrentInvalidateReactivateDelete(t *testing.T) {
 	if _, err := store.VerificationKey(kp1.KID); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Errorf("invalidated key pair still verifies: %v", err)
 	}
-	// Current fails now (no active key pair for the audience)
-	if _, err := store.Current("client"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	// Current fails now (no active key pair at all: newIssuedOnlyStore
+	// invalidated the bootstrap key too)
+	if _, err := store.Current(); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("Current with no active key pair: err = %v, want ErrKeyPairNotFound", err)
 	}
 
@@ -73,7 +79,7 @@ func TestKeyStore_IssueCurrentInvalidateReactivateDelete(t *testing.T) {
 	if !re.Active {
 		t.Error("expected the key pair to be active after Reactivate")
 	}
-	if got, err := store.Current("client"); err != nil || got.KID != kp1.KID {
+	if got, err := store.Current(); err != nil || got.KID != kp1.KID {
 		t.Fatalf("Current after Reactivate = %v, %v; want %s", got, err, kp1.KID)
 	}
 
@@ -205,32 +211,14 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 }
 
-// --- KeyStore (audience-partitioned) Tests ---
-
-func TestKeyStore_Current_AudiencePartition(t *testing.T) {
-	boot := newBootstrap(t)
-	s := newTestKeyStore(t, boot) // bootstrap signs for "client"
-	human := issueWindow(t, s, "human", time.Now(), time.Now().Add(time.Hour))
-	got, err := s.Current("human")
-	if err != nil || got.KID != human.KID {
-		t.Fatalf("Current(human): got=%+v err=%v", got, err)
-	}
-	if got, err := s.Current("client"); err != nil || got.KID != bootKID(t, boot) {
-		t.Fatalf("Current(client): got=%+v err=%v; want the bootstrap key", got, err)
-	}
-	if _, err := s.Current("robot"); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatalf("Current(robot): err = %v, want ErrKeyPairNotFound", err)
-	}
-}
-
 // A key pair issued ahead of time (ValidFrom in the future) is not used to
 // sign until its window opens: the current key keeps signing.
 func TestKeyStore_Signer_SkipsKeyNotYetValid(t *testing.T) {
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	current := issueWindow(t, s, "client", now.Add(-time.Hour), now.Add(2*time.Hour))
-	issueWindow(t, s, "client", now.Add(time.Hour), now.Add(2*time.Hour))
-	got, _, err := s.Signer("client")
+	current := issueWindow(t, s, now.Add(-time.Hour), now.Add(2*time.Hour))
+	issueWindow(t, s, now.Add(time.Hour), now.Add(2*time.Hour))
+	got, _, err := s.Signer()
 	if err != nil || got.KID != current.KID {
 		t.Fatalf("Signer = %+v, %v; want %s", got, err, current.KID)
 	}
@@ -243,13 +231,13 @@ func TestKeyStore_Signer_TieBreakIsDeterministic(t *testing.T) {
 	from := time.Now().Add(-time.Hour)
 	want := ""
 	for i := 0; i < 5; i++ {
-		kp := issueWindow(t, s, "client", from, from.Add(2*time.Hour))
+		kp := issueWindow(t, s, from, from.Add(2*time.Hour))
 		if kp.KID > want {
 			want = kp.KID
 		}
 	}
 	for i := 0; i < 50; i++ {
-		got, _, err := s.Signer("client")
+		got, _, err := s.Signer()
 		if err != nil || got.KID != want {
 			t.Fatalf("Signer = %+v, %v; want %s every time", got, err, want)
 		}
@@ -259,9 +247,9 @@ func TestKeyStore_Signer_TieBreakIsDeterministic(t *testing.T) {
 func TestKeyStore_Signer_MaxValidFrom(t *testing.T) {
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	issueWindow(t, s, "client", now.Add(-time.Hour), now.Add(time.Hour))
-	newer := issueWindow(t, s, "client", now, now.Add(time.Hour))
-	got, _, err := s.Signer("client")
+	issueWindow(t, s, now.Add(-time.Hour), now.Add(time.Hour))
+	newer := issueWindow(t, s, now, now.Add(time.Hour))
+	got, _, err := s.Signer()
 	if err != nil || got.KID != newer.KID {
 		t.Errorf("expected newer ValidFrom selected, got %+v, %v", got, err)
 	}
@@ -271,8 +259,8 @@ func TestKeyStore_Issue_RotateInvalidatesSiblings(t *testing.T) {
 	ctx := systemCtx()
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	existing := issueWindow(t, s, "client", now, now.Add(time.Hour))
-	fresh, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now.Add(time.Second), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
+	existing := issueWindow(t, s, now, now.Add(time.Hour))
+	fresh, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now.Add(time.Second), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -293,11 +281,11 @@ func TestKeyStore_Issue_RotateInvalidatesSiblings(t *testing.T) {
 func TestKeyStore_Issue_RotateNoOp(t *testing.T) {
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
-	fresh, err := s.Issue(systemCtx(), auth.IssueRequest{Audience: "client", ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
+	fresh, err := s.Issue(systemCtx(), auth.IssueRequest{ValidFrom: now, ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 60})
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
-	if got, err := s.Current("client"); err != nil || got.KID != fresh.KID || !got.Active {
+	if got, err := s.Current(); err != nil || got.KID != fresh.KID || !got.Active {
 		t.Errorf("solo Issue with Invalidate=true should still leave the new key active: %+v, %v", got, err)
 	}
 }
@@ -305,7 +293,7 @@ func TestKeyStore_Issue_RotateNoOp(t *testing.T) {
 func TestKeyStore_Issue_ConcurrentRotateExactlyOneActive(t *testing.T) {
 	ctx := systemCtx()
 	s := newIssuedOnlyStore(t)
-	base := issueWindow(t, s, "client", time.Now(), time.Now().Add(time.Hour))
+	base := issueWindow(t, s, time.Now(), time.Now().Add(time.Hour))
 	kids := []string{base.KID, "", ""}
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
@@ -313,7 +301,7 @@ func TestKeyStore_Issue_ConcurrentRotateExactlyOneActive(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			now := time.Now()
-			kp, err := s.Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: now.Add(time.Duration(i+1) * time.Millisecond), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 1})
+			kp, err := s.Issue(ctx, auth.IssueRequest{ValidFrom: now.Add(time.Duration(i+1) * time.Millisecond), ValidTo: now.Add(time.Hour), Invalidate: true, GracePeriodSec: 1})
 			if err == nil {
 				kids[i+1] = kp.KID
 			}
@@ -334,7 +322,7 @@ func TestKeyStore_Issue_ConcurrentRotateExactlyOneActive(t *testing.T) {
 		}
 	}
 	if active != 1 {
-		t.Errorf("expected exactly 1 active client-audience key, got %d", active)
+		t.Errorf("expected exactly 1 active key, got %d", active)
 	}
 }
 
@@ -342,8 +330,8 @@ func TestKeyStore_Published_LazyFilter(t *testing.T) {
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
 	past := now.Add(-time.Hour)
-	active := issueWindow(t, s, "client", now, now.Add(time.Hour))
-	expired := issueWindow(t, s, "client", past.Add(-time.Hour), past)
+	active := issueWindow(t, s, now, now.Add(time.Hour))
+	expired := issueWindow(t, s, past.Add(-time.Hour), past)
 	if _, ok := published(t, s, active.KID); !ok {
 		t.Error("expected the active key pair published")
 	}
@@ -356,7 +344,7 @@ func TestKeyStore_Reactivate_FreshWindow(t *testing.T) {
 	s := newIssuedOnlyStore(t)
 	now := time.Now()
 	past := now.Add(-time.Hour)
-	expired := issueWindow(t, s, "client", past.Add(-time.Hour), past)
+	expired := issueWindow(t, s, past.Add(-time.Hour), past)
 	if _, err := s.VerificationKey(expired.KID); err == nil {
 		t.Fatal("an expired key pair verifies")
 	}
@@ -374,7 +362,7 @@ func TestKeyStore_Reactivate_FreshWindow(t *testing.T) {
 
 func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
 	s := newIssuedOnlyStore(t)
-	kp := issueWindow(t, s, "client", time.Now(), time.Now().Add(time.Hour))
+	kp := issueWindow(t, s, time.Now(), time.Now().Add(time.Hour))
 	newWindow := time.Now().Add(48 * time.Hour)
 	got, err := s.Reactivate(systemCtx(), kp.KID, time.Now(), newWindow)
 	if err != nil {
@@ -390,7 +378,7 @@ func TestKeyStore_Reactivate_IdempotentOnActive(t *testing.T) {
 
 func TestKeyStore_Published_IncludesGracePeriodKey(t *testing.T) {
 	s := newIssuedOnlyStore(t)
-	kp := issueWindow(t, s, "client", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	kp := issueWindow(t, s, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	if err := s.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
 		t.Fatal(err)
 	}
@@ -408,7 +396,7 @@ func TestKeyStore_InvalidateNeverExtends(t *testing.T) {
 	issue := func(validTo time.Time, invalidate bool, grace int64) *auth.KeyPair {
 		t.Helper()
 		kp, err := s.Issue(ctx, auth.IssueRequest{
-			Audience: "client", ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: validTo,
+			ValidFrom: time.Now().Add(-2 * time.Hour), ValidTo: validTo,
 			Invalidate: invalidate, GracePeriodSec: grace,
 		})
 		if err != nil {

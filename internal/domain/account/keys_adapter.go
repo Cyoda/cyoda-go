@@ -43,10 +43,6 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeUnsupportedAlgorithm, "only RS256 supported in this version"))
 		return
 	}
-	if !isValidKeyPairAudience(string(req.Audience)) {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
-		return
-	}
 	now := time.Now().UTC()
 	validFrom := now
 	if req.ValidFrom != nil {
@@ -88,8 +84,7 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	// Invalidating the current key stops it signing at once (it may still
 	// verify through its grace period, but that is not signing), while a key
 	// issued ahead of time cannot sign until its validFrom. The combination
-	// can leave the audience without a signing key until the new window
-	// opens: for example an audience other than the bootstrap key's, or once
+	// can leave no signing key until the new window opens: for example once
 	// the bootstrap key is revoked. Issue ahead of time without invalidating,
 	// then invalidate the old key once the new one's window has opened.
 	if invalidate && validFrom.After(now) {
@@ -98,7 +93,7 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kp, err := h.keyStore.Issue(r.Context(), auth.IssueRequest{
-		Audience: string(req.Audience), ValidFrom: validFrom, ValidTo: validTo,
+		ValidFrom: validFrom, ValidTo: validTo,
 		Invalidate: invalidate, GracePeriodSec: grace,
 	})
 	if err != nil {
@@ -108,8 +103,6 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toJwtKeyPairResponse(kp))
 }
-
-func isValidKeyPairAudience(s string) bool { return s == "human" || s == "client" }
 
 // validKeyPairID writes 400 BAD_REQUEST and returns false if keyId does not
 // have the form of a key-pair KID (auth.MatchesKeyPairIDPattern).
@@ -164,20 +157,16 @@ func toJwtKeyPairResponse(kp *auth.KeyPair) genapi.JwtKeyPairResponseDto {
 	return resp
 }
 
-func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (h *Handler) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if !h.operator.Require(w, r) {
 		return
 	}
 	if !h.requireKeyStore(w, r) {
 		return
 	}
-	if !isValidKeyPairAudience(string(params.Audience)) {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
-		return
-	}
-	kp, err := h.keyStore.Current(string(params.Audience))
+	kp, err := h.keyStore.Current()
 	if errors.Is(err, auth.ErrKeyPairNotFound) {
-		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "no active key pair for audience"))
+		common.WriteError(w, r, common.Operational(http.StatusNotFound, common.ErrCodeKeypairNotFound, "no active key pair"))
 		return
 	}
 	if err != nil {
@@ -270,8 +259,8 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	// A future validFrom would put the key pair outside its own window at
-	// once; for the key signing now, that leaves the audience with no signing
-	// key. Issue a new key pair ahead of time instead.
+	// once; for the key signing now, that leaves no signing key. Issue a
+	// new key pair ahead of time instead.
 	if validFrom.After(now) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validFrom cannot be in the future"))
 		return

@@ -29,12 +29,11 @@ func withCallerTx(ctx context.Context) context.Context {
 func TestKVKeyStore_IgnoresCallerTransaction(t *testing.T) {
 	boot := newBootstrap(t)
 	probe := &txProbeKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
-	s := newKeyStore(t, probe, boot, "client")
+	s := newKeyStore(t, probe, boot)
 
 	txCtx := withCallerTx(systemCtx())
 
 	kp, err := s.Issue(txCtx, auth.IssueRequest{
-		Audience:   "client",
 		ValidFrom:  time.Now(),
 		ValidTo:    time.Now().Add(time.Hour),
 		Invalidate: true, // exercises siblingWrites' store List

@@ -93,11 +93,11 @@ func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
 	ctx := systemCtx()
 	now := time.Now()
 	from := now.Add(-2 * time.Hour)
-	issued, err := svc.KeyStore().Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: from, ValidTo: now.Add(time.Hour)})
+	issued, err := svc.KeyStore().Issue(ctx, auth.IssueRequest{ValidFrom: from, ValidTo: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("issue key pair: %v", err)
 	}
-	kp, signer, err := svc.KeyStore().Signer("client")
+	kp, signer, err := svc.KeyStore().Signer()
 	if err != nil || kp.KID != issued.KID {
 		t.Fatalf("signer = %v, %v; want the issued key pair %s", kp, err, issued.KID)
 	}

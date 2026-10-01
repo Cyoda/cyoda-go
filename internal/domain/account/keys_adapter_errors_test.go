@@ -11,14 +11,13 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 type failingKeyStore struct{ err error }
 
-func (f failingKeyStore) Signer(string) (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
-func (f failingKeyStore) Current(string) (*auth.KeyPair, error)             { return nil, f.err }
+func (f failingKeyStore) Signer() (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
+func (f failingKeyStore) Current() (*auth.KeyPair, error)             { return nil, f.err }
 func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error)    { return nil, f.err }
 func (f failingKeyStore) Published() ([]*auth.KeyPair, error)               { return nil, f.err }
 func (f failingKeyStore) Issue(context.Context, auth.IssueRequest) (*auth.KeyPair, error) {
@@ -52,10 +51,10 @@ func TestKeyPairAdapters_StoreErrorsAreNot404(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	calls := map[string]func(h *Handler, w http.ResponseWriter){
 		"issue": func(h *Handler, w http.ResponseWriter) {
-			h.IssueJwtKeyPair(w, operatorReq("POST", "/oauth/keys/keypair", `{"algorithm":"RS256","audience":"client"}`))
+			h.IssueJwtKeyPair(w, operatorReq("POST", "/oauth/keys/keypair", `{"algorithm":"RS256"}`))
 		},
 		"current": func(h *Handler, w http.ResponseWriter) {
-			h.GetCurrentJwtKeyPair(w, operatorReq("GET", "/oauth/keys/keypair/current", ""), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+			h.GetCurrentJwtKeyPair(w, operatorReq("GET", "/oauth/keys/keypair/current", ""))
 		},
 		"delete": func(h *Handler, w http.ResponseWriter) {
 			h.DeleteJwtKeyPair(w, operatorReq("DELETE", "/oauth/keys/keypair/"+wellFormedKID, ""), wellFormedKID)

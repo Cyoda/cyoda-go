@@ -92,7 +92,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, client *M2MClient) {
-	kp, signer, err := h.keyStore.Signer("client")
+	kp, signer, err := h.keyStore.Signer()
 	if err != nil {
 		writeTokenServerError(w, "keyStore.Signer", err)
 		return
@@ -224,7 +224,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	kp, signer, err := h.keyStore.Signer("client")
+	kp, signer, err := h.keyStore.Signer()
 	if err != nil {
 		writeTokenServerError(w, "keyStore.Signer", err)
 		return

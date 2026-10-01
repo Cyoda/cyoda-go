@@ -478,12 +478,12 @@ func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	s.Unimplemented.IssueJwtKeyPair(w, r)
 }
 
-func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if s.Account != nil {
-		s.Account.GetCurrentJwtKeyPair(w, r, params)
+		s.Account.GetCurrentJwtKeyPair(w, r)
 		return
 	}
-	s.Unimplemented.GetCurrentJwtKeyPair(w, r, params)
+	s.Unimplemented.GetCurrentJwtKeyPair(w, r)
 }
 
 func (s *Server) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {

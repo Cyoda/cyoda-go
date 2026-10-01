@@ -20,7 +20,6 @@ import (
 // KeyMeta is what a key vault binds to a sealed private key.
 type KeyMeta struct {
 	KID       string
-	Audience  string
 	Algorithm string
 	Owner     string
 	SPKI      []byte // empty for Generate
@@ -98,7 +97,7 @@ func deriveWrappingKey(k *rsa.PrivateKey) ([]byte, error) {
 func associatedData(m KeyMeta) []byte {
 	spkiHash := sha256.Sum256(m.SPKI)
 	var b []byte
-	for _, f := range [][]byte{[]byte(sealLabel), []byte(m.KID), []byte(m.Audience), []byte(m.Algorithm), []byte(m.Owner), spkiHash[:]} {
+	for _, f := range [][]byte{[]byte(sealLabel), []byte(m.KID), []byte(m.Algorithm), []byte(m.Owner), spkiHash[:]} {
 		b = binary.BigEndian.AppendUint32(b, uint32(len(f)))
 		b = append(b, f...)
 	}

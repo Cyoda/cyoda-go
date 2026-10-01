@@ -65,12 +65,6 @@ signal that requests are unauthenticated.
   of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
   be an integer from 1 to 31622400 (366 days); any other value stops the
   server at startup and makes `cyoda token` exit 1. (default: `3600`)
-- `CYODA_JWT_BOOTSTRAP_AUDIENCE` — audience for the bootstrap signing key
-  derived from `CYODA_JWT_SIGNING_KEY`. Must be `client` or `human`. The
-  M2M token-issuance path (`POST /oauth/token`) always uses the
-  client-audience key. Set to `human` only in deployments where M2M token
-  issuance is disabled and the bootstrap key signs human tokens through
-  an external flow. (default: `client`)
 
 ### Tenant identifiers
 
@@ -242,19 +236,19 @@ The key-pair endpoints (`/oauth/keys/keypair*`) need a platform operator:
 (see `cyoda help cli token`), or create an admin M2M client in `PLATFORM`.
 
 Operators can rotate signing keys at runtime via
-`POST /oauth/keys/keypair` (with `algorithm: RS256` and `audience: client`).
-Of the active key pairs of an audience inside their window, the bootstrap
+`POST /oauth/keys/keypair` (with `algorithm: RS256`).
+Of the active key pairs inside their window, the bootstrap
 key included, the one with the latest `validFrom` signs new tokens (on a tie,
 the greater key id). The bootstrap key takes part with a zero `validFrom`
 until a reactivation sets one. Until then, an active issued key pair inside
 its window signs before it, and the bootstrap key signs whenever no issued key
-pair of its audience is active and inside its window. A reactivation sets the
+pair is active and inside its window. A reactivation sets the
 bootstrap key's `validFrom` to the request's value, which defaults to now:
-from then on it signs before every issued key pair of its audience with an
+from then on it signs before every issued key pair with an
 earlier `validFrom`.
 
-Setting `invalidateCurrent: true` also invalidates the issued key pairs of the
-audience that have not ended (including one issued ahead of time), the first
+Setting `invalidateCurrent: true` also invalidates the issued key pairs that
+have not ended (including one issued ahead of time), the first
 rotation included. A rotation invalidates issued key pairs only: the
 bootstrap key is never one of them, stays active, keeps verifying, and
 `cyoda token` keeps working. Only an invalidate or a `DELETE` that names the
@@ -279,7 +273,7 @@ verify on every node until the key pair's `validTo`.
 (in its header) is listed in `/.well-known/jwks.json` was signed by
 cyoda-go; revoke that key pair. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
-from `POST /oauth/token` while it wins signer selection for its audience
+from `POST /oauth/token` while it wins signer selection
 (before the first rotation, for example, or after a reactivation with the
 default `validFrom`; see above).
 
@@ -339,13 +333,13 @@ never by reactivation. None of this ends an open stream (see below).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
-  `invalidateGracePeriodSec: 0`. If it signs and no other key pair of its
-  audience is active and inside its window (with the bootstrap key revoked,
+  `invalidateGracePeriodSec: 0`. If it signs and no other key pair is
+  active and inside its window (with the bootstrap key revoked,
   it may be the only one), invalidating or deleting it leaves no signer (see
   *No signer* below), so use the rotation instead.
 - If the `kid` names the bootstrap key, invalidate it with a grace period
-  of zero. If no issued `client` key pair is active and inside its window,
-  first issue one (`POST /oauth/keys/keypair` with audience `client`), and
+  of zero. If no issued key pair is active and inside its window,
+  first issue one (`POST /oauth/keys/keypair`), and
   hold an admin client in `PLATFORM` whose token it signs: otherwise
   `POST /oauth/token` has no signer once the bootstrap key is invalidated,
   no operator token verifies, and the only way back is a new
@@ -362,8 +356,8 @@ never by reactivation. None of this ends an open stream (see below).
   host's clock and is checked on the verifying node's clock. By then every
   token the bootstrap key signed has expired. Reactivating it sooner makes
   those tokens verify again. Pass an early `validFrom` on the reactivation,
-  for example `1970-01-01T00:00:00Z`, so that the issued key pairs of its
-  audience keep signing `POST /oauth/token`. With the default `validFrom`
+  for example `1970-01-01T00:00:00Z`, so that the issued key pairs
+  keep signing `POST /oauth/token`. With the default `validFrom`
   (now), the bootstrap key signs before them, and `POST /oauth/token` signs
   with it again. `DELETE` also ends the bootstrap key, but permanently.
 - If the token carries `ROLE_ADMIN` in `PLATFORM`, follow *A leaked
@@ -502,10 +496,7 @@ after the last restart (providers as the list above says), once
 `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` and
 `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` are set the way they will
 stay. In step 5, JWKS lists the bootstrap key of the latest
-`CYODA_JWT_SIGNING_KEY`, and `/current?audience=client` names it. With
-`CYODA_JWT_BOOTSTRAP_AUDIENCE=human`, issue a `client` key pair after the
-last restart, as the *Alternative to step 4* says: JWKS lists it too, and
-`/current` names it.
+`CYODA_JWT_SIGNING_KEY`, and `/current` names it.
 
 **1. Contain.** Stop client requests to the HTTP and gRPC APIs, on
 connections already open too, and leave the traffic between nodes open, so
@@ -576,26 +567,22 @@ signing key below.
 **4. End every outstanding token.**
 
 - Rotate: `POST /oauth/keys/keypair` with `algorithm: RS256`,
-  `audience: client`, `invalidateCurrent: true` and
-  `invalidateGracePeriodSec: 0`. This invalidates every issued `client`
+  `invalidateCurrent: true` and
+  `invalidateGracePeriodSec: 0`. This invalidates every issued
   key pair that has not ended, including one issued ahead of time, and
   the new pair signs. Do not invalidate or delete the signing pair
-  instead: that can leave no signer when no other `client` key pair is
+  instead: that can leave no signer when no other key pair is
   active and inside its window (see *No signer* below).
 - Once every node has applied the rotation (see *Shared and persisted*
   above), invalidate with `gracePeriodSec: 0` every key id that
-  `/.well-known/jwks.json` lists, except the new pair and the `human` key
-  pairs you issued yourself. JWKS does not show a key's audience, so keep
-  only key ids you know.
-- This always includes the bootstrap key, whatever its audience:
-  verification does not check a key's audience, and the bootstrap
-  audience is each node's configuration, read at startup and not stored,
-  so a token it signed while its audience was `client` still verifies.
+  `/.well-known/jwks.json` lists, except the new pair and any key pairs
+  you deliberately keep active. Keep only key ids you know.
+- This always includes the bootstrap key: it still verifies the tokens
+  it signed, whatever `CYODA_JWT_SIGNING_KEY` says now.
   `cyoda token` then stops working (to bring it back later, see
   *Emergency revocation of a leaked token* above). The way in is your
   admin client's new secret, or a new signing key (see *Alternative to
-  step 4*). With `CYODA_JWT_BOOTSTRAP_AUDIENCE=human`, `/oauth/token`
-  signs with the `client` pair the rotation created.
+  step 4*). `/oauth/token` signs with the pair the rotation created.
 - A `401` means your own token was signed by a key you invalidated: get
   a new one from `/oauth/token` with your admin client.
 - Every tenant's M2M and token-exchange tokens stop verifying, and
@@ -611,9 +598,9 @@ node's log level and trace sampler to their configuration. Wait for
 the clock offset between nodes (see the grace-period paragraph under *JWT
 signing keypair rotation*). Then check on every node:
 
-- JWKS lists only the new pair and the `human` key pairs you issued
-  yourself.
-- `/current?audience=client` names the new pair.
+- JWKS lists only the new pair and any key pairs you deliberately keep
+  active.
+- `/current` names the new pair.
 - `GET /clients` shows only the clients you kept or created, each with a
   `lastUpdateDate` from your own change.
 - If you cleaned the trusted keys, the list shows only the keys you
@@ -670,12 +657,12 @@ backend, see above), and start again from step 2.
 you turned on in step 3 (it is read at startup, so this is a restart; on
 the memory backend, see above), and lift the block.
 
-Whichever `client` key pair you issued in step 4 or in the *Alternative
-to step 4* is then the only `client` signer. Its `validTo` is
+Whichever key pair you issued in step 4 or in the *Alternative
+to step 4* is then the only signer. Its `validTo` is
 `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` days (365 by default) after its
 issue. Once it passes, `/oauth/token` cannot sign for any tenant, and
 only a new signing key brings it back (see *No signer* below). Rotate
-before then. With the bootstrap audience `client`, you can instead
+before then. You can instead
 reactivate the bootstrap key once the wait under *Emergency revocation of
 a leaked token* has passed, with an early `validFrom` and a `validTo`
 far ahead: it then signs whenever no issued key pair does.
@@ -688,9 +675,7 @@ holds verify again until they expire. Once every node runs with the new
 key, every token cyoda-go signed stops verifying and every issued key pair
 is retired (see *Replacing `CYODA_JWT_SIGNING_KEY`* above).
 `cyoda token --tenant PLATFORM` with the new key is then the way in, so
-step 3 needs no admin client. With `CYODA_JWT_BOOTSTRAP_AUDIENCE=human`,
-`/oauth/token` has no `client` signer until you issue a `client` key pair
-(`POST /oauth/keys/keypair`), so issue one. Steps 3 and 5 still apply: M2M
+step 3 needs no admin client. Steps 3 and 5 still apply: M2M
 clients and trusted keys survive the change (not on the memory backend).
 In step 5, JWKS and `/current` show the new bootstrap key, or a pair you
 issued since.
@@ -725,12 +710,12 @@ of three ways in. Verification looks up only the token's own key id:
   sealed: their tokens stop verifying and clients fetch new ones. Prefer a
   route that needs no new key whenever you hold a token that verifies.
 
-After a fix, `/oauth/token` signs only if a key pair of its audience is active
+After a fix, `/oauth/token` signs only if a key pair is active
 and inside its window; otherwise see *No signer* below.
 
 **The selected key pair is broken.** The log names the KID and the reason.
-`/oauth/token` cannot sign while the pair wins signer selection for its
-audience: until it is invalidated or deleted, or a newer key pair outranks it.
+`/oauth/token` cannot sign while the pair wins signer selection:
+until it is invalidated or deleted, or a newer key pair outranks it.
 A token signed by the broken pair itself does not verify. The fix depends on
 why:
 
@@ -739,7 +724,7 @@ why:
   Invalidate it or `DELETE` it, with `cyoda token --tenant PLATFORM` while
   the bootstrap key verifies, or with an earlier token. Issued key pairs
   are unaffected. A rotation with `invalidateCurrent: true` also ends the
-  pair, and also invalidates the audience's other issued key pairs that have
+  pair, and also invalidates the other issued key pairs that have
   not ended, including one issued ahead of time; tokens they signed stop
   verifying as each node applies the change (plus the clock offset between
   nodes, see the grace-period paragraph under *JWT signing keypair
@@ -756,8 +741,8 @@ why:
 
 **A stored record cannot be decoded at all.**
 
-- It blocks signing for every audience, not only the audience of that
-  record.
+- It blocks signing globally, not only for the key that record would have
+  been.
 - `invalidate` and `reactivate` answer `404` for it: it is not a key pair the
   API recognises.
 - `DELETE` always succeeds. It replaces the record with a deleted
@@ -810,9 +795,9 @@ never share one KID, so the record is refused as undecodable.
   sealed. If the record's vault kind is unrecognised, it is broken instead
   of retired: see *The selected key pair is broken*.
 
-**No signer.** No key pair of the audience is active and inside its window.
+**No signer.** No key pair is active and inside its window.
 While the bootstrap key is active it signs whenever no issued key pair does,
-so for the bootstrap key's audience (`client` by default) this arises only
+so this arises only
 when the bootstrap key itself has been invalidated or deleted by its key id,
 or a reactivation gave it a window that has since ended.
 
@@ -820,7 +805,7 @@ or a reactivation gave it a window that has since ended.
   still verify, `cyoda token` tokens included while the bootstrap key's
   grace period runs. A platform-operator token of that kind can issue a new
   key pair, or reactivate the bootstrap key. Issuing a new key pair leaves
-  the audience's other issued key pairs unaffected, unless
+  the other issued key pairs unaffected, unless
   `invalidateCurrent: true` is set, which also invalidates them (a running
   grace period included), including one issued ahead of time; tokens they
   signed stop verifying as each node applies the change (plus the clock

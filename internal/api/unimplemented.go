@@ -199,7 +199,7 @@ func (u *Unimplemented) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) 
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (u *Unimplemented) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }
 

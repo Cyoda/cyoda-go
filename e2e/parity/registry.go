@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 219 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 220 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -423,11 +423,13 @@ var allTests = []NamedTest{
 	// Signing key-pair lifecycle: issue, current, JWKS, invalidate,
 	// reactivate, delete — the same lifecycle now round-trips through
 	// each plugin's shared KV store rather than a per-node in-memory one.
-	// Signing key pairs are server-global, not tenant-scoped: other
-	// scenarios must not leave a human-audience key pair active inside its
-	// window, or rotate/invalidate client keys, on the shared server; use
+	// Signing key pairs are server-global, not tenant-scoped, and there is
+	// no audience to isolate a scenario's own key from the others: other
+	// scenarios must not leave an issued key pair active inside its window
+	// on the shared server, or rotate/invalidate the server's keys; use
 	// their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
+	{"KeyPairNoAudience", RunKeyPairNoAudience},
 	{"PlatformOperatorGate", RunPlatformOperatorGate},
 
 	// M2M clients in each backend's own spi.KeyValueStore: create, token,

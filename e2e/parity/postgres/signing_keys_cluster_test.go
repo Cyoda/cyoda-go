@@ -23,9 +23,9 @@ const reconcileInterval = time.Second
 // change message arrives, which the grace-period case relies on.
 //
 // The admin M2M client is created by the platform operator, so it lives in
-// PLATFORM: its tokens are signed by whichever "client"-audience key wins
-// signer selection (the bootstrap key is itself one), so the client keeps
-// working once the bootstrap key is deleted.
+// PLATFORM: its tokens are signed by whichever key wins signer selection
+// (the bootstrap key is itself a candidate), so the client keeps working
+// once the bootstrap key is deleted.
 func TestSigningKeys_OwnCluster(t *testing.T) {
 	fix, cleanup := MustSetupMultiNodeWithEnv(t, 2, []string{
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL=" + reconcileInterval.String(),
@@ -75,7 +75,7 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		waitStatus(t, urls[1], t1, http.StatusUnauthorized, "B refuses K1")
 		waitStatus(t, urls[1], tenant.Token, http.StatusOK, "B still accepts a token signed by the signing key")
 		waitStatus(t, urls[1], t2, http.StatusOK, "B accepts K2")
-		if code, body, err := client.NewClient(urls[1], op.Token).CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || !hasKeyID(body, k2) {
+		if code, body, err := client.NewClient(urls[1], op.Token).CurrentKeyPairRaw(t); err != nil || code != http.StatusOK || !hasKeyID(body, k2) {
 			t.Fatalf("B's current key pair: %d %s %v, want %s", code, body, err, k2)
 		}
 	})
@@ -101,7 +101,7 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		// here, so even a lost change message arrives well inside the grace.
 		b := client.NewClient(urls[1], op.Token)
 		for {
-			code, body, err := b.CurrentKeyPairRaw(t, "client")
+			code, body, err := b.CurrentKeyPairRaw(t)
 			if err == nil && code == http.StatusOK && !hasKeyID(body, k3) {
 				break
 			}
@@ -121,16 +121,16 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 		if code := modelListStatus(t, urls[1], t3); code != http.StatusUnauthorized {
 			t.Errorf("B after the grace period: %d, want 401", code)
 		}
-		if code, body, err := b.CurrentKeyPairRaw(t, "client"); err != nil || code != http.StatusOK || hasKeyID(body, k3) {
+		if code, body, err := b.CurrentKeyPairRaw(t); err != nil || code != http.StatusOK || hasKeyID(body, k3) {
 			t.Errorf("B's current key pair after the grace period: %d %s %v, want 200 and not K3", code, body, err)
 		}
 	})
 
 	// admin does not require K2: Reactivate always sets a fresh validFrom, so
-	// once it is called the bootstrap key has the latest validFrom of the
-	// audience and signs on A again (latest validFrom wins) until it is
-	// deleted — true whether or not a rotation ever touched the bootstrap
-	// key, since it was never a rotation sibling to begin with.
+	// once it is called the bootstrap key has the latest validFrom of all
+	// and signs on A again (latest validFrom wins) until it is deleted —
+	// true whether or not a rotation ever touched the bootstrap key, since
+	// it was never a rotation sibling to begin with.
 	admin := func(t *testing.T, node int) *client.Client { return client.NewClient(urls[node], adminToken(t)) }
 
 	t.Run("bootstrap reactivate, delete and terminal delete across nodes", func(t *testing.T) {

@@ -114,10 +114,10 @@ func signTokenNoKID(t *testing.T, iss, sub, orgID string, expOffsetSec int) stri
 
 // newTestKeyStore is the signing-key store the package's internal tests use:
 // a KVKeyStore over a fresh in-memory KV store, with boot as its bootstrap
-// key for the "client" audience.
+// key.
 func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *KVKeyStore {
 	t.Helper()
-	s, err := NewKVKeyStore(replicaSystemCtx(), newReplicaKV(t), KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(replicaSystemCtx(), newReplicaKV(t), KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}

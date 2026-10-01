@@ -91,7 +91,7 @@ func deleteTrustedKeyOnCleanup(t *testing.T, kid string) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
-	body := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	body := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", body)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -105,6 +105,13 @@ func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
 	if dto.KeyId == "" {
 		t.Fatal("expected non-empty keyId in response")
 	}
+	// This key pair's validFrom (now) outranks every earlier signer, so it
+	// becomes the server-global signer the instant it is issued; delete it
+	// on cleanup so it does not linger as the signer for later tests.
+	t.Cleanup(func() {
+		del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+dto.KeyId, nil)
+		del.Body.Close()
+	})
 	if dto.Algorithm != genapi.JwtKeyPairResponseDtoAlgorithmRS256 {
 		t.Errorf("expected algorithm RS256, got %s", dto.Algorithm)
 	}
@@ -115,14 +122,24 @@ func TestE2E_IssueJwtKeyPair_Happy(t *testing.T) {
 
 func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair first so there is an active one.
-	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human"})
+	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
+	issueRaw, _ := io.ReadAll(issueResp.Body)
 	issueResp.Body.Close()
 	if issueResp.StatusCode != http.StatusOK {
 		t.Fatalf("issue prerequisite keypair: got %d", issueResp.StatusCode)
 	}
+	var issued genapi.JwtKeyPairResponseDto
+	_ = json.Unmarshal(issueRaw, &issued)
+	// This key pair's validFrom (now) outranks every earlier signer, so it
+	// becomes the server-global signer the instant it is issued; delete it
+	// on cleanup so it does not linger as the signer for later tests.
+	t.Cleanup(func() {
+		del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+		del.Body.Close()
+	})
 
-	resp := operatorRequest(t, "GET", "/oauth/keys/keypair/current?audience=human", nil)
+	resp := operatorRequest(t, "GET", "/oauth/keys/keypair/current", nil)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -143,7 +160,7 @@ func TestE2E_GetCurrentJwtKeyPair_Happy(t *testing.T) {
 func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	resp := operatorRequest(t, "POST", "/oauth/keys/keypair",
-		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client", "validFrom": from}))
+		mustJSON(t, map[string]any{"algorithm": "RS256", "validFrom": from}))
 	var issued genapi.JwtKeyPairResponseDto
 	raw, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
@@ -153,7 +170,8 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 	if err := json.Unmarshal(raw, &issued); err != nil || issued.KeyId == "" {
 		t.Fatalf("issue: no keyId in %s (err %v)", raw, err)
 	}
-	// Every other test signs with the "client" audience; remove the key.
+	// Other tests may fetch a fresh token signed by the server-global
+	// signer; remove the key so it never becomes a candidate.
 	t.Cleanup(func() {
 		del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
 		del.Body.Close()
@@ -183,12 +201,12 @@ func TestE2E_KeyPairIssuedAheadDoesNotSignYet(t *testing.T) {
 }
 
 // TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400: issuing a
-// key pair ahead of time together with invalidateCurrent would leave the
-// audience with no signing key until the new window opens, so it is refused.
+// key pair ahead of time together with invalidateCurrent would leave no
+// signing key until the new window opens, so it is refused.
 func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing.T) {
 	from := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
-		"algorithm": "RS256", "audience": "client", "validFrom": from, "invalidateCurrent": true,
+		"algorithm": "RS256", "validFrom": from, "invalidateCurrent": true,
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 
@@ -205,17 +223,17 @@ func TestE2E_IssueJwtKeyPair_FutureValidFromWithInvalidateCurrent_400(t *testing
 // already ended could never sign, so issuing one is refused.
 func TestE2E_IssueJwtKeyPair_ValidToInPast_400(t *testing.T) {
 	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
-		"algorithm": "RS256", "audience": "client",
+		"algorithm": "RS256",
 		"validFrom": "2020-01-01T00:00:00Z", "validTo": "2020-01-02T00:00:00Z",
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 }
 
 // TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400: reactivating the key that
-// signs now with a future validFrom would leave the audience with no signing
-// key, so it is refused, and tokens keep working.
+// signs now with a future validFrom would leave no signing key, so it is
+// refused, and tokens keep working.
 func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
-	cur := operatorRequest(t, "GET", "/oauth/keys/keypair/current?audience=client", nil)
+	cur := operatorRequest(t, "GET", "/oauth/keys/keypair/current", nil)
 	var current genapi.JwtKeyPairResponseDto
 	raw, _ := io.ReadAll(cur.Body)
 	cur.Body.Close()
@@ -239,7 +257,7 @@ func TestE2E_ReactivateJwtKeyPair_FutureValidFrom_400(t *testing.T) {
 
 func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to delete.
-	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
@@ -258,7 +276,7 @@ func TestE2E_DeleteJwtKeyPair_Happy(t *testing.T) {
 
 func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 	// Issue a keypair to invalidate.
-	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
@@ -277,7 +295,7 @@ func TestE2E_InvalidateJwtKeyPair_Happy(t *testing.T) {
 
 func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	// Issue then invalidate then reactivate.
-	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	issueBody := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", issueBody)
 	var issued genapi.JwtKeyPairResponseDto
 	json.NewDecoder(issueResp.Body).Decode(&issued)
@@ -300,6 +318,32 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
 		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, raw)
+	}
+}
+
+// TestE2E_KeyPair_NoAudience: /current takes no audience, and a key issued
+// with a stray "audience":"human" is the one /current returns. This test
+// rotates the server-global signing key; restore it in t.Cleanup the way
+// TestE2E_IssueJwtKeyPair_Happy does.
+func TestE2E_KeyPair_NoAudience(t *testing.T) {
+	resp := operatorRequest(t, http.MethodPost, "/oauth/keys/keypair",
+		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human", "invalidateCurrent": true}))
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("issue: %d %s", resp.StatusCode, body)
+	}
+	var issued struct {
+		KeyID string `json:"keyId"`
+	}
+	_ = json.Unmarshal([]byte(body), &issued)
+	t.Cleanup(func() {
+		del := operatorRequest(t, http.MethodDelete, "/oauth/keys/keypair/"+issued.KeyID, nil)
+		del.Body.Close()
+	})
+	resp = operatorRequest(t, http.MethodGet, "/oauth/keys/keypair/current", nil)
+	cur := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(cur, issued.KeyID) {
+		t.Fatalf("current: %d %s; want key %s", resp.StatusCode, cur, issued.KeyID)
 	}
 }
 
@@ -480,7 +524,7 @@ func fetchJWKSKIDs(t *testing.T) map[string]bool {
 // from the published set and therefore absent from JWKS.
 func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	// Step 1: issue keypair A.
-	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "client"})
+	bodyA := mustJSON(t, map[string]any{"algorithm": "RS256"})
 	respA := operatorRequest(t, "POST", "/oauth/keys/keypair", bodyA)
 	var kpA genapi.JwtKeyPairResponseDto
 	json.NewDecoder(respA.Body).Decode(&kpA)
@@ -492,7 +536,6 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 	// Step 2: issue keypair B with invalidateCurrent=true and a 2 s grace period.
 	bodyB := mustJSON(t, map[string]any{
 		"algorithm":                "RS256",
-		"audience":                 "client",
 		"invalidateCurrent":        true,
 		"invalidateGracePeriodSec": int64(2),
 	})

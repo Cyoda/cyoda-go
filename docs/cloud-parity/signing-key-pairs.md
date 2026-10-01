@@ -22,12 +22,12 @@ across a restart, and when its issuing bootstrap key is replaced.
   `CYODA_JWT_SIGNING_KEY` afterwards mints a fresh KID with no stored
   state — the old, deleted key stays deleted.
 - **A rotation never ends the bootstrap key.** `invalidateCurrent` on
-  `POST /oauth/keys/keypair` ends the issued key pairs of the audience whose
-  window is open, the first rotation included; the bootstrap key is not one
-  of them. It stays active, keeps verifying, and signs again whenever no
-  issued key pair of its audience is active and inside its window. Only an
-  invalidate or `DELETE` that names its key id ends it, after the grace
-  period if one is given. Cloud's configured key
+  `POST /oauth/keys/keypair` ends every other issued key pair whose window
+  is open, the first rotation included; the bootstrap key is not one of
+  them. It stays active, keeps verifying, and signs again whenever no
+  issued key pair is active and inside its window. Only an invalidate or
+  `DELETE` that names its key id ends it, after the grace period if one is
+  given. Cloud's configured key
   (`KeyPairStrategy.LOCAL_FILE`, `JwtSigningKeyProvider.kt`) is not stored
   and is never a rotation sibling either, so the tiers agree.
 - **Replacing the bootstrap key retires every key pair it owned.** A key pair
@@ -41,18 +41,17 @@ across a restart, and when its issuing bootstrap key is replaced.
 - **A retired key pair answers 404, not 200 with stale data.** A retired key
   pair is never a candidate for signing, verification or JWKS — it is not
   merely excluded after being selected, it is never considered. `current`
-  and token issuance therefore either return a different, usable key pair for
-  the audience or answer as if none exists (`current`: `404
-  KEYPAIR_NOT_FOUND`) if every key pair for that audience is retired.
-  `DELETE`/`invalidate`/`reactivate` on a retired key pair's own KID answer
+  and token issuance therefore either return a different, usable key pair or
+  answer as if none exists (`current`: `404 KEYPAIR_NOT_FOUND`) if every key
+  pair is retired. `DELETE`/`invalidate`/`reactivate` on a retired key pair's own KID answer
   `404 KEYPAIR_NOT_FOUND` directly. A retired key pair becomes usable again
   only if the bootstrap key that owns it is restored.
 - **A broken key pair is manageable, not stuck.** Unlike a retired one,
   `invalidate`, `reactivate` and `delete` all answer `200` for a broken key
   pair — by KID, the admin API treats it like any owned key pair, whether or
   not its vault can actually open it. Only `current` (and token issuance) can
-  fail on it, and only if it wins signer selection for its audience:
-  `current` then answers `500`, not `404`. On `invalidate`/`reactivate`,
+  fail on it, and only if it wins signer selection: `current` then answers
+  `500`, not `404`. On `invalidate`/`reactivate`,
   `404` is reserved for a KID that is genuinely absent, retired, a foreign
   bootstrap-state record, an undecodable record, or (at this node's own
   bootstrap key id specifically) already deleted. `DELETE` treats an

@@ -131,7 +131,6 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_JWT_AUDIENCE":                         c.IAM.JWTAudience,
 		"CYODA_JWT_EXPIRY_SECONDS":                   strconv.Itoa(c.IAM.JWTExpiry),
 		"CYODA_REQUIRE_JWT":                          strconv.FormatBool(c.IAM.RequireJWT),
-		"CYODA_JWT_BOOTSTRAP_AUDIENCE":               c.IAM.BootstrapAudience,
 		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED": strconv.FormatBool(c.IAM.TrustedKeyRegistrationEnabled),
 		"CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT":       strconv.Itoa(c.IAM.TrustedKeyMaxPerTenant),
 		"CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS":    strconv.Itoa(c.IAM.TrustedKeyMaxValidityDays),

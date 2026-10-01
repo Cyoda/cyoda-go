@@ -22,7 +22,6 @@ import (
 // stays behind the Signer the store hands out and is never on this type.
 type KeyPair struct {
 	KID       string
-	Audience  string // "human" | "client"
 	Algorithm string // RS256 only
 	PublicKey *rsa.PublicKey
 	Active    bool
@@ -84,12 +83,12 @@ type M2MClient struct {
 // ErrKeyPairNotFound means the key pair is absent; any other error is the
 // store failing (ErrStoreStale and storage-unavailable errors answer 503).
 type KeyStore interface {
-	// Signer returns the key pair that signs new tokens for audience and its
-	// Signer: the active key pair inside its window with the latest
-	// ValidFrom, and on a tie the greater KID.
-	Signer(audience string) (*KeyPair, Signer, error)
+	// Signer returns the key pair that signs new tokens and its Signer: the
+	// active key pair inside its window with the latest ValidFrom, and on a
+	// tie the greater KID.
+	Signer() (*KeyPair, Signer, error)
 	// Current is the key pair Signer would choose, without the signer.
-	Current(audience string) (*KeyPair, error)
+	Current() (*KeyPair, error)
 	// VerificationKey returns the public key of kid if it may verify now.
 	// Every refusal wraps ErrKeyPairNotFound.
 	VerificationKey(kid string) (*rsa.PublicKey, error)

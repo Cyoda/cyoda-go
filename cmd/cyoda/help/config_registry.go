@@ -89,7 +89,6 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_JWT_AUDIENCE", Topic: "auth", Type: "string", Default: "", Description: "Expected JWT audience (aud), and set as aud on issued tokens; empty disables the audience check."},
 	{Name: "CYODA_JWT_EXPIRY_SECONDS", Topic: "auth", Type: "int", Default: "3600", Description: "Token lifetime in seconds, and the upper bound of cyoda token --ttl. Unset or empty means 3600; otherwise an integer from 1 to 31622400 (366 days), and any other value is a startup error."},
 	{Name: "CYODA_REQUIRE_JWT", Topic: "auth", Type: "bool", Default: "false", Description: "Production safety floor; refuses to start unless IAM mode is jwt and a signing key is set."},
-	{Name: "CYODA_JWT_BOOTSTRAP_AUDIENCE", Topic: "auth", Type: "string", Default: "client", Description: "Audience for the bootstrap signing key derived from CYODA_JWT_SIGNING_KEY; client or human."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the /oauth/keys/trusted/* endpoints; disabled returns 404 FEATURE_DISABLED."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "10", Description: "Per-tenant cap on trusted keys that can verify (active or in a grace period); 0 means unbounded."},
 	{Name: "CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity for trusted keys when the registration request omits validTo."},

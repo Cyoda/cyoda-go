@@ -275,7 +275,6 @@ type IAMConfig struct {
 	TrustedKeyMaxValidityDays     int
 	TrustedKeyMaxJWKProperties    int
 	KeypairDefaultValidityDays    int
-	BootstrapAudience             string
 
 	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
 	// interval for the per-node auth caches (trusted keys, signing keys).
@@ -402,7 +401,6 @@ func DefaultConfig() Config {
 			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
 			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
 			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
-			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
 			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
 			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
 			M2MClientMaxPerTenant:         envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
@@ -972,9 +970,9 @@ func ValidateHTTP(c HTTPConfig) error {
 // ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
 // is set, mock mode is rejected and the signing key must be present. In JWT
 // mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
-// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
-// etc. fail startup rather than being silently ignored. Called from
-// Config.Validate, which New runs before wiring auth.
+// env values for TrustedKeyMaxPerTenant, MaxValidityDays, etc. fail startup
+// rather than being silently ignored. Called from Config.Validate, which New
+// runs before wiring auth.
 func ValidateIAM(iam IAMConfig) error {
 	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
 	// can never silently fall back to unauthenticated access.
@@ -1015,7 +1013,6 @@ func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
 		TrustedKeyMaxValidityDays:     c.TrustedKeyMaxValidityDays,
 		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
 		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
-		BootstrapAudience:             c.BootstrapAudience,
 		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
 		M2MClientMaxPerTenant:         c.M2MClientMaxPerTenant,
 	}

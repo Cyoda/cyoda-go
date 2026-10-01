@@ -112,7 +112,7 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	})
 
 	// Get active key pair for signing.
-	kp, signer, err := svc.KeyStore().Signer("client")
+	kp, signer, err := svc.KeyStore().Signer()
 	if err != nil {
 		t.Fatalf("failed to get the signing key pair: %v", err)
 	}

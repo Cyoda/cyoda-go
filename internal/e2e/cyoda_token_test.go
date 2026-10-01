@@ -76,10 +76,10 @@ func TestCyodaToken_RefusedAfterSigningKeyInvalidated(t *testing.T) {
 	}
 }
 
-// TestCyodaToken_SurvivesRotation: a rotation (invalidateCurrent) on the
-// signing key's audience ends the issued key pair it replaces, signs with the
-// new one, and leaves the signing key alone — nothing is written for it, and a
-// cyoda token token is still accepted.
+// TestCyodaToken_SurvivesRotation: a rotation (invalidateCurrent) ends the
+// issued key pair it replaces, signs with the new one, and leaves the signing
+// key alone — nothing is written for it, and a cyoda token token is still
+// accepted.
 func TestCyodaToken_SurvivesRotation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -90,14 +90,14 @@ func TestCyodaToken_SurvivesRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newKeyStackOn(t, s, key)
-	k1 := h.issueKey(t, "client", false)
+	k1 := h.issueKey(t, false)
 	t1 := h.oauthToken(t)
 	if got := tokenKID(t, t1); got != k1 {
 		t.Fatalf("before the rotation the server signs with %s, want %s", got, k1)
 	}
 
-	k2 := h.issueKey(t, "client", true)
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != k2 {
+	k2 := h.issueKey(t, true)
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != k2 {
 		t.Errorf("current after the rotation: %d %s, want 200 %s", code, cur, k2)
 	}
 	if got := tokenKID(t, h.oauthToken(t)); got != k2 {

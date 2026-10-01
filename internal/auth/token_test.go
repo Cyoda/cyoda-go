@@ -39,8 +39,7 @@ type testTokenEnv struct {
 func setupTokenEnv(t *testing.T) *testTokenEnv {
 	t.Helper()
 
-	// The token endpoint signs with the bootstrap key of the "client"
-	// audience.
+	// The token endpoint signs with the bootstrap key.
 	signingKey := newBootstrap(t)
 	keyStore := newTestKeyStore(t, signingKey)
 	trustedKeyStore := newTestTrustedStore(t)
@@ -737,8 +736,8 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 // methods are not exercised by this test and return the same error.
 type failingKeyStore struct{ err error }
 
-func (f failingKeyStore) Signer(string) (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
-func (f failingKeyStore) Current(string) (*auth.KeyPair, error)             { return nil, f.err }
+func (f failingKeyStore) Signer() (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
+func (f failingKeyStore) Current() (*auth.KeyPair, error)             { return nil, f.err }
 func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error)    { return nil, f.err }
 func (f failingKeyStore) Published() ([]*auth.KeyPair, error)               { return nil, f.err }
 func (f failingKeyStore) Issue(context.Context, auth.IssueRequest) (*auth.KeyPair, error) {

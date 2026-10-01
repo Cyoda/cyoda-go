@@ -70,12 +70,11 @@ func newM2MClient(t *testing.T, c *client.Client) (id, secret string) {
 	return cred.ClientID, cred.ClientSecret
 }
 
-// IssueClientKeyPair issues an RS256 key pair of audience "client" on the
-// node c targets, as a rotation when invalidateCurrent is set, and returns
-// its key id.
+// IssueClientKeyPair issues an RS256 key pair on the node c targets, as a
+// rotation when invalidateCurrent is set, and returns its key id.
 func IssueClientKeyPair(t *testing.T, c *client.Client, invalidateCurrent bool) string {
 	t.Helper()
-	body := map[string]any{"algorithm": "RS256", "audience": "client"}
+	body := map[string]any{"algorithm": "RS256"}
 	if invalidateCurrent {
 		body["invalidateCurrent"] = true
 	}
@@ -107,9 +106,9 @@ func clientToken(t *testing.T, baseURL, id, secret string) string {
 // invalidate, reactivate and delete on A take effect on B.
 //
 // The shared cluster signs its fixture tokens with the bootstrap key, so the
-// scenario uses audience "client" without invalidateCurrent: the bootstrap
-// key stays valid for later scenarios. The key pair is deleted at the end
-// (and on cleanup if the scenario fails part-way).
+// scenario issues without invalidateCurrent: the bootstrap key stays valid
+// for later scenarios. The key pair is deleted at the end (and on cleanup if
+// the scenario fails part-way).
 func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) {
 	urls := fixture.BaseURLs()
 	tenant := fixture.NewTenant(t)
