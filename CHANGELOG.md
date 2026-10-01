@@ -10,6 +10,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only
   through an application's M2M client; see `auth.tokens`.
 
+- **The user id `system` (any letter case) is reserved and refused everywhere
+  a user id is accepted; the `oidc:` prefix is no longer reserved.** There is
+  now one rule for every user id, `common.ValidateUserID`;
+  `ValidateFirstPartyUserID` is gone.
+
 - **`CYODA_IAM_MODE` must be `mock` or `jwt`.** Any other value used to start
   the server with mock authentication, so every request ran as the mock
   admin, and without the mock-mode warning. The server now refuses to start.

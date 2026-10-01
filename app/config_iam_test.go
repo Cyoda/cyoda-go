@@ -109,15 +109,25 @@ func TestDefaultConfig_MockRolesValidOverrideDoesNotWarn(t *testing.T) {
 
 // TestShippedUserIDConstantsPassCheck stops a later change to a default from
 // producing a binary that cannot start, or a mock mode whose user fails the
-// check every door applies.
+// check every door applies. The platform system principal is the opposite
+// case: it must BE the reserved id, built directly rather than through
+// ValidateUserID, so it never passes the check itself.
 func TestShippedUserIDConstantsPassCheck(t *testing.T) {
 	cfg := DefaultConfig()
 	for name, id := range map[string]string{
 		"IAM.MockUserID": cfg.IAM.MockUserID,
 	} {
-		if err := common.ValidateFirstPartyUserID(id); err != nil {
+		if err := common.ValidateUserID(id); err != nil {
 			t.Errorf("%s (%q) fails the user-id check: %v", name, id, err)
 		}
+	}
+
+	systemID := common.SystemPrincipal().ID
+	if systemID != common.ReservedSystemUserID {
+		t.Errorf("SystemPrincipal().ID = %q, want %q", systemID, common.ReservedSystemUserID)
+	}
+	if err := common.ValidateUserID(systemID); err == nil {
+		t.Errorf("ValidateUserID(%q) = nil, want the system id to be refused as reserved", systemID)
 	}
 }
 

@@ -105,7 +105,7 @@ func TestM2MCodec_EncoderRefuses(t *testing.T) {
 	for name, mut := range map[string]func(c *M2MClient){
 		"bad id":            func(c *M2MClient) { c.ClientID = "a-b" },
 		"bad tenant":        func(c *M2MClient) { c.TenantID = spi.TenantID("a:b") },
-		"bad user":          func(c *M2MClient) { c.UserID = "oidc:x" },
+		"bad user":          func(c *M2MClient) { c.UserID = "system" },
 		"no roles":          func(c *M2MClient) { c.Roles = nil },
 		"empty role":        func(c *M2MClient) { c.Roles = []string{""} },
 		"not a hash":        func(c *M2MClient) { c.HashedSecret = "plaintext" },
@@ -164,7 +164,7 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		// validateM2MClient inside decodeClientRecord itself, rather than
 		// being rejected by encodeClientRecord before ever hitting the
 		// wire (which is all TestM2MCodec_EncoderRefuses exercises).
-		"bad user":                              {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.UserID = "oidc:x" })},
+		"bad user":                              {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.UserID = "SYSTEM" })},
 		"no roles":                              {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{} })},
 		"empty role":                            {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.Roles = []string{""} })},
 		"not a hash":                            {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.HashedSecret = "plaintext" })},

@@ -68,7 +68,7 @@ func validateM2MClient(c *M2MClient) error {
 	if err := common.ValidateTenantID(c.TenantID); err != nil {
 		return fmt.Errorf("tenant: %w", err)
 	}
-	if err := common.ValidateFirstPartyUserID(c.UserID); err != nil {
+	if err := common.ValidateUserID(c.UserID); err != nil {
 		return fmt.Errorf("user: %w", err)
 	}
 	if len(c.Roles) == 0 {

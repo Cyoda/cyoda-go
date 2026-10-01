@@ -13,7 +13,7 @@ func TestValidateUserID_Accepts(t *testing.T) {
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",     // generated M2M client id
 		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d", // UUID
 		"alice@example.com",
-		"oidc-style/sub",
+		"provider-style/sub",
 		"用户",                     // non-ASCII is admitted
 		"a",                      // shortest legal
 		strings.Repeat("u", 255), // longest legal, in characters
@@ -85,27 +85,17 @@ func TestValidateUserID_ReportsCharacterPosition(t *testing.T) {
 	}
 }
 
-// A first-party user id cannot begin with the prefix the OIDC path gives its
-// principals, in any case, or it could name the same user as an OIDC principal.
-func TestValidateFirstPartyUserID_ReservesOIDCPrefix(t *testing.T) {
-	for _, id := range []string{
-		"oidc:11111111-2222-3333-4444-555555555555:alice",
-		"oidc:",
-		"OIDC:x",
-		"Oidc:x",
-	} {
-		err := ValidateFirstPartyUserID(id)
-		if !errors.Is(err, ErrInvalidUserID) {
-			t.Errorf("ValidateFirstPartyUserID(%q) = %v, want ErrInvalidUserID", id, err)
+// The reserved id "system" is refused in any letter case, everywhere a user
+// id is accepted; a merely similar id is not.
+func TestValidateUserID_ReservesSystem(t *testing.T) {
+	for _, id := range []string{"system", "SYSTEM", "System", "sYsTeM"} {
+		if err := ValidateUserID(id); !errors.Is(err, ErrInvalidUserID) {
+			t.Errorf("ValidateUserID(%q) = %v, want ErrInvalidUserID", id, err)
 		}
 	}
-	for _, id := range []string{"oidc", "oidc-user", "my-oidc:x", "admin"} {
-		if err := ValidateFirstPartyUserID(id); err != nil {
-			t.Errorf("ValidateFirstPartyUserID(%q) = %v, want nil", id, err)
+	for _, id := range []string{"systems", "system1", "my-system", "legacy:x"} {
+		if err := ValidateUserID(id); err != nil {
+			t.Errorf("ValidateUserID(%q) = %v, want nil", id, err)
 		}
-	}
-	// Everything ValidateUserID rejects, it rejects too.
-	if err := ValidateFirstPartyUserID("a\nb"); !errors.Is(err, ErrInvalidUserID) {
-		t.Errorf("ValidateFirstPartyUserID(control char) = %v, want ErrInvalidUserID", err)
 	}
 }

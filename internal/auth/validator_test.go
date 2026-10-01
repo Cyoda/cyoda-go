@@ -303,10 +303,10 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsUserIDOutsideOIDCShape pins the first-party user claim:
+// TestValidator_RejectsUserClaimOutsideCheck pins the first-party user claim:
 // caas_user_id / sub is attacker-chosen, lands in slog and audit
-// attribution, and must meet the same length+control-char bar as OIDC sub.
-func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
+// attribution, and must meet common.ValidateUserID's length+control-char bar.
+func TestValidator_RejectsUserClaimOutsideCheck(t *testing.T) {
 	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
@@ -375,15 +375,15 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 	}
 }
 
-// A first-party token cannot carry a user id beginning with the reserved
-// "oidc:" prefix, from either caas_user_id or the sub fallback: it would name
-// the same user as an OIDC principal.
-func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
+// A first-party token cannot carry the reserved user id "system", in any
+// letter case, from either caas_user_id or the sub fallback: it would name
+// the platform system principal.
+func TestValidator_RejectsReservedSystemUserID(t *testing.T) {
 	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
 	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
-	const spoof = "oidc:11111111-2222-3333-4444-555555555555:alice"
+	const spoof = "SYSTEM"
 	for name, claim := range map[string]string{"caas_user_id": "caas_user_id", "sub": "sub"} {
 		t.Run(name, func(t *testing.T) {
 			claims := map[string]any{
@@ -396,7 +396,7 @@ func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
 			}
 			uc, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
-				t.Fatalf("Validate accepted the reserved prefix as %q", uc.UserID)
+				t.Fatalf("Validate accepted the reserved id as %q", uc.UserID)
 			}
 			if !errors.Is(err, common.ErrInvalidUserID) {
 				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
@@ -416,7 +416,7 @@ func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 		"user-1",
 		strings.Repeat("a", 255),
 		"alice@example.com",
-		"oidc-style/sub",
+		"provider-style/sub",
 		"用户",
 	} {
 		t.Run(user, func(t *testing.T) {

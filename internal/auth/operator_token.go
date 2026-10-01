@@ -32,7 +32,7 @@ func ValidateOperatorTokenRequest(req OperatorTokenRequest) error {
 	if err := common.ValidateTenantID(req.Tenant); err != nil {
 		return fmt.Errorf("tenant: %w", err)
 	}
-	if err := common.ValidateFirstPartyUserID(req.UserID); err != nil {
+	if err := common.ValidateUserID(req.UserID); err != nil {
 		return fmt.Errorf("user: %w", err)
 	}
 	if len(req.Roles) == 0 {

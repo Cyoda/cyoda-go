@@ -148,7 +148,7 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 	for name, args := range map[string][]string{
 		"no tenant":    {},
 		"bad tenant":   {"--tenant", "a:b"},
-		"oidc user":    {"--tenant", "acme", "--user", "oidc:x"},
+		"system user":  {"--tenant", "acme", "--user", "system"},
 		"empty role":   {"--tenant", "acme", "--roles", "ROLE_ADMIN,,ROLE_M2M"},
 		"zero ttl":     {"--tenant", "acme", "--ttl", "0s"},
 		"1ns ttl":      {"--tenant", "acme", "--ttl", "1ns"},
