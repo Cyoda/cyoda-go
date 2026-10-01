@@ -296,33 +296,44 @@ itself.
 Such a token ends for good, in every tenant, at the IdP. First end the
 principal's sessions there, revoke its refresh tokens, and reset its
 credentials or disable the user (the token's `sub` names it); otherwise
-the attacker gets a fresh token. Then retire at the IdP every signing key
-it published before those changes, the one named by the token's `kid`
-included. Each node drops a retired key once its cache of the IdP's keys
-has refreshed, within 5 minutes; a cache that cannot refresh serves no key.
-From then on no provider of that IdP, in any tenant, active or not,
-accepts the token. cyoda-go cannot show this from inside: it has no list
-of every tenant's providers of one IdP, and every refused token gets the
-same `401`. Where you cannot retire the IdP's keys (an IdP you do not run),
-the token ends at its `exp`, plus 30 seconds and the clock offset between
-the IdP and the nodes.
+the attacker gets a fresh token. Then have the IdP publish a new signing
+key and retire every key it published before those changes, the one named
+by the token's `kid` included; this ends every token those keys signed,
+for every user of the IdP, in every tenant and at every other relying
+party. Each node drops a retired key once its cache of the IdP's keys has
+refreshed, within 5 minutes, or at once after `POST
+/oauth/oidc/providers/reload` (platform operator); a cache that cannot
+refresh serves no key. From then on no provider of that IdP, in any
+tenant, active or not, accepts the token. Where you cannot retire the
+IdP's keys (an IdP you do not run), the token ends at its `exp`, plus 30
+seconds and the clock offset between the IdP and the nodes; a token with
+no `exp` ends only when the IdP no longer publishes the key named by its
+`kid`.
 
-Until then, cut the token off in its tenant. `GET /account` with the token
-names the tenant (`userAccountInfo.legalEntity.id`). The provider
+Until then, cut the token off. `GET /account` with the token names the
+tenant that accepts it (`userAccountInfo.legalEntity.id`). The provider
 endpoints act on the caller's own tenant, so use an admin token of that
 tenant: `cyoda token --tenant <id>` while the bootstrap key verifies, or an
 admin client of that tenant; without either, set a new
 `CYODA_JWT_SIGNING_KEY` (see *Alternative to step 4*), or have that
-tenant's admins act. Delete the tenant's providers of that IdP (an
+tenant's admins act. Deleting one tenant's provider can make the token
+resolve to another tenant's provider of the same IdP, with that tenant's
+roles. So first delete the providers of that IdP in the other tenants you
+know of (the INFO line `oidc.cross_tenant_uri_registration`, written when a
+second tenant registers the same discovery URI, names some), then those of
+the tenant that accepts the token. Delete rather than invalidate: an
 invalidated provider can be reactivated, and a reactivated one accepts the
-token again); other nodes apply the change as *Auth cache reconciliation*
-describes. This is a stopgap: another tenant's provider of the same IdP can
-then accept the token, as far as its settings allow. The INFO line
-`oidc.cross_tenant_uri_registration`, written when a second tenant
-registers the same discovery URI, names some such tenants; treat them the
-same way. A provider deleted here comes back by registering it again, once
-the changes at the IdP above are done, never by reactivation. None of this
-ends an open stream (see below).
+token again. Once other nodes have applied the change (see *Auth cache
+reconciliation*), send `GET /account` with the token to each node directly
+(step 1 of *A leaked platform admin-client secret* says how to reach one
+node); a `200` names a tenant that still accepts it, so treat that tenant
+the same way. A `401` does not show that no tenant accepts it later: every
+refusal gets the same `401`, and cyoda-go has no list of every tenant's
+providers of one IdP. That is why the changes at the IdP above are the end
+point and this is a stopgap. A provider deleted here comes back by
+registering it again, once those changes are done (see the
+*Register again* bullet under *A leaked admin token of another tenant*),
+never by reactivation. None of this ends an open stream (see below).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -434,7 +445,7 @@ client or resetting its secret does not end a token they hold. Contain
 first, then clean up, verify and restore.
 
 **A leaked admin token of another tenant.** Follow this procedure with the
-token in place of the secret, and apply steps 2, 3 and 5 to that tenant as
+token in place of the secret, and apply steps 2, 3, 5 and 6 to that tenant as
 well as to `PLATFORM`. Its holder can create clients and trusted keys in
 the tenant as the flags allow, and, if the tenant id is a UUID, OIDC
 providers with no flag. Step 4 and a new signing key do not end a token from
@@ -464,15 +475,19 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   register it once 30 seconds plus the clock offset between the IdP and
   the nodes have passed since the last change at the IdP. If the IdP's
   tokens carry no `iat`, wait instead for its longest access-token lifetime
-  plus that time.
+  plus that time; if they carry no `exp` either, wait until the IdP no
+  longer publishes any key it published before those changes.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
   after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
   provider list shows only the providers you registered again. Read the
   log lines step 5 names with the tenant's id in place of `PLATFORM`, and
   the INFO line `oidc provider registered` with the same `tenantId`. If the
   leaked token came from an IdP, check that the IdP no longer publishes
-  the keys you retired, or that the token's `exp` has passed. Then delete
-  the admin client you created in the tenant, or give it to the tenant.
+  the keys you retired and that 5 minutes have passed since (or a reload
+  ran), or that the token's `exp` is more than 30 seconds plus the clock
+  offset past.
+- Step 6: delete the admin client you created in the tenant, or give it to
+  the tenant.
 
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new
@@ -610,11 +625,14 @@ in `PLATFORM`, and in any other tenant this procedure covers, with your own
 records (`GET /entity/{entityId}/changes` and `GET /audit/entity/{entityId}`
 show who changed an entity and when), and restore what differs. A change
 made before step 1 is damage to repair, not a failed cleanup. Scheduled
-transitions keep firing during the block: a change whose executor is the
-system principal is such a firing, not an API call. List the scheduled
-tasks of each of those tenants (`GET /scheduled-tasks`), and end any you
-do not recognise by writing its entity out of the transition's source
-state or deleting the entity (see `cyoda help workflows`). Any other
+transitions keep firing during the block: a change whose `executedBy` has
+`kind` `system` is such a firing, not an API call (match the kind, not
+the id: a token can carry the user id `system`, but its kind is always
+`user` or `service`). List the scheduled tasks of each of those tenants
+(`GET /scheduled-tasks`, with an admin token of the tenant), and end any
+you do not recognise: move its entity out of the transition's source
+state with a manual transition, delete the entity, or import the workflow
+without that scheduled transition (see `cyoda help workflows`). Any other
 change made after step 1 that you did not make means someone still
 reaches the API (see below).
 
