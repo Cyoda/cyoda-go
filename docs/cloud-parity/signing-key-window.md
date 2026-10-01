@@ -12,7 +12,9 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
 - A key pair issued with a future `validFrom` is published in JWKS at once,
   but does not sign until its window opens.
 - A token whose key pair is outside its window is rejected with the uniform
-  `401`.
+  `401`. This holds also when an OIDC provider publishes a key under the
+  same `kid`: a `kid` that names a key pair is never resolved through a
+  provider.
 - An invalidated key pair never signs again unless reactivated. Its tokens
   keep verifying until the end of its grace period: invalidating sets
   `validTo` to now plus the grace period, never later than its current
@@ -55,8 +57,9 @@ key signed.
 ## Cloud action
 
 Confirm that Cloud signs only with a key inside its window, rejects tokens
-whose key is outside it, and refuses the three request shapes above — or record
-where it differs.
+whose key is outside it (also when an OIDC provider publishes the same
+`kid`), and refuses the three request shapes above — or record where it
+differs.
 
 Grace periods: Cloud's verification already follows the window alone
 (`StoredJWKPublicKeyProvider.kt:39`, `JWKEntity.isValidKey`,

@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 303 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 304 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -556,8 +556,9 @@ var allTests = []NamedTest{
 	// reactivate, delete — the same lifecycle now round-trips through
 	// each plugin's shared KV store rather than a per-node in-memory one.
 	// Signing key pairs are server-global, not tenant-scoped: other
-	// scenarios must not issue human-audience key pairs or rotate/invalidate
-	// client keys on the shared server; use their own cluster/stack for that.
+	// scenarios must not leave a human-audience key pair active inside its
+	// window, or rotate/invalidate client keys, on the shared server; use
+	// their own cluster/stack for that.
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 	{"PlatformOperatorGate", RunPlatformOperatorGate},
 	{"OidcCannotClaimCyodaKID", RunOidcCannotClaimCyodaKID},

@@ -48,8 +48,10 @@ Use this path when the IdP is the source of truth for user accounts. For pure M2
 ### Register a provider
 
 ```bash
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -X POST https://cyoda.example.com/api/oauth/oidc/providers \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
         "wellKnownConfigUri": "https://idp.example.com/.well-known/openid-configuration",
@@ -89,7 +91,7 @@ Behaviour on `issuers`:
 
 ```bash
 curl -X GET "https://cyoda.example.com/api/oauth/oidc/providers?activeOnly=true" \
-  -H "Authorization: Bearer ${TOKEN}"
+  -H @- <<<"Authorization: Bearer ${TOKEN}"
 ```
 
 `activeOnly=true` filters out invalidated providers. Available to any authenticated tenant member, not just admin.
@@ -98,7 +100,7 @@ curl -X GET "https://cyoda.example.com/api/oauth/oidc/providers?activeOnly=true"
 
 ```bash
 curl -X PATCH https://cyoda.example.com/api/oauth/oidc/providers/${PROVIDER_ID} \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{
         "expectedAudiences": ["cyoda-prod", "cyoda-staging"]
@@ -112,17 +114,17 @@ Per-field tri-state semantics: absent = unchanged, `null` or `[]` = clear, value
 ```bash
 # Invalidate — token validation refuses this provider's JWTs from this moment.
 curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/${PROVIDER_ID}/invalidate \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 
 # Reactivate — by default refreshes JWKS from upstream.
 curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/${PROVIDER_ID}/reactivate \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}" \
   -H "Content-Type: application/json" \
   -d '{"reactivateKeys": true}'
 
 # Delete permanently.
 curl -X DELETE https://cyoda.example.com/api/oauth/oidc/providers/${PROVIDER_ID} \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 ### Reload JWKS for all providers
@@ -147,7 +149,7 @@ Once registered, clients present the IdP's JWT directly:
 
 ```bash
 curl -X GET https://cyoda.example.com/api/clients \
-  -H "Authorization: Bearer ${IDP_ISSUED_JWT}"
+  -H @- <<<"Authorization: Bearer ${IDP_ISSUED_JWT}"
 ```
 
 The token is validated against the provider's JWKS; roles are read from the configured `rolesClaim`; identity is bound to the tenant that registered the provider.

@@ -285,24 +285,31 @@ default `validFrom`; see above).
 
 A working token whose `kid` that list does not name came from an OIDC
 provider, whatever its `iss` (a provider can name the same issuer as
-`CYODA_JWT_ISSUER`; it cannot take a cyoda-go key pair's `kid`, because a
-token under such a `kid` is refused whenever that key pair cannot verify).
+`CYODA_JWT_ISSUER`). A provider cannot take a cyoda-go key pair's `kid`: a
+token under it is refused while the key pair cannot verify, on every node
+that has applied the key pair's issue (see *Shared and persisted*).
 Revoking a cyoda-go key pair does not end it. `GET /account` with the token
-names its tenant (`userAccountInfo.legalEntity.id`); the provider endpoints
-act on the caller's own tenant, so get an admin token of that tenant (see
-step 2 under *A leaked admin token of another tenant*). Invalidate or
-delete the provider; a reactivation makes it verify again. Other nodes
-apply the change as *Auth cache reconciliation* describes. If another
-tenant registered the same IdP, the token can then resolve to that
-tenant's provider, as far as its settings allow: the
-`oidc.cross_tenant_uri_registration` log line names such tenants. Treat
-their providers of that IdP the same way, or give each one
-`expectedAudiences` the token's `aud` is not in. cyoda-go verifies these
-tokens itself, so ending the user's session at the IdP does not end an
-access token already issued. The token also stops working once the IdP no
-longer publishes the key named by its `kid` and each node's cache of the
-IdP's keys has refreshed (up to 5 minutes). None of this ends an open
-stream (see below).
+names its tenant (`userAccountInfo.legalEntity.id`). The provider endpoints
+act on the caller's own tenant, so act with an admin token of that tenant:
+`cyoda token --tenant <id>` while the bootstrap key verifies, or an admin
+client of that tenant. Invalidate or delete the provider; a reactivation
+makes the token verify again, so bring the provider back by registering it
+again, as *A leaked admin token of another tenant* describes. Other nodes
+apply the change as *Auth cache reconciliation* describes.
+
+If another tenant registered the same IdP, the token can then resolve to
+that tenant's provider, as far as its settings allow. Treat that tenant's
+providers of the IdP the same way, or give each one `expectedAudiences` the
+token's `aud` is not in. The INFO line `oidc.cross_tenant_uri_registration`,
+written when a second tenant registers the same discovery URI, names such
+tenants; it does not name a provider of the same IdP registered under
+another URI.
+
+cyoda-go verifies these tokens itself, so ending the user's session at the
+IdP does not end an access token already issued. The token also stops
+working once the IdP no longer publishes the key named by its `kid` and
+each node's cache of the IdP's keys has refreshed (up to 5 minutes). None
+of this ends an open stream (see below).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -423,7 +430,10 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   Then clean its clients and trusted keys as step 3 says, with the tenant
   in place of `PLATFORM`. If you keep no admin client in the tenant, create
   one there the same way (the same flag and the tenant client cap apply):
-  step 5 needs it, unless you use the *Alternative to step 4*.
+  step 5 needs it, unless you use the *Alternative to step 4*. Deleting the
+  providers can make a token from their IdP resolve to another tenant's
+  provider of the same IdP: treat that tenant as the paragraph after the
+  `kid` test under *Emergency revocation of a leaked token* says.
 - Register again the providers you need from your own records. If the
   leaked token came from an IdP, first, at that IdP, end all of the
   principal's sessions, revoke its refresh tokens, and reset its
@@ -441,9 +451,11 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
   provider list shows only the providers you registered again. Read the
   log lines step 5 names with the tenant's id in place of `PLATFORM`, and
-  the INFO line `oidc provider registered` with the same `tenantId`. Then
-  delete the admin client you created in the tenant, or give it to the
-  tenant.
+  the INFO line `oidc provider registered` with the same `tenantId`. If the
+  leaked token came from an IdP and has not expired, check that it no
+  longer authenticates (`GET /account` with it answers `401`), so it
+  resolves in no other tenant. Then delete the admin client you created in
+  the tenant, or give it to the tenant.
 
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new

@@ -546,7 +546,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **An OIDC provider can no longer have tokens accepted under the `kid` of a
   cyoda-go key pair.** A key pair published ahead of its window, or one
-  invalidated, retired or broken, answered as an unknown `kid`, so
+  invalidated, retired or broken, and every key pair on a node whose copy
+  of the signing keys was stale, answered as an unknown `kid`, so
   a tenant's IdP that published a key under that `kid` had its tokens
   accepted. Such a token now gets `401`.
 

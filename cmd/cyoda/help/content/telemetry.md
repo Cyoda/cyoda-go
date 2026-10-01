@@ -231,7 +231,7 @@ The `/livez` and `/readyz` probe endpoints stay unauthenticated regardless of bi
 The trace sampler is runtime-configurable via:
 
 - `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)
-- `GET :8080/api/admin/trace-sampler` — returns the current sampler config
+- `GET :8080/api/admin/trace-sampler` — returns the current sampler config; also requires a platform operator
 
 Request and response body:
 
@@ -287,8 +287,10 @@ curl -s http://localhost:9091/metrics | grep "^go_"
 **Scrape metrics with bearer auth:**
 
 ```
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -s \
-  -H "Authorization: Bearer $CYODA_METRICS_BEARER" \
+  -H @- <<<"Authorization: Bearer $CYODA_METRICS_BEARER" \
   http://localhost:9091/metrics
 ```
 
@@ -296,7 +298,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/admin/trace-sampler
 ```
 
@@ -304,7 +306,7 @@ curl -s \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sampler":"ratio","ratio":0.1,"parent_based":true}' \
   http://localhost:8080/api/admin/trace-sampler

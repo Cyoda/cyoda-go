@@ -591,7 +591,7 @@ In JWT mode, each tenant can register one or more external Identity Providers (I
 
 Provider records are per-tenant; a tenant's OIDC configuration is invisible to other tenants.
 
-**Validation chain.** When a JWT arrives, cyoda-go first checks whether the `iss` claim matches the locally-configured issuer (`CYODA_JWT_ISSUER`). If not, it searches the requesting tenant's registered providers for one whose `issuers` list matches. A match triggers external JWKS validation; no match rejects the token.
+**Validation chain.** When a JWT arrives, cyoda-go first resolves its `kid` against its own signing keys. Only a `kid` cyoda-go does not know goes on to the registered OIDC providers; a cyoda-go `kid` that cannot verify now is rejected. The OIDC step looks for a provider, in any tenant, whose JWKS publishes the `kid` and whose issuer rule accepts the token's `iss`, and the token acts in that provider's tenant. Several matches are narrowed by `expectedAudiences`; a token that is still ambiguous, or matches no provider, is rejected.
 
 **External-issuer token structure.** Tokens from a registered OIDC provider follow the standard JWT format. The roles claim name is configurable per-provider (defaults to `CYODA_OIDC_ROLES_CLAIM`):
 
