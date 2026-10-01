@@ -7,7 +7,7 @@ this spec wins and the page is corrected.
 ## 1. Requirement and boundary
 
 - No regular user accesses cyoda-go directly. cyoda-go has no per-user data
-  permissions, and does not acquire any.
+  permissions.
 - Only M2M clients authenticate to cyoda-go.
 - Work an M2M client does on behalf of an application user carries that user's
   identity into the entity history, the audit events and the gRPC callouts.
@@ -17,8 +17,8 @@ this spec wins and the page is corrected.
   compromised application. That responsibility lies with the application.
 
 The one exception to "only M2M clients" is the platform operator's offline
-token (`cyoda token`), signed with `CYODA_JWT_SIGNING_KEY`. It stays a
-user-kind principal with no client and no executor (§5).
+token (`cyoda token`), signed with `CYODA_JWT_SIGNING_KEY`: a user-kind
+principal with no client and no separate executor (§5).
 
 ## 2. Model
 
@@ -39,16 +39,19 @@ user-kind principal with no client and no executor (§5).
 | OBO client acts for alice | alice (kind user) | the OBO client (kind service) |
 | A client works for no user | the client | the client |
 | Compute node writes back during alice's transaction | alice | the compute client |
-| Scheduled transition armed by alice fires | alice | `system` |
+| Scheduled transition armed for alice fires | alice | `system` |
 | Platform operator token | the operator user | the operator user |
 
 ## 3. Clients
 
 ### 3.1 Permissions
 
-A client record (`auth.M2MClient`) gains `OnBehalfOf bool`, set at creation
-and immutable. It is a record flag, not a role, so it never appears in
-`authclaims`.
+A client record (`auth.M2MClient`) gains:
+
+- `OnBehalfOf bool`: set at creation, immutable. A record flag, not a role, so
+  it never appears in `authclaims`.
+- `SecretGen uint64`: 1 at creation, incremented by every successful secret
+  reset (§8).
 
 | Client | Roles | `OnBehalfOf` | May use |
 |---|---|---|---|
@@ -58,41 +61,72 @@ and immutable. It is a record flag, not a role, so it never appears in
 
 Rules, enforced by cyoda-go:
 
-- An OBO client never holds `ROLE_ADMIN`: `POST /clients?withAdminRole=true&onBehalfOf=true` is refused.
+- An OBO client never holds `ROLE_ADMIN`.
 - An OBO client never exists in tenant `PLATFORM`.
-- `client_credentials` with an OBO client is refused (`unauthorized_client`).
-- A token exchange by a non-OBO client is refused (`unauthorized_client`),
-  before the subject token is parsed.
+- `client_credentials` with an OBO client is refused.
+- A token exchange by a non-OBO client is refused, before the subject token is
+  parsed.
 
 ### 3.2 `POST /clients`
 
-New query parameter `onBehalfOf` (boolean, default false). `TechnicalUserDto`
-and the list response gain `onBehalfOf`. The codec (`kv_m2m_codec.go`) stores
-it; records without it read as false.
+New query parameter `onBehalfOf` (boolean, default false). Precedence of the
+checks: tenant admin (403) → `withAdminRole=true` while the admin-role flag is
+off (404 `FEATURE_DISABLED`) → `withAdminRole=true` with `onBehalfOf=true`
+(400) → `onBehalfOf=true` in `PLATFORM` (400) → cap (400).
 
-### 3.3 Data operations require `ROLE_M2M`
+`TechnicalUserDto`, the list response and `TechnicalUserCredentialsDto` gain
+`onBehalfOf`. `TechnicalUserCredentialsDto.grant_type` is
+`urn:ietf:params:oauth:grant-type:token-exchange` for an OBO client and
+`client_credentials` otherwise.
 
-Every data endpoint, HTTP and unary gRPC, requires `ROLE_M2M` in the caller's
-roles; otherwise `403 FORBIDDEN`. Account and operator endpoints keep their own
-guards. The operator token from `cyoda token` carries the roles it was signed
-with; `--roles` decides whether it can touch data. Mock mode's principal
-already carries `ROLE_M2M`.
+### 3.3 Every route requires `ROLE_M2M`, except an allow-list
+
+Every authenticated HTTP route (generated router and hand-registered mux
+routes) and every unary gRPC method requires `ROLE_M2M` in the caller's roles;
+otherwise `403 FORBIDDEN` / `PermissionDenied`. The allow-list:
+
+- routes guarded by `RequireAdmin` (clients, trusted keys);
+- routes guarded by the operator guard (key pairs, `/admin/*`);
+- `GET /account`.
+
+A test enumerates every OpenAPI operation, every hand-registered mux route and
+every gRPC method, and asserts each is either `ROLE_M2M`-guarded or on the
+allow-list, so no new route can escape the rule. The operator token carries the
+roles it was signed with; `cyoda token --roles` decides whether it can reach
+data. Mock mode's principal carries `ROLE_M2M`.
 
 ## 4. Token endpoint
 
-### 4.1 `client_credentials`
+### 4.1 Client authentication cost
 
-Unchanged, except:
+- **Verified-secret cache.** Per node, keyed by client id, holding the client
+  record's `HashedSecret` and the SHA-256 of the secret that matched it. A
+  request whose client record still has the same `HashedSecret` and whose
+  presented secret has the cached SHA-256 (constant-time compare) is
+  authenticated without bcrypt. The client record is read from the store on
+  every request, so a reset or delete takes effect at once.
+- **bcrypt bound.** At most `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`
+  bcrypt comparisons run at once per node (default: the number of CPUs). A
+  request that cannot get a slot within 1 s answers `503` with `Retry-After`.
+  Unknown client ids and wrong secrets keep paying one bcrypt, so a lookup
+  costs the same either way.
+- **Per-client fairness.** After authentication, a token bucket per client per
+  node: `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` (default 600, `0` = unlimited),
+  shared by both grants. Over the limit: `429` with `Retry-After`. At 600 per
+  minute and 300 s tokens, one client sustains about 3000 concurrently active
+  users per node.
 
-- an OBO client is refused (§3.1);
-- `expires_in` is the issued token's remaining life, computed, not a constant;
-- the per-client rate limit applies (§4.4).
+### 4.2 `client_credentials`
+
+Processing: method must be POST (`405`) → authenticate (§4.1) → refuse an OBO
+client (`400 unauthorized_client`) → per-client bucket → mint.
 
 Claims: `sub` = `caas_user_id` = the client's user id (its client id),
-`caas_org_id` = the client's tenant, `scopes` = the client's roles, `iss`,
-`aud` if configured, `iat`, `exp`, `jti`.
+`caas_org_id` = the client's tenant, `scopes` = the client's roles, `cgen` =
+the client's `SecretGen`, `caas_tier`, `iss`, `aud` if configured, `iat`,
+`exp`, `jti`. `expires_in` is the token's remaining life.
 
-### 4.2 Token exchange (OBO)
+### 4.3 Token exchange (OBO)
 
 Request: `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, client
 authentication by HTTP Basic, `subject_token` = the user assertion,
@@ -100,77 +134,74 @@ authentication by HTTP Basic, `subject_token` = the user assertion,
 
 Processing, in this order:
 
-1. Authenticate the client (store read). Unknown client or bad secret:
-   `401 invalid_client`.
-2. The client must be an OBO client: else `400 unauthorized_client`.
-3. Rate limit (§4.4): `429`.
-4. Any of `actor_token`, `actor_token_type`, `resource`, `audience`, `scope`,
+1. Method must be POST: else `405`.
+2. Authenticate the client (§4.1).
+3. The client must be an OBO client: else `400 unauthorized_client`.
+4. Per-client bucket: `429`.
+5. Any of `actor_token`, `actor_token_type`, `resource`, `audience`, `scope`,
    `requested_token_type` present: `400 invalid_request`.
-5. `subject_token_type` other than `…:jwt`: `400 invalid_request`.
-6. Parse the assertion; `alg` must be RS256 and `kid` present: else
+6. `subject_token_type` other than `…:jwt`: `400 invalid_request`.
+7. Parse the assertion; `alg` must be RS256 and `kid` present: else
    `400 invalid_request`.
-7. Read the trusted key `(client's tenant, kid)` from the shared store (§6.1).
-   Not found or invalidated: `400 invalid_request`. Store failure: `503`.
-   Not yet valid (`validFrom`): `400 invalid_request`.
-8. Verify the signature: else `400 invalid_request`.
-9. If the key lists issuers, `iss` must be one: else `400 invalid_request`.
-10. `aud` must contain `CYODA_JWT_ISSUER`; `exp` and `iat` required; `exp − iat`
-    at most 300 s; not expired and `iat` not in the future (30 s skew):
-    else `400 invalid_request`.
-11. `caas_org_id` must equal the client's tenant: else `403 access_denied`.
-12. `sub` must pass `ValidateUserID` and must not be reserved (§5.3): else
+8. Read the trusted key `(client's tenant, kid)` from the shared store (§6).
+   Not found, invalidated, or before `validFrom`: `400 invalid_request`.
+9. Verify the signature: else `400 invalid_request`.
+10. If the key lists issuers, `iss` must be one: else `400 invalid_request`.
+11. `aud` must contain `CYODA_JWT_ISSUER`; `exp` and `iat` required; `exp − iat`
+    at most 300 s; not expired; `iat` not in the future; `nbf` honoured (30 s
+    skew throughout): else `400 invalid_request`.
+12. `caas_org_id` must equal the client's tenant: else `403 access_denied`.
+13. `sub` must pass `ValidateUserID` (§5.3): else `400 invalid_request`.
+14. Mint the OBO token (§4.4). If its `exp` would not be in the future:
     `400 invalid_request`.
-13. Mint the OBO token (§4.3). If its `exp` would not be in the future:
-    `400 invalid_request`. Signing failure: `500`, ticketed.
 
-Error bodies are OAuth-shaped (`error`, `error_description`); descriptions
-never echo the subject, the tenant or the key id. A `401` carries
-`WWW-Authenticate: Basic`.
+Store errors at steps 2 and 8: an error marked storage-unavailable answers
+`503 temporarily_unavailable` with `Retry-After`; any other store error answers
+`500 server_error` with a ticket. Error bodies are OAuth-shaped (`error`,
+`error_description`); descriptions never echo the subject, the tenant or the
+key id. A `401` carries `WWW-Authenticate: Basic`. `slow_down` and
+`temporarily_unavailable` are used on the token endpoint deliberately, with
+the meaning of RFC 8628 and RFC 6749 §4.1.2.1 respectively.
 
-### 4.3 OBO token claims
+### 4.4 OBO token claims
 
 | Claim | Value |
 |---|---|
 | `sub`, `caas_user_id` | the asserted user |
 | `act` | `{"sub": "<client id>"}`, one level, never nested |
 | `caas_org_id` | the client's tenant |
-| `scopes` | the client's roles (assertion roles ignored) |
-| `iss`, `aud` (if configured), `jti` | as for `client_credentials` |
+| `scopes` | the client's roles (the assertion's roles are ignored) |
+| `caas_tier`, `iss`, `aud` (if configured), `jti` | as for `client_credentials` |
 | `iat` | now |
 | `exp` | min(assertion `exp`, now + `CYODA_JWT_EXPIRY_SECONDS`) |
 
-### 4.4 Rate limit
-
-Per client, per node, token bucket over both grants:
-`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` (default 120, `0` = unlimited). Over the
-limit: `429` with `Retry-After`. It bounds the bcrypt cost one client can
-impose on a node.
+No `cgen`: an OBO token cannot open a stream. `expires_in` is the token's
+remaining life.
 
 ### 4.5 Lifetime
 
-`CYODA_JWT_EXPIRY_SECONDS`: default 300, range 1–3600 (was default 3600,
-maximum 366 days). The Helm chart default and schema follow (chart version
-bump, `COMPATIBILITY.md`). `cyoda token --ttl` is capped by the same value.
+`CYODA_JWT_EXPIRY_SECONDS`: default 300, range 1–3600. The Helm chart default
+and schema follow (chart version bump, `COMPATIBILITY.md`). `cyoda token --ttl`
+is capped by the same value.
 
 ## 5. Principal and attribution
 
 ### 5.1 SPI change
 
-`spi.UserContext` gains `Executor *Principal`. It is set only for an OBO
-token; for every other token it is nil.
+`spi.UserContext` gains `Executor *Principal`, set only for an OBO token.
 
 `spi.AttributionFor(ctx)`:
 
 - `Executor` set: attributed = `{UserID, Kind}`, executor = `*Executor`.
   Transaction-origin inheritance never applies.
-- `Executor` nil: unchanged (service and system executors inside a transaction
-  inherit `tx.Origin`).
+- `Executor` nil: as before (a service or system executor inside a transaction
+  attributes to `tx.Origin`).
 
-`spi.ResolveOrigin` is unchanged: an OBO request's origin is its user.
+`spi.ResolveOrigin` is unchanged. Scheduled-task arming uses `AttributionFor`
+(§7.4), not `ResolveOrigin`.
 
-This is an SPI change consumed by every backend (memory, sqlite, postgres,
-cassandra): a cyoda-go-spi PR into main, cyoda-go pseudo-pins it, the
-cassandra plugin bumps its pin, `COMPATIBILITY.md` records it.
+SPI release: a cyoda-go-spi PR into main; cyoda-go pseudo-pins it; the
+cassandra plugin bumps its pin; `COMPATIBILITY.md` records it.
 
 ### 5.2 Validator mapping (`internal/auth/validator.go`)
 
@@ -180,39 +211,51 @@ cassandra plugin bumps its pin, `COMPATIBILITY.md` records it.
 | no `act`, has `scopes` | service | `caas_user_id` | `scopes` | nil |
 | neither (`cyoda token`) | user | `caas_user_id` | `user_roles` | nil |
 
-`act.sub` must pass the client-id grammar; otherwise the token is refused. A
-token with both `act` and `user_roles` is refused.
+Refused, so that the mapping is total: `act` without a non-empty `sub`; `act`
+without `scopes`; `act` with `user_roles`; `scopes` with `user_roles`.
 
-### 5.3 Reserved user ids
+The auth layer also puts a client-token marker in the request context, holding
+the client id (`caas_user_id`) and `cgen`, when the token has `scopes`, no
+`act`, and a `cgen` claim. Streams read it (§8).
 
-`ValidateUserID` refuses `system` (case-insensitive). The `oidc:` prefix
-reservation and the split between `ValidateFirstPartyUserID` and
-`ValidateUserID` are removed: one rule for every user id.
+### 5.3 User ids
+
+One rule, `ValidateUserID`, for every user id: the existing grammar, plus the
+reserved id `system` (case-insensitive). `ValidateFirstPartyUserID` and the
+`oidc:` prefix reservation do not exist.
 
 ### 5.4 Guards
 
 - `RequireAdmin` and the operator guard refuse any principal with an
-  `Executor`.
-- The compute-stream guard requires kind service, `ROLE_M2M`, and no
-  `Executor`. An OBO token gets `PermissionDenied`.
-- Mock mode: `CYODA_IAM_MOCK_KIND` defaults to `service`, so compute nodes join
-  in the getting-started mode.
+  `Executor` (`403 FORBIDDEN`).
+- The compute-stream guard requires kind service, `ROLE_M2M`, no `Executor`,
+  and the client-token marker: else `PermissionDenied`.
+- Mock mode: `CYODA_IAM_MOCK_KIND` defaults to `service`; the mock context
+  carries a client-token marker with no store check (§8).
+
+### 5.5 Joining a transaction
+
+An OBO request may join only a transaction whose origin is its own user
+(`{UserID, user}`); otherwise `403 FORBIDDEN` (HTTP) / `PermissionDenied`
+(gRPC). A compute client's write-back join is unchanged and attributes to the
+transaction's origin.
 
 ## 6. Trusted keys
 
-### 6.1 Storage and lookup
-
-- Key ids are unique per tenant; the store key is `(tenant, kid)`. The
-  cross-tenant `409 KEY_OWNED_BY_DIFFERENT_TENANT` and its error document are
-  removed.
-- The exchange reads the key from the shared store on every exchange. The
-  trusted-key node copy (replica), its broadcast topic and its reconcile
-  metrics are removed. `List` reads the store.
-- The invalidation grace period is removed: invalidating a key ends it at once.
-  Rotation: register the new key, switch the application, invalidate the old
-  key.
-- `POST /oauth/keys/trusted` and the key operations stay tenant-admin and stay
-  behind `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`; the per-tenant cap stays.
+- Storage: one KV namespace per tenant (as M2M clients), key = kid. Key ids are
+  unique within a tenant only; `List` and the per-tenant cap read one tenant's
+  namespace.
+- Register stays an upsert on `(tenant, kid)`.
+- The exchange reads the key from the store on every exchange; `List` reads the
+  store and can fail (`503` / `500`). The trusted-key node copy, its broadcast
+  topic and its reconcile metrics do not exist.
+- Invalidating a key ends it at once. The invalidate request has no body;
+  `invalidatePrevious` on register invalidates the previous key at once; no
+  grace period exists for trusted keys. Key pairs keep their own grace period,
+  so the invalidate request schema is split.
+- Trusted keys have no `audience`.
+- The endpoints stay tenant-admin and behind
+  `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`; the per-tenant cap stays.
 - Register, invalidate, reactivate and delete write INFO lines with tenant,
   kid, attributed user and executor.
 - Trusted keys are never accepted as bearer tokens.
@@ -221,31 +264,30 @@ reservation and the split between `ValidateFirstPartyUserID` and
 
 ### 7.1 Entity history
 
-`EntityVersionMeta.User`/`AttributedKind` and `Executor` come from
-`AttributionFor` (§5.1). `GET /entity/{id}/changes` already returns both.
+`EntityVersionMeta.User`, `AttributedKind` and `Executor` come from
+`AttributionFor`. `GET /entity/{id}/changes` returns them.
 
 ### 7.2 Audit events
 
-- EntityChange events gain `executedBy {id, kind}` beside `actor` (the
-  attributed user). OpenAPI audit schemas change accordingly.
-- `spi.StateMachineEvent` gains `Attributed Principal` and
-  `Executor Principal`, stamped by the engine from `AttributionFor` at record
-  time, persisted by every backend (memory, sqlite, postgres schema, cassandra
-  schema), and rendered as `actor` and `executedBy` in StateMachine audit
-  events.
+- EntityChange events: `actor {id, name, kind, legalId}` (the attributed user,
+  `kind` added) and `executedBy {id, kind}`.
+- `spi.StateMachineEvent` gains `Attributed Principal` and `Executor Principal`,
+  stamped by the engine from `AttributionFor` at record time and rendered as
+  `actor` and `executedBy` in StateMachine audit events. The events are stored
+  as JSON documents in every backend; no schema migration.
 
 ### 7.3 Callouts to compute nodes
 
-Every callout carries the attributed user and the executor, from
-`AttributionFor` on the callout's context:
+The node that dispatches a callout computes
+`(attributed, executor) := AttributionFor(ctx)` once and attaches:
 
 | Attribute | Value |
 |---|---|
-| `authtype` | attributed user's kind |
-| `authid` | attributed user's id |
-| `authclaims` | roles of the request's caller (`UserContext.Roles`) |
-| `authexecid` (new) | executor's id |
-| `authexectype` (new) | executor's kind |
+| `authtype` | attributed kind |
+| `authid` | attributed id |
+| `authexectype` (new) | executor kind |
+| `authexecid` (new) | executor id |
+| `authclaims` | the executor's roles (`UserContext.Roles` of the request's caller) |
 
 Per path:
 
@@ -256,24 +298,27 @@ Per path:
 | Processor write-back (joined), and its cascades | transaction origin | compute client / service |
 | CBD-detached callback by a compute client | that client / service | same |
 | Scheduled fire | `ArmedBy` | `system` / system |
-| Callout forwarded to another node | as on the forwarding node | as on the forwarding node |
+| Callout forwarded to another node | as computed on the dispatching node | as computed on the dispatching node |
 
-`cluster/dispatch` carries the executor on the wire (`DispatchCalloutRequest`,
-`buildContext`, every hand-over). `api/grpc/authctx` gains an executor reader.
-`authclaims` documentation changes to "the roles of the client that made the
-request".
+Forwarding: `DispatchCalloutRequest` carries `AttributedID`, `AttributedKind`,
+`ExecutorID`, `ExecutorKind` and the roles. The peer attaches them as received
+and never recomputes them; local and peer dispatch read the same context value.
+
+`api/grpc/authctx`: `Require(role)` gates on `authexectype ∈ {service}` and the
+role in `authclaims`; new readers return the attributed and executor
+principals.
 
 ### 7.4 Scheduled tasks
 
-`spi.ScheduledTask` gains `ArmedVia Principal` (the executor that armed it).
-A fire stamps `ChangeUser = ArmedBy`, `ChangeExecutor = system`; its callouts
+Arming stamps `ArmedBy` = the attributed principal from `AttributionFor`. A
+fire stamps `ChangeUser = ArmedBy`, `ChangeExecutor = system`; its callouts
 carry `authid = ArmedBy` and executor `system`.
 
 ### 7.5 Messages
 
-The `X-User-ID` request header on `POST /message` is removed. The stored
-message header's user is the attributed user of the request, and the executor
-is stored beside it.
+`POST /message` has no `X-User-ID` header. The stored message header records
+the attributed user and the executor of the request; the message GET response
+returns both.
 
 ### 7.6 Async search jobs
 
@@ -282,173 +327,248 @@ A job keeps the submitting request's `UserContext`, executor included.
 ## 8. Compute streams
 
 - Guard: §5.4.
-- Every 60 s (constant `streamClientRecheckInterval`), the stream reads its
-  client from the shared store by client id (new `M2MClientStore.Lookup`,
-  no secret). It closes when the client is absent, its tenant differs, or
-  `client.UpdatedAt` is later than the token's `iat`. A store failure closes
-  the stream (fail closed).
-- The client id is taken from the token's `sub`, which equals the client id for
-  client tokens; the stream refuses a token whose `sub` is not a client id.
-- Mock mode has no client store; the re-check is off in mock mode only.
+- Every 60 s (constant), the stream reads its client from the store by the
+  marker's client id (new `M2MClientStore.Lookup(clientID)`: record without
+  secret check). It closes with `Unauthenticated` when the client is absent,
+  its tenant differs from the stream's, or its `SecretGen` differs from the
+  marker's `cgen`. A store error closes the stream with `Unavailable`.
+- Mock mode has no client store; the re-check does not run.
 
 ## 9. Removals
 
-No code path that contradicts this design remains. Exit checks are greppable.
-
 | Area | Removed |
 |---|---|
-| OIDC subsystem | `internal/auth/oidc/` (whole package), `internal/domain/account/oidc_adapter.go`, OIDC wiring in `app/app.go` |
-| Validator chain | `ChainedValidator`, the `ErrUnknownKID` fall-through, `ErrKIDCannotVerify` (one validator remains); `http_jwks_source.go`, `NewJWKSValidator` |
-| Configuration | `CYODA_OIDC_REQUIRE_HTTPS`, `CYODA_OIDC_CONNECT_TIMEOUT_MS`, `CYODA_OIDC_SOCKET_TIMEOUT_MS`, `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS`, `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`, `CYODA_OIDC_ROLES_CLAIM`, and their `DefaultConfig()` fields |
+| OIDC subsystem | `internal/auth/oidc/`; `internal/domain/account/oidc_adapter.go`; OIDC wiring in `app/app.go`; OIDC methods in `internal/api/server.go` and `internal/api/unimplemented.go` |
+| Validator chain | `ChainedValidator`, the `ErrUnknownKID` fall-through, `ErrKIDCannotVerify`; `http_jwks_source.go`, `NewJWKSValidator` |
+| Configuration | `CYODA_OIDC_REQUIRE_HTTPS`, `CYODA_OIDC_CONNECT_TIMEOUT_MS`, `CYODA_OIDC_SOCKET_TIMEOUT_MS`, `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS`, `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`, `CYODA_OIDC_ROLES_CLAIM`, `CYODA_JWT_BOOTSTRAP_AUDIENCE`, their `DefaultConfig()` fields and `cmd/cyoda/help/config_registry.go` entries |
 | Error codes and docs | `OIDC_PROVIDER_DUPLICATE`, `OIDC_PROVIDER_INACTIVE`, `OIDC_PROVIDER_NOT_FOUND`, `OIDC_INVALID_TENANT`, `OIDC_SSRF_BLOCKED`, `KEY_OWNED_BY_DIFFERENT_TENANT` |
-| OpenAPI | `/oauth/oidc/providers*`; `subject_token_type` value `…:access_token`; `X-User-ID` on messages |
-| Trusted keys | node copy, broadcast topic, reconcile metrics, invalidation grace period |
-| Key pairs | the `human` audience: key pairs have one purpose, signing cyoda tokens; `audience` leaves the key-pair API and `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed |
+| Trusted keys | node copy (replica use), broadcast topic, `TrustedKeyMetrics` and its wiring, grace period, `audience`, global namespace |
+| Key pairs | the `audience` concept: `isValidKeyPairAudience`, audience in signing records, `KeyStore.Signer(audience)` → `Signer()`, `?audience=` on `/current`, audience in issue and list |
 | User ids | `OIDCUserIDPrefix`, `ValidateFirstPartyUserID` |
-| Tests | OIDC unit tests, `internal/e2e/oidc_*`, `e2e/parity/oidc.go`, `oidc_fixture.go`, `oidc_cyoda_kid.go`, their registry entries |
-| Docs | `help/content/auth/oidc.md` and every OIDC passage (auth, tokens, clients, config/auth, admin, errors, telemetry, openapi, cli/token, README); ARCHITECTURE §7.2–7.3 rewritten; ADR 0002 marked superseded by a new ADR 0004 |
+| Messages | `X-User-ID` |
+| Tests | OIDC unit tests; `internal/e2e/oidc_*`; `internal/e2e/keys_trusted_reconciliation_test.go`; `internal/auth/kv_trusted_store_reconcile_test.go`; `e2e/parity/oidc.go`, `oidc_fixture.go`, `oidc_cyoda_kid.go`, `client/oidc.go`, their registry entries and fixture hooks |
+| Docs | `help/content/auth/oidc.md`; ADR 0002 marked superseded by a new ADR 0004 |
 
-Exit checks: `grep -rn "oidc" --include=*.go internal app cmd` returns only
-history-free references that the plan lists explicitly; `grep -rn
-"KEY_OWNED_BY_DIFFERENT_TENANT\|CYODA_OIDC_\|X-User-ID\|BOOTSTRAP_AUDIENCE"`
-returns nothing outside `CHANGELOG.md` and `docs/superpowers/`.
+Staying: `kvReplica`, `coalescingRunner` and `ReconcileMetrics` remain for
+signing keys.
+
+Also updated: `docs/ARCHITECTURE.md`, `docs/CONCURRENCY.md`,
+`docs/FEATURES.md`, `.claude/rules/race-testing.md`. Deleted:
+`docs/proposals/cyoda-go-oidc-zitadel-roles-claim.md`.
+
+Exit checks, run from the repo root. The excluded paths are history
+(`docs/superpowers`, `docs/audits`, `docs/PRD.md`, `docs/release-notes`,
+`docs/analysis`, `docs/adr`, `docs/cloud-parity`, `CHANGELOG.md`,
+`.github/oasdiff-err-ignore.txt`), Cloud's file (`docs/cyoda`), the external
+API vocabulary (`e2e/externalapi`), or a different OIDC (cosign keyless
+signing in `.github/workflows`, `.goreleaser.yaml`, `scripts/install.sh`; the
+gateway's own OIDC in `deploy/helm/cyoda/docs/gateway-api-policies.md`):
+
+```
+X=(':!docs/superpowers' ':!docs/audits' ':!docs/PRD.md' ':!docs/release-notes'
+   ':!docs/analysis' ':!docs/adr' ':!docs/cloud-parity' ':!CHANGELOG.md'
+   ':!.github' ':!docs/cyoda' ':!e2e/externalapi' ':!.goreleaser.yaml'
+   ':!scripts/install.sh' ':!deploy/helm/cyoda/docs/gateway-api-policies.md')
+git grep -niI 'oidc' -- . "${X[@]}"
+git grep -nI -e KEY_OWNED_BY_DIFFERENT_TENANT -e CYODA_OIDC_ -e X-User-ID \
+  -e BOOTSTRAP_AUDIENCE -e ValidateFirstPartyUserID -e ChainedValidator \
+  -e TrustedKeyMetrics -- . "${X[@]}"
+```
+
+Both return nothing.
 
 ## 10. Configuration
 
-| Variable | Default | Range | Change |
-|---|---|---|---|
-| `CYODA_JWT_EXPIRY_SECONDS` | 300 | 1–3600 | default and maximum lowered |
-| `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | 120 | ≥ 0 (0 = unlimited) | new |
-| `CYODA_IAM_MOCK_KIND` | `service` | user, service, system | default changed |
-| `CYODA_JWT_BOOTSTRAP_AUDIENCE` | — | — | removed |
-| `CYODA_OIDC_*` (six) | — | — | removed |
+| Variable | Default | Range |
+|---|---|---|
+| `CYODA_JWT_EXPIRY_SECONDS` | 300 | 1–3600 |
+| `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | 600 | ≥ 0 (0 = unlimited) |
+| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | number of CPUs | ≥ 1 |
+| `CYODA_IAM_MOCK_KIND` | `service` | user, service, system |
 
-Help topics, `README.md` and `DefaultConfig()` change together (Gate 4).
+Help topics, `README.md`, `DefaultConfig()` and the config registry change
+together.
 
-## 11. Error and status tables
+## 11. OpenAPI changes
 
-### 11.1 `POST /oauth/token`
+| Path / schema | Change |
+|---|---|
+| `/oauth/oidc/providers*` | removed |
+| `POST /oauth/token` | 400 descriptions: `invalid_request`, `unauthorized_client`; add `403 access_denied`, `405`, `429`, `503` with `Retry-After`; `subject_token_type` enum is `…:jwt` only |
+| `POST /clients` | `onBehalfOf` query parameter |
+| `TechnicalUserDto`, list item, `TechnicalUserCredentialsDto` | `onBehalfOf`; `grant_type` per §3.2 |
+| `/oauth/keys/keypair*` | `audience` removed from issue, list and `/current` |
+| `/oauth/keys/trusted*` | `audience` removed; invalidate has no body; register's grace field removed; list adds `500`, `503` |
+| invalidate schemas | split: key pairs keep the grace field |
+| audit EntityChange | `actor.kind`, `executedBy` |
+| audit StateMachine | `actor`, `executedBy` |
+| `POST /message` | `X-User-ID` removed |
+| message GET | attributed user and executor |
+| every route outside the allow-list | `403 FORBIDDEN` without `ROLE_M2M` |
+| transaction join | `403 FORBIDDEN` for an OBO request joining another user's transaction |
+
+`go generate ./api` after the schema edits; oasdiff reports the breaking
+changes, which `CHANGELOG.md` lists under Breaking.
+
+## 12. Error and status tables
+
+### 12.1 `POST /oauth/token`
 
 | Cause | Status | `error` |
 |---|---|---|
+| method not POST | 405 | `method_not_allowed` |
 | no or bad client authentication | 401 | `invalid_client` |
+| bcrypt slots full | 503 | `temporarily_unavailable` |
 | unsupported `grant_type` | 400 | `unsupported_grant_type` |
 | `client_credentials` by an OBO client | 400 | `unauthorized_client` |
 | exchange by a non-OBO client | 400 | `unauthorized_client` |
-| rate limit | 429 | `slow_down` |
+| per-client bucket empty | 429 | `slow_down` |
 | forbidden RFC 8693 parameter | 400 | `invalid_request` |
 | bad `subject_token_type` | 400 | `invalid_request` |
 | malformed assertion, wrong `alg`, no `kid` | 400 | `invalid_request` |
 | unknown, invalidated or not-yet-valid key | 400 | `invalid_request` |
 | bad signature, issuer not listed | 400 | `invalid_request` |
-| `aud`, `exp`, `iat` missing or out of bounds | 400 | `invalid_request` |
+| `aud`, `exp`, `iat`, `nbf` missing or out of bounds | 400 | `invalid_request` |
 | `caas_org_id` ≠ client's tenant | 403 | `access_denied` |
 | `sub` invalid or reserved | 400 | `invalid_request` |
 | capped `exp` not in the future | 400 | `invalid_request` |
-| store unavailable | 503 | `temporarily_unavailable` |
+| store unavailable (client or key read) | 503 | `temporarily_unavailable` |
+| other store error | 500 | `server_error` (ticketed) |
 | signing failure | 500 | `server_error` (ticketed) |
 
-### 11.2 `POST /clients`
+### 12.2 `POST /clients`
 
 | Cause | Status | Code |
 |---|---|---|
 | success | 200 | — |
-| not a tenant admin | 403 | `FORBIDDEN` |
+| unauthenticated | 401 | `UNAUTHORIZED` |
+| not a tenant admin, or an OBO principal | 403 | `FORBIDDEN` |
+| `withAdminRole=true` while the flag is off | 404 | `FEATURE_DISABLED` |
 | `withAdminRole=true` and `onBehalfOf=true` | 400 | `BAD_REQUEST` |
 | `onBehalfOf=true` in tenant `PLATFORM` | 400 | `BAD_REQUEST` |
-| `withAdminRole=true` while the flag is off | 404 | `FEATURE_DISABLED` |
 | cap reached | 400 | `M2M_CLIENT_CAP_REACHED` |
+| mock mode | 501 | `NOT_IMPLEMENTED` |
+| store failure | 500 / 503 | ticketed |
 
-### 11.3 Trusted keys
+### 12.3 Trusted keys
 
-Unchanged statuses, except: the 409 for another tenant's kid is removed; a
-duplicate kid in the same tenant is `409 CONFLICT`; the invalidate request's
-grace-period field is removed.
+Statuses as in the current OpenAPI document, except: no cross-tenant 409; `GET` list adds `500` / `503`;
+invalidate takes no body.
 
-### 11.4 Data endpoints
+### 12.4 Other routes
 
-A caller without `ROLE_M2M`: `403 FORBIDDEN` (HTTP), `PermissionDenied`
-(gRPC). An OBO principal on an admin or operator endpoint: `403 FORBIDDEN`.
+| Cause | Status |
+|---|---|
+| no `ROLE_M2M`, route not on the allow-list | 403 `FORBIDDEN` / `PermissionDenied` |
+| OBO principal on an admin or operator route | 403 `FORBIDDEN` |
+| OBO request joining another user's transaction | 403 `FORBIDDEN` / `PermissionDenied` |
 
-### 11.5 Compute stream
+### 12.5 Compute stream
 
 | Cause | gRPC status |
 |---|---|
 | no or invalid token | `Unauthenticated` |
-| not kind service, no `ROLE_M2M`, or an OBO token | `PermissionDenied` |
-| `sub` not a client id | `PermissionDenied` |
-| re-check: client gone, tenant differs, token older than reset, store error | stream closed with `Unauthenticated` |
+| not kind service, no `ROLE_M2M`, an OBO token, or no client-token marker | `PermissionDenied` |
+| re-check: client gone, tenant differs, generation changed | stream closed, `Unauthenticated` |
+| re-check: store error | stream closed, `Unavailable` |
 
-## 12. Test coverage matrix
+## 13. Test coverage matrix
 
 | Scenario | Unit | E2E (postgres) | Parity | gRPC |
 |---|---|---|---|---|
-| client_credentials happy path; OBO client refused | ✓ | ✓ | ✓ | — |
-| exchange happy path: claims §4.3 | ✓ | ✓ | ✓ | — |
-| every §11.1 row | ✓ | ✓ | — | — |
-| assertion roles ignored (`ROLE_ADMIN` in assertion) | ✓ | ✓ | ✓ | — |
-| validator mapping §5.2, each row | ✓ | — | — | — |
-| attribution: OBO write, entity history user+executor | ✓ | ✓ | ✓ | — |
-| attribution: OBO write joined into another principal's transaction keeps alice | ✓ | ✓ | ✓ | — |
-| audit EntityChange and StateMachine events carry actor+executedBy | ✓ | ✓ | ✓ | — |
-| callout attributes per §7.3 row | ✓ | ✓ | — | ✓ |
-| forwarded callout carries executor (multi-node) | ✓ | ✓ (multi-node) | — | ✓ |
-| scheduled fire: ChangeUser=ArmedBy, executor system, callout attributes | ✓ | ✓ | ✓ | ✓ |
-| message user from token; `X-User-ID` gone | ✓ | ✓ | — | — |
-| data endpoint without `ROLE_M2M` → 403 | ✓ | ✓ | — | ✓ |
-| OBO principal on admin/operator endpoint → 403 | ✓ | ✓ | — | — |
-| POST /clients rules §11.2 | ✓ | ✓ | — | — |
-| trusted key per-tenant kid; no cross-tenant 409 | ✓ | ✓ | ✓ | — |
-| trusted key invalidation ends exchanges at once on every node | ✓ | ✓ (multi-node) | — | — |
-| store failure on exchange → 503 | ✓ | — | — | — |
-| rate limit → 429 | ✓ | ✓ | — | — |
-| stream guard §11.5 | ✓ | — | — | ✓ |
-| stream re-check: reset after token iat closes; delete closes; store error closes | ✓ | ✓ | — | ✓ |
-| lifetime default 300, max 3600, `expires_in` computed | ✓ | ✓ | — | — |
-| reserved user id `system` | ✓ | ✓ | — | — |
+| §12.1, every row | ✓ | ✓ except waived | — | — |
+| §12.2, every row | ✓ | ✓ except mock 501 (unit) | — | — |
+| §12.3 changed rows | ✓ | ✓ | ✓ (per-tenant kid) | — |
+| §12.4, every row | ✓ | ✓ | — | ✓ |
+| §12.5, every row | ✓ | ✓ | — | ✓ |
+| verified-secret cache: reset and delete take effect at once | ✓ | ✓ | — | — |
+| exchange happy path, claims §4.4, assertion roles ignored | ✓ | ✓ | ✓ | — |
+| validator mapping §5.2, every row and refusal | ✓ | — | — | — |
+| route allow-list enumeration test | ✓ | — | — | — |
+| OBO write: entity history user + executor | ✓ | ✓ | ✓ | ✓ |
+| compute write-back in alice's transaction: alice + compute client | ✓ | ✓ | ✓ | ✓ |
+| audit EntityChange and StateMachine events: actor + executedBy | ✓ | ✓ | ✓ | — |
+| callout attributes, every §7.3 row | ✓ | ✓ | — | ✓ |
+| forwarded callout (scheduled fire, write-back cascade) | ✓ | ✓ multi-node | — | ✓ |
+| scheduled fire armed by an OBO request, directly and inside its own joined transaction | ✓ | ✓ | ✓ | ✓ |
+| scheduled fire armed by a compute write-back in alice's transaction: `ArmedBy` alice | ✓ | ✓ | ✓ | — |
+| message stores user + executor; `X-User-ID` gone | ✓ | ✓ | ✓ | — |
+| trusted-key invalidation ends exchanges at once on every node | ✓ | ✓ multi-node | — | — |
+| lifetime default 300, maximum 3600, `expires_in` computed | ✓ | ✓ | — | — |
+| key-pair `audience` removed | ✓ | ✓ | ✓ | — |
+| mock kind default `service`: compute node joins in mock mode | ✓ | — | — | — |
 
-Concurrency checks (simultaneous exchange and key invalidation) are isolated
-single-backend e2e tests, not parity.
+Waivers:
 
-## 13. Cloud parity (Gate 7)
+- `503` on store unavailability and `500` on other store and signing failures:
+  unit only; a running backend cannot be made to fail these reads on demand.
+- Mock-mode `501` on `POST /clients`: unit only; the e2e suite runs in JWT mode.
+- Concurrency (exchange racing key invalidation, secret reset racing a cached
+  grant): isolated single-backend e2e, not parity.
+- Cassandra: attribution persistence (`AttributedKind`, `Executor`, `ArmedBy`)
+  is not recorded by the cassandra backend. The cassandra pin bump to this SPI
+  waits for that support; until then the attribution parity rows run on
+  memory, sqlite and postgres only.
+
+## 14. Cloud parity (Gate 7)
 
 New `docs/cloud-parity/obo-only-user-identity.md`. Cloud actions:
 
-- OBO token roles = the OBO client's roles; no user lookup; `act` one level.
+- Data access requires `ROLE_M2M`; human principals (`ROLE_USER`) do not
+  reach data endpoints. OBO tokens carry the OBO client's roles, never the
+  user's; no user lookup; `act` one level.
 - OBO permission on clients; OBO clients cannot use `client_credentials`.
-- Trusted keys are never bearer tokens; key ids per tenant; no grace period.
+- Trusted keys: never bearer tokens; per-tenant ids; register is an upsert; no
+  grace period; no `audience`.
 - OIDC provider endpoints retired.
-- Callout attributes `authexecid`/`authexectype`; `authclaims` = client roles.
-- Audit events carry `actor` and `executedBy`, StateMachine events included.
+- Callouts: `authid`/`authtype` = attributed principal, new
+  `authexecid`/`authexectype`, `authclaims` = executor's roles.
+- Audit events carry `actor` (with `kind`) and `executedBy`, StateMachine
+  events included.
 - Token lifetime default 300 s, maximum 3600 s.
+- Key pairs have no `audience`.
 
-Update `trusted-key-tenant.md`, `authcontext-attribution.md` and
-`user-id-rule.md`. File the CaaS ticket and cite it.
+Update `trusted-key-tenant.md`, `authcontext-attribution.md`,
+`user-id-rule.md`, `m2m-clients.md`, `platform-operator.md`,
+`signing-key-pairs.md`, `audit-event-identity-and-order.md` and
+`scheduled-transitions.md`. File the CaaS ticket and cite it.
 
-## 14. Security fix carried by this change
+## 15. Security properties
 
-Today the exchange copies `user_roles` from the assertion into the issued
-token. Anyone holding a tenant's trusted private key and any client of that
-tenant can mint `ROLE_ADMIN` tokens for that tenant, and platform-operator
-tokens in `PLATFORM`. Under §4.3 the assertion's roles are ignored and §3.1
-keeps OBO clients out of `PLATFORM` and away from `ROLE_ADMIN`.
+- The assertion's roles never reach the issued token, so a trusted private key
+  and a plain client together cannot mint `ROLE_ADMIN`, and nothing can mint a
+  platform-operator token through an exchange (§3.1, §4.4, §5.4).
+- Tenant isolation: the tenant comes from the stored client on both grants;
+  trusted keys are read in the client's tenant only; no response reveals
+  another tenant's keys or clients.
+- Revocation: a reset or delete stops new tokens at once on every node (store
+  read per grant, generation check on streams); issued tokens end within the
+  configured lifetime.
+- Token-endpoint CPU is bounded per node; one client's load cannot starve
+  another's beyond the bcrypt bound.
 
-## 15. Applications
+## 16. Applications
 
 `ctcc-management` must:
 
-- create an OBO client and a trusted key pair;
-- sign assertions with its users' ids and exchange them, caching one OBO token
-  per user;
-- stop forwarding Zitadel tokens; delete its OIDC registration scripts;
-- read `authexecid`/`authexectype` to tell scheduled work from a user acting
-  now, and keep its segregation-of-duties check on `authid`;
+- split its single client into an OBO client (BFF), a plain client per compute
+  node, and an admin client;
+- create a trusted key pair; sign assertions with its users' ids and exchange
+  them, caching one OBO token per user;
+- stop forwarding Zitadel tokens; delete its OIDC registration scripts,
+  `CYODA_OIDC_*` from `docker-compose.yml`, and `subOf`'s `oidc:` handling;
+- read `authexecid`/`authexectype`; expect write-back cascade callouts with
+  `authtype=user`; keep its segregation-of-duties check on `authid`, comparing
+  `(id, kind)`;
 - connect its compute node over TLS.
 
-## 16. Documentation
+## 17. Documentation
 
-- `docs/access-to-the-cyoda-api.html`: the companion page, kept in step.
+- `docs/access-to-the-cyoda-api.html`, kept in step with this spec.
 - Help topics: `auth`, `auth/tokens`, `auth/clients`, `auth/trusted-keys`,
-  `config/auth`, `cli/token`, `errors/*`, `telemetry`, `quickstart`, `admin`.
-- `README.md`, `docs/ARCHITECTURE.md` §7, ADR 0004 (superseding 0002),
-  `CHANGELOG.md` (Breaking), `COMPATIBILITY.md` (SPI pin, chart).
+  `config/auth`, `cli/token`, `errors/*`, `telemetry`, `quickstart`, `admin`,
+  `grpc`, `messages`, `audit`, `scheduled-tasks`, `workflows`, `helm`, `run`;
+  `cmd/cyoda/help/config_registry.go`.
+- `README.md` (the OIDC section included), `docs/ARCHITECTURE.md` (§7 and the
+  user-id rule), ADR 0004 superseding 0002, `CHANGELOG.md` (Breaking),
+  `COMPATIBILITY.md` (SPI pin, chart).

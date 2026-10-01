@@ -152,7 +152,7 @@ td:first-child{font-weight:500;width:24%}
         <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
         <tbody>
           <tr><td>Tenant</td><td>A cyoda legal entity. Its id is the <code>caas_org_id</code> in a cyoda token. Each tenant's data is separate from every other tenant's.</td></tr>
-          <tr><td>M2M client</td><td>A client id and secret that belongs to one tenant. It gets cyoda tokens with <code>client_credentials</code>. Its roles: <code>ROLE_M2M</code>, which every data operation requires; <code>ROLE_ADMIN</code> as well for an admin client. A client created with the on-behalf-of permission may also exchange user assertions; such a client never holds <code>ROLE_ADMIN</code> and never belongs to <code>PLATFORM</code>.</td></tr>
+          <tr><td>M2M client</td><td>A client id and secret that belongs to one tenant. It gets cyoda tokens with <code>client_credentials</code>. Its roles: <code>ROLE_M2M</code>, which every data operation requires; <code>ROLE_ADMIN</code> as well for an admin client. A client created with the on-behalf-of permission only exchanges user assertions; it never uses <code>client_credentials</code>, never holds <code>ROLE_ADMIN</code> and never belongs to <code>PLATFORM</code>.</td></tr>
           <tr><td>cyoda token</td><td>A token cyoda-go signs, carrying the client's tenant in <code>caas_org_id</code>. The only token the API accepts.</td></tr>
           <tr><td>Trusted key</td><td>A public key a tenant admin registers for the application. The application signs user assertions with the matching private key. Key ids are unique within a tenant. Invalidating a key ends it at once; to rotate, register the new key, switch the application to it, then invalidate the old one.</td></tr>
           <tr><td>User assertion</td><td>A JWT of at most 5 minutes' life that the application signs with its trusted key: <code>sub</code> = the user, <code>caas_org_id</code> = the tenant, <code>aud</code> = cyoda-go's issuer (<code>CYODA_JWT_ISSUER</code>), <code>iat</code>, <code>exp</code>, and <code>kid</code> naming the key. It says "this is my user"; cyoda-go records it and does not verify the user.</td></tr>
@@ -168,11 +168,11 @@ td:first-child{font-weight:500;width:24%}
   <section class="ref" aria-labelledby="ex-h">
     <h2 id="ex-h">The token exchange</h2>
     <ol>
-      <li>The client authenticates with its id and secret, and must hold the on-behalf-of permission. A per-client rate limit applies to every grant and exchange.</li>
+      <li>The client authenticates with its id and secret, and must hold the on-behalf-of permission. Each node bounds how many secret checks run at once and answers 503 when busy; a per-client rate limit (429) applies to every grant and exchange. Both answers carry <code>Retry-After</code>.</li>
       <li><code>subject_token_type</code> is <code>urn:ietf:params:oauth:token-type:jwt</code>; other RFC 8693 parameters, such as <code>actor_token</code>, are refused.</li>
       <li>The trusted key named by the assertion's <code>kid</code> is read from the shared store, in the client's tenant; a key of another tenant is never found. If the store cannot be read, the exchange answers 503.</li>
       <li>The assertion's signature, <code>exp</code> and <code>iat</code> (both required, at most 5 minutes apart), <code>aud</code>, its issuer if the key lists issuers, and <code>caas_org_id</code> = the client's tenant are checked.</li>
-      <li><code>sub</code> must be a valid user id and not a reserved one, such as <code>system</code> or anything starting with <code>oidc:</code>.</li>
+      <li><code>sub</code> must be a valid user id and not the reserved id <code>system</code>.</li>
       <li>The OBO token: <code>sub</code> = the user, <code>act.sub</code> = the client, the client's roles (any roles in the assertion are ignored), and <code>exp</code> no later than the assertion's <code>exp</code> or <code>CYODA_JWT_EXPIRY_SECONDS</code> from now, whichever is earlier.</li>
       <li>An on-behalf-of client only exchanges: <code>client_credentials</code> refuses it. An OBO token cannot open a compute-node stream.</li>
     </ol>
@@ -191,7 +191,7 @@ td:first-child{font-weight:500;width:24%}
         </tbody>
       </table>
     </div>
-    <p>Both identities appear wherever a change is reported: entity change history (<code>GET /entity/{id}/changes</code>), audit events (<code>GET /audit/entity/{id}</code>), and every callout to a compute node, including callouts another node forwards. A callout also carries the executor's roles. A scheduled task keeps the user and the client that armed it.</p>
+    <p>Both identities appear wherever a change is reported: entity change history (<code>GET /entity/{id}/changes</code>), audit events (<code>GET /audit/entity/{id}</code>), and every callout to a compute node, including callouts another node forwards. A callout also carries the executor's roles. A scheduled task keeps the user it was armed for, and fires with executor <code>system</code>.</p>
   </section>
 
   <section class="ref" aria-labelledby="life-h">
@@ -200,7 +200,7 @@ td:first-child{font-weight:500;width:24%}
       <li>A cyoda token lives <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. An OBO token never lives past its assertion's <code>exp</code>. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until it nears expiry.</li>
       <li>Every grant reads the client, and every exchange reads the client and the trusted key, from the shared store. Resetting a secret, deleting a client, or invalidating or deleting a trusted key stops new tokens at once on every node.</li>
       <li>Tokens issued before the change stay valid until they expire, at most the token lifetime.</li>
-      <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, if the token that opened it was issued before the client's last secret reset, or if the store cannot be read.</li>
+      <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, or if the client's secret was reset after the token that opened it was issued. If the store cannot be read, the stream closes as unavailable and the node reconnects.</li>
       <li>Invalidating every signing key pair, once a replacement is issued, ends every cyoda token for every tenant. It is the platform operator's last resort.</li>
     </ol>
   </section>
@@ -333,7 +333,7 @@ td:first-child{font-weight:500;width:24%}
       {s:"api",k:"ok",l:"a client's own token,\nROLE_M2M; tenant acme"},
       {m:["api","compute"],k:"ok",l:"stream open: callouts\nfor tenant acme"},
       {p:"Every minute"},
-      {m:["api","store"],k:"req",l:"client still there; token\nnewer than last reset?"},
+      {m:["api","store"],k:"req",l:"client still there; secret\nnot reset since token?"},
       {m:["store","api"],k:"ret",l:"yes"},
       {p:"The client is deleted"},
       {m:["api","store"],k:"req",l:"client still there?"},
