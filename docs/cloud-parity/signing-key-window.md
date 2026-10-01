@@ -62,9 +62,17 @@ whose key is outside it (also when an OIDC provider publishes the same
 differs.
 
 Key pairs have no `audience`: there is one set of key pairs, and the newest
-active one inside its window signs every token, M2M included. Cloud's own
-per-audience (human/client) signer partitioning, if any, should be dropped
-to match.
+active one inside its window signs every token, M2M included.
+
+Cloud does partition signer selection by audience today
+(`JwtKeyPairInteractor.kt:39-43,57` — `issueKeyPair` and `getCurrentKeyPair`
+each resolve `request.audience`/`audience` to a provider id via
+`toProviderId()`, mapping `human` to `CYODA_REGULAR_USERS_PROVIDER_ID` and
+`client` to `CYODA_TECHNICAL_USERS_PROVIDER_ID`, and look up or create the
+current signing key under that provider id independently of the other).
+Cloud action: drop this partitioning and resolve one current signing key per
+tenant/installation regardless of audience, to match cyoda-go's single
+signer set.
 
 Grace periods: Cloud's verification already follows the window alone
 (`StoredJWKPublicKeyProvider.kt:39`, `JWKEntity.isValidKey`,

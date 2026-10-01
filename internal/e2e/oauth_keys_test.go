@@ -321,13 +321,16 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	}
 }
 
-// TestE2E_KeyPair_NoAudience: /current takes no audience, and a key issued
-// with a stray "audience":"human" is the one /current returns. This test
-// rotates the server-global signing key; restore it in t.Cleanup the way
-// TestE2E_IssueJwtKeyPair_Happy does.
+// TestE2E_KeyPair_NoAudience: /current takes no audience query parameter,
+// and a key pair issued with a stray "audience":"human" field in the body is
+// accepted — the field is unknown to the server and has no effect, since key
+// pairs have no audience — and its validFrom (now) makes it the one
+// /current returns. No invalidateCurrent here: nothing pre-existing is
+// invalidated, so cleanup only has to delete the one key pair this test
+// created.
 func TestE2E_KeyPair_NoAudience(t *testing.T) {
 	resp := operatorRequest(t, http.MethodPost, "/oauth/keys/keypair",
-		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human", "invalidateCurrent": true}))
+		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human"}))
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("issue: %d %s", resp.StatusCode, body)
@@ -335,11 +338,14 @@ func TestE2E_KeyPair_NoAudience(t *testing.T) {
 	var issued struct {
 		KeyID string `json:"keyId"`
 	}
-	_ = json.Unmarshal([]byte(body), &issued)
+	if err := json.Unmarshal([]byte(body), &issued); err != nil || issued.KeyID == "" {
+		t.Fatalf("issue: no keyId in %s (decode error: %v)", body, err)
+	}
 	t.Cleanup(func() {
 		del := operatorRequest(t, http.MethodDelete, "/oauth/keys/keypair/"+issued.KeyID, nil)
 		del.Body.Close()
 	})
+
 	resp = operatorRequest(t, http.MethodGet, "/oauth/keys/keypair/current", nil)
 	cur := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK || !strings.Contains(cur, issued.KeyID) {

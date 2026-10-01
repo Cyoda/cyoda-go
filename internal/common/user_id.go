@@ -37,9 +37,11 @@ var ErrInvalidUserID = errors.New("invalid user id")
 // claims name one user.
 //
 // This is the one rule for every user id cyoda-go takes from outside it — the
-// first-party JWT claim and a token-exchange subject. A user id is not a key
-// or a path segment, so unlike a tenant id it has no grammar beyond this: any
-// other character is admitted, and nothing is normalised.
+// first-party JWT claim (validator.go), a token-exchange subject (token.go),
+// the operator-token --user flag (operator_token.go), and an M2M client
+// record's UserID (kv_m2m_codec.go). A user id is not a key or a path
+// segment, so unlike a tenant id it has no grammar beyond this: any other
+// character is admitted, and nothing is normalised.
 //
 // The returned error NEVER contains id, except when id is a case variant of
 // ReservedSystemUserID: that rejection quotes it back, but it carries no more

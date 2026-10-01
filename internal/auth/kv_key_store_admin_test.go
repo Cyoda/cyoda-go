@@ -212,6 +212,31 @@ func TestKVKeyStore_RotationLeavesTheSigningKey(t *testing.T) {
 	}
 }
 
+// A rotation ends every active issued sibling, not just one: with no
+// audience to partition them, every other owned/broken issued record whose
+// window is open is a sibling.
+func TestKVKeyStore_RotationEndsEveryActiveSibling(t *testing.T) {
+	ctx := systemCtx()
+	kv := mustNewMemoryKV(t, ctx)
+	boot := newBootstrap(t)
+	ks := newKeyStore(t, kv, boot)
+	a := issueWindow(t, ks, time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	b := issueWindow(t, ks, time.Now().Add(-time.Minute), time.Now().Add(time.Hour))
+	nw, err := ks.Issue(ctx, auth.IssueRequest{ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ks.VerificationKey(a.KID); err == nil {
+		t.Error("sibling a still verifies after the rotation")
+	}
+	if _, err := ks.VerificationKey(b.KID); err == nil {
+		t.Error("sibling b still verifies after the rotation")
+	}
+	if got, _, err := ks.Signer(); err != nil || got.KID != nw.KID {
+		t.Fatalf("signer = %v, %v; want the new key pair %s", got, err, nw.KID)
+	}
+}
+
 // commitThenFailKV commits the Put to the underlying store and only then
 // reports failure, on its FIRST call for failKey only — the shape writeAll's
 // own doc names ("the failing write can itself have partially or fully

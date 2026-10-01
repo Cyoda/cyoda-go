@@ -82,8 +82,8 @@ func TestClassify_SignerOpenedOnceWhileSealedUnchanged(t *testing.T) {
 	}
 }
 
-// The sealed bytes changing, with every other bound field (KID, audience,
-// algorithm, owner, SPKI) held identical, must force a fresh Open rather than
+// The sealed bytes changing, with every other bound field (KID, algorithm,
+// owner, SPKI) held identical, must force a fresh Open rather than
 // reuse the cached signer: a warm cache entry for the untampered record must
 // not paper over sealed bytes that no longer decrypt. If the fingerprint
 // dropped the sealed bytes, the second classify would still hit the cache

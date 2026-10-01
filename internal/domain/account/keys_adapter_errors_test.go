@@ -16,10 +16,10 @@ import (
 
 type failingKeyStore struct{ err error }
 
-func (f failingKeyStore) Signer() (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
-func (f failingKeyStore) Current() (*auth.KeyPair, error)             { return nil, f.err }
-func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error)    { return nil, f.err }
-func (f failingKeyStore) Published() ([]*auth.KeyPair, error)               { return nil, f.err }
+func (f failingKeyStore) Signer() (*auth.KeyPair, auth.Signer, error)    { return nil, nil, f.err }
+func (f failingKeyStore) Current() (*auth.KeyPair, error)                { return nil, f.err }
+func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error) { return nil, f.err }
+func (f failingKeyStore) Published() ([]*auth.KeyPair, error)            { return nil, f.err }
 func (f failingKeyStore) Issue(context.Context, auth.IssueRequest) (*auth.KeyPair, error) {
 	return nil, f.err
 }

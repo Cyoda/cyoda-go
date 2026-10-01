@@ -40,8 +40,8 @@ type AuthService struct {
 // load fails. Start runs their re-read loops.
 func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error) {
 	// Apply defaults only for a wholly unset IAMFeatures, so callers that
-	// don't set the field (e.g. tests) still get the default bootstrap
-	// audience and IAM limits, and a caller that sets any field keeps it.
+	// don't set the field (e.g. tests) still get the default IAM limits,
+	// and a caller that sets any field keeps it.
 	if config.IAMFeatures == (IAMFeatures{}) {
 		config.IAMFeatures = DefaultIAMFeatures()
 	}

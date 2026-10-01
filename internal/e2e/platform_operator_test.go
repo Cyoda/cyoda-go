@@ -12,14 +12,13 @@ import (
 
 // operatorEndpoints are the platform-wide endpoints behind the operator
 // guard. kid is well formed and never exists: every refusal here happens
-// before a lookup. The GET needs ?audience= (the generated wrapper answers
-// 400 for a missing one before the handler runs).
+// before a lookup.
 func operatorEndpoints() []struct{ name, method, path, body string } {
 	const kid = "0123456789abcdef0123456789abcdef"
 	validTo := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	return []struct{ name, method, path, body string }{
-		{"issue", http.MethodPost, "/oauth/keys/keypair", `{"algorithm":"RS256","audience":"human"}`},
-		{"current", http.MethodGet, "/oauth/keys/keypair/current?audience=human", ""},
+		{"issue", http.MethodPost, "/oauth/keys/keypair", `{"algorithm":"RS256"}`},
+		{"current", http.MethodGet, "/oauth/keys/keypair/current", ""},
 		{"invalidate", http.MethodPost, "/oauth/keys/keypair/" + kid + "/invalidate", ""},
 		{"reactivate", http.MethodPost, "/oauth/keys/keypair/" + kid + "/reactivate", `{"validTo":"` + validTo + `"}`},
 		{"delete", http.MethodDelete, "/oauth/keys/keypair/" + kid, ""},
@@ -72,7 +71,7 @@ func TestPlatformOperator_PlatformWithoutAdmin_403(t *testing.T) {
 func TestPlatformOperator_AdminM2MClientInPlatform(t *testing.T) {
 	id, secret := createM2MClient(t, "PLATFORM", "platform-seed", true)
 	tok := getToken(t, id, secret)
-	resp := requestAs(t, tok, http.MethodPost, "/oauth/keys/keypair", []byte(`{"algorithm":"RS256","audience":"human"}`))
+	resp := requestAs(t, tok, http.MethodPost, "/oauth/keys/keypair", []byte(`{"algorithm":"RS256"}`))
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("issue as a PLATFORM admin M2M client: %d %s", resp.StatusCode, body)

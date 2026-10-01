@@ -8,11 +8,11 @@ import "fmt"
 // Named "Features" (not "Config") to avoid name collision with
 // app.IAMConfig (app/config.go) which carries IAM mode + JWT settings.
 type IAMFeatures struct {
-	TrustedKeyRegistrationEnabled bool   // env CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED, default false
-	TrustedKeyMaxPerTenant        int    // env CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT, default 10; 0=unbounded
-	TrustedKeyMaxValidityDays     int    // env CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS, default 365
-	TrustedKeyMaxJWKProperties    int    // env CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES, default 20
-	KeypairDefaultValidityDays    int    // env CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS, default 365
+	TrustedKeyRegistrationEnabled bool // env CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED, default false
+	TrustedKeyMaxPerTenant        int  // env CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT, default 10; 0=unbounded
+	TrustedKeyMaxValidityDays     int  // env CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS, default 365
+	TrustedKeyMaxJWKProperties    int  // env CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES, default 20
+	KeypairDefaultValidityDays    int  // env CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS, default 365
 
 	// M2MAdminRoleEnabled gates POST /clients?withAdminRole=true. When false
 	// (the secure default) the endpoint returns 404 FEATURE_DISABLED on that

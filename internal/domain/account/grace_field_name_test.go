@@ -22,7 +22,7 @@ func TestGracePeriodRangeError_NamesInvalidateGracePeriodSec(t *testing.T) {
 
 	for _, grace := range []string{"-1", "9999999999"} {
 		t.Run("issue/"+grace, func(t *testing.T) {
-			body := []byte(`{"algorithm":"RS256","audience":"client","invalidateCurrent":true,"invalidateGracePeriodSec":` + grace + `}`)
+			body := []byte(`{"algorithm":"RS256","invalidateCurrent":true,"invalidateGracePeriodSec":` + grace + `}`)
 			w := httptest.NewRecorder()
 			h.IssueJwtKeyPair(w, operatorReq(t, "POST", "/", body))
 			assertGraceFieldNamed(t, w)

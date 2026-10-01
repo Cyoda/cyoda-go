@@ -38,8 +38,8 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - Rotating key pairs (`POST /oauth/keys/keypair` with `invalidateCurrent`) does not affect it.
 - Invalidating or deleting the signing key by its key id does. This is how the root key is revoked: `cyoda token` then stops granting access, after the grace period if one was given. The command cannot tell offline. The key-pair endpoints that do this (`/oauth/keys/keypair/*`) require a platform operator (`--tenant PLATFORM`).
 - Reactivating the signing key gives it a window that ends at the reactivation's `validTo`; tokens from `cyoda token` are refused from that time.
-- Reactivating the signing key also sets its `validFrom`, which defaults to now. From then on it signs `POST /oauth/token` tokens before every issued key pair of the `client` audience with an earlier `validFrom`. To keep the issued key pairs signing, pass an early `validFrom`, for example `1970-01-01T00:00:00Z` (see `cyoda help config auth`).
-- After that, the platform operator's ways back to the key-pair endpoints are a token from `cyoda token --tenant PLATFORM` while the bootstrap key verifies (including its grace period); an admin M2M client in `PLATFORM`, created before the bootstrap key is revoked, while an issued `client` key pair signs its tokens (creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`); or a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Create an admin M2M client in `PLATFORM` before revoking the signing key. Store that client's secret like `CYODA_JWT_SIGNING_KEY`. If it may have leaked, follow *A leaked platform admin-client secret* in `cyoda help config auth`.
+- Reactivating the signing key also sets its `validFrom`, which defaults to now. From then on it signs `POST /oauth/token` tokens before every issued key pair with an earlier `validFrom`. To keep the issued key pairs signing, pass an early `validFrom`, for example `1970-01-01T00:00:00Z` (see `cyoda help config auth`).
+- After that, the platform operator's ways back to the key-pair endpoints are a token from `cyoda token --tenant PLATFORM` while the bootstrap key verifies (including its grace period); an admin M2M client in `PLATFORM`, created before the bootstrap key is revoked, while an issued key pair signs its tokens (creating an admin M2M client needs `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`); or a new `CYODA_JWT_SIGNING_KEY` on every node, which retires every issued key pair and every token cyoda-go signed. Create an admin M2M client in `PLATFORM` before revoking the signing key. Store that client's secret like `CYODA_JWT_SIGNING_KEY`. If it may have leaked, follow *A leaked platform admin-client secret* in `cyoda help config auth`.
 
 ## OPTIONS
 
@@ -78,7 +78,7 @@ curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $
 
 # Platform operator (key-pair, OIDC reload, /admin/* endpoints)
 TOKEN=$(cyoda token --tenant PLATFORM)
-curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client' \
+curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current' \
   <<<"Authorization: Bearer $TOKEN"
 
 # Create the recommended PLATFORM admin M2M client

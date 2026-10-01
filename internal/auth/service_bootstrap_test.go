@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -42,23 +43,25 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 
 // TestBootstrapKey_ConfiguredIAMFeaturesKept: only a wholly unset
 // IAMFeatures takes the defaults; one that is set is used as given, so a
-// field it sets is not overwritten back to the default.
+// field it sets is not overwritten back to the default. Proven here with
+// M2MClientMaxPerTenant, a field NewAuthService actually reads (unlike
+// KeypairDefaultValidityDays, which only the key-pair issue adapter
+// consults): a cap of 1 refuses a tenant's second client.
 func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 	features := auth.DefaultIAMFeatures()
-	features.KeypairDefaultValidityDays = 30
-	pem := generateTestPEM(t)
+	features.M2MClientMaxPerTenant = 1
 	svc := newTestAuthService(t, auth.AuthConfig{
-		SigningKeyPEM: pem,
+		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures:   features,
 	})
-	kp, err := svc.KeyStore().Current()
-	if err != nil {
-		t.Fatalf("bootstrap key does not sign: %v", err)
+	store := svc.M2MClientStore()
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT1", "user-1", []string{"ROLE_M2M"}); err != nil {
+		t.Fatalf("first client: %v", err)
 	}
-	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
-		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT2", "user-2", []string{"ROLE_M2M"}); !errors.Is(err, auth.ErrM2MClientCapReached) {
+		t.Fatalf("second client with M2MClientMaxPerTenant=1: err = %v, want ErrM2MClientCapReached", err)
 	}
 }
 

@@ -234,7 +234,7 @@ func TestKVKeyStore_NonKIDRecordIsIgnored(t *testing.T) {
 // TestKeyStore_IssuedKeySignsWithoutAudience: an issued, active, in-window key
 // pair is the signer; the bootstrap signs again once it is invalidated.
 func TestKeyStore_IssuedKeySignsWithoutAudience(t *testing.T) {
-	s := newTestKeyStore(t, newBootstrap(t)) // kv_key_store_test.go:48; the default vault can issue
+	s := newTestKeyStore(t, newBootstrap(t)) // the default vault can issue
 	kp, err := s.Issue(systemCtx(), auth.IssueRequest{ValidFrom: time.Now().Add(-time.Minute), ValidTo: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("issue: %v", err)
@@ -257,7 +257,7 @@ func TestKeyStore_IssuedKeySignsWithoutAudience(t *testing.T) {
 func TestKVKeyStore_ConstructionFailsWhenListFails(t *testing.T) {
 	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
 	kv.fail.Store(true)
-	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t),})
+	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t)})
 	if err == nil || s != nil {
 		t.Fatalf("store = %v, err = %v; want a construction error", s, err)
 	}

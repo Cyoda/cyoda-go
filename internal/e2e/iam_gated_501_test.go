@@ -14,11 +14,8 @@ type gatedOp struct {
 }
 
 // all14GatedOps lists every op gated behind the IAM subsystem.
-// Path-parameter placeholders:
-//   - string keyId / clientId → any alphanumeric segment; gate fires before
-//     format checks in the handler.
-//   - getCurrentJwtKeyPair → ?audience=human required (generated code enforces
-//     the required query param before calling the handler).
+// Path-parameter placeholders: string keyId / clientId → any alphanumeric
+// segment; gate fires before format checks in the handler.
 var all14GatedOps = []gatedOp{
 	// 4 M2M ops (requireM2MStore → 501)
 	{http.MethodGet, "/api/clients", "listTechnicalUsers"},
@@ -27,7 +24,7 @@ var all14GatedOps = []gatedOp{
 	{http.MethodPut, "/api/clients/someclient/secret", "resetTechnicalUserSecret"},
 	// 5 keypair ops (requireKeyStore → 501)
 	{http.MethodPost, "/api/oauth/keys/keypair", "issueJwtKeyPair"},
-	{http.MethodGet, "/api/oauth/keys/keypair/current?audience=human", "getCurrentJwtKeyPair"},
+	{http.MethodGet, "/api/oauth/keys/keypair/current", "getCurrentJwtKeyPair"},
 	{http.MethodDelete, "/api/oauth/keys/keypair/anykeyid", "deleteJwtKeyPair"},
 	{http.MethodPost, "/api/oauth/keys/keypair/anykeyid/invalidate", "invalidateJwtKeyPair"},
 	{http.MethodPost, "/api/oauth/keys/keypair/anykeyid/reactivate", "reactivateJwtKeyPair"},

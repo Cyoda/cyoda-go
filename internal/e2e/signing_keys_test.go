@@ -609,7 +609,7 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 	h := newKeyStackOn(t, newSchedDB(t), key)
 	opTok := operatorToken(t, key, "cyoda-callback-test", "")
 	kReact, tReact := h.issueSigning(t) // reactivated during its grace
-	h.issueKey(t, false)      // signs the admin calls once the others end
+	h.issueKey(t, false)                // signs the admin calls once the others end
 	kGrace, tGrace := h.issueSigning(t) // grace runs out
 
 	earliestValidTo := time.Now().Add(grace)
