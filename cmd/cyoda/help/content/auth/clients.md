@@ -53,7 +53,7 @@ The request takes no body. `withAdminRole` is a query parameter; the only role t
 
 ```bash
 curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=false" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`) — schema `TechnicalUserCredentialsDto`:
@@ -76,7 +76,7 @@ A tenant that already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients gets `
 
 ```bash
 curl -X GET https://cyoda.example.com/api/clients \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `clientId`:
@@ -96,7 +96,7 @@ Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `cli
 
 ```bash
 curl -X DELETE https://cyoda.example.com/api/clients/${CLIENT_ID} \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`):
@@ -116,7 +116,7 @@ Rotates `client_secret` for an existing client. The verb is `PUT`, not `POST`.
 
 ```bash
 curl -X PUT https://cyoda.example.com/api/clients/${CLIENT_ID}/secret \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation, carrying the new `client_secret`. Capture it before the connection closes. Existing JWTs minted with the previous secret remain valid until their natural `exp`; only new `/oauth/token` requests need the new secret.

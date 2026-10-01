@@ -126,7 +126,7 @@ A search that includes `StateMachine` events (the default, or an explicit `event
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID"
 ```
 
@@ -134,7 +134,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?eventType=EntityChange"
 ```
 
@@ -142,19 +142,19 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?transactionId=$TX_ID"
 ```
 
 **Paginate using a cursor:**
 
 ```
-NEXT=$(curl -s -H "Authorization: Bearer $TOKEN" \
+NEXT=$(curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?limit=10" \
   | jq -r '.pagination.nextCursor')
 
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?limit=10&cursor=$NEXT"
 ```
 
@@ -162,7 +162,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID/workflow/$TX_ID/finished"
 ```
 

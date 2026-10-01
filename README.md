@@ -98,7 +98,7 @@ CYODA_PROFILES=local cyoda &
 TOKEN=$(CYODA_PROFILES=local cyoda token --tenant demo)
 
 # Make an authenticated call
-curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/account
+curl -H @- <<<"Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 ```
 
 The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
@@ -139,12 +139,11 @@ The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from 
 
 ```bash
 curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "my-auth0",
     "wellKnownConfigUri": "https://example.auth0.com/.well-known/openid-configuration",
-    "audienceClaim": "https://api.example.com",
+    "expectedAudiences": ["https://api.example.com"],
     "rolesClaim": "https://example.com/roles"
   }'
 ```

@@ -169,7 +169,7 @@ Errors are RFC 9457 `application/problem+json` with `properties.errorCode` set t
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "X-Correlation-ID: nobel-2024-physics" \
   -d '{
@@ -182,7 +182,7 @@ curl -s -X POST \
 **Retrieve a message:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16"
 ```
 
@@ -190,7 +190,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/message/8824c480-c166-11ee-bf9f-ae468cd3ed16"
 ```
 
@@ -198,7 +198,7 @@ curl -s -X DELETE \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '["8824c480-c166-11ee-9cc7-ae468cd3ed16","31134900-d9cb-11ee-9cc7-ae468cd3ed16"]' \
   "http://localhost:8080/api/message"

@@ -297,18 +297,20 @@ verifies, or an admin client of that tenant.
 
 If another tenant registered the same IdP, removing this tenant's provider
 can make the token resolve to that tenant's provider, as far as its
-settings allow. So first invalidate or delete that tenant's providers of
-the IdP, or give each one `expectedAudiences` the token's `aud` is not in.
-The INFO line `oidc.cross_tenant_uri_registration`, written when a second
-tenant registers the same discovery URI, names such tenants; it does not
-name a provider of the same IdP registered under another URI.
+settings allow. So first, with an admin token of that tenant, delete its
+providers of the IdP, and tell its admins why. Do not only invalidate them
+or narrow their `expectedAudiences`: that tenant's admins can reactivate or
+widen them, and a reactivated provider accepts the token again. The INFO
+line `oidc.cross_tenant_uri_registration`, written when a second tenant
+registers the same discovery URI, names such tenants; it does not name a
+provider of the same IdP registered under another URI.
 
-Then invalidate or delete this tenant's provider. A reactivation makes the
-token verify again, so bring the provider back by registering it again, as
-*A leaked admin token of another tenant* describes. Other nodes apply each
-change as *Auth cache reconciliation* describes. Once they have, `GET
-/account` with the token answers `401`; if it names another tenant, treat
-that tenant the same way.
+Then delete this tenant's provider. Every provider deleted here comes back
+only by registering it again, as *A leaked admin token of another tenant*
+describes, never by reactivation. Other nodes apply each change as *Auth
+cache reconciliation* describes. Once they have, `GET /account` with the
+token answers `401`; if it names another tenant, treat that tenant the same
+way.
 
 cyoda-go verifies these tokens itself, so ending the user's session at the
 IdP does not end an access token already issued. The token also stops
@@ -414,8 +416,8 @@ procedure has taken effect on every node: they can create, reset and delete
 `PLATFORM`'s M2M clients and trusted keys, issue, invalidate, reactivate and
 delete key pairs (deleting the bootstrap key is permanent), change each
 node's log level and trace sampler, and open a compute-node gRPC stream.
-They can also change any models, workflows and entities kept in
-`PLATFORM`; if you keep any there, check them in step 5.
+They can also change any models, workflows, entities, scheduled tasks and
+messages kept in `PLATFORM`; step 5 checks them.
 Verification does not check that a client still exists, so deleting the
 client or resetting its secret does not end a token they hold. Contain
 first, then clean up, verify and restore.
@@ -432,16 +434,16 @@ act on the caller's own tenant, so you need an admin token of that tenant.
 - Step 2: `cyoda token --tenant <id>` while the bootstrap key verifies;
   otherwise use the *Alternative to step 4*. That token stops verifying
   in step 4.
-- Step 3: first delete every OIDC provider of the tenant
-  (`GET /oauth/oidc/providers`, then `DELETE /oauth/oidc/providers/{id}`).
-  Then clean its clients and trusted keys as step 3 says, with the tenant
+- Step 3: if another tenant registered an IdP of this tenant, first treat
+  that tenant as the paragraph beginning *If another tenant registered the
+  same IdP* under *Emergency revocation of a leaked token* says: deleting
+  this tenant's providers can make a token from that IdP resolve to the
+  other tenant's provider. Then delete every OIDC provider of the tenant
+  (`GET /oauth/oidc/providers`, then `DELETE /oauth/oidc/providers/{id}`),
+  and clean its clients and trusted keys as step 3 says, with the tenant
   in place of `PLATFORM`. If you keep no admin client in the tenant, create
   one there the same way (the same flag and the tenant client cap apply):
-  step 5 needs it, unless you use the *Alternative to step 4*. Deleting the
-  providers can make a token from their IdP resolve to another tenant's
-  provider of the same IdP: treat that tenant as the paragraph beginning
-  *If another tenant registered the same IdP* under *Emergency revocation
-  of a leaked token* says.
+  step 5 needs it, unless you use the *Alternative to step 4*.
 - Register again the providers you need from your own records. If the
   leaked token came from an IdP, first, at that IdP, end all of the
   principal's sessions, revoke its refresh tokens, and reset its
@@ -592,6 +594,9 @@ signing keypair rotation*). Then check on every node:
 - If you cleaned the trusted keys, the list shows only the keys you
   registered again (only a node where registration is on can list).
 - `GET /admin/log-level` is the level the node starts with.
+- The models, workflows, entities, scheduled tasks and messages kept in
+  `PLATFORM`, and in any other tenant this procedure covers, match your
+  own records. These checks are not tied to one node.
 
 If anything is off, go back to step 3. A node that fails to start in step
 5 stays out of service until it starts and passes these checks.

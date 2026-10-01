@@ -85,12 +85,12 @@ curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current?audience=client
 # (server started with CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true)
 TOKEN=$(cyoda token --tenant PLATFORM)
 # A private directory: no other user can plant a symlink at the file name.
-dir=$(mktemp -d) || exit
-cd "$dir" || exit
-# --fail: an error answer is not saved as if it were the credential.
-(umask 077; curl --fail -H @- -X POST \
-  'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json \
-  <<<"Authorization: Bearer $TOKEN")
+if dir=$(mktemp -d) && cd "$dir"; then
+  # --fail: an error answer is not saved as if it were the credential.
+  (umask 077; curl --fail -H @- -X POST \
+    'http://localhost:8080/api/clients?withAdminRole=true' -o platform-client.json \
+    <<<"Authorization: Bearer $TOKEN")
+fi
 # Move client_id and client_secret into a secret store kept like
 # CYODA_JWT_SIGNING_KEY (the secret is shown only once), then delete the file.
 # Consider setting CYODA_IAM_M2M_ADMIN_ROLE_ENABLED back to false: it applies

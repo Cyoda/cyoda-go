@@ -9,7 +9,8 @@ cyoda-go **defines** the contract; Cyoda Cloud aligns to it.
   `invalidateJwtKeyPair`, `reactivateJwtKeyPair`, `deleteJwtKeyPair`) and OIDC
   reload (`reloadOidcProviders`) require `ROLE_ADMIN` in the tenant (legal
   entity) `PLATFORM`. An admin of any other tenant gets `403 FORBIDDEN`, with
-  the detail "platform operator required". No token gets `401`.
+  the detail "platform operator required". A request without a token gets
+  `401`.
 - **`/admin/log-level` and `/admin/trace-sampler` are cyoda-go only.** They
   are runtime controls for a single cyoda-go node's process (log level,
   trace sampler); Cloud has no such endpoints and needs none. They are not

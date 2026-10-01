@@ -105,7 +105,7 @@ All are optional query parameters.
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?status=WAITING"
 ```
 
@@ -113,19 +113,19 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?entityId=$ENTITY_ID"
 ```
 
 **Filter to one model version and page through the results:**
 
 ```
-NEXT=$(curl -s -H "Authorization: Bearer $TOKEN" \
+NEXT=$(curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?modelName=order&modelVersion=1&limit=10" \
   | jq -r '.pagination.nextCursor')
 
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?modelName=order&modelVersion=1&limit=10&cursor=$NEXT"
 ```
 

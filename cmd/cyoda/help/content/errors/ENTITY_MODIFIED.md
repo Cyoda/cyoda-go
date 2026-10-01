@@ -39,7 +39,7 @@ Not retryable in the protocol sense — replaying the same payload with the same
 
    ```
    curl -X PUT \
-     -H "Authorization: Bearer $TOKEN" \
+     -H @- <<<"Authorization: Bearer $TOKEN" \
      -H "Content-Type: application/json" \
      -H "If-Match: <meta.transactionId from step 1>" \
      -d '<reconciled payload>' \

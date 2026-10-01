@@ -621,7 +621,7 @@ Per-state visit limit (default 10) and total cascade depth limit (100) are enfor
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "importMode": "MERGE",
@@ -655,7 +655,7 @@ curl -s -X POST \
 **Export workflows:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/workflow/export"
 ```
 
@@ -663,7 +663,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/74807f00-ed0d-11ee-a357-ae468cd3ed16/APPROVE"
@@ -673,7 +673,7 @@ curl -s -X PUT \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "importMode": "REPLACE",

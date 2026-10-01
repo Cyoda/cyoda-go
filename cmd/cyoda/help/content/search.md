@@ -393,7 +393,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"simple","jsonPath":"$.category","operatorType":"EQUALS","value":"physics"}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1"
@@ -403,7 +403,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"APPROVED"}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1"
@@ -413,7 +413,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "type": "group",
@@ -430,7 +430,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"group","operator":"AND","conditions":[]}' \
   "http://localhost:8080/api/search/direct/nobel-prize/1?pointInTime=2025-08-01T00:00:00Z&limit=100"
@@ -440,7 +440,7 @@ curl -s -X POST \
 
 ```
 JOB_ID=$(curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"simple","jsonPath":"$.year","operatorType":"EQUALS","value":"2024"}' \
   "http://localhost:8080/api/search/async/nobel-prize/1" | tr -d '"')
@@ -449,14 +449,14 @@ JOB_ID=$(curl -s -X POST \
 **Poll async job status:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID/status"
 ```
 
 **Retrieve async results (page 0):**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID?pageNumber=0&pageSize=500"
 ```
 
@@ -464,7 +464,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/search/async/$JOB_ID/cancel"
 ```
 

@@ -285,14 +285,14 @@ Querying a table returns one row per entity (object and JSON tables) or one row 
 **List all schemas:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "https://cloud.cyoda.com/api/sql/schema/listAll"
 ```
 
 **Get schema by name:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "https://cloud.cyoda.com/api/sql/schema/?schemaName=NOBEL_PRIZES"
 ```
 
@@ -300,14 +300,14 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "https://cloud.cyoda.com/api/sql/schema/putDefault/Nobel_PRIZES"
 ```
 
 **Preview tables for a model (by model UUID):**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "https://cloud.cyoda.com/api/sql/schema/genTables/a1b2c3d4-e5f6-11ee-b789-0242ac120002"
 ```
 
@@ -315,7 +315,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "schemaName": "NOBEL_PRIZES",
@@ -336,7 +336,7 @@ curl -s -X POST \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "https://cloud.cyoda.com/api/sql/schema/?schemaName=NOBEL_PRIZES"
 ```
 
