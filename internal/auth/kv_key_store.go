@@ -26,7 +26,9 @@ var ErrKeyPairBroken = errors.New("key pair cannot be used")
 
 // ErrKeyPairCannotVerify: the kid names a key pair of this store (the
 // bootstrap key or a stored record) that may not verify now — ahead of its
-// window, invalidated past its grace period, deleted, retired or broken.
+// window, invalidated past its grace period, retired or broken, or the
+// bootstrap key deleted. Deleting an issued key pair removes its record, so
+// its kid is unknown afterwards.
 // It always comes wrapped with ErrKeyPairNotFound.
 var ErrKeyPairCannotVerify = errors.New("key pair cannot verify now")
 

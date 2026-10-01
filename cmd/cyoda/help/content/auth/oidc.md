@@ -136,7 +136,7 @@ active provider: an invalidated one rejects the PATCH with
 
 ```bash
 curl -X POST https://cyoda.example.com/api/oauth/oidc/providers/reload \
-  -H "Authorization: Bearer ${PLATFORM_OPERATOR_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${PLATFORM_OPERATOR_TOKEN}"
 ```
 
 Forces an immediate JWKS refresh for every active provider, in every tenant, on the receiving node. In a multi-node cluster the reload is broadcast. A provider whose discovery fetch fails during the refresh keeps its previously cached keys (freshness remains subject to the standard JWKS cache TTL).
@@ -158,12 +158,11 @@ JWTs issued by the federated IdP must conform to the universal cyoda claim contr
 
 - `iss` must match per the `issuers` / discovery-document rule above.
 - `aud` must match `expectedAudiences` if set.
-- The configured `rolesClaim` (per-provider override or `CYODA_OIDC_ROLES_CLAIM`) is looked up as a literal **top-level** JWT claim name. The value at that key may be any of:
-  1. **JSON array of strings** — `["admin","warehouse"]` → used as-is.
-  2. **JSON object** — `{ "admin": {…}, "warehouse": {…} }` → roles are the **top-level keys** (`["admin","warehouse"]`); inner values are ignored. This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles` with `projectRoleAssertion=true`.
-  3. **String** — `"admin warehouse"` → split on whitespace per RFC 6749 §3.3 / RFC 8693 §4.2; a lone token `"admin"` yields one role.
-
-  Empty / absent / non-collection scalar (number, bool) → no roles, no error (the user is authenticated but unprivileged). Role names containing a comma are dropped silently (cyoda comma-joins roles for downstream serialisation; no major IdP emits commas in role names by convention).
+- The configured `rolesClaim` (per-provider override or `CYODA_OIDC_ROLES_CLAIM`) is looked up as a literal **top-level** JWT claim name. Its value is read as follows.
+- A **JSON array of strings** — `["admin","warehouse"]` → used as-is.
+- A **JSON object** — `{ "admin": {…}, "warehouse": {…} }` → roles are the **top-level keys** (`["admin","warehouse"]`); inner values are ignored. This is the shape Zitadel emits for `urn:zitadel:iam:org:project:roles` with `projectRoleAssertion=true`.
+- A **string** — `"admin warehouse"` → split on whitespace per RFC 6749 §3.3 / RFC 8693 §4.2; a lone token `"admin"` yields one role.
+- Empty / absent / non-collection scalar (number, bool) → no roles, no error (the user is authenticated but unprivileged). Role names containing a comma are dropped silently (cyoda comma-joins roles for downstream serialisation; no major IdP emits commas in role names by convention).
 
   Common per-IdP values for `rolesClaim`:
 

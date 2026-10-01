@@ -284,14 +284,25 @@ from `POST /oauth/token` while it wins signer selection for its audience
 default `validFrom`; see above).
 
 A working token whose `kid` that list does not name came from an OIDC
-provider of its tenant, whatever its `iss` (a provider can name the same
-issuer as `CYODA_JWT_ISSUER`). Revoking a cyoda-go key pair does not end it.
-Invalidate or delete the provider; a reactivation makes it verify again.
-Other nodes apply the change as *Auth cache reconciliation* describes.
-cyoda-go verifies these tokens itself, so ending the user's session at the
-IdP does not end an access token already issued. The token also stops
-working once the IdP no longer publishes the key named by its `kid` and
-each node's cache of the IdP's keys has refreshed (up to 5 minutes).
+provider, whatever its `iss` (a provider can name the same issuer as
+`CYODA_JWT_ISSUER`; it cannot take a cyoda-go key pair's `kid`, because a
+token under such a `kid` is refused whenever that key pair cannot verify).
+Revoking a cyoda-go key pair does not end it. `GET /account` with the token
+names its tenant (`userAccountInfo.legalEntity.id`); the provider endpoints
+act on the caller's own tenant, so get an admin token of that tenant (see
+step 2 under *A leaked admin token of another tenant*). Invalidate or
+delete the provider; a reactivation makes it verify again. Other nodes
+apply the change as *Auth cache reconciliation* describes. If another
+tenant registered the same IdP, the token can then resolve to that
+tenant's provider, as far as its settings allow: the
+`oidc.cross_tenant_uri_registration` log line names such tenants. Treat
+their providers of that IdP the same way, or give each one
+`expectedAudiences` the token's `aud` is not in. cyoda-go verifies these
+tokens itself, so ending the user's session at the IdP does not end an
+access token already issued. The token also stops working once the IdP no
+longer publishes the key named by its `kid` and each node's cache of the
+IdP's keys has refreshed (up to 5 minutes). None of this ends an open
+stream (see below).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -299,9 +310,10 @@ each node's cache of the IdP's keys has refreshed (up to 5 minutes).
   audience is active and inside its window (with the bootstrap key revoked,
   it may be the only one), invalidating or deleting it leaves no signer (see
   *No signer* below), so use the rotation instead.
-- If the `kid` names the bootstrap key, invalidate it with a grace period of
-  0. If `cyoda token` is still wanted, reactivate the bootstrap key once the
-  longest token lifetime in use has passed since the later of two times:
+- If the `kid` names the bootstrap key, invalidate it with a grace period
+  of zero. If `cyoda token` is still wanted, reactivate the bootstrap key
+  once the longest token lifetime in use has passed since the later of two
+  times:
   every node having applied the invalidation (see *Shared and persisted*
   below), and the last `cyoda token` run. A token signed after the
   invalidation also verifies again on reactivation. The wait is the
@@ -324,9 +336,10 @@ each node's cache of the IdP's keys has refreshed (up to 5 minutes).
   token of another tenant* under *A leaked platform admin-client secret*
   below.
 
-Revoking a key pair ends no open connection. A compute-node gRPC stream is
-authenticated only when it opens, so a stream opened with the leaked token
-(it needs `ROLE_M2M`) keeps running: restart every node to end open
+Revoking a key pair, or invalidating or deleting an OIDC provider, ends no
+open connection. A compute-node gRPC stream is authenticated only when it
+opens, so a stream opened with the leaked token (it needs `ROLE_M2M`, which
+an OIDC token can carry too) keeps running: restart every node to end open
 streams. On the memory backend a restart loses all data, an invalidation
 of the bootstrap key included: if you revoked the bootstrap key, give every
 node a new `CYODA_JWT_SIGNING_KEY` at that restart.
@@ -411,19 +424,19 @@ act on the caller's own tenant, so you need an admin token of that tenant.
   in place of `PLATFORM`. If you keep no admin client in the tenant, create
   one there the same way (the same flag and the tenant client cap apply):
   step 5 needs it, unless you use the *Alternative to step 4*.
-- Register again the providers you need from your own records, once. If
-  the leaked token came from one of them, first, at the IdP, end all of the
-  principal's sessions and revoke its refresh tokens (or disable the user),
-  and remove its admin role or reset its credentials; the token's `sub`
-  names it. Otherwise a refresh token or a live session gets a fresh token,
-  and without the admin role the principal still has every non-admin right
-  in the tenant. A provider registered again refuses tokens whose `iat` is
-  more than 30 seconds before its registration, so register it only once
-  30 seconds plus the clock offset between the IdP and the nodes have
-  passed since the sessions ended. If the leaked token has no `iat`,
-  register again only once its `exp` is more than 30 seconds past, plus
-  that clock offset; with no `exp` either, only once the IdP no longer
-  publishes the key named by its `kid`.
+- Register again the providers you need from your own records. If the
+  leaked token came from an IdP, first, at that IdP, end all of the
+  principal's sessions, revoke its refresh tokens, and reset its
+  credentials, or disable the user; the token's `sub` names it. Otherwise
+  the attacker gets a fresh token. Removing only the admin role is not
+  enough: the principal keeps every non-admin right in the tenant. A
+  provider registered again refuses tokens whose `iat` is more than 30
+  seconds before its registration, so register each provider of that IdP
+  only once 30 seconds plus the clock offset between the IdP and the nodes
+  have passed since the last of these changes at the IdP. If the IdP's
+  tokens carry no `iat`, wait instead for its longest access-token lifetime
+  plus that time; if they carry no `exp` either, wait until the IdP no
+  longer publishes any key it published before those changes.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
   after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
   provider list shows only the providers you registered again. Read the
@@ -579,9 +592,9 @@ provider update, invalidation, reactivation or deletion that changes the
 provider; the checks above show their result. No INFO line is written
 while a node's level is above `info`, configured or set. A level that
 matches proves nothing on its own: the `log level changed` line is
-written after the new level applies, so
-setting `warn` or `error` writes no line. Setting the level back writes one
-whose `previous` is `warn` or `error`, and that line ends such a period.
+written after the new level applies, so setting `warn` or `error` writes
+no line. Setting the level back writes one whose `previous` is `warn` or
+`error`, and that line ends such a period.
 
 Someone still reaches the API if a node's level differed from the level it
 starts with before the restart in step 5, or if a line was written
@@ -700,15 +713,14 @@ why:
 - At this node's bootstrap key id, the record takes the place of the
   bootstrap key's state, so whatever that state was, a token from
   `cyoda token` does not verify on this node (the bootstrap key is unusable)
-  and `/oauth/token` cannot sign. Two routes remain. Both permanently delete
-  the old bootstrap key (see *Deleting the bootstrap key is permanent*);
-  prefer route 1 when the token it needs exists.
-  1. An earlier token, used to `DELETE` the record. Issued key pairs are
-     unaffected.
-  2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
-     node, get a token from `cyoda token --tenant PLATFORM`, then `DELETE`
-     the old key id with it. This also retires every issued key pair the old
-     key sealed.
+  and `/oauth/token` cannot sign. Two routes remain, and both permanently
+  delete the old bootstrap key (see *Deleting the bootstrap key is
+  permanent*). Prefer the first when the token it needs exists: `DELETE`
+  the record with an earlier token, which leaves issued key pairs
+  unaffected. The second needs no earlier token: set a new
+  `CYODA_JWT_SIGNING_KEY` on every node, get a token from
+  `cyoda token --tenant PLATFORM`, then `DELETE` the old key id with it.
+  This also retires every issued key pair the old key sealed.
 
 **An issued record is stored at this node's bootstrap key id.** Two keys can
 never share one KID, so the record is refused as undecodable.
@@ -720,20 +732,20 @@ never share one KID, so the record is refused as undecodable.
   token it produces does not verify here, for the same reason above.
   `/oauth/token` cannot sign at all while the record is there, so an admin
   M2M client in `PLATFORM` cannot get a fresh token either. Two routes
-  remain; prefer route 1 when the token it needs exists.
-  1. An earlier token — for example one an admin M2M client in `PLATFORM`
-     obtained while an issued key pair signed its tokens — used to `DELETE`
-     the record. The
-     `DELETE` writes a deleted bootstrap-state record at the id, which ends
-     the old bootstrap key for good. Issued key pairs are unaffected.
-  2. No earlier token needed: set a new `CYODA_JWT_SIGNING_KEY` on every
-     node. This changes the bootstrap key id, so the record then decodes
-     normally, as retired (its owner no longer matches). Nothing is written
-     at the old id: the record stays there, `DELETE` answers `404` for it,
-     and restoring the old key brings the incident back. This also retires
-     every other issued key pair the old key sealed. If the record's vault
-     kind is unrecognised, it is broken instead of retired: see *The
-     selected key pair is broken*.
+  remain; prefer the first when the token it needs exists.
+- The first route: `DELETE` the record with an earlier token, for example
+  one an admin M2M client in `PLATFORM` obtained while an issued key pair
+  signed its tokens. The `DELETE` writes a deleted bootstrap-state record
+  at the id, which ends the old bootstrap key for good. Issued key pairs
+  are unaffected.
+- The second route needs no earlier token: set a new
+  `CYODA_JWT_SIGNING_KEY` on every node. This changes the bootstrap key id,
+  so the record then decodes normally, as retired (its owner no longer
+  matches). Nothing is written at the old id: the record stays there,
+  `DELETE` answers `404` for it, and restoring the old key brings the
+  incident back. This also retires every other issued key pair the old key
+  sealed. If the record's vault kind is unrecognised, it is broken instead
+  of retired: see *The selected key pair is broken*.
 
 **No signer.** No key pair of the audience is active and inside its window.
 While the bootstrap key is active it signs whenever no issued key pair does,
