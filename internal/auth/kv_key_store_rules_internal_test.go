@@ -366,11 +366,6 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 			if !tc.wantOK && !errors.Is(err, ErrKeyPairNotFound) {
 				t.Fatalf("err = %v, want ErrKeyPairNotFound", err)
 			}
-			// A refusal for a kid the store holds a record for marks it
-			// ours, so the validator does not hand the token to OIDC.
-			if wantKnown := !tc.wantOK && tc.other != "absent" && tc.other != "ignored"; errors.Is(err, ErrKeyPairCannotVerify) != wantKnown {
-				t.Fatalf("err = %v, ErrKeyPairCannotVerify = %v, want %v", err, !wantKnown, wantKnown)
-			}
 		})
 	}
 }

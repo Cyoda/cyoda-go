@@ -56,40 +56,6 @@ type BackendFixture interface {
 	PlatformOperator(t *testing.T) Tenant
 }
 
-// NonAdminTenantFixture is an OPTIONAL capability interface that
-// BackendFixture implementations may satisfy to support minting
-// non-admin JWTs for authorization-negative parity scenarios.
-//
-// Scenarios that test 403 FORBIDDEN responses on admin-only endpoints
-// call NewNonAdminTenant to get a token that authenticates but does not
-// carry ROLE_ADMIN. Backends that cannot mint arbitrary JWTs (e.g. an
-// out-of-tree backend that delegates auth to an external IdP) may leave
-// this interface unimplemented — authz-negative scenarios that depend on it
-// skip automatically via t.Skip.
-//
-// All in-tree backends (memory, sqlite, postgres) implement this
-// interface because they mint JWTs from a locally held RSA keypair.
-type NonAdminTenantFixture interface {
-	// NewNonAdminTenant mints a fresh tenant JWT that carries no
-	// ROLE_ADMIN scope. The tenant ID is unique per call (same
-	// isolation contract as NewTenant). Implementations MUST call
-	// t.Helper() and t.Fatal on provisioning failure.
-	NewNonAdminTenant(t *testing.T) Tenant
-}
-
-// NonAdminTenantOrSkip resolves the fixture's non-admin tenant
-// capability. If the fixture does not implement NonAdminTenantFixture,
-// the test is skipped. Otherwise it returns the non-admin tenant.
-// Call this at the top of every authz-negative scenario.
-func NonAdminTenantOrSkip(t *testing.T, fixture BackendFixture) Tenant {
-	t.Helper()
-	na, ok := fixture.(NonAdminTenantFixture)
-	if !ok {
-		t.Skip("fixture does not support non-admin JWT minting; skipping authz-negative test")
-	}
-	return na.NewNonAdminTenant(t)
-}
-
 // Tenant identifies a fresh tenant scope for a single test, plus the JWT
 // the test uses to authenticate API calls within that scope.
 type Tenant struct {

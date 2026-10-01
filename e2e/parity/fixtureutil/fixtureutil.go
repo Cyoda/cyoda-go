@@ -135,40 +135,6 @@ func GenerateJWTKeySet() (*JWTKeySet, error) {
 	}, nil
 }
 
-// MintNonAdminTenantJWT creates a fresh tenant JWT with no ROLE_ADMIN scope.
-// Use this to test endpoints that require ROLE_ADMIN — the request should
-// be rejected with 403 FORBIDDEN. The returned tenant has the same shape as
-// MintTenantJWT but carries only ROLE_M2M so that the request authenticates
-// successfully while failing the admin authorization gate.
-func MintNonAdminTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
-	t.Helper()
-
-	tenantID := uuid.NewString()
-	now := time.Now()
-
-	claims := map[string]any{
-		"sub":          "test-nonadmin-" + tenantID[:8],
-		"iss":          ks.Issuer,
-		"caas_user_id": "test-nonadmin-" + tenantID[:8],
-		"caas_org_id":  tenantID,
-		"scopes":       []string{"ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(1 * time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}
-
-	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
-	if err != nil {
-		t.Fatalf("failed to mint non-admin tenant JWT: %v", err)
-	}
-
-	return parity.Tenant{
-		ID:    tenantID,
-		Token: token,
-	}
-}
-
 // MintTenantJWT creates a fresh tenant JWT for use in parity tests.
 func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()

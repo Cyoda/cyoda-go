@@ -89,9 +89,10 @@ type App struct {
 	// recovery middleware, the gRPC recovery interceptors, the async-search
 	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
 	// watchdog and runs). Notification-callback recoveries (member-registry
-	// onChange, auth key-store reconcile broadcast) deliberately do not. Nothing resets it: a node
-	// that has panicked has state nothing has verified. Read by
-	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
+	// onChange, auth key-store reconcile broadcast) deliberately do not.
+	// Nothing resets it: a node that has panicked has state nothing has
+	// verified. Read by RegisterHealthRoutes (GET /health) and by
+	// ReadinessCheck (/readyz).
 	healthFlag *atomic.Bool
 }
 

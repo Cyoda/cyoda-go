@@ -17,20 +17,6 @@ func encodeSeg(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func buildTestJWT(t *testing.T, kid, alg string, claims map[string]any) string {
-	t.Helper()
-	header := map[string]any{"kid": kid, "alg": alg, "typ": "JWT"}
-	hb, err := json.Marshal(header)
-	if err != nil {
-		t.Fatalf("buildTestJWT: marshal header: %v", err)
-	}
-	cb, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatalf("buildTestJWT: marshal claims: %v", err)
-	}
-	return encodeSeg(hb) + "." + encodeSeg(cb) + ".c2ln"
-}
-
 // nowOffset returns a Unix timestamp offset by sec seconds from now.
 func nowOffset(sec int) int64 {
 	return time.Now().Add(time.Duration(sec) * time.Second).Unix()
@@ -88,19 +74,6 @@ func signTokenWithKey(t *testing.T, kid string, priv *rsa.PrivateKey, iss, sub, 
 		t.Fatalf("signTokenWithKey: %v", err)
 	}
 	return tok
-}
-
-// signTokenWithEphemeralKey generates a fresh RSA key pair (not registered in
-// any validator), signs a token with the given kid, and returns the token.
-// Used to exercise the unknown-kid path: the kid is present in the header
-// but the validator's source has no entry for it.
-func signTokenWithEphemeralKey(t *testing.T, kid, iss, sub, orgID string, expOffsetSec int) string {
-	t.Helper()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("signTokenWithEphemeralKey: generate key: %v", err)
-	}
-	return signTokenWithKey(t, kid, priv, iss, sub, orgID, expOffsetSec)
 }
 
 // signTokenNoKID produces a valid RS256 JWT whose header omits the kid field.

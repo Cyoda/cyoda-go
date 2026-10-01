@@ -91,8 +91,7 @@ type KeyStore interface {
 	// Current is the key pair Signer would choose, without the signer.
 	Current(audience string) (*KeyPair, error)
 	// VerificationKey returns the public key of kid if it may verify now.
-	// Every refusal wraps ErrKeyPairNotFound; one for a kid that names a key
-	// pair of this store also wraps ErrKeyPairCannotVerify.
+	// Every refusal wraps ErrKeyPairNotFound.
 	VerificationKey(kid string) (*rsa.PublicKey, error)
 	// Published returns the key pairs to publish in JWKS.
 	Published() ([]*KeyPair, error)

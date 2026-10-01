@@ -24,15 +24,6 @@ var ErrKeyPairNotFound = errors.New("key pair not found")
 // ErrKeyPairBroken: the key pair the rules select cannot be used → 500.
 var ErrKeyPairBroken = errors.New("key pair cannot be used")
 
-// ErrKeyPairCannotVerify: the kid names a key pair this node knows — the
-// bootstrap key, or any record at a key id: owned, retired, broken,
-// undecodable, or another bootstrap key's state — that may not verify now,
-// or the copy is stale. Deleting an issued key pair removes its record, and
-// a node that has not yet applied a new key pair does not hold it, so
-// neither kid is known.
-// It always comes wrapped with ErrKeyPairNotFound.
-var ErrKeyPairCannotVerify = errors.New("key pair cannot verify now")
-
 type storeStaleError struct{}
 
 func (storeStaleError) Error() string {
@@ -212,43 +203,34 @@ func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
 // VerificationKey returns the public key a token's KID names, if that key
 // pair may verify on this node now: owned or the signing key from
 // configuration, not deleted, and Verifies(now) — an invalidated key pair
-// verifies until the end of its grace period. A kid this store knows that
-// may not verify now also answers ErrKeyPairCannotVerify; while the copy is
-// stale nothing verifies, and a kid it holds is still known. Every refusal
-// wraps ErrKeyPairNotFound. There is no store read on this path.
+// verifies until the end of its grace period. While the copy is stale
+// nothing verifies. Every refusal wraps ErrKeyPairNotFound — a kid this
+// store knows but that cannot currently verify and a kid it has never heard
+// of fail the same way. There is no store read on this path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	stale := s.rep.Stale()
 	now := time.Now()
-	var (
-		pub   *rsa.PublicKey
-		known bool
-	)
+	var pub *rsa.PublicKey
 	s.rep.read(func(recs map[string]*signingEntry) {
 		if kid == s.boot.kid {
-			known = true
 			if bv := s.bootstrapView(recs); bv.usable && bv.pair.Verifies(now) {
 				pub = bv.pair.PublicKey
 			}
 			return
 		}
 		e, ok := recs[kid]
-		known = ok && e.class != classIgnored
 		if ok && e.class == classOwned && e.pair.Verifies(now) {
 			pub = e.pair.PublicKey
 		}
 	})
+	if pub != nil && !stale {
+		return pub, nil
+	}
 	var why string
 	if stale {
 		why = " (store stale)"
 	}
-	switch {
-	case pub != nil && !stale:
-		return pub, nil
-	case known:
-		return nil, fmt.Errorf("%w: %w: %q%s", ErrKeyPairCannotVerify, ErrKeyPairNotFound, kid, why)
-	default:
-		return nil, fmt.Errorf("%w: %q%s", ErrKeyPairNotFound, kid, why)
-	}
+	return nil, fmt.Errorf("%w: %q%s", ErrKeyPairNotFound, kid, why)
 }
 
 // publishable reports whether a key pair belongs in JWKS: its window has not

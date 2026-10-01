@@ -1822,8 +1822,8 @@ func (c *Client) QueryGroupedStats(t *testing.T, modelName string, modelVersion 
 // and returns (status, body, transport-error) without raising on non-2xx.
 // This is the general-purpose negative-path companion to doJSON, following
 // the *Raw naming convention established by the rest of the parity client.
-// OIDC helpers (and any future domain client) call this instead of duplicating
-// the pattern. The body argument may be nil for methods that send no payload.
+// Domain clients call this instead of duplicating the pattern. The body
+// argument may be nil for methods that send no payload.
 func (c *Client) DoJSONBodyRaw(t *testing.T, method, path string, body any) (int, []byte, error) {
 	t.Helper()
 
