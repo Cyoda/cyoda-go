@@ -105,20 +105,23 @@ for completeness):
 - `internal/cluster/dispatch/nonce_cache.go` — Mutex; AEAD replay-window enforcement.
 - `internal/domain/search/path_validation_cache.go` — RWMutex on validation results.
 - `internal/grpc/members.go` — multiple mutexes governing gRPC member streams.
-- `internal/auth/replica.go:78-83` — signing-key store: `mu` (RWMutex) on the node copy, brief; `adminMu`, held across an admin write's KV reads and writes; `reconcileMu`, held across a re-read's KV `List`.
-- `internal/auth/oidc/registry.go:86,112,122` — `mu` (RWMutex) on the provider maps, brief; `reloadWarmMu`, held across a reload and the JWKS fetches that follow it; `reconcileMu`, held across a reload's KV read.
-- `internal/auth/kv_m2m_store.go:52` — `createLocks`: 64 striped mutexes, chosen by a hash of the tenant id, that serialise M2M client creates of one tenant on one node. One is held across a KV `List` (only when a cap is configured), a `Get` and up to two `Put`s, and, when a write fails, through the undo's `Delete`s for up to `undoTimeout` (30 s). A create that waits on a slow store therefore delays the creates of every tenant on the same stripe, on that node. The store removes any transaction from its context before it calls the KV store.
+- `internal/auth/replica.go:89-94` — signing-key store: `mu` (RWMutex) on the node copy, brief; `adminMu`, held across an admin write's KV reads and writes; `reconcileMu`, held across a re-read's KV `List`.
+- `internal/auth/kv_m2m_store.go:57` — `createLocks`: 64 striped mutexes, chosen by a hash of the tenant id, that serialise M2M client creates of one tenant on one node. One is held across a KV `List` (only when a cap is configured), a `Get` and up to two `Put`s, and, when a write fails, through the undo's `Delete`s for up to `undoTimeout` (30 s). A create that waits on a slow store therefore delays the creates of every tenant on the same stripe, on that node. The store removes any transaction from its context before it calls the KV store.
 - `internal/auth/kv_trusted_store.go` — `locks`: 64 striped mutexes (the same tenant hash), that serialise the changes to one tenant's trusted keys on one node: register, invalidate, reactivate and delete. One is held across that change's KV reads (a `List` of the tenant's namespace for the cap and the rotation, a `Get`) and its `Put`s or `Delete`. Reads (`Get`, `List`, `GetForVerification`) take no lock. The store removes any transaction from its context before it calls the KV store.
+- `internal/auth/secret_check.go:69` — `sem`, a `semaphore.Weighted` of `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots (default `GOMAXPROCS`) that bounds the bcrypt operations running at once on one node: each secret comparison of `POST /oauth/token`, and each hash of a new secret on `POST /clients` and the secret reset. A slot is held for one bcrypt operation, with no KV call inside it; a caller waits at most 1 s for one and is then refused (`ErrSecretCheckBusy`, answered `503`). The M2M client store takes a slot after it has read the client record, so a slot is never held across a KV call.
+- `internal/auth/secret_check.go:105` — `mu` (Mutex) on the verified-secret cache (client id → stored hash and SHA-256 of the secret that matched it, at most 65536 entries); held for one map lookup, insert or delete, brief.
+- `internal/auth/client_bucket.go:19` — `mu` (Mutex) on the per-client token buckets of `POST /oauth/token`; held for one bucket's reservation and, at most once a minute, a sweep of the full buckets, brief.
 
 These locks are local to their owning component and do not interact
 with the tx-state lock order. Except for the `internal/auth` locks held
-across KV calls or network fetches, listed above, each has a brief,
+across KV calls and the secret-check slots, listed above, each has a brief,
 bounded critical section.
 
 Test infrastructure (`internal/testing/...`, `internal/e2e/...`,
 `internal/common/diagnostics.go`) and the remaining small mutexes in
-`internal/auth/` (JWKS, validator and signer caches, log throttling, gossip-ping
-coalescing, OIDC single-flight) are excluded from the inventory — they
+`internal/auth/` (the validator's audience setting, the signer cache, log
+throttling, gossip-ping coalescing, the replica's loop handle) are excluded
+from the inventory — they
 guard in-memory state only and do not interact with the tx-state surface.
 
 ## 4. The SPI tx-state locking contract

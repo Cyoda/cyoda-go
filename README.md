@@ -107,6 +107,7 @@ The `/api/account` response confirms the token's tenant and roles. With that tok
 
 | Env var | Default | Effect |
 |---------|---------|--------|
+| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Lifetime of every token cyoda-go issues, in seconds, and the upper bound of `cyoda token --ttl`. Must be an integer from 1 to 3600; any other value refuses to start. A token exchange's token also ends no later than its assertion's `exp`. |
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
@@ -119,46 +120,40 @@ every mock-mode caller a client, as in `jwt` mode; `user` or `system` lets
 local/CI setups exercise user- or system-attributed code paths without real
 JWT auth.
 
-### Federated OIDC providers
+### Access
 
-cyoda-go can accept JWTs issued by external OIDC providers — Auth0, Cognito, Keycloak, or any spec-compliant issuer — alongside its own first-party tokens. Each tenant registers its own providers; tokens are validated against the provider's JWKS endpoint.
+Only M2M clients connect to cyoda-go; users never call it directly. An
+application signs its own users in, decides what each user may do, and calls
+cyoda-go for them. cyoda-go has no per-user permissions: it records what the
+client states about the user and does not verify the user. Like any database,
+it cannot protect data from an application that is itself compromised.
 
-**Validation order:** cyoda-go tries the built-in JWKSValidator first (cyoda's own signing keys), then the OIDCValidator. A token whose `kid` the first does not know goes to the second; any other failure is final. Trusted keys registered via `/oauth/keys/trusted/*` are not in this chain: they verify only the subject token of a token exchange.
+- **M2M clients** (`POST /clients`) belong to one tenant and get tokens with
+  `client_credentials`. A plain client holds `ROLE_M2M`, which every data
+  operation requires; an admin client also holds `ROLE_ADMIN`. A service or a
+  compute node uses a client of its own, and its changes are recorded as the
+  client's.
+- **On-behalf-of clients** (`POST /clients?onBehalfOf=true`) act for the
+  application's users. They use only the token exchange (RFC 8693): the
+  client presents a short user assertion the application signed, and gets a
+  token for that user carrying the client's roles. Every change made with it
+  is recorded for the user, with the client as its executor, and both reach
+  compute nodes in each callout. An on-behalf-of client never holds
+  `ROLE_ADMIN` and never exists in the `PLATFORM` tenant.
+- **Trusted keys** (`/oauth/keys/trusted*`) are the public keys a tenant admin
+  registers for the application's user assertions. A trusted key verifies
+  only an assertion presented to the token exchange, in its own tenant; it is
+  never accepted as a bearer token.
 
-**Management endpoints** (JWT mode, `CYODA_IAM_MODE=jwt`):
-
-| Method | Path | Auth |
-|--------|------|------|
-| `POST` | `/oauth/oidc/providers` | `ROLE_ADMIN` |
-| `GET` | `/oauth/oidc/providers` | any authenticated tenant member |
-| `PATCH` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/{id}/invalidate` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/{id}/reactivate` | `ROLE_ADMIN` |
-| `DELETE` | `/oauth/oidc/providers/{id}` | `ROLE_ADMIN` |
-| `POST` | `/oauth/oidc/providers/reload` | platform operator |
-
-The `reload` endpoint flushes the in-memory JWKS cache and re-fetches keys from every active provider in every tenant — useful after a key rotation at an IdP. It needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. A tenant refreshes only its own provider's keys with a `PATCH .../{id}` whose body is `{}`, and only while the provider is active.
-
-**Register a provider:**
-
-```bash
-curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
-  -H @- <<<"Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "wellKnownConfigUri": "https://example.auth0.com/.well-known/openid-configuration",
-    "expectedAudiences": ["https://api.example.com"],
-    "rolesClaim": "https://example.com/roles"
-  }'
-```
-
-**Configuration:** see `cyoda help config auth` (the "Federated OIDC providers" section) for the six `CYODA_OIDC_*` env vars that control HTTPS enforcement, SSRF blocking, default roles claim, and HTTP timeouts for discovery and JWKS fetches.
+The platform operator's first admin token comes from `cyoda token` (see
+*First real call*). [`docs/access-to-the-cyoda-api.html`](docs/access-to-the-cyoda-api.html)
+walks through each scenario; `cyoda help auth` is the reference.
 
 ### Auth cache reconciliation
 
 The signing-key cache pushes updates to peers on write and falls back to a
-periodic KV-reconcile if a broadcast is missed. Trusted keys and M2M clients
-have no cache: every call reads the store.
+periodic KV-reconcile if a broadcast is missed. No node keeps a copy of a
+trusted key or an M2M client: every call reads the store.
 
 | Env var | Default | Effect |
 |---------|---------|--------|

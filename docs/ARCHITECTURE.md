@@ -1,7 +1,7 @@
 # Cyoda-Go Architecture
 
-**Version:** 2.2
-**Date:** 2026-08-05
+**Version:** 2.3
+**Date:** 2026-10-02
 
 Technical architecture reference for Cyoda-Go, a Go implementation of the Cyoda platform with a pluggable storage layer. This document targets system architects familiar with distributed systems concepts (CAP theorem, Snapshot Isolation, SWIM gossip protocols, first-committer-wins validation).
 
@@ -20,7 +20,7 @@ For product-level context, see the [PRD](PRD.md).
 7. [Authentication & Authorization](#7-authentication--authorization)
    - 7.1 [Mock Mode](#71-mock-mode-default)
    - 7.2 [JWT Mode](#72-jwt-mode)
-   - 7.3 [OIDC Provider Registry](#73-oidc-provider-registry)
+   - 7.3 [Principals and Attribution](#73-principals-and-attribution)
    - 7.4 [Authorization](#74-authorization)
    - 7.5 [Admin listener authentication](#75-admin-listener-authentication)
    - 7.6 [Platform operator](#76-platform-operator)
@@ -85,7 +85,8 @@ internal/
                           operates on the predicate.Condition AST)
   logging/                slog wrappers
   observability/          OpenTelemetry SDK init, tracing decorators
-  auth/                   JWT (RS256, JWKS, M2M, OBO), key management; auth/oidc/ provider registry
+  auth/                   JWT (RS256, JWKS), M2M clients, OBO token exchange, trusted keys,
+                          signing-key management, admin and operator guards
   iam/mock/               Mock authentication for development
   httpmw/                 Transaction-join middleware
   txgate/                 Per-transaction lock; held by every joined request for
@@ -228,9 +229,9 @@ Plugin authors never implement these — they are internal to the cyoda-go appli
 
 Multi-tenancy is intrinsic. Every request context carries a resolved `UserContext` with `TenantID`. All stores, across all plugins, partition by tenant.
 
-A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only place a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method. `cyoda token --tenant` applies the same check before it signs, and the claim is checked again when the token is used. Everything downstream — peer dispatch bodies, gossip envelopes, scheduled-task and search-job rows, OIDC provider records — carries a value already admitted at that door and does not re-check it. The M2M client store is the exception: a stored tenant id names the KV namespace of a client's record, so its decoder (`internal/auth/kv_m2m_codec.go`) checks the tenant id of every record and index entry again and treats one that fails as undecodable. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
+A tenant identifier matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` — 1 to 100 bytes, the first an ASCII letter or digit, case preserved and significant. `common.ValidateTenantID` is the one definition, and it is applied at the only place a tenant identifier enters the binary from outside it: the `caas_org_id` claim on an inbound JWT (§7.2), which covers every authenticated HTTP request and every authenticated gRPC method. `cyoda token --tenant` applies the same check before it signs, and the claim is checked again when the token is used. Everything downstream — peer dispatch bodies, gossip envelopes, scheduled-task and search-job rows — carries a value already admitted at that door and does not re-check it. The M2M client store is the exception: a stored tenant id names the KV namespace of a client's record, so its decoder (`internal/auth/kv_m2m_codec.go`) checks the tenant id of every record and index entry again and treats one that fails as undecodable. The rule is a Cloud-facing contract: see `docs/cloud-parity/tenant-id-grammar.md`.
 
-A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the first-party `caas_user_id` claim (or `sub` when `caas_user_id` is absent), the OIDC `sub`, and the token-exchange subject `sub`; `cyoda token --user` applies the same check before it signs. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. The OIDC path builds its user ids as `oidc:<providerId>:<sub>`, so `oidc:` is a reserved word: `common.ValidateFirstPartyUserID` rejects it, in any case, at every other door. See `docs/cloud-parity/user-id-rule.md`.
+A user identifier is valid UTF-8, 1 to 255 characters, with no control character (U+0000–U+001F, U+007F–U+009F), no noncharacter and no U+FFFD, and is not `system` in any letter case; nothing is normalised. `common.ValidateUserID` is the one definition, applied at every place a principal's user id enters from outside: the `caas_user_id` claim (or `sub` when `caas_user_id` is absent) of an inbound token, and the `sub` of a user assertion presented to the token exchange; `cyoda token --user` applies the same check before it signs, and the M2M client decoder checks a stored client's user id again. The excluded characters are those the CloudEvents spec forbids in a string attribute, since the user id is sent to compute nodes as `authid`, plus U+FFFD, so that invalid input cannot alias a real id. `system` (`common.ReservedSystemUserID`) is the platform principal's own id — the executor of every scheduled firing — and is reserved so that no caller can be recorded as it. See `docs/cloud-parity/user-id-rule.md`.
 
 ---
 
@@ -384,7 +385,7 @@ contract.
 
 **Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's goroutines — the claim loop, each run, the heartbeat and the watchdog. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for the scheduler's claim loop, heartbeat and watchdog — which also cancel every scheduled run in progress — and a task ended FAILED with `RUN_PANICKED` for a scheduled run, which has no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. A scheduled run is engine work like any request, so its panic latches the node too, and its task is not given back: running it again on another node would spread the problem. It ends FAILED `RUN_PANICKED`; if that record has not landed when the process exits, or the panic was in recording the run's outcome, which records nothing, the task stays `RUNNING` under this owner, another node reclaims it after `CYODA_SCHEDULER_STALE_AFTER` as a lost owner, and `CYODA_SCHEDULER_MAX_LOST_OWNERS` bounds any repeat (§4.8).
 
-Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the OIDC broadcast handler with its dispatch goroutines (`internal/auth/oidc/broadcast.go`, which counts panics on its own metric); and each per-member gRPC stream's three per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`) and the keep-alive loop (`keepAliveLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing or liveness bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out and broadcast handler on the next event, the three per-member goroutines by the client reconnecting as a fresh member.
+Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the signing-key copy's gossip-ping handler and its re-read (`handlePing` and `reconcileOnce` in `internal/auth/replica.go`, and the run loop in `internal/auth/coalesce.go`); and each per-member gRPC stream's four per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`), the keep-alive loop (`keepAliveLoop`) and the client re-check loop (`clientRecheckLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing, liveness or credential bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out on the next event, the signing-key copy on the next ping or reconcile tick, the four per-member goroutines by the client reconnecting as a fresh member.
 
 Nothing resets the flag: it latches on the first panic recovered in engine or store work, and `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` once latched — while the admin listener's `/readyz` (§7.5) reads the same flag and reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the flag. `/health` and `/readyz` read the same flag but serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
 
@@ -1008,14 +1009,14 @@ POST /internal/dispatch/callout
   character. A processor that changes nothing answers with the entity it was
   given and the owner persists that answer, so a rewrite on either leg would
   rewrite a tenant's stored data
-- Reconstruct `UserContext` from request fields (tenantID, userID, roles, principal kind)
+- Run the callout under a `UserContext` of the executor the request names (its id, kind and roles, in the request's tenant), and attach the callout's attributed and executor principals as received, never recomputing them (§7.3)
 - A request carries two tenants — its own `TenantID`, which the reconstructed `UserContext` runs as, and `EntityMeta.TenantID`, which is handed to the local dispatcher as the entity's own. They must agree, or the callout would run as one tenant over another's entity; a mismatch is answered, under seal, as a `terminal` refusal with no try made — as is any authenticated request that cannot be run. The equality is unconditional and covers an absent `EntityMeta.TenantID`: every callout kind is built from a live stored entity whose `Meta.TenantID` is always set, so an empty one can only come from a hand-crafted peer body. The response names neither value — both are peer-supplied.
 - Runs the local procedure (`RunLocal`) with the tries the owner allows, and never hands the callout on
 - A request that does not authenticate is a bare `403`, and so is a replayed one; a request that authenticates but meets a full replay cache is answered, under seal, `no_handoff` with no try used, so that a saturated cache does not fail a callout that is not repeat-safe. Such a refusal records no nonce, so the node raises a "refuse at or before" watermark to the refused request's timestamp and answers every later request at or before it, whose nonce it does not hold, the same way — without it, the refused envelope is accepted as soon as the cache has room
 
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
 request carries the entity payload and meta, the workflow/transition names,
-the callout's txID, the caller's tenant/user/roles/principal, a request id the
+the callout's txID, the tenant, the callout's attributed and executor principals and the executor's roles (all four principal fields required), a request id the
 owner mints and uses for every try, how many tries and how long an answer may
 take, the owner's node id and the fencing number the peer's tries are numbered
 under, the enclosing callouts (empty unless the callout was made from inside a
@@ -1836,17 +1837,19 @@ are one-way request events; replies are carried on the generic
 
 ## 7. Authentication & Authorization
 
-Two modes, selected via `CYODA_IAM_MODE`:
+Only M2M clients reach cyoda-go. An application authenticates its own users and decides what each may do; cyoda-go has no per-user permissions. A client that acts for a user exchanges a user assertion the application signed for an on-behalf-of (OBO) token: cyoda-go applies the client's roles and records the user, without verifying the user. The one other token source is the platform operator's offline `cyoda token`, signed with `CYODA_JWT_SIGNING_KEY`. The decision record is [docs/adr/0004-m2m-only-access-with-on-behalf-of-identity.md](adr/0004-m2m-only-access-with-on-behalf-of-identity.md).
+
+Two modes, selected via `CYODA_IAM_MODE` (`mock` or `jwt`; any other value refuses to start):
 
 ### 7.1 Mock Mode (default)
 
-`mockiam.NewAuthenticationService(defaultUser)` -- returns a fixed `UserContext` for every request. Used for development and testing.
+`mockiam.NewAuthenticationService(defaultUser)` returns a fixed `UserContext` for every request. Used for development and testing.
 
-Default mock user: `mock-user-001`, kind `service` (override via `CYODA_IAM_MOCK_KIND`), tenant `mock-tenant`, roles `[ROLE_ADMIN, ROLE_M2M]` (override via `CYODA_IAM_MOCK_ROLES`). The context carries a client-token marker. The defaults grant admin HTTP access and gRPC streaming. Mock mode has no client store, so an open stream is not re-checked.
+Default mock user: `mock-user-001`, kind `service` (override via `CYODA_IAM_MOCK_KIND`), tenant `mock-tenant`, roles `[ROLE_ADMIN, ROLE_M2M]` (override via `CYODA_IAM_MOCK_ROLES`). The context carries a client-token marker (§7.3) for that principal. The defaults grant admin HTTP access and gRPC streaming. Mock mode has no client store, so an open stream is not re-checked, and `POST /clients` answers `501 NOT_IMPLEMENTED`.
 
 ### 7.2 JWT Mode
 
-Full RS256 JWT authentication with JWKS discovery and M2M client support.
+RS256 JWT authentication. cyoda-go signs every token it accepts with its own key pairs and publishes their public halves at `/.well-known/jwks.json`; verification is an in-process lookup with no network call.
 
 **Components:**
 
@@ -1854,12 +1857,12 @@ Full RS256 JWT authentication with JWKS discovery and M2M client support.
 |-----------|---------|
 | `AuthService` | Wires all auth components, exposes HTTP handlers |
 | `KVKeyStore` | Signing key pairs and the bootstrap key's revocation state: KV-backed, shared by the cluster (see below) |
-| `KVTrustedKeyStore` | Trusted external public keys: KV-backed, one namespace per tenant, shared by the cluster, no node copy; a per-tenant cap |
+| `KVTrustedKeyStore` | Trusted public keys for user assertions: KV-backed, one namespace per tenant, shared by the cluster, no node copy; a per-tenant cap |
 | `KVM2MClientStore` | Machine-to-machine client credentials: KV-backed, shared by the cluster, no node copy; a per-tenant cap |
 | `JWKSHandler` | `GET /.well-known/jwks.json` -- standard JWKS endpoint |
-| `NewTokenHandler` | `POST /oauth/token` -- issues JWTs (client_credentials, OBO exchange) |
-| `JWKSValidator` | Validates JWTs against a `KeySource`: `NewLocalKeySource` in-process by default (no HTTP fetch), or `NewHTTPJWKSSource` (TLS 1.3 pinned, JSON content-type validated) for external-IdP wiring |
-| `DelegatingAuthenticator` | Implements `contract.AuthenticationService`, delegates to validator |
+| `NewTokenHandler` | `POST /oauth/token` -- issues tokens (`client_credentials`, token exchange) |
+| `JWKSValidator` | Validates a JWT against a `KeySource` (`NewLocalKeySource`: the node's signing-key copy) and maps its claims to a principal (§7.3) |
+| `DelegatingAuthenticator` | Implements `contract.AuthenticationService`: reads the bearer token, delegates to the validator, and puts the principal and, for a client's own token, the client-token marker on the request context |
 
 `KVKeyStore` is built on a replicated-KV-store component (`internal/auth/replica.go`). Each node keeps an in-memory copy of the `signing-keys` KV namespace, refreshed by a payload-free gossip ping on write (`auth.signingkeys` topic, coalesced) and by a periodic reconcile (`CYODA_AUTH_CACHE_RECONCILE_INTERVAL`, default 60s, jittered ±10%, so a missed ping is picked up within up to 1.1× the interval — 66s by default — plus however long that re-read itself takes) that rebuilds the copy from KV as the backstop. An admin write (issue, invalidate, reactivate, delete) that changes one record reads it from KV directly, never the node copy, before deciding and writing (an `issue` with no rotation involved reads nothing — it just writes the new record). A write that changes several records at once (a rotation, decided from a KV `List`) tries to restore every record it already wrote if a later one fails; a restore that itself fails is logged at ERROR naming the records left changed, and a crash between writes — rather than a reported failure — can still leave the new record active alongside old siblings, for the admin to repeat. Either way, a successful admin write patches only the records it touched into the node copy — it never rebuilds the copy from a fresh `List`. `Current`'s and `Published`'s (JWKS) reads, like verification, touch only the node's own copy and never call the store at all, so staleness is their only route to `503`: if reconciliation has not succeeded for 10× the interval, `KVKeyStore`'s verification lookup treats every KID as unknown (`401`, the uniform mapping), and `Current`/`Published` fail with a stale error that `common.Internal` reports as `503 STORAGE_UNAVAILABLE` (JWKS: with `Retry-After`). Token issuance (`Signer`) hits the same stale error over the same node-copy-only path, but `/oauth/token` always renders a signing failure as a plain `500 server_error`, never `503`. `issue`/`invalidate`/`reactivate`/`delete`, by contrast, write KV directly on every call — reading it first when the decision needs to, as above — and never check staleness at all; they answer `503` only when a KV call itself reports the backend unavailable.
 
@@ -1881,7 +1884,7 @@ This is critical for multi-node clusters: all nodes sharing the same RSA private
 
 **M2M clients.** `KVM2MClientStore` (`internal/auth/kv_m2m_store.go`, codec in `kv_m2m_codec.go`) keeps clients in the SYSTEM-tenant KV store: one namespace per tenant, `m2m-clients:<tenantId>`, holds the client records (id, tenant, user id, roles, bcrypt hash of the secret, timestamps), and one global namespace, `m2m-client-ids`, maps each client id to its tenant. Tenant ids cannot contain `:`, so the namespaces cannot alias. There is no node copy and no gossip: every call reads or writes the store, so a create, reset or delete is visible on every node when it returns, and clients persist wherever the backend does. Every call removes any transaction from its context first, because the postgres KV store joins a transaction it finds there. A client exists when its record exists and its index entry names the record's tenant. Create writes the record, then the index entry; delete removes the index entry, then the record. A failed write may have landed, so on a context the caller cannot cancel a failed record write removes the record (never the index entry, which this call did not write), a failed index write removes the index entry and then the record, and a failed reset writes back the record it read. `Authenticate` refuses a client id outside `^[A-Za-z0-9]{1,100}$` without a store read, and otherwise always makes two KV reads (the index entry, then either the record or a fixed key that is never written), so the server's reads do not depend on whether an id exists. An unknown id, a malformed id and a wrong secret each cost one bcrypt comparison (against a dummy hash when there is no record); a right secret skips it when the node's verified-secret cache (`internal/auth/secret_check.go`: per client id, the record's `HashedSecret` and the SHA-256 of the secret that matched it, compared in constant time, at most 65536 entries) matches the record just read, so a reset or delete takes effect on the next request on every node. A wrong secret leaves the cached entry in place: it can never hit, and dropping it would let anyone holding the public client id evict it. Every bcrypt operation — each comparison, and the hash of a new secret in create and reset — runs in one of `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots (a `semaphore.Weighted`; default `runtime.GOMAXPROCS(0)`). An operation that gets none within 1 s writes nothing and is refused with `Retry-After: 1`: `503 temporarily_unavailable` on `/oauth/token`, `503 SERVER_BUSY` on `POST /clients` and the secret reset. Each refusal increments `cyoda.auth.secret_checks.refused`; none is logged. After authentication and the grant's client-kind check, the token handler takes one token from the client's per-node bucket (`internal/auth/client_bucket.go`, `x/time/rate`, `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` per minute with an equal burst, shared by both grants; full buckets are dropped once a minute); an empty bucket is `429 slow_down` with `Retry-After`. A backend can take longer to read a present key than a missing one (on cassandra a hit is two queries and a miss one), which can let a caller who already holds an id confirm that it exists; client ids are not secret (a token's `sub`) and generated ids are 80-bit random, so this does not allow enumeration. Create checks the per-tenant cap (`CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`) by listing the tenant's namespace under a per-node lock; the KV SPI has no compare-and-set, so creates on different nodes at the same moment can exceed the cap by one client per node, two concurrent changes to one client resolve by last write, a failed reset's write-back can land after a later successful reset (the secret that reset returned then stops working, and the secret from before both resets works again), and a reset racing a delete can leave a record without its index entry: listed, unable to authenticate, removed by `DELETE`. An undecodable record is skipped by list (logged at ERROR) but counts toward the cap, is removed by delete, and is a `500` for reset and for `/oauth/token`. An undecodable index entry is a `500` for `/oauth/token`, and for a reset of an id whose record the caller's tenant holds (logged at ERROR with its key); a reset of an id with no record in the caller's tenant is a `404` before the index entry is read, since no reset can succeed without that record. Delete removes an undecodable index entry too, as long as the caller's own tenant namespace holds a record for that id — the namespace proves ownership, the same rule applied to an undecodable record — and otherwise stays a `500`, since a damaged entry naming another tenant is never touched. A store failure is never `401` on `/oauth/token`: it is `503 temporarily_unavailable` with `Retry-After` when the backend reports itself unavailable and `500 server_error` otherwise; on `/clients` it is `500` with a ticket or `503 STORAGE_UNAVAILABLE`.
 
-**OBO (On-Behalf-Of) exchange:** Only an on-behalf-of client may use the token exchange (grant `urn:ietf:params:oauth:grant-type:token-exchange`), and it may use no other grant; a plain or admin client is refused it (`400 unauthorized_client`) before its assertion is read. The client presents, with its own credentials, a user assertion signed by a trusted key registered in the client's own tenant; a key registered by another tenant is not found. A key's tenant is the tenant that registered it, never a claim in the token it signs. The assertion's `aud` must contain the cyoda issuer and its `exp − iat` must be at most 300 seconds; its `caas_org_id` must equal the client's tenant, and its `sub` must pass the user-identifier rule (§1). The issued token carries the assertion's `sub` as its user id, the client's roles (never the assertion's), and an `act` claim naming the client, so calls made with it are attributed to that user; it expires at the earlier of the assertion's `exp` and the configured lifetime. Every refusal is OAuth-shaped with a fixed description that never repeats the user, tenant or key id.
+**Token exchange (on behalf of a user).** Only an on-behalf-of client may use the token exchange (grant `urn:ietf:params:oauth:grant-type:token-exchange`), and it may use no other grant: `client_credentials` refuses it, and the exchange refuses a plain or admin client (`400 unauthorized_client`) before its assertion is read. The handler (`internal/auth/token.go`) checks, in order: the client's bucket (`429`); none of `actor_token`, `actor_token_type`, `resource`, `audience`, `scope` or `requested_token_type` present, in the body or the query string; `subject_token_type` = `urn:ietf:params:oauth:token-type:jwt`; the assertion parses, is RS256 and names a `kid`; the trusted key `(client's tenant, kid)` read from the store is active and inside its window; the signature verifies and, if the key lists issuers, `iss` is one of them; `aud` contains `CYODA_JWT_ISSUER`, `exp` and `iat` are present with `exp − iat` at most 300 s, the assertion has not expired, `iat` is not in the future and `nbf` (if present) has passed, each with 30 s of skew; `caas_org_id` equals the client's tenant (`403 access_denied` otherwise); `sub` passes the user-identifier rule (§1). Every other refusal is `400 invalid_request`. A key registered by another tenant is not found: a key's tenant is the tenant that registered it, never a claim in the token it signs. The issued token carries the assertion's `sub` as `sub` and `caas_user_id`, the client's tenant, the client's roles in `scopes` (never the assertion's), and `act: {"sub": "<client id>"}`; it carries no `cgen`, so it cannot open a compute stream. It expires at the earlier of the assertion's `exp` and now + `CYODA_JWT_EXPIRY_SECONDS`; one that would expire at once is refused. A client-credentials token carries the client's id as `sub` and `caas_user_id`, its roles in `scopes`, and `cgen`, the client's secret generation (1 at creation, one more per reset). `expires_in` is a token's remaining life on both grants. Every refusal is OAuth-shaped with a fixed description that never repeats the user, tenant or key id; a `401` carries `WWW-Authenticate: Basic realm="cyoda"`.
 
 **First admin token: `cyoda token`.** No credential is defined by
 configuration except the signing key. `cyoda token` (`cmd/cyoda/token.go`,
@@ -1891,40 +1894,48 @@ configuration except the signing key. `cyoda token` (`cmd/cyoda/token.go`,
 and makes no network call. It adds no capability, since whoever holds the
 signing key can already sign any token the validator accepts. Its tokens
 verify exactly as long as the bootstrap key does on the cluster; an operator
-uses them for the first admin calls, such as creating M2M clients.
-`--tenant PLATFORM` makes it a platform operator, needed for the signing
-key-pair endpoints, OIDC reload and the runtime controls (§7.6).
+uses them for the first admin calls, such as creating M2M clients. The token
+carries exactly the roles it is signed with, so it reaches data only when
+signed with `ROLE_M2M` (§7.4). `--tenant PLATFORM` makes it a platform
+operator, needed for the signing key-pair endpoints and the runtime controls
+(§7.6).
 
-### 7.3 OIDC Provider Registry
+### 7.3 Principals and Attribution
 
-When `CYODA_IAM_MODE=jwt` is active, tenants can register external Identity Providers (IdPs) that issue JWTs which cyoda-go should accept alongside its own locally-issued tokens. Each provider record is stored in the KV store under a single namespace (`oidc-providers`) with composite keys of the form `<tenantID>:<providerID>`, giving per-tenant isolation without a separate table.
+**Validator mapping.** `JWKSValidator.buildUserContext` (`internal/auth/validator.go`) maps a verified token to exactly one principal, by which claim keys it carries:
 
-The `<tenantID>` half is a **canonical lowercase UUID**, and the adapter — the single entry point to the OIDC service — requires the caller's tenant to already be spelled that way rather than normalising it. `uuid.Parse` accepts forms `uuid.UUID.String()` folds away, and folding them here would alias tenants that every other subsystem keys apart by raw text, letting one reach another's providers. A tenant that is not a canonically-spelled UUID has no key it may address and gets `400 OIDC_INVALID_TENANT` from every provider operation, including the list one; `POST /oauth/oidc/providers/reload` takes no tenant and is exempt — it acts on every tenant's providers at once, so it is gated on the caller being a platform operator instead.
+| Token | `Kind` | `UserID` | `Roles` | `Executor` |
+|---|---|---|---|---|
+| `act` and `scopes` (OBO token) | `user` | `caas_user_id` | `scopes` | `{act.sub, service}` |
+| `scopes`, no `act` (a client's own token) | `service` | `caas_user_id` | `scopes` | nil |
+| `user_roles` (`cyoda token`) | `user` | `caas_user_id` | `user_roles` | nil |
+| none of the three | `user` | `caas_user_id` | none | nil |
 
-**Chained multi-issuer validation.** The `DelegatingAuthenticator` from §7.2 is the outer shell; inside it a `ChainedValidator` tries two validators in order, keyed on the token's `kid`:
+`caas_user_id` falls back to `sub` only when it is absent. Refused, so that the mapping is total: `scopes` with `user_roles`; `act` without `scopes` (which also covers `act` with `user_roles`); an `act` that is not an object whose `sub` is a client id; a `scopes` or `user_roles` claim that is not an array of strings; a `cgen` that is not an integer in [0, 2^53); a client's own token with `cgen` whose `caas_user_id` is not a client id. For a client's own token with `cgen`, the authenticator also puts a client-token marker, `contract.ClientToken{ClientID, Gen}`, on the request context; compute streams require it (§7.4).
 
-1. **`JWKSValidator` (first)** — resolves the `kid` against the node's signing-key store and checks the signature, claims and `iss` (`CYODA_JWT_ISSUER`). Only a `kid` the store does not know passes the token on. A `kid` the node's copy holds that cannot verify now (ahead of its window, invalidated past its grace period, retired, broken, or any key while the copy is stale) is a final failure, so no OIDC provider can have tokens accepted under it. The copy holds the configured bootstrap key and every stored key pair from the moment the node applies its issue until a `DELETE` removes it; a node that has not yet applied an issue does not know that `kid`. Every other failure is final too.
-2. **`OIDCValidator` (second)** — finds the providers, in any tenant, whose JWKS (sourced from the discovery document at `<providerURL>/.well-known/openid-configuration`) publishes the `kid` and whose issuer rule accepts the token's `iss`. One candidate is used; several are narrowed by `expectedAudiences`, and a token still ambiguous is rejected. It validates the signature and standard claims, binds the token to the provider owner's tenant, then maps the token's roles claim to cyoda roles. No candidate rejects the token as unauthorized.
+**Attributed principal and executor.** `spi.AttributionFor(ctx)` returns who a change is for and who made it. For an OBO principal (`Executor` set) the attributed principal is the user and the executor is the client, and a transaction's origin never applies. Otherwise the executor is the caller, and a `service` or `system` caller inside a transaction attributes to the transaction's origin (`spi.ResolveOrigin` stamps the origin when the transaction begins). So: an OBO request is attributed to its user, executed by the OBO client; a client's own request to the client in both roles; a compute node's write-back joined to a transaction to the transaction's origin, executed by the compute client; a scheduled firing to the task's `ArmedBy`, executed by `system`; a `cyoda token` request to the operator's user in both roles.
 
-**Per-provider configuration** (stored per-record, not global):
+**Where identity is recorded.**
 
-| Field | Purpose |
-|-------|---------|
-| `issuers` | Whitelist of accepted `iss` values from this IdP |
-| `expectedAudiences` | Audience values the token must carry (`aud` claim) |
-| `rolesClaim` | JWT claim name to extract roles from (overrides `CYODA_OIDC_ROLES_CLAIM` per-provider) |
-
-**JWKS caching and cache eviction.** Each node caches the JWKS response for a provider. When a provider record is updated, deleted, or reloaded via the REST API, the owning node evicts its local cache entry and broadcasts on the `oidc.providers` topic via `spi.ClusterBroadcaster`; peers that receive it evict their copy. The broadcast is best-effort and fire-and-forget; behind it, the same reconcile backstop as the trusted-key cache (`CYODA_AUTH_CACHE_RECONCILE_INTERVAL`, default 60s, jittered ±10%) periodically rebuilds the provider map from KV, so a dropped message costs at most one interval of staleness rather than persisting until an explicit reload. Warm JWKS sources are carried over on reconcile — the backstop never causes IdP re-fetch traffic; key freshness stays governed by the per-source JWKS cache TTL. If reconciliation has not succeeded for 10× the interval, `ResolveKey` fails closed and OIDC-issued tokens are rejected with the uniform 401 until a reconcile succeeds. A provider whose JWKS URL is unreachable at validation time is treated as an auth failure, not a 5xx.
-
-**REST API.** Seven endpoints under `/oauth/oidc/providers` implement the full lifecycle: register, list, update, invalidate (suspend without delete), reactivate, delete, and reload-cache. Register, update, invalidate, reactivate and delete require `ROLE_ADMIN` in the caller's own tenant. Reload-cache rebuilds every tenant's providers on every node, so it requires a platform operator instead: `ROLE_ADMIN` in the tenant `PLATFORM`. All seven are documented in the OpenAPI spec.
-
-**Security controls.** The JWKS fetch URL is validated at registration time against SSRF rules: HTTPS is required by default (`CYODA_OIDC_REQUIRE_HTTPS`), and private/loopback/link-local network ranges are blocked by default (`CYODA_OIDC_ALLOW_PRIVATE_NETWORKS`). Violations surface as `400 OIDC_SSRF_BLOCKED`. See §9 for the six `CYODA_OIDC_*` env vars.
-
-**Design rationale.** See [docs/adr/0002-federated-identity-provider-architecture.md](adr/0002-federated-identity-provider-architecture.md) for the full decision record including alternatives considered for storage layout, chaining order, and cache-eviction strategy.
+- **Entity history:** each version's `User`, `AttributedKind` and `Executor` come from `AttributionFor`; `GET /entity/{entityId}/changes` returns them as `user`, `attributedKind` and `executedBy`.
+- **Audit events:** an EntityChange event carries `actor` (the attributed principal, with `kind`) and `executedBy`; the engine stamps `spi.StateMachineEvent.Attributed` and `Executor` from `AttributionFor` when it records an event (`internal/domain/workflow/engine.go`), rendered as `actor` and `executedBy`. Events are stored as JSON documents in every backend.
+- **Callouts:** the node that dispatches a callout computes `IdentityFrom(ctx)` once (`internal/grpc/callout.go`): `AttributionFor` and the caller's roles. Every try attaches `authtype`/`authid` (attributed), `authexectype`/`authexecid` (executor) and `authclaims` (the executor's roles); a hand-over carries the four principal fields and the roles, and the receiving node attaches them as received (§4.3). A callout whose principals lack an id or a recognised kind is not sent. `api/grpc/authctx.Require` gates on an executor of kind `service` holding the role.
+- **Scheduled transitions:** arming stamps `ArmedBy` with the arming write's attributed principal (`internal/domain/workflow/arm.go`); a firing begins its transaction with `ArmedBy` as the origin, stamps each change with `ArmedBy` as the user and `system` as the executor, and its callouts carry the same pair (§4.8).
+- **Messages:** `POST /message/new/{subject}` records the request's attributed principal and executor in the message header (`internal/domain/messaging/handler.go`); no request header names the sender. `GET /message/{messageId}` returns `userId`, `attributedKind` and `executedBy`.
+- **Async search:** a job keeps the submitting request's `UserContext`, executor included.
+- **Trusted-key changes:** register, invalidate, reactivate and delete write INFO lines with the tenant, the kid, and the attributed principal and executor.
 
 ### 7.4 Authorization
 
-Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint admits only a compute node's own client-credentials token: kind `service`, `ROLE_M2M`, no `Executor`, and the client-token marker; anything else is `PermissionDenied`. Every 60 s an open stream reads its client through `M2MClientStore.Lookup` and closes with `Unauthenticated` when the client is gone, in another tenant, or its `SecretGen` differs from the marker's, and with `Unavailable` when the store cannot be read. `RequireAdmin` and the operator guard refuse any principal with an `Executor` (an on-behalf-of token) with `403 FORBIDDEN`.
+Authorization is done by route guards. `contract.AuthorizationService` has one implementation, the permissive stub `mockiam.NewAuthorizationService()`, and no request path calls it.
+
+**`ROLE_M2M` on every data route.** Every authenticated route requires `ROLE_M2M` in the caller's roles, except an allow-list (`internal/api/route_guard.go`): `GET /account`, the client and trusted-key operations (guarded by `RequireAdmin`) and the key-pair operations (guarded by the operator guard). The generated router wraps every other operation in `RequireM2M` (`internal/api/chimux.go`); the hand-registered data routes (transitions, grouped statistics) are wrapped too, and the `/admin/*` routes, which are not, carry the operator guard. A caller without the role gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") before the transaction-join middleware runs, so it joins nothing. Over gRPC, `UnaryRequireM2M` and `StreamRequireM2M` refuse every method and stream with `PermissionDenied`; gRPC has no allow-listed method. Tests check every OpenAPI operation and hand-registered route against the rule (`app/route_classification_test.go`), and every gRPC method and stream (`internal/grpc/role_interceptor_test.go`).
+
+**Admin and operator guards.** `RequireAdmin` (tenant admin: `ROLE_ADMIN`) and the operator guard (§7.6) refuse any principal with an `Executor` — an OBO token — with `403 FORBIDDEN` ("on-behalf-of tokens cannot administer"), whatever its roles. `POST /clients` refuses `withAdminRole=true` with `onBehalfOf=true`, and `onBehalfOf=true` in the tenant `PLATFORM` (`400 BAD_REQUEST`), so no OBO client holds `ROLE_ADMIN` or exists in `PLATFORM`.
+
+**Joining a transaction.** An OBO request may join only a transaction whose origin is its own user (`internal/domain/txjoin/txjoin.go`): otherwise `403 FORBIDDEN` ("an on-behalf-of request may join only its own user's transaction"), and over gRPC the RPC's error envelope with that message. A compute client's own write-back joins and is attributed to the transaction's origin.
+
+**Compute streams.** `startStreaming` admits only a compute node's own client-credentials token: kind `service`, `ROLE_M2M`, no `Executor`, and the client-token marker; anything else is `PermissionDenied`. Every 60 s (a constant, `clientRecheckInterval`) an open stream reads its client through `M2MClientStore.Lookup` and closes with `Unauthenticated` when the client is gone, belongs to another tenant, or its `SecretGen` differs from the marker's `cgen`, and with `Unavailable` when the store cannot be read. The opening token's expiry does not end a stream. HTTP requests and unary gRPC calls are not checked against the client store: a deleted client's or a reset secret's tokens verify until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS` (default 300 s, at most 3600 s).
 
 ### 7.5 Admin listener authentication
 
@@ -1940,8 +1951,9 @@ contract:
   probes carry no bearer token; authenticating these endpoints
   would break the standard readiness contract.
 - **`/metrics`** is optionally bearer-gated and always exposes
-  application metrics — OIDC subsystem metrics (`oidc_*`) when IAM
-  runs in `jwt` mode, and transaction/dispatch metrics when
+  application metrics — auth metrics (`cyoda.auth.*`,
+  `auth.signingkeys.*`) when IAM runs in `jwt` mode, and
+  transaction/dispatch metrics when
   `CYODA_OTEL_ENABLED=true` — in addition to Go runtime/process
   metrics. When `CYODA_METRICS_BEARER` (or
   `CYODA_METRICS_BEARER_FILE`) is non-empty, a request must carry
@@ -1963,36 +1975,37 @@ namespace.
 ### 7.6 Platform operator
 
 Some endpoints change state every tenant shares: the signing key-pair
-endpoints (`/oauth/keys/keypair*`), `POST /oauth/oidc/providers/reload`, and
+endpoints (`/oauth/keys/keypair*`) and
 `GET`/`POST /api/admin/log-level` and `/api/admin/trace-sampler` (main API
 listener, §11 — distinct from the admin listener in §7.5). Only a **platform
 operator** may call them: a caller whose `UserContext` carries `ROLE_ADMIN`
 and whose tenant is exactly `PLATFORM` (bytewise, case-sensitive). `auth.OperatorGuard`
 (`internal/auth`) implements the check: no `UserContext` is `401 UNAUTHORIZED`;
 `ROLE_ADMIN` missing, or present in any tenant other than `PLATFORM`, is
-`403 FORBIDDEN` with the detail "platform operator required". Its zero value
-applies this rule, so a guard left at its zero value fails closed. In mock IAM
-mode the check is `ROLE_ADMIN` alone, since mock mode has one fixed tenant.
+`403 FORBIDDEN` with the detail "platform operator required"; an OBO token is
+refused first, whatever its roles (§7.4). Its zero value applies this rule, so
+a guard left at its zero value fails closed. In mock IAM mode the check is
+`ROLE_ADMIN` alone, since mock mode has one fixed tenant.
 
-The rule rests on tenant binding: every token source other than the signing
-key fixes a token's tenant to the tenant that set the source up — an OIDC
-provider's owner, an M2M client's creating tenant, a trusted key's registering
-tenant. A tenant admin can grant their own principals any role, but cannot
-mint a principal in another tenant. Since an OIDC provider needs a canonical
-UUID tenant, `PLATFORM` cannot own one, so a `PLATFORM` principal comes only
-from `cyoda token --tenant PLATFORM` (§7.2), an admin M2M client that a
-`PLATFORM` admin creates in `PLATFORM`, or a trusted key a `PLATFORM` admin
-registers in `PLATFORM`. A role-based rule instead of a tenant-based one would
-need every token source to filter a reserved role, and one missed source
-would let any tenant admin grant it to themselves.
+The rule rests on tenant binding: the only token source other than the
+signing key is `POST /oauth/token`, and both of its grants take the tenant from
+the stored client — the tenant that created it. The token exchange reads the
+trusted key in the client's tenant and requires the assertion's `caas_org_id`
+to equal it, and the token it issues carries the client's roles, never the
+assertion's. A tenant admin can grant their own clients any role, but cannot
+mint a principal in another tenant. So a `PLATFORM` principal comes only from
+`cyoda token --tenant PLATFORM` (§7.2) or an admin M2M client that a
+`PLATFORM` admin creates in `PLATFORM`; no OBO client can exist there. A
+role-based rule instead of a tenant-based one would need every token source to
+filter a reserved role, and one missed source would let any tenant admin grant
+it to themselves.
 
 `PLATFORM` is not `SYSTEM`: `SYSTEM` is the internal machinery's tenant (the
 system principal and the store holding the cluster's auth state) and gets no
 rights from this rule.
 
-Tenant-scoped admin endpoints — trusted keys, M2M clients, and OIDC provider
-register/update/invalidate/reactivate/delete — stay on `auth.RequireAdmin`:
-any tenant's `ROLE_ADMIN`.
+Tenant-scoped admin endpoints — trusted keys and M2M clients — stay on
+`auth.RequireAdmin`: any tenant's `ROLE_ADMIN`, never an OBO token.
 
 ---
 
@@ -2042,13 +2055,12 @@ In `verbose` mode (`CYODA_ERROR_RESPONSE_MODE=verbose`), internal error details 
 Codes are grouped by surface area:
 
 - **Domain** — model lifecycle, entity CRUD, workflow, validation, generic 4xx (`BAD_REQUEST`, `UNAUTHORIZED`, `FORBIDDEN`, `SERVER_ERROR`, `NOT_IMPLEMENTED`), and storage availability (`STORAGE_UNAVAILABLE`).
-- **IAM** — key pairs, trusted keys, M2M clients, unsupported algorithms and key types.
+- **IAM** — key pairs, trusted keys, M2M clients, secret-check capacity (`SERVER_BUSY`), unsupported algorithms and key types.
 - **Cluster / transaction** — distributed-transaction hand-off (`TRANSACTION_*`), transaction-token handling (`TX_*`), gossip membership, idempotency.
 - **Compute dispatch** — externalized processor / criteria / function invocation across cluster members.
 - **Search** — async search-job lifecycle and scan-budget limits.
 - **Composite unique keys** — uniqueness violations and unique-key definition errors.
 - **Scheduled transitions** — Function-callout result validation.
-- **OIDC provider registry** — provider lifecycle and SSRF rejection.
 - **Help subsystem** — topic lookup.
 
 The authoritative code list is `internal/common/error_codes.go`. Per-code semantics, HTTP status, retryable hint, structured `properties`, and remediation guidance live in the help subsystem at `cmd/cyoda/help/content/errors/<CODE>.md`, rendered via `cyoda help errors` (catalogue) and `cyoda help errors <CODE>` (per-code page). The `TestErrCode_Parity` gate in `cmd/cyoda/help` enforces that every constant in `error_codes.go` has a corresponding help topic.
@@ -2128,7 +2140,7 @@ See §7.5 for the authentication policy on admin endpoints.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_OTEL_ENABLED` | `false` | Enable OTLP push (metric + trace exporters) and `otelhttp` middleware. The Prometheus scrape endpoint (`/metrics`) and OIDC metrics are always on regardless of this flag. |
+| `CYODA_OTEL_ENABLED` | `false` | Enable OTLP push (metric + trace exporters) and `otelhttp` middleware. The Prometheus scrape endpoint (`/metrics`) and the auth metrics are always on regardless of this flag. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | (OTel SDK default) | Standard OTel environment variable — honored directly, no cyoda-specific alias. |
 
 The trace sampler is swappable at runtime via `POST /api/admin/trace-sampler`
@@ -2187,25 +2199,16 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_IAM_MODE` | `mock` | `mock` (dev) or `jwt` (production) |
 | `CYODA_JWT_SIGNING_KEY` (with `_FILE` variant) | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
-| `CYODA_JWT_AUDIENCE` | (empty) | Required `aud` on inbound first-party JWTs, and set as `aud` on every token cyoda-go issues (`/oauth/token`, both grants, and `cyoda token`); empty disables the check and issued tokens carry no `aud` |
-| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Token expiry in seconds, at most `3600` |
+| `CYODA_JWT_AUDIENCE` | (empty) | Required `aud` on inbound JWTs, and set as `aud` on every token cyoda-go issues (`/oauth/token`, both grants, and `cyoda token`); empty disables the check and issued tokens carry no `aud` |
+| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Token lifetime in seconds, `1`–`3600`; also caps `cyoda token --ttl`. An OBO token ends no later than its assertion's `exp` |
 | `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
+| `CYODA_IAM_MOCK_KIND` | `service` | Principal kind of the default mock user: `user`, `service` or `system` (mock mode only). |
+| `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | Enables the trusted-key endpoints; otherwise they answer `404 FEATURE_DISABLED` |
+| `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | Allows `POST /clients?withAdminRole=true`; otherwise it answers `404 FEATURE_DISABLED` |
+| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Re-read interval of the signing-key node copy (jittered ±10%); the copy fails closed after 10× this without a successful re-read; at least `1s` |
 | `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Per-client, per-node limit on `POST /oauth/token` across both grants (burst of the same size); `429 slow_down` over it; `0` = unlimited |
 | `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | `runtime.GOMAXPROCS(0)` | Concurrent bcrypt operations per node (token-endpoint checks, client-secret hashing on create and reset); `503` when no slot frees up within 1 s; at least `1` |
-
-### OIDC Provider Registry
-
-These variables apply globally to all tenant-registered OIDC providers. Per-provider overrides (`rolesClaim`, `issuers`, `expectedAudiences`) are stored per-record in KV, not as env vars. See §7.3.
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CYODA_OIDC_REQUIRE_HTTPS` | `true` | Reject OIDC provider URLs that do not use `https://`. Disable only in isolated test environments. |
-| `CYODA_OIDC_CONNECT_TIMEOUT_MS` | `5000` | TCP connection timeout (ms) for JWKS discovery and fetch requests. |
-| `CYODA_OIDC_SOCKET_TIMEOUT_MS` | `5000` | Socket read timeout (ms) for JWKS responses. |
-| `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` | `5000` | Timeout (ms) to acquire a connection from the HTTP client pool for OIDC requests. |
-| `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` | `false` | Allow OIDC provider URLs that resolve to private/loopback/link-local addresses. When `false`, registering such a URL returns `400 OIDC_SSRF_BLOCKED`. |
-| `CYODA_OIDC_ROLES_CLAIM` | `roles` | Default JWT claim name to extract roles from for externally-issued tokens. Overridable per-provider at registration time. |
 
 ### gRPC
 
@@ -2332,7 +2335,7 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 
 **HTTP middleware:** the generated API router is wrapped in `otelhttp.NewMiddleware` (enabled when `CYODA_OTEL_ENABLED=true`), producing `http.server` spans for every request and auto-extracting upstream trace context from `traceparent` headers.
 
-**OIDC subsystem metrics** (`oidc_*`) are always exposed at `/metrics` when IAM runs in `jwt` mode — no collector required, no flag to toggle.
+**Auth metrics** are always exposed at `/metrics` when IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`: `cyoda.auth.secret_checks.refused` (`internal/auth/secret_check.go`) and the signing-key copy's `auth.signingkeys.reconcile_consecutive_failures` and `auth.signingkeys.reconcile_staleness_seconds` gauges (`internal/auth/reconcile_metrics.go`).
 
 **Transaction manager decorator:** `TracingTransactionManager` wraps the underlying transaction manager and adds spans (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`, `tx.rollback_to_savepoint`, `tx.release_savepoint`) plus metrics (`cyoda.tx.duration`, `cyoda.tx.active`, `cyoda.tx.conflicts`). This decorator is active when `CYODA_OTEL_ENABLED=true`.
 
@@ -2375,7 +2378,7 @@ Capabilities this document's design implies but the system does not provide. Eac
 | Idempotency keys | Client-provided keys preventing duplicate operations on retry. The `IDEMPOTENCY_CONFLICT` code is reserved, but no handler reads an `Idempotency-Key` header. |
 | Trace propagation through the search pipeline | A unified search trace waterfall. The search packages emit no spans, and the async-search goroutine starts from a fresh context, severing the parent span. |
 | Outbound trace propagation to external processors | End-to-end workflow tracing. Inbound gRPC trace context is extracted and dispatches are wrapped in spans, but no `traceparent` is injected into the dispatched CloudEvent or the peer-forward request. |
-| Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Migrations `000011`, `000012` and `000013` have since taken the same exception for the same reason; every index-on-populated-table migration hits this choice until the gap closes. |
+| Migration-runner retry tolerance for a deadlock-killed advisory lock | Being able to use `CREATE INDEX CONCURRENTLY` for an index added on an already-populated table without deadlocking the concurrent multi-node boot path. Today the migration runner holds one session-level advisory lock for a migrator's entire run with no retry on a `SQLSTATE 40P01` from a lock cycle against `CONCURRENTLY`'s own multi-phase wait, so `entities`' migration `000008` uses a plain `CREATE INDEX` (writer-blocking for the build's duration) instead — see `docs/plugins/POSTGRES.md`. Migrations `000011`, `000012` and `000013` take the same exception for the same reason; every index-on-populated-table migration hits this choice until the gap closes. |
 
 ---
 
