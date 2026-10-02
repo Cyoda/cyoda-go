@@ -145,8 +145,41 @@ func TestE2E_Clients_CreateListRoundtrip(t *testing.T) {
 	}
 }
 
+// TestE2E_Clients_TokenExchangeRoundtrip: an on-behalf-of client created
+// through POST /clients?onBehalfOf=true exchanges a user assertion signed
+// with its tenant's trusted key for a token of that user, acting through
+// the client.
 func TestE2E_Clients_TokenExchangeRoundtrip(t *testing.T) {
-	// Create a client, then exchange its credentials for a JWT.
+	id, secret := createClient(t, false, true)
+	priv, kid := registerTrustedSignerAs(t, suiteToken(t), "", nil)
+	resp := exchangeAs(t, id, secret, assertionFor(priv, kid, "alice", "test-tenant", nil))
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("exchange: %d %s", resp.StatusCode, raw)
+	}
+	var tok struct {
+		AccessToken string `json:"access_token"`
+	}
+	if err := json.Unmarshal(raw, &tok); err != nil || tok.AccessToken == "" {
+		t.Fatalf("no access_token in the exchange response (%v)", err)
+	}
+	claims := decodeJWTPayload(t, tok.AccessToken)
+	if claims["sub"] != "alice" {
+		t.Errorf("sub: got %v want alice", claims["sub"])
+	}
+	if act, _ := claims["act"].(map[string]any); act["sub"] != id {
+		t.Errorf("act: got %v want {sub: %s}", claims["act"], id)
+	}
+	scopes, _ := claims["scopes"].([]any)
+	if !containsAnyString(scopes, "ROLE_M2M") {
+		t.Errorf("scopes %v missing ROLE_M2M", scopes)
+	}
+}
+
+// TestE2E_Clients_ClientCredentialsRoundtrip: a plain client exchanges its
+// credentials for a JWT of its own.
+func TestE2E_Clients_ClientCredentialsRoundtrip(t *testing.T) {
 	id, secret := createClient(t, false, false)
 
 	// The harness's getToken helper does the client_credentials grant.

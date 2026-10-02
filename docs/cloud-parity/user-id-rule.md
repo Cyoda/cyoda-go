@@ -43,7 +43,7 @@ unlike a tenant id, it has no charset grammar.
 | --- | --- | --- |
 | First-party user claim: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
 | OIDC `sub` | Federated tokens | `401`, as before |
-| Token-exchange subject token `sub`, which becomes the issued token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_grant` |
+| Token-exchange subject token `sub`, which becomes the issued token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_request` |
 
 `cyoda token --user`, which signs an admin token offline with the signing key,
 checks the same rule, the reserved word below included, before it signs (exit

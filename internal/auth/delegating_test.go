@@ -36,6 +36,21 @@ func generateTestPEM(t *testing.T) string {
 	return string(pemBlock)
 }
 
+// Every method reaches the token handler, so a method other than POST is
+// the endpoint's own OAuth-shaped 405, not the mux's plain-text one.
+func TestAuthService_TokenEndpointNonPostIs405(t *testing.T) {
+	svc := newTestAuthService(t, AuthConfig{SigningKeyPEM: generateTestPEM(t), Issuer: "cyoda", ExpirySeconds: 300})
+	for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		rr := httptest.NewRecorder()
+		svc.Handler().ServeHTTP(rr, httptest.NewRequest(m, "/oauth/token", nil))
+		var body map[string]string
+		_ = json.Unmarshal(rr.Body.Bytes(), &body)
+		if rr.Code != http.StatusMethodNotAllowed || body["error"] != "method_not_allowed" {
+			t.Fatalf("%s: %d %s, want 405 method_not_allowed", m, rr.Code, rr.Body.String())
+		}
+	}
+}
+
 func TestAuthService_FullFlow(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
@@ -50,7 +65,7 @@ func TestAuthService_FullFlow(t *testing.T) {
 	defer server.Close()
 
 	// Create M2M client directly via store.
-	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "user-1", []string{"ROLE_ADMIN"}, false)
+	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
@@ -95,8 +110,8 @@ func TestAuthService_FullFlow(t *testing.T) {
 		t.Fatalf("token validation failed: %v", err)
 	}
 
-	if uc.UserID != "user-1" {
-		t.Errorf("expected UserID user-1, got %s", uc.UserID)
+	if uc.UserID != "TESTCLIENT" {
+		t.Errorf("expected UserID TESTCLIENT, got %s", uc.UserID)
 	}
 	if string(uc.Tenant.ID) != "tenant-1" {
 		t.Errorf("expected TenantID tenant-1, got %s", uc.Tenant.ID)

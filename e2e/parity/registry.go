@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 222 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 223 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -445,6 +445,11 @@ var allTests = []NamedTest{
 	// each tenant lists only its own, and invalidating or deleting one leaves
 	// the other unchanged.
 	{"TrustedKeyPerTenantKid", RunTrustedKeyPerTenantKid},
+
+	// The token exchange on every backend: an on-behalf-of client exchanges
+	// a user assertion for a token of that user carrying the client as
+	// act.sub and the client's roles only; a plain client is refused.
+	{"OBOExchange", RunOBOExchange},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

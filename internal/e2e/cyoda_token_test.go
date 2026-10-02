@@ -3,8 +3,6 @@ package e2e_test
 import (
 	"context"
 	"crypto/rsa"
-	"encoding/json"
-	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -145,26 +143,9 @@ func TestIssuedTokens_AcceptedWithConfiguredAudience(t *testing.T) {
 		t.Errorf("client_credentials token: %d, want 200", code)
 	}
 
-	// The trusted key is registered with a platform-operator token, which
-	// carries the audience; that keeps the registration independent of what
-	// /oauth/token issues. It must be registered under h.clientID's own
-	// tenant (PLATFORM, since createKeyStackClient provisions it there) —
-	// the exchanging client's tenant is where the token-exchange grant looks
-	// up the trusted key, and must also match the subject token's claimed
-	// tenant (see TestToken_TokenExchange_TenantMismatch_403).
-	priv := genKey(t)
-	const trustedKID = "e2e-aud-trusted"
-	body, err := json.Marshal(trustedKeyBody(priv, trustedKID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp := h.doAuthBearer(t, h.platformToken(t), http.MethodPost, "/api/oauth/keys/trusted", string(body), "")
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("register trusted key: %d %s", resp.StatusCode, raw)
-	}
-	exchanged := h.grantToken(t, exchangeForm(t, priv, trustedKID, "ext-user-1", string(auth.PlatformTenantID), []string{"ROLE_USER"}), h.clientID, h.clientSecret)
+	// The OBO token is minted on this stack, whose admin tokens carry the
+	// audience; the assertion's aud is the stack's issuer.
+	exchanged := oboTokenOn(t, h.baseURL, h.token(t), "alice")
 	if code := h.authedStatus(t, exchanged); code != http.StatusOK {
 		t.Errorf("token-exchange token: %d, want 200", code)
 	}

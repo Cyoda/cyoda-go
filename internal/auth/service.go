@@ -76,7 +76,9 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	// answer asks the caller to retry after one re-read interval.
 	publicMux := http.NewServeMux()
 	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
-	publicMux.Handle("POST /oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds))
+	// Every method reaches the token handler, which answers its own
+	// OAuth-shaped 405 for anything but POST.
+	publicMux.Handle("/oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds))
 
 	return &AuthService{
 		keyStore:     keyStore,

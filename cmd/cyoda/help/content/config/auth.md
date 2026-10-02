@@ -126,7 +126,7 @@ from outside it:
   `oidc:<providerId>:<sub>`, so it can be longer than 255 characters; the
   limit applies to `sub`.
 - **The `sub` of a token-exchange subject token**, which becomes the issued
-  token's user id. A value outside the check is `400 invalid_grant`.
+  token's user id. A value outside the check is `400 invalid_request`.
 
 `cyoda token --user` checks the same rule, the reserved word below included,
 before it signs.

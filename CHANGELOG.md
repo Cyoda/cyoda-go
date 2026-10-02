@@ -6,6 +6,27 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`POST /oauth/token`: the token exchange is for on-behalf-of clients only
+  and client credentials for the others (`400 unauthorized_client`); exchange
+  failures answer `invalid_request` (was `invalid_grant`); the assertion must
+  carry `aud` = the cyoda issuer and `exp − iat` ≤ 300 s; the issued token
+  carries the client's roles, never the assertion's; `expires_in` is the
+  token's remaining life; client tokens carry `cgen`.** Also: the exchange
+  refuses the RFC 8693 parameters `actor_token`, `actor_token_type`,
+  `resource`, `audience`, `scope` and `requested_token_type`, even empty
+  (`400 invalid_request`); the token's `exp` is the earlier of the
+  assertion's `exp` and now + `CYODA_JWT_EXPIRY_SECONDS`; the only accepted
+  `subject_token_type` is `urn:ietf:params:oauth:token-type:jwt`; a client
+  store that is unavailable answers `503 temporarily_unavailable` with
+  `Retry-After` (was `500`); a `401` carries `WWW-Authenticate: Basic`; a
+  method other than `POST` is the endpoint's OAuth-shaped
+  `405 method_not_allowed` (a `GET` used to fall through to the
+  authenticated API and answer `401`); `grant_type`, `subject_token` and
+  `subject_token_type` are read from the form body only, never the query
+  string; a body that is not a form is `400 invalid_request`. Error descriptions are fixed and never repeat the
+  user id, tenant or key id. `ErrorResponseDto.error` drops `invalid_grant`
+  and `invalid_scope` (never sent) and adds `temporarily_unavailable`.
+
 - **The OIDC provider endpoints (`/oauth/oidc/providers*`), their error codes
   and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only
   through an application's M2M client; see `auth.tokens`.

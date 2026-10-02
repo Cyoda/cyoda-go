@@ -98,10 +98,15 @@ func trustedJWK(t *testing.T, kid string) map[string]any {
 	if err != nil {
 		t.Fatalf("generate RSA key: %v", err)
 	}
+	return trustedJWKOf(&priv.PublicKey, kid)
+}
+
+// trustedJWKOf is the public JWK of pub, under kid.
+func trustedJWKOf(pub *rsa.PublicKey, kid string) map[string]any {
 	return map[string]any{
 		"kty": "RSA",
 		"kid": kid,
-		"n":   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
-		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
+		"n":   base64.RawURLEncoding.EncodeToString(pub.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pub.E)).Bytes()),
 	}
 }

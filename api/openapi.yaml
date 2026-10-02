@@ -6082,15 +6082,22 @@ paths:
         Authenticates a M2M client and returns an access token.
 
 
-        Supports two grant types:
+        Supports two grant types, each for one kind of client:
 
 
-        1. **client_credentials** — Standard OAuth 2.0 Client Credentials Grant
-        for M2M authentication.
+        1. **client_credentials** — OAuth 2.0 Client Credentials Grant, for
+        plain and admin clients. The token carries the client as `sub` and
+        `caas_user_id`, its tenant, its roles in `scopes`, and its secret
+        generation in `cgen`.
 
         2. **urn:ietf:params:oauth:grant-type:token-exchange** — RFC 8693 Token
-        Exchange.
-           The M2M client acts on behalf of a user by presenting the user's JWT as `subject_token`.
+        Exchange, for on-behalf-of clients only. The client presents a user
+        assertion as `subject_token`: an RS256 JWT signed with a trusted key
+        of the client's tenant, whose `aud` contains the cyoda issuer and
+        whose `exp − iat` is at most 300 seconds. The token carries the
+        asserted user as `sub` and `caas_user_id`, the client as `act.sub`
+        and the client's roles in `scopes`; the assertion's roles are
+        ignored.
 
         In both cases the M2M client authenticates via HTTP Basic Authentication
 
@@ -6120,13 +6127,12 @@ paths:
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
-                  description: The subject token to exchange
+                  description: The user assertion to exchange
                 subject_token_type:
                   type: string
                   description: The type of the subject token
                   enum:
                     - urn:ietf:params:oauth:token-type:jwt
-                    - urn:ietf:params:oauth:token-type:access_token
       responses:
         "200":
           description: Access token issued successfully
@@ -6136,8 +6142,16 @@ paths:
                 $ref: "#/components/schemas/TokenResponseDto"
         "400":
           description: Bad request - unsupported_grant_type (grant_type missing or
-            not supported), or invalid_grant (the token-exchange subject token
-            is unsupported, invalid, unverifiable or carries an unusable sub)
+            not supported); unauthorized_client (client_credentials by an
+            on-behalf-of client, or a token exchange by any other client); or
+            invalid_request (a malformed body; on the token exchange, a
+            forbidden RFC 8693 parameter - actor_token, actor_token_type,
+            resource, audience, scope, requested_token_type - even empty, a
+            subject_token_type other than the JWT type, a malformed assertion,
+            an alg other than RS256, no kid, a kid that is not an active
+            trusted key of the client's tenant, a bad signature, an issuer the
+            key does not list, aud, exp, iat or nbf missing or out of bounds,
+            an invalid or reserved sub, or an exp that is not in the future)
           content:
             application/json:
               schema:
@@ -6145,13 +6159,19 @@ paths:
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
             client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
-            wrong secret)
+            wrong secret). Carries WWW-Authenticate Basic.
+          headers:
+            WWW-Authenticate:
+              description: The client authentication scheme, Basic.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "403":
-          description: Forbidden - Tenant boundary violation
+          description: Forbidden - access_denied (the assertion's caas_org_id is
+            not the client's tenant)
           content:
             application/json:
               schema:
@@ -6164,8 +6184,22 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "500":
           description: Internal Server Error - server_error (ticket in
-            error_description, generic message) - the client store failed,
-            including an undecodable record or index entry, or signing failed.
+            error_description, generic message) - the client or trusted-key
+            store failed, including an undecodable record or index entry, or
+            signing failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
+        "503":
+          description: Service Unavailable - temporarily_unavailable (the client
+            store or the trusted-key store is unavailable). Retry after the
+            Retry-After delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -9228,12 +9262,11 @@ components:
           enum:
             - invalid_request
             - invalid_client
-            - invalid_grant
             - unauthorized_client
             - unsupported_grant_type
-            - invalid_scope
             - access_denied
             - server_error
+            - temporarily_unavailable
             - method_not_allowed
           example: invalid_request
         error_description:
@@ -9840,8 +9873,8 @@ components:
         expires_in:
           type: integer
           format: int32
-          description: The lifetime in seconds of the access token
-          example: 3600
+          description: The access token's remaining lifetime in seconds (its exp minus now)
+          example: 300
           maximum: 86400
           minimum: 1
         refresh_token:

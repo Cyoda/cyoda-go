@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,6 +16,28 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
+
+// The token-exchange grant (RFC 8693) and the only subject token type it
+// accepts.
+const (
+	grantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+	tokenTypeJWT       = "urn:ietf:params:oauth:token-type:jwt"
+)
+
+// Bounds on a user assertion presented to the token exchange.
+const (
+	// assertionMaxLifetime is the longest exp − iat an assertion may carry.
+	assertionMaxLifetime = 300
+	// assertionClockSkew is the tolerance on every time claim.
+	assertionClockSkew = 30
+)
+
+// exchangeForbiddenParams are the RFC 8693 parameters the exchange does not
+// support. A request that carries any of them, even empty, is refused rather
+// than served with the parameter ignored.
+var exchangeForbiddenParams = []string{
+	"actor_token", "actor_token_type", "resource", "audience", "scope", "requested_token_type",
+}
 
 // tokenHandler implements the POST /oauth/token endpoint.
 type tokenHandler struct {
@@ -54,6 +77,9 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 	return claims
 }
 
+// ServeHTTP authenticates the client, then serves the grant it asks for. A
+// plain or admin client may only use client_credentials, an on-behalf-of
+// client only the token exchange.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeTokenError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
@@ -65,194 +91,235 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	clientID, secret, ok := parseBasicAuth(r)
 	if !ok {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
+		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 
 	// A store failure is the server failing, not the credentials being
-	// wrong: it answers 500, never 401.
+	// wrong: it never answers 401.
 	client, err := h.m2mStore.Authenticate(r.Context(), clientID, secret)
 	if errors.Is(err, ErrInvalidClient) {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "")
+		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 	if err != nil {
-		writeTokenServerError(w, "m2mStore.Authenticate", err)
+		writeTokenStoreError(w, "m2mStore.Authenticate", err)
 		return
 	}
 
-	switch r.FormValue("grant_type") {
+	if err := r.ParseForm(); err != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "malformed request body")
+		return
+	}
+
+	switch r.PostForm.Get("grant_type") {
 	case "client_credentials":
 		h.handleClientCredentials(w, r, client)
-	case "urn:ietf:params:oauth:grant-type:token-exchange":
+	case grantTokenExchange:
 		h.handleTokenExchange(w, r, client)
 	default:
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "")
 	}
 }
 
+// handleClientCredentials issues a client its own token (§4.2).
 func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, client *M2MClient) {
-	kp, signer, err := h.keyStore.Signer()
-	if err != nil {
-		writeTokenServerError(w, "keyStore.Signer", err)
+	if client.OnBehalfOf {
+		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "this client may only exchange user assertions")
 		return
 	}
 
 	now := time.Now()
 	claims := map[string]any{
 		"sub":          client.ClientID,
-		"iss":          h.issuer,
 		"caas_user_id": client.UserID,
 		"caas_org_id":  client.TenantID,
 		"scopes":       client.Roles,
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(time.Duration(h.expirySeconds) * time.Second).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
+		// The secret generation the token was issued under: a stream opened
+		// with it ends when the client's secret is reset.
+		"cgen": client.SecretGen,
 	}
-
-	token, err := Sign(r.Context(), h.withAudience(claims), signer, kp.KID)
-	if err != nil {
-		writeTokenServerError(w, "Sign", err)
-		return
-	}
-
-	writeTokenResponse(w, http.StatusOK, map[string]any{
-		"access_token": token,
-		"token_type":   "Bearer",
-		"expires_in":   h.expirySeconds,
-	})
+	h.mintAndRespond(w, r, claims, now, now.Add(time.Duration(h.expirySeconds)*time.Second), false)
 }
 
+// handleTokenExchange issues an on-behalf-of client a token for the user its
+// assertion names (§4.3, §4.4). Every refusal carries a fixed description:
+// none echoes the subject, the tenant or the key id.
 func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Request, client *M2MClient) {
-	subjectToken := r.FormValue("subject_token")
-	subjectTokenType := r.FormValue("subject_token_type")
-
-	if subjectTokenType != "urn:ietf:params:oauth:token-type:jwt" {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unsupported subject_token_type")
+	// Refused before the assertion is read.
+	if !client.OnBehalfOf {
+		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "this client may not exchange user assertions")
 		return
 	}
 
-	parsed, err := Parse(subjectToken)
-	if err != nil {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid subject token")
+	// r.Form holds the body and the query string; a parameter in either is
+	// refused, even when empty.
+	for _, p := range exchangeForbiddenParams {
+		if _, present := r.Form[p]; present {
+			writeTokenError(w, http.StatusBadRequest, "invalid_request", "unsupported parameter")
+			return
+		}
+	}
+	if r.PostForm.Get("subject_token_type") != tokenTypeJWT {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "unsupported subject_token_type")
 		return
 	}
 
-	if err := EnsureAlgRS256(parsed.Header); err != nil {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unsupported token algorithm")
+	parsed, err := Parse(r.PostForm.Get("subject_token"))
+	if err != nil || EnsureAlgRS256(parsed.Header) != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "invalid subject token")
 		return
 	}
-
 	kid, _ := parsed.Header["kid"].(string)
 	if kid == "" {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "missing kid in subject token")
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "invalid subject token")
 		return
 	}
 
-	// The key is looked up in the exchanging client's own tenant. A key's
-	// tenant is the tenant that registered it; the subject token's
-	// caas_org_id is written by the key holder and cannot bind a key to a
-	// tenant, so a key registered elsewhere is not found here.
-	// The store is read on every exchange; it refuses a key that is absent,
-	// inactive or outside its window. A store that cannot answer fails the
-	// exchange: it is never read as "no such key".
+	// The key is read from the store in the exchanging client's own tenant,
+	// on every exchange. A key's tenant is the tenant that registered it; the
+	// assertion's caas_org_id is written by the key holder and cannot bind a
+	// key to a tenant, so a key registered elsewhere is not found here. The
+	// store refuses a key that is absent, inactive or outside its window. A
+	// store that cannot answer fails the exchange: it is never read as "no
+	// such key".
 	trustedKey, err := h.trustedKeyStore.GetForVerification(r.Context(), client.TenantID, kid)
 	if errors.Is(err, ErrTrustedKeyNotFound) {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unknown trusted key")
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "unknown or inactive trusted key")
 		return
 	}
 	if err != nil {
-		if common.StorageUnavailable(err) != nil {
-			writeTokenUnavailable(w, "trustedKeyStore.GetForVerification", err)
-			return
-		}
-		writeTokenServerError(w, "trustedKeyStore.GetForVerification", err)
+		writeTokenStoreError(w, "trustedKeyStore.GetForVerification", err)
 		return
 	}
 
-	if err := Verify(parsed.SigningInput, parsed.Signature, trustedKey.PublicKey); err != nil {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "signature verification failed")
+	if err := Verify(parsed.SigningInput, parsed.Signature, trustedKey.PublicKey); err != nil ||
+		!issuerListed(trustedKey.Issuers, parsed.Claims["iss"]) {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "subject token signature or issuer rejected")
 		return
 	}
 
-	// Validate issuer if the trusted key has issuers configured.
-	if len(trustedKey.Issuers) > 0 {
-		iss, _ := parsed.Claims["iss"].(string)
-		issuerMatch := false
-		for _, allowed := range trustedKey.Issuers {
-			if iss == allowed {
-				issuerMatch = true
-				break
-			}
-		}
-		if !issuerMatch {
-			writeTokenError(w, http.StatusBadRequest, "invalid_grant", "untrusted token issuer")
-			return
-		}
-	}
-
-	if err := ValidateClaims(parsed.Claims, 30*time.Second); err != nil {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", err.Error())
+	now := time.Now()
+	assertionExp, ok := h.assertionClaimsAcceptable(parsed.Claims, now)
+	if !ok {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "subject token claims rejected")
 		return
 	}
 
-	// Extract claims from subject token.
-	// The sub claim identifies the user on whose behalf we're acting.
-	subjectSub, _ := parsed.Claims["sub"].(string)
-	if subjectSub == "" {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "subject token missing sub claim")
-		return
-	}
-	// sub becomes the issued token's user id, so it passes the check every
-	// door applies to one. The description carries the reason, never the value.
-	if err := common.ValidateUserID(subjectSub); err != nil {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "subject token sub claim rejected: "+err.Error())
-		return
-	}
-	subOrgID, _ := parsed.Claims["caas_org_id"].(string)
-
-	// Tenant boundary check: the subject must be a principal of the client's
-	// tenant, which is also the tenant of the key that signed it.
-	// Domain-type tenant compared against raw JWT claim string at the security
-	// boundary; subOrgID is the untyped JWT "caas_org_id" claim asserted to string.
-	if string(client.TenantID) != subOrgID {
+	// The asserted user must be a user of the client's tenant. Domain-type
+	// tenant compared against the raw claim at the security boundary.
+	if orgID, _ := parsed.Claims["caas_org_id"].(string); orgID != string(client.TenantID) {
 		writeTokenError(w, http.StatusForbidden, "access_denied", "tenant mismatch")
 		return
 	}
 
+	// sub becomes the issued token's user id, so it passes the check every
+	// door applies to one.
+	sub, _ := parsed.Claims["sub"].(string)
+	if common.ValidateUserID(sub) != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "subject token sub rejected")
+		return
+	}
+
+	// exp = min(assertion exp, now + expiry), in whole seconds. The time
+	// claims bound the assertion's exp to now + 330 s, so the comparison is
+	// in range.
+	exp := now.Unix() + int64(h.expirySeconds)
+	if assertionExp < float64(exp) {
+		exp = int64(math.Floor(assertionExp))
+	}
+	if exp <= now.Unix() {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "subject token has expired")
+		return
+	}
+
+	claims := map[string]any{
+		"sub":          sub,
+		"caas_user_id": sub,
+		"caas_org_id":  client.TenantID,
+		// The client's roles; the assertion's are ignored.
+		"scopes": client.Roles,
+		"act":    map[string]any{"sub": client.ClientID},
+	}
+	h.mintAndRespond(w, r, claims, now, time.Unix(exp, 0), true)
+}
+
+// assertionClaimsAcceptable applies the time and audience rules to a
+// verified assertion and returns its exp: aud contains the cyoda issuer; exp
+// and iat are numbers with exp − iat at most assertionMaxLifetime; iat is
+// not in the future, exp not past and nbf, when present, not in the future,
+// each within assertionClockSkew.
+func (h *tokenHandler) assertionClaimsAcceptable(claims map[string]any, now time.Time) (float64, bool) {
+	if checkAudience(claims["aud"], h.issuer) != nil {
+		return 0, false
+	}
+	exp, okExp := claims["exp"].(float64)
+	iat, okIat := claims["iat"].(float64)
+	if !okExp || !okIat {
+		return 0, false
+	}
+	t := float64(now.Unix())
+	if exp-iat > assertionMaxLifetime || iat > t+assertionClockSkew || exp <= t-assertionClockSkew {
+		return 0, false
+	}
+	if raw, present := claims["nbf"]; present {
+		nbf, ok := raw.(float64)
+		if !ok || nbf > t+assertionClockSkew {
+			return 0, false
+		}
+	}
+	return exp, true
+}
+
+// issuerListed reports whether iss is one of issuers; a key that lists no
+// issuers accepts any.
+func issuerListed(issuers []string, iss any) bool {
+	if len(issuers) == 0 {
+		return true
+	}
+	s, ok := iss.(string)
+	if !ok {
+		return false
+	}
+	for _, allowed := range issuers {
+		if s == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+// mintAndRespond completes claims with the fields every issued token
+// carries, signs it and writes the token response. expires_in is the token's
+// remaining life, exp − now in whole seconds. exchanged adds the RFC 8693
+// issued_token_type.
+func (h *tokenHandler) mintAndRespond(w http.ResponseWriter, r *http.Request, claims map[string]any, now, exp time.Time, exchanged bool) {
+	token, err := h.mint(r, claims, now, exp)
+	if err != nil {
+		writeTokenServerError(w, "mint", err)
+		return
+	}
+	body := map[string]any{
+		"access_token": token,
+		"token_type":   "Bearer",
+		"expires_in":   exp.Unix() - now.Unix(),
+	}
+	if exchanged {
+		body["issued_token_type"] = tokenTypeJWT
+	}
+	writeTokenResponse(w, http.StatusOK, body)
+}
+
+// mint signs claims with the current signing key, after setting iss, iat,
+// exp, jti, caas_tier and, when configured, aud.
+func (h *tokenHandler) mint(r *http.Request, claims map[string]any, now time.Time, exp time.Time) (string, error) {
 	kp, signer, err := h.keyStore.Signer()
 	if err != nil {
-		writeTokenServerError(w, "keyStore.Signer", err)
-		return
+		return "", err
 	}
-
-	oboNow := time.Now()
-	claims := map[string]any{
-		"sub":          subjectSub,
-		"iss":          h.issuer,
-		"caas_user_id": subjectSub,
-		"caas_org_id":  subOrgID,
-		"scopes":       client.Roles, // the client's roles; the assertion's are ignored
-		"act":          map[string]any{"sub": client.ClientID},
-		"caas_tier":    "unlimited",
-		"exp":          oboNow.Add(time.Duration(h.expirySeconds) * time.Second).Unix(),
-		"iat":          oboNow.Unix(),
-		"jti":          uuid.NewString(),
-	}
-
-	token, err := Sign(r.Context(), h.withAudience(claims), signer, kp.KID)
-	if err != nil {
-		writeTokenServerError(w, "Sign", err)
-		return
-	}
-
-	writeTokenResponse(w, http.StatusOK, map[string]any{
-		"access_token":      token,
-		"token_type":        "Bearer",
-		"expires_in":        h.expirySeconds,
-		"issued_token_type": "urn:ietf:params:oauth:token-type:jwt",
-	})
+	claims["iss"], claims["iat"], claims["exp"], claims["jti"], claims["caas_tier"] =
+		h.issuer, now.Unix(), exp.Unix(), uuid.NewString(), "unlimited"
+	return Sign(r.Context(), h.withAudience(claims), signer, kp.KID)
 }
 
 // parseBasicAuth extracts client_id and client_secret from the Authorization header.
@@ -283,6 +350,9 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 	return id, sec, true
 }
 
+// writeTokenError writes an OAuth-shaped error (RFC 6749 §5.2). A 401
+// carries WWW-Authenticate: Basic, the scheme the endpoint authenticates
+// clients with.
 func writeTokenError(w http.ResponseWriter, status int, errCode, description string) {
 	resp := map[string]string{"error": errCode}
 	if description == "" {
@@ -293,6 +363,9 @@ func writeTokenError(w http.ResponseWriter, status int, errCode, description str
 	}
 	resp["error_description"] = description
 	SetNoStore(w.Header())
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", "Basic")
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(resp)
@@ -318,17 +391,27 @@ func writeTokenServerError(w http.ResponseWriter, op string, cause error) {
 		fmt.Sprintf("server_error [ticket: %s]", ticket))
 }
 
-// writeTokenUnavailable answers a 503 temporarily_unavailable with
-// Retry-After: 1 when a store the grant needs is unavailable. The cause goes
-// to the log, never into the response.
-func writeTokenUnavailable(w http.ResponseWriter, op string, cause error) {
+// writeTokenStoreError answers a failed store read: a storage-unavailable
+// error is a retryable 503 temporarily_unavailable, any other a ticketed
+// 500. The cause goes to the log, never into the response.
+func writeTokenStoreError(w http.ResponseWriter, op string, cause error) {
+	if common.StorageUnavailable(cause) == nil {
+		writeTokenServerError(w, op, cause)
+		return
+	}
 	slog.Warn("token request refused: store unavailable",
 		"pkg", "auth",
 		"op", op,
 		"cause", cause,
 	)
+	writeTokenRetry(w, http.StatusServiceUnavailable, "temporarily_unavailable")
+}
+
+// writeTokenRetry answers a refusal the client may retry (temporarily_unavailable
+// with the meaning of RFC 6749 §4.1.2.1), with Retry-After: 1.
+func writeTokenRetry(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Retry-After", "1")
-	writeTokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "")
+	writeTokenError(w, status, code, "")
 }
 
 // SetNoStore marks a response as never to be stored by a cache (RFC 6749

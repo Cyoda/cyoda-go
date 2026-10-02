@@ -162,7 +162,8 @@ Management endpoints:
 
 Token exchange (OAuth error shape, see `auth.tokens`):
 
-- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule.
+- `400 unauthorized_client` — the exchanging client is not an on-behalf-of client.
+- `400 invalid_request` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the assertion does not parse, is not RS256, or has no `kid`; the `kid` is not an active trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; `aud` does not contain the cyoda issuer; `exp` or `iat` is missing, `exp − iat` exceeds 300 seconds, or a time claim fails; or `sub` is missing or breaks the user-identifier rule.
 - `503 temporarily_unavailable` (with `Retry-After: 1`) — the trusted-key store could not be read. The exchange is refused; it is never served from a copy that might hold an invalidated key. Any other store failure is `500 server_error` with a ticket.
 - `403 access_denied` — `caas_org_id` is not the client's tenant.
 

@@ -531,7 +531,7 @@ func New(cfg Config) *App {
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface:
 	//
-	//   PUBLIC (no auth): /.well-known/jwks.json, POST /oauth/token.
+	//   PUBLIC (no auth): /.well-known/jwks.json, /oauth/token.
 	//     These are the JWKS discovery + token-exchange endpoints and must
 	//     be reachable by unauthenticated callers by protocol.
 	//
@@ -542,7 +542,9 @@ func New(cfg Config) *App {
 	// Public auth endpoints (no auth middleware).
 	if authSvc != nil {
 		mux.Handle("/.well-known/", authSvc.Handler())
-		mux.Handle("POST /oauth/token", authSvc.Handler())
+		// Every method: the token handler answers its own 405, so a GET
+		// never falls through to the authenticated catch-all.
+		mux.Handle("/oauth/token", authSvc.Handler())
 	}
 
 	// Admin routes (auth middleware required).

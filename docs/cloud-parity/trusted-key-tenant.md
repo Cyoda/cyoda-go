@@ -12,8 +12,8 @@ In cyoda-go a trusted key verifies one thing: the subject token of the
 token-exchange grant (`POST /oauth/token`,
 `urn:ietf:params:oauth:grant-type:token-exchange`). The key is looked up in the
 exchanging M2M client's tenant (`TrustedKeyStore.GetForVerification`). A `kid`
-registered by another tenant is not found: `400 invalid_grant`, "unknown
-trusted key" — the same answer as a `kid` that does not exist, so the grant does
+registered by another tenant is not found: `400 invalid_request`, "unknown or
+inactive trusted key" — the same answer as a `kid` that does not exist, so the grant does
 not reveal another tenant's keys. The subject's `caas_org_id` must still equal
 the client's tenant (`403 access_denied` otherwise).
 

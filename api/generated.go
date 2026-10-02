@@ -405,15 +405,14 @@ func (e EntityChangeMetaChangeType) Valid() bool {
 
 // Defines values for ErrorResponseDtoError.
 const (
-	AccessDenied         ErrorResponseDtoError = "access_denied"
-	InvalidClient        ErrorResponseDtoError = "invalid_client"
-	InvalidGrant         ErrorResponseDtoError = "invalid_grant"
-	InvalidRequest       ErrorResponseDtoError = "invalid_request"
-	InvalidScope         ErrorResponseDtoError = "invalid_scope"
-	MethodNotAllowed     ErrorResponseDtoError = "method_not_allowed"
-	ServerError          ErrorResponseDtoError = "server_error"
-	UnauthorizedClient   ErrorResponseDtoError = "unauthorized_client"
-	UnsupportedGrantType ErrorResponseDtoError = "unsupported_grant_type"
+	AccessDenied           ErrorResponseDtoError = "access_denied"
+	InvalidClient          ErrorResponseDtoError = "invalid_client"
+	InvalidRequest         ErrorResponseDtoError = "invalid_request"
+	MethodNotAllowed       ErrorResponseDtoError = "method_not_allowed"
+	ServerError            ErrorResponseDtoError = "server_error"
+	TemporarilyUnavailable ErrorResponseDtoError = "temporarily_unavailable"
+	UnauthorizedClient     ErrorResponseDtoError = "unauthorized_client"
+	UnsupportedGrantType   ErrorResponseDtoError = "unsupported_grant_type"
 )
 
 // Valid indicates whether the value is a known member of the ErrorResponseDtoError enum.
@@ -423,15 +422,13 @@ func (e ErrorResponseDtoError) Valid() bool {
 		return true
 	case InvalidClient:
 		return true
-	case InvalidGrant:
-		return true
 	case InvalidRequest:
-		return true
-	case InvalidScope:
 		return true
 	case MethodNotAllowed:
 		return true
 	case ServerError:
+		return true
+	case TemporarilyUnavailable:
 		return true
 	case UnauthorizedClient:
 		return true
@@ -1575,15 +1572,12 @@ func (e GetTechnicalUserTokenFormdataBodyGrantType) Valid() bool {
 
 // Defines values for GetTechnicalUserTokenFormdataBodySubjectTokenType.
 const (
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt         GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the GetTechnicalUserTokenFormdataBodySubjectTokenType enum.
 func (e GetTechnicalUserTokenFormdataBodySubjectTokenType) Valid() bool {
 	switch e {
-	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
@@ -2978,7 +2972,7 @@ type TokenResponseDto struct {
 	// AccessToken The JWT access token for API authentication
 	AccessToken string `json:"access_token"`
 
-	// ExpiresIn The lifetime in seconds of the access token
+	// ExpiresIn The access token's remaining lifetime in seconds (its exp minus now)
 	ExpiresIn int32 `json:"expires_in"`
 
 	// IssuedTokenType The type of the issued token (present only for token-exchange responses, per RFC 8693)
@@ -3959,7 +3953,7 @@ type GetTechnicalUserTokenFormdataBody struct {
 	// GrantType The OAuth 2.0 grant type
 	GrantType *GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type,omitempty" json:"grant_type,omitempty"`
 
-	// SubjectToken The subject token to exchange
+	// SubjectToken The user assertion to exchange
 	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
 
 	// SubjectTokenType The type of the subject token
