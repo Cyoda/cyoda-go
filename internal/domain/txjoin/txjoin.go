@@ -187,7 +187,8 @@ func (j *Joiner) Verify(tok string) (*Pass, error) {
 // pass with another user's on-behalf-of token would be recorded as that user
 // inside the first user's transaction. It runs after Join, which supplies the
 // origin, and before the fence, so a refused request absorbs nothing. A
-// service client's join is unchecked: its writes attribute to the origin.
+// principal without an Executor joins unchecked (a service client, or a
+// user-kind token such as the operator's).
 //
 // Error mapping:
 //
@@ -262,11 +263,11 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 // Order: verify (done) → Join (tenant) → an on-behalf-of request's own-user
 // check → Admit → take the lock, which is where the queue's cap is applied →
 // Check under the lock → handler → release. The check under the lock is the
-// one that gives the right to touch the transaction: the owner's wait takes the same lock, so
-// a request either passed this check before the number rose — and the owner
-// waits for it — or is refused here. The engine gives the lock up for the
-// length of a callout of the callback's own through the handle installed here
-// (txgate.Suspend).
+// one that gives the right to touch the transaction: the owner's wait takes
+// the same lock, so a request either passed this check before the number rose
+// — and the owner waits for it — or is refused here. The engine gives the lock
+// up for the length of a callout of the callback's own through the handle
+// installed here (txgate.Suspend).
 //
 // A non-nil error means the handler did not run: a refusal, or — while the
 // request was still queued for the lock, having touched nothing — ctx's own

@@ -33,11 +33,17 @@ type fakeTM struct {
 	// origin is the attribution root Join puts on the transaction it returns,
 	// as a real manager carries the one recorded at Begin.
 	origin spi.Principal
+	// noTx makes Join succeed but hand back the context with no transaction
+	// on it — a manager that broke its contract.
+	noTx bool
 }
 
 func (f fakeTM) Join(ctx context.Context, txID string) (context.Context, error) {
 	if f.joinErr != nil {
 		return nil, f.joinErr
+	}
+	if f.noTx {
+		return ctx, nil
 	}
 	return spi.WithTransaction(ctx, &spi.TransactionState{ID: txID, Origin: f.origin}), nil
 }
@@ -420,18 +426,27 @@ func TestJoin_OBOJoinsOnlyItsOwnUsersTransaction(t *testing.T) {
 	tests := []struct {
 		name   string
 		origin spi.Principal
+		noTx   bool
 		uc     *spi.UserContext
 		refuse bool
 	}{
-		{"OBOOwnUser_Admitted", alice,
+		{"OBOOwnUser_Admitted", alice, false,
 			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, false},
-		{"OBOOtherUser_403", alice,
+		{"OBOOtherUser_403", alice, false,
 			&spi.UserContext{UserID: "bob", Kind: spi.PrincipalUser, Executor: oboClient}, true},
-		{"OBOSameIDServiceOrigin_403", spi.Principal{ID: "alice", Kind: spi.PrincipalService},
+		{"OBOSameIDServiceOrigin_403", spi.Principal{ID: "alice", Kind: spi.PrincipalService}, false,
 			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
-		{"OBONoOrigin_403", spi.Principal{},
+		{"OBONoOrigin_403", spi.Principal{}, false,
 			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
-		{"ServiceClient_AdmittedWhateverTheOrigin", alice,
+		// Fails closed: a join that hands back no transaction has no origin to
+		// match.
+		{"OBONoTransaction_403", alice, true,
+			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
+		{"ServiceClient_UserOrigin_Admitted", alice, false,
+			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
+		{"ServiceClient_ServiceOrigin_Admitted", spi.Principal{ID: "app-svc", Kind: spi.PrincipalService}, false,
+			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
+		{"ServiceClient_NoOrigin_Admitted", spi.Principal{}, false,
 			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
 	}
 	for _, tc := range tests {
@@ -440,7 +455,7 @@ func TestJoin_OBOJoinsOnlyItsOwnUsersTransaction(t *testing.T) {
 			f, claims := liveFence(t, "req-1", "tx-1")
 			tok, _ := s.Issue(claims)
 			base := spi.WithUserContext(context.Background(), tc.uc)
-			got, err := joinFromToken(base, s, fakeTM{origin: tc.origin}, f, tok)
+			got, err := joinFromToken(base, s, fakeTM{origin: tc.origin, noTx: tc.noTx}, f, tok)
 			if !tc.refuse {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
