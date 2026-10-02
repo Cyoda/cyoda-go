@@ -66,6 +66,19 @@ type AuditActorInfo struct {
 	LegalID    string `json:"legalId"`
 	Name       string `json:"name,omitempty"`
 	ExternalID string `json:"externalId,omitempty"`
+	// Kind is the attributed actor's principal kind: user | service | system.
+	// Open value set; empty on a legacy event recorded before attribution was
+	// stamped.
+	Kind string `json:"kind,omitempty"`
+}
+
+// AuditPrincipal is the {id, kind} executor object on an EntityChange or
+// StateMachine audit event's executedBy field — the principal that actually
+// staged the change, independent of the attributed actor. Kind is one of
+// user | service | system.
+type AuditPrincipal struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
 }
 
 // auditEventBase is the alias used inside UnmarshalJSON to break
@@ -122,6 +135,11 @@ type StateMachineAuditEvent struct {
 	// these bytes themselves; for the parity contract layer, knowing
 	// the bytes are present is sufficient.
 	Data json.RawMessage `json:"data,omitempty"`
+
+	// ExecutedBy is the principal that actually staged the change,
+	// independent of the attributed actor (AuditEvent.Actor). Present only
+	// when the engine recorded one.
+	ExecutedBy *AuditPrincipal `json:"executedBy,omitempty"`
 }
 
 // stateMachineAuditEventFlat is a flat struct (no embedded types with
@@ -145,6 +163,7 @@ type stateMachineAuditEventFlat struct {
 	EventType       string          `json:"eventType"`
 	EventID         string          `json:"eventId"`
 	Data            json.RawMessage `json:"data,omitempty"`
+	ExecutedBy      *AuditPrincipal `json:"executedBy,omitempty"`
 }
 
 // UnmarshalJSON decodes StateMachineAuditEvent with
@@ -175,6 +194,7 @@ func (e *StateMachineAuditEvent) UnmarshalJSON(b []byte) error {
 	e.EventType = flat.EventType
 	e.EventID = flat.EventID
 	e.Data = flat.Data
+	e.ExecutedBy = flat.ExecutedBy
 	return nil
 }
 
@@ -193,6 +213,11 @@ type EntityChangeAuditEvent struct {
 	// varies by entity model; parity scenarios that need typed access
 	// can decode these bytes themselves.
 	Changes json.RawMessage `json:"changes,omitempty"`
+
+	// ExecutedBy is the principal that actually staged the change,
+	// independent of the attributed actor (AuditEvent.Actor). Present only
+	// when the engine recorded one.
+	ExecutedBy *AuditPrincipal `json:"executedBy,omitempty"`
 }
 
 // entityChangeAuditEventFlat is the flat alias used for strict decoding.
@@ -211,6 +236,7 @@ type entityChangeAuditEventFlat struct {
 	ChangeType      string          `json:"changeType"`
 	Version         int64           `json:"version"`
 	Changes         json.RawMessage `json:"changes,omitempty"`
+	ExecutedBy      *AuditPrincipal `json:"executedBy,omitempty"`
 }
 
 // UnmarshalJSON decodes EntityChangeAuditEvent with
@@ -238,6 +264,7 @@ func (e *EntityChangeAuditEvent) UnmarshalJSON(b []byte) error {
 	e.ChangeType = flat.ChangeType
 	e.Version = flat.Version
 	e.Changes = flat.Changes
+	e.ExecutedBy = flat.ExecutedBy
 	return nil
 }
 

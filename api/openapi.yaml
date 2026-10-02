@@ -11229,9 +11229,27 @@ components:
         externalId:
           type: string
           description: External identifier of the actor, if applicable
+        kind:
+          type: string
+          description: Open value set. Known values are user, service and system.
       required:
         - id
         - legalId
+    AuditPrincipalDto:
+      type: object
+      description: >
+        The principal that actually made a change, independent of the
+        attributed actor. Present on an audit event only when the engine
+        recorded one.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          description: Open value set. Known values are user, service and system.
+      required:
+        - id
+        - kind
     AuditEventDto:
       type: object
       discriminator:
@@ -11468,6 +11486,10 @@ components:
                 The entity's version number for this change. Strictly
                 increasing over the entity's history, across delete and
                 recreate; (entityId, version) identifies the event.
+            executedBy:
+              $ref: "#/components/schemas/AuditPrincipalDto"
+              description: The principal that actually staged the change,
+                independent of the attributed actor. Present when known.
       required:
         - changeType
         - microsTime
@@ -11557,6 +11579,10 @@ components:
               description: >
                 The event's identity: a time-based UUID the server assigned
                 when it recorded the event. The same on every read.
+            executedBy:
+              $ref: "#/components/schemas/AuditPrincipalDto"
+              description: The principal that actually staged the change,
+                independent of the attributed actor. Present when known.
       required:
         - eventId
         - eventType

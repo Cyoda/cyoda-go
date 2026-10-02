@@ -1671,6 +1671,9 @@ type AuditActorInfoDto struct {
 	// Id Identifier of the actor
 	Id string `json:"id"`
 
+	// Kind Open value set. Known values are user, service and system.
+	Kind *string `json:"kind,omitempty"`
+
 	// LegalId Legal entity identifier of the actor
 	LegalId string `json:"legalId"`
 
@@ -1714,6 +1717,14 @@ type AuditEventDto struct {
 
 // AuditEventDtoSeverity Severity level of the event
 type AuditEventDtoSeverity string
+
+// AuditPrincipalDto The principal that actually made a change, independent of the attributed actor. Present on an audit event only when the engine recorded one.
+type AuditPrincipalDto struct {
+	Id string `json:"id"`
+
+	// Kind Open value set. Known values are user, service and system.
+	Kind string `json:"kind"`
+}
 
 // CancelAsyncSearchDto defines model for CancelAsyncSearchDto.
 type CancelAsyncSearchDto struct {
@@ -1822,6 +1833,9 @@ type EntityChangeAuditEventDto struct {
 
 	// EntityModel Type of the entity related to this event (model.version)
 	EntityModel *string `json:"entityModel,omitempty"`
+
+	// ExecutedBy The principal that actually staged the change, independent of the attributed actor. Present when known.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred
 	MicrosTime int64 `json:"microsTime"`
@@ -2778,6 +2792,9 @@ type StateMachineAuditEventDto struct {
 	// can pair the entry-side `STATE_MACHINE_START` with a
 	// terminal abort event in the audit log.
 	EventType *StateMachineAuditEventDtoEventType `json:"eventType,omitempty"`
+
+	// ExecutedBy The principal that actually staged the change, independent of the attributed actor. Present when known.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred
 	MicrosTime int64 `json:"microsTime"`

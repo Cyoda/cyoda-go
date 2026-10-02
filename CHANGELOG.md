@@ -858,6 +858,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- Audit events: `actor` gains `kind`, and entity-change and state-machine
+  events carry `executedBy`; state-machine events now carry `actor`.
+
 - The compute test client (`cmd/compute-test-client`) authenticates with
   `CYODA_COMPUTE_CLIENT_ID` / `CYODA_COMPUTE_CLIENT_SECRET` (the
   `client_credentials` grant, refreshing its token before it expires)

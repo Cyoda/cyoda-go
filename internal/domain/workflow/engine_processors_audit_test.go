@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -154,5 +155,55 @@ func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
 	}
 	if !strings.Contains(second.Details, `execution type "internalized" is not yet implemented`) {
 		t.Errorf("cascade-path second emit Details = %q, want rejection sub-string", second.Details)
+	}
+}
+
+// TestEngine_RecordEvent_StampsAttribution asserts that every state-machine
+// audit event the engine records under an on-behalf-of context carries the
+// {attributed, executor} pair spi.AttributionFor(ctx) computes: here alice
+// (user) as the attributed principal, the OBO client (service) as executor.
+func TestEngine_RecordEvent_StampsAttribution(t *testing.T) {
+	engine, factory := setupEngine(t)
+	uc := &spi.UserContext{
+		UserID: "alice", UserName: "alice", Kind: spi.PrincipalUser,
+		Tenant:   spi.Tenant{ID: testTenant, Name: string(testTenant)},
+		Roles:    []string{"USER"},
+		Executor: &spi.Principal{ID: "OBOCLIENT0000001", Kind: spi.PrincipalService},
+	}
+	ctx := spi.WithUserContext(context.Background(), uc)
+	modelRef := spi.ModelRef{EntityName: "audit-attribution", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "AuditAttributionWF", InitialState: "NONE", Active: true,
+		States: map[string]spi.StateDefinition{
+			"NONE":   {Transitions: []spi.TransitionDefinition{{Name: "store", Next: "STORED", Manual: false}}},
+			"STORED": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e1", modelRef, map[string]any{})
+	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
+	}
+	events, err := auditStore.GetEvents(ctx, "e1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("expected at least one state machine event")
+	}
+	for _, ev := range events {
+		if ev.Attributed.ID != "alice" || ev.Attributed.Kind != spi.PrincipalUser {
+			t.Errorf("event %s: Attributed = %+v, want {alice user}", ev.EventType, ev.Attributed)
+		}
+		if ev.Executor.ID != "OBOCLIENT0000001" || ev.Executor.Kind != spi.PrincipalService {
+			t.Errorf("event %s: Executor = %+v, want {OBOCLIENT0000001 service}", ev.EventType, ev.Executor)
+		}
 	}
 }

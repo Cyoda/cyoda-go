@@ -69,7 +69,9 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
       "microsTime": 1754042700000000,
       "entityId": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
       "transactionId": "9f1a2b3c-ed0e-11ee-a357-ae468cd3ed16",
-      "version": 2
+      "version": 2,
+      "actor": {"id": "alice", "name": "alice", "legalId": "acme", "kind": "user"},
+      "executedBy": {"id": "OBOCLIENT0000001", "kind": "service"}
     },
     {
       "auditEventType": "StateMachine",
@@ -80,7 +82,9 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
       "entityId": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
       "state": "APPROVED",
       "data": {"success": true},
-      "eventId": "3f9b6a10-6f5e-11f0-8f3a-0242ac110002"
+      "eventId": "3f9b6a10-6f5e-11f0-8f3a-0242ac110002",
+      "actor": {"id": "alice", "name": "alice", "legalId": "acme", "kind": "user"},
+      "executedBy": {"id": "OBOCLIENT0000001", "kind": "service"}
     }
   ]
 }
@@ -91,6 +95,7 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 - `changeType`: `"CREATE"`, `"UPDATE"`, or `"DELETE"` — the type of entity change
 - `version`: the entity's version number for this change, strictly increasing over the entity's whole history including across a delete and a later recreate. `(entityId, version)` identifies this event.
 - `changes`: before/after diff — **not yet emitted by the server (deferred gap)**; the field is declared in the OpenAPI schema but the server currently omits it from all responses. Do not rely on `changes` being present.
+- `executedBy`: `{id, kind}` — the principal that actually staged the change, independent of `actor` (see below). Present when the engine recorded one.
 - `severity`, `utcTime`, `microsTime`, `entityId`, `transactionId`, `actor` — plus `entityModel`, `consistencyTime`, `details`, `system` — inherited from `AuditEventDto` (see the `openapi` topic for the full schema)
 
 **StateMachineAuditEventDto** fields (discriminated by `auditEventType: "StateMachine"`):
@@ -99,6 +104,14 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 - `eventId`: a time-based UUID assigned by the server when it recorded the event. Unique per event and the same value on every read, on this endpoint and on the workflow-finished endpoint below.
 - `state`: entity state at the time of the event
 - `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`.
+- `actor`: the attributed principal the transition ran for (see `AuditActorInfoDto.kind` below). Present when the engine recorded one.
+- `executedBy`: `{id, kind}` — the principal that actually ran the transition, independent of `actor`. Present when the engine recorded one.
+
+### Actor and executor
+
+`AuditActorInfoDto` (the `actor` field on both event kinds) carries `id`, `legalId`, `name`, and `kind` — an open value set, known values `user`, `service`, and `system`. `kind` is empty on a legacy event recorded before attribution was stamped.
+
+`executedBy` is an `AuditPrincipalDto` — `{id, kind}`, both populated when present. It names the principal that actually made the change, which can differ from `actor`: e.g. an on-behalf-of (OBO) write attributes to the user (`actor`) but is executed by the OBO client (`executedBy`, `kind: "service"`); a cascade write executed by a compute node inside another principal's transaction attributes to that transaction's origin but is executed by the compute node's service identity.
 
 **GET /api/audit/entity/{entityId}/workflow/{transactionId}/finished** — Get workflow finished event
 

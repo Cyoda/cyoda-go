@@ -511,3 +511,59 @@ func TestAuditE2E_Cursor400(t *testing.T) {
 		assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
 	})
 }
+
+// TestAuditE2E_OBOIdentity proves actor/executedBy on both audit event kinds
+// for an on-behalf-of write: alice's on-behalf-of token creates an entity
+// whose single auto-transition (secondaryWorkflow: NONE -store-> STORED)
+// emits a StateMachine event in the same request. Both the EntityChange and
+// the StateMachine events must carry alice (kind user) as actor, and the OBO
+// client (kind service) as executedBy.
+func TestAuditE2E_OBOIdentity(t *testing.T) {
+	const model = "audit-e2e-obo-identity-6"
+	setupModelWithWorkflow(t, model, secondaryWorkflow)
+
+	alice := oboToken(t, "alice")
+	resp := requestAs(t, alice, http.MethodPost, "/entity/JSON/"+model+"/1", []byte(`{"name":"x"}`))
+	body := readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("create as alice (OBO): %d %s", resp.StatusCode, body)
+	}
+	id := parseCreatedEntityID(body)
+	if id == "" {
+		t.Fatalf("create as alice (OBO): no entity id in %s", body)
+	}
+
+	events, _ := auditPage(t, id, "limit=1000")
+	if len(events) < 2 {
+		t.Fatalf("expected at least one EntityChange and one StateMachine event, got %d: %v", len(events), events)
+	}
+
+	oboClientID := oboClientOf(t, alice)
+	var sawEntityChange, sawStateMachine bool
+	for _, ev := range events {
+		actor, ok := ev["actor"].(map[string]any)
+		if !ok {
+			t.Fatalf("event %v missing actor", ev)
+		}
+		if actor["id"] != "alice" || actor["kind"] != "user" {
+			t.Errorf("event %v: actor = %v, want {alice user ...}", ev["auditEventType"], actor)
+		}
+		exe, ok := ev["executedBy"].(map[string]any)
+		if !ok {
+			t.Fatalf("event %v missing executedBy", ev)
+		}
+		if exe["id"] != oboClientID || exe["kind"] != "service" {
+			t.Errorf("event %v: executedBy = %v, want {%s service}", ev["auditEventType"], exe, oboClientID)
+		}
+		switch ev["auditEventType"] {
+		case "EntityChange":
+			sawEntityChange = true
+		case "StateMachine":
+			sawStateMachine = true
+		}
+	}
+	if !sawEntityChange || !sawStateMachine {
+		t.Fatalf("expected both EntityChange and StateMachine events, got EntityChange=%v StateMachine=%v: %v",
+			sawEntityChange, sawStateMachine, events)
+	}
+}
