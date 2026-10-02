@@ -44,7 +44,7 @@ jwt:
   existingSecret: ""
   existingSecretKey: signing-key.pem
   issuer: cyoda
-  expirySeconds: 3600
+  expirySeconds: 300
 
 cluster:
   # -- HMAC secret used for gossip encryption AND inter-node HTTP dispatch

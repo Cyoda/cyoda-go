@@ -46,7 +46,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - `--tenant <tenantId>` — required. The tenant the token acts in. A tenant that will register OIDC providers must be a UUID in its canonical lowercase form (see `cyoda help errors OIDC_INVALID_TENANT`).
 - `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
 - `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`.
-- `--ttl <duration>` — lifetime, at least `1s` and at most `CYODA_JWT_EXPIRY_SECONDS` (default 3600 s); a value outside that range is a flag error (exit 2). Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
+- `--ttl <duration>` — lifetime, at least `1s` and at most `CYODA_JWT_EXPIRY_SECONDS` (default 300 s); a value outside that range is a flag error (exit 2). Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
 
 ## ENVIRONMENT VARIABLES
 
@@ -54,8 +54,8 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 - `CYODA_JWT_ISSUER` — `iss` (default `cyoda` when unset). An empty value makes the command exit 1.
 - `CYODA_JWT_AUDIENCE` — `aud`, when set.
 - `CYODA_JWT_EXPIRY_SECONDS` — the upper bound of `--ttl`. Unset or empty
-  means 3600. Otherwise it must be a whole number of seconds from 1 to
-  31622400 (366 days); any other value makes the command exit 1.
+  means 300. Otherwise it must be a whole number of seconds from 1 to
+  3600; any other value makes the command exit 1.
 
 ## OUTPUT
 

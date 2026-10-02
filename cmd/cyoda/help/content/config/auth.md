@@ -64,8 +64,8 @@ signal that requests are unauthenticated.
   issued tokens carry no `aud` (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
   of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
-  be an integer from 1 to 31622400 (366 days); any other value stops the
-  server at startup and makes `cyoda token` exit 1. (default: `3600`)
+  be an integer from 1 to 3600; any other value stops the
+  server at startup and makes `cyoda token` exit 1. (default: `300`)
 
 ### Tenant identifiers
 

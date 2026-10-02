@@ -23,7 +23,7 @@ func TestLoadJWTSettings_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Issuer != "cyoda" || s.Audience != "" || s.ExpirySeconds != 3600 || s.SigningKeyPEM != "" {
+	if s.Issuer != "cyoda" || s.Audience != "" || s.ExpirySeconds != 300 || s.SigningKeyPEM != "" {
 		t.Fatalf("defaults = %+v", s)
 	}
 }
@@ -55,8 +55,8 @@ func TestLoadJWTSettings_EmptyExpiryIsTheDefault(t *testing.T) {
 	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
 	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
 	s, err := LoadJWTSettings()
-	if err != nil || s.ExpirySeconds != 3600 {
-		t.Fatalf("settings = %+v, err = %v; want expiry 3600", s, err)
+	if err != nil || s.ExpirySeconds != 300 {
+		t.Fatalf("settings = %+v, err = %v; want expiry 300", s, err)
 	}
 }
 

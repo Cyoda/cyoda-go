@@ -33,7 +33,7 @@ This is the single home for the JWT claim contract. `auth.trusted-keys` links he
 - `CYODA_JWT_SIGNING_KEY` (PEM RSA private key; tokens cyoda issues are signed with this)
 - `CYODA_JWT_ISSUER` (default `cyoda`; populates the `iss` claim; must not be empty; a user assertion's `aud` must contain it)
 - `CYODA_JWT_AUDIENCE` (default empty = no `aud` check on inbound tokens, and no `aud` on issued tokens)
-- `CYODA_JWT_EXPIRY_SECONDS` (default `3600`)
+- `CYODA_JWT_EXPIRY_SECONDS` (default `300`, maximum `3600`)
 
 See `config.auth` for the full env-var reference.
 
@@ -65,7 +65,7 @@ Response (`200 OK`):
 {
   "access_token": "eyJhbGciOiJSUzI1NiIs…",
   "token_type":   "Bearer",
-  "expires_in":   3600
+  "expires_in":   300
 }
 ```
 

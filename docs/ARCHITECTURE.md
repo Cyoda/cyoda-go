@@ -2188,7 +2188,7 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_JWT_SIGNING_KEY` (with `_FILE` variant) | (none) | PEM-encoded RSA private key (or base64-encoded PEM) |
 | `CYODA_JWT_ISSUER` | `cyoda` | JWT issuer claim |
 | `CYODA_JWT_AUDIENCE` | (empty) | Required `aud` on inbound first-party JWTs, and set as `aud` on every token cyoda-go issues (`/oauth/token`, both grants, and `cyoda token`); empty disables the check and issued tokens carry no `aud` |
-| `CYODA_JWT_EXPIRY_SECONDS` | `3600` | Token expiry in seconds |
+| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Token expiry in seconds, at most `3600` |
 | `CYODA_REQUIRE_JWT` | `false` | Production safety floor: when `true`, the binary refuses to start unless `CYODA_IAM_MODE=jwt` AND `CYODA_JWT_SIGNING_KEY` is set. Protects against silently shipping a mock-auth deployment. |
 | `CYODA_IAM_MOCK_ROLES` | `ROLE_ADMIN,ROLE_M2M` | Comma-separated roles attached to the default mock user (mock mode only). |
 | `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Per-client, per-node limit on `POST /oauth/token` across both grants (burst of the same size); `429 slow_down` over it; `0` = unlimited |

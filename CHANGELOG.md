@@ -65,12 +65,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gone, the `caas_org_id` claim is the only place a tenant id enters
   cyoda-go from outside it. See `cyoda help cli token`.
 
-- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 31622400 (366
-  days).** The server used to replace a non-numeric value with 3600 and
-  accept 0 or a negative value, issuing tokens that had already expired; it
-  now refuses to start, and `cyoda token` exits 1, for any value outside that
-  range; unset or empty still means 3600. The Helm chart's
-  `jwt.expirySeconds` has the same upper bound.
+- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 3600, and now
+  defaults to 300 (was 3600).** The server used to replace a non-numeric
+  value with 3600 and accept 0, a negative value, or anything up to 31622400
+  (366 days), issuing tokens that had already expired or lived for up to a
+  year; it now refuses to start, and `cyoda token` exits 1, for any value
+  outside 1–3600; unset or empty means 300. A revoked M2M client's issued
+  tokens therefore now end within at most an hour, down from up to a year.
+  The Helm chart's `jwt.expirySeconds` has the same default and upper bound.
 
 - **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
   it and issue tokens with an empty `iss`; it now refuses to start, and

@@ -77,7 +77,7 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY`; takes precedence
 - `CYODA_JWT_ISSUER` = `cyoda` (default; set to your issuer URI)
 - `CYODA_JWT_AUDIENCE` = `` (default empty; set to require the audience claim on inbound tokens and to set it on issued tokens)
-- `CYODA_JWT_EXPIRY_SECONDS` = `3600` (default)
+- `CYODA_JWT_EXPIRY_SECONDS` = `300` (default)
 
 **Inter-node dispatch auth (cluster mode):**
 
