@@ -51,7 +51,7 @@ func TestListScheduledTasks_RoutedAndBound(t *testing.T) {
 	serve := func(target string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodGet, target, nil)
 		r = r.WithContext(spi.WithUserContext(r.Context(),
-			&spi.UserContext{UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"}}))
+			&spi.UserContext{UserID: "u1", Kind: spi.PrincipalUser, Tenant: spi.Tenant{ID: "tenant-a"}, Roles: []string{"ROLE_M2M"}}))
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		return w

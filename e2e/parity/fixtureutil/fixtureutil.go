@@ -147,7 +147,7 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	return parity.Tenant{ID: tenantID, Token: token}
 }
 
-// mintTenantAdminJWT signs a ROLE_ADMIN token of tenantID for userID with the
+// mintTenantAdminJWT signs a ROLE_ADMIN, ROLE_M2M token of tenantID for userID with the
 // fixture's key.
 func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) {
 	now := time.Now()
@@ -156,7 +156,7 @@ func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) 
 		"iss":          ks.Issuer,
 		"caas_user_id": userID,
 		"caas_org_id":  tenantID,
-		"scopes":       []string{"ROLE_ADMIN"},
+		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
 		"caas_tier":    "unlimited",
 		"exp":          now.Add(1 * time.Hour).Unix(),
 		"iat":          now.Unix(),
@@ -250,7 +250,7 @@ func provisionComputeClient(baseURL, tenantID string, ks *JWTKeySet) (id, secret
 	return cred.ID, cred.Secret, nil
 }
 
-// MintComputeTenantJWT creates a regular (non-M2M) JWT whose tenant matches
+// MintComputeTenantJWT creates a tenant-admin JWT (not a client token) whose tenant matches
 // the compute-test-client's tenant. Tests that exercise gRPC processor/criteria
 // dispatch use this instead of MintTenantJWT so the MemberRegistry finds
 // the compute-test-client member.

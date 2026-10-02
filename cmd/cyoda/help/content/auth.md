@@ -37,6 +37,16 @@ Every cyoda API call needs an `Authorization: Bearer <jwt>` header. This page he
 
 All cyoda APIs accept the JWT via `Authorization: Bearer <token>`. The token claim shape — `sub`, `iss`, `caas_org_id`, `caas_user_id`, `user_roles` or `scopes`, `caas_tier`, `exp`, `iat`, `jti`, optionally `aud` and `act` — is documented in `auth.tokens`.
 
+## ROLES
+
+Every HTTP operation and every gRPC call requires `ROLE_M2M` in the token's roles, except:
+
+- `GET /account`;
+- the client and trusted-key operations (`/clients*`, `/oauth/keys/trusted*`), which require `ROLE_ADMIN`;
+- the key-pair operations (`/oauth/keys/keypair*`) and `/admin/*`, which require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`).
+
+A token without `ROLE_M2M` gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") or gRPC `PermissionDenied` before the operation runs. Every M2M client holds `ROLE_M2M`, so its tokens reach data. A token from `cyoda token` carries the roles it was signed with: sign it with `--roles ROLE_ADMIN,ROLE_M2M` to reach data (see `cli.token`). In mock mode the principal's roles are `CYODA_IAM_MOCK_ROLES`, `ROLE_ADMIN,ROLE_M2M` by default.
+
 ## SEE ALSO
 
 - `cli.token` — sign the first admin token with the signing key

@@ -29,7 +29,9 @@ The token names a person: `sub` and `caas_user_id` are `--user`, `caas_org_id` i
 
 The token serves HTTP calls and unary gRPC calls. It never opens a compute-node stream, whatever its roles: a stream opens only with an M2M client's own `client_credentials` token. A compute node uses an M2M client, which can fetch new tokens itself.
 
-The key-pair endpoints, OIDC reload and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
+The token carries exactly the roles it is signed with. The default, `ROLE_ADMIN`, reaches `GET /account` and the admin operations: clients, trusted keys and, in `PLATFORM`, key pairs and `/admin/*`. Every other operation — entities, models, search, messages, audit, scheduled tasks, every gRPC call — requires `ROLE_M2M` and answers `403 FORBIDDEN` (gRPC `PermissionDenied`) without it. To reach data, sign with `--roles ROLE_ADMIN,ROLE_M2M`.
+
+The key-pair endpoints and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
 
 ## WHEN THE TOKEN IS REFUSED
 
@@ -43,9 +45,9 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 
 ## OPTIONS
 
-- `--tenant <tenantId>` — required. The tenant the token acts in. A tenant that will register OIDC providers must be a UUID in its canonical lowercase form (see `cyoda help errors OIDC_INVALID_TENANT`).
+- `--tenant <tenantId>` — required. The tenant the token acts in.
 - `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
-- `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`.
+- `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`, which reaches only the admin operations; `--roles ROLE_ADMIN,ROLE_M2M` also reaches data.
 - `--ttl <duration>` — lifetime, at least `1s` and at most `CYODA_JWT_EXPIRY_SECONDS` (default 300 s); a value outside that range is a flag error (exit 2). Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
 
 ## ENVIRONMENT VARIABLES
@@ -76,7 +78,11 @@ TOKEN=$(cyoda token --tenant acme)
 # local users, stdin is not.
 curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $TOKEN"
 
-# Platform operator (key-pair, OIDC reload, /admin/* endpoints)
+# Data: entities, models, search (ROLE_M2M is required)
+TOKEN=$(cyoda token --tenant acme --roles ROLE_ADMIN,ROLE_M2M)
+curl -H @- http://localhost:8080/api/model/ <<<"Authorization: Bearer $TOKEN"
+
+# Platform operator (key-pair, /admin/* endpoints)
 TOKEN=$(cyoda token --tenant PLATFORM)
 curl -H @- 'http://localhost:8080/api/oauth/keys/keypair/current' \
   <<<"Authorization: Bearer $TOKEN"

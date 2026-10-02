@@ -91,19 +91,23 @@ func NewServer(
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
 	// Recovery runs first so it also covers a panic inside auth or tx-routing.
-	// Auth runs second so the tx-route interceptor sees the authenticated
-	// UserContext (the join layer's tenant check depends on it); tx-route runs
-	// third, joining the referenced transaction or forwarding to its owner.
+	// Auth runs second so the later interceptors see the authenticated
+	// UserContext. The ROLE_M2M check runs third, so a caller without the role
+	// joins and forwards nothing; tx-route runs last (the join layer's tenant
+	// check depends on the UserContext), joining the referenced transaction or
+	// forwarding to its owner.
 	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
 			UnaryRecoveryInterceptor(healthFlag),
 			UnaryAuthInterceptor(authSvc),
+			UnaryRequireM2M(),
 			txRoute.unary(),
 		),
 		googlegrpc.ChainStreamInterceptor(
 			StreamRecoveryInterceptor(healthFlag),
 			StreamAuthInterceptor(authSvc),
+			StreamRequireM2M(),
 			txRoute.stream(),
 		),
 	)

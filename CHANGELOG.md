@@ -6,6 +6,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Every API operation requires `ROLE_M2M`, except account, client,
+  trusted-key, key-pair and `/admin` operations (guarded by their admin or
+  operator rule) and `GET /account`.** The exempt account operation is
+  `GET /account` alone; `GET /account/subscriptions` requires the role. A
+  caller without it gets `403 FORBIDDEN` ("this operation requires
+  ROLE_M2M") before the operation runs, and before a transaction token it
+  presents is read; every gRPC method and stream answers `PermissionDenied`.
+  Every M2M client holds `ROLE_M2M`. A `cyoda token` carries only the roles
+  it is signed with: the default `ROLE_ADMIN` reaches the admin operations,
+  `--roles ROLE_ADMIN,ROLE_M2M` also reaches data. The OpenAPI document lists
+  `403` on every operation the rule covers.
+
 - **A compute node must connect with its own client-credentials token (kind
   service, `ROLE_M2M`); an on-behalf-of token cannot open a stream or
   administer. A stream closes within a minute after its client is deleted or

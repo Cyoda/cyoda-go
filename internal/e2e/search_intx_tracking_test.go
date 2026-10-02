@@ -53,7 +53,7 @@ func intxTenantCtx() context.Context {
 		UserID:   "test-admin",
 		UserName: "Test Admin",
 		Tenant:   spi.Tenant{ID: intxTrackingTenant, Name: intxTrackingTenant},
-		Roles:    []string{"ROLE_ADMIN"},
+		Roles:    []string{"ROLE_ADMIN", "ROLE_M2M"},
 	})
 }
 

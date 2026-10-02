@@ -89,6 +89,7 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		// the model with a field name the wire jsonPath grammar cannot address.
 		{Status: 400, Code: "VALIDATION_FAILED"},
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
+		{Status: 403, Code: "FORBIDDEN"},          // TestRouteGuard_DataRouteRequiresM2M: the caller lacks ROLE_M2M
 		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
 		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric

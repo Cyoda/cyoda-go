@@ -150,9 +150,12 @@ func tokenKID(t *testing.T, tok string) string {
 	return kid
 }
 
+// authedStatus reports the status of GET /api/account with tok: 200 when tok
+// authenticates, whatever its roles (the operation needs no role), 401 when
+// it does not.
 func (h *callbackHarness) authedStatus(t *testing.T, tok string) int {
 	t.Helper()
-	req, _ := http.NewRequest("GET", h.baseURL+"/api/model/", nil)
+	req, _ := http.NewRequest("GET", h.baseURL+"/api/account", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

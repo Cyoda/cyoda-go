@@ -356,6 +356,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SubscriptionsResponseDto"
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "501":
           $ref: "#/components/responses/NotImplemented"
       security:
@@ -472,7 +474,8 @@ paths:
         "403":
           description: >-
             Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
-            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
+            another tenant is refused here too, and so is a caller without ROLE_M2M,
+            each with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
@@ -566,7 +569,8 @@ paths:
         "403":
           description: >-
             Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
-            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
+            another tenant is refused here too, and so is a caller without ROLE_M2M,
+            each with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
@@ -6887,6 +6891,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "500":
           $ref: '#/components/responses/InternalServerError'
         "503":
@@ -12092,7 +12098,11 @@ components:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
     Forbidden:
-      description: Forbidden — caller does not have permission for this resource
+      description: >-
+        Forbidden — caller does not have permission for this resource;
+        `properties.errorCode` is FORBIDDEN. Among the causes: the caller lacks
+        ROLE_M2M, which every operation requires except `GET /account` and the
+        client, trusted-key and key-pair operations.
       content:
         application/problem+json:
           schema:

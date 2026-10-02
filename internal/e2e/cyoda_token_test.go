@@ -15,10 +15,10 @@ import (
 
 // cyoda_token_test.go proves, end to end against a real PostgreSQL, the
 // admin token `cyoda token` signs offline with the configured signing key:
-// the server accepts it on HTTP and gRPC, refuses it once the signing key is
-// invalidated, keeps accepting it across a rotation, and — with
-// CYODA_JWT_AUDIENCE set — accepts it and the server's own issued tokens only
-// when they carry that audience.
+// the server accepts it on HTTP and gRPC (gRPC serves it only with
+// ROLE_M2M), refuses it once the signing key is invalidated, keeps accepting
+// it across a rotation, and — with CYODA_JWT_AUDIENCE set — accepts it and
+// the server's own issued tokens only when they carry that audience.
 
 // operatorToken signs a token the way `cyoda token --tenant PLATFORM` does
 // (auth.MintOperatorToken, its defaults: user operator, ROLE_ADMIN, 15
@@ -26,8 +26,15 @@ import (
 // aud.
 func operatorToken(t *testing.T, key *rsa.PrivateKey, issuer, audience string) string {
 	t.Helper()
+	return operatorTokenWithRoles(t, key, issuer, audience, "ROLE_ADMIN")
+}
+
+// operatorTokenWithRoles is operatorToken signed with roles, the way
+// `cyoda token --tenant PLATFORM --roles` does.
+func operatorTokenWithRoles(t *testing.T, key *rsa.PrivateKey, issuer, audience string, roles ...string) string {
+	t.Helper()
 	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
-		Tenant: auth.PlatformTenantID, UserID: "operator", Roles: []string{"ROLE_ADMIN"},
+		Tenant: auth.PlatformTenantID, UserID: "operator", Roles: roles,
 		TTL: 15 * time.Minute, Issuer: issuer, Audience: audience,
 	})
 	if err != nil {
@@ -46,8 +53,13 @@ func TestCyodaToken_AcceptedOnHTTPAndUnaryGRPC(t *testing.T) {
 	if code := h.authedStatus(t, tok); code != http.StatusOK {
 		t.Errorf("HTTP: %d, want 200", code)
 	}
-	if err := grpcEntitySearch(h, tok); err != nil {
-		t.Errorf("gRPC refused a cyoda token token: %v", err)
+	// The default roles carry no ROLE_M2M: the token authenticates on gRPC
+	// but no method serves it. Signed with ROLE_M2M, it reaches data.
+	if err := grpcEntitySearch(h, tok); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("gRPC with the default roles: %v, want PermissionDenied", err)
+	}
+	if err := grpcEntitySearch(h, operatorTokenWithRoles(t, key, "cyoda-callback-test", "", "ROLE_ADMIN", "ROLE_M2M")); err != nil {
+		t.Errorf("gRPC refused a cyoda token token with ROLE_M2M: %v", err)
 	}
 }
 

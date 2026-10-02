@@ -112,7 +112,7 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 			cbRouteContext(secondary, "attr-mn-casc-marker")))
 
 	const userID = "cluster-alice"
-	user := ac.ComputeUser(t, userID, "ROLE_USER")
+	user := ac.ComputeUser(t, userID, "ROLE_USER", "ROLE_M2M")
 
 	// Same-node baseline: node 0 owns T AND hosts the member. Dispatch is local,
 	// the callback lands on the owner and joins locally — no cross-node hop.
@@ -197,7 +197,7 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 		`{"name":"x","amount":1,"status":"new"}`, attrScheduledWorkflow)
 
 	const userID = "cluster-bob"
-	user := ac.ComputeUser(t, userID, "ROLE_USER")
+	user := ac.ComputeUser(t, userID, "ROLE_USER", "ROLE_M2M")
 
 	// Arm several tasks through node 1. Any node may claim and run them; the
 	// durable ArmedBy (the user) drives the attribution wherever the task runs.

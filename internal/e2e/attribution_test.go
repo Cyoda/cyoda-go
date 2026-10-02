@@ -61,12 +61,11 @@ func (h *callbackHarness) signingKID(t *testing.T) string {
 
 // mintUserToken mints an OBO-shaped user JWT (carries the user_roles claim key →
 // validator assigns Kind=user) for the given principal id. Signed with the
-// stack's own key so it validates first-party.
+// stack's own key so it validates first-party. It always carries ROLE_M2M, the
+// role every data route requires, in addition to roles.
 func (h *callbackHarness) mintUserToken(t *testing.T, userID string, roles ...string) string {
 	t.Helper()
-	if roles == nil {
-		roles = []string{}
-	}
+	roles = append(append([]string{}, roles...), "ROLE_M2M")
 	now := time.Now()
 	claims := map[string]any{
 		"sub":          userID,

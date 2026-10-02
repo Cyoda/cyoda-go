@@ -101,7 +101,7 @@ TOKEN=$(CYODA_PROFILES=local cyoda token --tenant demo)
 curl -H @- <<<"Authorization: Bearer $TOKEN" http://localhost:8080/api/account
 ```
 
-The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
+The `/api/account` response confirms the token's tenant and roles. With that token, create the M2M clients that applications and compute nodes use (`POST /api/clients`; see `cyoda help auth clients` and `cyoda help cli token`). Every data operation — models, entities, search, messages — requires `ROLE_M2M`: an M2M client's tokens carry it, and a `cyoda token` carries it only when signed with `--roles ROLE_ADMIN,ROLE_M2M` (see `cyoda help auth`). From here, follow the **Build an app** link below to register an entity model and start creating entities.
 
 **Optional IAM settings:**
 
