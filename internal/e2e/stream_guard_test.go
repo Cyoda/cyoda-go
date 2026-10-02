@@ -97,7 +97,8 @@ func TestStream_OBOToken_PermissionDenied(t *testing.T) {
 }
 
 // A client token without ROLE_M2M cannot come from /oauth/token — every
-// client holds ROLE_M2M — so it is signed here.
+// client holds ROLE_M2M — so it is signed here. The server's stream
+// interceptor refuses it before the stream handler runs.
 func TestStream_ClientTokenWithoutROLE_M2M(t *testing.T) {
 	h := newCalloutHarness(t, nil)
 	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "no-m2m", "test-tenant", "no-m2m", []string{"ROLE_ADMIN"})

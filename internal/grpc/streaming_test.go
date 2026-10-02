@@ -1081,9 +1081,9 @@ func TestHasRole(t *testing.T) {
 // --- who may open a stream ---
 
 // TestStartStreaming_Guard: only a compute node's own client-credentials
-// token opens a stream — kind service, ROLE_M2M, no executor, and the
-// client-token marker. Every other principal is refused before the join
-// event is read.
+// token opens a stream — kind service, no executor, and the client-token
+// marker. Every other principal is refused before the join event is read.
+// ROLE_M2M is the stream interceptor's check (TestRoleInterceptor_*).
 func TestStartStreaming_Guard(t *testing.T) {
 	client := func() *spi.UserContext {
 		return &spi.UserContext{UserID: "C1", Kind: spi.PrincipalService,
@@ -1098,11 +1098,6 @@ func TestStartStreaming_Guard(t *testing.T) {
 		{"user kind", func() context.Context {
 			uc := client()
 			uc.Kind = spi.PrincipalUser
-			return guardContext(uc, true)
-		}, codes.PermissionDenied},
-		{"no ROLE_M2M", func() context.Context {
-			uc := client()
-			uc.Roles = []string{"ROLE_ADMIN"}
 			return guardContext(uc, true)
 		}, codes.PermissionDenied},
 		{"on-behalf-of: executor set", func() context.Context {

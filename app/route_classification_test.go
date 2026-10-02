@@ -54,10 +54,11 @@ type classifiedOp struct {
 }
 
 // servedAuthenticatedOps returns every OpenAPI operation the server routes and
-// authenticates. It leaves out the operations that declare no bearer security
-// (the token endpoint: unauthenticated by protocol) and the operations whose
-// tags api/config.yaml excludes from code generation (not routed at all);
-// unservedOps returns the latter.
+// authenticates with a bearer token. It leaves out exactly the operations that
+// are unauthenticated by protocol — those declaring `security: []` and the
+// token endpoint (basic auth) — and returns as unserved the operations whose
+// tags api/config.yaml excludes from code generation (not routed at all). Any
+// other operation without bearer security fails the test: classify it.
 func servedAuthenticatedOps(t *testing.T) (served, unserved []classifiedOp) {
 	t.Helper()
 	doc, err := genapi.GetSwagger()
@@ -72,7 +73,14 @@ func servedAuthenticatedOps(t *testing.T) (served, unserved []classifiedOp) {
 				unserved = append(unserved, co)
 				continue
 			}
+			if op.Security != nil && len(*op.Security) == 0 {
+				continue // security: [] — unauthenticated by declaration
+			}
+			if method == http.MethodPost && path == "/oauth/token" {
+				continue // the token endpoint: the client authenticates with basic auth
+			}
 			if !requiresBearer(doc, op) {
+				t.Errorf("%s %s: neither bearer-authenticated, `security: []`, nor the token endpoint; classify it", method, path)
 				continue
 			}
 			served = append(served, co)
