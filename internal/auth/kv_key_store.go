@@ -115,8 +115,10 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 func (s *KVKeyStore) ReconcileInterval() time.Duration { return s.rep.cfg.interval }
 func (s *KVKeyStore) Start(ctx context.Context)        { s.rep.Start(ctx) }
 
-// Wait blocks until the goroutine Start started has exited. Call it after
-// cancelling Start's ctx; it returns immediately if Start was never called.
+// Wait blocks until the goroutine Start started has exited, and then until
+// any gossip-ping-triggered reconcile already in flight has also finished.
+// Call it after cancelling Start's ctx (the same ctx the store was
+// constructed with); it returns immediately if Start was never called.
 func (s *KVKeyStore) Wait() { s.rep.Wait() }
 
 type bootstrapView struct {

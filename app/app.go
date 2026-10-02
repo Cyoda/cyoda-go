@@ -311,7 +311,18 @@ func New(cfg Config) *App {
 			// cacheBroadcaster above).
 			authBroadcaster = gossipReg
 		}
-		authSvc, err = auth.NewAuthService(systemCtx, auth.AuthConfig{
+		// authLoopCtx is the signing-key replica's own construction context
+		// AND Start's loop-stop signal — the same object, passed to both.
+		// That is what lets one cancel (stopAuthLoops, below) reach both
+		// consumers: Start's periodic loop exits on it directly, and the
+		// replica's reconcileOnce checks this same ctx before any
+		// gossip-ping-triggered re-read, so a ping that arrives after
+		// teardown (its subscription is never unsubscribed) sees it already
+		// done and makes no store call. Deliberately not systemCtx:
+		// systemCtx is also the context every other auth store call runs
+		// on and must stay uncancelled for the lifetime of those calls.
+		authLoopCtx, authLoopCancel := context.WithCancel(context.Background())
+		authSvc, err = auth.NewAuthService(authLoopCtx, auth.AuthConfig{
 			SigningKeyPEM:     cfg.IAM.JWTSigningKey,
 			Issuer:            cfg.IAM.JWTIssuer,
 			Audience:          cfg.IAM.JWTAudience,
@@ -333,13 +344,11 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// Periodic re-read of the signing-key store (the trusted-key and
-		// M2M client stores keep no node copy, so they need no loop). Runs
-		// under its own cancelable context, not systemCtx — systemCtx is
-		// also the context store calls run on, and App owns this loop's
-		// lifetime independently of that: stopAuthLoops below cancels it and
-		// waits for the goroutine to exit, and Close calls it before the
-		// store factory closes, so no tick reaches a closing store.
-		authLoopCtx, authLoopCancel := context.WithCancel(context.Background())
+		// M2M client stores keep no node copy, so they need no loop).
+		// stopAuthLoops cancels authLoopCtx and waits for both the loop
+		// goroutine and any in-flight ping-triggered reconcile to exit, and
+		// Close calls it before the store factory closes, so no tick and no
+		// ping-triggered re-read reaches a closing store.
 		authSvc.Start(authLoopCtx)
 		a.stopAuthLoops = func() {
 			authLoopCancel()

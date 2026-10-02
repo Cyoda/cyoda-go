@@ -450,6 +450,48 @@ func TestReplica_WaitReturnsImmediatelyWithoutStart(t *testing.T) {
 	}
 }
 
+// TestReplica_PingAfterCancelAndWaitCausesNoStoreRead proves the other half
+// of the production shutdown contract Wait exists for: after the owner
+// cancels Start's ctx and calls Wait, a gossip ping that arrives afterward
+// (the broadcaster subscription set up at construction is never torn down)
+// must not read the store at all — not even once, and no failure log for
+// one. This holds only because the replica's own construction ctx is the
+// SAME object passed to Start (the contract app.go's authLoopCtx now
+// follows): reconcileOnce checks that ctx directly, so a ping-triggered
+// reconcile sees it already done regardless of whether the periodic loop or
+// the ping triggered it.
+func TestReplica_PingAfterCancelAndWaitCausesNoStoreRead(t *testing.T) {
+	kv := &listHookKV{KeyValueStore: newReplicaKV(t)}
+	var listCount atomic.Int64
+	kv.onList = func() { listCount.Add(1) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Start(ctx) {
+		t.Fatal("Start returned false on first call")
+	}
+
+	before := listCount.Load() // construction's own List call
+
+	cancel()
+	r.Wait()
+
+	// Simulate a gossip ping arriving after teardown: the subscription is
+	// never unsubscribed, so handlePing can still fire.
+	r.handlePing(nil)
+	r.ping.Wait() // block until the (expected no-op) triggered reconcile finishes
+
+	if got := listCount.Load(); got != before {
+		t.Fatalf("a gossip ping after cancel+Wait read the store: before=%d after=%d", before, got)
+	}
+}
+
 type failingListKV struct {
 	spi.KeyValueStore
 	fail atomic.Bool

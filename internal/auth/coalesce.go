@@ -13,6 +13,11 @@ type coalescingRunner struct {
 	running bool
 	dirty   bool
 	pending func() // latest run passed to a Trigger that arrived mid-flight
+	// done is non-nil exactly while running is true: the run goroutine
+	// closes it right before clearing running, so Wait can block on a
+	// channel instead of polling. Trigger allocates a fresh one each time a
+	// run starts.
+	done chan struct{}
 }
 
 // Trigger schedules run. If an execution is in flight, it marks the runner
@@ -32,6 +37,7 @@ func (c *coalescingRunner) Trigger(run func()) {
 			return false
 		}
 		c.running = true
+		c.done = make(chan struct{})
 		return true
 	}()
 	if !start {
@@ -52,6 +58,7 @@ func (c *coalescingRunner) Trigger(run func()) {
 					return p, true
 				}
 				c.running = false
+				close(c.done)
 				return nil, false
 			}()
 			if !again {
@@ -59,4 +66,25 @@ func (c *coalescingRunner) Trigger(run func()) {
 			}
 		}
 	}()
+}
+
+// Wait blocks until any run in flight at the moment it is called — including
+// a trailing run already queued by a Trigger that arrived mid-flight — has
+// finished. Returns immediately if nothing is running. Production shutdown
+// behaviour (kvReplica.Wait calls it), not a test hook: a caller that has
+// already stopped triggering new runs (cancelled the ctx reconcileOnce
+// checks) uses it to be sure a run already under way — one that could still
+// be mid-store-call — has actually returned before anything it was reading
+// closes. It does not wait for a Trigger that arrives after Wait has already
+// observed the runner idle; making that safe is the caller's job (see
+// kvReplica's ctx-done guard), not this runner's.
+func (c *coalescingRunner) Wait() {
+	done := func() chan struct{} {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.done
+	}()
+	if done != nil {
+		<-done
+	}
 }

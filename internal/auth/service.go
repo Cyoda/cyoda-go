@@ -110,9 +110,10 @@ func (s *AuthService) Start(ctx context.Context) {
 	s.keyStore.Start(ctx)
 }
 
-// Wait blocks until the goroutine Start started has exited. Call it after
-// cancelling Start's ctx, before closing the KV store Start reads from; it
-// returns immediately if Start was never called.
+// Wait blocks until the goroutine Start started has exited, and then until
+// any gossip-ping-triggered reconcile already in flight has also finished.
+// Call it after cancelling Start's ctx, before closing the KV store Start
+// reads from; it returns immediately if Start was never called.
 func (s *AuthService) Wait() {
 	s.keyStore.Wait()
 }

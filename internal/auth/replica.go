@@ -73,7 +73,15 @@ type replicaConfig[R any] struct {
 type kvReplica[R any] struct {
 	cfg replicaConfig[R]
 	kv  spi.KeyValueStore
-	ctx context.Context // process lifetime: no cancellation, no deadline
+	// ctx is the loop owner's context, exactly as given to newKVReplica — no
+	// longer detached from cancellation (it was, once). The owner is
+	// expected to pass this same ctx to Start, so cancelling it both ends
+	// the periodic loop (Start's own select) and, via the check at the top
+	// of reconcileOnce, turns any later ping-triggered reconcile into a
+	// no-op: no store call, no failure log. The broadcaster subscription set
+	// up below is never torn down, so a ping can still arrive after the
+	// owner tears this replica down; that guard is what makes arriving safe.
+	ctx context.Context
 
 	mu   sync.RWMutex // the copy lock
 	recs map[string]R
@@ -103,7 +111,7 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	if cfg.metrics == nil {
 		cfg.metrics = NopReconcileMetrics{}
 	}
-	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: context.WithoutCancel(ctx), epoch: time.Now()}
+	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: ctx, epoch: time.Now()}
 	entries, err := kv.List(noTx(r.ctx), cfg.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
@@ -210,13 +218,24 @@ func (r *kvReplica[R]) handlePing(_ []byte) {
 }
 
 // reconcileOnce is one bounded re-read on its own deadline, recover-wrapped:
-// it runs detached from any caller that could handle a panic.
+// it runs detached from any caller that could handle a panic. Triggered by
+// either the periodic loop (Start) or a gossip ping (handlePing) — the ping
+// path is wired at construction and outlives Start, so it can still fire
+// after the owner has cancelled r.ctx (the subscription is never torn down).
+// The check below is what makes that safe: once r.ctx is done there is
+// nothing left to reconcile against, so this returns before making any
+// store call or logging anything — a ping after teardown is a silent no-op,
+// not one more "reconcile failed" line against a store that may already be
+// closed.
 func (r *kvReplica[R]) reconcileOnce() {
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error(r.cfg.name+" reconcile panic", "pkg", "auth", "panic", rec)
 		}
 	}()
+	if r.ctx.Err() != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.ctx, r.cfg.interval)
 	defer cancel()
 	_ = r.Reconcile(ctx)
@@ -254,9 +273,13 @@ func (r *kvReplica[R]) Start(ctx context.Context) bool {
 	return true
 }
 
-// Wait blocks until the goroutine started by Start has exited. It returns
-// immediately if Start was never called (e.g. startup failed before reaching
-// it): nothing is running, so there is nothing to wait for.
+// Wait blocks until the goroutine started by Start has exited (immediately
+// if Start was never called), and then until any gossip-ping-triggered
+// reconcile already in flight at that moment has also finished. The caller
+// is expected to have cancelled r.ctx first (the same ctx given to both
+// newKVReplica and Start) — reconcileOnce's own check then makes a ping that
+// arrives after this returns a safe no-op, so Wait does not need to guard
+// against one arriving later.
 func (r *kvReplica[R]) Wait() {
 	r.loopMu.Lock()
 	done := r.loopDone
@@ -264,6 +287,7 @@ func (r *kvReplica[R]) Wait() {
 	if done != nil {
 		<-done
 	}
+	r.ping.Wait()
 }
 
 // jitteredInterval returns d × [0.9, 1.1).
