@@ -552,6 +552,7 @@ func TestReplica_WaitBlocksUntilLoopExits(t *testing.T) {
 	kv.onList = func() { listCount.Add(1) }
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // ends the loop on an early failure; a second cancel is a no-op
 	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
 		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
 		interval: 50 * time.Millisecond,
@@ -689,6 +690,7 @@ func TestReplica_WaitBlocksUntilInFlightTickFinishes(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // ends the loop on an early failure; a second cancel is a no-op
 	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
 		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
 		interval: 20 * time.Millisecond,
