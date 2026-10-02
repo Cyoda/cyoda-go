@@ -1774,17 +1774,24 @@ type EdgeMessageDto struct {
 
 // EdgeMessageHeader defines model for EdgeMessageHeader.
 type EdgeMessageHeader struct {
-	ContentEncoding string `json:"contentEncoding"`
-	ContentLength   int64  `json:"contentLength"`
+	// AttributedKind Kind of userId. Open value set. Known values are user, service and system.
+	AttributedKind  *string `json:"attributedKind,omitempty"`
+	ContentEncoding string  `json:"contentEncoding"`
+	ContentLength   int64   `json:"contentLength"`
 
 	// ContentType Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature.
 	ContentType   string  `json:"contentType"`
 	CorrelationId *string `json:"correlationId,omitempty"`
-	MessageId     *string `json:"messageId,omitempty"`
-	Recipient     *string `json:"recipient,omitempty"`
-	ReplyTo       *string `json:"replyTo,omitempty"`
-	Subject       string  `json:"subject"`
-	UserId        *string `json:"userId,omitempty"`
+
+	// ExecutedBy The principal that actually made a change, independent of the attributed actor. Present on an audit event only when the engine recorded one.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
+	MessageId  *string            `json:"messageId,omitempty"`
+	Recipient  *string            `json:"recipient,omitempty"`
+	ReplyTo    *string            `json:"replyTo,omitempty"`
+	Subject    string             `json:"subject"`
+
+	// UserId The attributed user — the principal the message is recorded for.
+	UserId *string `json:"userId,omitempty"`
 }
 
 // EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
@@ -3895,9 +3902,6 @@ type NewMessageParams struct {
 
 	// XMessageID Custom message identifier
 	XMessageID *string `json:"X-Message-ID,omitempty"`
-
-	// XUserID ID of the message sender
-	XUserID *string `json:"X-User-ID,omitempty"`
 
 	// XRecipient Intended message recipient
 	XRecipient *string `json:"X-Recipient,omitempty"`
@@ -7598,25 +7602,6 @@ func (siw *ServerInterfaceWrapper) NewMessage(w http.ResponseWriter, r *http.Req
 		}
 
 		params.XMessageID = &XMessageID
-
-	}
-
-	// ------------- Optional header parameter "X-User-ID" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("X-User-ID")]; found {
-		var XUserID string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-User-ID", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "X-User-ID", valueList[0], &XUserID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-User-ID", Err: err})
-			return
-		}
-
-		params.XUserID = &XUserID
 
 	}
 

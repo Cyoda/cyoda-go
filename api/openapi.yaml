@@ -3866,14 +3866,6 @@ paths:
             type: string
             maxLength: 1024
             minLength: 1
-        - name: X-User-ID
-          in: header
-          description: ID of the message sender
-          required: false
-          schema:
-            type: string
-            maxLength: 1024
-            minLength: 1
         - name: X-Recipient
           in: header
           description: Intended message recipient
@@ -10823,6 +10815,12 @@ components:
           type: string
         userId:
           type: string
+          description: The attributed user — the principal the message is recorded for.
+        attributedKind:
+          type: string
+          description: Kind of userId. Open value set. Known values are user, service and system.
+        executedBy:
+          $ref: "#/components/schemas/AuditPrincipalDto"
         recipient:
           type: string
         replyTo:

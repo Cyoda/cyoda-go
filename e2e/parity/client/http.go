@@ -943,7 +943,6 @@ type MessageHeaderInput struct {
 	ContentType     string
 	ContentEncoding string
 	MessageID       string
-	UserID          string
 	Recipient       string
 	ReplyTo         string
 	CorrelationID   string
@@ -1043,9 +1042,6 @@ func (c *Client) CreateMessageWithHeaders(t *testing.T, subject, payload string,
 	}
 	if header.MessageID != "" {
 		h.Set("X-Message-ID", header.MessageID)
-	}
-	if header.UserID != "" {
-		h.Set("X-User-ID", header.UserID)
 	}
 	if header.Recipient != "" {
 		h.Set("X-Recipient", header.Recipient)

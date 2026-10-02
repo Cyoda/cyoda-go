@@ -6,6 +6,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`POST /message` no longer reads `X-User-ID`; a message records the
+  attributed user and the executor of the request, returned as `userId`,
+  `attributedKind` and `executedBy`.** For a direct client request the
+  executor equals the attributed user; for an on-behalf-of request `userId`
+  is the user and `executedBy` is the on-behalf-of client.
+
 - **Callouts: `authid`/`authtype` name the attributed principal (the user an
   on-behalf-of request is for, a transaction's origin for a write-back, the
   arming user for a scheduled fire); new `authexecid`/`authexectype` name the

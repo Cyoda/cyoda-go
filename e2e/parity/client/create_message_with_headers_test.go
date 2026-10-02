@@ -32,7 +32,6 @@ func TestCreateMessageWithHeaders_SetsXHeaders(t *testing.T) {
 		ContentType:     "application/json",
 		ContentEncoding: "utf-8",
 		MessageID:       "msg-id-1",
-		UserID:          "user-42",
 		Recipient:       "rec-1",
 		ReplyTo:         "reply-addr",
 		CorrelationID:   "corr-xyz",
@@ -57,9 +56,6 @@ func TestCreateMessageWithHeaders_SetsXHeaders(t *testing.T) {
 	// X-* headers
 	if got := gotHeaders.Get("X-Message-ID"); got != "msg-id-1" {
 		t.Errorf("X-Message-ID: got %q, want msg-id-1", got)
-	}
-	if got := gotHeaders.Get("X-User-ID"); got != "user-42" {
-		t.Errorf("X-User-ID: got %q, want user-42", got)
 	}
 	if got := gotHeaders.Get("X-Recipient"); got != "rec-1" {
 		t.Errorf("X-Recipient: got %q, want rec-1", got)
@@ -112,7 +108,7 @@ func TestCreateMessageWithHeaders_EmptyFieldsOmitted(t *testing.T) {
 	}
 
 	// Optional X-* headers must be absent
-	for _, h := range []string{"X-Message-ID", "X-User-ID", "X-Recipient", "X-Reply-To", "X-Correlation-ID", "Content-Encoding"} {
+	for _, h := range []string{"X-Message-ID", "X-Recipient", "X-Reply-To", "X-Correlation-ID", "Content-Encoding"} {
 		if v := gotHeaders.Get(h); v != "" {
 			t.Errorf("header %q should be absent for zero-value input, got %q", h, v)
 		}

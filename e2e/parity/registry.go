@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 227 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 228 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -369,6 +369,10 @@ var allTests = []NamedTest{
 	// executed by the compute client.
 	{"AttributionOBOWrite", RunAttributionOBOWrite},
 	{"AttributionOBOWriteBack", RunAttributionOBOWriteBack},
+	// Edge messages: the same OBO attribution contract as entity writes,
+	// rendered on the message header (userId/attributedKind/executedBy)
+	// instead of change history.
+	{"MessageAttribution", RunMessageAttribution},
 
 	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
 	// parity scenario (search_type_directed.go). Data-field temporal

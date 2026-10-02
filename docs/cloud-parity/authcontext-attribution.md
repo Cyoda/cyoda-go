@@ -78,6 +78,29 @@ claims, a `system` or `user` executor, an absent or unrecognized
   `executedBy` entirely (never emitted as JSON `null`); `user` renders as
   today.
 
+## 2a. Attributed/executor pair on edge messages
+
+`POST /message/new/{subject}` no longer reads a caller-supplied sender
+header. `GET /message/{messageId}` renders the same {attributed, executor}
+pair as change history, on the message's `header`:
+
+```json
+{
+  "userId": "alice",
+  "attributedKind": "user",
+  "executedBy": { "id": "OBOCLIENT0000001", "kind": "service" }
+}
+```
+
+- `userId` — the attributed principal's id, resolved from `AttributionFor`
+  at save time (never from a request header). Stays optional; omitted when
+  empty, as before.
+- `attributedKind` — the attributed principal's kind. Omitted when empty.
+- `executedBy` — `{id, kind}` of the immediate authenticated principal that
+  sent the message. Equals the attributed principal for a direct request;
+  diverges for an on-behalf-of request (the on-behalf-of client). Omitted
+  when the executor has no id.
+
 ## 3. Attribution semantics per follow-on kind
 
 - **Joined cascade** (a processor's write joins the triggering

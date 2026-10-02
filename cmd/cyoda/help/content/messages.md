@@ -59,7 +59,10 @@ The create request and the read response are different shapes: you POST a payloa
 - `contentType` (string): from the `Content-Type` request header; informational.
 - `contentLength` (int64): from the `Content-Length` request header.
 - `contentEncoding` (string): from the `Content-Encoding` request header (default `UTF-8`).
-- `messageId`, `userId`, `recipient`, `replyTo`, `correlationId` (all optional strings): from the `X-Message-ID`, `X-User-ID`, `X-Recipient`, `X-Reply-To`, `X-Correlation-ID` request headers respectively. These are caller-supplied envelope fields and are distinct from the server-generated store ID in the URL.
+- `messageId`, `recipient`, `replyTo`, `correlationId` (all optional strings): from the `X-Message-ID`, `X-Recipient`, `X-Reply-To`, `X-Correlation-ID` request headers respectively. These are caller-supplied envelope fields and are distinct from the server-generated store ID in the URL.
+- `userId` (optional string): the attributed user — the principal the message is recorded for, resolved from the caller's token, never from a request header. For an on-behalf-of request this is the user, not the on-behalf-of client.
+- `attributedKind` (optional string): the kind of `userId`. Open value set; known values `user`, `service` and `system`.
+- `executedBy` (optional object `{id, kind}`): the principal that actually sent the message, independent of `userId`. For a direct client request this equals the attributed principal; for an on-behalf-of request this is the on-behalf-of client (`kind: "service"`).
 
 ## ENDPOINTS
 
@@ -69,7 +72,7 @@ The create request and the read response are different shapes: you POST a payloa
 - `Content-Type` (header, required): MIME type of the payload (informational)
 - `Content-Length` (header, required): payload size in bytes
 - `Content-Encoding` (header, optional): default `UTF-8`
-- `X-Message-ID`, `X-User-ID`, `X-Recipient`, `X-Reply-To`, `X-Correlation-ID` (headers, optional): AMQP envelope fields, each 1..1024 chars
+- `X-Message-ID`, `X-Recipient`, `X-Reply-To`, `X-Correlation-ID` (headers, optional): AMQP envelope fields, each 1..1024 chars
 - `transactionTimeoutMillis` (query, optional): int64 — maximum time the server may spend before the message save begins. Exceeding it fails with `408 errors.TRANSACTION_TIMEOUT` before anything is stored; the save itself, once started, is shielded and always completes. Rejected with `400` on a request that joins an open transaction. Absent means no server-side timeout.
 
 Request body: a `NewMessageRequest` object `{ payload, metaData }` as described in MESSAGE SHAPE. Missing `payload` returns `400 BAD_REQUEST`.
@@ -98,6 +101,8 @@ Response: `200 OK`, `application/json`, an `EdgeMessageDto`:
     "contentEncoding": "UTF-8",
     "messageId": "msg-nobel-2024-physics",
     "userId": "nobel-committee",
+    "attributedKind": "user",
+    "executedBy": { "id": "OBOCLIENT0000001", "kind": "service" },
     "recipient": "scientific-community",
     "replyTo": "announcements@nobelprize.org",
     "correlationId": "nobel-2024-physics-announcement"
