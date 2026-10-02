@@ -248,11 +248,12 @@ func TestSchedRun_UnsafeFailureFails(t *testing.T) {
 		}
 	}
 	// actor/executedBy (spec §13): attributed to the principal that armed
-	// the task (the model's create request), executed by the system —
-	// mirroring a scheduled firing's own audit events.
+	// the task (the harness's create request: user test-admin, a service
+	// token), executed by the system — mirroring a scheduled firing's own
+	// audit events.
 	ev := smEventsOfType(h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_FAIL")[0]
-	if actor, _ := ev["actor"].(map[string]any); actor["id"] == nil || actor["id"] == "" {
-		t.Errorf("SCHEDULED_TRANSITION_FAIL actor = %v, want a non-empty id (the arming principal)", ev["actor"])
+	if actor, _ := ev["actor"].(map[string]any); actor["id"] != "test-admin" || actor["kind"] != "service" {
+		t.Errorf("SCHEDULED_TRANSITION_FAIL actor = %v, want {id:test-admin kind:service} (the arming principal)", ev["actor"])
 	}
 	if executedBy, _ := ev["executedBy"].(map[string]any); executedBy["id"] != "system" || executedBy["kind"] != "system" {
 		t.Errorf("SCHEDULED_TRANSITION_FAIL executedBy = %v, want {id:system kind:system}", ev["executedBy"])
