@@ -15,8 +15,8 @@ import (
 
 const defaultReconcileInterval = 60 * time.Second
 
-// maxReconcileAttempts bounds the generation-guard retry of a re-read and of a
-// single-record load. Only continuous local change can exhaust it.
+// maxReconcileAttempts bounds the generation-guard retry of a re-read
+// (Reconcile). Only continuous local change can exhaust it.
 const maxReconcileAttempts = 5
 
 // stalenessMultiplier × interval is the fail-closed bound: a copy with no

@@ -56,7 +56,12 @@ var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not de
 // and the sibling invalidation of a rotation see every change made on this
 // node before them. The KV SPI has no compare-and-set: two changes to one
 // tenant's keys at the same moment on two nodes resolve by last write, and
-// the cap can be exceeded by one key per node.
+// the cap can be exceeded by one key per node. In particular, an Invalidate
+// (or a rotation's write that ends a previous key) on one node racing a
+// Delete of the same key on another reads the key before the delete and
+// writes it after, bringing the deleted key back as an inactive record. That
+// record never verifies (Verifies requires Active), so revocation is
+// unaffected, but it reappears in List until it is deleted again.
 type KVTrustedKeyStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int

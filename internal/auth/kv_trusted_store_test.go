@@ -457,8 +457,10 @@ func TestKVTrustedKeyStore_InvalidateEndsAtOnce(t *testing.T) {
 	kv := mustNewMemoryKV(t, systemCtx())
 	s := auth.NewKVTrustedKeyStore(kv, 10)
 	key := generateTestKey(t)
-	_ = s.Register(systemCtx(), &auth.TrustedKey{KID: "k1", TenantID: "acme", PublicKey: &key.PublicKey,
-		Active: true, ValidFrom: time.Now().Add(-time.Minute)}, false)
+	if err := s.Register(systemCtx(), &auth.TrustedKey{KID: "k1", TenantID: "acme", PublicKey: &key.PublicKey,
+		Active: true, ValidFrom: time.Now().Add(-time.Minute)}, false); err != nil {
+		t.Fatalf("register: %v", err)
+	}
 	if err := s.Invalidate(systemCtx(), "acme", "k1"); err != nil {
 		t.Fatalf("invalidate: %v", err)
 	}

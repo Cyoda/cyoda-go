@@ -91,7 +91,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/signing-key-pairs.md`.
   - JWT signing key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
     invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store.
-    They converge across every node the same way trusted keys already do.
+    Every node keeps a copy, updated by a change message on every write and
+    re-read from the store periodically as a backstop.
   - They survive a restart on a persistent backend (not on the memory
     backend).
   - First-party token verification now depends on that store. A node that
@@ -940,8 +941,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A runtime-issued signing key pair only worked on the node that issued
   it.** In a cluster, a token signed with one was rejected by every other
   node, and the key pair itself did not survive a restart. Key pairs are now
-  shared and persisted across the cluster the same way trusted keys already
-  were (see Breaking).
+  stored in the SYSTEM-tenant KV store and shared by every node of the
+  cluster (see Breaking).
 
 - **A trusted-key admin write could act on a stale copy, miss a rotation's
   sibling, leave a failed rotation with nothing rolled back, or block
