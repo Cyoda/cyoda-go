@@ -1718,7 +1718,7 @@ type AuditEventDto struct {
 // AuditEventDtoSeverity Severity level of the event
 type AuditEventDtoSeverity string
 
-// AuditPrincipalDto The principal that actually made a change, independent of the attributed actor. Present on an audit event only when the engine recorded one.
+// AuditPrincipalDto The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
 type AuditPrincipalDto struct {
 	Id string `json:"id"`
 
@@ -1783,7 +1783,7 @@ type EdgeMessageHeader struct {
 	ContentType   string  `json:"contentType"`
 	CorrelationId *string `json:"correlationId,omitempty"`
 
-	// ExecutedBy The principal that actually made a change, independent of the attributed actor. Present on an audit event only when the engine recorded one.
+	// ExecutedBy The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
 	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 	MessageId  *string            `json:"messageId,omitempty"`
 	Recipient  *string            `json:"recipient,omitempty"`

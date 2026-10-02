@@ -313,18 +313,6 @@ func mintAppToken(t *testing.T, key *rsa.PrivateKey, roles ...string) string {
 	return tok
 }
 
-// TestJWTMode_NoOIDCRoutes: the provider endpoints do not exist.
-func TestJWTMode_NoOIDCRoutes(t *testing.T) {
-	a, key := jwtAppWithKey(t)
-	req := httptest.NewRequest(http.MethodGet, "/oauth/oidc/providers", nil)
-	req.Header.Set("Authorization", "Bearer "+mintAppToken(t, key, "ROLE_ADMIN", "ROLE_M2M"))
-	rr := httptest.NewRecorder()
-	a.Handler().ServeHTTP(rr, req)
-	if rr.Code != http.StatusNotFound && rr.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET /oauth/oidc/providers: status %d, want 404/405", rr.Code)
-	}
-}
-
 func ctxWithTenant(tid spi.TenantID) context.Context {
 	uc := &spi.UserContext{
 		UserID: "test-user",

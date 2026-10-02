@@ -5807,11 +5807,11 @@ paths:
         - OAuth, Keys
       summary: Register a trusted public key
       description: >
-        Registers a pre-shared public key for JWT validation. This enables
-        external applications
-
-        to sign user JWTs that Cyoda can verify without requiring a reachable
-        OIDC discovery endpoint.
+        Registers a public key that verifies user assertions. An application
+        signs a user assertion with the matching private key, and an
+        on-behalf-of client of the same tenant exchanges it for a token at
+        `POST /oauth/token` (token exchange). A trusted key never verifies a
+        bearer token.
 
         The key is bound to the caller's tenant (legalEntityId). Key ids are
         unique within a tenant only: another tenant may register the same
@@ -11236,9 +11236,9 @@ components:
     AuditPrincipalDto:
       type: object
       description: >
-        The principal that actually made a change, independent of the
-        attributed actor. Present on an audit event only when the engine
-        recorded one.
+        The principal that executed the request — that made a change or
+        sent a message — independent of the attributed principal. Present
+        only when one was recorded.
       properties:
         id:
           type: string

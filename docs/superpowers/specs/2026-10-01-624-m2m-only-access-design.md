@@ -366,13 +366,16 @@ Exit checks, run from the repo root. The excluded paths are history
 `.github/oasdiff-err-ignore.txt`), Cloud's file (`docs/cyoda`), the external
 API vocabulary (`e2e/externalapi`), or a different OIDC (cosign keyless
 signing in `.github/workflows`, `.goreleaser.yaml`, `scripts/install.sh`; the
-gateway's own OIDC in `deploy/helm/cyoda/docs/gateway-api-policies.md`):
+gateway's own OIDC in `deploy/helm/cyoda/docs/gateway-api-policies.md`),
+or the test that proves the removed provider routes stay removed
+(`app/removed_routes_test.go`):
 
 ```
 X=(':!docs/superpowers' ':!docs/audits' ':!docs/PRD.md' ':!docs/release-notes'
    ':!docs/analysis' ':!docs/adr' ':!docs/cloud-parity' ':!CHANGELOG.md'
    ':!.github' ':!docs/cyoda' ':!e2e/externalapi' ':!.goreleaser.yaml'
-   ':!scripts/install.sh' ':!deploy/helm/cyoda/docs/gateway-api-policies.md')
+   ':!scripts/install.sh' ':!deploy/helm/cyoda/docs/gateway-api-policies.md'
+   ':!app/removed_routes_test.go')
 git grep -niI 'oidc' -- . "${X[@]}"
 git grep -nI -e KEY_OWNED_BY_DIFFERENT_TENANT -e CYODA_OIDC_ -e X-User-ID \
   -e BOOTSTRAP_AUDIENCE -e ValidateFirstPartyUserID -e ChainedValidator \
