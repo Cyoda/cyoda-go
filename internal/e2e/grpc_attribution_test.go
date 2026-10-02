@@ -16,7 +16,8 @@ import (
 // rule through the gRPC door (EntityManage): an OBO create records the user
 // and the OBO client; a compute write-back joined to the user's transaction
 // records the user and the compute client; an OBO create that arms a
-// scheduled transition stamps ScheduledTask.ArmedBy with the OBO user; an OBO
+// scheduled transition stamps ScheduledTask.ArmedBy with the OBO user, both
+// directly and when the OBO callback joins its own transaction; an OBO
 // callback joining another user's transaction is refused through the RPC's
 // error envelope. The pass is never logged.
 
@@ -151,6 +152,59 @@ func TestGRPCAttribution_ScheduledOBOArmed(t *testing.T) {
 		`SELECT armed_by_id, armed_by_kind FROM scheduled_tasks WHERE entity_id=$1`, id,
 	).Scan(&armedID, &armedKind); err != nil {
 		t.Fatalf("inspect scheduled_task for %s: %v", id, err)
+	}
+	if armedID != "alice" || armedKind != "user" {
+		t.Errorf("armed timer principal = {%q,%q}; want {alice,user} (the OBO user, never the OBO client)", armedID, armedKind)
+	}
+}
+
+// TestGRPCAttribution_ScheduledOBOArmedJoined: alice's on-behalf-of token
+// creates X; X's SYNC processor calls back over EntityManage presenting
+// alice's OWN on-behalf-of token AND the pass — joining alice's own
+// transaction (allowed; TestGRPCCallbackJoin_OBOOtherUser_Forbidden covers
+// the refused other-user case) — to create Y on a far-future-timer workflow.
+// The timer armed on Y inside that joined transaction must carry alice,
+// never the OBO client: the "inside its own joined transaction" half of
+// spec §13's OBO-armed row, through the gRPC door.
+func TestGRPCAttribution_ScheduledOBOArmedJoined(t *testing.T) {
+	h := newCallbackHarness(t)
+	const primary = "grpc-attr-sched-obo-joined-primary"
+	const secondary = "grpc-attr-sched-obo-joined-secondary"
+	h.SetupModelWithWorkflow(t, secondary, farFutureTimerWF("grpc-attr-sched-obo-joined-y-wf"))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	yIDs := make(chan string, 1)
+	h.RegisterProc("grpc-attr-sched-obo-joined-proc", func(rc *reqCtx) (map[string]any, error) {
+		env, id, err := h.createEntityGRPCAs(alice, rc.token, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil || !env.Success {
+			return nil, fmt.Errorf("gRPC joined-OBO create Y: %s %v", describeEnv(env), err)
+		}
+		yIDs <- id
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, procCascadeWF("grpc-attr-sched-obo-joined", "grpc-attr-sched-obo-joined-proc", "SYNC", ""))
+
+	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
+	}
+
+	var yID string
+	select {
+	case yID = <-yIDs:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: processor did not create Y")
+	}
+	t.Cleanup(func() {
+		if env, err := h.deleteEntityGRPC(yID); err != nil || !env.Success {
+			t.Errorf("cleanup: delete %s: %s %v", yID, describeEnv(env), err)
+		}
+	})
+
+	var armedID, armedKind string
+	if err := dbPool.QueryRow(context.Background(),
+		`SELECT armed_by_id, armed_by_kind FROM scheduled_tasks WHERE entity_id=$1`, yID,
+	).Scan(&armedID, &armedKind); err != nil {
+		t.Fatalf("inspect scheduled_task for Y=%s: %v", yID, err)
 	}
 	if armedID != "alice" || armedKind != "user" {
 		t.Errorf("armed timer principal = {%q,%q}; want {alice,user} (the OBO user, never the OBO client)", armedID, armedKind)

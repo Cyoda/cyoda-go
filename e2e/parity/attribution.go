@@ -274,7 +274,7 @@ func assertScheduledFireAttribution(t *testing.T, fired *client.EntityChangeMeta
 }
 
 // RunAttributionScheduledArmedByFire pins scheduled-fire attribution across
-// backends: a task's ArmedBy is the write's ATTRIBUTED user at arm time
+// backends: a task's ArmedBy is the write's attributed principal at arm time
 // (spi.AttributionFor), and the fired anchor attributes to that principal,
 // executed by the SYSTEM principal {system, system} — never the literal
 // "scheduler", and never re-attributed to a different actor. Same on every
@@ -347,10 +347,13 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 	})
 
 	// WriteBackArmed pins spec §13's "scheduled fire armed by a compute
-	// write-back in alice's transaction": a SYNC processor's callback, using
-	// the compute client's OWN token, creates a secondary joined to the
-	// primary creator's transaction. ArmedBy must be that transaction's
-	// origin — never the compute client that staged the write-back.
+	// write-back in alice's transaction": alice's on-behalf-of token creates
+	// the primary; its SYNC processor's callback, using the compute client's
+	// OWN token, creates a secondary joined to alice's transaction. ArmedBy
+	// must be alice — that transaction's origin — never the compute client
+	// that staged the write-back. alice is on-behalf-of (OBOToken), matching
+	// how every other "alice" in this spec row is on-behalf-of
+	// (RunAttributionOBOWriteBack), not a plain direct-service tenant.
 	t.Run("WriteBackArmed", func(t *testing.T) {
 		tenant := fixture.ComputeTenant(t)
 		admin := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -362,9 +365,10 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 		cbSetupModel(t, admin, primary, cbSampleCreateSecondary,
 			cbPrimaryProcWorkflow("attr-scheduled-fire-wb-wf", "cb-create-secondary", "SYNC", cbContext(secondary, marker)))
 
-		primaryID, err := admin.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+		alice := OBOToken(t, fixture, tenant, "alice")
+		primaryID, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
 		if err != nil {
-			t.Fatalf("primary create: %v", err)
+			t.Fatalf("primary create as alice (OBO): %v", err)
 		}
 		prim, err := admin.GetEntity(t, primaryID)
 		if err != nil {
@@ -379,25 +383,26 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("parse secondaryId %q: %v", secIDStr, err)
 		}
 
-		// The origin is the primary's creator (the compute tenant itself). The
-		// secondary's write-back CREATE attributes to that origin, executed by
-		// a DIFFERENT service principal (the compute member) — proving ArmedBy
-		// below is the chain origin, not the executor that staged the write.
-		origin := changePrincipalOf(t, mustChanges(t, admin, primaryID), "service", "primary creator")
+		// The primary OBO create attributes to alice, executed by the OBO
+		// client. The secondary's write-back CREATE attributes to alice too
+		// (the chain origin), executed by a DIFFERENT, service principal (the
+		// compute member) — proving ArmedBy below is the chain origin, not
+		// the executor that staged the write.
+		assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, primaryID), "CREATE"), "primary OBO write", oboClientIDOf(t, alice))
 		secCreate := findChangeByType(mustChanges(t, admin, secID), "CREATE")
 		if secCreate == nil {
 			t.Fatalf("no CREATE change for write-back secondary %s", secID)
 		}
-		if secCreate.User != origin {
-			t.Errorf("write-back secondary attributed user = %q; want %q (the chain origin)", secCreate.User, origin)
+		if secCreate.User != "alice" || secCreate.AttributedKind != "user" {
+			t.Errorf("write-back secondary attributed = {%q,%q}; want {alice,user} (the chain origin)", secCreate.User, secCreate.AttributedKind)
 		}
-		if secCreate.ExecutedBy == nil || secCreate.ExecutedBy.ID == origin {
-			t.Errorf("write-back secondary executor = %+v; want a DIFFERENT principal from the origin %q (the compute member, not the origin itself)",
-				secCreate.ExecutedBy, origin)
+		if secCreate.ExecutedBy == nil || secCreate.ExecutedBy.Kind != "service" || secCreate.ExecutedBy.ID == "alice" {
+			t.Errorf("write-back secondary executor = %+v; want a service principal different from alice (the compute member, not the origin itself)",
+				secCreate.ExecutedBy)
 		}
 
 		awaitEntityStateAttr(t, admin, secID, "Closed", 15*time.Second)
-		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, secID)), origin, "service")
+		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, secID)), "alice", "user")
 	})
 }
 

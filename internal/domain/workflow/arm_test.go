@@ -406,7 +406,7 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 	}
 	notWant := spi.Principal{ID: "arm-service", Kind: spi.PrincipalService}
 	if task.ArmedBy == notWant {
-		t.Error("ArmedBy must not be the service executor — arming always uses the chain origin")
+		t.Error("ArmedBy must not be the service executor — a service executor's write inherits the transaction's origin")
 	}
 }
 
@@ -450,9 +450,9 @@ func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, na
 }
 
 // TestReconcile_ArmedByIsTheWritesAttributedUser covers §5.1/§7.4: ArmedBy is
-// the write's ATTRIBUTED user (spi.AttributionFor), not the transaction's
-// origin (spi.ResolveOrigin) — alice writes inside a transaction bob began,
-// and the arm stamps alice, not bob.
+// the write's attributed principal (spi.AttributionFor), not the
+// transaction's origin (spi.ResolveOrigin) — alice writes inside a
+// transaction bob began, and the arm stamps alice, not bob.
 func TestReconcile_ArmedByIsTheWritesAttributedUser(t *testing.T) {
 	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
 	got := armedBy(t, armOriginUserCtx("bob"), &alice, "armedby-attr")

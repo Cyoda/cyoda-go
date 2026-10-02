@@ -170,8 +170,8 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				}
 				timeoutMs = &v
 			}
-			// ArmedBy is the write's ATTRIBUTED user (spi.AttributionFor), not
-			// its transaction origin (spi.ResolveOrigin) — they differ for a
+			// ArmedBy is the write's attributed principal (spi.AttributionFor),
+			// not its transaction origin (spi.ResolveOrigin) — they differ for a
 			// user-kind caller writing inside a transaction begun by someone
 			// else, and for an on-behalf-of principal (AttributionFor never
 			// lets an OBO write inherit a transaction's origin). The executor
@@ -297,8 +297,8 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, &expiredSchedule{transition: tr.Name}, nil
 	}
 
-	// ArmedBy is the write's ATTRIBUTED user (spi.AttributionFor(ctx)), NOT
-	// from the Function's dispatch result — res carries only timing (fireAt /
+	// ArmedBy is the write's attributed principal (spi.AttributionFor(ctx)),
+	// NOT from the Function's dispatch result — res carries only timing (fireAt /
 	// fireAfterMs / expireAfterMs), never a principal. The callout affects
 	// WHEN this task fires, never WHO it is attributed to. The executor half
 	// of AttributionFor is discarded — see the static-schedule arm site for

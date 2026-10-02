@@ -533,6 +533,16 @@ func TestAttribution_D3_OBOKeepsOwnUser(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout: D3 processor did not create Y")
 	}
+	// farFutureTimerWF's AutoClose never fires (ten minutes out) and this
+	// stack's scheduler is disabled (newCallbackHarness default, shares the
+	// package database), so nothing ever claims or cancels Y's armed task —
+	// delete Y so it doesn't outlive the test (deletion cancels its
+	// scheduled tasks).
+	t.Cleanup(func() {
+		if resp := h.DoAuthBearer(t, http.MethodDelete, "/api/entity/"+yID, "", "", alice); resp.StatusCode != http.StatusOK {
+			t.Errorf("cleanup: delete Y=%s: %d %s", yID, resp.StatusCode, h.readBody(t, resp))
+		}
+	})
 
 	change := findChangeByType(h.getChanges(t, yID), "CREATE")
 	assertAttribution(t, change, "Y D3 write", "alice", "user", "service", oboClientOf(t, alice))

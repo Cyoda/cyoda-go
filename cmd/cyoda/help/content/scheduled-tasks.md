@@ -90,7 +90,7 @@ All are optional query parameters.
 - `lastError`: for a `FAILED` task, present with the failure's text (pairs with `failedTime`), even when the text is empty. For every other status, present when `lastAttemptTime` is set, paired with it. Client-safe text — a `CODE: detail` message, a compute node's own message, or `internal error [ticket: <uuid>]`.
 - `failureReason`: present when `status` is `FAILED`. Open value set; accept a value not listed here. Known values: `UNSAFE_WORK_NOT_COMPLETED` — a processor not declared `idempotent` was handed to a compute node and the run did not commit, so it is not repeated; `OWNER_LOST_REPEATEDLY` — the node running the task was lost too many times; `EXPIRED_AFTER_FAILED_ATTEMPTS` — `expiresTime` passed after a failed attempt or a lost node; `RUN_PANICKED` — the run failed with an internal error; `STOPPED_AFTER_PARTIAL_COMMIT` — the run committed the entity into another state and then stopped.
 - `failedTime`: present when `status` is `FAILED`.
-- `armedBy`: the ATTRIBUTED user of the write that armed the task — `{id, kind}`, `kind` one of `user`, `service`, `system`. For an on-behalf-of write this is the on-behalf-of user, never the client that holds the token. Present when known.
+- `armedBy`: the attributed principal of the write that armed the task — `{id, kind}`, `kind` one of `user`, `service`, `system`. For an on-behalf-of write this is the on-behalf-of user, never the client that holds the token. Present when known.
 
 ## ERRORS
 

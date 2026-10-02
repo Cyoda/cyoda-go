@@ -870,7 +870,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
-- A scheduled transition records as `armedBy` the attributed user of the
+- A scheduled transition records as `armedBy` the attributed principal of the
   write that armed it.
 
 - Audit events: `actor` gains `kind`, and entity-change and state-machine
