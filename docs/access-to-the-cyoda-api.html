@@ -137,7 +137,7 @@ td:first-child{font-weight:500;width:24%}
         <tbody>
           <tr><td>Who the user is</td><td>The application, with any sign-in method it chooses.</td></tr>
           <tr><td>What the user may do</td><td>The application, before it acts for the user. cyoda-go has no per-user permissions.</td></tr>
-          <tr><td>Which tenant a request acts in</td><td>cyoda-go: always the client's own tenant. No request can name another.</td></tr>
+          <tr><td>Which tenant a request acts in</td><td>cyoda-go: always the client's own tenant. No request can name another; only a platform operator's <code>cyoda token</code>, signed offline with the signing key, names its tenant.</td></tr>
           <tr><td>What the client may do</td><td>cyoda-go, from the client's roles and permissions: data access (<code>ROLE_M2M</code>), tenant administration (<code>ROLE_ADMIN</code>), joining as a compute node, acting for users.</td></tr>
           <tr><td>Rules inside a workflow that need the user</td><td>The application's processors and criteria, which receive the user and the client with each callout, for example to keep the submitter of a request from approving it.</td></tr>
         </tbody>
@@ -153,12 +153,12 @@ td:first-child{font-weight:500;width:24%}
         <tbody>
           <tr><td>Tenant</td><td>A cyoda legal entity. Its id is the <code>caas_org_id</code> in a cyoda token. Each tenant's data is separate from every other tenant's.</td></tr>
           <tr><td>M2M client</td><td>A client id and secret that belongs to one tenant. It gets cyoda tokens with <code>client_credentials</code>. Its roles: <code>ROLE_M2M</code>, which every data operation requires; <code>ROLE_ADMIN</code> as well for an admin client. A client created with the on-behalf-of permission only exchanges user assertions; it never uses <code>client_credentials</code>, never holds <code>ROLE_ADMIN</code> and never belongs to <code>PLATFORM</code>.</td></tr>
-          <tr><td>cyoda token</td><td>A token cyoda-go signs, carrying the client's tenant in <code>caas_org_id</code>. The only token the API accepts.</td></tr>
+          <tr><td>cyoda token</td><td>A token cyoda-go signs, carrying the tenant in <code>caas_org_id</code>: the client's tenant, or the tenant a platform operator named with <code>cyoda token</code>. The only kind of token the API accepts.</td></tr>
           <tr><td>Trusted key</td><td>A public key a tenant admin registers for the application. The application signs user assertions with the matching private key. Key ids are unique within a tenant. Invalidating a key ends it at once; to rotate, register the new key, switch the application to it, then invalidate the old one.</td></tr>
-          <tr><td>User assertion</td><td>A JWT of at most 5 minutes' life that the application signs with its trusted key: <code>sub</code> = the user, <code>caas_org_id</code> = the tenant, <code>aud</code> = cyoda-go's issuer (<code>CYODA_JWT_ISSUER</code>), <code>iat</code>, <code>exp</code>, and <code>kid</code> naming the key. It says "this is my user"; cyoda-go records it and does not verify the user.</td></tr>
+          <tr><td>User assertion</td><td>A JWT of at most 5 minutes' life that the application signs (RS256) with its trusted key: <code>sub</code> = the user, <code>caas_org_id</code> = the tenant, <code>aud</code> = cyoda-go's issuer (<code>CYODA_JWT_ISSUER</code>), <code>iat</code>, <code>exp</code>, and <code>kid</code> naming the key. It says "this is my user"; cyoda-go records it and does not verify the user.</td></tr>
           <tr><td>On-behalf-of (OBO) token</td><td>The cyoda token a token exchange returns: the user as <code>sub</code>, the client as <code>act.sub</code>. cyoda-go treats the client as the caller, with the client's roles, and the user as the one the work is for. The user is recorded, not authorized.</td></tr>
-          <tr><td>Attributed user</td><td>Who a change is for: the user named in an OBO token, or otherwise the caller. Shown as <code>actor</code> in audit events.</td></tr>
-          <tr><td>Executor</td><td>Who actually made a change: the M2M client whose token made the call, or <code>system</code> for a scheduled firing.</td></tr>
+          <tr><td>Attributed user</td><td>Who a change is for: the user named in an OBO token; for a compute node's write-back, the user of the transaction it joined; otherwise the caller. Shown as <code>actor</code> in audit events.</td></tr>
+          <tr><td>Executor</td><td>Who actually made a change: the M2M client whose token made the call, <code>system</code> for a scheduled firing, or the operator's user for a <code>cyoda token</code>. Shown as <code>executedBy</code>.</td></tr>
           <tr><td>Platform operator</td><td><code>ROLE_ADMIN</code> in the tenant <code>PLATFORM</code>. Manages signing keys and node-wide settings. Whoever holds <code>CYODA_JWT_SIGNING_KEY</code> can sign a token for any tenant with <code>cyoda token</code>.</td></tr>
         </tbody>
       </table>
@@ -170,8 +170,8 @@ td:first-child{font-weight:500;width:24%}
     <ol>
       <li>The client authenticates with its id and secret, and must hold the on-behalf-of permission. Each node bounds how many secret checks run at once and answers 503 when busy; a per-client rate limit (429) applies to every grant and exchange. Both answers carry <code>Retry-After</code>.</li>
       <li><code>subject_token_type</code> is <code>urn:ietf:params:oauth:token-type:jwt</code>; other RFC 8693 parameters, such as <code>actor_token</code>, are refused.</li>
-      <li>The trusted key named by the assertion's <code>kid</code> is read from the shared store, in the client's tenant; a key of another tenant is never found. If the store cannot be read, the exchange answers 503.</li>
-      <li>The assertion's signature, <code>exp</code> and <code>iat</code> (both required, at most 5 minutes apart), <code>aud</code>, its issuer if the key lists issuers, and <code>caas_org_id</code> = the client's tenant are checked.</li>
+      <li>The trusted key named by the assertion's <code>kid</code> is read from the shared store, in the client's tenant; a key of another tenant is never found. If the store cannot be read, the exchange is refused: 503 when the store reports itself unavailable, 500 for any other failure.</li>
+      <li>The assertion's RS256 signature, <code>exp</code> and <code>iat</code> (both required, at most 5 minutes apart, 30 seconds of clock skew), <code>nbf</code> if present, <code>aud</code>, its issuer if the key lists issuers, and <code>caas_org_id</code> = the client's tenant are checked. A tenant mismatch is 403; every other failure is 400.</li>
       <li><code>sub</code> must be a valid user id and not the reserved id <code>system</code>.</li>
       <li>The OBO token: <code>sub</code> = the user, <code>act.sub</code> = the client, the client's roles (any roles in the assertion are ignored), and <code>exp</code> no later than the assertion's <code>exp</code> or <code>CYODA_JWT_EXPIRY_SECONDS</code> from now, whichever is earlier.</li>
       <li>An on-behalf-of client only exchanges: <code>client_credentials</code> refuses it. An OBO token cannot open a compute-node stream.</li>
@@ -191,7 +191,7 @@ td:first-child{font-weight:500;width:24%}
         </tbody>
       </table>
     </div>
-    <p>Both identities appear wherever a change is reported: entity change history (<code>GET /entity/{id}/changes</code>), audit events (<code>GET /audit/entity/{id}</code>), and every callout to a compute node, including callouts another node forwards. A callout also carries the executor's roles. A scheduled task keeps the user it was armed for, and fires with executor <code>system</code>.</p>
+    <p>Both identities appear wherever a change is reported: entity change history (<code>GET /entity/{id}/changes</code>), audit events (<code>GET /audit/entity/{id}</code>), messages (<code>GET /message/{id}</code>), and every callout to a compute node, including callouts another node forwards. A callout also carries the executor's roles. A scheduled task keeps the user it was armed for, and fires with executor <code>system</code>.</p>
   </section>
 
   <section class="ref" aria-labelledby="life-h">
@@ -201,7 +201,7 @@ td:first-child{font-weight:500;width:24%}
       <li>Every grant reads the client, and every exchange reads the client and the trusted key, from the shared store. Resetting a secret, deleting a client, or invalidating or deleting a trusted key stops new tokens at once on every node.</li>
       <li>Tokens issued before the change stay valid until they expire, at most the token lifetime.</li>
       <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, or if the client's secret was reset after the token that opened it was issued. If the store cannot be read, the stream closes as unavailable and the node reconnects.</li>
-      <li>Invalidating every signing key pair, once a replacement is issued, ends every cyoda token for every tenant. It is the platform operator's last resort.</li>
+      <li>Issuing a new signing key pair and invalidating every other one, the bootstrap key included, ends every cyoda token signed before, for every tenant. It is the platform operator's last resort.</li>
     </ol>
   </section>
 
@@ -324,7 +324,7 @@ td:first-child{font-weight:500;width:24%}
      ]},
 
     {id:"compute", name:"Compute node joins",
-     summary:"A compute node gets a cyoda token with its own client and opens the gRPC stream over TLS. The stream needs a service principal with ROLE_M2M. It re-checks its client every minute and closes if the client was deleted or its secret reset.",
+     summary:"A compute node gets a cyoda token with its own client and opens the gRPC stream over TLS. The stream needs the client's own client_credentials token: a service principal with ROLE_M2M. It re-checks its client every minute and closes if the client was deleted or its secret reset.",
      lanes:["compute","tok","api","store"],
      steps:[
       {m:["compute","tok"],k:"req",l:"client_credentials"},
@@ -342,7 +342,7 @@ td:first-child{font-weight:500;width:24%}
      ],
      notes:[
       ["Tenant-scoped","A node joins only its client's tenant and receives only that tenant's callouts."],
-      ["Services only","A stream needs principal kind service and ROLE_M2M; an OBO token cannot open one."],
+      ["Services only","A stream needs a client's own client_credentials token: principal kind service and ROLE_M2M. An OBO token cannot open one."],
       ["Bounded by the client","A stream outlives its token but not its client: it closes within a minute of a delete or secret reset."]
      ]},
 
@@ -364,12 +364,12 @@ td:first-child{font-weight:500;width:24%}
       {m:["tok","app"],k:"fail",l:"401 invalid_client"},
       {p:"A token issued before the change"},
       {m:["app","api"],k:"req",l:"API call, earlier token"},
-      {m:["api","app"],k:"warn",l:"200 until its exp\n(at most 5 minutes)"}
+      {m:["api","app"],k:"warn",l:"200 until its exp\n(5 minutes by default)"}
      ],
      notes:[
       ["Every node at once","Grants and exchanges read the shared store, so no node issues a token for a deleted client or an invalidated key."],
       ["The bound is the token lifetime","Keep CYODA_JWT_EXPIRY_SECONDS short; 300 seconds by default."],
-      ["Logged","Creating, deleting and resetting clients and trusted keys write INFO lines with the tenant id."]
+      ["Logged","Creating, deleting and resetting clients, and registering, invalidating, reactivating and deleting trusted keys, write INFO lines with the tenant id."]
      ]},
 
     {id:"refused", name:"Requests that are refused",
@@ -377,7 +377,7 @@ td:first-child{font-weight:500;width:24%}
      lanes:["any","tok","api"],
      steps:[
       {m:["any","api"],k:"req",l:"API call with an identity\nprovider's token"},
-      {s:"api",k:"fail",l:"not signed by cyoda:\nno lock, no network"},
+      {s:"api",k:"fail",l:"not signed by a cyoda key:\nno network call made"},
       {m:["api","any"],k:"fail",l:"401"},
       {p:"Exchanges"},
       {m:["any","tok"],k:"req",l:"exchange by a client\nwithout the permission"},
@@ -393,9 +393,9 @@ td:first-child{font-weight:500;width:24%}
       {m:["api","any"],k:"fail",l:"PermissionDenied"}
      ],
      notes:[
-      ["One kind of token","Every API request carries a token cyoda-go signed for a client of the tenant."],
+      ["One kind of token","Every API request carries a token cyoda-go signed: for a client of the tenant, or a platform operator's cyoda token."],
       ["Acting for users is a permission","Only a client created for user requests can obtain OBO tokens."],
-      ["Reserved ids","A user assertion can never make a request pose as the system or another reserved principal."]
+      ["Reserved id","A user assertion can never name the system principal, the executor of scheduled firings."]
      ]}
   ];
 
