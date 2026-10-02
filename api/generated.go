@@ -1233,13 +1233,16 @@ func (e SystemAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for TechnicalUserCredentialsDtoGrantType.
 const (
-	TechnicalUserCredentialsDtoGrantTypeClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeClientCredentials                        TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange TechnicalUserCredentialsDtoGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the TechnicalUserCredentialsDtoGrantType enum.
 func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 	switch e {
 	case TechnicalUserCredentialsDtoGrantTypeClientCredentials:
+		return true
+	case TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange:
 		return true
 	default:
 		return false
@@ -2939,14 +2942,17 @@ type TechnicalUserCredentialsDto struct {
 	// ClientSecretExpiresAt Time at which the client secret will expire, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch), or 0 if it will not expire. Per RFC 7591 Section 3.2.1, this field is required when a client_secret is issued.
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
 
-	// GrantType The OAuth2 grant type (must be 'client_credentials')
+	// GrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 	GrantType TechnicalUserCredentialsDtoGrantType `json:"grant_type"`
+
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
 
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
 }
 
-// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type (must be 'client_credentials')
+// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 type TechnicalUserCredentialsDtoGrantType string
 
 // TechnicalUserDto defines model for TechnicalUserDto.
@@ -2959,6 +2965,9 @@ type TechnicalUserDto struct {
 
 	// LastUpdateDate The date and time when the M2M client was last updated
 	LastUpdateDate time.Time `json:"lastUpdateDate"`
+
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
 
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
@@ -3363,6 +3372,9 @@ type GetStateMachineFinishedEventParams struct {
 type CreateTechnicalUserParams struct {
 	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
+
+	// OnBehalfOf When true, the created client is an on-behalf-of (OBO) client: it may only perform token exchanges (`urn:ietf:params:oauth:grant-type:token-exchange`), never `client_credentials`. The flag is immutable and never combined with `withAdminRole=true`, and the client is never created in the `PLATFORM` tenant.
+	OnBehalfOf *bool `form:"onBehalfOf,omitempty" json:"onBehalfOf,omitempty"`
 }
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
@@ -5766,6 +5778,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "withAdminRole"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "withAdminRole", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "onBehalfOf" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "onBehalfOf", r.URL.Query(), &params.OnBehalfOf, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "onBehalfOf"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "onBehalfOf", Err: err})
 		}
 		return
 	}

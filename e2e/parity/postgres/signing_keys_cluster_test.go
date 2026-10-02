@@ -211,7 +211,7 @@ func hasKeyID(body []byte, kid string) bool {
 // c targets.
 func createAdminClient(t *testing.T, c *client.Client) (id, secret string) {
 	t.Helper()
-	code, body, err := c.CreateClientRaw(t, true)
+	code, body, err := c.CreateClientRaw(t, true, false)
 	if err != nil || code != http.StatusOK {
 		t.Fatalf("create admin client: %d %v", code, err)
 	}

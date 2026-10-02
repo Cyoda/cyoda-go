@@ -697,6 +697,19 @@ paths:
           required: false
           schema:
             type: boolean
+        - name: onBehalfOf
+          in: query
+          description: "When true, the created client is an on-behalf-of (OBO)
+            client: it may only perform token exchanges
+            (`urn:ietf:params:oauth:grant-type:token-exchange`), never
+            `client_credentials`. The flag is immutable and never combined
+            with `withAdminRole=true`, and the client is never created in
+            the `PLATFORM` tenant.
+            "
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: M2M client created successfully
@@ -706,8 +719,10 @@ paths:
                 $ref: "#/components/schemas/TechnicalUserCredentialsDto"
         "400":
           description: "Bad request — M2M_CLIENT_CAP_REACHED: the tenant already has
-            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; or BAD_REQUEST:
-            `withAdminRole` is not a boolean."
+            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; BAD_REQUEST:
+            `withAdminRole` or `onBehalfOf` is not a boolean, `withAdminRole=true`
+            is combined with `onBehalfOf=true`, or `onBehalfOf=true` is
+            requested in the `PLATFORM` tenant."
           content:
             application/problem+json:
               schema:
@@ -9163,9 +9178,12 @@ components:
           minLength: 8
         grant_type:
           type: string
-          description: The OAuth2 grant type (must be 'client_credentials')
+          description: "The OAuth2 grant type this client uses:
+            `client_credentials`, or the token-exchange URN for an
+            on-behalf-of client (`onBehalfOf: true`)."
           enum:
             - client_credentials
+            - "urn:ietf:params:oauth:grant-type:token-exchange"
           example: client_credentials
         client_secret_expires_at:
           type: integer
@@ -9188,12 +9206,18 @@ components:
             seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section
             3.2.1. "
           example: 1709913600
+        onBehalfOf:
+          type: boolean
+          description: "Whether this is an on-behalf-of (OBO) client: it may
+            only perform token exchanges, never `client_credentials`. Set at
+            creation and immutable."
       required:
         - client_id
         - client_secret
         - client_secret_expires_at
         - grant_type
         - roles
+        - onBehalfOf
     ErrorResponseDto:
       type: object
       properties:
@@ -11092,11 +11116,17 @@ components:
           example: "[M2M]"
           items:
             type: string
+        onBehalfOf:
+          type: boolean
+          description: "Whether this is an on-behalf-of (OBO) client: it may
+            only perform token exchanges, never `client_credentials`. Set at
+            creation and immutable."
       required:
         - clientId
         - creationDate
         - lastUpdateDate
         - roles
+        - onBehalfOf
     AuditActorInfoDto:
       type: object
       properties:

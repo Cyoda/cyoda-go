@@ -56,7 +56,7 @@ func modelListStatus(t *testing.T, baseURL, token string) int {
 // newM2MClient creates an M2M client through the node c targets.
 func newM2MClient(t *testing.T, c *client.Client) (id, secret string) {
 	t.Helper()
-	code, body, err := c.CreateClientRaw(t, false)
+	code, body, err := c.CreateClientRaw(t, false, false)
 	if err != nil || code != http.StatusOK {
 		t.Fatalf("create M2M client: %d %v", code, err)
 	}

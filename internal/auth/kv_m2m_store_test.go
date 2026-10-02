@@ -23,7 +23,7 @@ func newM2M(t *testing.T, max int) (*auth.KVM2MClientStore, spi.KeyValueStore) {
 func TestKVM2M_Lifecycle(t *testing.T) {
 	s, _ := newM2M(t, 0)
 	ctx := systemCtx()
-	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +62,7 @@ func TestKVM2M_Lifecycle(t *testing.T) {
 func TestKVM2M_CreateStampsTimestampsAndResetAdvancesUpdatedAt(t *testing.T) {
 	s, _ := newM2M(t, 0)
 	before := time.Now()
-	sec, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestKVM2M_CreateStampsTimestampsAndResetAdvancesUpdatedAt(t *testing.T) {
 func TestKVM2M_SharedAcrossInstances(t *testing.T) {
 	kv := mustNewMemoryKV(t, systemCtx())
 	a, b := auth.NewKVM2MClientStore(kv, 0), auth.NewKVM2MClientStore(kv, 0)
-	sec, _ := a.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := a.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if _, err := b.Authenticate(systemCtx(), "C1", sec); err != nil {
 		t.Fatal("node B does not see node A's client")
 	}
@@ -111,7 +111,7 @@ func TestKVM2M_SharedAcrossInstances(t *testing.T) {
 
 func TestKVM2M_TenantIsolation(t *testing.T) {
 	s, _ := newM2M(t, 0)
-	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if l, _ := s.List(systemCtx(), "other"); len(l) != 0 {
 		t.Fatal("other tenant lists acme's client")
 	}
@@ -128,9 +128,9 @@ func TestKVM2M_TenantIsolation(t *testing.T) {
 
 func TestKVM2M_DeleteNeverTouchesAnotherTenantsIndex(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	// An orphan record of the same id in tenant "other" (as a crash could leave).
-	if _, err := s.Create(systemCtx(), "other", "C2", "C2", []string{"ROLE_M2M"}); err != nil {
+	if _, err := s.Create(systemCtx(), "other", "C2", "C2", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := kv.Get(systemCtx(), "m2m-clients:other", "C2")
@@ -145,7 +145,7 @@ func TestKVM2M_DeleteNeverTouchesAnotherTenantsIndex(t *testing.T) {
 
 func TestKVM2M_RecordWithoutIndexNeverAuthenticatesAndIsRemovable(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	_ = kv.Delete(systemCtx(), "m2m-client-ids", "C1")
 	if _, err := s.Authenticate(systemCtx(), "C1", sec); !errors.Is(err, auth.ErrInvalidClient) {
 		t.Fatal("record without index authenticates")
@@ -166,8 +166,8 @@ func TestKVM2M_RecordWithoutIndexNeverAuthenticatesAndIsRemovable(t *testing.T) 
 
 func TestKVM2M_UndecodableRecord(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
-	_, _ = s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"})
+	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	_, _ = s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
 	_ = kv.Put(systemCtx(), "m2m-clients:acme", "C1", []byte("{"))
 	if _, err := s.Authenticate(systemCtx(), "C1", "x"); err == nil || errors.Is(err, auth.ErrInvalidClient) {
 		t.Fatalf("authenticate on undecodable: %v, want a store error", err)
@@ -191,7 +191,7 @@ func TestKVM2M_UndecodableRecord(t *testing.T) {
 // for the id — see TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient.
 func TestKVM2M_UndecodableIndexEntry(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
 	if _, err := s.Authenticate(systemCtx(), "C1", sec); err == nil || errors.Is(err, auth.ErrInvalidClient) {
 		t.Fatalf("authenticate: %v, want a store error", err)
@@ -221,7 +221,7 @@ func TestKVM2M_ResetSecretWithoutAnOwnRecordIsNotFoundBeforeTheIndexIsRead(t *te
 // creatable again.
 func TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	_ = kv.Put(systemCtx(), "m2m-client-ids", "C1", []byte("{"))
 	if err := s.Delete(systemCtx(), "acme", "C1"); err != nil {
 		t.Fatalf("delete: %v, want nil", err)
@@ -232,7 +232,7 @@ func TestKVM2M_DeleteRemovesADamagedIndexEntryOfTheCallersOwnClient(t *testing.T
 	if _, err := kv.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
 		t.Fatal("record left behind")
 	}
-	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err != nil {
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatalf("create after delete: %v", err)
 	}
 }
@@ -260,7 +260,7 @@ func TestKVM2M_DeleteKeepsAStoreErrorWhenOwnershipCannotBeProven(t *testing.T) {
 func TestKVM2M_DeleteKeepsAStoreErrorOnAnIndexReadFailureEvenWithAnOwnRecord(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	good := auth.NewKVM2MClientStore(mem, 0)
-	if _, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err != nil {
+	if _, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatal(err)
 	}
 	s := auth.NewKVM2MClientStore(&failNSKV{KeyValueStore: mem, ns: "m2m-client-ids", failGet: true}, 0)
@@ -296,16 +296,16 @@ func TestKVM2M_DeleteRemovesADamagedRecordAndDamagedIndexEntryOfTheCallersOwnCli
 
 func TestKVM2M_Cap(t *testing.T) {
 	s, _ := newM2M(t, 2)
-	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
-	_, _ = s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"})
-	if _, err := s.Create(systemCtx(), "acme", "C3", "C3", []string{"ROLE_M2M"}); !errors.Is(err, auth.ErrM2MClientCapReached) {
+	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	_, _ = s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
+	if _, err := s.Create(systemCtx(), "acme", "C3", "C3", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientCapReached) {
 		t.Fatalf("third create: %v", err)
 	}
-	if _, err := s.Create(systemCtx(), "other", "C4", "C4", []string{"ROLE_M2M"}); err != nil {
+	if _, err := s.Create(systemCtx(), "other", "C4", "C4", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatal("cap is per tenant")
 	}
 	_ = s.Delete(systemCtx(), "acme", "C1")
-	if _, err := s.Create(systemCtx(), "acme", "C3", "C3", []string{"ROLE_M2M"}); err != nil {
+	if _, err := s.Create(systemCtx(), "acme", "C3", "C3", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatalf("after a delete: %v", err)
 	}
 }
@@ -313,7 +313,7 @@ func TestKVM2M_Cap(t *testing.T) {
 func TestKVM2M_CapZeroIsUnbounded(t *testing.T) {
 	s, _ := newM2M(t, 0)
 	for i := 0; i < 3; i++ {
-		if _, err := s.Create(systemCtx(), "acme", fmt.Sprintf("C%d", i), "u", []string{"ROLE_M2M"}); err != nil {
+		if _, err := s.Create(systemCtx(), "acme", fmt.Sprintf("C%d", i), "u", []string{"ROLE_M2M"}, false); err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}
 	}
@@ -342,7 +342,7 @@ func TestKVM2M_CapHoldsUnderConcurrentCreatesOnOneNode(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if _, err := s.Create(systemCtx(), "acme", fmt.Sprintf("C%d", i), fmt.Sprintf("C%d", i), []string{"ROLE_M2M"}); err == nil {
+			if _, err := s.Create(systemCtx(), "acme", fmt.Sprintf("C%d", i), fmt.Sprintf("C%d", i), []string{"ROLE_M2M"}, false); err == nil {
 				ok.Add(1)
 			}
 		}(i)
@@ -360,15 +360,15 @@ func TestKVM2M_CapHoldsUnderConcurrentCreatesOnOneNode(t *testing.T) {
 // id outside the grammar fails in the encoder, before anything is written.
 func TestKVM2M_CreateRefusesExistingAndInvalidIDs(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
-	if _, err := s.Create(systemCtx(), "other", "C1", "C1", []string{"ROLE_M2M"}); !errors.Is(err, auth.ErrM2MClientExists) {
+	_, _ = s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	if _, err := s.Create(systemCtx(), "other", "C1", "C1", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientExists) {
 		t.Fatalf("existing id in another tenant: %v", err)
 	}
 	_ = kv.Put(systemCtx(), "m2m-client-ids", "C9", []byte("{"))
-	if _, err := s.Create(systemCtx(), "acme", "C9", "C9", []string{"ROLE_M2M"}); !errors.Is(err, auth.ErrM2MClientExists) {
+	if _, err := s.Create(systemCtx(), "acme", "C9", "C9", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientExists) {
 		t.Fatalf("undecodable index entry's id: %v", err)
 	}
-	if _, err := s.Create(systemCtx(), "acme", "a-b", "a-b", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(systemCtx(), "acme", "a-b", "a-b", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("id outside the grammar: created")
 	}
 	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "a-b"); !errors.Is(err, spi.ErrNotFound) {
@@ -383,7 +383,7 @@ func TestKVM2M_CreateRefusesExistingAndInvalidIDs(t *testing.T) {
 // a reset.
 func TestKVM2M_NoPlaintextSecretStored(t *testing.T) {
 	s, kv := newM2M(t, 0)
-	sec, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,7 +429,7 @@ func (k *failNSKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
 func TestKVM2M_CreateUndoesARecordWhenTheIndexWriteFails(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	s := auth.NewKVM2MClientStore(&failNSKV{KeyValueStore: mem, ns: "m2m-client-ids"}, 0)
-	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("want error")
 	}
 	if _, err := mem.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
@@ -471,7 +471,7 @@ func TestKVM2M_CreateUndoesAnAmbiguousRecordWrite(t *testing.T) {
 			t.Error(err)
 		}
 	}}, 0)
-	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("want error")
 	}
 	if _, err := mem.Get(systemCtx(), "m2m-clients:acme", "C1"); !errors.Is(err, spi.ErrNotFound) {
@@ -485,7 +485,7 @@ func TestKVM2M_CreateUndoesAnAmbiguousRecordWrite(t *testing.T) {
 func TestKVM2M_CreateUndoesAnAmbiguousIndexWrite(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	s := auth.NewKVM2MClientStore(&nsCommitThenFailKV{KeyValueStore: mem, ns: "m2m-client-ids"}, 0)
-	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("want error")
 	}
 	for _, ns := range []string{"m2m-client-ids", "m2m-clients:acme"} {
@@ -498,7 +498,7 @@ func TestKVM2M_CreateUndoesAnAmbiguousIndexWrite(t *testing.T) {
 func TestKVM2M_StoreFailureIsNeverNotFoundOrInvalid(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	good := auth.NewKVM2MClientStore(mem, 0)
-	sec, _ := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, _ := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	s := auth.NewKVM2MClientStore(brokenKV{}, 0)
 	if _, err := s.Authenticate(systemCtx(), "C1", sec); err == nil || errors.Is(err, auth.ErrInvalidClient) {
 		t.Fatalf("authenticate: %v", err)
@@ -512,7 +512,7 @@ func TestKVM2M_StoreFailureIsNeverNotFoundOrInvalid(t *testing.T) {
 	if _, _, err := s.ResetSecret(systemCtx(), "acme", "C1"); err == nil || errors.Is(err, auth.ErrM2MClientNotFound) {
 		t.Fatalf("reset: %v", err)
 	}
-	if _, err := s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}); err == nil || errors.Is(err, auth.ErrM2MClientExists) {
+	if _, err := s.Create(systemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false); err == nil || errors.Is(err, auth.ErrM2MClientExists) {
 		t.Fatalf("create: %v", err)
 	}
 	// The store error keeps its storage-unavailable marker, so the adapter
@@ -595,7 +595,7 @@ func TestKVM2M_IgnoresCallerTransaction(t *testing.T) {
 
 	probe := &txProbeKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
 	s := auth.NewKVM2MClientStore(probe, 10) // a cap, so Create lists too
-	sec, err := s.Create(txCtx, "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := s.Create(txCtx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -614,12 +614,50 @@ func TestKVM2M_IgnoresCallerTransaction(t *testing.T) {
 	}
 
 	undoProbe := &txProbeKV{KeyValueStore: &failNSKV{KeyValueStore: mustNewMemoryKV(t, systemCtx()), ns: "m2m-client-ids"}}
-	if _, err := auth.NewKVM2MClientStore(undoProbe, 0).Create(txCtx, "acme", "C2", "C2", []string{"ROLE_M2M"}); err == nil {
+	if _, err := auth.NewKVM2MClientStore(undoProbe, 0).Create(txCtx, "acme", "C2", "C2", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("create with a failing index write: want error")
 	}
 
 	if seen := append(probe.calls(), undoProbe.calls()...); len(seen) != 0 {
 		t.Fatalf("KV calls made under the caller's transaction: %v", seen)
+	}
+}
+
+// A client created with onBehalfOf=true carries it and starts at SecretGen 1;
+// a reset increments SecretGen without touching OnBehalfOf; Lookup reads the
+// current record without a secret, and an absent id is ErrM2MClientNotFound.
+func TestKVM2MClientStore_OnBehalfOfAndSecretGen(t *testing.T) {
+	s := auth.NewKVM2MClientStore(mustNewMemoryKV(t, systemCtx()), 0)
+	ctx := systemCtx()
+	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	c, err := s.Authenticate(ctx, "C1", sec)
+	if err != nil || !c.OnBehalfOf || c.SecretGen != 1 {
+		t.Fatalf("after create: %+v, %v", c, err)
+	}
+	_, c, err = s.ResetSecret(ctx, "acme", "C1")
+	if err != nil || c.SecretGen != 2 || !c.OnBehalfOf {
+		t.Fatalf("after reset: %+v, %v", c, err)
+	}
+	got, err := s.Lookup(ctx, "C1")
+	if err != nil || got.SecretGen != 2 || got.TenantID != "acme" {
+		t.Fatalf("lookup: %+v, %v", got, err)
+	}
+	if _, err := s.Lookup(ctx, "NOPE"); !errors.Is(err, auth.ErrM2MClientNotFound) {
+		t.Fatalf("lookup absent: %v", err)
+	}
+}
+
+// A store failure on Lookup keeps its storage-unavailable marker, so a
+// caller (the compute-stream re-check) can tell it apart from "gone".
+func TestKVM2MClientStore_LookupKeepsUnavailableMarker(t *testing.T) {
+	s := auth.NewKVM2MClientStore(brokenKV{}, 0)
+	_, err := s.Lookup(systemCtx(), "C1")
+	var su interface{ StorageUnavailable() bool }
+	if !errors.As(err, &su) || !su.StorageUnavailable() {
+		t.Fatalf("Lookup error lost its storage-unavailable marker: %v", err)
 	}
 }
 
@@ -663,7 +701,7 @@ func TestKVM2M_CreateUndoSurvivesCallerCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(systemCtx())
 	defer cancel()
 	s := auth.NewKVM2MClientStore(&cancelThenFailKV{KeyValueStore: mem, ns: "m2m-client-ids", cancel: cancel}, 0)
-	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("want error")
 	}
 	for _, ns := range []string{"m2m-client-ids", "m2m-clients:acme"} {
@@ -680,7 +718,7 @@ func TestKVM2M_CreateRecordUndoSurvivesCallerCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(systemCtx())
 	defer cancel()
 	s := auth.NewKVM2MClientStore(&cancelThenFailKV{KeyValueStore: mem, ns: "m2m-clients:acme", cancel: cancel}, 0)
-	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}); err == nil {
+	if _, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("want error")
 	}
 	for _, ns := range []string{"m2m-clients:acme", "m2m-client-ids"} {
@@ -696,7 +734,7 @@ func TestKVM2M_CreateRecordUndoSurvivesCallerCancel(t *testing.T) {
 func TestKVM2M_ResetSecretRestoresTheRecordAfterAnAmbiguousWrite(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	good := auth.NewKVM2MClientStore(mem, 0)
-	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -714,7 +752,7 @@ func TestKVM2M_ResetSecretRestoresTheRecordAfterAnAmbiguousWrite(t *testing.T) {
 func TestKVM2M_ResetSecretRestoreSurvivesCallerCancel(t *testing.T) {
 	mem := mustNewMemoryKV(t, systemCtx())
 	good := auth.NewKVM2MClientStore(mem, 0)
-	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
+	sec, err := good.Create(systemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

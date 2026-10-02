@@ -71,6 +71,8 @@ type M2MClient struct {
 	TenantID     spi.TenantID
 	UserID       string
 	Roles        []string
+	OnBehalfOf   bool      // set at Create, immutable: may only perform token exchanges
+	SecretGen    uint64    // 1 at Create, incremented by every successful ResetSecret
 	CreatedAt    time.Time // set at Create, never advanced
 	UpdatedAt    time.Time // advanced on ResetSecret; equal to CreatedAt on fresh create
 }
@@ -164,8 +166,12 @@ var ErrM2MClientExists = errors.New("m2m client already exists")
 // marker; stored data that does not decode (errM2MUndecodable); or a failure
 // to generate or hash a secret, which wraps no KV error.
 type M2MClientStore interface {
-	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string) (secret string, err error)
+	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string, onBehalfOf bool) (secret string, err error)
 	Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error)
+	// Lookup returns clientID's record without checking a secret: the current
+	// record as the store holds it. ErrM2MClientNotFound when clientID is
+	// outside the grammar or no record exists for it in any tenant.
+	Lookup(ctx context.Context, clientID string) (*M2MClient, error)
 	List(ctx context.Context, tenantID spi.TenantID) ([]*M2MClient, error)
 	Delete(ctx context.Context, tenantID spi.TenantID, clientID string) error
 	ResetSecret(ctx context.Context, tenantID spi.TenantID, clientID string) (secret string, c *M2MClient, err error)

@@ -24,8 +24,8 @@ func TestKVM2M_AuthenticateReadShape(t *testing.T) {
 	mem := newReplicaKV(t)
 	ckv := &countingKV{KeyValueStore: mem}
 	s := NewKVM2MClientStore(ckv, 0)
-	sec, _ := s.Create(replicaSystemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"})
-	_, _ = s.Create(replicaSystemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"})
+	sec, _ := s.Create(replicaSystemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	_, _ = s.Create(replicaSystemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
 	_ = mem.Delete(replicaSystemCtx(), m2mClientIndexNamespace, "C2") // C2: record without index
 	for name, call := range map[string]func(){
 		"unknown id":           func() { _, _ = s.Authenticate(replicaSystemCtx(), "NOPE", "x") },

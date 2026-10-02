@@ -46,7 +46,7 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	defer srv.Close()
 
 	// Create M2M client via store (normally would be via API, but testing the flow)
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	}
 
 	// Create M2M client on node A and issue a token
-	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client on node A: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 	defer srv.Close()
 
 	// Create an M2M client so we can authenticate
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}

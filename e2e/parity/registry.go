@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 221 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 222 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -438,6 +438,7 @@ var allTests = []NamedTest{
 	// at the cap with 400 M2M_CLIENT_CAP_REACHED, a delete freeing a slot.
 	{"M2MClientLifecycle", RunM2MClientLifecycle},
 	{"M2MClientCap", RunM2MClientCap},
+	{"M2MClientOnBehalfOf", RunM2MClientOnBehalfOf},
 
 	// Trusted keys in each backend's own spi.KeyValueStore, one namespace
 	// per tenant: one kid registered in two tenants is two independent keys —

@@ -203,12 +203,20 @@ func deleteClientAtCleanup(t *testing.T, baseURL, id string, bearer func() strin
 
 // createClient creates an M2M client in the suite tenant through POST
 // /clients and returns its id and secret (never log the secret). The client
-// is deleted when the test ends.
-func createClient(t *testing.T, withAdminRole bool) (string, string) {
+// is deleted when the test ends. onBehalfOf requests an on-behalf-of client
+// (?onBehalfOf=true); it is never combined with withAdminRole=true.
+func createClient(t *testing.T, withAdminRole, onBehalfOf bool) (string, string) {
 	t.Helper()
 	path := "/api/clients"
+	var q []string
 	if withAdminRole {
-		path += "?withAdminRole=true"
+		q = append(q, "withAdminRole=true")
+	}
+	if onBehalfOf {
+		q = append(q, "onBehalfOf=true")
+	}
+	if len(q) > 0 {
+		path += "?" + strings.Join(q, "&")
 	}
 	resp := doAuth(t, http.MethodPost, path, "")
 	defer resp.Body.Close()

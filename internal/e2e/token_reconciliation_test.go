@@ -87,7 +87,7 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -124,7 +124,7 @@ func TestToken_BadGrantType_400UnsupportedGrantType(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"password"}}, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "unsupported_grant_type")
 }
@@ -135,7 +135,7 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, _ := createClient(t, false)
+	id, _ := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
 	assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 }
@@ -153,7 +153,7 @@ func TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType(t *testing.T) {
 		"subject_token":      {"fake.token.here"},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"}, // not jwt — rejected
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, form, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
 }
@@ -170,7 +170,7 @@ func TestToken_TokenExchange_InvalidGrant_MalformedToken(t *testing.T) {
 		"subject_token":      {"not-a-jwt"},
 		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, form, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
 }

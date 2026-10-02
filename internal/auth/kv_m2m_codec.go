@@ -53,6 +53,8 @@ type m2mClientRecord struct {
 	UserID       string   `json:"userId"`
 	Roles        []string `json:"roles"`
 	HashedSecret string   `json:"hashedSecret"`
+	OnBehalfOf   bool     `json:"onBehalfOf"`
+	SecretGen    uint64   `json:"secretGen"`
 	CreatedAt    string   `json:"createdAt"`
 	UpdatedAt    string   `json:"updatedAt"`
 }
@@ -89,6 +91,9 @@ func validateM2MClient(c *M2MClient) error {
 	if cost < minM2MBcryptCost || cost > maxM2MBcryptCost {
 		return fmt.Errorf("hashedSecret has bcrypt cost %d, outside [%d, %d]", cost, minM2MBcryptCost, maxM2MBcryptCost)
 	}
+	if c.SecretGen < 1 {
+		return errors.New("secretGen must be at least 1")
+	}
 	if !StorableTime(c.CreatedAt) || !StorableTime(c.UpdatedAt) {
 		return errors.New("timestamp out of range")
 	}
@@ -103,6 +108,7 @@ func encodeClientRecord(c *M2MClient) ([]byte, error) {
 	return json.Marshal(m2mClientRecord{
 		ClientID: c.ClientID, TenantID: string(c.TenantID), UserID: c.UserID,
 		Roles: append([]string(nil), c.Roles...), HashedSecret: c.HashedSecret,
+		OnBehalfOf: c.OnBehalfOf, SecretGen: c.SecretGen,
 		CreatedAt: c.CreatedAt.UTC().Format(time.RFC3339Nano), UpdatedAt: c.UpdatedAt.UTC().Format(time.RFC3339Nano),
 	})
 }
@@ -125,7 +131,7 @@ func decodeClientRecord(tenant spi.TenantID, key string, data []byte) (*M2MClien
 	}
 	created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
 	updated, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
-	c := &M2MClient{ClientID: r.ClientID, HashedSecret: r.HashedSecret, TenantID: spi.TenantID(r.TenantID), UserID: r.UserID, Roles: r.Roles, CreatedAt: created, UpdatedAt: updated}
+	c := &M2MClient{ClientID: r.ClientID, HashedSecret: r.HashedSecret, TenantID: spi.TenantID(r.TenantID), UserID: r.UserID, Roles: r.Roles, OnBehalfOf: r.OnBehalfOf, SecretGen: r.SecretGen, CreatedAt: created, UpdatedAt: updated}
 	if err := validateM2MClient(c); err != nil {
 		return nil, fmt.Errorf("%w: %w", errM2MUndecodable, err)
 	}

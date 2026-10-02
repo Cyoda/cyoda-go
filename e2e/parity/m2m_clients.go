@@ -21,7 +21,7 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 	cb := client.NewClient(fixture.BaseURL(), b.Token)
 	ctx := context.Background()
 
-	code, body, err := ca.CreateClientRaw(t, false)
+	code, body, err := ca.CreateClientRaw(t, false, false)
 	if err != nil || code != http.StatusOK {
 		t.Fatalf("create: %d %v", code, err)
 	}
@@ -76,6 +76,77 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 	}
 }
 
+// RunM2MClientOnBehalfOf checks that an on-behalf-of (OBO) client — created
+// via POST /clients?onBehalfOf=true — reports onBehalfOf=true and the
+// token-exchange grant_type on create, in the tenant's list, and again after
+// a secret reset, consistently across backends.
+func RunM2MClientOnBehalfOf(t *testing.T, fixture BackendFixture) {
+	a := fixture.NewTenant(t)
+	ca := client.NewClient(fixture.BaseURL(), a.Token)
+
+	code, body, err := ca.CreateClientRaw(t, false, true)
+	if err != nil || code != http.StatusOK {
+		t.Fatalf("create: %d %v", code, err)
+	}
+	var cred struct {
+		ID         string `json:"client_id"`
+		Secret     string `json:"client_secret"`
+		OnBehalfOf bool   `json:"onBehalfOf"`
+		GrantType  string `json:"grant_type"`
+	}
+	if err := json.Unmarshal(body, &cred); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if !cred.OnBehalfOf {
+		t.Fatalf("create: onBehalfOf=%v, want true", cred.OnBehalfOf)
+	}
+	if cred.GrantType != "urn:ietf:params:oauth:grant-type:token-exchange" {
+		t.Fatalf("create: grant_type=%q, want the token-exchange URN", cred.GrantType)
+	}
+
+	code, body, _ = ca.ListClientsRaw(t)
+	if code != http.StatusOK {
+		t.Fatalf("list: %d", code)
+	}
+	var list []struct {
+		ClientID   string `json:"clientId"`
+		OnBehalfOf bool   `json:"onBehalfOf"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	found := false
+	for _, c := range list {
+		if c.ClientID == cred.ID {
+			found = true
+			if !c.OnBehalfOf {
+				t.Fatalf("list entry %s: onBehalfOf=%v, want true", c.ClientID, c.OnBehalfOf)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("created client %s not in list", cred.ID)
+	}
+
+	code, body, _ = ca.ResetClientSecretRaw(t, cred.ID)
+	if code != http.StatusOK {
+		t.Fatalf("reset: %d", code)
+	}
+	var reset struct {
+		OnBehalfOf bool   `json:"onBehalfOf"`
+		GrantType  string `json:"grant_type"`
+	}
+	if err := json.Unmarshal(body, &reset); err != nil {
+		t.Fatalf("decode reset: %v", err)
+	}
+	if !reset.OnBehalfOf {
+		t.Fatalf("reset: onBehalfOf=%v, want true", reset.OnBehalfOf)
+	}
+	if reset.GrantType != "urn:ietf:params:oauth:grant-type:token-exchange" {
+		t.Fatalf("reset: grant_type=%q, want the token-exchange URN", reset.GrantType)
+	}
+}
+
 // RunM2MClientCap checks the per-tenant cap: the fixture sets
 // CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3, so a tenant's third client succeeds,
 // its fourth is refused with 400 M2M_CLIENT_CAP_REACHED, and deleting one
@@ -85,7 +156,7 @@ func RunM2MClientCap(t *testing.T, fixture BackendFixture) {
 	c := client.NewClient(fixture.BaseURL(), a.Token)
 	var first string
 	for i := 0; i < 3; i++ {
-		code, body, _ := c.CreateClientRaw(t, false)
+		code, body, _ := c.CreateClientRaw(t, false, false)
 		if code != http.StatusOK {
 			t.Fatalf("create %d: %d %s", i, code, body)
 		}
@@ -97,7 +168,7 @@ func RunM2MClientCap(t *testing.T, fixture BackendFixture) {
 			first = cred.ID
 		}
 	}
-	code, body, _ := c.CreateClientRaw(t, false)
+	code, body, _ := c.CreateClientRaw(t, false, false)
 	if code == http.StatusOK {
 		// The cap failed to bind — the response carries a live
 		// client_secret, so never echo the body into the failure message.
@@ -109,7 +180,7 @@ func RunM2MClientCap(t *testing.T, fixture BackendFixture) {
 	if code, _, _ := c.DeleteClientRaw(t, first); code != http.StatusOK {
 		t.Fatal("delete")
 	}
-	if code, _, _ := c.CreateClientRaw(t, false); code != http.StatusOK {
+	if code, _, _ := c.CreateClientRaw(t, false, false); code != http.StatusOK {
 		t.Fatal("create after delete")
 	}
 }

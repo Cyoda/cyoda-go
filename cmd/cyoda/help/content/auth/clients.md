@@ -43,13 +43,25 @@ Use this path when you control both the service and its cyoda registration. For 
 - The created client is scoped to the caller's tenant — there is no per-request tenant parameter on these endpoints.
 - A tenant holds at most `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients (default `100`, `0` = no cap). See STORAGE AND CONSISTENCY.
 
+## ON-BEHALF-OF (OBO) CLIENTS
+
+`POST /clients?onBehalfOf=true` creates an on-behalf-of client: one that may only exchange a user assertion for a cyoda token (the token-exchange grant), never `client_credentials`. Use this for an application that acts for its own end users rather than as itself.
+
+Rules, enforced on every create:
+
+- `onBehalfOf` is set once, at creation, and is immutable — there is no way to flip it later; delete the client and create a new one instead.
+- An on-behalf-of client never holds `ROLE_ADMIN`: `withAdminRole=true` combined with `onBehalfOf=true` is refused with `400 BAD_REQUEST`.
+- An on-behalf-of client never exists in the `PLATFORM` tenant: `onBehalfOf=true` requested there is refused with `400 BAD_REQUEST`.
+
+`TechnicalUserDto` (list) and `TechnicalUserCredentialsDto` (create, reset) both carry `onBehalfOf`. For an on-behalf-of client, `grant_type` in the credentials DTO is `urn:ietf:params:oauth:grant-type:token-exchange` instead of `client_credentials`.
+
 ## REQUEST FLOW
 
 The 4 `/clients` operations: provision, list, delete, reset-secret. Field names follow RFC 7591 (snake_case) for the credentials DTOs; list-item DTOs use cyoda's customary camelCase.
 
 ### Provision a client
 
-The request takes no body. `withAdminRole` is a query parameter; the only role the new client receives unconditionally is `ROLE_M2M`, and `ROLE_ADMIN` is added when `withAdminRole=true` AND the IAM feature is enabled.
+The request takes no body. `withAdminRole` and `onBehalfOf` are query parameters; the only role the new client receives unconditionally is `ROLE_M2M`, `ROLE_ADMIN` is added when `withAdminRole=true` AND the IAM feature is enabled, and the two are never combined (see ON-BEHALF-OF (OBO) CLIENTS).
 
 ```bash
 curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=false" \
@@ -64,7 +76,8 @@ Response (`200 OK`) — schema `TechnicalUserCredentialsDto`:
   "client_secret":            "mySecretKey123",
   "grant_type":               "client_credentials",
   "client_secret_expires_at": 0,
-  "roles":                    ["ROLE_M2M"]
+  "roles":                    ["ROLE_M2M"],
+  "onBehalfOf":               false
 }
 ```
 
@@ -87,7 +100,8 @@ Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `cli
     "clientId":       "abc523BCD",
     "creationDate":   "2026-06-17T10:02:27.88Z",
     "lastUpdateDate": "2026-06-17T10:02:27.88Z",
-    "roles":          ["ROLE_M2M"]
+    "roles":          ["ROLE_M2M"],
+    "onBehalfOf":     false
   }
 ]
 ```
@@ -153,7 +167,7 @@ A stored client that cannot be read back (a damaged record) is left out of `GET 
 - `errors.M2M_CLIENT_NOT_FOUND` (`404`) — delete or reset: the referenced `clientId` does not exist or belongs to a different tenant. A reset also answers it for a client left without its index entry by the reset-and-delete race above.
 - `errors.M2M_CLIENT_CAP_REACHED` (`400`) — create: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients.
 - `errors.FEATURE_DISABLED` (`404`) — `withAdminRole=true` requested with `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=false`.
-- `errors.BAD_REQUEST` (`400`) — query-string parameter invalid (e.g. malformed `withAdminRole` value), or a `clientId` in the path that does not match `^[A-Za-z0-9]{1,100}$`.
+- `errors.BAD_REQUEST` (`400`) — query-string parameter invalid (e.g. malformed `withAdminRole` or `onBehalfOf` value); `withAdminRole=true` combined with `onBehalfOf=true`; `onBehalfOf=true` requested in the `PLATFORM` tenant; or a `clientId` in the path that does not match `^[A-Za-z0-9]{1,100}$`.
 - `errors.NOT_IMPLEMENTED` (`501`) — `CYODA_IAM_MODE` is not `jwt`.
 - `errors.SERVER_ERROR` (`500`) — any of the four operations: the store failed, or a damaged record or index entry blocks the operation (see above). The body carries a generic message and a `ticket`.
 - `errors.STORAGE_UNAVAILABLE` (`503`) — any of the four operations: the store reports itself unavailable. Retryable.

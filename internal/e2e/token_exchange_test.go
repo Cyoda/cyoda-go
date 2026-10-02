@@ -88,7 +88,7 @@ func exchangeForm(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string, r
 // TenantMismatch test below).
 func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string) *http.Response {
 	t.Helper()
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	return postToken(t, exchangeForm(t, priv, kid, sub, tenant, []string{"ROLE_USER"}), id, secret)
 }
 

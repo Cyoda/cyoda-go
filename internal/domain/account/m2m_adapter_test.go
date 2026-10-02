@@ -51,7 +51,7 @@ func newM2MAdapterFixture(t *testing.T, flagOn bool) *Handler {
 // returns its secret.
 func seedClient(t *testing.T, h *Handler, tenant, clientID string) string {
 	t.Helper()
-	sec, err := h.m2mClientStore.Create(m2mSysCtx(), spi.TenantID(tenant), clientID, clientID, []string{"ROLE_M2M"})
+	sec, err := h.m2mClientStore.Create(m2mSysCtx(), spi.TenantID(tenant), clientID, clientID, []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatalf("seed %s/%s: %v", tenant, clientID, err)
 	}
@@ -456,6 +456,178 @@ func TestCreateTechnicalUser_RepeatedCreates_NoCollisions(t *testing.T) {
 	}
 }
 
+// --- Create, onBehalfOf precedence (spec §3.2 / §12.2) ---
+
+// ptr is a small helper for building genapi.CreateTechnicalUserParams literals.
+func ptr(b bool) *bool { return &b }
+
+// TestCreateTechnicalUser_OnBehalfOfPrecedence drives the checks POST
+// /clients applies in order: withAdminRole=true while the admin-role flag is
+// off (404), withAdminRole=true combined with onBehalfOf=true (400, flag on
+// or off), onBehalfOf=true in the PLATFORM tenant (400), onBehalfOf=true as a
+// tenant admin (200, OBO body shape), and a plain create (200, plain body
+// shape).
+func TestCreateTechnicalUser_OnBehalfOfPrecedence(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		flagOn        bool
+		tenant        string
+		withAdminRole bool
+		onBehalfOf    bool
+		wantStatus    int
+		wantErrCode   string
+	}{
+		{
+			name: "withAdminRole and onBehalfOf, flag off", flagOn: false, tenant: tenantA,
+			withAdminRole: true, onBehalfOf: true,
+			wantStatus: http.StatusNotFound, wantErrCode: common.ErrCodeFeatureDisabled,
+		},
+		{
+			name: "withAdminRole and onBehalfOf, flag on", flagOn: true, tenant: tenantA,
+			withAdminRole: true, onBehalfOf: true,
+			wantStatus: http.StatusBadRequest, wantErrCode: common.ErrCodeBadRequest,
+		},
+		{
+			name: "onBehalfOf in PLATFORM", flagOn: true, tenant: string(auth.PlatformTenantID),
+			onBehalfOf: true,
+			wantStatus: http.StatusBadRequest, wantErrCode: common.ErrCodeBadRequest,
+		},
+		{
+			name: "onBehalfOf as a tenant admin", flagOn: false, tenant: tenantA,
+			onBehalfOf: true,
+			wantStatus: http.StatusOK,
+		},
+		{
+			name: "plain", flagOn: false, tenant: tenantA,
+			wantStatus: http.StatusOK,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newM2MAdapterFixture(t, tc.flagOn)
+			req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tc.tenant)
+			rr := httptest.NewRecorder()
+			h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{
+				WithAdminRole: ptr(tc.withAdminRole),
+				OnBehalfOf:    ptr(tc.onBehalfOf),
+			})
+
+			if rr.Code != tc.wantStatus {
+				t.Fatalf("status: got %d want %d, body=%s", rr.Code, tc.wantStatus, rr.Body.String())
+			}
+			if tc.wantErrCode != "" {
+				if code := decodeErrCode(t, rr.Body.Bytes()); code != tc.wantErrCode {
+					t.Errorf("errorCode: got %q want %q", code, tc.wantErrCode)
+				}
+				return
+			}
+			var creds genapi.TechnicalUserCredentialsDto
+			if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if creds.OnBehalfOf != tc.onBehalfOf {
+				t.Errorf("onBehalfOf: got %v want %v", creds.OnBehalfOf, tc.onBehalfOf)
+			}
+			if len(creds.Roles) != 1 || creds.Roles[0] != "ROLE_M2M" {
+				t.Errorf("roles: got %v want [ROLE_M2M]", creds.Roles)
+			}
+			wantGrant := "client_credentials"
+			if tc.onBehalfOf {
+				wantGrant = "urn:ietf:params:oauth:grant-type:token-exchange"
+			}
+			if string(creds.GrantType) != wantGrant {
+				t.Errorf("grant_type: got %q want %q", creds.GrantType, wantGrant)
+			}
+			stored := storedClient(t, h, tc.tenant, creds.ClientId)
+			if stored == nil {
+				t.Fatalf("%s not stored in tenant %s", creds.ClientId, tc.tenant)
+			}
+			if stored.OnBehalfOf != tc.onBehalfOf {
+				t.Errorf("stored OnBehalfOf: got %v want %v", stored.OnBehalfOf, tc.onBehalfOf)
+			}
+		})
+	}
+}
+
+// TestCreateTechnicalUser_NilStore_OnBehalfOf_Returns501 pins that the
+// mock-mode 501 fires before either new onBehalfOf check, same as it already
+// does for withAdminRole.
+func TestCreateTechnicalUser_NilStore_OnBehalfOf_Returns501(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	h := New(nil, nil, nil, feats, auth.OperatorGuard{})
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+
+	h.CreateTechnicalUser(rr, req, genapi.CreateTechnicalUserParams{OnBehalfOf: ptr(true)})
+
+	if rr.Code != http.StatusNotImplemented {
+		t.Fatalf("status: got %d want 501, body=%s", rr.Code, rr.Body.String())
+	}
+	if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeNotImplemented {
+		t.Errorf("errorCode: got %q want %q", code, common.ErrCodeNotImplemented)
+	}
+}
+
+// --- List, onBehalfOf field ---
+
+func TestListTechnicalUsers_IncludesOnBehalfOf(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if _, err := h.m2mClientStore.Create(m2mSysCtx(), tenantA, "PLAINONE", "PLAINONE", []string{"ROLE_M2M"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.m2mClientStore.Create(m2mSysCtx(), tenantA, "OBOONE", "OBOONE", []string{"ROLE_M2M"}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ListTechnicalUsers(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var got []genapi.TechnicalUserDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	obo := map[string]bool{}
+	for _, c := range got {
+		obo[c.ClientId] = c.OnBehalfOf
+	}
+	if obo["PLAINONE"] {
+		t.Errorf("PLAINONE: onBehalfOf true, want false")
+	}
+	if !obo["OBOONE"] {
+		t.Errorf("OBOONE: onBehalfOf false, want true")
+	}
+}
+
+// --- Reset, onBehalfOf and grant_type preserved ---
+
+func TestResetTechnicalUserSecret_PreservesOnBehalfOfAndGrantType(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if _, err := h.m2mClientStore.Create(m2mSysCtx(), tenantA, "OBORESET", "OBORESET", []string{"ROLE_M2M"}, true); err != nil {
+		t.Fatal(err)
+	}
+
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/OBORESET/secret", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.ResetTechnicalUserSecret(rr, req, "OBORESET")
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d want 200, body=%s", rr.Code, rr.Body.String())
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !creds.OnBehalfOf {
+		t.Error("onBehalfOf: got false, want true")
+	}
+	if string(creds.GrantType) != "urn:ietf:params:oauth:grant-type:token-exchange" {
+		t.Errorf("grant_type: got %q, want the token-exchange URN", creds.GrantType)
+	}
+}
+
 // --- Delete, admin, owned ---
 
 func TestDeleteTechnicalUser_AdminOwned_Returns200AndRemoves(t *testing.T) {
@@ -830,11 +1002,14 @@ func (s failingM2MStore) wrap(op string) error {
 	return fmt.Errorf("failed to %s m2m client: %w", op, s.err)
 }
 
-func (s failingM2MStore) Create(context.Context, spi.TenantID, string, string, []string) (string, error) {
+func (s failingM2MStore) Create(context.Context, spi.TenantID, string, string, []string, bool) (string, error) {
 	return "", s.wrap("write")
 }
 func (s failingM2MStore) Authenticate(context.Context, string, string) (*auth.M2MClient, error) {
 	return nil, s.wrap("read")
+}
+func (s failingM2MStore) Lookup(context.Context, string) (*auth.M2MClient, error) {
+	return nil, s.wrap("lookup")
 }
 func (s failingM2MStore) List(context.Context, spi.TenantID) ([]*auth.M2MClient, error) {
 	return nil, s.wrap("list")

@@ -44,7 +44,7 @@ var corruptBodyHash = "$2a$10$" + strings.Repeat("!", 53)
 func validClient(t *testing.T) *M2MClient {
 	t.Helper()
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	return &M2MClient{ClientID: "ABC123", HashedSecret: testHash(), TenantID: "acme", UserID: "ABC123", Roles: []string{"ROLE_M2M"}, CreatedAt: now, UpdatedAt: now}
+	return &M2MClient{ClientID: "ABC123", HashedSecret: testHash(), TenantID: "acme", UserID: "ABC123", Roles: []string{"ROLE_M2M"}, SecretGen: 1, CreatedAt: now, UpdatedAt: now}
 }
 
 // A stored bcrypt cost outside [DefaultCost, DefaultCost+4] is undecodable,
@@ -92,12 +92,33 @@ func TestM2MCodec_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.ClientID != c.ClientID || got.TenantID != c.TenantID || got.UserID != c.UserID || got.HashedSecret != c.HashedSecret ||
+		got.OnBehalfOf != c.OnBehalfOf || got.SecretGen != c.SecretGen ||
 		!got.CreatedAt.Equal(c.CreatedAt) || !got.UpdatedAt.Equal(c.UpdatedAt) || strings.Join(got.Roles, ",") != "ROLE_M2M" {
 		t.Fatalf("round trip: %+v", got)
 	}
 	ib, _ := encodeIndexEntry("acme")
 	if tn, err := decodeIndexEntry(ib); err != nil || tn != "acme" {
 		t.Fatalf("index: %v %v", tn, err)
+	}
+}
+
+// OnBehalfOf and a SecretGen above 1 round-trip too: the zero value of
+// OnBehalfOf is a valid (and common) value, so this is the only test that
+// would notice the field being dropped on the wire.
+func TestM2MCodec_RoundTripOnBehalfOfAndSecretGen(t *testing.T) {
+	c := validClient(t)
+	c.OnBehalfOf = true
+	c.SecretGen = 3
+	b, err := encodeClientRecord(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeClientRecord("acme", "ABC123", b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.OnBehalfOf || got.SecretGen != 3 {
+		t.Fatalf("round trip: OnBehalfOf=%v SecretGen=%d, want true, 3", got.OnBehalfOf, got.SecretGen)
 	}
 }
 
@@ -111,6 +132,7 @@ func TestM2MCodec_EncoderRefuses(t *testing.T) {
 		"not a hash":        func(c *M2MClient) { c.HashedSecret = "plaintext" },
 		"corrupt hash body": func(c *M2MClient) { c.HashedSecret = corruptBodyHash },
 		"year 10000":        func(c *M2MClient) { c.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"secretGen zero":    func(c *M2MClient) { c.SecretGen = 0 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validClient(t)
@@ -136,6 +158,8 @@ func validRecordJSON(t *testing.T, mutate func(r *m2mClientRecord)) []byte {
 		UserID:       c.UserID,
 		Roles:        append([]string(nil), c.Roles...),
 		HashedSecret: c.HashedSecret,
+		OnBehalfOf:   c.OnBehalfOf,
+		SecretGen:    c.SecretGen,
 		CreatedAt:    ts,
 		UpdatedAt:    ts,
 	}
@@ -177,6 +201,7 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		"timestamp not parseable": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) {
 			r.CreatedAt = "not-a-date"
 		})},
+		"secretGen zero": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.SecretGen = 0 })},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

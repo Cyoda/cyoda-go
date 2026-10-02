@@ -917,6 +917,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   an offset-based cursor walk over them could repeat or skip rows. See
   `cyoda help audit`.
 
+- **`POST /clients?onBehalfOf=true` creates an on-behalf-of client; client
+  DTOs carry `onBehalfOf`, and the credentials DTO's `grant_type` is the
+  token-exchange URN for such a client.**
+
 ### Fixed
 
 - **Responses that carry a credential are never cached.** Every

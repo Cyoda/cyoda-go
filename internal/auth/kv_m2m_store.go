@@ -148,11 +148,39 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	return c, nil
 }
 
+// Lookup returns clientID's current record, read from the store, without
+// checking a secret. An id outside the client-id grammar and an id with no
+// record in any tenant are both ErrM2MClientNotFound; any other error is the
+// store failing, wrapped so a storage-unavailable one keeps its marker.
+func (s *KVM2MClientStore) Lookup(ctx context.Context, clientID string) (*M2MClient, error) {
+	ctx = noTx(ctx)
+	if !ValidClientID(clientID) {
+		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	tenant, found, err := s.getIndex(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	c, _, found, err := s.getRecord(ctx, tenant, clientID)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
+	}
+	return c, nil
+}
+
 // Create adds a client and returns its plaintext secret, once. An id that is
 // taken, in any tenant, or whose index entry does not decode, is
 // ErrM2MClientExists; a tenant at the cap is ErrM2MClientCapReached. The
 // caller passes a generated id; the encoder refuses one outside the grammar.
-func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID, userID string, roles []string) (string, error) {
+// onBehalfOf is stored on the record and never changes afterward; the new
+// client's SecretGen starts at 1.
+func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID, userID string, roles []string, onBehalfOf bool) (string, error) {
 	ctx = noTx(ctx)
 	secret, err := GenerateSecret()
 	if err != nil {
@@ -163,7 +191,7 @@ func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clie
 		return "", fmt.Errorf("failed to hash secret: %w", err)
 	}
 	now := time.Now().UTC()
-	rec, err := encodeClientRecord(&M2MClient{ClientID: clientID, HashedSecret: string(hash), TenantID: tenant, UserID: userID, Roles: append([]string(nil), roles...), CreatedAt: now, UpdatedAt: now})
+	rec, err := encodeClientRecord(&M2MClient{ClientID: clientID, HashedSecret: string(hash), TenantID: tenant, UserID: userID, Roles: append([]string(nil), roles...), OnBehalfOf: onBehalfOf, SecretGen: 1, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return "", err
 	}
@@ -331,6 +359,7 @@ func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID,
 		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
 	c.HashedSecret, c.UpdatedAt = string(hash), time.Now().UTC()
+	c.SecretGen++
 	rec, err := encodeClientRecord(c)
 	if err != nil {
 		return "", nil, err

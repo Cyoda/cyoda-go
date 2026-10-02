@@ -27,7 +27,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	})
 
 	secret, err := svc.M2MClientStore().Create(
-		systemCtx(), "tenant-1", "CLIENT1", "user-1", []string{"ROLE_USER"},
+		systemCtx(), "tenant-1", "CLIENT1", "user-1", []string{"ROLE_USER"}, false,
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
