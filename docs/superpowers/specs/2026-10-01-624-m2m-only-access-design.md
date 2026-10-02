@@ -513,6 +513,9 @@ Waivers:
 - Mock-mode `501` on `POST /clients`: unit only; the e2e suite runs in JWT mode.
 - Concurrency (exchange racing key invalidation, secret reset racing a cached
   grant): isolated single-backend e2e, not parity.
+- §12.4, an OBO principal on an admin or operator route: the gRPC column
+  does not apply. The admin, client, trusted-key, key-pair and `/admin`
+  routes are HTTP-only; no gRPC entry point exists.
 - Scheduled fire armed by an OBO request inside its own joined transaction:
   parity covers the direct case only; the compute test client has no OBO token
   support. Unit, e2e and gRPC cover the joined case.
