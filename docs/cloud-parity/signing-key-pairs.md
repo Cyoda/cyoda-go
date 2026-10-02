@@ -7,6 +7,10 @@ across a restart, and when its issuing bootstrap key is replaced.
 
 ## What cyoda-go does
 
+- **Key pairs have no audience.** There is one set of key pairs, and the
+  newest active key pair inside its window signs every token. Key-pair issue,
+  list and `GET /oauth/keys/keypair/current` carry no `audience`, `/current`
+  takes no `?audience=`, and no setting names a bootstrap-key audience.
 - **Key pairs are shared and persisted.** Issuing, invalidating, reactivating
   or deleting a key pair (`/oauth/keys/keypair*`) on one node of a cluster
   takes effect on every other node, and the change survives a restart on a
@@ -124,3 +128,5 @@ Tracked in CP-3979. Confirm, or record where Cloud differs:
 7. A rotation (`invalidateCurrent`) ends stored key pairs only, never the
    configured signing key. The grace-period rules — verify until the end of
    the grace period, never sign again — are in `signing-key-window.md`.
+8. Drop `audience` from key pairs: one signer for every token, no
+   `?audience=` on `/current` (tracked with `obo-only-user-identity.md`).

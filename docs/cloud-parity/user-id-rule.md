@@ -8,7 +8,8 @@ rule, which authenticated before, is now rejected.
 ## Rule
 
 A user identifier is valid UTF-8, 1 to 255 characters (Unicode code points, not
-bytes), and contains none of these:
+bytes), is not the reserved id `system` in any letter case, and contains none
+of these:
 
 - a control character: U+0000–U+001F and U+007F–U+009F;
 - a noncharacter: U+FDD0–U+FDEF, and U+FFFE and U+FFFF in every plane;
@@ -27,46 +28,36 @@ for a rejected character its code point and position, but never the value.
 A user id is not a key or a path segment: it is attribution and display. So,
 unlike a tenant id, it has no charset grammar.
 
-- **255 characters** was already the OIDC `sub` limit.
+- **255 characters** bounds a value that is attribution and display, not
+  a key.
 - **Control characters and noncharacters** are what the CloudEvents spec
   forbids in a String attribute. A user id is sent to compute nodes as the
   `authid` attribute, so a user id that passes the rule is always a legal
-  attribute value. The OIDC `sub` already banned C0 and DEL; C1 and
-  noncharacters are new for it too.
+  attribute value.
 - **U+FFFD**: a JSON decoder replaces every invalid UTF-8 byte and every lone
   surrogate escape with U+FFFD. Admitting it would let different signed claims
   (`"a\ud800"`, `"a\udfff"`, raw `a\xff`) all decode to one user id.
+- **`system`** is the platform principal's own id, the executor of every
+  scheduled firing (`common.ReservedSystemUserID`). Reserving it means no
+  caller can be recorded as that principal.
 
 ## Where it is enforced
 
 | Door | Surface | Failure |
 | --- | --- | --- |
-| First-party user claim: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
-| OIDC `sub` | Federated tokens | `401`, as before |
-| Token-exchange subject token `sub`, which becomes the issued token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_request` |
+| User claim of an inbound token: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
+| User assertion `sub`, which becomes the OBO token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_request` |
 
 `cyoda token --user`, which signs an admin token offline with the signing key,
-checks the same rule, the reserved word below included, before it signs (exit
-code `2`); the claim is checked again at the first door when the token is
-used. No configuration variable carries a user id.
+checks the same rule, `system` included, before it signs (exit code `2`); the
+claim is checked again at the first door when the token is used. A stored M2M
+client whose user id fails the rule is treated as damaged. No configuration
+variable carries a user id.
 
 A `caas_user_id` that is present names the user. If it is empty, not a string,
 or outside the rule, the token is rejected. It never falls back to `sub`, which
 would put a different identity in place of the one the token carries. Only an
 absent `caas_user_id` falls back to `sub`.
-
-For an OIDC principal the user id is `oidc:<providerId>:<sub>`. The rule applies
-to `sub`, so the full id can be longer than 255 characters.
-
-### `oidc:` is a reserved word
-
-Every user id that does not come from the OIDC path — the first-party claim and the
-token-exchange `sub` — must also not begin with
-`oidc:`, compared without case. Without this, a first-party token could carry
-`oidc:<providerId>:alice`, the exact user id of the OIDC principal `alice`, and
-the audit trail could not tell the two apart. The check is
-`common.ValidateFirstPartyUserID`; the OIDC path builds its ids from the same
-constant, `common.OIDCUserIDPrefix`.
 
 ## Cloud today
 
@@ -91,7 +82,7 @@ Checked against `~/dev/cyoda` and `~/dev/cyoda-platform`:
    prefix, because of the `userName` column. cyoda-go admits 255. A `sub`
    between the two works in cyoda-go and fails enrollment in Cloud. Cloud
    should either admit 255 or record it as a declared divergence.
-3. Reserve `oidc:` (any case) on every user id Cloud does not build from an
-   OIDC `sub`, if Cloud adopts the `oidc:<providerId>:<sub>` form. Cloud's own
-   form today is `<providerId>|<sub>` in `userName`; it has the same question
-   for a first-party id that spells that form.
+3. Reserve `system` (any letter case) on every user id that comes from
+   outside the platform: a token's user claim and an OBO assertion's `sub`.
+4. Apply the rule to the `sub` of every OBO user assertion (see
+   `obo-only-user-identity.md`), which becomes the issued token's user id.

@@ -8,28 +8,40 @@ A trusted key belongs to the tenant that registered it. It verifies a token for
 that tenant only. The tenant is taken from the key's registration, never from a
 claim in the token it signs: the key holder writes those claims.
 
-In cyoda-go a trusted key verifies one thing: the subject token of the
-token-exchange grant (`POST /oauth/token`,
-`urn:ietf:params:oauth:grant-type:token-exchange`). The key is looked up in the
-exchanging M2M client's tenant (`TrustedKeyStore.GetForVerification`). A `kid`
+In cyoda-go a trusted key verifies one thing: the user assertion presented as
+the subject token of the token-exchange grant (`POST /oauth/token`,
+`urn:ietf:params:oauth:grant-type:token-exchange`), which only an on-behalf-of
+client may use (see `obo-only-user-identity.md`). The key is read from the
+store, on every exchange, in the exchanging client's tenant
+(`TrustedKeyStore.GetForVerification`). A `kid`
 registered by another tenant is not found: `400 invalid_request`, "unknown or
 inactive trusted key" — the same answer as a `kid` that does not exist, so the grant does
 not reveal another tenant's keys. The subject's `caas_org_id` must still equal
 the client's tenant (`403 access_denied` otherwise).
 
 cyoda-go does not accept a trusted-key-signed JWT as a bearer token on API
-calls. Only cyoda's own signing keys and registered OIDC providers verify bearer
-tokens.
+calls. Only cyoda's own signing keys verify bearer tokens.
 
-## Grace period and cap
+## Key ids, lifecycle and cap
 
-An invalidated trusted key keeps verifying subject tokens until its `validTo`
-(the grace period); a grace period never extends a key's window, and rotation
-ends every sibling whose window is open. The per-tenant cap counts every key
-that can still verify, and applies to reactivation as well as registration
-(`400 TRUSTED_KEY_CAP_REACHED`). Cloud already counts keys in their grace
-period (`TrustedKeyRegistrationService.kt:103-107`); Cloud action: apply the
-cap to reactivation too, or record the difference.
+- Key ids are unique within a tenant only: each tenant's keys live in their
+  own namespace, keyed by kid. Another tenant may register the same `keyId`
+  for an independent key; there is no cross-tenant `409`.
+- Register is an upsert on `(tenant, kid)`, so a retried registration
+  succeeds.
+- Trusted keys have no grace period and no `audience`. Invalidating a key
+  ends it at once, and the invalidate request has no body;
+  `invalidatePrevious` on register ends every other key of the tenant at
+  once.
+- `GET /oauth/keys/trusted` reads the store and can fail: `503
+  STORAGE_UNAVAILABLE` when the store reports itself unavailable, `500`
+  otherwise.
+- The per-tenant cap counts every active key whose `validTo` has not passed,
+  and applies to reactivation as well as registration (`400
+  TRUSTED_KEY_CAP_REACHED`); a registration with `invalidatePrevious` is never
+  refused by it.
+- Register, invalidate, reactivate and delete write INFO lines with the
+  tenant, the kid, and the attributed principal and executor of the call.
 
 ## What changed
 
@@ -47,6 +59,11 @@ tenant, user and roles from the token's claims. Tracked in CP-3974.
 
 ## Cloud action
 
-When a token is verified with a stored trusted key, require the key's owning
-legal entity to equal the token's `caas_org_id`, on every path that verifies
-with it (bearer authentication and token exchange).
+1. When a token is verified with a stored trusted key, require the key's
+   owning legal entity to equal the token's `caas_org_id`. Under the access
+   model of `obo-only-user-identity.md` the only such path is the token
+   exchange: stop accepting trusted-key JWTs as bearer tokens.
+2. Make key ids unique per tenant, register an upsert, and drop the grace
+   period and `audience` of trusted keys.
+3. Apply the cap to reactivation as well as registration, or record the
+   difference.

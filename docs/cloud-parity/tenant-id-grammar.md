@@ -2,12 +2,11 @@
 
 cyoda-go defines the contract; Cyoda Cloud aligns to it.
 
-Two rules about the *shape* of a tenant identifier, which is why they share one
-document. The first says which strings may be a tenant id at all. The second
-says which spelling a tenant id must already have on the one surface that types
-it as a UUID. The first is a **wire-contract tightening**: tokens that
-authenticate today stop authenticating. The second is a **wire-visible status
-change** on the OIDC management surface.
+The rule about the *shape* of a tenant identifier: which strings may be a
+tenant id at all. It is a **wire-contract tightening**: tokens that
+authenticated before stop authenticating. A second rule, on the spelling a
+tenant had to have on the OIDC provider surface, is retired with that surface
+(see Part 2).
 
 ---
 
@@ -72,7 +71,7 @@ checked again at the door when the token is used. No configuration variable
 carries a tenant id.
 
 Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
-search-job rows, OIDC provider records — carries a value this cluster already
+search-job rows — carries a value this cluster already
 admitted at that door. Re-checking there would guard against a corrupted store
 or a compromised peer, a threat model in which tenant-id spelling is not what
 saves you. The stored M2M clients are the one exception, and an internal one:
@@ -91,8 +90,9 @@ own default tenant is unrepresentable.
 Two consequences look like gaps and are not. The token endpoint needs no check:
 it mints `caas_org_id` from a stored client row whose tenant is the tenant of
 the admin who created the client, admitted at the door, and any token it mints
-is presented back through the door before it can do anything. The federated OIDC path needs no check: its tenant is a
-`uuid.UUID`, structurally incapable of failing the grammar.
+is presented back through the door before it can do anything. The token
+exchange takes the same stored tenant, and refuses an assertion whose
+`caas_org_id` differs from it.
 
 ## Response
 
@@ -166,137 +166,12 @@ knows that doing so would break the contract.
 
 ---
 
-# Part 2 — the OIDC surface requires a canonically-spelled UUID tenant
+# Part 2 — retired
 
-## Rule
-
-On the OIDC provider surface, where cyoda-go types the owner as a UUID
-(`OwnerLegalEntityID uuid.UUID`), the caller's tenant must **already be a UUID
-in its canonical lowercase form**:
-
-```
-1a2b3c4d-5e6f-7080-9a0b-c1d2e3f4a5b6
-```
-
-Anything else — upper case, the 32-character hyphenless form, or a tenant that
-is not UUID-shaped at all — is `400 OIDC_INVALID_TENANT` from every operation
-that takes a tenant. The check is one comparison at the single entry point to
-the OIDC service: parse the tenant as a UUID and require the parsed value to
-spell back exactly what the caller sent.
-
-**The canonical form is required, never normalised to.** That distinction is
-the whole of the rule, and an implementer who normalises instead opens a
-cross-tenant hole. Storage keys a provider by `OwnerLegalEntityID.String()`,
-which is always canonical, while every other subsystem in cyoda-go compares a
-tenant as raw text — the tenant resolver hands it back verbatim, and the
-entity, KV, audit and message stores all key on that string. Two UUID-equal but
-differently spelled tenants therefore own two disjoint sets of data everywhere
-else. Folding them together on this one surface would make them a single tenant
-here: either could list, modify and delete the other's providers, and — worse —
-register a provider whose owner is the other's UUID, which is an authentication
-trust anchor for a tenant it is not, because the validated user context's
-tenant is built from the stored provider's owner id.
-
-Requiring the canonical spelling keeps one identity per tenant across the whole
-product. A tenant spelled some other way gets a diagnosable `400` on the whole
-OIDC surface instead of silently addressing another tenant's namespace.
-
-This is compatible with Part 1 by design: the grammar admits upper case
-deliberately, because case is significant for a tenant id, so it does not and
-must not be relied on to say anything about UUID spelling. Note also which
-spellings can reach this surface at all: `uuid.Parse` accepts braced
-(`{…}`) and `urn:uuid:…` forms, but both are already rejected at the token
-boundary by the Part 1 grammar — on `{` and `:` respectively — so they never
-arrive. The forms that do arrive, and that this rule turns away, are upper case
-and the hyphenless 32-hex form.
-
-## The wire-visible change
-
-A tenant that is **not a canonically-spelled UUID** now receives
-`400 OIDC_INVALID_TENANT` from **every** OIDC provider operation that takes a
-tenant, including the list one:
-
-| Operation | Before | Now |
-| --- | --- | --- |
-| `POST /oauth/oidc/providers` | `400 OIDC_INVALID_TENANT` | unchanged |
-| `GET /oauth/oidc/providers` | **empty `200`** | `400 OIDC_INVALID_TENANT` |
-| `PATCH`/`DELETE /oauth/oidc/providers/{id}` and the invalidate/reactivate forms | `404` | `400 OIDC_INVALID_TENANT` |
-| `POST /oauth/oidc/providers/reload` | `200` | unchanged — tenant-independent |
-
-The Before column describes a tenant that is not UUID-shaped at all. For a
-tenant whose id is a UUID spelled non-canonically the change is sharper:
-registration used to answer `500` and leave an orphaned provider blob behind,
-and every later operation `404`-ed or listed nothing; all of them now answer
-`400 OIDC_INVALID_TENANT`.
-
-The empty `200` was the defect worth naming: it reported "you have no providers"
-to a tenant that could never have had one, because its prefix scan matched
-nothing. `400` is the same answer registration already gave, delivered at the
-point the caller asks. `api/openapi.yaml` and the `OIDC_INVALID_TENANT` help
-topic previously described the code as registration-only; both now describe the
-whole surface.
-
-## Why an implementer should care about the spelling half
-
-Keying writes by the canonical form and reads by the caller's raw string is not
-merely an unreachable record. In cyoda-go it made registration itself fail: the
-post-write index read-back missed the entry it had just written, the service
-rolled the registration back, answered `500`, and the rollback — keyed the same
-wrong way — left the provider blob behind. A tenant spelled in any non-canonical
-UUID form could not register a provider at all.
-
-Requiring the canonical spelling fixes that the same way normalising would —
-register and read address one key, nothing strands, no `500`, no orphaned
-blob — and, unlike normalising, without merging two tenants' identities. That
-is why the rule is a requirement and not a transformation.
-
-Token validation was never affected on either tier, because the provider
-registry is built from the *stored* provider's own owner id, which is already
-canonical. Only the management API strands. That asymmetry is what makes the
-defect easy to ship and hard to notice.
-
-## The Cloud side — no ticket, and why
-
-**Cloud needs nothing here.** Neither half of Part 2 is reachable in Cloud,
-because Cloud does not scope this surface by a tenant string at all:
-`OIDCProviderInteractor.listProviders(activeOnly: Boolean)`
-(`OIDCProviderInteractor.kt:49`) takes no tenant, and the service beneath it
-(`JWKOIDCService.kt:188`) fetches `GroupCondition.ALL` and filters only on
-`active`, leaving tenant scoping to the platform's owner-based entity access
-control over the `owner` field that registration sets from
-`securityManager.authorizedUser.legalEntityId` (`JWKOIDCService.kt:165`). With
-no tenant-keyed namespace there is no prefix scan to come back empty, and no
-pair of spellings under which a write and a read could disagree — both defects
-are artefacts of cyoda-go keying a KV namespace by `<tenant>:<providerID>`.
-
-### Open question: the two tiers scope this surface differently
-
-The tiers reach tenant isolation on the OIDC surface by two different designs,
-and it is worth naming the difference so a Cloud reader does not mistake it for
-something this change introduced or for a defect on either side.
-
-- **cyoda-go scopes by a UUID tenant key.** Providers live in one KV namespace
-  keyed `<tenant>:<providerID>`, the owner is typed `uuid.UUID`, and a tenant
-  that is not a canonically-spelled UUID has no key it may address — hence
-  `OIDC_INVALID_TENANT`.
-- **Cloud scopes by owner-based entity access control.** There is no tenant key:
-  the listing fetches `GroupCondition.ALL` and the platform's access control
-  decides what the caller may see, over an `owner` field registration sets from
-  the caller's legal entity. The shape of that identifier does not enter into
-  it.
-
-Neither is wrong today. Each is coherent within its own storage model, and both
-isolate tenants. The consequence of the difference is narrow: cyoda-go requires
-a canonically-spelled UUID tenant to use the OIDC surface at all, and Cloud does
-not.
-
-This predates the change recorded here on both tiers — cyoda-go's registration
-already answered `400 OIDC_INVALID_TENANT` — and nothing above narrows or widens
-it. **Whether the two tiers should converge on one scoping model is an open
-question for the project lead**, not a decision taken in this document. It is
-recorded here rather than ticketed because this folder is the coordination
-surface, and a named open question is worth more than a ticket filed on an
-assumption.
+Part 2 required a canonically spelled UUID tenant on the OIDC provider
+surface. That surface, its `OIDC_INVALID_TENANT` error and its store are
+removed (`obo-only-user-identity.md`), so the rule has nothing left to
+govern. Cloud needed no change for it, and needs none now.
 
 ## Test surface
 
@@ -310,14 +185,3 @@ assumption.
   the grammar, and the accepted set still authenticating.
 - `cmd/cyoda/token_test.go` — `cyoda token` refuses a tenant outside the
   grammar with exit code `2` and signs nothing.
-- `internal/e2e/oidc_providers_test.go`, `internal/domain/account/oidc_adapter_test.go`
-  — a canonically-spelled UUID tenant registers, lists, updates, invalidates,
-  reactivates and deletes the same provider; a non-canonically-spelled or
-  non-UUID tenant gets `400 OIDC_INVALID_TENANT` from every operation; and two
-  tenants whose ids are UUID-equal but differently spelled cannot reach each
-  other's providers.
-- `e2e/parity/oidc.go` — `RunOidcInvalidTenantUUIDRejected_Skip` records why this
-  one is not a cross-backend scenario: the parity fixture's tenants are always
-  UUID-shaped, because its HTTP server requires real JWTs. Both behaviours are
-  engine-level and reach no storage backend, so a parity scenario would buy no
-  backend signal.

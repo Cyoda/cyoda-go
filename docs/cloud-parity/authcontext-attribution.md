@@ -72,8 +72,9 @@ claims, a `system` or `user` executor, an absent or unrecognized
 - `attributedKind` — the attributed principal's kind (`user`/`service`/
   `system`).
 - `executedBy` — the immediate authenticated principal that performed the
-  write: `{id, kind}`. Diverges from the attributed principal only on
-  cascades and scheduled fires.
+  write: `{id, kind}`. Diverges from the attributed principal on an
+  on-behalf-of request (the user, executed by the on-behalf-of client), on a
+  compute node's joined write-back and its cascades, and on scheduled fires.
 - **Legacy rows** (written before this change) omit `attributedKind` and
   `executedBy` entirely (never emitted as JSON `null`); `user` renders as
   today.
@@ -103,25 +104,35 @@ pair as change history, on the message's `header`:
 
 ## 3. Attribution semantics per follow-on kind
 
+- **On-behalf-of request** (an OBO token: a user stated by an on-behalf-of
+  client, see `obo-only-user-identity.md`) — attributed to the **user**,
+  executed by the **on-behalf-of client**. The user is recorded, never
+  authorized. A transaction's origin never applies to it: an OBO request
+  joins only a transaction begun for its own user, and is refused (`403
+  FORBIDDEN`) otherwise. A transaction it begins has the user as its origin,
+  so its cascades, callouts and the timers it arms carry the user.
 - **Joined cascade** (a processor's write joins the triggering
   transaction) — attributed to the **transaction's origin**: the principal
   authenticated at the causal chain's root `Begin`, propagated unchanged
   through every joined write, including a cross-node proxied join (origin
   lives on the owning node's transaction state; the join token carries no
-  identity). Executor is the immediate writer (e.g. the compute service
-  account).
+  identity). Executor is the immediate writer (e.g. the compute node's own
+  client).
 - **Scheduled fire** — attributed to the **durable arming principal**
-  (`ArmedBy`, captured at arm time and stored on the scheduled task),
-  executed by a real `system`-kind platform principal — never the fake
-  `"scheduler"` user. A fire whose durable `ArmedBy` doesn't match what was
-  seeded pre-transaction aborts and retries on a later scan rather than
-  attribute against a stale/forged value.
+  (`ArmedBy`: the arming write's attributed principal, stored on the
+  scheduled task), executed by a real `system`-kind platform principal —
+  never a fake `"scheduler"` user. The fire's transaction begins with the
+  claimed task's `ArmedBy` as its origin; if the task's life changed since
+  the claim, the run ends before anything is written, so a fire never
+  attributes against a stale value. `system` is a reserved user id, so no
+  caller can be recorded as that principal (`user-id-rule.md`).
 - **CBD-detached** (`COMMIT_BEFORE_DISPATCH` with `startNewTxOnDispatch:
   false`) — handed over to the application. The dispatch carries no
   transaction token, so the processor's callback writes are **ordinary
   independent requests**, not part of any platform-tracked chain. The
-  identity those callbacks present governs attribution as usual (service
-  credentials → that service; an OBO user token → that user). The
+  identity those callbacks present governs attribution as usual (a client's
+  own token → that client; an OBO token → that user, executed by its OBO
+  client). The
   callout's AuthContext (§1) carries the causal principal as its attributed
   principal (`authid`/`authtype`) so the application can self-attribute if
   it chooses; the platform adds no carrier mechanism for this mode.
@@ -132,7 +143,9 @@ Emit `authtype`/`authid` (attributed), `authexectype`/`authexecid`
 (executor) and `authclaims` (the executor's roles) per §1, computed once by
 the dispatching node and forwarded unchanged (including the
 `service_account` → `service` rename and the fail-loud behaviour on a
-missing id or an unset kind), surface
-`attributedKind`/`executedBy` on change-history reads per §2, and implement
-the three attribution paths in §3 identically — cascade origin propagation,
-durable scheduled-arming attribution, and the CBD-detached handover boundary.
+missing id or an unset kind); surface `attributedKind`/`executedBy` on
+change-history reads per §2 and on edge messages per §2a; and implement the
+attribution paths in §3 identically — on-behalf-of attribution and its join
+rule, cascade origin propagation, durable scheduled-arming attribution, and
+the CBD-detached handover boundary. Tracked with
+`obo-only-user-identity.md`.
