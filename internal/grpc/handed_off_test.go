@@ -61,7 +61,9 @@ func TestTry_HandedOff_FalseOnEveryReturnBeforeTheSend(t *testing.T) {
 		{"no auth context (Terminal)", func(t *testing.T) (context.Context, *ProcessorDispatcher, *Member, Callout) {
 			reg := NewMemberRegistry()
 			m, _ := attach(t, reg, "m-1", testTenantID, "x", answersAs("m-1"))
-			return context.Background(), newTestDispatcher(t, reg), m, rawCall(5 * time.Second)
+			call := rawCall(5 * time.Second)
+			call.Identity = IdentityFrom(context.Background())
+			return context.Background(), newTestDispatcher(t, reg), m, call
 		}},
 		{"the member is gone before the request is tracked", func(t *testing.T) (context.Context, *ProcessorDispatcher, *Member, Callout) {
 			reg := NewMemberRegistry()

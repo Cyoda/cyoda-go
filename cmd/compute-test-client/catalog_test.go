@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 // TestSlowConfigurable_SleepsForSleepMS verifies the slow-configurable
@@ -24,5 +26,53 @@ func TestSlowConfigurable_SleepsForSleepMS(t *testing.T) {
 	}
 	if d := time.Since(start); d < 100*time.Millisecond {
 		t.Fatalf("slept %v, want at least 100ms", d)
+	}
+}
+
+// TestRecordAuthType_RecordsBothPrincipals verifies that record-authtype
+// writes the auth context the calc request carried into the entity data: the
+// attributed principal (authtype, authid) and the executor (authexectype,
+// authexecid).
+func TestRecordAuthType_RecordsBothPrincipals(t *testing.T) {
+	d := &dispatcher{cat: newCatalog(nil, nil)}
+	msg, err := newCloudEvent(ceTypeProcessorRequest, map[string]any{
+		"requestId": "r-1", "entityId": "e-1", "processorName": "record-authtype",
+		"payload": map[string]any{"data": map[string]any{"name": "x"}},
+	})
+	if err != nil {
+		t.Fatalf("newCloudEvent: %v", err)
+	}
+	msg.Attributes = map[string]*cepb.CloudEvent_CloudEventAttributeValue{}
+	for k, v := range map[string]string{"authtype": "user", "authid": "alice", "authexectype": "service", "authexecid": "C9"} {
+		msg.Attributes[k] = &cepb.CloudEvent_CloudEventAttributeValue{Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: v}}
+	}
+	payload, err := extractTextData(msg)
+	if err != nil {
+		t.Fatalf("extractTextData: %v", err)
+	}
+
+	reply, err := d.answer(context.Background(), msg, payload, "")
+	if err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	var body struct {
+		Success bool `json:"success"`
+		Payload struct {
+			Data map[string]any `json:"data"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(reply.GetTextData()), &body); err != nil {
+		t.Fatalf("reply is not JSON: %v", err)
+	}
+	if !body.Success {
+		t.Fatalf("reply success = false: %s", reply.GetTextData())
+	}
+	for field, want := range map[string]string{
+		"observedAuthType": "user", "observedAuthID": "alice",
+		"observedAuthExecType": "service", "observedAuthExecID": "C9",
+	} {
+		if got, _ := body.Payload.Data[field].(string); got != want {
+			t.Errorf("%s = %q, want %q", field, got, want)
+		}
 	}
 }

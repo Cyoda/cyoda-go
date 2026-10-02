@@ -66,7 +66,7 @@ func TestCatalogFailure_CarriesVerdict(t *testing.T) {
 		t.Run("processor/"+tc.name, func(t *testing.T) {
 			payload := json.RawMessage(fmt.Sprintf(
 				`{"requestId":"r-1","entityId":"e-1","processorName":%q,"payload":{"data":{}}}`, tc.name))
-			ce, err := d.handleProcessorRequest(ctx, payload, "", "")
+			ce, err := d.handleProcessorRequest(ctx, payload, "", calloutAuth{})
 			if err != nil {
 				t.Fatalf("handleProcessorRequest: %v", err)
 			}

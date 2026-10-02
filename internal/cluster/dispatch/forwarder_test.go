@@ -30,6 +30,10 @@ func makeProcessorReq() dispatch.DispatchCalloutRequest {
 		TransitionName: "run",
 		TxID:           "tx-1",
 		TenantID:       "t1",
+		AttributedID:   "alice",
+		AttributedKind: spi.PrincipalUser,
+		ExecutorID:     "C9",
+		ExecutorKind:   spi.PrincipalService,
 	}
 }
 
@@ -44,6 +48,10 @@ func makeCriteriaReq() dispatch.DispatchCalloutRequest {
 		TransitionName: "approve",
 		TxID:           "tx-2",
 		TenantID:       "t2",
+		AttributedID:   "alice",
+		AttributedKind: spi.PrincipalUser,
+		ExecutorID:     "C9",
+		ExecutorKind:   spi.PrincipalService,
 	}
 }
 

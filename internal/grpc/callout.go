@@ -1,9 +1,11 @@
 package grpc
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -57,6 +59,34 @@ type CalloutSource struct {
 	Function                     *spi.ScheduleFunction    // FunctionCallout
 }
 
+// CalloutIdentity is who a callout's work is for and who executes it, with the
+// executor's roles. The pnode that dispatches the callout computes it once
+// (IdentityFrom); every try attaches it as computed, and a hand-over carries it
+// to the peer, which attaches it as received and never recomputes it.
+type CalloutIdentity struct {
+	// Attributed is the principal the work is for: the user of an
+	// on-behalf-of request, a transaction's origin for a write-back, the
+	// arming principal for a scheduled fire.
+	Attributed spi.Principal
+	// Executor is the principal that executes the work.
+	Executor spi.Principal
+	// Roles are the executor's roles.
+	Roles []string
+}
+
+// IdentityFrom computes a callout's identity from the dispatching context:
+// the attributed principal and the executor from spi.AttributionFor, and the
+// roles of the request's caller. With no UserContext on ctx it returns an
+// identity that names nobody, which AttachAuthContext refuses.
+func IdentityFrom(ctx context.Context) CalloutIdentity {
+	attributed, executor := spi.AttributionFor(ctx)
+	id := CalloutIdentity{Attributed: attributed, Executor: executor}
+	if uc := spi.GetUserContext(ctx); uc != nil {
+		id.Roles = slices.Clone(uc.Roles)
+	}
+	return id
+}
+
 // Callout is one processor, criterion or function request, in the form the
 // local procedure tries on cnodes. Build it with NewProcessorCallout,
 // NewCriteriaCallout or NewFunctionCallout; the caller then fills RequestID,
@@ -93,6 +123,9 @@ type Callout struct {
 	// Source is what the callout was built from. A hand-over sends it, and the
 	// pnode that receives it builds the same Callout with the same builder.
 	Source CalloutSource
+	// Identity is who the callout is for and who executes it. The owner sets
+	// it once, before its first try; a hand-over carries it.
+	Identity CalloutIdentity
 
 	eventType    string
 	buildRequest func(requestID string) any

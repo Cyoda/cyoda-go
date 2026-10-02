@@ -343,9 +343,9 @@ func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload j
 	case ceTypeFunctionRequest:
 		return d.handleFunctionRequest(ctx, payload, pass)
 	default:
-		// authtype carries the executor's principal kind; processors see it as
-		// Entity.AuthType.
-		return d.handleProcessorRequest(ctx, payload, pass, authTypeFromCloudEvent(msg))
+		// The auth context names the attributed principal and the executor;
+		// processors see it on the Entity.
+		return d.handleProcessorRequest(ctx, payload, pass, authFromCloudEvent(msg))
 	}
 }
 
@@ -447,7 +447,7 @@ func (d *dispatcher) keepAliveLoop(ctx context.Context, stream grpc.BidiStreamin
 
 // handleProcessorRequest dispatches a processor request to the catalog and
 // returns the response CloudEvent.
-func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken, authType string) (*cepb.CloudEvent, error) {
+func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.RawMessage, txToken string, auth calloutAuth) (*cepb.CloudEvent, error) {
 	var req struct {
 		RequestID     string          `json:"requestId"`
 		ProcessorID   string          `json:"processorId"`
@@ -471,8 +471,11 @@ func (d *dispatcher) handleProcessorRequest(ctx context.Context, payload json.Ra
 
 	// Build entity from payload data.
 	entity := &Entity{
-		ID:       req.EntityID,
-		AuthType: authType,
+		ID:           req.EntityID,
+		AuthType:     auth.Type,
+		AuthID:       auth.ID,
+		AuthExecType: auth.ExecType,
+		AuthExecID:   auth.ExecID,
 	}
 	if req.Payload != nil && req.Payload.Data != nil {
 		entity.Data = req.Payload.Data

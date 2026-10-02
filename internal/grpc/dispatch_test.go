@@ -72,6 +72,7 @@ func oneTry(d *ProcessorDispatcher, ctx context.Context, call Callout) (CalloutR
 	call.AnswerLimit = limit
 	call.OwnerNodeID = "node-test"
 	call.Number = &countingNumberer{}
+	call.Identity = IdentityFrom(ctx)
 	res := d.RunLocal(ctx, call, 1)
 	return res.Result, res.Err()
 }
@@ -114,10 +115,18 @@ func testProcessor(tags string, responseTimeoutMs int64) spi.ProcessorDefinition
 // tryOnce makes one try against member with a raw payload carrying only the
 // request id, and folds the three outcomes of a try into (response, error) —
 // the shape the tests of the single try were written against. timeoutMs is the
-// answer limit.
+// answer limit. The callout's identity is computed from ctx, as the owner
+// computes it.
 func tryOnce(d *ProcessorDispatcher, ctx context.Context, member *Member, requestID, txID string, timeoutMs int64) (*ProcessingResponse, error) {
+	return tryOnceAs(d, ctx, member, IdentityFrom(ctx), requestID, txID, timeoutMs)
+}
+
+// tryOnceAs is tryOnce with the callout's identity given rather than computed
+// from ctx, as on a pnode that received the callout in a hand-over.
+func tryOnceAs(d *ProcessorDispatcher, ctx context.Context, member *Member, id CalloutIdentity, requestID, txID string, timeoutMs int64) (*ProcessingResponse, error) {
 	var got *ProcessingResponse
 	call := Callout{
+		Identity:    id,
 		Kind:        ProcessorCallout,
 		Name:        "my-proc",
 		TenantID:    member.TenantID,
@@ -1359,4 +1368,44 @@ func mustCE(t *testing.T) *cepb.CloudEvent {
 		t.Fatal(err)
 	}
 	return ce
+}
+
+// TestDispatchCalloutToMember_SendsTheCalloutsIdentity guards that a try
+// attaches the identity the callout carries and never recomputes it from the
+// context it runs under. On a pnode that received the callout in a hand-over,
+// the context names only the executor; the attributed principal the owner
+// computed is alice, and that is what the cnode is sent.
+func TestDispatchCalloutToMember_SendsTheCalloutsIdentity(t *testing.T) {
+	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
+	member := registry.Get(memberID)
+	peerCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "C9", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+		Tenant: spi.Tenant{ID: testTenantID},
+	})
+	id := CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "C9", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+
+	go func() {
+		ce := <-sentCh
+		for key, want := range map[string]string{
+			"authid": "alice", "authtype": "user", "authexecid": "C9", "authexectype": "service", "authclaims": "ROLE_M2M",
+		} {
+			if got, ok := ceAttr(ce, key); !ok || got != want {
+				t.Errorf("%s = %q (present %v), want %q", key, got, ok, want)
+			}
+		}
+		reqID, err := extractRequestID(ce)
+		if err != nil {
+			t.Errorf("extractRequestID: %v", err)
+			return
+		}
+		member.CompleteRequest(reqID, &ProcessingResponse{Success: true, Payload: json.RawMessage(`{"data":{}}`)})
+	}()
+
+	if _, err := tryOnceAs(dispatcher, peerCtx, member, id, "req-identity", "tx-1", 5000); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 }

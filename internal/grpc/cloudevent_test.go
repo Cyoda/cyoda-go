@@ -11,156 +11,176 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// TestAttachAuthContext_KindDriven guards that authtype is emitted verbatim
-// from the explicit principal Kind, not sniffed from roles. The ROLE_M2M
-// case is a regression guard: a user-kind principal carrying ROLE_M2M (e.g.
-// an OBO-style delegated call) must still emit authtype=user — role-sniffing
-// is dead.
-func TestAttachAuthContext_KindDriven(t *testing.T) {
-	tests := []struct {
-		name         string
-		kind         spi.PrincipalKind
-		roles        []string
-		wantAuthType string
-	}{
-		{"user kind", spi.PrincipalUser, nil, "user"},
-		{"service kind", spi.PrincipalService, nil, "service"},
-		{"system kind", spi.PrincipalSystem, nil, "system"},
-		{"user kind with ROLE_M2M regression", spi.PrincipalUser, []string{"ROLE_M2M"}, "user"},
+// ceAttr returns the string value of a CloudEvent attribute and whether it is
+// present.
+func ceAttr(ce *cepb.CloudEvent, key string) (string, bool) {
+	v, ok := ce.Attributes[key]
+	if !ok {
+		return "", false
 	}
+	return v.GetCeString(), true
+}
 
+// TestCalloutIdentity_EveryPath pins the auth context of a callout on each
+// path a callout is made from: the identity is computed from the dispatching
+// context once (IdentityFrom) and attached as computed. authid/authtype name
+// the attributed principal, authexecid/authexectype the executor, and
+// authclaims the executor's roles.
+func TestCalloutIdentity_EveryPath(t *testing.T) {
+	oboClient := spi.Principal{ID: "obo-client", Kind: spi.PrincipalService}
+	tests := []struct {
+		name                     string
+		ctx                      context.Context
+		wantID, wantType         string
+		wantExecID, wantExecType string
+		wantClaims               string // "" means absent
+	}{
+		{
+			name: "on-behalf-of request",
+			ctx: spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "alice", Kind: spi.PrincipalUser, Executor: &oboClient, Roles: []string{"ROLE_M2M"},
+			}),
+			wantID: "alice", wantType: "user", wantExecID: "obo-client", wantExecType: "service", wantClaims: "ROLE_M2M",
+		},
+		{
+			name: "client's own request",
+			ctx: spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "C1", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+			}),
+			wantID: "C1", wantType: "service", wantExecID: "C1", wantExecType: "service", wantClaims: "ROLE_M2M",
+		},
+		{
+			name: "processor write-back in the origin's transaction",
+			ctx: spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "compute", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+			}), &spi.TransactionState{ID: "tx-1", Origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}}),
+			wantID: "alice", wantType: "user", wantExecID: "compute", wantExecType: "service", wantClaims: "ROLE_M2M",
+		},
+		{
+			name: "scheduled fire",
+			ctx: spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+				UserID: "system", Kind: spi.PrincipalSystem,
+			}), &spi.TransactionState{ID: "tx-2", Origin: spi.Principal{ID: "bob", Kind: spi.PrincipalUser}}),
+			wantID: "bob", wantType: "user", wantExecID: "system", wantExecType: "system",
+		},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
-				UserID: "principal-1",
-				Kind:   tt.kind,
-				Roles:  tt.roles,
-			})
 			ce := &cepb.CloudEvent{}
-
-			if err := AttachAuthContext(ctx, ce); err != nil {
-				t.Fatalf("unexpected error: %v", err)
+			if err := AttachAuthContext(ce, IdentityFrom(tt.ctx)); err != nil {
+				t.Fatalf("AttachAuthContext: %v", err)
 			}
-
-			authType, ok := ce.Attributes["authtype"]
-			if !ok {
-				t.Fatal("expected authtype attribute")
+			for key, want := range map[string]string{
+				"authid": tt.wantID, "authtype": tt.wantType,
+				"authexecid": tt.wantExecID, "authexectype": tt.wantExecType,
+			} {
+				if got, ok := ceAttr(ce, key); !ok || got != want {
+					t.Errorf("%s = %q (present %v), want %q", key, got, ok, want)
+				}
 			}
-			if got := authType.GetCeString(); got != tt.wantAuthType {
-				t.Errorf("expected authtype=%s, got %s", tt.wantAuthType, got)
-			}
-
-			authID, ok := ce.Attributes["authid"]
-			if !ok {
-				t.Fatal("expected authid attribute")
-			}
-			if got := authID.GetCeString(); got != "principal-1" {
-				t.Errorf("expected authid=principal-1, got %s", got)
+			got, ok := ceAttr(ce, "authclaims")
+			switch {
+			case tt.wantClaims == "" && ok:
+				t.Errorf("authclaims = %q, want absent", got)
+			case tt.wantClaims != "" && got != tt.wantClaims:
+				t.Errorf("authclaims = %q (present %v), want %q", got, ok, tt.wantClaims)
 			}
 		})
 	}
 }
 
-// TestAttachAuthContext_NilUserContext guards the fail-loud rule: a dispatch
-// path with no UserContext on ctx must fail rather than emit a bogus or
-// absent authtype.
-func TestAttachAuthContext_NilUserContext(t *testing.T) {
-	ce := &cepb.CloudEvent{}
-	err := AttachAuthContext(context.Background(), ce)
-	if err == nil {
-		t.Fatal("expected error for nil user context")
-	}
-	if ce.Attributes != nil {
-		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
-	}
-	// A missing UserContext on a dispatch path is a server-side condition
-	// (missed context propagation), never a client fault — classifyWorkflowError
-	// keys off this sentinel to map the failure to 5xx, not 400.
-	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
-		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+// TestIdentityFrom_RolesAreACopy guards that the identity a callout carries
+// does not share its roles with the request's UserContext.
+func TestIdentityFrom_RolesAreACopy(t *testing.T) {
+	uc := &spi.UserContext{UserID: "C1", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"}}
+	id := IdentityFrom(spi.WithUserContext(context.Background(), uc))
+	uc.Roles[0] = "ROLE_CHANGED"
+	if len(id.Roles) != 1 || id.Roles[0] != "ROLE_M2M" {
+		t.Errorf("Roles = %v, want the roles as they were when the identity was computed", id.Roles)
 	}
 }
 
-// TestAttachAuthContext_UnsetKind guards that an unset Kind (legacy/unmigrated
-// auth constructor) fails loud rather than emitting an empty authtype.
-func TestAttachAuthContext_UnsetKind(t *testing.T) {
-	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{UserID: "principal-1"})
-	ce := &cepb.CloudEvent{}
-	err := AttachAuthContext(ctx, ce)
-	if err == nil {
-		t.Fatal("expected error for unset principal kind")
-	}
-	if ce.Attributes != nil {
-		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
-	}
-	// An unset Kind is a server-side condition (missed constructor / missed
-	// cross-node forwarding), never client-supplied — classifyWorkflowError
-	// keys off this sentinel to map the failure to 5xx, not 400.
-	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
-		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+// TestAttachAuthContext_KindDriven guards that the type attributes are the
+// principals' explicit kinds, never sniffed from roles: a user-kind principal
+// carrying ROLE_M2M still emits authtype=user.
+func TestAttachAuthContext_KindDriven(t *testing.T) {
+	for _, kind := range []spi.PrincipalKind{spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem} {
+		t.Run(string(kind), func(t *testing.T) {
+			p := spi.Principal{ID: "principal-1", Kind: kind}
+			ce := &cepb.CloudEvent{}
+			if err := AttachAuthContext(ce, CalloutIdentity{Attributed: p, Executor: p, Roles: []string{"ROLE_M2M"}}); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got, _ := ceAttr(ce, "authtype"); got != string(kind) {
+				t.Errorf("authtype = %q, want %q", got, kind)
+			}
+			if got, _ := ceAttr(ce, "authexectype"); got != string(kind) {
+				t.Errorf("authexectype = %q, want %q", got, kind)
+			}
+		})
 	}
 }
 
-// TestAttachAuthContext_InvalidKind guards the pinned wire contract:
-// authtype must always be one of {user,service,system}. A misconfigured
-// mock/test double (e.g. CYODA_IAM_MOCK_KIND=bogus) producing an out-of-set
-// Kind must fail the dispatch, not emit the bogus value onto the wire.
-func TestAttachAuthContext_InvalidKind(t *testing.T) {
-	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID: "principal-1",
-		Kind:   spi.PrincipalKind("bogus"),
-	})
-	ce := &cepb.CloudEvent{}
-	err := AttachAuthContext(ctx, ce)
-	if err == nil {
-		t.Fatal("expected error for invalid principal kind")
+// TestAttachAuthContext_RefusesAnIncompleteIdentity guards the fail-loud rule:
+// a callout is never sent without a faithful auth context. A missing id or an
+// unset or unrecognized kind on either principal is refused, nothing is
+// attached, and the error wraps contract.ErrAuthContextUnavailable — none of
+// these can come from client input, so the failure maps to a sanitized 5xx.
+func TestAttachAuthContext_RefusesAnIncompleteIdentity(t *testing.T) {
+	alice := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	svc := spi.Principal{ID: "C1", Kind: spi.PrincipalService}
+	tests := []struct {
+		name string
+		id   CalloutIdentity
+	}{
+		{"no user context on the dispatching path", IdentityFrom(context.Background())},
+		{"attributed id empty", CalloutIdentity{Attributed: spi.Principal{Kind: spi.PrincipalUser}, Executor: svc}},
+		{"executor id empty", CalloutIdentity{Attributed: alice, Executor: spi.Principal{Kind: spi.PrincipalService}}},
+		{"attributed kind unset", CalloutIdentity{Attributed: spi.Principal{ID: "alice"}, Executor: svc}},
+		{"executor kind unset", CalloutIdentity{Attributed: alice, Executor: spi.Principal{ID: "C1"}}},
+		{"attributed kind unrecognized", CalloutIdentity{Attributed: spi.Principal{ID: "alice", Kind: "bogus"}, Executor: svc}},
+		{"executor kind unrecognized", CalloutIdentity{Attributed: alice, Executor: spi.Principal{ID: "C1", Kind: "bogus"}}},
 	}
-	if ce.Attributes != nil {
-		t.Errorf("expected no attributes to be attached, got %v", ce.Attributes)
-	}
-	// An unrecognized Kind is a server-side misconfiguration, never
-	// client-supplied — must map to 5xx, not 400.
-	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
-		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ce := &cepb.CloudEvent{}
+			err := AttachAuthContext(ce, tt.id)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !errors.Is(err, contract.ErrAuthContextUnavailable) {
+				t.Errorf("error does not wrap contract.ErrAuthContextUnavailable: %v", err)
+			}
+			if ce.Attributes != nil {
+				t.Errorf("attributes attached: %v", ce.Attributes)
+			}
+		})
 	}
 }
 
 // TestAttachAuthContext_NilCloudEvent guards against a nil CloudEvent even
-// when the UserContext is well-formed.
+// when the identity is complete.
 func TestAttachAuthContext_NilCloudEvent(t *testing.T) {
-	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID: "principal-1",
-		Kind:   spi.PrincipalUser,
-	})
-	err := AttachAuthContext(ctx, nil)
+	p := spi.Principal{ID: "principal-1", Kind: spi.PrincipalUser}
+	err := AttachAuthContext(nil, CalloutIdentity{Attributed: p, Executor: p})
 	if err == nil {
 		t.Fatal("expected error for nil cloud event")
 	}
-	// A nil CloudEvent is a caller (dispatch-path) programming error, never
-	// client-supplied — must map to 5xx, not 400.
 	if !errors.Is(err, contract.ErrAuthContextUnavailable) {
 		t.Errorf("expected error to wrap contract.ErrAuthContextUnavailable, got %v", err)
 	}
 }
 
-// TestAttachAuthContext_AuthClaimsFromRoles guards that authclaims is
-// populated from roles when present, and omitted when absent.
+// TestAttachAuthContext_AuthClaimsFromRoles guards that authclaims is the
+// executor's roles joined by commas.
 func TestAttachAuthContext_AuthClaimsFromRoles(t *testing.T) {
-	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID: "principal-1",
-		Kind:   spi.PrincipalUser,
-		Roles:  []string{"ROLE_USER", "ROLE_ADMIN"},
-	})
+	p := spi.Principal{ID: "principal-1", Kind: spi.PrincipalService}
 	ce := &cepb.CloudEvent{}
-	if err := AttachAuthContext(ctx, ce); err != nil {
+	if err := AttachAuthContext(ce, CalloutIdentity{Attributed: p, Executor: p, Roles: []string{"ROLE_M2M", "ROLE_ADMIN"}}); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	claims, ok := ce.Attributes["authclaims"]
-	if !ok {
-		t.Fatal("expected authclaims attribute")
-	}
-	if got := claims.GetCeString(); got != "ROLE_USER,ROLE_ADMIN" {
-		t.Errorf("expected authclaims=ROLE_USER,ROLE_ADMIN, got %s", got)
+	if got, ok := ceAttr(ce, "authclaims"); !ok || got != "ROLE_M2M,ROLE_ADMIN" {
+		t.Errorf("authclaims = %q (present %v), want ROLE_M2M,ROLE_ADMIN", got, ok)
 	}
 }
 

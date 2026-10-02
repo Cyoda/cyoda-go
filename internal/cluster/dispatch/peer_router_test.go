@@ -17,6 +17,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -167,6 +168,13 @@ func TestHandOver_SendsTheHandOverFields(t *testing.T) {
 	if fwd.got.TriesLeft != 3 || fwd.got.Major != 2 || fwd.got.OwnerNodeID != "self-node" || fwd.got.RequestID != "rid-1" || fwd.got.AnswerLimitMs != 1500 {
 		t.Errorf("request = %+v", fwd.got)
 	}
+	// The identity is the callout's, computed once by the owner — not the
+	// context's user-1, which the router never reads.
+	if fwd.got.AttributedID != "alice" || fwd.got.AttributedKind != spi.PrincipalUser ||
+		fwd.got.ExecutorID != "C9" || fwd.got.ExecutorKind != spi.PrincipalService {
+		t.Errorf("identity = %q/%q executed by %q/%q, want alice/user executed by C9/service",
+			fwd.got.AttributedID, fwd.got.AttributedKind, fwd.got.ExecutorID, fwd.got.ExecutorKind)
+	}
 	// The node the envelope is sealed for and the address it is sent to are both
 	// this peer's, from the one registry entry: a hand-over sealed for anything
 	// else would not open where it lands.
@@ -180,9 +188,11 @@ func TestHandOver_NothingToHandOver_IsTerminal_NothingSent(t *testing.T) {
 	router := newTestRouter(t, &stubNodeRegistry{}, fwd)
 	peer := node("peer-1", true, "tenant-1", "python")
 
-	noUser := router.HandOver(context.Background(), peer, ownerCallout(t, "processor"), 3, 2)
+	anonymous := ownerCallout(t, "processor")
+	anonymous.Identity = internalgrpc.CalloutIdentity{}
+	noIdentity := router.HandOver(testContext(), peer, anonymous, 3, 2)
 	noTries := router.HandOver(testContext(), peer, ownerCallout(t, "processor"), 0, 2)
-	for name, a := range map[string]HandOverAnswer{"no user context": noUser, "no tries left": noTries} {
+	for name, a := range map[string]HandOverAnswer{"no identity": noIdentity, "no tries left": noTries} {
 		if a.Connected || a.TriesUsed != 0 || a.Failure == nil || a.Failure.Kind != contract.Terminal {
 			t.Errorf("%s: %+v", name, a)
 		}

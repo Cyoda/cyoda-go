@@ -470,16 +470,40 @@ because its client went away.
 
 **Auth context on dispatched events:**
 
-The server attaches CloudEvent Auth Context extension attributes to every dispatched request:
+The server attaches CloudEvent Auth Context extension attributes to every
+dispatched request. They name two principals: the **attributed** principal —
+who the work is for — and the **executor** — who does it.
 
-- `authtype` — `"user"`, `"service"`, or `"system"`, driven by the originating
-  principal's explicit kind (not sniffed from roles). **Wire change:** this was
-  previously `"user"` / `"service_account"` inferred from a `ROLE_M2M` role;
-  it is now one of exactly these three values, always. Dispatch fails closed
-  — no callout is sent — if the principal's kind is unset or unrecognized, so
-  a bogus or absent `authtype` never reaches a compute node.
-- `authid` — the user ID of the originating request
-- `authclaims` — comma-separated roles of the originating user
+- `authtype` / `authid` — the attributed principal's kind and id.
+- `authexectype` / `authexecid` — the executor's kind and id.
+- `authclaims` — the executor's roles, comma separated. Absent when the
+  executor has no roles (the `system` executor of a scheduled fire).
+
+Per path, the attributed principal and the executor are:
+
+- an on-behalf-of request, and its cascades: the user (`user`), executed by
+  the on-behalf-of client (`service`);
+- a client's own request: the client (`service`) in both;
+- a processor write-back joined to a transaction, and its cascades: the
+  transaction's origin, executed by the compute client (`service`);
+- a callback of a commit-before-dispatch processor (no pass): the calling
+  client (`service`) in both;
+- a scheduled fire: the principal that armed the timer, executed by
+  `system` (`system`).
+
+The kinds are `"user"`, `"service"` or `"system"` — the principals' explicit
+kinds, never sniffed from roles. The node that dispatches a callout computes
+both principals once; a callout handed over to another node carries them,
+and that node attaches them as received. Dispatch fails closed — no callout
+is sent — when either principal has no id or a kind that is unset or
+unrecognized, so a bogus or absent principal never reaches a compute node.
+
+The `api/grpc/authctx` package reads these attributes for a compute node:
+`Type`/`ID` (the attributed principal), `ExecutorType`/`ExecutorID` (the
+executor) and `Roles`. `Require(ce, role)` is a fail-closed role gate: it
+reports `true` only when the executor is a `service` and `role` is in
+`authclaims`. The attributed principal plays no part in it, so a scheduled
+fire (executor `system`) never passes.
 
 ## KEEPALIVE
 

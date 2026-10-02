@@ -20,9 +20,12 @@ func kindOf(d *ProcessorDispatcher, ctx context.Context, member *Member, call Ca
 	return failure, ctxErr
 }
 
+// rawCall is a processor callout with a raw payload carrying only the request
+// id, made by testContext's principal.
 func rawCall(limit time.Duration) Callout {
 	return Callout{
-		Kind: ProcessorCallout, Name: "p", TenantID: testTenantID, RequestID: "r1", AnswerLimit: limit, OwnerNodeID: "node-test",
+		Identity: IdentityFrom(testContext()),
+		Kind:     ProcessorCallout, Name: "p", TenantID: testTenantID, RequestID: "r1", AnswerLimit: limit, OwnerNodeID: "node-test",
 		eventType:    EntityProcessorCalculationRequest,
 		buildRequest: func(id string) any { return map[string]any{"requestId": id} },
 		mapResponse:  func(*ProcessingResponse) (CalloutResult, error) { return CalloutResult{}, nil },
@@ -195,7 +198,9 @@ func TestTryKind_AuthContext_IsTerminalAndNamesNoPrincipal(t *testing.T) {
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "user-secret-id", Tenant: spi.Tenant{ID: testTenantID}, // Kind unset
 	})
-	failure, ctxErr := kindOf(d, ctx, registry.Get(memberID), rawCall(5*time.Second))
+	call := rawCall(5 * time.Second)
+	call.Identity = IdentityFrom(ctx)
+	failure, ctxErr := kindOf(d, ctx, registry.Get(memberID), call)
 	assertKindAndCode(t, failure, ctxErr, contract.Terminal, "")
 	if !errors.Is(failure, contract.ErrAuthContextUnavailable) {
 		t.Error("the sentinel the classifier maps to a ticketed 500 must survive")
@@ -226,6 +231,7 @@ func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
 
 	call := NewProcessorCallout(testTenantID, testEntity(), testProcessor("python", 0), "wf1", "t1", "tx-1")
 	call.RequestID, call.AnswerLimit, call.OwnerNodeID = "r1", 5*time.Second, "node-test"
+	call.Identity = IdentityFrom(testContext())
 	failure, ctxErr := kindOf(d, testContext(), m, call)
 	if ctxErr != nil {
 		t.Fatalf("unexpected ctx error: %v", ctxErr)

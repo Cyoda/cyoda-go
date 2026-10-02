@@ -160,7 +160,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	if err != nil {
 		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), false, nil
 	}
-	if err := AttachAuthContext(ctx, ce); err != nil {
+	if err := AttachAuthContext(ce, call.Identity); err != nil {
 		// The cause names the principal; the client-safe Message does not.
 		return CalloutResult{}, &contract.CalloutFailure{
 			Kind:    contract.Terminal,

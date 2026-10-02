@@ -3,15 +3,30 @@
 ## 1. AuthContext contract (pinned)
 
 Every processor/criteria/function callout carries CloudEvent Auth Context
-extension attributes:
+extension attributes naming two principals — the **attributed** principal
+(who the work is for) and the **executor** (who does it). The node that
+dispatches the callout computes the pair once, with the same rule that
+attributes a write (`AttributionFor`):
 
-- `authtype` — `user`, `service`, or `system`, driven by the originating
-  principal's **explicit kind**, never sniffed from roles. `authtype` is
-  **always present and faithful**: an unset or unrecognized kind fails the
-  callout dispatch rather than emit a normalized/absent value — a
-  wrong-but-available `authtype` would violate correctness-over-availability.
-- `authid` — the originating principal's id.
-- `authclaims` — comma-separated roles of the originating principal.
+- `authtype` / `authid` — the attributed principal's kind and id.
+- `authexectype` / `authexecid` — the executor's kind and id.
+- `authclaims` — comma-separated roles of the executor; absent when it has
+  none.
+
+Kinds are `user`, `service`, or `system`, the principals' **explicit
+kinds**, never sniffed from roles. Both principals are **always present and
+faithful**: a missing id or an unset or unrecognized kind fails the callout
+dispatch rather than emit a normalized/absent value — a wrong-but-available
+principal would violate correctness-over-availability.
+
+| Callout made by | `authid` / `authtype` | `authexecid` / `authexectype` |
+|---|---|---|
+| an on-behalf-of request, and its cascades | the user / `user` | the on-behalf-of client / `service` |
+| a client's own request | the client / `service` | the client / `service` |
+| a processor write-back joined to a transaction, and its cascades | the transaction's origin | the compute client / `service` |
+| a CBD-detached callback of a compute client | that client / `service` | that client / `service` |
+| a scheduled fire | `ArmedBy` | `system` / `system` |
+| a callout forwarded to another node | as computed on the dispatching node | as computed on the dispatching node |
 
 **Wire break:** `authtype` previously emitted `user` / `service_account`,
 inferred by sniffing `ROLE_M2M`. It now emits exactly one of `user` /
@@ -24,18 +39,21 @@ authenticates the cyoda server endpoint (TLS server verification); over an
 unauthenticated channel the attributes are forgeable. Application
 authorization built on `authclaims` must fail **closed** when claims are
 absent or empty — including the `system` case, which never carries
-meaningful claims. In cluster mode the executor kind driving `authtype` is
-forwarded between nodes inside the mutually-authenticated peer channel, so the
-`authtype` a compute node sees is only as trustworthy as the cluster's own
-peer trust — the same boundary that already governs cross-node dispatch;
-attribution (origin) is unaffected, as it lives on the owner node's
-transaction and never crosses on the wire.
+meaningful claims. In cluster mode the transaction's origin stays on the
+node that holds the transaction; the attributed and executor principals
+computed from it, with the executor's roles, cross the mutually-authenticated
+peer channel in a callout hand-over, and the receiving node attaches them as
+received and never recomputes them. The principals a compute node sees are
+therefore only as trustworthy as the cluster's own peer trust — the same
+boundary that already governs cross-node dispatch.
 
-**SDK helper.** `api/grpc/authctx` gives compute-node authors `Type`/`ID`/
-`Roles` readers plus `Require(ce, role)`, a fail-closed role gate: it
-returns `false` for a nil event, empty/absent claims, or `authtype ==
-system`, and `true` only when `authtype` is `user` or `service` and the
-role is present in `authclaims`.
+**SDK helper.** `api/grpc/authctx` gives compute-node authors `Type`/`ID`
+(the attributed principal), `ExecutorType`/`ExecutorID` (the executor) and
+`Roles` readers, plus `Require(ce, role)`, a fail-closed role gate: it
+returns `true` only when `authexectype` is `service` and the role is present
+in `authclaims`, and `false` for everything else — a nil event, empty/absent
+claims, a `system` or `user` executor, an absent or unrecognized
+`authexectype`. The attributed principal plays no part in the gate.
 
 ## 2. Attributed/executor pair on change history
 
@@ -81,14 +99,17 @@ role is present in `authclaims`.
   independent requests**, not part of any platform-tracked chain. The
   identity those callbacks present governs attribution as usual (service
   credentials → that service; an OBO user token → that user). The
-  callout's AuthContext (§1) carries the causal principal so the
-  application can self-attribute if it chooses; the platform adds no
-  carrier mechanism for this mode.
+  callout's AuthContext (§1) carries the causal principal as its attributed
+  principal (`authid`/`authtype`) so the application can self-attribute if
+  it chooses; the platform adds no carrier mechanism for this mode.
 
 ## 4. Cloud obligation
 
-Emit `authtype`/`authid`/`authclaims` per §1 (including the `service_account`
-→ `service` rename and the fail-loud unset-kind behaviour), surface
+Emit `authtype`/`authid` (attributed), `authexectype`/`authexecid`
+(executor) and `authclaims` (the executor's roles) per §1, computed once by
+the dispatching node and forwarded unchanged (including the
+`service_account` → `service` rename and the fail-loud behaviour on a
+missing id or an unset kind), surface
 `attributedKind`/`executedBy` on change-history reads per §2, and implement
 the three attribution paths in §3 identically — cascade origin propagation,
 durable scheduled-arming attribution, and the CBD-detached handover boundary.

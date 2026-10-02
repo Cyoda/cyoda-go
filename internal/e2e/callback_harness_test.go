@@ -64,7 +64,10 @@ type reqCtx struct {
 	entityID   string         // primary (cascade-anchor) entity id
 	entityData map[string]any // attached primary data (uncommitted, from the dispatch payload)
 	entityMeta map[string]any // attached primary meta (state, transactionId, ...)
-	h          *callbackHarness
+	// attrs are the calc request's CloudEvent attributes other than the pass
+	// (authid, authtype, authexecid, authexectype, authclaims, ...).
+	attrs map[string]string
+	h     *callbackHarness
 }
 
 // callbackResult is the HTTP outcome of a callback made from inside a processor.
@@ -683,7 +686,14 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 		token:     internalgrpc.TxTokenFromCloudEvent(ce),
 		requestID: req.replyID,
 		entityID:  body.EntityID,
+		attrs:     map[string]string{},
 		h:         h,
+	}
+	for k, v := range ce.GetAttributes() {
+		if k == internalgrpc.TxTokenAttr {
+			continue // the pass lives in rc.token only
+		}
+		req.rc.attrs[k] = v.GetCeString()
 	}
 	if body.Payload != nil {
 		req.rc.entityMeta = body.Payload.Meta

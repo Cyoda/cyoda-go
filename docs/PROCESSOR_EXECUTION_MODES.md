@@ -266,7 +266,8 @@ rejects this flag for any other execution mode.
   no causal chain for these callbacks — each is an ordinary direct request,
   attributed to whatever identity it presents (its own service credentials,
   or an OBO user token it forwards). The dispatch's AuthContext carries the
-  causal principal (`authtype`/`authid`/`authclaims` — see
+  causal principal as its attributed principal (`authid`/`authtype`, with
+  the executor in `authexecid`/`authexectype` — see
   `docs/cloud-parity/authcontext-attribution.md`), so an application wanting
   user-level attribution on its callback writes must present that identity
   itself; the platform provides no separate carrier for this mode.

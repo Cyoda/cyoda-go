@@ -36,14 +36,18 @@ type DispatchCalloutRequest struct {
 	TxID           string         `json:"txID"`
 	TenantID       string         `json:"tenantID"`
 	Tags           string         `json:"tags"`
-	UserID         string         `json:"userID"`
-	// PrincipalKind is the originating principal's explicit kind
-	// (spi.PrincipalUser/Service/System). The peer reconstructs a
-	// UserContext from this request (handler.go buildContext) and
-	// AttachAuthContext fails the dispatch closed if Kind is unset or
-	// outside {user,service,system} — see internal/grpc/cloudevent.go.
-	PrincipalKind spi.PrincipalKind `json:"principalKind"`
-	Roles         []string          `json:"roles"`
+
+	// AttributedID/AttributedKind and ExecutorID/ExecutorKind are the
+	// callout's identity as the owner computed it: who the work is for and
+	// who executes it. Roles are the executor's roles. The receiving pnode
+	// attaches them to every try as received and never recomputes them; it
+	// runs the callout under a UserContext of the executor. All four
+	// principal fields are required (validate).
+	AttributedID   string            `json:"attributedID"`
+	AttributedKind spi.PrincipalKind `json:"attributedKind"`
+	ExecutorID     string            `json:"executorID"`
+	ExecutorKind   spi.PrincipalKind `json:"executorKind"`
+	Roles          []string          `json:"roles"`
 
 	// RequestID is created by the owner and sent on every try, by every pnode.
 	RequestID string `json:"requestID"`

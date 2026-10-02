@@ -99,7 +99,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	ctx := common.WithDiagnostics(h.buildContext(r, identity, req.TenantID, req.UserID, req.PrincipalKind, req.Roles))
+	ctx := common.WithDiagnostics(h.buildContext(r, identity, &req))
 	res := h.local.RunLocal(ctx, call, req.TriesLeft)
 
 	diag := common.GetDiagnostics(ctx)
@@ -119,31 +119,28 @@ func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding,
 	h.writeSealed(w, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}), requestID)
 }
 
-// buildContext constructs the context.Context the callout runs under: the
-// UserContext the hand-over named, and the authenticated PeerIdentity. Even in
-// the shared-key regime where PeerIdentity is degenerate, propagating it
-// through context means downstream audit / tracing can read origin without
-// being rewritten when transport evolves.
+// buildContext constructs the context.Context the callout runs under: a
+// UserContext of the executor the hand-over named, and the authenticated
+// PeerIdentity. Even in the shared-key regime where PeerIdentity is
+// degenerate, propagating it through context means downstream audit / tracing
+// can read origin without being rewritten when transport evolves.
 //
 // The tenant is the wire's, named by its id alone: a peer is authenticated by
 // the cluster-wide key and its identity carries no tenant, so nothing about the
 // tenant may be filled in here that the peer did not send. validate has already
 // held the entity's own tenant to the same value.
 //
-// principalKind is forwarded verbatim from the originating node's
-// DispatchCalloutRequest.PrincipalKind so the peer's local dispatch — which
-// calls AttachAuthContext just like single-node dispatch — reconstructs the
-// SAME faithful auth context the originating node had, rather than an
-// unset Kind that would fail the dispatch closed (see
-// internal/grpc/cloudevent.go).
-func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, tenantID, userID string, principalKind spi.PrincipalKind, roles []string) context.Context {
+// The executor is the principal that acts on this pnode. The callout's auth
+// context is not read from this UserContext: the callout carries the identity
+// the owner computed (toCallout), and every try attaches that as received.
+func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, req *DispatchCalloutRequest) context.Context {
 	uc := &spi.UserContext{
-		UserID: userID,
-		Kind:   principalKind,
+		UserID: req.ExecutorID,
+		Kind:   req.ExecutorKind,
 		Tenant: spi.Tenant{
-			ID: spi.TenantID(tenantID),
+			ID: spi.TenantID(req.TenantID),
 		},
-		Roles: roles,
+		Roles: req.Roles,
 	}
 	ctx := spi.WithUserContext(r.Context(), uc)
 	ctx = WithPeerIdentity(ctx, identity)

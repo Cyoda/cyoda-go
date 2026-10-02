@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,40 +29,36 @@ func NewCloudEvent(eventType string, payload any) (*cepb.CloudEvent, error) {
 	}, nil
 }
 
-// AttachAuthContext adds CloudEvents Auth Context extension attributes to a CloudEvent
-// based on the UserContext in the request context. authtype is emitted verbatim from
-// the principal's explicit Kind — never sniffed from roles — and is always one of the
-// pinned wire values {user,service,system}.
+// AttachAuthContext adds the CloudEvents Auth Context extension attributes for
+// id to a CloudEvent:
 //
-// Fails loud rather than emitting a bogus or absent authtype: no UserContext on ctx,
-// an unset Kind, or a Kind outside {user,service,system} (e.g. a misconfigured mock)
-// all return an error. Callers must fail the dispatch on error — the callout must
+//   - authtype / authid: the attributed principal — who the work is for;
+//   - authexectype / authexecid: the executor — who does it;
+//   - authclaims: the executor's roles, comma separated, when it has any.
+//
+// The type attributes are the principals' explicit kinds, never sniffed from
+// roles, and always one of the pinned wire values {user,service,system}.
+//
+// Fails loud rather than emitting a bogus or absent principal: a nil event, or
+// either principal with an empty id, an unset kind, or a kind outside
+// {user,service,system} (e.g. a misconfigured mock) returns an error and
+// attaches nothing. Callers must fail the dispatch on error — the callout must
 // never be sent without a faithful AuthContext.
 //
 // Every failure returned here wraps contract.ErrAuthContextUnavailable: none of
 // these conditions can originate from client-supplied input (the client does not
-// control dispatch-path UserContext construction), so classifyWorkflowError
+// control how a callout's identity is computed), so classifyWorkflowError
 // (internal/domain/entity) matches the sentinel via errors.Is and maps it to a
 // sanitized 5xx with a ticket UUID, never a 400 that would echo the raw message
 // (including the principal id) to the client.
 //
 // See: https://github.com/cloudevents/spec/blob/main/cloudevents/extensions/authcontext.md
-func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) error {
-	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return errors.Join(contract.ErrAuthContextUnavailable,
-			errors.New("attach auth context: no user context on dispatch path"))
+func AttachAuthContext(ce *cepb.CloudEvent, id CalloutIdentity) error {
+	if err := checkPrincipal("attributed", id.Attributed); err != nil {
+		return err
 	}
-	if uc.Kind == "" {
-		return errors.Join(contract.ErrAuthContextUnavailable,
-			fmt.Errorf("attach auth context: principal kind unset for principal %q", uc.UserID))
-	}
-	switch uc.Kind {
-	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
-		// pinned wire contract: authtype ∈ {user,service,system}
-	default:
-		return errors.Join(contract.ErrAuthContextUnavailable,
-			fmt.Errorf("attach auth context: unrecognized principal kind %q for principal %q", uc.Kind, uc.UserID))
+	if err := checkPrincipal("executor", id.Executor); err != nil {
+		return err
 	}
 	if ce == nil {
 		return errors.Join(contract.ErrAuthContextUnavailable,
@@ -73,21 +68,40 @@ func AttachAuthContext(ctx context.Context, ce *cepb.CloudEvent) error {
 	if ce.Attributes == nil {
 		ce.Attributes = make(map[string]*cepb.CloudEvent_CloudEventAttributeValue)
 	}
-
-	ce.Attributes["authtype"] = &cepb.CloudEvent_CloudEventAttributeValue{
-		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: string(uc.Kind)},
-	}
-	ce.Attributes["authid"] = &cepb.CloudEvent_CloudEventAttributeValue{
-		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: uc.UserID},
-	}
-
-	// Claims: roles as comma-separated string.
-	if len(uc.Roles) > 0 {
-		ce.Attributes["authclaims"] = &cepb.CloudEvent_CloudEventAttributeValue{
-			Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: strings.Join(uc.Roles, ",")},
-		}
+	setStringAttr(ce, "authtype", string(id.Attributed.Kind))
+	setStringAttr(ce, "authid", id.Attributed.ID)
+	setStringAttr(ce, "authexectype", string(id.Executor.Kind))
+	setStringAttr(ce, "authexecid", id.Executor.ID)
+	if len(id.Roles) > 0 {
+		setStringAttr(ce, "authclaims", strings.Join(id.Roles, ","))
 	}
 	return nil
+}
+
+// checkPrincipal refuses a principal a callout cannot faithfully name: an
+// empty id, an unset kind, or a kind outside the pinned wire set.
+func checkPrincipal(role string, p spi.Principal) error {
+	if p.ID == "" {
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			fmt.Errorf("attach auth context: %s principal has no id", role))
+	}
+	switch p.Kind {
+	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
+		// pinned wire contract: {user,service,system}
+		return nil
+	case "":
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			fmt.Errorf("attach auth context: principal kind unset for %s principal %q", role, p.ID))
+	default:
+		return errors.Join(contract.ErrAuthContextUnavailable,
+			fmt.Errorf("attach auth context: unrecognized principal kind %q for %s principal %q", p.Kind, role, p.ID))
+	}
+}
+
+func setStringAttr(ce *cepb.CloudEvent, key, value string) {
+	ce.Attributes[key] = &cepb.CloudEvent_CloudEventAttributeValue{
+		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeString{CeString: value},
+	}
 }
 
 // ParseCloudEvent extracts the event type and raw JSON payload from a CloudEvent.

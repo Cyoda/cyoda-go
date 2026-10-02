@@ -38,8 +38,10 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 		TxID:           "tx-999",
 		TenantID:       "tenant-abc",
 		Tags:           "gpu",
-		UserID:         "user-1",
-		PrincipalKind:  spi.PrincipalUser,
+		AttributedID:   "alice",
+		AttributedKind: spi.PrincipalUser,
+		ExecutorID:     "C9",
+		ExecutorKind:   spi.PrincipalService,
 		Roles:          []string{"admin", "editor"},
 	}
 
@@ -71,14 +73,14 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	if got.Tags != req.Tags {
 		t.Errorf("Tags = %q, want %q", got.Tags, req.Tags)
 	}
-	if got.UserID != req.UserID {
-		t.Errorf("UserID = %q, want %q", got.UserID, req.UserID)
+	if got.AttributedID != "alice" || got.AttributedKind != spi.PrincipalUser {
+		t.Errorf("attributed = %q/%q, want alice/user", got.AttributedID, got.AttributedKind)
+	}
+	if got.ExecutorID != "C9" || got.ExecutorKind != spi.PrincipalService {
+		t.Errorf("executor = %q/%q, want C9/service", got.ExecutorID, got.ExecutorKind)
 	}
 	if len(got.Roles) != 2 || got.Roles[0] != "admin" || got.Roles[1] != "editor" {
 		t.Errorf("Roles = %v, want [admin editor]", got.Roles)
-	}
-	if got.PrincipalKind != spi.PrincipalUser {
-		t.Errorf("PrincipalKind = %q, want %q", got.PrincipalKind, spi.PrincipalUser)
 	}
 	if got.Processor == nil || got.Processor.Type != "HTTP" {
 		t.Errorf("Processor.Type = %v, want HTTP", got.Processor)
@@ -168,8 +170,10 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 		TxID:           "tx-100",
 		TenantID:       "tenant-xyz",
 		Tags:           "cpu",
-		UserID:         "user-2",
-		PrincipalKind:  spi.PrincipalService,
+		AttributedID:   "bob",
+		AttributedKind: spi.PrincipalUser,
+		ExecutorID:     "system",
+		ExecutorKind:   spi.PrincipalSystem,
 		Roles:          []string{"viewer"},
 	}
 
@@ -207,14 +211,14 @@ func TestDispatchCalloutRequest_CriteriaJSONRoundTrip(t *testing.T) {
 	if got.Tags != "cpu" {
 		t.Errorf("Tags = %q, want cpu", got.Tags)
 	}
-	if got.UserID != "user-2" {
-		t.Errorf("UserID = %q, want user-2", got.UserID)
+	if got.AttributedID != "bob" || got.AttributedKind != spi.PrincipalUser {
+		t.Errorf("attributed = %q/%q, want bob/user", got.AttributedID, got.AttributedKind)
+	}
+	if got.ExecutorID != "system" || got.ExecutorKind != spi.PrincipalSystem {
+		t.Errorf("executor = %q/%q, want system/system", got.ExecutorID, got.ExecutorKind)
 	}
 	if len(got.Roles) != 1 || got.Roles[0] != "viewer" {
 		t.Errorf("Roles = %v, want [viewer]", got.Roles)
-	}
-	if got.PrincipalKind != spi.PrincipalService {
-		t.Errorf("PrincipalKind = %q, want %q", got.PrincipalKind, spi.PrincipalService)
 	}
 	if string(got.Entity) != string(entityData) {
 		t.Errorf("Entity = %s, want %s", got.Entity, entityData)

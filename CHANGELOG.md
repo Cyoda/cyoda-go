@@ -6,6 +6,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Callouts: `authid`/`authtype` name the attributed principal (the user an
+  on-behalf-of request is for, a transaction's origin for a write-back, the
+  arming user for a scheduled fire); new `authexecid`/`authexectype` name the
+  executor; `authclaims` are the executor's roles. `authctx.Require` gates on
+  the executor being a service.** The node that dispatches a callout computes
+  both principals once; a callout handed over to another node carries them
+  and is sent with them as received. A callout is not sent when either
+  principal has no id or an unset or unrecognized kind. A compute node that
+  read `authid` as the request's caller reads `authexecid`; `authctx` adds
+  `ExecutorType` and `ExecutorID`, and `Require` no longer admits a user
+  executor.
+
 - **A callback authenticated with an on-behalf-of token may join only a
   transaction begun for the same user (`403 FORBIDDEN` otherwise).** The
   transaction token binds no caller, and an on-behalf-of write records its own

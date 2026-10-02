@@ -2854,8 +2854,9 @@ func engineConflictIsTransactionConflict(err error) bool {
 //     the transaction is unusable, never that the processor failed, so it must
 //     not reach the catch-all and become a 400 carrying the driver's own text.
 //   - ErrAuthContextUnavailable (AttachAuthContext could not populate a
-//     dispatch CloudEvent's Auth Context — no UserContext, unset/unrecognized
-//     principal Kind, or nil CloudEvent) → sanitized 5xx via common.Internal.
+//     dispatch CloudEvent's Auth Context — a principal with no id or an
+//     unset/unrecognized Kind, or nil CloudEvent) → sanitized 5xx via
+//     common.Internal.
 //     These are server-side conditions never attributable to client input, so
 //     the raw message (which may include the principal id) never reaches the
 //     client via 4xx WORKFLOW_FAILED.

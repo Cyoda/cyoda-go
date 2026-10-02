@@ -28,12 +28,16 @@ type Entity struct {
 	State string          `json:"state"`
 	Data  json.RawMessage `json:"data"`
 
-	// AuthType is the executor's principal kind (user|service|system) carried
-	// by the dispatch's CloudEvents authtype attribute. Set by the dispatcher
-	// from the calc-request CloudEvent, not decoded from entity JSON — hence
-	// json:"-". Lets a processor observe the faithful executor kind, including
-	// the kind a cross-node forwarded dispatch reconstructs (Task 7).
-	AuthType string `json:"-"`
+	// AuthType/AuthID are the attributed principal (the authtype and authid
+	// attributes) and AuthExecType/AuthExecID the executor (authexectype and
+	// authexecid) of the calc request. Set by the dispatcher from the
+	// calc-request CloudEvent, not decoded from entity JSON — hence json:"-".
+	// They let a processor observe the auth context as it arrived, including
+	// on a callout another pnode forwarded.
+	AuthType     string `json:"-"`
+	AuthID       string `json:"-"`
+	AuthExecType string `json:"-"`
+	AuthExecID   string `json:"-"`
 }
 
 // processorFunc is the signature of a registered processor.
@@ -164,13 +168,14 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				}
 				return &Entity{ID: entity.ID, State: entity.State, Data: out}, nil
 			},
-			// record-authtype — records the executor principal kind observed on
-			// the dispatch (Entity.AuthType, from the CloudEvents authtype
-			// attribute) into entity data at `observedAuthType`. Used by the
-			// cross-node attribution parity scenario to assert a forwarded
-			// processor dispatch (A→B) reconstructs the originating executor's
-			// true kind on the member-hosting node (Task 7). attachEntity:true
-			// is required so entity.Data is present to merge into.
+			// record-authtype — records the auth context observed on the
+			// dispatch into entity data: the attributed principal at
+			// `observedAuthType`/`observedAuthID` and the executor at
+			// `observedAuthExecType`/`observedAuthExecID`. Used by the
+			// cross-node attribution parity scenarios to assert a forwarded
+			// callout carries the identity the dispatching pnode computed.
+			// attachEntity:true is required so entity.Data is present to merge
+			// into.
 			"record-authtype": func(ctx context.Context, entity *Entity, config json.RawMessage) (*Entity, error) {
 				data := map[string]any{}
 				if len(entity.Data) > 0 {
@@ -179,6 +184,9 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 					}
 				}
 				data["observedAuthType"] = entity.AuthType
+				data["observedAuthID"] = entity.AuthID
+				data["observedAuthExecType"] = entity.AuthExecType
+				data["observedAuthExecID"] = entity.AuthExecID
 				out, err := json.Marshal(data)
 				if err != nil {
 					return nil, err
