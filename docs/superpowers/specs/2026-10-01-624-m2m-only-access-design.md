@@ -240,7 +240,8 @@ reserved id `system` (case-insensitive). `ValidateFirstPartyUserID` and the
 
 An OBO request may join only a transaction whose origin is its own user
 (`{UserID, user}`); otherwise `403 FORBIDDEN` (HTTP) / the RPC's error
-envelope with code `FORBIDDEN` (gRPC, as for every join failure). A compute client's write-back join is unchanged and attributes to the
+envelope (gRPC: code `CLIENT_ERROR`, message `FORBIDDEN: …`, as for every
+operational error). A compute client's write-back join is unchanged and attributes to the
 transaction's origin.
 
 ## 6. Trusted keys
@@ -465,7 +466,7 @@ invalidate takes no body.
 |---|---|
 | no `ROLE_M2M`, route not on the allow-list | 403 `FORBIDDEN` / `PermissionDenied` |
 | OBO principal on an admin or operator route | 403 `FORBIDDEN` |
-| OBO request joining another user's transaction | 403 `FORBIDDEN` / envelope `FORBIDDEN` |
+| OBO request joining another user's transaction | 403 `FORBIDDEN` / envelope `CLIENT_ERROR`, message `FORBIDDEN: …` |
 
 ### 12.5 Compute stream
 
