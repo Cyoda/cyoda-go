@@ -31,7 +31,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). Requires `Authoriz
 
 A scheduled workflow transition arms a task each time the entity enters the transition's source state. `GET /scheduled-tasks` lists the caller's tenant's scheduled-transition tasks that still exist: `WAITING`, `RUNNING` or `FAILED`. A task that fired, was declined, expired or was cancelled is removed; its outcome is in the entity's audit trail (see the `audit` topic), not here.
 
-Results are sorted by `scheduledTime`, then `taskId`, ascending, and paged with an opaque cursor. Filters combine with AND. A `modelName`, `modelVersion` or `entityId` naming an unknown model or entity, or one of another tenant, returns an empty list rather than an error. Any authenticated user of the calling tenant may call this endpoint; the tenant is always the token's — no parameter selects a different one.
+Results are sorted by `scheduledTime`, then `taskId`, ascending, and paged with an opaque cursor. Filters combine with AND. A `modelName`, `modelVersion` or `entityId` naming an unknown model or entity, or one of another tenant, returns an empty list rather than an error. Any caller of the tenant whose token holds `ROLE_M2M` may call this endpoint; the tenant is always the token's — no parameter selects a different one.
 
 ## PARAMETERS
 

@@ -12,21 +12,22 @@ see_also:
   - errors.STORAGE_UNAVAILABLE
   - errors.UNSUPPORTED_KEY_TYPE
   - errors.FEATURE_DISABLED
+  - errors.FORBIDDEN
 ---
 
 # auth.trusted-keys
 
 ## NAME
 
-auth.trusted-keys — register a public key with cyoda so that JWTs you sign with the matching private key can be exchanged, by an M2M client of the same tenant, for a cyoda token on behalf of a user.
+auth.trusted-keys — register a public key with cyoda so that user assertions you sign with the matching private key can be exchanged, by an on-behalf-of client of the same tenant, for a cyoda token on behalf of a user.
 
 ## GOAL
 
-You have a system that knows who its users are and can sign JWTs (your own identity service, a gateway, a back-office tool). You want an M2M client to act in cyoda on behalf of those users, so that each call is attributed to the user rather than to the client.
+Your application signs its users in and decides what each may do. You want it to call cyoda for those users, so that each change is recorded for the user, with the application's client as its executor.
 
-Register the public key once. Your system signs a JWT for the user — the *subject token* — and your M2M client exchanges it at `POST /api/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user. See `auth.tokens` for the grant.
+Register the public key once. For each user, your application signs a short JWT — the *user assertion*, sent as the `subject_token` — and its on-behalf-of client exchanges it at `POST /api/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user, carrying the client's roles. cyoda records the user the assertion names; it does not verify the user. See `auth.tokens` for the grant.
 
-A trusted-key JWT is used **only** as a subject token in that grant. cyoda does not accept it as a bearer token on API calls.
+A trusted-key JWT is used **only** as the subject token of that grant. cyoda does not accept it as a bearer token on API calls.
 
 **Feature flag.** The 5 trusted-key endpoints under `/oauth/keys/trusted/*` are **off by default**. The operator must set `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` to enable them; otherwise every endpoint returns `404 FEATURE_DISABLED`. This is intentional — trusted keys move the trust boundary, and that posture should be explicit.
 
@@ -43,7 +44,7 @@ A trusted-key JWT is used **only** as a subject token in that grant. cyoda does 
 
 - A keypair you generated yourself. cyoda-go accepts `kty: "RSA"` only. Cloud also supports `kty: "EC"` and `kty: "OKP"`; cyoda-go parity is tracked for a future release.
 - A `ROLE_ADMIN` cyoda token to register, list, delete and lifecycle the entry.
-- An M2M client in the same tenant (`auth.clients`) to perform the exchange.
+- An on-behalf-of client in the same tenant (`POST /clients?onBehalfOf=true`, see `auth.clients`) to perform the exchange. Any other client is refused the exchange.
 
 ## REQUEST FLOW
 
@@ -118,10 +119,11 @@ Your system signs a JWT for the user with the matching private key, setting `kid
 ```text
 Header:  { "alg": "RS256", "typ": "JWT", "kid": "my-signing-key-2026-06" }
 Payload: { "sub": "<user id>", "caas_org_id": "<your tenant>",
-           "user_roles": ["ROLE_USER"], "iat": <now>, "exp": <later> }
+           "aud": "<CYODA_JWT_ISSUER>",
+           "iat": <now>, "exp": <now + at most 300> }
 ```
 
-Your M2M client exchanges it:
+Your on-behalf-of client exchanges it:
 
 ```bash
 # The client secret and the subject token go on stdin (-K-), not the
@@ -135,17 +137,18 @@ data = "subject_token=${SIGNED_JWT}"
 EOF
 ```
 
-cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is active and within its validity window, verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.
+cyoda looks up `kid` among the trusted keys **of the client's tenant**, checks that the key is active and within its validity window, verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user, with the client's roles; use that token on API calls for that user.
 
 ## TOKEN
 
 A subject token you sign with a trusted-key private key must carry:
 
 - `sub` — the user id. It becomes the issued token's user id, so it must pass the user-identifier rule in `config.auth`.
-- `caas_org_id` — must equal the M2M client's tenant, which is also the tenant that registered the key.
-- `exp` and `iat` — required; `nbf` is honoured if present.
+- `caas_org_id` — must equal the client's tenant, which is also the tenant that registered the key.
+- `aud` — must contain `CYODA_JWT_ISSUER` (a string or an array).
+- `exp` and `iat` — required, with `exp − iat` at most 300 seconds; `nbf` is honoured if present. Every time claim is checked with 30 seconds of clock skew.
 - `iss` — checked only when the key was registered with `issuers`; it must then be one of them.
-- Roles (`user_roles`, `roles`) are ignored: the issued token carries the M2M client's roles.
+- Roles (`user_roles`, `roles`) are ignored: the issued token carries the client's roles.
 
 Cyoda does not mint subject tokens — you sign them. The claim shape of the token cyoda issues is in `auth.tokens`.
 
@@ -159,6 +162,7 @@ Management endpoints:
 - `errors.STORAGE_UNAVAILABLE` (`503`, retryable) — the store could not be read or written, on any of the endpoints, the list included. Any other store failure is `500` with a ticket.
 - `errors.UNSUPPORTED_KEY_TYPE` (`400`) — `kty` is not `"RSA"`.
 - `errors.UNAUTHORIZED` (`401`) — caller lacks a valid bearer for the management call.
+- `errors.FORBIDDEN` (`403`) — the caller's token lacks `ROLE_ADMIN`, or is an on-behalf-of token.
 
 Token exchange (OAuth error shape, see `auth.tokens`):
 
@@ -166,10 +170,11 @@ Token exchange (OAuth error shape, see `auth.tokens`):
 - `400 invalid_request` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the assertion does not parse, is not RS256, or has no `kid`; the `kid` is not an active trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; `aud` does not contain the cyoda issuer; `exp` or `iat` is missing, `exp − iat` exceeds 300 seconds, or a time claim fails; or `sub` is missing or breaks the user-identifier rule.
 - `503 temporarily_unavailable` (with `Retry-After: 1`) — the trusted-key store could not be read. The exchange is refused; it is never served from a copy that might hold an invalidated key. Any other store failure is `500 server_error` with a ticket.
 - `403 access_denied` — `caas_org_id` is not the client's tenant.
+- `429 slow_down` — the client has used its `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` on this node (see `auth.tokens`).
 
 ## SEE ALSO
 
 - `auth.tokens` — the token-exchange grant and the claim shape of issued tokens
-- `auth.clients` — the M2M client that performs the exchange
+- `auth.clients` — the on-behalf-of client that performs the exchange
 - `config.auth` — `CYODA_IAM_TRUSTED_KEY_*` env vars and the user-identifier rule
 - `openapi` — `cyoda help openapi tags` and look for the `IAM` tag's `/oauth/keys/trusted/*` operations

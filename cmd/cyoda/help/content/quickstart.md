@@ -100,6 +100,13 @@ In Kubernetes, `kubectl exec <pod> -- /cyoda token --tenant acme`; in Docker
 Compose, `docker compose exec -T <service> /cyoda token --tenant acme`. See
 `cli.token`.
 
+Applications and compute nodes connect as M2M clients; users never call
+cyoda directly. An application that calls cyoda for its signed-in users uses
+an on-behalf-of client and a trusted key, so that each change is recorded for
+the user; see `auth`. Data operations require `ROLE_M2M`, which every M2M
+client holds; the admin token above carries `ROLE_ADMIN` only (see
+`cli.token`).
+
 **Admin metrics auth (optional):**
 
 - `CYODA_METRICS_BEARER` — static bearer token required on `GET /metrics`

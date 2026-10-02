@@ -46,7 +46,7 @@ A token from `cyoda token` verifies while the signing key verifies on the cluste
 ## OPTIONS
 
 - `--tenant <tenantId>` — required. The tenant the token acts in.
-- `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the subject of a token exchange).
+- `--user <userId>` — the user id recorded for calls made with the token. Default `operator`. It must pass the user-identifier rule in `config.auth`; `system` is reserved and refused (exit 2). Use a distinctive user id: the value is recorded as the caller in audit, and another principal can carry the same id (for example the user of a token exchange).
 - `--roles <r1,r2>` — comma-separated roles. Default `ROLE_ADMIN`, which reaches only the admin operations; `--roles ROLE_ADMIN,ROLE_M2M` also reaches data.
 - `--ttl <duration>` — lifetime, at least `1s` and at most `CYODA_JWT_EXPIRY_SECONDS` (default 300 s); a value outside that range is a flag error (exit 2). Default `15m`, or `CYODA_JWT_EXPIRY_SECONDS` when that is shorter.
 

@@ -26,6 +26,8 @@ One cause: the token lacks `ROLE_M2M`, which every operation requires except `GE
 
 Another cause: the endpoint needs a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM` (signing key pairs, `/admin/*`). An admin of any other tenant gets this error with the detail "platform operator required".
 
+An on-behalf-of token — one the token exchange issued for a user — never administers: the client, trusted-key, key-pair and `/admin/*` operations refuse it with the detail "on-behalf-of tokens cannot administer", whatever its roles. It also joins only a transaction begun for its own user: a request that presents another user's transaction token gets the detail "an on-behalf-of request may join only its own user's transaction". Over gRPC that refusal comes in the RPC's error envelope (`Success: false`) with the same text.
+
 Not retryable with the same token. Access depends on the token's role claims and, for some endpoints, its tenant.
 
 ## SEE ALSO

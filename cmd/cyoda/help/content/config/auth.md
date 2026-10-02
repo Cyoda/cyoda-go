@@ -85,9 +85,7 @@ every authenticated HTTP request and every authenticated gRPC method. A claim
 outside the grammar is rejected like any other bad token: `401` with the
 uniform problem detail, and nothing in the response distinguishing it. The
 server log records the rejection at request time — one warning per rejected
-request, carrying the reason and a byte offset, never the offending value. If
-you mint tokens from an external IdP, constrain the claim there — an
-identifier outside this grammar is only diagnosable from cyoda's own logs.
+request, carrying the reason and a byte offset, never the offending value.
 `cyoda token --tenant` checks the same rule before it signs, and the claim is
 checked again when the token is used.
 
@@ -108,34 +106,34 @@ and contain none of these:
 
 Any other character is admitted, including non-ASCII, and nothing is
 normalised. A user id is not a key or a path segment, so it has no grammar
-beyond this and the reserved word `oidc:` described below. The excluded characters are the ones the CloudEvents spec forbids
-in a string attribute — a user id is sent to compute nodes as `authid` — plus
-U+FFFD, which a JSON decoder puts in place of every invalid byte, so that two
-different claims can never name one user.
+beyond this and the reserved id `system` described below. The excluded
+characters are the ones the CloudEvents spec forbids in a string attribute — a
+user id is sent to compute nodes as `authid` — plus U+FFFD, which a JSON
+decoder puts in place of every invalid byte, so that two different claims can
+never name one user.
 
 The same check applies at every place a principal's user id enters the binary
 from outside it:
 
-- **The user claim on an inbound first-party JWT** — `caas_user_id`, or `sub`
-  when `caas_user_id` is absent. A claim outside the check is an ordinary
-  `401`, logged like the tenant claim above: the reason, and for a rejected
+- **The user claim on an inbound JWT** — `caas_user_id`, or `sub` when
+  `caas_user_id` is absent. A claim outside the check is an ordinary `401`,
+  logged like the tenant claim above: the reason, and for a rejected
   character its code point and position, never the value. A `caas_user_id`
   that is present but empty, not a string, or outside the check is rejected;
   it does not fall back to `sub`.
-- **The `sub` of a federated OIDC token.** The principal's user id is then
-  `oidc:<providerId>:<sub>`, so it can be longer than 255 characters; the
-  limit applies to `sub`.
-- **The `sub` of a token-exchange subject token**, which becomes the issued
-  token's user id. A value outside the check is `400 invalid_request`.
+- **The `sub` of a user assertion** presented to the token exchange, which
+  becomes the issued token's user id. A value outside the check is
+  `400 invalid_request`.
 
-`cyoda token --user` checks the same rule, the reserved word below included,
-before it signs.
+`cyoda token --user` checks the same rule, the reserved id included, before it
+signs. A stored M2M client whose user id fails the check is treated as
+damaged (see `auth.clients`).
 
-**`oidc:` is a reserved word.** The OIDC path builds every user id it creates
-as `oidc:<providerId>:<sub>`. Every other user id — the first-party claim and the
-token-exchange `sub` — must not begin with
-`oidc:`, in any case, so that it can never name the same user as an OIDC
-principal. Such a value is rejected at the door like any other bad user id.
+**`system` is a reserved user id.** It is the identity of the platform's own
+principal, the executor of every scheduled firing. No user id from outside
+cyoda — a token claim, an assertion's `sub`, `cyoda token --user` — may be
+`system` in any letter case, so no caller can be recorded as that principal.
+Such a value is rejected at the door like any other bad user id.
 
 ### HMAC secret (inter-node dispatch authentication)
 
@@ -216,38 +214,15 @@ additionally runs a periodic KV-reconcile as a backstop against missed
 broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` sets that interval; each tick is jittered ±10% to avoid a cross-node
 reconcile herd. A cache that goes 10× this interval without a successful
 reconcile fails closed on verification rather than serving a potentially stale
-answer: it refuses first-party tokens (`401`) and answers JWKS with `503`.
-Trusted keys and M2M clients have no cache: every call, the token exchange
-included, reads the store, so a change is in force on every node when the
-call returns.
+answer: it refuses every token (`401`) and answers JWKS with `503`.
+No node keeps a copy of a trusted key or an M2M client: every call, the
+token exchange included, reads the store, so a change is in force on every
+node when the call returns. (The verified-secret cache under
+`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` holds only the SHA-256 of a
+secret that matched; the client record is still read on every request.)
 
 - `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for the signing-key cache
   (default: `60s`, floor: `1s`)
-
-### Federated OIDC providers (`POST /oauth/oidc/providers`)
-
-These variables control the federated OIDC provider registration behaviour
-(JWT mode only). They apply to all tenants at the process level.
-
-- `CYODA_OIDC_REQUIRE_HTTPS` — when `true`, `POST /oauth/oidc/providers` rejects
-  any `wellKnownConfigUri` whose scheme is not `https`. Set to `true` in
-  production to prevent accidental registration of plaintext-HTTP providers.
-  (default: `true`)
-- `CYODA_OIDC_ALLOW_PRIVATE_NETWORKS` — when `true`, the SSRF blocklist check is
-  bypassed so private-network OIDC providers (e.g. `https://127.0.0.1/...`) can
-  be registered. Intended for integration tests and local development only.
-  Never set in production. (default: `false`)
-- `CYODA_OIDC_ROLES_CLAIM` — the JWT claim name from which role values are read
-  for tokens issued by a federated OIDC provider. Overrideable per-provider via
-  the `rolesClaim` field on the registration or update API. See
-  `cyoda help auth oidc` for the accepted claim value shapes (string array,
-  JSON object — keys are roles, space-delimited string). (default: `roles`)
-- `CYODA_OIDC_CONNECT_TIMEOUT_MS` — TCP connect timeout in milliseconds for
-  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
-- `CYODA_OIDC_SOCKET_TIMEOUT_MS` — HTTP read timeout in milliseconds for
-  OIDC discovery and JWKS endpoint fetches. (default: `5000`)
-- `CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS` — connection-pool request timeout
-  in milliseconds for OIDC discovery and JWKS endpoint fetches. (default: `5000`)
 
 ### JWT signing keypair rotation
 
@@ -295,67 +270,15 @@ no longer verify. A node that has not yet applied an invalidation can still
 sign with the key pair until it does; with a grace period, those tokens
 verify on every node until the key pair's `validTo`.
 
-**Emergency revocation of a leaked token:** a working token whose `kid`
-(in its header) is listed in `/.well-known/jwks.json` was signed by
-cyoda-go; revoke that key pair. A rotation is not enough: it never ends the
+**Emergency revocation of a leaked token:** revoke the key pair named by
+the `kid` in the token's header. Every token cyoda-go accepts was signed by
+one of its own key pairs, the bootstrap key or an issued one, and JWKS
+(`/.well-known/jwks.json`) lists each key pair until it can no longer
+verify. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
 from `POST /oauth/token` while it wins signer selection
 (before the first rotation, for example, or after a reactivation with the
 default `validFrom`; see above).
-
-A working token whose `kid` that list does not name came from an OIDC
-provider, whatever its `iss` (a provider can name the same issuer as
-`CYODA_JWT_ISSUER`). A provider cannot take the `kid` of a key pair a node
-holds — the configured bootstrap key, and every stored key pair from the
-moment the node applies its issue until a `DELETE` removes it (see *Shared
-and persisted*): a token under that `kid` is refused while the key pair
-cannot verify. Revoking a cyoda-go key pair does not end it, and neither
-does ending the user's session at the IdP: cyoda-go verifies the token
-itself.
-
-Such a token ends for good, in every tenant, at the IdP. First end the
-principal's sessions there, revoke its refresh tokens, and reset its
-credentials or disable the user (the token's `sub` names it); otherwise
-the attacker gets a fresh token. Then have the IdP publish a new signing
-key and retire every key it published before those changes, the one named
-by the token's `kid` included; this ends every token those keys signed,
-for every user of the IdP, in every tenant and at every other relying
-party. Each node drops a retired key once its cache of the IdP's keys has
-refreshed, within 5 minutes; a cache that cannot refresh serves no key.
-`POST /oauth/oidc/providers/reload` (platform operator) can shorten this,
-but its `200` does not show that it did: a node whose discovery fetch
-fails keeps its cached keys, and other nodes act when the broadcast
-arrives. So wait the 5 minutes. From then on no provider of that IdP, in any
-tenant, active or not, accepts the token. Where you cannot retire the
-IdP's keys (an IdP you do not run), the token ends at its `exp`, plus 30
-seconds and the clock offset between the IdP and the nodes; a token with
-no `exp` ends only when the IdP no longer publishes the key named by its
-`kid`.
-
-Until then, cut the token off. `GET /account` with the token names the
-tenant that accepts it (`userAccountInfo.legalEntity.id`). The provider
-endpoints act on the caller's own tenant, so use an admin token of each
-tenant whose providers you delete: `cyoda token --tenant <id>` while the
-bootstrap key verifies, or an admin client of that tenant; without either,
-set a new `CYODA_JWT_SIGNING_KEY` (see *Alternative to step 4*), or have
-that tenant's admins act. Deleting one tenant's provider can make the token
-resolve to another tenant's provider of the same IdP, with that tenant's
-roles. So first delete the providers of that IdP in the other tenants you
-know of (the INFO line `oidc.cross_tenant_uri_registration`, written when a
-second tenant registers the same discovery URI, names some), then those of
-the tenant that accepts the token. Delete rather than invalidate: an
-invalidated provider can be reactivated, and a reactivated one accepts the
-token again. Once other nodes have applied the change (see *Auth cache
-reconciliation*), send `GET /account` with the token to each node directly
-(step 1 of *A leaked platform admin-client secret* says how to reach one
-node); a `200` names a tenant that still accepts it, so treat that tenant
-the same way. A `401` does not show that no tenant accepts it later: every
-refusal gets the same `401`, and cyoda-go has no list of every tenant's
-providers of one IdP. That is why the changes at the IdP above are the end
-point and this is a stopgap. A provider deleted here comes back by
-registering it again, once those changes are done (see the
-*Register again* bullet under *A leaked admin token of another tenant*),
-never by reactivation. None of this ends an open stream (see below).
 
 - If the `kid` names an issued key pair, invalidate it with a grace period of
   0, or `DELETE` it, or rotate with `invalidateCurrent: true` and
@@ -388,8 +311,8 @@ never by reactivation. None of this ends an open stream (see below).
   with it again. `DELETE` also ends the bootstrap key, but permanently.
 - If the token carries `ROLE_ADMIN` in `PLATFORM`, follow *A leaked
   platform admin-client secret* below with the token in place of the
-  secret: it can create clients and trusted keys, and verification does not
-  check that a client still exists.
+  secret: it can create clients and trusted keys, and a request is not
+  checked against the client store.
 - If it carries `ROLE_ADMIN` in another tenant, follow *A leaked admin
   token of another tenant* under *A leaked platform admin-client secret*
   below.
@@ -466,63 +389,40 @@ delete key pairs (deleting the bootstrap key is permanent), change each
 node's log level and trace sampler, and open a compute-node gRPC stream.
 They can also change any models, workflows, entities, scheduled tasks and
 messages kept in `PLATFORM`; step 5 checks them.
-Verification does not check that a client still exists, so deleting the
-client or resetting its secret does not end a token they hold. Contain
+A request is not checked against the client store, so deleting the client
+or resetting its secret does not end a token they hold: it verifies until its
+`exp`, at most `CYODA_JWT_EXPIRY_SECONDS` after it was issued. Only a
+compute-node stream checks its client, once a minute (see below). Contain
 first, then clean up, verify and restore.
 
 **A leaked admin token of another tenant.** Follow this procedure with the
 token in place of the secret, and apply steps 2, 3, 5 and 6 to that tenant as
 well as to `PLATFORM`. Its holder can create clients and trusted keys in
-the tenant as the flags allow, and, if the tenant id is a UUID, OIDC
-providers with no flag. Step 4 and a new signing key do not end a token from
-the tenant's OIDC provider (see the `kid` test under *Emergency revocation
-of a leaked token*). The client, trusted-key and OIDC-provider endpoints
-act on the caller's own tenant, so you need an admin token of that tenant.
+the tenant as the flags allow; with both an on-behalf-of client and a
+trusted key of the tenant, it can get tokens for any user id of the tenant,
+with that client's roles. The client and trusted-key endpoints act on the
+caller's own tenant, so you need an admin token of that tenant.
 
 - Step 2: `cyoda token --tenant <id>` while the bootstrap key verifies;
   otherwise use the *Alternative to step 4*. That token stops verifying
   in step 4.
-- Step 3: delete every OIDC provider of the tenant
-  (`GET /oauth/oidc/providers`, then `DELETE /oauth/oidc/providers/{id}`),
-  and clean its clients and trusted keys as step 3 says, with the tenant
-  in place of `PLATFORM`. If you keep no admin client in the tenant, create
-  one there the same way (the same flag and the tenant client cap apply):
-  step 5 needs it, unless you use the *Alternative to step 4*. If the
-  leaked token came from an IdP, make the changes at that IdP that
-  *Emergency revocation of a leaked token* lists: deleting this tenant's
-  providers does not stop another tenant's provider of the same IdP from
-  accepting the token.
-- Register again the providers you need from your own records. Register
-  those of the IdP a leaked token came from only once the changes at that
-  IdP are done; removing only the principal's admin role there is not
-  enough, because it keeps every non-admin right in the tenant. Where you
-  cannot retire the IdP's keys, a provider registered again still refuses
-  tokens whose `iat` is more than 30 seconds before its registration:
-  register it once 30 seconds plus the clock offset between the IdP and
-  the nodes have passed since the last change at the IdP. If the IdP's
-  tokens carry no `iat`, wait instead for its longest access-token lifetime
-  plus that time; if they carry no `exp` either, wait until the IdP no
-  longer publishes any key it published before those changes.
+- Step 3: clean the tenant's clients and trusted keys as step 3 says, with
+  the tenant in place of `PLATFORM`. If you keep no admin client in the
+  tenant, create one there the same way (the same flag and the tenant
+  client cap apply): step 5 needs it, unless you use the *Alternative to
+  step 4*.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
-  after the *Alternative to step 4*, `cyoda token --tenant <id>`. The
-  provider list shows only the providers you registered again. Read the
-  log lines step 5 names with the tenant's id in place of `PLATFORM`, and
-  the INFO line `oidc provider registered` with the same `tenantId`. If the
-  leaked token came from an IdP, check that the IdP no longer publishes
-  the key named by the token's `kid` and that 5 minutes have passed since,
-  or that the token's `exp` is more than 30 seconds plus the clock offset
-  past. A token with no `exp` from an IdP whose keys you cannot retire
-  keeps the block in place until the IdP stops publishing that key.
+  after the *Alternative to step 4*, `cyoda token --tenant <id>`. Read the
+  log lines step 5 names with the tenant's id in place of `PLATFORM`.
 - Step 6: delete the admin client you created in the tenant, or give it to
   the tenant.
 
 On the memory backend a restart loses all data, an invalidation of the
 bootstrap key included. There, give every node a new
 `CYODA_JWT_SIGNING_KEY` at the restart in step 1: it removes every client,
-trusted key, OIDC provider and key pair and ends every token cyoda-go
-signed, so steps 3 and 4 have nothing to clean. Give every later restart a
-new key too. Create the clients, trusted keys and OIDC providers you need
-after the last restart (providers as the list above says), once
+trusted key and key pair and ends every token cyoda-go signed, so steps 3
+and 4 have nothing to clean. Give every later restart a new key too. Create
+the clients and trusted keys you need after the last restart, once
 `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` and
 `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` are set the way they will
 stay. In step 5, JWKS lists the bootstrap key of the latest
@@ -583,8 +483,10 @@ signing key below.
   `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true` on the node you call, read at
   startup; the tenant client cap applies) and store its `client_id` and
   `client_secret`. If you cannot, use the new signing key below.
-- Trusted keys. A trusted key of `PLATFORM` and any client of the tenant
-  exchange for a token with the roles the subject token names. Keys
+- Trusted keys. No on-behalf-of client can exist in `PLATFORM`, so a
+  trusted key of `PLATFORM` gives no token; in another tenant, a trusted
+  key and an on-behalf-of client of that tenant give tokens for any user id
+  of the tenant. Clean them all the same. Keys
   registered while `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` was on
   still verify exchanges when it is off, but the trusted-key endpoints
   then answer `404 FEATURE_DISABLED`. Registration replaces the key
@@ -648,8 +550,8 @@ show who changed an entity and when), and restore what differs. A change
 made before step 1 is damage to repair, not a failed cleanup. Scheduled
 transitions keep firing during the block: a change whose `executedBy` has
 `kind` `system` is such a firing, not an API call (match the kind, not
-the id: a token can carry the user id `system`, but its kind is always
-`user` or `service`). List the scheduled tasks of each of those tenants
+the id: the kind of a token's principal is always `user` or `service`, and
+`system` is a reserved user id no token carries). List the scheduled tasks of each of those tenants
 (`GET /scheduled-tasks`, with an admin token of the tenant), and end any
 you do not recognise: move its entity out of the transition's source
 state with a manual transition, delete the entity, or import the workflow
@@ -671,9 +573,7 @@ your own actions from others by the timestamp and your own record. The
 INFO lines `trusted key registered`, `trusted key invalidated`, `trusted
 key reactivated` and `trusted key deleted` name the tenant, the kid, and
 the attributed principal and executor of the call. The other key-pair
-calls log nothing, and neither does an OIDC provider update, invalidation,
-reactivation or deletion that changes the provider; the checks above show
-their result. No INFO line is written
+calls log nothing; the checks above show their result. No INFO line is written
 while a node's level is above `info`, configured or set. A level that
 matches proves nothing on its own: the `log level changed` line is
 written after the new level applies, so setting `warn` or `error` writes
@@ -852,9 +752,9 @@ or a reactivation gave it a window that has since ended.
   expire: if it was invalidated because a token leaked, wait for the
   longest token lifetime first (see *Emergency revocation of a leaked
   token*), or issue a new key pair instead.
-- Once every grace period has ended, no token can reach these endpoints
-  independently of cyoda's own signing key: `PLATFORM` cannot own an OIDC
-  provider. Recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, needing
+- Once every grace period has ended, no token verifies: every token
+  cyoda-go accepts is signed by one of its own key pairs. Recovery is a new
+  `CYODA_JWT_SIGNING_KEY` on every node, needing
   no token. This starts a fresh, active bootstrap key with no stored state,
   and retires every issued key pair the old key sealed.
 
@@ -895,13 +795,6 @@ CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT=10
 
 ```
 CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true
-```
-
-**With federated OIDC providers (JWT mode):**
-
-```
-CYODA_OIDC_REQUIRE_HTTPS=true
-CYODA_OIDC_ROLES_CLAIM=roles
 ```
 
 ## SEE ALSO

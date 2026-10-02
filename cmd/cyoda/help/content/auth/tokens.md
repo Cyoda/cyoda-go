@@ -142,7 +142,7 @@ Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap ke
 On API calls:
 
 - `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, issuer untrusted, or `kid` not a usable key of this node.
-- `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation.
+- `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation (`ROLE_M2M` for every data operation), or a token-exchange token on a client, trusted-key, key-pair or `/admin/*` operation, which it never reaches.
 
 The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`, RFC 6749 §5.2) rather than the generic cyoda error envelope. The descriptions are fixed and never repeat the user id, the tenant or the key id.
 

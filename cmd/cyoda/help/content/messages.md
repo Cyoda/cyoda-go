@@ -26,7 +26,7 @@ DELETE /api/message/{messageId}
 DELETE /api/message
 ```
 
-Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints require `Authorization: Bearer <token>` except when `CYODA_IAM_MODE=mock`. No role is required beyond a valid token.
+Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). All endpoints require `Authorization: Bearer <token>` except when `CYODA_IAM_MODE=mock`. Every endpoint requires `ROLE_M2M` in the token's roles (`403 FORBIDDEN` without it; see `auth`).
 
 ## DESCRIPTION
 

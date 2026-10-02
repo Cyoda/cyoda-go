@@ -25,7 +25,7 @@ POST /api/admin/trace-sampler
 
 ## DESCRIPTION
 
-Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`) and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately.
+Both endpoint families require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`; a token from the token exchange is refused whatever its roles) and update process-local state atomically. State is **not** propagated across nodes; multi-node deployments must hit each node's endpoint separately.
 
 ## ENDPOINTS
 
@@ -99,7 +99,7 @@ curl -X POST -H @- \
 - `parent_based` defaults to `true` and respects upstream sampling decisions in the `traceparent` header. With `parent_based: true`, an upstream "do not sample" overrides this node's `sampler: always`. This is standard OpenTelemetry `ParentBased` semantics and is usually correct for distributed-trace integrity. Set `parent_based: false` to override.
 - The initial sampler at process start is seeded from the standard OpenTelemetry env vars `OTEL_TRACES_SAMPLER` and `OTEL_TRACES_SAMPLER_ARG`. Supported values are the six standard combinations from the OTel spec (`always_on`, `always_off`, `traceidratio`, and their `parentbased_` variants). The admin endpoint is a runtime override, not a replacement.
 - Sampler and log level are process-local. Each node has its own state; multi-node deployments need to hit each node's admin endpoint separately.
-- `/metrics` exposes application metrics (OIDC, and — with `CYODA_OTEL_ENABLED=true` — transaction/dispatch) in addition to Go runtime/process metrics. The OIDC metric family is present whenever IAM runs in `jwt` mode. See `telemetry` for authentication options and the full metric catalogue.
+- `/metrics` exposes application metrics (auth, and — with `CYODA_OTEL_ENABLED=true` — transaction/dispatch) in addition to Go runtime/process metrics. The auth metrics are present whenever IAM runs in `jwt` mode. See `telemetry` for authentication options and the full metric catalogue.
 
 ## SEE ALSO
 
