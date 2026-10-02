@@ -41,7 +41,7 @@ func TestParseBehaviour(t *testing.T) {
 }
 
 func TestJoinPayload_CarriesConfiguredTags(t *testing.T) {
-	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x", "y"}, behaviourCatalog, newRecorder())
+	d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x", "y"}, behaviourCatalog, newRecorder())
 	tags, _ := d.joinPayload()["tags"].([]string)
 	if !slices.Equal(tags, []string{"x", "y"}) {
 		t.Errorf("join tags = %v; want [x y]", tags)
@@ -94,7 +94,7 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := newRecorder()
-			d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, tc.beh, rec)
+			d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x"}, tc.beh, rec)
 			ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
 
 			reply, drop, err := d.handleCallout(context.Background(), ce, payload)
@@ -139,7 +139,7 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 // TestHandleCallout_HoldAnswersFromCatalogOnRelease: a hold client records the
 // work, stays silent, and on release answers it as the catalog would.
 func TestHandleCallout_HoldAnswersFromCatalogOnRelease(t *testing.T) {
-	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
+	d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
 	ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
 
 	reply, drop, err := d.handleCallout(context.Background(), ce, payload)
@@ -186,7 +186,7 @@ func (s *recordingStream) events() []*cepb.CloudEvent {
 // receiving work, sends exactly one catalog answer for it on release, and
 // nothing more on a second release.
 func TestRelease_HoldSendsOneAnswerOnTheStream(t *testing.T) {
-	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
+	d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x"}, behaviourHold, newRecorder())
 	s := &recordingStream{}
 	d.setStream(s)
 	ce, payload := processorRequest(t, "r-1", "noop", "pass-value", "")
@@ -218,7 +218,7 @@ func TestRelease_HoldSendsOneAnswerOnTheStream(t *testing.T) {
 
 func TestHandleCallout_RecordsCriterionAndFunction(t *testing.T) {
 	rec := newRecorder()
-	d := newDispatcher("", "", newCatalog(nil, nil), nil, []string{"x"}, behaviourStall, rec)
+	d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x"}, behaviourStall, rec)
 	for _, c := range []struct{ ceType, nameField, name string }{
 		{ceTypeCriteriaRequest, "criteriaName", "always-true"},
 		{ceTypeFunctionRequest, "functionName", "sched-fn-resolve"},

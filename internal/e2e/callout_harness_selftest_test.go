@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -42,6 +43,48 @@ func TestCalloutHarness_StartsWithNoCnode(t *testing.T) {
 			code = env.Error.Code + ": " + env.Error.Message
 		}
 		t.Fatalf("gRPC create over the harness API connection failed: %s", code)
+	}
+}
+
+// TestComputeMember_DefaultBearerIsAStoredClient proves the bearer a cnode
+// given no bearer joins with is a client-credentials token of a stored
+// ROLE_M2M client of the harness's tenant — not a self-signed token — and that
+// every such cnode of one harness authenticates as the same client.
+func TestComputeMember_DefaultBearerIsAStoredClient(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+
+	tok := h.computeBearer(t)
+	parsed, err := auth.Parse(tok)
+	if err != nil {
+		t.Fatalf("parse the compute bearer: %v", err)
+	}
+	if _, ok := parsed.Claims["cgen"]; !ok {
+		t.Fatal("the compute bearer carries no cgen; it is not a stored client's client-credentials token")
+	}
+	if got := parsed.Claims["caas_org_id"]; got != "test-tenant" {
+		t.Errorf("caas_org_id = %v; want test-tenant", got)
+	}
+	clientID, _ := parsed.Claims["caas_user_id"].(string)
+	if !clientIDsOn(t, h.baseURL, h.token(t))[clientID] {
+		t.Errorf("the compute bearer names client %q, which GET /clients does not list", clientID)
+	}
+	scopes, _ := parsed.Claims["scopes"].([]any)
+	if !slices.Contains(scopes, any("ROLE_M2M")) || slices.Contains(scopes, any("ROLE_ADMIN")) {
+		t.Errorf("scopes = %v; want ROLE_M2M and no ROLE_ADMIN", scopes)
+	}
+
+	again, err := auth.Parse(h.computeBearer(t))
+	if err != nil {
+		t.Fatalf("parse the second compute bearer: %v", err)
+	}
+	if got := again.Claims["caas_user_id"]; got != clientID {
+		t.Errorf("second compute bearer names client %v; want the same client %q", got, clientID)
+	}
+
+	m := newComputeMember(t, h, memberSpec{tags: []string{"h2-stored"}, handle: func(*computeMember, func(*cepb.CloudEvent) error, calcRequest) {}})
+	t.Cleanup(m.stop)
+	if got := h.app.MemberRegistry().Get(m.id); got == nil || string(got.TenantID) != "test-tenant" {
+		t.Errorf("a cnode with the default bearer did not join under test-tenant: %+v", got)
 	}
 }
 

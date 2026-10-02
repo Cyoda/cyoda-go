@@ -15,6 +15,9 @@ type memoryFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
 }
 
@@ -48,7 +51,7 @@ func (f *memoryFixture) PlatformOperator(t *testing.T) parity.Tenant {
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *memoryFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
 // setup builds binaries, launches subprocesses, and waits for readiness.
@@ -69,6 +72,7 @@ func setup() (*memoryFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 	}
 

@@ -1,52 +1,73 @@
 package fixtureutil_test
 
 import (
-	"encoding/base64"
-	"encoding/json"
 	"net/http"
-	"strings"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
+	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
-// TestMintM2MJWTForTenant: the token names the given tenant and carries
-// ROLE_M2M, which StartStreaming requires.
-func TestMintM2MJWTForTenant(t *testing.T) {
+// TestProvisionComputeClient_IsAStoredClientOfTheTenant: the credentials
+// ProvisionComputeClient returns belong to a stored M2M client of the given
+// tenant — the token endpoint issues them a client-credentials token (it
+// carries cgen) naming that tenant and ROLE_M2M, which StartStreaming
+// requires. ComputeCredentials provisions one client per tenant and hands the
+// same one to every compute client of that tenant.
+func TestProvisionComputeClient_IsAStoredClientOfTheTenant(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess launch under -short")
+	}
+	cyodaBin, err := fixtureutil.BuildCyodaBinary()
+	if err != nil {
+		t.Fatalf("BuildCyodaBinary: %v", err)
+	}
 	ks, err := fixtureutil.GenerateJWTKeySet()
 	if err != nil {
 		t.Fatalf("GenerateJWTKeySet: %v", err)
 	}
-	tok, err := fixtureutil.MintM2MJWTForTenant(ks, "tenant-xyz")
+	node, err := fixtureutil.LaunchCyodaNode(cyodaBin, ks, []string{"CYODA_STORAGE_BACKEND=memory"}, 0)
 	if err != nil {
-		t.Fatalf("MintM2MJWTForTenant: %v", err)
+		t.Fatalf("LaunchCyodaNode: %v", err)
 	}
-	parts := strings.Split(tok, ".")
-	if len(parts) != 3 {
-		t.Fatalf("token has %d parts; want 3", len(parts))
+	t.Cleanup(node.Kill)
+
+	id, secret := fixtureutil.ProvisionComputeClient(t, node.BaseURL, "tenant-xyz", ks)
+	tok, status, err := client.FetchClientCredentialsToken(t.Context(), node.BaseURL, id, secret)
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("client_credentials grant with the provisioned client: status %d, %v", status, err)
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	parsed, err := auth.Parse(tok)
 	if err != nil {
-		t.Fatalf("decode claims: %v", err)
+		t.Fatalf("parse token: %v", err)
 	}
-	var claims struct {
-		Org    string   `json:"caas_org_id"`
-		Scopes []string `json:"scopes"`
+	if got := parsed.Claims["caas_org_id"]; got != "tenant-xyz" {
+		t.Errorf("caas_org_id = %v; want tenant-xyz", got)
 	}
-	if err := json.Unmarshal(raw, &claims); err != nil {
-		t.Fatalf("unmarshal claims: %v", err)
+	if got := parsed.Claims["caas_user_id"]; got != id {
+		t.Errorf("caas_user_id = %v; want the client id", got)
 	}
-	if claims.Org != "tenant-xyz" {
-		t.Errorf("caas_org_id = %q; want tenant-xyz", claims.Org)
+	if _, ok := parsed.Claims["cgen"]; !ok {
+		t.Error("token carries no cgen; it is not a stored client's client-credentials token")
 	}
-	hasM2M := false
-	for _, s := range claims.Scopes {
-		hasM2M = hasM2M || s == "ROLE_M2M"
+	scopes, _ := parsed.Claims["scopes"].([]any)
+	if !slices.Contains(scopes, any("ROLE_M2M")) {
+		t.Errorf("scopes = %v; want ROLE_M2M among them", scopes)
 	}
-	if !hasM2M {
-		t.Errorf("scopes = %v; want ROLE_M2M among them", claims.Scopes)
+
+	creds := fixtureutil.NewComputeCredentials(ks)
+	id1, _ := creds.For(t, node.BaseURL, "tenant-abc")
+	id2, _ := creds.For(t, node.BaseURL, "tenant-abc")
+	other, _ := creds.For(t, node.BaseURL, "tenant-def")
+	if id1 != id2 {
+		t.Errorf("two compute clients of one tenant got clients %q and %q; want one shared client", id1, id2)
+	}
+	if other == id1 {
+		t.Error("two tenants share one client")
 	}
 }
 
@@ -70,7 +91,7 @@ func TestStartComputeClient_JoinsRecordsAndStops(t *testing.T) {
 		t.Fatal("LaunchResult.ComputeBin is empty; a fixture needs it to start further clients")
 	}
 
-	var cc parity.ComputeClient = fixtureutil.StartComputeClientForFixture(t, ks, result.ComputeBin,
+	var cc parity.ComputeClient = fixtureutil.StartComputeClientForFixture(t, fixtureutil.NewComputeCredentials(ks), result.ComputeBin,
 		result.GRPCEndpoint, result.BaseURL, parity.ComputeClientSpec{
 			TenantID:  "h8-extra-tenant",
 			Tags:      []string{"h8-extra"},
@@ -105,7 +126,8 @@ func TestStartComputeClient_RejectsUnknownBehaviour(t *testing.T) {
 	}
 	start := time.Now()
 	_, err = fixtureutil.StartComputeClient(fixtureutil.ComputeClientOpts{
-		ComputeBin: bin, GRPCEndpoint: "127.0.0.1:1", Token: "x", Behaviour: "explode",
+		ComputeBin: bin, GRPCEndpoint: "127.0.0.1:1", HTTPBase: "http://127.0.0.1:1",
+		ClientID: "x", ClientSecret: "y", Behaviour: "explode",
 	})
 	if err == nil {
 		t.Fatal("StartComputeClient accepted an unknown behaviour")

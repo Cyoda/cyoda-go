@@ -28,8 +28,8 @@ func TestControlSurface_RecordAndRelease(t *testing.T) {
 
 	rec := newRecorder()
 	rec.setMemberID("member-1")
-	cat := newCatalog(newCallbackClient(door.URL, "bearer"), nil)
-	d := newDispatcher("", "", cat, nil, []string{"x"}, behaviourLateCallback, rec)
+	cat := newCatalog(newCallbackClient(door.URL, staticToken("bearer")), nil)
+	d := newDispatcher("", nil, cat, nil, []string{"x"}, behaviourLateCallback, rec)
 
 	hs, err := newHealthServer(rec, d.release)
 	if err != nil {

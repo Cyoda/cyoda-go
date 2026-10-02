@@ -20,8 +20,9 @@ import (
 type ComputeClientOpts struct {
 	ComputeBin   string // absolute path of the built compute-test-client
 	GRPCEndpoint string // host:port of the cyoda node the client attaches to
-	HTTPBase     string // HTTP base its callbacks go to
-	Token        string // M2M bearer for the tenant it joins under; never logged
+	HTTPBase     string // HTTP base its callbacks and token requests go to
+	ClientID     string // M2M client it authenticates as (tenant it joins under)
+	ClientSecret string // that client's secret; never logged
 	Tags         []string
 	Behaviour    string
 	// ReadyTimeout bounds the wait for the client to report ready (it does so
@@ -52,7 +53,8 @@ func StartComputeClient(opts ComputeClientOpts) (*ComputeClientProc, error) {
 	cmd.WaitDelay = 3 * time.Second
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", opts.GRPCEndpoint),
-		fmt.Sprintf("CYODA_COMPUTE_TOKEN=%s", opts.Token),
+		fmt.Sprintf("CYODA_COMPUTE_CLIENT_ID=%s", opts.ClientID),
+		fmt.Sprintf("CYODA_COMPUTE_CLIENT_SECRET=%s", opts.ClientSecret),
 		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", opts.HTTPBase),
 		fmt.Sprintf("CYODA_TEST_COMPUTE_TAGS=%s", strings.Join(opts.Tags, ",")),
 		fmt.Sprintf("CYODA_TEST_COMPUTE_BEHAVIOUR=%s", opts.Behaviour),
@@ -157,21 +159,53 @@ func (p *ComputeClientProc) Cmd() *exec.Cmd { return p.cmd }
 // ControlURL returns the base URL of the client's local control endpoint.
 func (p *ComputeClientProc) ControlURL() string { return p.controlURL }
 
+// ComputeCredentials provisions, once per tenant, the M2M client the
+// compute-test-clients of one fixture authenticate as, and hands that client
+// to every further compute client of the tenant — as the replicas of one
+// compute service share one client. One fixture's servers share one store, so
+// one ComputeCredentials serves them all; this keeps a scenario that starts
+// several compute clients in one tenant under the per-tenant client cap. It is
+// safe for concurrent use.
+type ComputeCredentials struct {
+	ks       *JWTKeySet
+	mu       sync.Mutex
+	byTenant map[string]computeCredential
+}
+
+type computeCredential struct{ id, secret string }
+
+// NewComputeCredentials returns a ComputeCredentials that provisions with
+// tenant-admin JWTs signed by ks.
+func NewComputeCredentials(ks *JWTKeySet) *ComputeCredentials {
+	return &ComputeCredentials{ks: ks, byTenant: map[string]computeCredential{}}
+}
+
+// For returns tenantID's compute client, provisioning it through baseURL the
+// first time (ProvisionComputeClient). The secret is a credential: never log it.
+func (c *ComputeCredentials) For(t *testing.T, baseURL, tenantID string) (id, secret string) {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cred, ok := c.byTenant[tenantID]; ok {
+		return cred.id, cred.secret
+	}
+	id, secret = ProvisionComputeClient(t, baseURL, tenantID, c.ks)
+	c.byTenant[tenantID] = computeCredential{id: id, secret: secret}
+	return id, secret
+}
+
 // StartComputeClientForFixture is what a fixture's StartComputeClient calls:
-// it checks the spec, mints an M2M bearer for the spec's tenant from the
-// fixture's key set, and starts the client. It fails the test on any error.
-func StartComputeClientForFixture(t *testing.T, ks *JWTKeySet, computeBin, grpcEndpoint, httpBase string, spec parity.ComputeClientSpec) parity.ComputeClient {
+// it checks the spec, takes the spec's tenant's compute client from creds,
+// and starts the client. It fails the test on any error.
+func StartComputeClientForFixture(t *testing.T, creds *ComputeCredentials, computeBin, grpcEndpoint, httpBase string, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
 	if spec.TenantID == "" || len(spec.Tags) == 0 {
 		t.Fatalf("ComputeClientSpec needs a TenantID and at least one tag: %+v", spec)
 	}
-	token, err := MintM2MJWTForTenant(ks, spec.TenantID)
-	if err != nil {
-		t.Fatalf("failed to mint M2M JWT for the compute client: %v", err)
-	}
+	id, secret := creds.For(t, httpBase, spec.TenantID)
 	p, err := StartComputeClient(ComputeClientOpts{
 		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoint, HTTPBase: httpBase,
-		Token: token, Tags: spec.Tags, Behaviour: spec.Behaviour,
+		ClientID: id, ClientSecret: secret, Tags: spec.Tags, Behaviour: spec.Behaviour,
 	})
 	if err != nil {
 		t.Fatalf("failed to start compute client: %v", err)

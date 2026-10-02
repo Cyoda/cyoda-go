@@ -67,12 +67,11 @@ type AttributionCapable interface {
 	// the compute-test-client's tenant — a human origin whose cascades still
 	// dispatch to the registered gRPC member.
 	ComputeUser(t *testing.T, userID string, roles ...string) parity.Tenant
+	// ComputeServiceID is the executor principal id of every callback of the
+	// fixture's own compute client: the id of the M2M client it
+	// authenticates as.
+	ComputeServiceID() string
 }
-
-// attrServiceID is the executor principal id of every member callback — the
-// user id the compute-test-client's self-signed M2M JWT carries
-// (fixtureutil.MintM2MJWT: caas_user_id=compute-admin).
-const attrServiceID = "compute-admin"
 
 // attrRequireCapable type-asserts the optional attribution capability, skipping
 // the scenario as PENDING when the fixture has not wired it.
@@ -132,8 +131,12 @@ func RunAttribution_ProxiedJoinCascade(t *testing.T, fixture MultiNodeFixture) {
 	sameChange := attrFindChange(t, cRead, sameNodeSecID, "CREATE")
 	crossChange := attrFindChange(t, cRead, crossNodeSecID, "CREATE")
 
-	attrAssert(t, "same-node secondary", sameChange, userID, "user", "service", attrServiceID)
-	attrAssert(t, "cross-node secondary", crossChange, userID, "user", "service", attrServiceID)
+	serviceID := ac.ComputeServiceID()
+	if serviceID == "" {
+		t.Fatal("the fixture names no compute client id")
+	}
+	attrAssert(t, "same-node secondary", sameChange, userID, "user", "service", serviceID)
+	attrAssert(t, "cross-node secondary", crossChange, userID, "user", "service", serviceID)
 
 	// Explicit identical-attribution assertion (the primary acceptance
 	// criterion): the cross-node cascade records the SAME {attributed, executor}

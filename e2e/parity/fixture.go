@@ -41,8 +41,9 @@ type BackendFixture interface {
 	// registered tenant. Processor and criteria dispatch is tenant-scoped:
 	// the gRPC MemberRegistry only routes requests to members registered
 	// under the same tenant. The compute-test-client connects with a fixed
-	// tenant (from its M2M JWT), so tests that exercise processor/criteria
-	// dispatch must create entities under this tenant.
+	// tenant (that of the M2M client it authenticates as), so tests that
+	// exercise processor/criteria dispatch must create entities under this
+	// tenant.
 	//
 	// Tests that do NOT need processor/criteria dispatch should use
 	// NewTenant for full tenant isolation.

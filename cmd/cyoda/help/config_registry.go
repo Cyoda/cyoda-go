@@ -114,8 +114,9 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES", Topic: "grpc", Type: "int", Default: "10485760", Description: "Ceiling on the answer to a compute member's callback, which is held in memory while the transaction is held. A larger answer fails the callback with 413 JOINED_RESPONSE_TOO_LARGE and is never sent in part. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_JOINED_MAX_WAITERS", Topic: "grpc", Type: "int", Default: "128", Description: "How many of a compute member's callbacks may queue for one transaction behind the one holding it. Past the cap a callback is refused with a retryable 503 TOO_MANY_JOINED_REQUESTS rather than parked holding its request. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_COMPUTE_GRPC_ENDPOINT", Topic: "grpc", Type: "string", Default: "", Description: "gRPC endpoint for a compute node to connect to (compute-client side)."},
-	{Name: "CYODA_COMPUTE_TOKEN", Topic: "grpc", Type: "string", Default: "", Description: "Bearer token for compute-node authentication (compute-client side)."},
-	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node calls back into (compute-client side)."},
+	{Name: "CYODA_COMPUTE_CLIENT_ID", Topic: "grpc", Type: "string", Default: "", Description: "Id of the M2M client a compute node authenticates as (compute-client side)."},
+	{Name: "CYODA_COMPUTE_CLIENT_SECRET", Topic: "grpc", Type: "string", Default: "", Description: "Secret of the M2M client a compute node authenticates as (compute-client side). Never logged."},
+	{Name: "CYODA_COMPUTE_HTTP_BASE", Topic: "grpc", Type: "string", Default: "", Description: "HTTP base URL of the cyoda instance a compute node gets its token from and calls back into (compute-client side)."},
 
 	// --- scheduler ---
 	{Name: "CYODA_SCHEDULER_ENABLED", Topic: "scheduler", Type: "bool", Default: "true", Description: "Kill switch: a node with false claims no scheduled task."},

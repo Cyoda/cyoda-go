@@ -95,22 +95,19 @@ func parseCallbackConfig(parameters json.RawMessage) (cbConfig, error) {
 
 // callbackClient issues HTTP callbacks into cyoda-go, presenting the tx-token as
 // X-Tx-Token so writes/reads join the originating transaction. It authenticates
-// with the compute client's M2M bearer.
+// with the compute client's M2M bearer, asking token for it on every request.
 type callbackClient struct {
 	baseURL string
-	bearer  string
+	token   func() (string, error)
 	hc      *http.Client
 }
 
-// newCallbackClient constructs a callback client, or nil when baseURL is empty
-// (callback processors then report a clear error rather than panicking).
-func newCallbackClient(baseURL, bearer string) *callbackClient {
-	if baseURL == "" {
-		return nil
-	}
+// newCallbackClient constructs a callback client for the cyoda instance at
+// baseURL.
+func newCallbackClient(baseURL string, token func() (string, error)) *callbackClient {
 	return &callbackClient{
 		baseURL: baseURL,
-		bearer:  bearer,
+		token:   token,
 		hc:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -132,7 +129,11 @@ func (c *callbackClient) do(ctx context.Context, method, path, body, txToken, if
 	if err != nil {
 		return cbResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.bearer)
+	bearer, err := c.token()
+	if err != nil {
+		return cbResult{}, fmt.Errorf("callback bearer: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	if txToken != "" {
 		req.Header.Set("X-Tx-Token", txToken)

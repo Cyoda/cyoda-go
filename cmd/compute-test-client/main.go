@@ -5,7 +5,10 @@
 //
 // The binary is launched as a subprocess by per-backend test fixtures
 // (e2e/parity/{memory,sqlite,postgres}). Each fixture passes the cyoda gRPC
-// endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable.
+// endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable, the cyoda
+// HTTP base via CYODA_COMPUTE_HTTP_BASE, and the credentials of the M2M client
+// the binary authenticates as via CYODA_COMPUTE_CLIENT_ID and
+// CYODA_COMPUTE_CLIENT_SECRET.
 //
 // A separate local HTTP endpoint (/healthz for readiness; /record and
 // /release for a scenario to read what the client received, to trigger a
@@ -40,23 +43,26 @@ func main() {
 		os.Exit(1)
 	}
 
-	token := os.Getenv("CYODA_COMPUTE_TOKEN")
-	if token == "" {
-		slog.Error("CYODA_COMPUTE_TOKEN must be set", "pkg", "compute-test-client")
+	// The client authenticates as a stored M2M client: it fetches its bearer
+	// from CYODA_COMPUTE_HTTP_BASE's token endpoint with these credentials and
+	// refreshes it before it expires. The secret is never logged.
+	clientID := os.Getenv("CYODA_COMPUTE_CLIENT_ID")
+	clientSecret := os.Getenv("CYODA_COMPUTE_CLIENT_SECRET")
+	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
+	if clientID == "" || clientSecret == "" || httpBase == "" {
+		slog.Error("CYODA_COMPUTE_CLIENT_ID, CYODA_COMPUTE_CLIENT_SECRET and CYODA_COMPUTE_HTTP_BASE must be set", "pkg", "compute-test-client")
 		os.Exit(1)
 	}
+	tokens := newTokenSource(httpBase, clientID, clientSecret)
 
-	// Optional HTTP base URL for callback-join processors. When
-	// unset, callback processors report a clear error rather than panicking;
-	// the non-callback catalog still serves. The M2M token doubles as the
-	// callback bearer (same tenant as dispatch).
-	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
-	cb := newCallbackClient(httpBase, token)
+	// HTTP callbacks for callback-join processors go to the same instance, as
+	// the same client (same tenant as dispatch).
+	cb := newCallbackClient(httpBase, tokens.Token)
 
 	// gRPC EntityManage callback client (cross-node gRPC callback).
 	// It dials the same gRPC endpoint the member streams from; when that node is a
 	// non-owner for a forwarded dispatch, the callback forwards B→A to the owner.
-	gcb, err := newGRPCCallbackClient(endpoint, token)
+	gcb, err := newGRPCCallbackClient(endpoint, tokens.Token)
 	if err != nil {
 		slog.Error("gRPC callback client failed", "pkg", "compute-test-client", "error", err)
 		os.Exit(1)
@@ -66,8 +72,7 @@ func main() {
 	cat := newCatalog(cb, gcb)
 	slog.Info("catalog loaded", "pkg", "compute-test-client",
 		"processors", len(cat.processors), "criteria", len(cat.criteria), "functions", len(cat.functions),
-		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria),
-		"callbackEnabled", cb != nil, "grpcCallbackEnabled", gcb != nil)
+		"callbackProcessors", len(cat.callbackProcessors), "callbackCriteria", len(cat.callbackCriteria))
 
 	tags := parseTags(os.Getenv("CYODA_TEST_COMPUTE_TAGS"))
 	beh, err := parseBehaviour(os.Getenv("CYODA_TEST_COMPUTE_BEHAVIOUR"))
@@ -77,7 +82,7 @@ func main() {
 	}
 
 	rec := newRecorder()
-	disp := newDispatcher(endpoint, token, cat, gcb, tags, beh, rec)
+	disp := newDispatcher(endpoint, tokens.Token, cat, gcb, tags, beh, rec)
 	slog.Info("behaviour", "pkg", "compute-test-client", "tags", tags, "behaviour", string(beh))
 
 	// Start the health server first so the fixture can poll it before

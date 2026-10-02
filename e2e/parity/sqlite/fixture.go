@@ -21,6 +21,9 @@ type sqliteFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
 }
 
@@ -54,7 +57,7 @@ func (f *sqliteFixture) PlatformOperator(t *testing.T) parity.Tenant {
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
 // setup creates a temp directory for the SQLite database, builds
@@ -99,6 +102,7 @@ func setup() (*sqliteFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 	}
 

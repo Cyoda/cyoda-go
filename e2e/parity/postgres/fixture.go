@@ -21,6 +21,9 @@ type postgresFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
 }
 
@@ -54,7 +57,7 @@ func (f *postgresFixture) PlatformOperator(t *testing.T) parity.Tenant {
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
 // setup boots a Postgres testcontainer, builds binaries, launches
@@ -112,6 +115,7 @@ func setup() (*postgresFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 	}
 

@@ -11,7 +11,6 @@ import (
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -34,7 +33,7 @@ const (
 // dispatcher manages the gRPC connection to cyoda and the dispatch loop.
 type dispatcher struct {
 	endpoint  string
-	token     string
+	token     func() (string, error)
 	cat       *catalog
 	gcb       *grpcCallbackClient
 	tags      []string
@@ -81,7 +80,7 @@ func (d *dispatcher) send(stream grpc.BidiStreamingClient[cepb.CloudEvent, cepb.
 }
 
 // newDispatcher creates a dispatcher targeting the given cyoda gRPC endpoint.
-func newDispatcher(endpoint, token string, cat *catalog, gcb *grpcCallbackClient, tags []string, beh behaviour, rec *recorder) *dispatcher {
+func newDispatcher(endpoint string, token func() (string, error), cat *catalog, gcb *grpcCallbackClient, tags []string, beh behaviour, rec *recorder) *dispatcher {
 	return &dispatcher{endpoint: endpoint, token: token, cat: cat, gcb: gcb, tags: tags, behaviour: beh, rec: rec}
 }
 
@@ -144,8 +143,11 @@ func (d *dispatcher) joinPayload() map[string]any {
 // sends the join event, and waits for the greet response. On success it
 // stores the assigned memberID.
 func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb.CloudEvent, cepb.CloudEvent], error) {
+	// The bearer rides as per-call credentials: the stream carries the one
+	// current when it opens.
 	conn, err := grpc.NewClient(d.endpoint,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(bearerCredentials{tok: d.token}),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dial gRPC endpoint %s: %w", d.endpoint, err)
@@ -154,11 +156,7 @@ func (d *dispatcher) connect(ctx context.Context) (grpc.BidiStreamingClient[cepb
 
 	client := cyodapb.NewCloudEventsServiceClient(conn)
 
-	// Attach the JWT as per-call metadata.
-	md := metadata.Pairs("authorization", "Bearer "+d.token)
-	streamCtx := metadata.NewOutgoingContext(ctx, md)
-
-	stream, err := client.StartStreaming(streamCtx)
+	stream, err := client.StartStreaming(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open StartStreaming: %w", err)
 	}

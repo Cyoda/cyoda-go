@@ -174,6 +174,14 @@ type callbackHarness struct {
 	// reader (member goroutine, callback()), keeping go test -race clean.
 	bearerOnce sync.Once
 	bearerVal  atomic.Value // stores string
+
+	// owner is the test that built the harness. The compute client's deletion
+	// is registered on it, so the client outlives a subtest that first asked
+	// for it and is deleted before the stack shuts down.
+	owner *testing.T
+	// computeMu guards computeCred, this stack's compute client (computeBearer).
+	computeMu   sync.Mutex
+	computeCred *m2mCredential
 }
 
 // newCallbackHarness stands up the full stack + connected member and registers
@@ -229,7 +237,7 @@ func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure fu
 	// is built from cfg.HTTPPort and must match the live server).
 	srv := httptest.NewUnstartedServer(nil)
 	srv.Start()
-	h := &callbackHarness{baseURL: srv.URL, signKey: rsaKey, procs: map[string]callbackProc{}, crits: map[string]callbackCrit{}, funcs: map[string]callbackFunc{}}
+	h := &callbackHarness{baseURL: srv.URL, signKey: rsaKey, owner: t, procs: map[string]callbackProc{}, crits: map[string]callbackCrit{}, funcs: map[string]callbackFunc{}}
 	t.Cleanup(srv.Close)
 
 	srvPort := srv.Listener.Addr().(*net.TCPAddr).Port
@@ -366,6 +374,31 @@ func (h *callbackHarness) fetchToken(t *testing.T) string {
 		t.Fatalf("sign admin token: %v", err)
 	}
 	return tok
+}
+
+// computeBearer returns a client-credentials bearer of this stack's compute
+// client, fetched through /oauth/token: a ROLE_M2M client of test-tenant,
+// created through POST /clients on first use and deleted when the harness's
+// test ends. Every cnode that joins with the harness's tenant authenticates
+// as this one client, as the replicas of one compute service do.
+func (h *callbackHarness) computeBearer(t *testing.T) string {
+	t.Helper()
+	cred := func() m2mCredential {
+		h.computeMu.Lock()
+		defer h.computeMu.Unlock()
+		if h.computeCred == nil {
+			code, raw := h.postClient(t, h.token(t))
+			if code != http.StatusOK {
+				t.Fatalf("create the compute client: %d %s", code, withheld(code, raw))
+			}
+			c := decodeCredential(t, "create the compute client", raw)
+			owner := h.owner
+			deleteClientAtCleanup(owner, h.baseURL, c.id, func() string { return h.token(owner) })
+			h.computeCred = &c
+		}
+		return *h.computeCred
+	}()
+	return h.fetchTokenFor(t, cred.id, cred.secret)
 }
 
 // platformToken signs a platform-operator token (ROLE_ADMIN, ROLE_M2M in the
@@ -852,7 +885,7 @@ type calcHandler func(m *computeMember, send func(*cepb.CloudEvent) error, req c
 
 // memberSpec says how a cnode joins and what it does with work.
 type memberSpec struct {
-	bearer string   // M2M bearer to join with; "" = the harness's own tenant
+	bearer string   // M2M bearer to join with; "" = the harness's compute client (computeBearer)
 	tags   []string // join tags
 	handle calcHandler
 }
@@ -879,13 +912,13 @@ type computeMember struct {
 func (m *computeMember) closeStream() { m.cancel() }
 
 // newComputeMember dials the stack's gRPC server, opens StartStreaming with
-// spec.bearer, joins with spec.tags, waits for the greet, then runs a receive
+// spec.bearer (default: the harness's compute client), joins with spec.tags, waits for the greet, then runs a receive
 // loop handing each calculation request to spec.handle on its own goroutine.
 func newComputeMember(t *testing.T, h *callbackHarness, spec memberSpec) *computeMember {
 	t.Helper()
 	bearer := spec.bearer
 	if bearer == "" {
-		bearer = h.token(t)
+		bearer = h.computeBearer(t)
 	}
 
 	conn, err := grpc.NewClient(h.grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))

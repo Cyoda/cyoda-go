@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
@@ -138,14 +139,22 @@ func GenerateJWTKeySet() (*JWTKeySet, error) {
 // MintTenantJWT creates a fresh tenant JWT for use in parity tests.
 func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
-
 	tenantID := uuid.NewString()
-	now := time.Now()
+	token, err := mintTenantAdminJWT(ks, tenantID, "test-user-"+tenantID[:8])
+	if err != nil {
+		t.Fatalf("failed to mint tenant JWT: %v", err)
+	}
+	return parity.Tenant{ID: tenantID, Token: token}
+}
 
+// mintTenantAdminJWT signs a ROLE_ADMIN token of tenantID for userID with the
+// fixture's key.
+func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) {
+	now := time.Now()
 	claims := map[string]any{
-		"sub":          "test-user-" + tenantID[:8],
+		"sub":          userID,
 		"iss":          ks.Issuer,
-		"caas_user_id": "test-user-" + tenantID[:8],
+		"caas_user_id": userID,
 		"caas_org_id":  tenantID,
 		"scopes":       []string{"ROLE_ADMIN"},
 		"caas_tier":    "unlimited",
@@ -153,16 +162,7 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 		"iat":          now.Unix(),
 		"jti":          uuid.NewString(),
 	}
-
-	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
-	if err != nil {
-		t.Fatalf("failed to mint tenant JWT: %v", err)
-	}
-
-	return parity.Tenant{
-		ID:    tenantID,
-		Token: token,
-	}
+	return auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
 }
 
 // MintPlatformOperatorJWT mints a platform-operator token: ROLE_ADMIN in the
@@ -190,32 +190,64 @@ func MintPlatformOperatorJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	return parity.Tenant{ID: string(auth.PlatformTenantID), Token: token}
 }
 
-// ComputeTenantID is the tenant under which the compute-test-client
-// registers via its M2M JWT. Processor/criteria dispatch is tenant-scoped,
-// so tests exercising gRPC dispatch must use this tenant for entity
-// creation. Exported so fixtures can reference it without duplicating
-// the string.
+// ComputeTenantID is the tenant of the fixture's own compute-test-client: it
+// authenticates as an M2M client of this tenant (ProvisionComputeClient).
+// Processor/criteria dispatch is tenant-scoped, so tests exercising gRPC
+// dispatch must use this tenant for entity creation. Exported so fixtures can
+// reference it without duplicating the string.
 const ComputeTenantID = "system-tenant"
 
-// MintM2MJWT creates the M2M JWT of the fixture's own compute-test-client.
-func MintM2MJWT(ks *JWTKeySet) (string, error) { return MintM2MJWTForTenant(ks, ComputeTenantID) }
+// computeProvisionerID is the user id of the admin token that provisions
+// compute clients.
+const computeProvisionerID = "compute-provisioner"
 
-// MintM2MJWTForTenant creates an M2M JWT under which a compute-test-client
-// joins as a compute node of tenantID.
-func MintM2MJWTForTenant(ks *JWTKeySet, tenantID string) (string, error) {
-	now := time.Now()
-	claims := map[string]any{
-		"sub":          "compute-test",
-		"iss":          ks.Issuer,
-		"caas_user_id": "compute-admin",
-		"caas_org_id":  tenantID,
-		"scopes":       []string{"ROLE_ADMIN", "ROLE_M2M"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(2 * time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
+// ProvisionComputeClient creates, through POST /api/clients on baseURL, an M2M
+// client of tenantID for a compute-test-client to authenticate as, and returns
+// its credentials. The request is authenticated by a tenant-admin JWT for
+// tenantID signed with ks. The secret is a credential: never log it. It fails
+// the test on any error.
+func ProvisionComputeClient(t *testing.T, baseURL, tenantID string, ks *JWTKeySet) (id, secret string) {
+	t.Helper()
+	id, secret, err := provisionComputeClient(baseURL, tenantID, ks)
+	if err != nil {
+		t.Fatalf("failed to provision the compute client: %v", err)
 	}
-	return auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
+	return id, secret
+}
+
+// provisionComputeClient is ProvisionComputeClient without *testing.T, for the
+// launch functions.
+func provisionComputeClient(baseURL, tenantID string, ks *JWTKeySet) (id, secret string, err error) {
+	admin, err := mintTenantAdminJWT(ks, tenantID, computeProvisionerID)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to mint the provisioning admin JWT: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/clients", nil)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to build POST /api/clients: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+admin)
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to call POST /api/clients: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read POST /api/clients: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		// Only a 200 carries a secret, so a refusal's body is safe to show.
+		return "", "", fmt.Errorf("POST /api/clients answered %d: %s", resp.StatusCode, raw)
+	}
+	var cred struct {
+		ID     string `json:"client_id"`
+		Secret string `json:"client_secret"`
+	}
+	if err := json.Unmarshal(raw, &cred); err != nil || cred.ID == "" || cred.Secret == "" {
+		return "", "", fmt.Errorf("POST /api/clients answered no credentials (decode error: %v)", err)
+	}
+	return cred.ID, cred.Secret, nil
 }
 
 // MintComputeTenantJWT creates a regular (non-M2M) JWT whose tenant matches
@@ -224,29 +256,11 @@ func MintM2MJWTForTenant(ks *JWTKeySet, tenantID string) (string, error) {
 // the compute-test-client member.
 func MintComputeTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
-
-	now := time.Now()
-	claims := map[string]any{
-		"sub":          "test-user-compute",
-		"iss":          ks.Issuer,
-		"caas_user_id": "test-user-compute",
-		"caas_org_id":  ComputeTenantID,
-		"scopes":       []string{"ROLE_ADMIN"},
-		"caas_tier":    "unlimited",
-		"exp":          now.Add(1 * time.Hour).Unix(),
-		"iat":          now.Unix(),
-		"jti":          uuid.NewString(),
-	}
-
-	token, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(ks.Key), ks.Kid)
+	token, err := mintTenantAdminJWT(ks, ComputeTenantID, "test-user-compute")
 	if err != nil {
 		t.Fatalf("failed to mint compute tenant JWT: %v", err)
 	}
-
-	return parity.Tenant{
-		ID:    ComputeTenantID,
-		Token: token,
-	}
+	return parity.Tenant{ID: ComputeTenantID, Token: token}
 }
 
 // MintComputeUserJWT creates a USER-kind (OBO-shaped) JWT scoped to the
@@ -627,8 +641,9 @@ func LaunchCyodaAndCompute(ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts)
 //
 // cyodaBin and computeBin must be absolute paths to already-built
 // executables. The env for cyoda is assembled via CyodaEnv plus
-// extraEnv; the env for compute-test-client carries the gRPC
-// endpoint and an M2M token minted from ks.
+// extraEnv; the env for compute-test-client carries the gRPC endpoint,
+// the HTTP base and the credentials of an M2M client of ComputeTenantID
+// provisioned on the node (ProvisionComputeClient).
 func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySet, extraEnv []string, opts ...LaunchOpts) (*LaunchResult, func(), error) {
 	var opt LaunchOpts
 	if len(opts) > 0 {
@@ -640,16 +655,17 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	}
 	cleanup := node.Kill
 
-	// Mint M2M JWT for compute client.
-	m2mToken, err := MintM2MJWT(ks)
+	// The fixture's own compute client authenticates as a stored M2M client.
+	clientID, clientSecret, err := provisionComputeClient(node.BaseURL, ComputeTenantID, ks)
 	if err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
+		return nil, nil, err
 	}
 
 	// Callbacks target the same single node that dispatched them.
 	compute, err := StartComputeClient(ComputeClientOpts{
-		ComputeBin: computeBin, GRPCEndpoint: node.GRPCEndpoint, HTTPBase: node.BaseURL, Token: m2mToken,
+		ComputeBin: computeBin, GRPCEndpoint: node.GRPCEndpoint, HTTPBase: node.BaseURL,
+		ClientID: clientID, ClientSecret: clientSecret,
 	})
 	if err != nil {
 		cleanup()
@@ -688,6 +704,9 @@ type ClusterLaunchResult struct {
 	GRPCEndpoints []string
 	// ComputeBin is the built compute-test-client (see LaunchResult.ComputeBin).
 	ComputeBin string
+	// ComputeClientID is the M2M client the fixture's own compute-test-client
+	// authenticates as: the executor id of that member's callbacks.
+	ComputeClientID string
 	// CyodaCmds holds one *exec.Cmd per node, in the same order as
 	// BaseURLs. Exposed mainly for diagnostics; cleanup handles
 	// process termination.
@@ -1075,22 +1094,23 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	// for the membership view to propagate after the last node joins.
 	time.Sleep(gossipSettleDelay)
 
-	// Mint M2M JWT for the compute client.
-	m2mToken, err := MintM2MJWT(ks)
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("failed to mint M2M JWT: %w", err)
-	}
-
 	// The fixture's own client attaches to node 0, and its callbacks target
-	// node 0; cross-node callback forwarding is covered by scenarios.
+	// node 0; cross-node callback forwarding is covered by scenarios. It
+	// authenticates as a stored M2M client, provisioned through node 0 into
+	// the storage every node shares.
 	grpcEndpoints := make([]string, n)
 	for i := 0; i < n; i++ {
 		grpcEndpoints[i] = fmt.Sprintf("127.0.0.1:%d", grpcPorts[i])
 	}
+	node0 := fmt.Sprintf("http://127.0.0.1:%d", httpPorts[0])
+	clientID, clientSecret, err := provisionComputeClient(node0, ComputeTenantID, ks)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
 	compute, err := StartComputeClient(ComputeClientOpts{
-		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoints[0],
-		HTTPBase: fmt.Sprintf("http://127.0.0.1:%d", httpPorts[0]), Token: m2mToken,
+		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoints[0], HTTPBase: node0,
+		ClientID: clientID, ClientSecret: clientSecret,
 		ReadyTimeout: defaultCyodaReadinessTimeout,
 	})
 	if err != nil {
@@ -1109,15 +1129,16 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	}
 
 	return &ClusterLaunchResult{
-		BaseURLs:      baseURLs,
-		GRPCEndpoint:  grpcEndpoints[0],
-		GRPCEndpoints: grpcEndpoints,
-		ComputeBin:    computeBin,
-		CyodaCmds:     cyodaCmds,
-		ComputeCmd:    compute.Cmd(),
-		NodeLogs:      nodeLogBufs,
-		KillNode:      killNode,
-		SignalNode:    signalNode,
-		AwaitNodeExit: awaitNodeExit,
+		BaseURLs:        baseURLs,
+		GRPCEndpoint:    grpcEndpoints[0],
+		GRPCEndpoints:   grpcEndpoints,
+		ComputeBin:      computeBin,
+		ComputeClientID: clientID,
+		CyodaCmds:       cyodaCmds,
+		ComputeCmd:      compute.Cmd(),
+		NodeLogs:        nodeLogBufs,
+		KillNode:        killNode,
+		SignalNode:      signalNode,
+		AwaitNodeExit:   awaitNodeExit,
 	}, cleanup, nil
 }
