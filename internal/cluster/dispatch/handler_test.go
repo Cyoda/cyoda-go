@@ -637,3 +637,54 @@ func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
 		t.Errorf("expected ErrSharedSecretTooShort, got %v", err)
 	}
 }
+
+// A scheduled fire's callout handed over to another pnode: the executor is the
+// system, which holds no roles. The identity arrives exactly as sent — no roles
+// invented — and the cnode on the receiving pnode is sent no authclaims.
+func TestHandler_AScheduledFiresIdentityArrivesAsSent(t *testing.T) {
+	scheduled := func(t *testing.T) DispatchCalloutRequest {
+		req := validRequest(t, "processor")
+		req.AttributedID, req.AttributedKind = "bob", spi.PrincipalUser
+		req.ExecutorID, req.ExecutorKind = "system", spi.PrincipalSystem
+		req.Roles = nil
+		return req
+	}
+
+	t.Run("the callout's identity", func(t *testing.T) {
+		auth := newAEAD(t)
+		runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+		postHandOver(t, newHandlerMux(t, runner, auth), auth, scheduled(t))
+
+		want := internalgrpc.CalloutIdentity{
+			Attributed: spi.Principal{ID: "bob", Kind: spi.PrincipalUser},
+			Executor:   spi.Principal{ID: "system", Kind: spi.PrincipalSystem},
+		}
+		if got := runner.gotCall.Identity; !reflect.DeepEqual(got, want) {
+			t.Errorf("callout identity = %+v, want %+v", got, want)
+		}
+		uc := spi.GetUserContext(runner.gotCtx)
+		if uc == nil || uc.UserID != "system" || uc.Kind != spi.PrincipalSystem || len(uc.Roles) != 0 {
+			t.Errorf("user context = %+v, want the system executor with no roles", uc)
+		}
+	})
+
+	t.Run("what the cnode is sent", func(t *testing.T) {
+		signer, err := token.NewSigner(testSecret32)
+		if err != nil {
+			t.Fatalf("NewSigner: %v", err)
+		}
+		reg, cnode := attachedCnode(t, "tenant-1", "python")
+		local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		auth := newAEAD(t)
+		if resp := postHandOver(t, newHandlerMux(t, local, auth), auth, scheduled(t)); resp.Outcome != OutcomeOK {
+			t.Fatalf("%+v", resp)
+		}
+
+		got := cnode.onlyAuth(t)
+		want := map[string]string{"authid": "bob", "authtype": "user", "authexecid": "system", "authexectype": "system"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("auth context = %v, want %v (no authclaims: the system holds no roles)", got, want)
+		}
+	})
+}

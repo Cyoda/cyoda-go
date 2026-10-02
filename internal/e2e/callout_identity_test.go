@@ -30,18 +30,23 @@ type calloutAuth struct {
 func recordCalloutAuth(h *callbackHarness, name string) <-chan calloutAuth {
 	seen := make(chan calloutAuth, 4)
 	h.RegisterProc(name, func(rc *reqCtx) (map[string]any, error) {
-		claims, ok := rc.attrs["authclaims"]
-		select {
-		case seen <- calloutAuth{
-			id: rc.attrs["authid"], typ: rc.attrs["authtype"],
-			execID: rc.attrs["authexecid"], execType: rc.attrs["authexectype"],
-			claims: claims, claimsPresent: ok,
-		}:
-		default:
-		}
+		sendCalloutAuth(seen, rc)
 		return nil, nil
 	})
 	return seen
+}
+
+// sendCalloutAuth records rc's auth context on seen without blocking.
+func sendCalloutAuth(seen chan<- calloutAuth, rc *reqCtx) {
+	claims, ok := rc.attrs["authclaims"]
+	select {
+	case seen <- calloutAuth{
+		id: rc.attrs["authid"], typ: rc.attrs["authtype"],
+		execID: rc.attrs["authexecid"], execType: rc.attrs["authexectype"],
+		claims: claims, claimsPresent: ok,
+	}:
+	default:
+	}
 }
 
 // awaitCalloutAuth waits for the first callout seen on ch.
@@ -116,9 +121,10 @@ func TestCalloutIdentity_ClientsOwnRequest(t *testing.T) {
 }
 
 // TestCalloutIdentity_WriteBackCascade: alice's on-behalf-of request creates
-// X; X's processor writes Y back with the compute client's own token, joined
-// to alice's transaction; Y's processor is called. Its callout is for alice,
-// the transaction's origin, and executed by the compute client.
+// X; X's processor A — called for alice, executed by the OBO client — writes
+// Y back with the compute client's own token, joined to alice's transaction;
+// Y's processor B is called within the same request. B's callout is for
+// alice, the transaction's origin, and executed by the compute client.
 func TestCalloutIdentity_WriteBackCascade(t *testing.T) {
 	h := newCallbackHarness(t)
 	const primary = "cid-wb-primary"
@@ -131,7 +137,9 @@ func TestCalloutIdentity_WriteBackCascade(t *testing.T) {
 	if computeID == "" {
 		t.Fatal("the compute client's token carries no caas_user_id")
 	}
+	seenA := make(chan calloutAuth, 4)
 	h.RegisterProc("cid-wb-a", func(rc *reqCtx) (map[string]any, error) {
+		sendCalloutAuth(seenA, rc)
 		res, err := rc.CreateEntityAs(compute, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
 		if err != nil {
 			return nil, fmt.Errorf("write-back create: %w", err)
@@ -148,9 +156,69 @@ func TestCalloutIdentity_WriteBackCascade(t *testing.T) {
 		t.Fatalf("create X as alice (OBO): %d %s", status, body)
 	}
 
+	gotA := awaitCalloutAuth(t, seenA, 10*time.Second)
+	assertCalloutAuth(t, "OBO request's own callout", gotA, "alice", "user", oboClientOf(t, alice), "service")
 	got := awaitCalloutAuth(t, seen, 10*time.Second)
 	assertCalloutAuth(t, "write-back cascade", got, "alice", "user", computeID, "service")
 	assertClaimsHold(t, "write-back cascade", got, "ROLE_M2M")
+}
+
+// TestCalloutIdentity_OBOCascade: alice's on-behalf-of request creates X; X's
+// processor writes Y back with alice's own on-behalf-of token, joined to her
+// transaction (an on-behalf-of request may join its own user's); Y's
+// processor is called within the same request. Every callout of an
+// on-behalf-of request and its cascades is for alice, executed by the OBO
+// client.
+func TestCalloutIdentity_OBOCascade(t *testing.T) {
+	h := newCallbackHarness(t)
+	const primary = "cid-obo-casc-primary"
+	const secondary = "cid-obo-casc-secondary"
+	seen := recordCalloutAuth(h, "cid-obo-casc-b")
+	h.SetupModelWithWorkflow(t, secondary, writeBackWF(secondary, "cid-obo-casc-b"))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	seenA := make(chan calloutAuth, 4)
+	h.RegisterProc("cid-obo-casc-a", func(rc *reqCtx) (map[string]any, error) {
+		sendCalloutAuth(seenA, rc)
+		res, err := rc.CreateEntityAs(alice, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("OBO cascade create: %w", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("OBO cascade create status=%d body=%s", res.StatusCode, res.Body)
+		}
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, writeBackWF(primary, "cid-obo-casc-a"))
+
+	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":1,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
+	}
+
+	obo := oboClientOf(t, alice)
+	assertCalloutAuth(t, "OBO request's callout", awaitCalloutAuth(t, seenA, 10*time.Second), "alice", "user", obo, "service")
+	got := awaitCalloutAuth(t, seen, 10*time.Second)
+	assertCalloutAuth(t, "OBO cascade's callout", got, "alice", "user", obo, "service")
+	assertClaimsHold(t, "OBO cascade's callout", got, "ROLE_M2M")
+}
+
+// TestCalloutIdentity_GRPCOBORequest: the gRPC door. An entity created over
+// EntityManage with alice's on-behalf-of token runs a processor whose callout
+// is for alice, executed by the OBO client.
+func TestCalloutIdentity_GRPCOBORequest(t *testing.T) {
+	h := newCallbackHarness(t)
+	const model = "cid-grpc-obo"
+	seen := recordCalloutAuth(h, "cid-grpc-obo-proc")
+	h.SetupModelWithWorkflow(t, model, writeBackWF(model, "cid-grpc-obo-proc"))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	if env, _, err := h.createEntityGRPCAs(alice, "", model, 1, `{"name":"x","amount":1,"status":"new"}`); err != nil || !env.Success {
+		t.Fatalf("EntityManage create as alice (OBO): %s %v", describeEnv(env), err)
+	}
+
+	got := awaitCalloutAuth(t, seen, 10*time.Second)
+	assertCalloutAuth(t, "gRPC OBO request", got, "alice", "user", oboClientOf(t, alice), "service")
+	assertClaimsHold(t, "gRPC OBO request", got, "ROLE_M2M")
 }
 
 // TestCalloutIdentity_CBDDetachedCallback: a commit-before-dispatch processor

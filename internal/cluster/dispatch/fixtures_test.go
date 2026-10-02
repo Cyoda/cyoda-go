@@ -79,11 +79,25 @@ func testFunction() spi.ScheduleFunction {
 }
 
 // scriptedCnode is a compute member of a real MemberRegistry: it records the
-// pass of every request it is sent and answers each one with success, so a test
-// can run the real local procedure over it and read what the pass says.
+// pass and the auth context of every request it is sent and answers each one
+// with success, so a test can run the real local procedure over it and read
+// what the request carried.
 type scriptedCnode struct {
 	mu     sync.Mutex
 	passes []string
+	auth   []map[string]string
+}
+
+// onlyAuth returns the auth context attributes of the one request the cnode
+// was sent, by name; an absent attribute is absent from the map.
+func (c *scriptedCnode) onlyAuth(t *testing.T) map[string]string {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.auth) != 1 {
+		t.Fatalf("the cnode was sent %d requests, want 1", len(c.auth))
+	}
+	return c.auth[0]
 }
 
 func (c *scriptedCnode) onlyPass(t *testing.T) string {
@@ -120,6 +134,13 @@ func attachedCnode(t *testing.T, tenantID spi.TenantID, tag string) (*internalgr
 			cnode.mu.Lock()
 			defer cnode.mu.Unlock()
 			cnode.passes = append(cnode.passes, internalgrpc.TxTokenFromCloudEvent(ce))
+			auth := map[string]string{}
+			for _, key := range []string{"authid", "authtype", "authexecid", "authexectype", "authclaims"} {
+				if v, ok := ce.Attributes[key]; ok {
+					auth[key] = v.GetCeString()
+				}
+			}
+			cnode.auth = append(cnode.auth, auth)
 		}()
 		if m := reg.Get(id); m != nil {
 			m.CompleteRequest(body.RequestID, &internalgrpc.ProcessingResponse{
