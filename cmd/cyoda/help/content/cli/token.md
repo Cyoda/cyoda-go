@@ -23,7 +23,7 @@ cli.token — sign a short-lived token with `CYODA_JWT_SIGNING_KEY` and print it
 
 `cyoda token` is how an operator gets the first token that can call the admin API: for example to create the M2M clients that applications and compute nodes use (`POST /clients`). It signs the token itself with the signing key from `CYODA_JWT_SIGNING_KEY` (or `CYODA_JWT_SIGNING_KEY_FILE`), which the key-pair API and `cyoda help config auth` call the bootstrap key. It opens no store and makes no network call.
 
-Whoever holds the signing key can already sign any first-party token cyoda-go accepts, so the command adds no capability. Protect the signing key accordingly.
+Whoever holds the signing key can already sign any token cyoda-go accepts, so the command adds no capability. Protect the signing key accordingly.
 
 The token names a person: `sub` and `caas_user_id` are `--user`, `caas_org_id` is `--tenant`, the roles are in `user_roles`. It carries `iss` from `CYODA_JWT_ISSUER` and, when `CYODA_JWT_AUDIENCE` is set, `aud`.
 
