@@ -295,6 +295,11 @@ func New(cfg Config) *App {
 			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
 			os.Exit(1)
 		}
+		secretCheckMetrics, err := auth.NewOTelSecretCheckMetrics(observability.Meter())
+		if err != nil {
+			slog.Error("startup failure", "phase", "auth-secret-check-metrics-init", "error", err.Error())
+			os.Exit(1)
+		}
 		var authBroadcaster spi.ClusterBroadcaster
 		if gossipReg != nil {
 			// Typed-nil guard: only assign when non-nil (same rationale as
@@ -314,6 +319,7 @@ func New(cfg Config) *App {
 
 			TokenRequestsPerMinute:    cfg.IAM.TokenRequestsPerMinute,
 			MaxConcurrentSecretChecks: cfg.IAM.TokenMaxConcurrentSecretChecks,
+			SecretCheckMetrics:        secretCheckMetrics,
 		})
 		if err != nil {
 			slog.Error("startup failure",

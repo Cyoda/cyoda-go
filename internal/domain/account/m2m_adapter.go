@@ -114,7 +114,8 @@ func toTechnicalUserCredentialsDto(c *auth.M2MClient, plaintextSecret string) ge
 // writeM2MClientError answers a Delete or ResetSecret failure. The store
 // enforces tenant isolation, so an absent client and another tenant's client
 // are the same ErrM2MClientNotFound and get the same 404 — no cross-tenant
-// existence oracle. Anything else is the store failing: 503 when it reports
+// existence oracle. A reset with no free secret-check slot is 503
+// SERVER_BUSY. Anything else is the store failing: 503 when it reports
 // itself unavailable, otherwise 500 with a ticket.
 func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	if errors.Is(err, auth.ErrM2MClientNotFound) {
@@ -122,7 +123,23 @@ func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err 
 			common.ErrCodeM2MClientNotFound, "M2M client not found"))
 		return
 	}
+	if writeSecretCheckBusy(w, r, err) {
+		return
+	}
 	common.WriteError(w, r, common.Internal(op, err))
+}
+
+// writeSecretCheckBusy answers ErrSecretCheckBusy — no free slot to hash a
+// new secret, nothing written — with a retryable 503 SERVER_BUSY and
+// Retry-After: 1, and reports whether it did.
+func writeSecretCheckBusy(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, auth.ErrSecretCheckBusy) {
+		return false
+	}
+	w.Header().Set("Retry-After", "1")
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable,
+		common.ErrCodeServerBusy, "the node is busy and could not hash a client secret — retry").AsRetryable())
+	return true
 }
 
 // CreateTechnicalUser implements POST /clients?withAdminRole=<bool>&onBehalfOf=<bool>.
@@ -185,6 +202,9 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		if errors.Is(createErr, auth.ErrM2MClientCapReached) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
 				common.ErrCodeM2MClientCapReached, "M2M client cap reached for tenant"))
+			return
+		}
+		if writeSecretCheckBusy(w, r, createErr) {
 			return
 		}
 		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))

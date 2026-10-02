@@ -29,10 +29,11 @@ import (
 // also the bucket's burst.
 const tokenRequestsPerMinute = 600
 
-// TestTokenCache_ResetRacesGrant: once a reset has answered, the old secret
-// is refused on every request — including on a node whose cache verified it
-// a moment before — and the new secret's token carries the new generation.
-func TestTokenCache_ResetRacesGrant(t *testing.T) {
+// TestTokenCache_GrantsAfterResetRefuseOldSecret: once a reset has answered,
+// the old secret is refused on every request to this single-node server —
+// even though its cache verified that secret a moment before — and the new
+// secret's token carries the new generation.
+func TestTokenCache_GrantsAfterResetRefuseOldSecret(t *testing.T) {
 	id, secret := createClient(t, false, false)
 	_ = getToken(t, id, secret) // warms the cache with the old secret
 

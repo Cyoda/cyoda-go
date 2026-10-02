@@ -27,8 +27,12 @@ type AuthConfig struct {
 	// node, across both grants; 0: no limit.
 	TokenRequestsPerMinute int
 	// MaxConcurrentSecretChecks bounds the bcrypt comparisons the token
-	// endpoint runs at once on this node; <= 0: the number of CPUs.
+	// endpoint and the /clients secret hashing run at once on this node;
+	// <= 0: runtime.GOMAXPROCS(0), the CPUs the process may use.
 	MaxConcurrentSecretChecks int
+	// SecretCheckMetrics counts bcrypt operations refused for lack of a
+	// slot; nil: no metrics.
+	SecretCheckMetrics SecretCheckMetrics
 }
 
 // AuthService wires together the auth stores and serves the public auth
@@ -80,9 +84,9 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	}
 	slots := config.MaxConcurrentSecretChecks
 	if slots <= 0 {
-		slots = runtime.NumCPU()
+		slots = runtime.GOMAXPROCS(0)
 	}
-	m2mStore := NewKVM2MClientStore(config.KV, config.IAMFeatures.M2MClientMaxPerTenant, SecretCheckLimit{Slots: slots, Wait: secretCheckWait})
+	m2mStore := NewKVM2MClientStore(config.KV, config.IAMFeatures.M2MClientMaxPerTenant, SecretCheckLimit{Slots: slots, Wait: secretCheckWait, Metrics: config.SecretCheckMetrics})
 
 	// Public mux: token issuance and JWKS (no auth required). A stale JWKS
 	// answer asks the caller to retry after one re-read interval.

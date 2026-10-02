@@ -37,6 +37,16 @@ func TestClientBuckets_ZeroIsUnlimited(t *testing.T) {
 	}
 }
 
+func TestClientBuckets_NegativeIsUnlimited(t *testing.T) {
+	b := newClientBuckets(-1)
+	now := time.Now()
+	for i := 0; i < 1000; i++ {
+		if ok, _ := b.allow("C1", now); !ok {
+			t.Fatalf("request %d refused with a negative limit", i+1)
+		}
+	}
+}
+
 // A full bucket is the same as a fresh one, so the buckets of clients idle
 // for a refill period are dropped: the map holds only recently active
 // clients.

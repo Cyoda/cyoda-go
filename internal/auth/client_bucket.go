@@ -15,7 +15,7 @@ import (
 // are dropped: the map holds only the clients served in the last two
 // minutes or so.
 type clientBuckets struct {
-	n         int // requests per minute and burst; 0: no limit
+	n         int // requests per minute and burst; <= 0: no limit
 	mu        sync.Mutex
 	limiters  map[string]*rate.Limiter
 	lastSweep time.Time
@@ -28,7 +28,7 @@ func newClientBuckets(n int) *clientBuckets {
 // allow takes one token from clientID's bucket at now. When the bucket is
 // empty nothing is taken, and wait is how long until a token is there.
 func (b *clientBuckets) allow(clientID string, now time.Time) (ok bool, wait time.Duration) {
-	if b.n == 0 {
+	if b.n <= 0 {
 		return true, 0
 	}
 	b.mu.Lock()

@@ -1072,6 +1072,28 @@ func TestM2MAdapter_StorageUnavailable_Returns503(t *testing.T) {
 	}
 }
 
+// Create and ResetSecret hash a new secret in one of the node's
+// secret-check slots. With none free they answer 503 SERVER_BUSY with
+// Retry-After: 1, never a ticketed 500.
+func TestM2MAdapter_SecretCheckBusy_Returns503(t *testing.T) {
+	h := New(nil, nil, failingM2MStore{err: auth.ErrSecretCheckBusy}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	ops := m2mOperations(h)
+	for _, name := range []string{"Create", "ResetSecret"} {
+		t.Run(name, func(t *testing.T) {
+			rr := ops[name]()
+			if rr.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status %d want 503, body=%s", rr.Code, rr.Body.String())
+			}
+			if code := decodeErrCode(t, rr.Body.Bytes()); code != common.ErrCodeServerBusy {
+				t.Errorf("errorCode: got %q want %q", code, common.ErrCodeServerBusy)
+			}
+			if got := rr.Header().Get("Retry-After"); got != "1" {
+				t.Errorf("Retry-After = %q, want 1", got)
+			}
+		})
+	}
+}
+
 // Any other store failure is 500 with a ticket and a generic message.
 func TestM2MAdapter_StoreFailure_Returns500WithTicket(t *testing.T) {
 	h := New(nil, nil, failingM2MStore{err: errors.New("disk on fire at " + storeOutage)}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})

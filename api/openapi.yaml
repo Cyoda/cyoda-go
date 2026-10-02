@@ -759,7 +759,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
+            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
+            up within 1 second; nothing was written, so no client was created; carries
+            Retry-After). Retryable.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; set on SERVER_BUSY.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -920,7 +932,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
+            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
+            up within 1 second; nothing was written, so the old secret stays in force; carries
+            Retry-After). Retryable.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; set on SERVER_BUSY.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /entity/stats:

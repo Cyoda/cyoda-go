@@ -125,6 +125,10 @@ regardless of `CYODA_OTEL_ENABLED`:
 - `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
 - `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
 
+The client-secret metric is exposed whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.auth.secret_checks.refused` — `Int64Counter` — client-secret (bcrypt) operations refused because none of the node's `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots freed up within 1 second: token requests answered `503 temporarily_unavailable`, and `POST /clients` or secret resets answered `503 SERVER_BUSY`. A refusal is not logged, so this counter is the only signal; a steady rate means the node is saturated with token requests. No labels.
+
 Scheduler metrics are exposed on every node that runs the scheduler (`CYODA_SCHEDULER_ENABLED=true`), regardless of `CYODA_OTEL_ENABLED`:
 
 - `cyoda.scheduler.runs` — `Int64Counter` — scheduled runs that ended; labeled by `outcome`: `fired`, `declined`, `expired`, `cancelled`, `attempt_failed` (a safe failure, to be retried), `failed` (the task ended `FAILED`), `superseded` (an entity write or another claim replaced the run), `self_cancelled` (the node's own heartbeats failed), `shutdown_cancelled`, `panicked`. Alarm on `failed` and `panicked`

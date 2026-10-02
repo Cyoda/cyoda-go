@@ -301,7 +301,8 @@ type IAMConfig struct {
 	// TokenMaxConcurrentSecretChecks bounds the bcrypt comparisons
 	// POST /oauth/token runs at once on one node; a request that gets no slot
 	// within 1 s answers 503. env CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS,
-	// default the number of CPUs; at least 1.
+	// default runtime.GOMAXPROCS(0), the CPUs the process may use (it follows a
+	// container CPU limit); at least 1.
 	TokenMaxConcurrentSecretChecks int
 }
 
@@ -418,7 +419,7 @@ func DefaultConfig() Config {
 			M2MAdminRoleEnabled:            envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
 			M2MClientMaxPerTenant:          envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
 			TokenRequestsPerMinute:         envInt("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", 600),
-			TokenMaxConcurrentSecretChecks: envInt("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", runtime.NumCPU()),
+			TokenMaxConcurrentSecretChecks: envInt("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", runtime.GOMAXPROCS(0)),
 		},
 		Cluster: cluster.Config{
 			// Enabled defaults false for easier onboarding — NOT because multi-node is

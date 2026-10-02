@@ -70,12 +70,12 @@ func renderMillis(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Millisecond), 10)
 }
 
-// renderCPUCount renders a default that is the machine's CPU count as the
-// table spells it, "number of CPUs"; any other value as the integer, so a
+// renderGOMAXPROCS renders a default computed as runtime.GOMAXPROCS(0) as
+// the table spells it, "GOMAXPROCS"; any other value as the integer, so a
 // fixed default in config.go still fails the binding.
-func renderCPUCount(n int) string {
-	if n == runtime.NumCPU() {
-		return "number of CPUs"
+func renderGOMAXPROCS(n int) string {
+	if n == runtime.GOMAXPROCS(0) {
+		return "GOMAXPROCS"
 	}
 	return strconv.Itoa(n)
 }
@@ -150,7 +150,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":             strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
 		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT":          strconv.Itoa(c.IAM.M2MClientMaxPerTenant),
 		"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE":          strconv.Itoa(c.IAM.TokenRequestsPerMinute),
-		"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": renderCPUCount(c.IAM.TokenMaxConcurrentSecretChecks),
+		"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": renderGOMAXPROCS(c.IAM.TokenMaxConcurrentSecretChecks),
 		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":          renderDuration(c.IAM.AuthCacheReconcileInterval),
 
 		// --- cors ---

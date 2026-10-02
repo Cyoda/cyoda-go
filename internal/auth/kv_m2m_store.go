@@ -48,8 +48,9 @@ const undoTimeout = 30 * time.Second
 // exceeded by one record per node. All are documented (cyoda help auth
 // clients).
 //
-// Authenticate keeps a per-node cache of verified secrets and runs every
-// bcrypt comparison in one of a bounded number of slots (see Authenticate).
+// Authenticate keeps a per-node cache of verified secrets. Every bcrypt
+// operation — Authenticate's comparison, the hash of a new secret in Create
+// and ResetSecret — runs in one of a bounded number of slots.
 type KVM2MClientStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int
@@ -179,12 +180,34 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	}); err != nil {
 		return nil, err
 	}
+	// A wrong secret leaves the cached entry alone: it can never hit (the
+	// sums differ), and anyone holding the public client id could otherwise
+	// evict the client's warm entry.
 	if mismatch != nil {
-		s.verified.drop(clientID)
 		return nil, ErrInvalidClient
 	}
 	s.verified.put(clientID, c.HashedSecret, sum)
 	return c, nil
+}
+
+// newSecret generates a secret and hashes it in one of the node's
+// secret-check slots. No free slot within the wait: ErrSecretCheckBusy.
+func (s *KVM2MClientStore) newSecret(ctx context.Context) (string, []byte, error) {
+	secret, err := GenerateSecret()
+	if err != nil {
+		return "", nil, err
+	}
+	var hash []byte
+	var hashErr error
+	if err := s.slots.run(ctx, func() {
+		hash, hashErr = bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
+	}); err != nil {
+		return "", nil, err
+	}
+	if hashErr != nil {
+		return "", nil, fmt.Errorf("failed to hash secret: %w", hashErr)
+	}
+	return secret, hash, nil
 }
 
 // Lookup returns clientID's current record, read from the store, without
@@ -218,16 +241,14 @@ func (s *KVM2MClientStore) Lookup(ctx context.Context, clientID string) (*M2MCli
 // ErrM2MClientExists; a tenant at the cap is ErrM2MClientCapReached. The
 // caller passes a generated id; the encoder refuses one outside the grammar.
 // onBehalfOf is stored on the record and never changes afterward; the new
-// client's SecretGen starts at 1.
+// client's SecretGen starts at 1. The secret is hashed in a secret-check
+// slot; with none free the result is ErrSecretCheckBusy and nothing is
+// written.
 func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID, userID string, roles []string, onBehalfOf bool) (string, error) {
 	ctx = noTx(ctx)
-	secret, err := GenerateSecret()
+	secret, hash, err := s.newSecret(ctx)
 	if err != nil {
 		return "", err
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", fmt.Errorf("failed to hash secret: %w", err)
 	}
 	now := time.Now().UTC()
 	rec, err := encodeClientRecord(&M2MClient{ClientID: clientID, HashedSecret: string(hash), TenantID: tenant, UserID: userID, Roles: append([]string(nil), roles...), OnBehalfOf: onBehalfOf, SecretGen: 1, CreatedAt: now, UpdatedAt: now})
@@ -363,8 +384,10 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 }
 
 // ResetSecret gives an existing client of tenant a new secret and returns it,
-// once, with the client. The secret is hashed before the store is read, so
-// the gap between read and write is one round trip. A failed write may have
+// once, with the client. The secret is hashed, in a secret-check slot,
+// before the store is read, so the gap between read and write is one round
+// trip; with no slot free the result is ErrSecretCheckBusy and nothing is
+// read or written. A failed write may have
 // committed, so it restores the record it read, on a context the caller
 // cannot cancel: a failed reset leaves the old secret in force, unless the
 // restore itself fails (the stored secret may then be the new one, never
@@ -373,13 +396,9 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 // client-id grammar.
 func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
 	ctx = noTx(ctx)
-	secret, err := GenerateSecret()
+	secret, hash, err := s.newSecret(ctx)
 	if err != nil {
 		return "", nil, err
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(secret), bcrypt.DefaultCost)
-	if err != nil {
-		return "", nil, fmt.Errorf("failed to hash secret: %w", err)
 	}
 	c, prev, found, err := s.getRecord(ctx, tenant, clientID)
 	if err != nil {

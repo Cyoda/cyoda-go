@@ -4,25 +4,58 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/semaphore"
 )
 
-// SecretCheckLimit bounds bcrypt work on one node.
+// SecretCheckLimit bounds bcrypt work on one node: comparing a presented
+// secret, and hashing a new one.
 type SecretCheckLimit struct {
-	Slots int           // concurrent comparisons; ≥ 1
-	Wait  time.Duration // longest wait for a slot; production: time.Second
+	Slots   int                // concurrent bcrypt operations; ≥ 1
+	Wait    time.Duration      // longest wait for a slot; production: time.Second
+	Metrics SecretCheckMetrics // counts refusals; nil: no metrics
+}
+
+// SecretCheckMetrics counts the bcrypt operations refused because no slot
+// freed up within the wait. A refusal is not logged: under load there would
+// be one line per request.
+type SecretCheckMetrics interface {
+	SecretCheckRefused()
+}
+
+// otelSecretCheckMetrics implements SecretCheckMetrics over an OTel counter.
+type otelSecretCheckMetrics struct {
+	refused metric.Int64Counter
+}
+
+// NewOTelSecretCheckMetrics builds the OTel-backed SecretCheckMetrics,
+// publishing the counter "cyoda.auth.secret_checks.refused".
+func NewOTelSecretCheckMetrics(meter metric.Meter) (SecretCheckMetrics, error) {
+	refused, err := meter.Int64Counter("cyoda.auth.secret_checks.refused",
+		metric.WithDescription("Client-secret bcrypt operations refused because no slot freed up within the wait"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create the secret-check refusal counter: %w", err)
+	}
+	return &otelSecretCheckMetrics{refused: refused}, nil
+}
+
+func (m *otelSecretCheckMetrics) SecretCheckRefused() {
+	m.refused.Add(context.Background(), 1)
 }
 
 // secretCheckWait is how long a token request waits for a secret-check slot
 // before it is refused with 503.
 const secretCheckWait = time.Second
 
-// ErrSecretCheckBusy is returned by M2MClientStore.Authenticate when no
-// secret-check slot frees up within the wait. The token endpoint answers it
-// with 503 temporarily_unavailable and Retry-After.
+// ErrSecretCheckBusy is returned by M2MClientStore.Authenticate, Create and
+// ResetSecret when no secret-check slot frees up within the wait; nothing
+// was written. The token endpoint answers it with 503
+// temporarily_unavailable, the /clients endpoints with 503 SERVER_BUSY,
+// both with Retry-After: 1.
 var ErrSecretCheckBusy = errors.New("secret check capacity exhausted")
 
 // maxVerifiedSecrets bounds the verified-secret cache of one node. Dropping
@@ -31,27 +64,31 @@ var ErrSecretCheckBusy = errors.New("secret check capacity exhausted")
 // secret was reset, leave entries no request removes.
 const maxVerifiedSecrets = 65536
 
-// secretSlots bounds the bcrypt comparisons running at once on one node.
+// secretSlots bounds the bcrypt operations running at once on one node.
 type secretSlots struct {
-	sem  *semaphore.Weighted
-	wait time.Duration
+	sem     *semaphore.Weighted
+	wait    time.Duration
+	metrics SecretCheckMetrics // nil: no metrics
 }
 
 func newSecretSlots(limit SecretCheckLimit) *secretSlots {
-	return &secretSlots{sem: semaphore.NewWeighted(int64(limit.Slots)), wait: limit.Wait}
+	return &secretSlots{sem: semaphore.NewWeighted(int64(limit.Slots)), wait: limit.Wait, metrics: limit.Metrics}
 }
 
-// run runs compare in a slot. A slot that does not free up within the wait,
-// or a caller that gives up first, is ErrSecretCheckBusy and compare does
-// not run.
-func (s *secretSlots) run(ctx context.Context, compare func()) error {
+// run runs work in a slot. A slot that does not free up within the wait, or
+// a caller that gives up first, is ErrSecretCheckBusy, counted, and work
+// does not run.
+func (s *secretSlots) run(ctx context.Context, work func()) error {
 	wctx, cancel := context.WithTimeout(ctx, s.wait)
 	defer cancel()
 	if err := s.sem.Acquire(wctx, 1); err != nil {
+		if s.metrics != nil {
+			s.metrics.SecretCheckRefused()
+		}
 		return ErrSecretCheckBusy
 	}
 	defer s.sem.Release(1)
-	compare()
+	work()
 	return nil
 }
 

@@ -148,6 +148,12 @@ const (
 	// caller's action is identical, and which bound bit is operator
 	// information. Retryable: capacity frees as in-flight jobs complete.
 	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
+	// ErrCodeServerBusy is returned when the node has no capacity left for
+	// the bounded work a request needs within the wait — today, a
+	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
+	// with every CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS slot taken.
+	// Nothing was written. 503 with Retry-After. Retryable.
+	ErrCodeServerBusy = "SERVER_BUSY"
 )
 
 // Grouped statistics — POST /api/entity/stats/{entityName}/{modelVersion}/query.
@@ -326,6 +332,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeSearchResultLimit:                {},
 	ErrCodeSearchShardTimeout:               {},
 	ErrCodeSearchTimeout:                    {},
+	ErrCodeServerBusy:                       {},
 	ErrCodeServerError:                      {},
 	ErrCodeStorageUnavailable:               {},
 	ErrCodeTooManyJoinedRequests:            {},

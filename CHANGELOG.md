@@ -821,9 +821,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Changed
 
 - `POST /oauth/token` bounds concurrent secret checks per node
-  (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the CPU count;
-  `503` when busy) and limits each client per node
-  (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600; `429 slow_down`).
+  (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the number of CPUs
+  the process may use (GOMAXPROCS); `503` when busy) and limits each client
+  per node (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600;
+  `429 slow_down`). The same bound covers the secret hashing of
+  `POST /clients` and `PUT /clients/{clientId}/secret`, which answer
+  `503 SERVER_BUSY` with `Retry-After: 1` when busy (new error code).
+  Refusals are counted in `cyoda.auth.secret_checks.refused`.
 
 - **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
   resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,

@@ -175,16 +175,22 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   `Retry-After` header (whole seconds until the next request is allowed).
   Each node counts on its own. `0` means unlimited; a negative value refuses
   to start. (default: `600`)
-- `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` — client-secret checks
-  (bcrypt) `POST /oauth/token` runs at once on one node. A request that gets
-  no slot within 1 second returns `503` with error `temporarily_unavailable`
-  and `Retry-After: 1`. Every request with an unknown client id or a wrong
+- `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` — client-secret (bcrypt)
+  operations that run at once on one node: the secret checks of
+  `POST /oauth/token`, and the hashing of a new secret by `POST /clients` and
+  `PUT /clients/{clientId}/secret`. An operation that gets no slot within 1
+  second writes nothing and is refused with `Retry-After: 1`: `503` with
+  error `temporarily_unavailable` on the token endpoint, `503` with error
+  code `SERVER_BUSY` on the `/clients` calls. Each refusal increments the
+  `cyoda.auth.secret_checks.refused` counter (see `cyoda help telemetry`);
+  none is logged. Every token request with an unknown client id or a wrong
   secret pays one check, so a lookup costs the same either way. A node keeps
   a cache of secrets it has verified: a request whose secret matches the
   cache, and whose client record (read from the store on every request)
   still carries the hash it was verified against, skips the check; a secret
   reset or a client delete takes effect on the next request. Must be at
-  least `1`; startup fails otherwise. (default: the number of CPUs)
+  least `1`; startup fails otherwise. (default: the number of CPUs the
+  process may use (GOMAXPROCS), which follows a container CPU limit)
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
   that can verify. It counts every active key whose `validTo` has not passed;
   an invalidated key frees its slot at once (trusted keys have no grace

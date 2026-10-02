@@ -113,6 +113,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)
 - `errors.SEARCH_SHARD_TIMEOUT` — `503` — retryable — one or more search shards did not respond within the configured timeout
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected
+- `errors.SERVER_BUSY` — `503` — retryable — the node had no free client-secret (bcrypt) slot within 1 s for `POST /clients` or a secret reset; nothing was written; carries `Retry-After: 1`
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again

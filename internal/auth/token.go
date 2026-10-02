@@ -59,7 +59,7 @@ type tokenHandler struct {
 // empty, is set as the aud claim of every issued token: a server that checks
 // the audience (CYODA_JWT_AUDIENCE) must accept its own tokens.
 // requestsPerMinute limits each authenticated client on this node, across
-// both grants; 0: no limit.
+// both grants; <= 0: no limit.
 func NewTokenHandler(
 	keyStore KeyStore,
 	trustedKeyStore TrustedKeyStore,

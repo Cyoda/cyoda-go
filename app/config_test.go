@@ -235,8 +235,8 @@ func TestDefaultConfig_TokenEndpointCost(t *testing.T) {
 	if iam.TokenRequestsPerMinute != 600 {
 		t.Errorf("default TokenRequestsPerMinute = %d, want 600", iam.TokenRequestsPerMinute)
 	}
-	if iam.TokenMaxConcurrentSecretChecks != runtime.NumCPU() {
-		t.Errorf("default TokenMaxConcurrentSecretChecks = %d, want %d (the CPU count)", iam.TokenMaxConcurrentSecretChecks, runtime.NumCPU())
+	if iam.TokenMaxConcurrentSecretChecks != runtime.GOMAXPROCS(0) {
+		t.Errorf("default TokenMaxConcurrentSecretChecks = %d, want %d (GOMAXPROCS)", iam.TokenMaxConcurrentSecretChecks, runtime.GOMAXPROCS(0))
 	}
 	t.Setenv("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", "0")
 	t.Setenv("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", "3")

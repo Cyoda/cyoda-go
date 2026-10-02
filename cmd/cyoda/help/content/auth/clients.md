@@ -12,6 +12,7 @@ see_also:
   - errors.M2M_CLIENT_CAP_REACHED
   - errors.FEATURE_DISABLED
   - errors.STORAGE_UNAVAILABLE
+  - errors.SERVER_BUSY
   - errors.UNAUTHORIZED
   - errors.FORBIDDEN
 ---
@@ -171,6 +172,7 @@ A stored client that cannot be read back (a damaged record) is left out of `GET 
 - `errors.NOT_IMPLEMENTED` (`501`) — `CYODA_IAM_MODE` is not `jwt`.
 - `errors.SERVER_ERROR` (`500`) — any of the four operations: the store failed, or a damaged record or index entry blocks the operation (see above). The body carries a generic message and a `ticket`.
 - `errors.STORAGE_UNAVAILABLE` (`503`) — any of the four operations: the store reports itself unavailable. Retryable.
+- `errors.SERVER_BUSY` (`503`, with `Retry-After: 1`) — create or reset: the node had no free slot to hash the new secret within 1 second (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, shared with the token endpoint's secret checks). Nothing was written: no client is created, and a reset leaves the old secret in force. Retryable.
 
 ## SEE ALSO
 
