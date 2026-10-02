@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -57,10 +58,9 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		KID:       trustedKID,
 		TenantID:  spi.TenantID(tenantID),
 		PublicKey: &trustedKey.PublicKey,
-		Audience:  "cyoda-go",
 		Active:    true,
 		ValidFrom: time.Now().Add(-time.Hour),
-	}, auth.RotateOptions{})
+	}, false)
 	if err != nil {
 		t.Fatalf("failed to register trusted key: %v", err)
 	}
@@ -552,10 +552,9 @@ func TestTokenExchangeKeyFromAnotherTenant(t *testing.T) {
 		KID:       otherKID,
 		TenantID:  spi.TenantID("tenant-other"),
 		PublicKey: &otherKey.PublicKey,
-		Audience:  "cyoda-go",
 		Active:    true,
 		ValidFrom: time.Now().Add(-time.Hour),
-	}, auth.RotateOptions{}); err != nil {
+	}, false); err != nil {
 		t.Fatalf("register other tenant's key: %v", err)
 	}
 
@@ -665,15 +664,10 @@ func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	}
 }
 
-// Invalidating with a grace period keeps the key verifying until the grace
-// period ends — the contract of the invalidate operation, and what a rotation
-// with invalidatePrevious relies on to avoid an outage.
-func TestTokenExchangeKeyInGracePeriod(t *testing.T) {
-	env := setupTokenEnv(t)
-	if err := env.trustedKeyStore.Invalidate(context.Background(), spi.TenantID(env.tenantID), env.trustedKID, 3600); err != nil {
-		t.Fatalf("failed to invalidate trusted key: %v", err)
-	}
-
+// exchangeRequest is a token-exchange request by env's client for a subject
+// token signed with env's trusted key.
+func exchangeRequest(t *testing.T, env *testTokenEnv) *http.Request {
+	t.Helper()
 	subjectToken := signSubjectToken(t, env.trustedKey, env.trustedKID, map[string]any{
 		"sub":         "ext-user-1",
 		"caas_org_id": env.tenantID,
@@ -684,13 +678,74 @@ func TestTokenExchangeKeyInGracePeriod(t *testing.T) {
 	extra := url.Values{}
 	extra.Set("subject_token", subjectToken)
 	extra.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
-	req := makeTokenRequest("urn:ietf:params:oauth:grant-type:token-exchange",
+	return makeTokenRequest("urn:ietf:params:oauth:grant-type:token-exchange",
 		basicAuth(env.clientID, env.clientSecret), extra)
-	rr := httptest.NewRecorder()
-	env.handler.ServeHTTP(rr, req)
+}
 
-	if rr.Code != http.StatusOK {
-		t.Fatalf("expected 200 for a key in its grace period, got %d: %s", rr.Code, rr.Body.String())
+// A key whose window has not opened yet is refused like an unknown one: the
+// store decides, on every exchange.
+func TestTokenExchangeKeyNotYetValid(t *testing.T) {
+	env := setupTokenEnv(t)
+	from := time.Now().Add(time.Hour)
+	if err := env.trustedKeyStore.Register(context.Background(), &auth.TrustedKey{
+		KID: env.trustedKID, TenantID: spi.TenantID(env.tenantID), PublicKey: &env.trustedKey.PublicKey,
+		Active: true, ValidFrom: from,
+	}, false); err != nil {
+		t.Fatalf("re-register ahead: %v", err)
+	}
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, exchangeRequest(t, env))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a key not yet valid, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if resp := decodeResponse(t, rr); resp["error"] != "invalid_grant" || resp["error_description"] != "unknown trusted key" {
+		t.Errorf("got %v / %v, want invalid_grant / unknown trusted key", resp["error"], resp["error_description"])
+	}
+}
+
+// failingTrustedKeyStore fails GetForVerification with err.
+type failingTrustedKeyStore struct {
+	auth.TrustedKeyStore
+	err error
+}
+
+func (f failingTrustedKeyStore) GetForVerification(context.Context, spi.TenantID, string) (*auth.TrustedKey, error) {
+	return nil, f.err
+}
+
+// A trusted-key store that cannot answer fails the exchange — it is never
+// read as "no such key". Storage unavailable: 503 temporarily_unavailable
+// with Retry-After: 1. Any other store failure: 500 server_error with a
+// ticket. Neither response carries the cause.
+func TestTokenExchangeTrustedKeyStoreFailure(t *testing.T) {
+	env := setupTokenEnv(t)
+	for name, c := range map[string]struct {
+		err        error
+		status     int
+		code       string
+		retryAfter string
+	}{
+		"unavailable": {fmt.Errorf("failed to read trusted key: %w", unavailable{}), http.StatusServiceUnavailable, "temporarily_unavailable", "1"},
+		"other":       {errors.New("failed to read trusted key: disk on fire"), http.StatusInternalServerError, "server_error", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, "cyoda", "", 3600)
+			rr := httptest.NewRecorder()
+			h.ServeHTTP(rr, exchangeRequest(t, env))
+			if rr.Code != c.status {
+				t.Fatalf("status = %d, want %d: %s", rr.Code, c.status, rr.Body.String())
+			}
+			if got := rr.Header().Get("Retry-After"); got != c.retryAfter {
+				t.Errorf("Retry-After = %q, want %q", got, c.retryAfter)
+			}
+			resp := decodeResponse(t, rr)
+			if resp["error"] != c.code {
+				t.Errorf("error = %v, want %s", resp["error"], c.code)
+			}
+			if strings.Contains(rr.Body.String(), "storage down") || strings.Contains(rr.Body.String(), "disk on fire") {
+				t.Errorf("response leaks the cause: %s", rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -698,7 +753,7 @@ func TestTokenExchangeInactiveTrustedKey(t *testing.T) {
 	env := setupTokenEnv(t)
 
 	// Invalidate the trusted key.
-	if err := env.trustedKeyStore.Invalidate(context.Background(), spi.TenantID(env.tenantID), env.trustedKID, 0); err != nil {
+	if err := env.trustedKeyStore.Invalidate(context.Background(), spi.TenantID(env.tenantID), env.trustedKID); err != nil {
 		t.Fatalf("failed to invalidate trusted key: %v", err)
 	}
 

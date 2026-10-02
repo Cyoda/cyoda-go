@@ -28,15 +28,9 @@ func newReplicaKV(t *testing.T) spi.KeyValueStore {
 	return kv
 }
 
-// stringDecode keeps every value as its string; a value "bad" fails, "skip" is skipped.
-func stringDecode(kvKey string, data []byte) (string, string, bool, error) {
-	switch string(data) {
-	case "bad":
-		return "", "", false, errors.New("bad record")
-	case "skip":
-		return "", "", false, nil
-	}
-	return kvKey, string(data), true, nil
+// stringDecode keeps every value as its string.
+func stringDecode(kvKey string, data []byte) (string, string) {
+	return kvKey, string(data)
 }
 
 func newStringReplica(t *testing.T, kv spi.KeyValueStore, bc spi.ClusterBroadcaster) *kvReplica[string] {
@@ -61,27 +55,13 @@ func snapshot(r *kvReplica[string]) map[string]string {
 	return out
 }
 
-// The initial load treats an undecodable record as a re-read does: it is left
-// out of the copy (so the key it held is refused), never a reason to fail the
-// load, and never counted as a skip.
-func TestReplica_LoadSkipsUndecodable(t *testing.T) {
+func TestReplica_ReconcileSwaps(t *testing.T) {
 	ctx := replicaSystemCtx()
 	kv := newReplicaKV(t)
-	_ = kv.Put(ctx, "ns", "a", []byte("1"))
-	_ = kv.Put(ctx, "ns", "s", []byte("skip"))
-	_ = kv.Put(ctx, "ns", "b", []byte("bad"))
+	_ = kv.Put(ctx, "ns", "old", []byte("0"))
 	r := newStringReplica(t, kv, nil)
-	if got := snapshot(r); got["a"] != "1" || len(got) != 1 || r.skippedAtLoad != 1 {
-		t.Fatalf("copy = %v skipped = %d", got, r.skippedAtLoad)
-	}
-}
-
-func TestReplica_ReconcileSwapsAndSkipsBadOnReRead(t *testing.T) {
-	ctx := replicaSystemCtx()
-	kv := newReplicaKV(t)
-	r := newStringReplica(t, kv, nil)
+	_ = kv.Delete(ctx, "ns", "old")
 	_ = kv.Put(ctx, "ns", "a", []byte("1"))
-	_ = kv.Put(ctx, "ns", "b", []byte("bad"))
 	if err := r.Reconcile(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -349,8 +329,6 @@ func TestReplica_ReconcileYieldsToLocalChange(t *testing.T) {
 type listHookKV struct {
 	spi.KeyValueStore
 	onList func()
-	gets   atomic.Int32
-	onGet  func()
 }
 
 // List fetches first and runs the hook after, so a hook that mutates the
@@ -363,40 +341,6 @@ func (h *listHookKV) List(ctx context.Context, ns string) (map[string][]byte, er
 		h.onList()
 	}
 	return v, err
-}
-
-func (h *listHookKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
-	v, err := h.KeyValueStore.Get(ctx, ns, key)
-	if h.gets.Add(1) == 1 && h.onGet != nil {
-		h.onGet()
-	}
-	return v, err
-}
-
-// A single-record load that raced a delete must not put the record back.
-func TestReplica_LoadOneIsGenerationGuarded(t *testing.T) {
-	ctx := replicaSystemCtx()
-	base := newReplicaKV(t)
-	_ = base.Put(ctx, "ns", "k", []byte("v"))
-	kv := &listHookKV{KeyValueStore: base}
-	r := newStringReplica(t, kv, nil)
-	r.read(func(m map[string]string) {}) // loaded
-	_ = r.mutate(func() (func(map[string]string), bool, error) {
-		return func(m map[string]string) { delete(m, "k") }, false, nil
-	})
-	kv.onGet = func() {
-		_ = r.mutate(func() (func(map[string]string), bool, error) {
-			_ = base.Delete(ctx, "ns", "k")
-			return func(m map[string]string) { delete(m, "k") }, true, nil
-		})
-	}
-	_, found, err := r.loadOne(ctx, "k")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if found || snapshot(r)["k"] != "" {
-		t.Fatal("a stale single-record read overwrote a newer delete")
-	}
 }
 
 func TestReplica_PingTriggersReRead(t *testing.T) {
@@ -651,12 +595,11 @@ func (k *replicaTxProbeKV) List(ctx context.Context, ns string) (map[string][]by
 }
 
 // TestKVReplica_IgnoresCallerTransaction proves that no KV call a kvReplica
-// makes — construction's initial List, a re-read's List (Reconcile), a
-// single-record load (loadOne) or an admin write (writeAll/put) — carries a
-// transaction found in the caller's context. That covers every call the
-// replica itself makes; KVKeyStore and the trusted-key store also issue
-// direct decision reads against the underlying kv (not through the replica),
-// and those strip the transaction at method entry instead.
+// makes — construction's initial List, a re-read's List (Reconcile) or an
+// admin write (writeAll/put) — carries a transaction found in the caller's
+// context. That covers every call the replica itself makes; KVKeyStore also
+// issues direct decision reads against the underlying kv (not through the
+// replica), and those strip the transaction at method entry instead.
 func TestKVReplica_IgnoresCallerTransaction(t *testing.T) {
 	txCtx := spi.WithTransaction(replicaSystemCtx(), &spi.TransactionState{ID: "caller-tx"})
 
@@ -670,9 +613,6 @@ func TestKVReplica_IgnoresCallerTransaction(t *testing.T) {
 	}
 
 	if err := r.writeAll(txCtx, []kvWrite{{key: "k1", value: []byte("v1")}}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := r.loadOne(txCtx, "k1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Reconcile(txCtx); err != nil {

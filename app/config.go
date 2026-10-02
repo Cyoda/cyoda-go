@@ -276,8 +276,8 @@ type IAMConfig struct {
 	TrustedKeyMaxJWKProperties    int
 	KeypairDefaultValidityDays    int
 
-	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
-	// interval for the per-node auth caches (trusted keys, signing keys).
+	// AuthCacheReconcileInterval is the periodic KV-reconcile interval of
+	// the per-node signing-key cache.
 	// Jittered ±10% per tick; the fail-closed staleness bound is fixed at
 	// 10× this value. CYODA_AUTH_CACHE_RECONCILE_INTERVAL, default 60s,
 	// floor 1s.

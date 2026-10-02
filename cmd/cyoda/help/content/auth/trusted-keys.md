@@ -9,7 +9,7 @@ see_also:
   - config.auth
   - errors.TRUSTED_KEY_NOT_FOUND
   - errors.TRUSTED_KEY_CAP_REACHED
-  - errors.KEY_OWNED_BY_DIFFERENT_TENANT
+  - errors.STORAGE_UNAVAILABLE
   - errors.UNSUPPORTED_KEY_TYPE
   - errors.FEATURE_DISABLED
 ---
@@ -36,7 +36,7 @@ A trusted-key JWT is used **only** as a subject token in that grant. cyoda does 
 
 - `CYODA_IAM_MODE=jwt`.
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` (gate; see callout above).
-- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every key that can still verify: an active key, and one in its grace period after invalidation, until its `validTo`. A key invalidated with a grace period keeps its slot until the period ends — including one invalidated by `invalidatePrevious`, so a rotation frees no slot for the key it registers. Reactivating a key is held to the same cap. To register or reactivate at the cap, delete an old key or invalidate it with no grace period first.
+- `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every active key whose `validTo` has not passed, including one whose `validFrom` is still ahead. Trusted keys have no grace period: an invalidated key frees its slot at once. A registration with `invalidatePrevious` ends every other key of the tenant, so it is never refused by the cap. Reactivating a key is held to the same cap. To register or reactivate at the cap, delete or invalidate an old key first.
 - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — default validity for trusted keys when not specified at registration.
 
 **Client (you) needs:**
@@ -61,16 +61,15 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
   -H @- \
   -H "Content-Type: application/json" \
   -d '{
-        "keyId":    "my-signing-key-2026-06",
-        "audience": "human",
-        "jwk":      { "kty": "RSA", "n": "<base64url-modulus>", "e": "AQAB" }
+        "keyId": "my-signing-key-2026-06",
+        "jwk":   { "kty": "RSA", "n": "<base64url-modulus>", "e": "AQAB" }
       }' \
   <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-`audience` is required (`human` or `client`). Optional fields: `issuers` (when set, the subject token's `iss` must be one of them), `validFrom`, `validTo`, `invalidatePrevious` and `invalidateGracePeriodSec`. Response (`200 OK`) echoes the registered key shape plus lifecycle metadata.
+Optional fields: `issuers` (when set, the subject token's `iss` must be one of them), `validFrom`, `validTo`, and `invalidatePrevious` (invalidates every other key of the tenant at once). Response (`200 OK`) echoes the registered key shape plus lifecycle metadata.
 
-The key belongs to the tenant of the admin who registers it. Pick a stable, descriptive `keyId`: it becomes the `kid` header you set when signing, and it must be unique across all tenants.
+The key belongs to the tenant of the admin who registers it. Pick a stable, descriptive `keyId`: it becomes the `kid` header you set when signing. Key ids are unique within a tenant only — another tenant may register the same `keyId` for its own, independent key. Registering a `keyId` your tenant already has replaces that key (an upsert), so a retried registration succeeds.
 
 ### List trusted keys
 
@@ -84,9 +83,9 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 ### Invalidate / reactivate
 
 ```bash
-# Stop accepting subject tokens signed with this key, without removing the entry.
-# Optional body: {"gracePeriodSec": 3600} keeps it verifying for up to that
-# many seconds more, never past its validTo; without it, it stops at once.
+# Stop accepting subject tokens signed with this key at once, without
+# removing the entry. The request has no body: trusted keys have no grace
+# period.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 
@@ -98,13 +97,12 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/reactiva
   <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-"At once" means on the node that takes the call. Other nodes apply an
-invalidation, a reactivation or a delete when the change reaches them (see
-*Auth cache reconciliation* in `cyoda help config auth`). The node that
-takes the call stamps an invalidation's new `validTo` from its own clock. A
-reactivation's `validTo` comes from the request, but its default
-`validFrom` is that node's clock. Each node checks both against its own
-clock, so the clock offset between nodes adds to the delay.
+Every change is written to the shared store, and every token exchange reads
+the key from the store, so a registration, invalidation, reactivation or
+delete is in force on every node when the call returns. A reactivation's
+`validTo` comes from the request, but its default `validFrom` is the clock of
+the node that takes the call, and each node checks the window against its own
+clock.
 
 ### Delete
 
@@ -137,7 +135,7 @@ data = "subject_token=${SIGNED_JWT}"
 EOF
 ```
 
-cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is within its validity window (an invalidated key stays valid until its grace period ends), verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.
+cyoda looks up `kid` among the trusted keys **of the M2M client's tenant**, checks that the key is active and within its validity window, verifies the RS256 signature, and checks the claims below. The response carries a cyoda token for the user; use that token on API calls.
 
 ## TOKEN
 
@@ -156,15 +154,16 @@ Cyoda does not mint subject tokens — you sign them. The claim shape of the tok
 Management endpoints:
 
 - `errors.FEATURE_DISABLED` (`404`) — trusted-key endpoints called with `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=false`.
-- `errors.TRUSTED_KEY_NOT_FOUND` (`404`) — referenced `keyId` not in the registry (also returned for cross-tenant access — the existence of another tenant's key is never confirmed).
-- `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — registering or reactivating a key would exceed the per-tenant cap; delete an old key or invalidate it with no grace period first.
-- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` (`409`) — registration request specifies a `keyId` that already belongs to another tenant. Pick a fresh `keyId`.
+- `errors.TRUSTED_KEY_NOT_FOUND` (`404`) — the caller's tenant has no key with this `keyId`. A `keyId` is looked up in the caller's tenant only; another tenant's key with the same `keyId` is a different key.
+- `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — registering or reactivating a key would exceed the per-tenant cap; delete or invalidate an old key first.
+- `errors.STORAGE_UNAVAILABLE` (`503`, retryable) — the store could not be read or written, on any of the endpoints, the list included. Any other store failure is `500` with a ticket.
 - `errors.UNSUPPORTED_KEY_TYPE` (`400`) — `kty` is not `"RSA"`.
 - `errors.UNAUTHORIZED` (`401`) — caller lacks a valid bearer for the management call.
 
 Token exchange (OAuth error shape, see `auth.tokens`):
 
-- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule. The same `unknown trusted key` answer is given while cyoda cannot confirm its trusted-key cache is current, so no key is used that might have been revoked.
+- `400 invalid_grant` — the `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`; the subject token does not parse, is not RS256, or has no `kid`; the `kid` is not a trusted key of the client's tenant, or the key is outside its validity window; the signature does not verify; `iss` is not among the key's `issuers`; a time claim fails; or `sub` is missing or breaks the user-identifier rule.
+- `503 temporarily_unavailable` (with `Retry-After: 1`) — the trusted-key store could not be read. The exchange is refused; it is never served from a copy that might hold an invalidated key. Any other store failure is `500 server_error` with a ticket.
 - `403 access_denied` — `caas_org_id` is not the client's tenant.
 
 ## SEE ALSO

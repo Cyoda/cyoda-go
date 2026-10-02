@@ -19,8 +19,7 @@ type AuthConfig struct {
 	IAMFeatures       IAMFeatures            // IAM feature surface for /oauth/keys/* and bootstrap key config
 	KV                spi.KeyValueStore      // SYSTEM-tenant KV store; required
 	Broadcaster       spi.ClusterBroadcaster // nil on a single node
-	ReconcileInterval time.Duration          // re-read interval of both key stores; <= 0 uses the default
-	TrustedKeyMetrics ReconcileMetrics       // nil: no metrics
+	ReconcileInterval time.Duration          // re-read interval of the signing-key store; <= 0 uses the default
 	SigningKeyMetrics ReconcileMetrics       // nil: no metrics
 }
 
@@ -36,8 +35,9 @@ type AuthService struct {
 	handler      http.Handler
 }
 
-// NewAuthService builds and loads both key stores from the KV store; a failed
-// load fails. Start runs their re-read loops.
+// NewAuthService builds the stores over the KV store and loads the signing
+// key pairs; a failed load fails. Start runs the signing-key store's re-read
+// loop. The trusted-key and M2M client stores keep no node copy.
 func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error) {
 	// Apply defaults only for a wholly unset IAMFeatures, so callers that
 	// don't set the field (e.g. tests) still get the default IAM limits,
@@ -56,20 +56,7 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 		return nil, fmt.Errorf("failed to parse signing key: %w", err)
 	}
 
-	trustedOpts := []KVTrustedKeyStoreOption{
-		WithMaxTrustedKeys(config.IAMFeatures.TrustedKeyMaxPerTenant),
-		WithReconcileInterval(config.ReconcileInterval),
-	}
-	if config.TrustedKeyMetrics != nil {
-		trustedOpts = append(trustedOpts, WithReconcileMetrics(config.TrustedKeyMetrics))
-	}
-	if config.Broadcaster != nil {
-		trustedOpts = append(trustedOpts, WithTrustedKeyBroadcaster(config.Broadcaster))
-	}
-	trustedStore, err := NewKVTrustedKeyStore(ctx, config.KV, trustedOpts...)
-	if err != nil {
-		return nil, err
-	}
+	trustedStore := NewKVTrustedKeyStore(config.KV, config.IAMFeatures.TrustedKeyMaxPerTenant)
 
 	// The bootstrap key is built from configuration on every node; its KID
 	// is derived from the public key, so every node sharing the key has the
@@ -100,9 +87,8 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	}, nil
 }
 
-// Start runs both key stores' re-read loops until ctx ends.
+// Start runs the signing-key store's re-read loop until ctx ends.
 func (s *AuthService) Start(ctx context.Context) {
-	s.trustedStore.StartReconcileLoop(ctx)
 	s.keyStore.Start(ctx)
 }
 

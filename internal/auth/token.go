@@ -154,19 +154,20 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	// tenant is the tenant that registered it; the subject token's
 	// caas_org_id is written by the key holder and cannot bind a key to a
 	// tenant, so a key registered elsewhere is not found here.
-	trustedKey, err := h.trustedKeyStore.GetForVerification(client.TenantID, kid)
-	if err != nil {
+	// The store is read on every exchange; it refuses a key that is absent,
+	// inactive or outside its window. A store that cannot answer fails the
+	// exchange: it is never read as "no such key".
+	trustedKey, err := h.trustedKeyStore.GetForVerification(r.Context(), client.TenantID, kid)
+	if errors.Is(err, ErrTrustedKeyNotFound) {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "unknown trusted key")
 		return
 	}
-
-	// GetForVerification has already dropped a key past its ValidTo. An
-	// invalidated key is inactive but keeps verifying until that ValidTo — the
-	// grace period the invalidate operation promises — so Active is not
-	// checked here: every path that clears it also sets ValidTo.
-	now := time.Now()
-	if now.Before(trustedKey.ValidFrom) {
-		writeTokenError(w, http.StatusBadRequest, "invalid_grant", "trusted key not yet valid")
+	if err != nil {
+		if common.StorageUnavailable(err) != nil {
+			writeTokenUnavailable(w, "trustedKeyStore.GetForVerification", err)
+			return
+		}
+		writeTokenServerError(w, "trustedKeyStore.GetForVerification", err)
 		return
 	}
 
@@ -319,6 +320,19 @@ func writeTokenServerError(w http.ResponseWriter, op string, cause error) {
 	)
 	writeTokenError(w, http.StatusInternalServerError, "server_error",
 		fmt.Sprintf("server_error [ticket: %s]", ticket))
+}
+
+// writeTokenUnavailable answers a 503 temporarily_unavailable with
+// Retry-After: 1 when a store the grant needs is unavailable. The cause goes
+// to the log, never into the response.
+func writeTokenUnavailable(w http.ResponseWriter, op string, cause error) {
+	slog.Warn("token request refused: store unavailable",
+		"pkg", "auth",
+		"op", op,
+		"cause", cause,
+	)
+	w.Header().Set("Retry-After", "1")
+	writeTokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", "")
 }
 
 // SetNoStore marks a response as never to be stored by a cache (RFC 6749

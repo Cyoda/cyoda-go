@@ -36,24 +36,23 @@ const (
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
 	// for a condition's literal-vs-field mismatch.
-	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
-	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
-	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
-	ErrCodeUnauthorized              = "UNAUTHORIZED"
-	ErrCodeForbidden                 = "FORBIDDEN"
-	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"
-	ErrCodeKeyOwnedByDifferentTenant = "KEY_OWNED_BY_DIFFERENT_TENANT"
-	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
-	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
-	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
-	ErrCodeM2MClientNotFound         = "M2M_CLIENT_NOT_FOUND"
-	ErrCodeM2MClientCapReached       = "M2M_CLIENT_CAP_REACHED"
-	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
-	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
-	ErrCodeServerError               = "SERVER_ERROR"
-	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
-	ErrCodePreconditionRequired      = "PRECONDITION_REQUIRED"
-	ErrCodeUnsupportedMediaType      = "UNSUPPORTED_MEDIA_TYPE"
+	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
+	ErrCodeUnauthorized         = "UNAUTHORIZED"
+	ErrCodeForbidden            = "FORBIDDEN"
+	ErrCodeFeatureDisabled      = "FEATURE_DISABLED"
+	ErrCodeKeypairNotFound      = "KEYPAIR_NOT_FOUND"
+	ErrCodeTrustedKeyCapReached = "TRUSTED_KEY_CAP_REACHED"
+	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeM2MClientNotFound    = "M2M_CLIENT_NOT_FOUND"
+	ErrCodeM2MClientCapReached  = "M2M_CLIENT_CAP_REACHED"
+	ErrCodeUnsupportedAlgorithm = "UNSUPPORTED_ALGORITHM"
+	ErrCodeUnsupportedKeyType   = "UNSUPPORTED_KEY_TYPE"
+	ErrCodeServerError          = "SERVER_ERROR"
+	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
+	ErrCodePreconditionRequired = "PRECONDITION_REQUIRED"
+	ErrCodeUnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE"
 )
 
 const (
@@ -307,7 +306,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeInvalidUniqueKey:                 {},
 	ErrCodeInvalidUniqueKeyDefinition:       {},
 	ErrCodeJoinedResponseTooLarge:           {},
-	ErrCodeKeyOwnedByDifferentTenant:        {},
 	ErrCodeKeypairNotFound:                  {},
 	ErrCodeM2MClientCapReached:              {},
 	ErrCodeM2MClientNotFound:                {},

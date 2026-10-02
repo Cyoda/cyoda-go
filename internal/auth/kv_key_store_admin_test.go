@@ -900,3 +900,30 @@ func TestMatchesKeyPairIDPattern(t *testing.T) {
 		}
 	}
 }
+
+// fakeBroadcaster delivers published messages synchronously to every
+// subscriber, including the publisher's own node (mirrors gossip loopback
+// being absent — so tests subscribe a SECOND store to observe propagation).
+type fakeBroadcaster struct {
+	mu       sync.Mutex
+	handlers map[string][]func([]byte)
+}
+
+func newFakeBroadcaster() *fakeBroadcaster {
+	return &fakeBroadcaster{handlers: map[string][]func([]byte){}}
+}
+
+func (b *fakeBroadcaster) Broadcast(topic string, payload []byte) {
+	b.mu.Lock()
+	hs := append([]func([]byte){}, b.handlers[topic]...)
+	b.mu.Unlock()
+	for _, h := range hs {
+		h(payload)
+	}
+}
+
+func (b *fakeBroadcaster) Subscribe(topic string, h func([]byte)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.handlers[topic] = append(b.handlers[topic], h)
+}

@@ -5752,7 +5752,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal Server Error - the trusted-key store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -5763,6 +5763,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     post:
@@ -5776,29 +5778,20 @@ paths:
         to sign user JWTs that Cyoda can verify without requiring a reachable
         OIDC discovery endpoint.
 
-        The key is bound to the caller's tenant (legalEntityId).
+        The key is bound to the caller's tenant (legalEntityId). Key ids are
+        unique within a tenant only: another tenant may register the same
+        `keyId`, and the two keys are independent.
 
 
-        If a key with the same `keyId` already exists and belongs to the
-        caller's tenant, it is
-
-        replaced atomically (upsert semantics). This makes the endpoint
-        retry-safe during key
-
-        rotation — a retried request after a partial failure will succeed rather
-        than conflict.
-
-        If the key belongs to a different tenant, the request is rejected with
-        `409 Conflict`.
+        If a key with the same `keyId` already exists in the caller's tenant,
+        it is replaced (upsert semantics). This makes the endpoint retry-safe
+        during key rotation — a retried request after a partial failure will
+        succeed rather than conflict.
 
 
-        Use `invalidatePrevious` to retire all other active trusted keys for
-        this tenant
-
-        in a single atomic operation, with an optional grace period
-        (`invalidateGracePeriodSec`)
-
-        during which the old keys continue to be accepted.
+        Use `invalidatePrevious` to invalidate every other key of the tenant
+        at once. Trusted keys have no grace period: an invalidated key stops
+        verifying subject tokens immediately.
 
 
         Requires ROLE_ADMIN. Disabled by default — enable via
@@ -5821,7 +5814,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, invalid audience, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
+          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -5840,12 +5833,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          description: "Conflict — KEY_OWNED_BY_DIFFERENT_TENANT: a key with this keyId is registered to another tenant."
           content:
             application/problem+json:
               schema:
@@ -5936,11 +5923,10 @@ paths:
         - OAuth, Keys
       summary: Invalidate a trusted public key
       description: >
-        Invalidates a registered trusted public key. After invalidation, JWTs
-        signed with the
-
-        corresponding private key will no longer be accepted for validation
-        (after the grace period). If `gracePeriodSec` is omitted or zero, invalidation is immediate.
+        Invalidates a registered trusted public key at once: from the moment
+        the request returns, subject tokens signed with the corresponding
+        private key are refused on every node. Trusted keys have no grace
+        period, and the request has no body.
 
         Requires ROLE_ADMIN.
       operationId: invalidateTrustedKey
@@ -5953,17 +5939,12 @@ paths:
           required: true
           schema:
             type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InvalidateKeyRequestDto"
       responses:
         "200":
           description: Trusted key invalidated successfully
           content: {}
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format or gracePeriodSec out of range."
+          description: "Bad request — BAD_REQUEST: invalid keyId format."
           content:
             application/problem+json:
               schema:
@@ -9864,12 +9845,7 @@ components:
       properties:
         active:
           type: boolean
-          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
-        audience:
-          type: string
-          enum:
-            - human
-            - client
+          description: Whether the key is currently active. False after invalidation; true after reactivation.
         issuers:
           type: array
           example: "[https://my-app.local/]"
@@ -9882,7 +9858,7 @@ components:
             public key components. "
         keyId:
           type: string
-          description: Unique key identifier
+          description: Key identifier, unique within the tenant
           example: my-app-key-1
         legalEntityId:
           type: string
@@ -9900,7 +9876,6 @@ components:
           example: 2026-02-01T10:00:00.000Z
       required:
         - active
-        - audience
         - jwk
         - keyId
         - legalEntityId
@@ -9910,8 +9885,8 @@ components:
       properties:
         keyId:
           type: string
-          description: Unique key identifier. Will be matched against the `kid` header in
-            JWTs.
+          description: Key identifier, unique within the caller's tenant. Will be
+            matched against the `kid` header in JWTs.
           example: my-app-key-1
         jwk:
           type: object
@@ -9923,11 +9898,6 @@ components:
             honoured in this version.'
           example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
             n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
-        audience:
-          type: string
-          enum:
-            - human
-            - client
         issuers:
           type: array
           description: "List of allowed issuer URIs. When this parameter is configured,
@@ -9950,25 +9920,15 @@ components:
           example: 2026-10-15T10:00:00.000Z
         invalidatePrevious:
           type: boolean
-          description: "If true, invalidates all other keys for the same audience
-            belonging to the caller's tenant. Enables atomic key rotation. "
+          description: "If true, invalidates every other key of the tenant at once."
           example: false
-        invalidateGracePeriodSec:
-          type: integer
-          format: int64
-          description: "Grace period in seconds for invalidating previous keys (only used
-            when invalidatePrevious is true): each keeps at most this long, and
-            never past its current validTo. Default is 0 (immediate
-            invalidation). "
-          example: 3600
-          minimum: 0
-          maximum: 31622400
       required:
-        - audience
         - jwk
         - keyId
     InvalidateKeyRequestDto:
       type: object
+      description: Body of the key-pair invalidate request. Trusted keys have no
+        grace period, and their invalidate request has no body.
       properties:
         gracePeriodSec:
           type: integer

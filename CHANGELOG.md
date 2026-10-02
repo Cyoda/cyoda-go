@@ -79,6 +79,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed.** The newest active key pair
   signs every token.
 
+- **Trusted keys: key ids are unique per tenant (the cross-tenant `409
+  KEY_OWNED_BY_DIFFERENT_TENANT` is gone); `audience` and the invalidation
+  grace period are removed — invalidating a key ends it at once and the
+  invalidate request has no body; every token exchange reads the key from the
+  store; `GET /oauth/keys/trusted` can answer `500`/`503`.** See `cyoda help
+  auth trusted-keys`.
+
 - **Signing key pairs are shared and persisted by the cluster.** See
   `cyoda help config auth` ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-pairs.md`.

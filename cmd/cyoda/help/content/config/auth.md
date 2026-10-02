@@ -168,8 +168,9 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   so a tenant can exceed the cap by at most one client per node.
   (default: `100`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
-  that can verify. It counts an active key, and one in its grace period after
-  invalidation until its `validTo`. `0` means unbounded. (default: `10`)
+  that can verify. It counts every active key whose `validTo` has not passed;
+  an invalidated key frees its slot at once (trusted keys have no grace
+  period). `0` means unbounded. (default: `10`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` — default validity for trusted
   keys when the registration request omits `validTo`. No clamp on
   user-supplied `validTo` values. (default: `365`)
@@ -186,16 +187,17 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
 
 ### Auth cache reconciliation
 
-All three per-node auth caches (trusted keys, signing key pairs, OIDC
-providers) push updates to peers on write and additionally run a periodic
-KV-reconcile as a backstop against missed broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL`
-sets that shared interval; each tick is jittered ±10% to avoid a cross-node
+The per-node signing-key cache pushes updates to peers on write and
+additionally runs a periodic KV-reconcile as a backstop against missed
+broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` sets that interval; each tick is jittered ±10% to avoid a cross-node
 reconcile herd. A cache that goes 10× this interval without a successful
 reconcile fails closed on verification rather than serving a potentially stale
-answer. A stale signing-key cache refuses first-party tokens (`401`) and
-answers JWKS with `503`.
+answer: it refuses first-party tokens (`401`) and answers JWKS with `503`.
+Trusted keys and M2M clients have no cache: every call, the token exchange
+included, reads the store, so a change is in force on every node when the
+call returns.
 
-- `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for all three caches
+- `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for the signing-key cache
   (default: `60s`, floor: `1s`)
 
 ### Federated OIDC providers (`POST /oauth/oidc/providers`)
@@ -637,9 +639,12 @@ deleted: step 4 writes one, and another is the only trace left by someone
 who deleted that key. A node that starts with the bootstrap key ended
 writes the same line at INFO. None of these lines names who acted: tell
 your own actions from others by the timestamp and your own record. The
-other key-pair and trusted-key calls log nothing, and neither does an OIDC
-provider update, invalidation, reactivation or deletion that changes the
-provider; the checks above show their result. No INFO line is written
+INFO lines `trusted key registered`, `trusted key invalidated`, `trusted
+key reactivated` and `trusted key deleted` name the tenant, the kid, and
+the attributed principal and executor of the call. The other key-pair
+calls log nothing, and neither does an OIDC provider update, invalidation,
+reactivation or deletion that changes the provider; the checks above show
+their result. No INFO line is written
 while a node's level is above `info`, configured or set. A level that
 matches proves nothing on its own: the `log level changed` line is
 written after the new level applies, so setting `warn` or `error` writes
@@ -823,17 +828,6 @@ or a reactivation gave it a window that has since ended.
   provider. Recovery is a new `CYODA_JWT_SIGNING_KEY` on every node, needing
   no token. This starts a fresh, active bootstrap key with no stored state,
   and retires every issued key pair the old key sealed.
-
-#### Upgrading from v0.7.x
-
-KV-backed trusted-key entries written by versions < v0.8.0 are orphaned.
-Within the `trusted-keys` namespace, entries are now keyed `<tenantID>:<kid>`
-(was bare `<kid>`). v0.8.0 does not query the old shape; affected entries are
-left in place but not loaded. Operators must re-register affected keys. To audit,
-look for entries in the `trusted-keys` namespace whose key contains no `:`
-separator (the exact query depends on the KV backend; for the SQLite plugin:
-`SELECT key FROM kv_store WHERE namespace='trusted-keys' AND key NOT LIKE '%:%'`).
-cyoda-go has no known production users on this surface.
 
 ## EXAMPLES
 

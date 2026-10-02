@@ -119,7 +119,6 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 		KID:       "tk-1",
 		TenantID:  tID,
 		PublicKey: &key1.PublicKey,
-		Audience:  "api://default",
 		Active:    true,
 		ValidFrom: time.Now(),
 	}
@@ -128,17 +127,16 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 		KID:       "tk-2",
 		TenantID:  tID,
 		PublicKey: &key2.PublicKey,
-		Audience:  "api://other",
 		Active:    true,
 		ValidFrom: time.Now(),
 		ValidTo:   &expiry,
 	}
 
 	// Register
-	if err := store.Register(context.Background(), tk1, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk1, false); err != nil {
 		t.Fatalf("Register tk1 failed: %v", err)
 	}
-	if err := store.Register(context.Background(), tk2, auth.RotateOptions{}); err != nil {
+	if err := store.Register(context.Background(), tk2, false); err != nil {
 		t.Fatalf("Register tk2 failed: %v", err)
 	}
 
@@ -147,8 +145,8 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	if err != nil {
 		t.Fatalf("Get tk-1 failed: %v", err)
 	}
-	if got.KID != "tk-1" || got.Audience != "api://default" || !got.Active {
-		t.Errorf("unexpected trusted key: KID=%s Audience=%s Active=%v", got.KID, got.Audience, got.Active)
+	if got.KID != "tk-1" || !got.Active {
+		t.Errorf("unexpected trusted key: KID=%s Active=%v", got.KID, got.Active)
 	}
 
 	// Get not found
@@ -158,13 +156,13 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// List
-	all := store.List(tID)
+	all, _ := store.List(context.Background(), tID)
 	if len(all) != 2 {
 		t.Errorf("expected 2 trusted keys, got %d", len(all))
 	}
 
-	// Invalidate (with 0 grace period — ValidTo = now)
-	if err := store.Invalidate(context.Background(), tID, "tk-1", 0); err != nil {
+	// Invalidate: ends the key at once (ValidTo = now)
+	if err := store.Invalidate(context.Background(), tID, "tk-1"); err != nil {
 		t.Fatalf("Invalidate failed: %v", err)
 	}
 	got, _ = store.Get(context.Background(), tID, "tk-1")
@@ -190,7 +188,7 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	if err == nil {
 		t.Fatal("expected error after Delete, got nil")
 	}
-	all = store.List(tID)
+	all, _ = store.List(context.Background(), tID)
 	if len(all) != 1 {
 		t.Errorf("expected 1 trusted key after delete, got %d", len(all))
 	}
@@ -201,7 +199,7 @@ func TestTrustedKeyStore_RegisterGetListInvalidateReactivateDelete(t *testing.T)
 	}
 
 	// Invalidate not found
-	if err := store.Invalidate(context.Background(), tID, "tk-999", 0); err == nil {
+	if err := store.Invalidate(context.Background(), tID, "tk-999"); err == nil {
 		t.Fatal("expected error invalidating non-existent trusted key, got nil")
 	}
 
@@ -467,8 +465,8 @@ func TestTrustedKeyStore_TenantIsolation(t *testing.T) {
 	priv := testRSAPriv(t)
 	tA := spi.TenantID("tenant-a")
 	tB := spi.TenantID("tenant-b")
-	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(context.Background(), tk, auth.RotateOptions{}); err != nil {
+	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now()}
+	if err := s.Register(context.Background(), tk, false); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	if _, err := s.Get(context.Background(), tB, "k1"); err == nil {
@@ -477,39 +475,21 @@ func TestTrustedKeyStore_TenantIsolation(t *testing.T) {
 	if err := s.Delete(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Delete(k1) leaked")
 	}
-	if err := s.Invalidate(context.Background(), tB, "k1", 0); err == nil {
+	if err := s.Invalidate(context.Background(), tB, "k1"); err == nil {
 		t.Error("B.Invalidate(k1) leaked")
 	}
 }
 
-func TestTrustedKeyStore_CrossTenantCollision_409(t *testing.T) {
-	s := newTestTrustedStore(t)
-	priv := testRSAPriv(t)
-	tA := spi.TenantID("tenant-a")
-	tB := spi.TenantID("tenant-b")
-	kA := &auth.TrustedKey{KID: "shared", TenantID: tA, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(context.Background(), kA, auth.RotateOptions{})
-	kB := &auth.TrustedKey{KID: "shared", TenantID: tB, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	err := s.Register(context.Background(), kB, auth.RotateOptions{})
-	if err == nil {
-		t.Fatal("expected cross-tenant error")
-	}
-	var ae *common.AppError
-	if !errors.As(err, &ae) || ae.Code != common.ErrCodeKeyOwnedByDifferentTenant {
-		t.Errorf("expected KEY_OWNED_BY_DIFFERENT_TENANT, got %v", err)
-	}
-}
-
 func TestTrustedKeyStore_CapReached(t *testing.T) {
-	s := newTestTrustedStore(t, auth.WithMaxTrustedKeys(2))
+	s := auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, systemCtx()), 2)
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	mk := func(kid string) *auth.TrustedKey {
-		return &auth.TrustedKey{KID: kid, TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
+		return &auth.TrustedKey{KID: kid, TenantID: tID, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now()}
 	}
-	_ = s.Register(context.Background(), mk("k1"), auth.RotateOptions{})
-	_ = s.Register(context.Background(), mk("k2"), auth.RotateOptions{})
-	err := s.Register(context.Background(), mk("k3"), auth.RotateOptions{})
+	_ = s.Register(context.Background(), mk("k1"), false)
+	_ = s.Register(context.Background(), mk("k2"), false)
+	err := s.Register(context.Background(), mk("k3"), false)
 	if err == nil {
 		t.Fatal("expected cap-reached error")
 	}
@@ -520,16 +500,16 @@ func TestTrustedKeyStore_CapReached(t *testing.T) {
 }
 
 func TestTrustedKeyStore_CapCountsValidOnly(t *testing.T) {
-	s := newTestTrustedStore(t, auth.WithMaxTrustedKeys(2))
+	s := auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, systemCtx()), 2)
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
 	past := time.Now().Add(-1 * time.Hour)
-	expired := &auth.TrustedKey{KID: "old", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	active := &auth.TrustedKey{KID: "new", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
-	_ = s.Register(context.Background(), active, auth.RotateOptions{})
-	third := &auth.TrustedKey{KID: "third", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := s.Register(context.Background(), third, auth.RotateOptions{}); err != nil {
+	expired := &auth.TrustedKey{KID: "old", TenantID: tID, PublicKey: &priv.PublicKey, Active: false, ValidFrom: past, ValidTo: &past}
+	active := &auth.TrustedKey{KID: "new", TenantID: tID, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now()}
+	_ = s.Register(context.Background(), expired, false)
+	_ = s.Register(context.Background(), active, false)
+	third := &auth.TrustedKey{KID: "third", TenantID: tID, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now()}
+	if err := s.Register(context.Background(), third, false); err != nil {
 		t.Fatalf("expected accept; expired excluded from count; got %v", err)
 	}
 }
@@ -538,10 +518,10 @@ func TestTrustedKeyStore_RotateInvalidatesSameTenant(t *testing.T) {
 	s := newTestTrustedStore(t)
 	priv := testRSAPriv(t)
 	tID := spi.TenantID("t")
-	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = s.Register(context.Background(), a, auth.RotateOptions{})
-	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	if err := s.Register(context.Background(), b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60}); err != nil {
+	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now()}
+	_ = s.Register(context.Background(), a, false)
+	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
+	if err := s.Register(context.Background(), b, true); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 	gotA, _ := s.Get(context.Background(), tID, "a")
@@ -556,8 +536,8 @@ func TestTrustedKeyStore_Reactivate_RequiresFreshWindow(t *testing.T) {
 	tID := spi.TenantID("t")
 	now := time.Now()
 	past := now.Add(-1 * time.Hour)
-	expired := &auth.TrustedKey{KID: "e", TenantID: tID, PublicKey: &priv.PublicKey, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	_ = s.Register(context.Background(), expired, auth.RotateOptions{})
+	expired := &auth.TrustedKey{KID: "e", TenantID: tID, PublicKey: &priv.PublicKey, Active: false, ValidFrom: past, ValidTo: &past}
+	_ = s.Register(context.Background(), expired, false)
 	if err := s.Reactivate(context.Background(), tID, "e", now, past); err == nil {
 		t.Error("expected past validTo rejected")
 	}

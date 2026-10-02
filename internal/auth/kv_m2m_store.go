@@ -15,9 +15,16 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// createLockStripes bounds the per-tenant create locks' memory: tenants hash
-// onto a fixed set of mutexes.
-const createLockStripes = 64
+// tenantLockStripes bounds the memory of the per-tenant locks of the M2M
+// client and trusted-key stores: tenants hash onto a fixed set of mutexes.
+const tenantLockStripes = 64
+
+// tenantStripe is the index of t's lock among tenantLockStripes.
+func tenantStripe(t spi.TenantID) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(t))
+	return h.Sum32() % tenantLockStripes
+}
 
 // undoTimeout bounds the compensation of a failed create or reset.
 const undoTimeout = 30 * time.Second
@@ -42,7 +49,7 @@ const undoTimeout = 30 * time.Second
 type KVM2MClientStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int
-	createLocks  [createLockStripes]sync.Mutex
+	createLocks  [tenantLockStripes]sync.Mutex
 }
 
 // NewKVM2MClientStore returns a store over kv. maxPerTenant <= 0: no cap.
@@ -54,9 +61,7 @@ func NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int) *KVM2MClientSto
 func noTx(ctx context.Context) context.Context { return spi.WithTransaction(ctx, nil) }
 
 func (s *KVM2MClientStore) createLock(t spi.TenantID) *sync.Mutex {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(t))
-	return &s.createLocks[h.Sum32()%createLockStripes]
+	return &s.createLocks[tenantStripe(t)]
 }
 
 // getIndex reads the index entry of id. found=false: absent.

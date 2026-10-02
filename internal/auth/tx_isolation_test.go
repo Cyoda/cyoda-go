@@ -57,17 +57,13 @@ func TestKVKeyStore_IgnoresCallerTransaction(t *testing.T) {
 }
 
 // TestKVTrustedKeyStore_IgnoresCallerTransaction mirrors
-// TestKVKeyStore_IgnoresCallerTransaction for the trusted-key store: Register
-// with Invalidate exercises storedKeys (the sibling-read decision), Get reads
-// the node's copy that Register just populated (a copy hit; it reaches no
-// KV), Reactivate/Invalidate exercise storedKey via update, and Delete
-// exercises its own storedKey read.
+// TestKVKeyStore_IgnoresCallerTransaction for the trusted-key store: every
+// method reads or writes the store — Register with invalidatePrevious (the
+// sibling read), Get, List, GetForVerification, Reactivate (the cap read),
+// Invalidate and Delete — and none may carry the caller's transaction.
 func TestKVTrustedKeyStore_IgnoresCallerTransaction(t *testing.T) {
 	probe := &txProbeKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
-	s, err := auth.NewKVTrustedKeyStore(systemCtx(), probe)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
+	s := auth.NewKVTrustedKeyStore(probe, 10)
 
 	tenant := spi.TenantID("acme")
 	tk1 := newTrustedKey(t, tenant, "kid-1", time.Now())
@@ -75,19 +71,25 @@ func TestKVTrustedKeyStore_IgnoresCallerTransaction(t *testing.T) {
 
 	txCtx := withCallerTx(systemCtx())
 
-	if err := s.Register(txCtx, tk1, auth.RotateOptions{}); err != nil {
+	if err := s.Register(txCtx, tk1, false); err != nil {
 		t.Fatalf("Register tk1: %v", err)
 	}
-	if err := s.Register(txCtx, tk2, auth.RotateOptions{Invalidate: true}); err != nil {
+	if err := s.Register(txCtx, tk2, true); err != nil {
 		t.Fatalf("Register tk2 (invalidate): %v", err)
 	}
 	if _, err := s.Get(txCtx, tenant, tk1.KID); err != nil {
 		t.Fatalf("Get: %v", err)
 	}
+	if _, err := s.List(txCtx, tenant); err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if _, err := s.GetForVerification(txCtx, tenant, tk2.KID); err != nil {
+		t.Fatalf("GetForVerification: %v", err)
+	}
 	if err := s.Reactivate(txCtx, tenant, tk1.KID, time.Now(), time.Now().Add(48*time.Hour)); err != nil {
 		t.Fatalf("Reactivate: %v", err)
 	}
-	if err := s.Invalidate(txCtx, tenant, tk1.KID, 0); err != nil {
+	if err := s.Invalidate(txCtx, tenant, tk1.KID); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
 	if err := s.Delete(txCtx, tenant, tk2.KID); err != nil {

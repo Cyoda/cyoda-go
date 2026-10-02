@@ -471,6 +471,8 @@ func ParseHealthAddr(r io.Reader, timeout time.Duration) (string, error) {
 //     rather than creating 100 clients. Every other scenario that creates
 //     M2M clients stays under 3 per tenant (grepped for CreateClientRaw /
 //     newM2MClient across e2e/parity).
+//   - CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true — the trusted-key
+//     endpoints are off by default; RunTrustedKeyPerTenantKid needs them.
 func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 	return append(os.Environ(),
 		fmt.Sprintf("CYODA_HTTP_PORT=%d", httpPort),
@@ -481,6 +483,7 @@ func CyodaEnv(httpPort, grpcPort int, ks *JWTKeySet) []string {
 		fmt.Sprintf("CYODA_JWT_ISSUER=%s", ks.Issuer),
 		"CYODA_LOG_LEVEL=info",
 		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT=3",
+		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true",
 	)
 }
 

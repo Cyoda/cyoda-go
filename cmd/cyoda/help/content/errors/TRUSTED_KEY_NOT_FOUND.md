@@ -12,7 +12,7 @@ see_also:
 
 ## NAME
 
-TRUSTED_KEY_NOT_FOUND — an admin operation referenced a trusted-key KID that is not present in the registry.
+TRUSTED_KEY_NOT_FOUND — an admin operation referenced a trusted-key KID that the caller's tenant has not registered.
 
 ## SYNOPSIS
 
@@ -20,7 +20,7 @@ HTTP: `404` `Not Found`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Returned by trusted-key admin endpoints when the supplied KID does not match any registered key:
+Returned by trusted-key admin endpoints when the supplied KID does not match any key of the caller's tenant:
 
 - `DELETE /oauth/keys/trusted/{keyId}` — the deletion target does not exist.
 - `POST /oauth/keys/trusted/{keyId}/invalidate` — the lifecycle target does not exist.
@@ -30,7 +30,7 @@ The detail field carries a generic `key not found` message; internal store phras
 
 Not retryable. Verify the KID via `GET /oauth/keys/trusted` before retrying the operation.
 
-Returned uniformly for kids that don't exist AND kids owned by another tenant; the response does not distinguish — by design, to prevent cross-tenant existence enumeration.
+A kid is looked up in the caller's tenant only. Key ids are unique within a tenant, not across tenants: another tenant's key with the same kid is a different key, which this tenant can neither see nor change.
 
 ## SEE ALSO
 

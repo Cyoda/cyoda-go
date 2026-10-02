@@ -49,9 +49,9 @@ func registerTrustedSigner(t *testing.T) (*rsa.PrivateKey, string) {
 }
 
 // trustedKeyBody is the POST /oauth/keys/trusted body registering priv's
-// public half under kid for the "human" audience.
+// public half under kid.
 func trustedKeyBody(priv *rsa.PrivateKey, kid string) map[string]any {
-	return map[string]any{"keyId": kid, "audience": "human", "jwk": map[string]any{
+	return map[string]any{"keyId": kid, "jwk": map[string]any{
 		"kty": "RSA",
 		"kid": kid,
 		"n":   base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
@@ -92,37 +92,37 @@ func exchangeSubject(t *testing.T, priv *rsa.PrivateKey, kid, sub, tenant string
 	return postToken(t, exchangeForm(t, priv, kid, sub, tenant, []string{"ROLE_USER"}), id, secret)
 }
 
-// TestToken_TokenExchange_InvalidatedKeyGracePeriod: a key invalidated with a
-// grace period keeps verifying subject tokens until the period ends; one
-// invalidated without a grace period stops at once.
-func TestToken_TokenExchange_InvalidatedKeyGracePeriod(t *testing.T) {
-	invalidate := func(t *testing.T, kid string, graceSec int) {
-		t.Helper()
-		resp := adminRequest(t, "POST", "/oauth/keys/trusted/"+kid+"/invalidate",
-			mustJSON(t, map[string]any{"gracePeriodSec": graceSec}))
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			raw, _ := io.ReadAll(resp.Body)
-			t.Fatalf("invalidate %s: status=%d; body: %s", kid, resp.StatusCode, raw)
-		}
-	}
+// TestToken_TokenExchange_InvalidatedKeyEndsAtOnce: trusted keys have no
+// grace period. An exchange succeeds, the key is invalidated (no body), and
+// the very next exchange is refused. A stray gracePeriodSec in the
+// invalidate body changes nothing: the request has no body to read.
+func TestToken_TokenExchange_InvalidatedKeyEndsAtOnce(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"no-body":          nil,
+		"stray-grace-body": mustJSON(t, map[string]any{"gracePeriodSec": 3600}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			priv, kid := registerTrustedSigner(t)
+			ok := exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant")
+			if ok.StatusCode != http.StatusOK {
+				raw, _ := io.ReadAll(ok.Body)
+				ok.Body.Close()
+				t.Fatalf("exchange before invalidate: status=%d, want 200; body: %s", ok.StatusCode, raw)
+			}
+			ok.Body.Close()
 
-	t.Run("with-grace", func(t *testing.T) {
-		priv, kid := registerTrustedSigner(t)
-		invalidate(t, kid, 3600)
-		resp := exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant")
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			raw, _ := io.ReadAll(resp.Body)
-			t.Fatalf("status=%d, want 200 inside the grace period; body: %s", resp.StatusCode, raw)
-		}
-	})
-	t.Run("immediate", func(t *testing.T) {
-		priv, kid := registerTrustedSigner(t)
-		invalidate(t, kid, 0)
-		assertOAuthError(t, exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant"),
-			http.StatusBadRequest, "invalid_grant")
-	})
+			inv := adminRequest(t, "POST", "/oauth/keys/trusted/"+kid+"/invalidate", body)
+			if inv.StatusCode != http.StatusOK {
+				raw, _ := io.ReadAll(inv.Body)
+				inv.Body.Close()
+				t.Fatalf("invalidate %s: status=%d; body: %s", kid, inv.StatusCode, raw)
+			}
+			inv.Body.Close()
+
+			assertOAuthError(t, exchangeSubject(t, priv, kid, "ext-user-1", "test-tenant"),
+				http.StatusBadRequest, "invalid_grant")
+		})
+	}
 }
 
 // TestToken_TokenExchange_KeyFromAnotherTenant_400: a trusted key belongs to

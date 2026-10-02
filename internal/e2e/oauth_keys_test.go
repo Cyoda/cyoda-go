@@ -14,7 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // requestAs issues a request to serverURL+"/api"+path with token as bearer.
@@ -357,9 +360,8 @@ func TestE2E_RegisterTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-tk-%d", time.Now().UnixNano())
 	deleteTrustedKeyOnCleanup(t, kid)
 	body := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "human",
+		"keyId": kid,
+		"jwk":   rsaJWK(t, kid),
 	})
 	resp := adminRequest(t, "POST", "/oauth/keys/trusted", body)
 	defer resp.Body.Close()
@@ -384,9 +386,8 @@ func TestE2E_ListTrustedKeys_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-list-%d", time.Now().UnixNano())
 	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "client",
+		"keyId": kid,
+		"jwk":   rsaJWK(t, kid),
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
@@ -419,9 +420,8 @@ func TestE2E_ListTrustedKeys_Happy(t *testing.T) {
 func TestE2E_DeleteTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-del-%d", time.Now().UnixNano())
 	regBody := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "client",
+		"keyId": kid,
+		"jwk":   rsaJWK(t, kid),
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
@@ -440,9 +440,8 @@ func TestE2E_DeleteTrustedKey_Happy(t *testing.T) {
 func TestE2E_InvalidateTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-inv-%d", time.Now().UnixNano())
 	regBody := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "human",
+		"keyId": kid,
+		"jwk":   rsaJWK(t, kid),
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
@@ -462,9 +461,8 @@ func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 	kid := fmt.Sprintf("e2e-react-%d", time.Now().UnixNano())
 	deleteTrustedKeyOnCleanup(t, kid)
 	regBody := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "human",
+		"keyId": kid,
+		"jwk":   rsaJWK(t, kid),
 	})
 	regResp := adminRequest(t, "POST", "/oauth/keys/trusted", regBody)
 	regResp.Body.Close()
@@ -581,7 +579,7 @@ func TestE2E_GracePeriodRoundTrip(t *testing.T) {
 // a request body larger than 1 MiB with 400.
 func TestE2E_KeypairBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
-	oversized := fmt.Sprintf(`{"algorithm":"RS256","audience":"client","_padding":"%s"}`, padding)
+	oversized := fmt.Sprintf(`{"algorithm":"RS256","_padding":"%s"}`, padding)
 
 	token := platformToken(t)
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/keypair", strings.NewReader(oversized))
@@ -606,7 +604,7 @@ func TestE2E_KeypairBodySizeLimit(t *testing.T) {
 // a request body larger than 1 MiB with 400.
 func TestE2E_TrustedKeyBodySizeLimit(t *testing.T) {
 	padding := strings.Repeat("x", 1<<20+1)
-	oversized := fmt.Sprintf(`{"keyId":"e2e-size","audience":"human","_padding":"%s"}`, padding)
+	oversized := fmt.Sprintf(`{"keyId":"e2e-size","_padding":"%s"}`, padding)
 
 	token := suiteToken(t)
 	req, err := e2eNewRequest(t, "POST", serverURL+"/api/oauth/keys/trusted", strings.NewReader(oversized))
@@ -692,50 +690,38 @@ func adminRequestAs(t *testing.T, clientID, clientSecret, method, path string, b
 	return resp
 }
 
-// TestE2E_CrossTenant_TrustedKey_409 registers a trusted key as the suite
-// tenant, then attempts to register the same keyId from a second tenant and
-// expects 409 KEY_OWNED_BY_DIFFERENT_TENANT. Adapter-level coverage also
-// exists at TestRegisterTrustedKey_CrossTenantCollision_409.
-func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
-	// Provision a second M2M client at a different tenant.
-	clientBID, clientBSecret := createM2MClient(t, "tenant-b", "user-b", true)
-
-	kid := fmt.Sprintf("e2e-xtenant-%d", time.Now().UnixNano())
-	deleteTrustedKeyOnCleanup(t, kid)
-
-	// Register the key as the suite tenant (tenant A = "test-tenant").
-	bodyA := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "human",
+// TestE2E_TrustedKey_SameKidInTwoTenants: key ids are unique per tenant. Two
+// tenants register different keys under one kid; both registrations succeed,
+// and each tenant lists exactly its own key.
+func TestE2E_TrustedKey_SameKidInTwoTenants(t *testing.T) {
+	kid := "same-kid-" + uuid.NewString()[:8]
+	tokA, tokB := suiteToken(t), adminTokenForTenant(t, "tenant-kid-b", "admin-b")
+	for _, tok := range []string{tokA, tokB} {
+		resp := requestAs(t, tok, http.MethodPost, "/oauth/keys/trusted",
+			mustJSON(t, map[string]any{"keyId": kid, "jwk": rsaJWK(t, kid)}))
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			t.Fatalf("register: %d %s", resp.StatusCode, readBody(t, resp))
+		}
+		resp.Body.Close()
+	}
+	t.Cleanup(func() {
+		for _, tok := range []string{tokA, tokB} {
+			requestAs(t, tok, http.MethodDelete, "/oauth/keys/trusted/"+kid, nil).Body.Close()
+		}
 	})
-	respA := adminRequest(t, "POST", "/oauth/keys/trusted", bodyA)
-	respA.Body.Close()
-	if respA.StatusCode != http.StatusOK {
-		t.Fatalf("register as tenant A: got %d", respA.StatusCode)
-	}
-
-	// Attempt to register the same keyId from tenant B.
-	bodyB := mustJSON(t, map[string]any{
-		"keyId":    kid,
-		"jwk":      rsaJWK(t, kid),
-		"audience": "human",
-	})
-	respB := adminRequestAs(t, clientBID, clientBSecret, "POST", "/oauth/keys/trusted", bodyB)
-	raw, _ := io.ReadAll(respB.Body)
-	respB.Body.Close()
-	if respB.StatusCode != http.StatusConflict {
-		t.Fatalf("expected 409 for cross-tenant collision, got %d: %s", respB.StatusCode, raw)
-	}
-	// The RFC 7807 problem response embeds the error code in properties.errorCode.
-	var errBody struct {
-		Properties struct {
-			ErrorCode string `json:"errorCode"`
-		} `json:"properties"`
-	}
-	_ = json.Unmarshal(raw, &errBody)
-	if errBody.Properties.ErrorCode != "KEY_OWNED_BY_DIFFERENT_TENANT" {
-		t.Errorf("expected error code KEY_OWNED_BY_DIFFERENT_TENANT, got %q (body: %s)", errBody.Properties.ErrorCode, raw)
+	for _, tok := range []string{tokA, tokB} {
+		resp := requestAs(t, tok, http.MethodGet, "/oauth/keys/trusted", nil)
+		var keys []map[string]any
+		_ = json.Unmarshal([]byte(readBody(t, resp)), &keys)
+		n := 0
+		for _, k := range keys {
+			if k["keyId"] == kid {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Fatalf("tenant sees %d keys with kid %s, want exactly its own", n, kid)
+		}
 	}
 }
 
@@ -744,3 +730,252 @@ func TestE2E_CrossTenant_TrustedKey_409(t *testing.T) {
 // the server with the flag flipped to false for a single test within the
 // TestMain harness. Adapter-level TestRegisterTrustedKey_FlagDisabled_404
 // covers the invariant at handler level, which is where the flag is enforced.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// issueJwtKeyPair error surface
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestKeys_IssueNonRS256_400UnsupportedAlgorithm verifies that requesting a
+// non-RS256 algorithm returns 400 UNSUPPORTED_ALGORITHM.
+func TestKeys_IssueNonRS256_400UnsupportedAlgorithm(t *testing.T) {
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "ES256",
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_ALGORITHM")
+}
+
+// unknownKeyPairID is a well-formed key-pair id (32 lowercase hex) that no
+// store issues or derives.
+const unknownKeyPairID = "00000000000000000000000000000000"
+
+// ─────────────────────────────────────────────────────────────────────────────
+// keyId format and unknown keyId (delete, invalidate, reactivate)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestKeys_KeyPair_MalformedId_400 verifies that a keyId that is not 32
+// lowercase hex characters returns 400 BAD_REQUEST on every key-pair
+// lifecycle endpoint.
+func TestKeys_KeyPair_MalformedId_400(t *testing.T) {
+	validTo := mustJSON(t, map[string]any{"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339)})
+	for _, c := range []struct {
+		method, path string
+		body         []byte
+	}{
+		{"DELETE", "/oauth/keys/keypair/not-a-kid", nil},
+		{"POST", "/oauth/keys/keypair/not-a-kid/invalidate", nil},
+		{"POST", "/oauth/keys/keypair/not-a-kid/reactivate", validTo},
+	} {
+		t.Run(c.method+" "+c.path, func(t *testing.T) {
+			assertProblemJSON(t, operatorRequest(t, c.method, c.path, c.body), http.StatusBadRequest, "BAD_REQUEST")
+		})
+	}
+}
+
+// TestKeys_DeleteKeyPair_UnknownId_404 verifies that deleting a well-formed
+// but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
+func TestKeys_DeleteKeyPair_UnknownId_404(t *testing.T) {
+	resp := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+unknownKeyPairID, nil)
+	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
+}
+
+// TestKeys_InvalidateKeyPair_BadGrace_400 verifies that gracePeriodSec < 0
+// returns 400 BAD_REQUEST. The grace check runs before the key-store lookup,
+// so a well-formed unknown keyId triggers it.
+func TestKeys_InvalidateKeyPair_BadGrace_400(t *testing.T) {
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", mustJSON(t, map[string]any{
+		"gracePeriodSec": int64(-1),
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_InvalidateKeyPair_UnknownId_404 verifies that invalidating a
+// well-formed but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
+func TestKeys_InvalidateKeyPair_UnknownId_404(t *testing.T) {
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", nil)
+	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
+}
+
+// TestKeys_ReactivateKeyPair_BadBody_400 verifies that omitting the required
+// validTo field returns 400 BAD_REQUEST. The validTo check runs before the
+// key-store lookup, so a well-formed unknown keyId triggers it.
+func TestKeys_ReactivateKeyPair_BadBody_400(t *testing.T) {
+	// {} decodes to zero ValidTo; handler returns 400 "validTo required".
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_ReactivateKeyPair_UnknownId_404 verifies that reactivating a
+// well-formed but unknown keyId returns 404 KEYPAIR_NOT_FOUND.
+func TestKeys_ReactivateKeyPair_UnknownId_404(t *testing.T) {
+	body := mustJSON(t, map[string]any{
+		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+	})
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", body)
+	assertProblemJSON(t, resp, http.StatusNotFound, "KEYPAIR_NOT_FOUND")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// registerTrustedKey error surface
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestTrusted_RegisterNonRSA_400UnsupportedKeyType verifies that submitting a
+// non-RSA JWK (EC kty) returns 400 UNSUPPORTED_KEY_TYPE.
+func TestTrusted_RegisterNonRSA_400UnsupportedKeyType(t *testing.T) {
+	// Minimal EC JWK — the server accepts only RSA.
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{
+		"keyId": "e2e-ec-type-test",
+		"jwk":   map[string]any{"kty": "EC"},
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_KEY_TYPE")
+}
+
+// TestTrustedKey_CapReached_400: registering one key past the per-tenant cap
+// (CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT) is 400 TRUSTED_KEY_CAP_REACHED. It
+// runs in a tenant of its own, so filling that tenant's cap does not affect
+// any other test. Invalidating a key ends it at once, so it frees its slot at
+// once; reactivating it makes it verify again, so it is held to the cap.
+func TestTrustedKey_CapReached_400(t *testing.T) {
+	tenant := fmt.Sprintf("e2e-cap-%d", time.Now().UnixNano())
+	clientID, secret := createM2MClient(t, tenant, "cap-admin", true)
+	limit := app.DefaultConfig().IAM.TrustedKeyMaxPerTenant
+
+	register := func(i int) *http.Response {
+		kid := fmt.Sprintf("%s-%d", tenant, i)
+		return adminRequestAs(t, clientID, secret, "POST", "/oauth/keys/trusted",
+			mustJSON(t, map[string]any{"keyId": kid, "jwk": rsaJWK(t, kid)}))
+	}
+	for i := range limit {
+		resp := register(i)
+		if resp.StatusCode != http.StatusOK {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			t.Fatalf("key %d of %d: status=%d, want 200; body: %s", i+1, limit, resp.StatusCode, raw)
+		}
+		resp.Body.Close()
+	}
+	assertProblemJSON(t, register(limit), http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
+
+	inv := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/invalidate", tenant), nil)
+	if inv.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(inv.Body)
+		inv.Body.Close()
+		t.Fatalf("invalidate key 0: status=%d; body: %s", inv.StatusCode, raw)
+	}
+	inv.Body.Close()
+	if resp := register(limit); resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("register after freeing a slot: status=%d; body: %s", resp.StatusCode, raw)
+	} else {
+		resp.Body.Close()
+	}
+
+	resp := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/reactivate", tenant),
+		mustJSON(t, map[string]any{"validTo": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// deleteTrustedKey / invalidateTrustedKey / reactivateTrustedKey error surface
+// ─────────────────────────────────────────────────────────────────────────────
+
+// TestTrusted_Delete_BadId_400 verifies that a keyId containing characters
+// outside the allowed pattern returns 400 BAD_REQUEST.
+func TestTrusted_Delete_BadId_400(t *testing.T) {
+	// '!' is outside ^[A-Za-z0-9._-]{1,128}$ — MatchesTrustedKIDPattern rejects it.
+	resp := adminRequest(t, "DELETE", "/oauth/keys/trusted/bad!kid", nil)
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Delete_UnknownId_404 verifies that deleting a valid-format but
+// non-existent keyId returns 404 TRUSTED_KEY_NOT_FOUND.
+func TestTrusted_Delete_UnknownId_404(t *testing.T) {
+	resp := adminRequest(t, "DELETE", "/oauth/keys/trusted/valid-but-nonexistent", nil)
+	assertProblemJSON(t, resp, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// TestTrusted_Invalidate_BadId_400 verifies that an invalid keyId format
+// returns 400 BAD_REQUEST.
+func TestTrusted_Invalidate_BadId_400(t *testing.T) {
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/bad!kid/invalidate", nil)
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Invalidate_UnknownId_404 verifies that invalidating a
+// valid-format but non-existent keyId returns 404 TRUSTED_KEY_NOT_FOUND.
+func TestTrusted_Invalidate_UnknownId_404(t *testing.T) {
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/invalidate", nil)
+	assertProblemJSON(t, resp, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// TestTrusted_Reactivate_BadId_400 verifies that an invalid keyId format
+// returns 400 BAD_REQUEST (pattern check runs before validTo validation and
+// key-store lookup).
+func TestTrusted_Reactivate_BadId_400(t *testing.T) {
+	body := mustJSON(t, map[string]any{
+		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+	})
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/bad!kid/reactivate", body)
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Reactivate_UnknownId_404 verifies that reactivating a
+// valid-format but non-existent keyId returns 404 TRUSTED_KEY_NOT_FOUND.
+func TestTrusted_Reactivate_UnknownId_404(t *testing.T) {
+	body := mustJSON(t, map[string]any{
+		"validTo": time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+	})
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", body)
+	assertProblemJSON(t, resp, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timestamps a key record cannot hold
+// ─────────────────────────────────────────────────────────────────────────────
+
+// year10000 is a timestamp Go reads whose UTC form is in year 10000: a key
+// record holding it could never be read back.
+const year10000 = "9999-12-31T23:59:59-05:00"
+
+// TestKeys_IssueKeyPair_ValidToOutOfRange_400 verifies that a validTo whose
+// UTC year is outside 1..9999 returns 400 BAD_REQUEST.
+func TestKeys_IssueKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+		"algorithm": "RS256",
+		"validTo":   year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_ReactivateKeyPair_ValidToOutOfRange_400: the range check runs
+// before the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestKeys_ReactivateKeyPair_ValidToOutOfRange_400(t *testing.T) {
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_Register_ValidToOutOfRange_400 verifies that registering a
+// trusted key with a validTo whose UTC year is outside 1..9999 returns 400
+// BAD_REQUEST and stores nothing.
+func TestTrusted_Register_ValidToOutOfRange_400(t *testing.T) {
+	kid := fmt.Sprintf("e2e-far-%d", time.Now().UnixNano())
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{
+		"keyId":   kid,
+		"jwk":     rsaJWK(t, kid),
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	del := adminRequest(t, "DELETE", "/oauth/keys/trusted/"+kid, nil)
+	assertProblemJSON(t, del, http.StatusNotFound, "TRUSTED_KEY_NOT_FOUND")
+}
+
+// TestTrusted_Reactivate_ValidToOutOfRange_400: the range check runs before
+// the key-store lookup, so a well-formed unknown keyId triggers it.
+func TestTrusted_Reactivate_ValidToOutOfRange_400(t *testing.T) {
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted/valid-but-nonexistent/reactivate", mustJSON(t, map[string]any{
+		"validTo": year10000,
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}

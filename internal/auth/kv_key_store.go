@@ -96,8 +96,8 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 	openCtx := context.WithoutCancel(ctx)
 	rep, err := newKVReplica(ctx, kv, replicaConfig[*signingEntry]{
 		name: "signing-key", namespace: signingKeysNamespace, topic: topicSigningKeys,
-		decode: func(k string, d []byte) (string, *signingEntry, bool, error) {
-			return k, s.cls.classify(openCtx, k, d), true, nil
+		decode: func(k string, d []byte) (string, *signingEntry) {
+			return k, s.cls.classify(openCtx, k, d)
 		},
 		interval: cfg.ReconcileInterval, broadcaster: cfg.Broadcaster, metrics: cfg.Metrics,
 		afterChange: s.afterChange,

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,4 +262,18 @@ func TestKVKeyStore_ConstructionFailsWhenListFails(t *testing.T) {
 	if err == nil || s != nil {
 		t.Fatalf("store = %v, err = %v; want a construction error", s, err)
 	}
+}
+
+// toggleListKV fails every List call once fail is set, simulating the store
+// going unavailable for a re-read (the initial load still succeeds).
+type toggleListKV struct {
+	spi.KeyValueStore
+	fail atomic.Bool
+}
+
+func (k *toggleListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	if k.fail.Load() {
+		return nil, errors.New("list down")
+	}
+	return k.KeyValueStore.List(ctx, ns)
 }

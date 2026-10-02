@@ -342,7 +342,7 @@ func TestE2E_TrustedKeyMutations_StorageFailureIsNotNotFound(t *testing.T) {
 func registerTrustedTestKey(t *testing.T, h *callbackHarness, kid string) {
 	t.Helper()
 	jwk := rsaJWK(t, kid)
-	body, err := json.Marshal(map[string]any{"keyId": kid, "jwk": jwk, "audience": "human"})
+	body, err := json.Marshal(map[string]any{"keyId": kid, "jwk": jwk})
 	if err != nil {
 		t.Fatalf("marshal register body: %v", err)
 	}

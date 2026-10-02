@@ -152,12 +152,13 @@ curl -sX POST http://localhost:8080/api/oauth/oidc/providers \
 
 ### Auth cache reconciliation
 
-The trusted-key, signing-key and OIDC-provider caches push updates to peers on
-write and fall back to a periodic KV-reconcile if a broadcast is missed.
+The signing-key cache pushes updates to peers on write and falls back to a
+periodic KV-reconcile if a broadcast is missed. Trusted keys and M2M clients
+have no cache: every call reads the store.
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the trusted-key, signing-key and OIDC-provider caches; verification fails closed after 10× this without a successful KV reconcile. |
+| `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` | `60s` | Reconcile interval for the signing-key cache; verification fails closed after 10× this without a successful KV reconcile. |
 
 ## Composite unique keys
 

@@ -93,7 +93,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — not retryable — the answer to a request made under a transaction token is larger than `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; nothing is sent, page the read
 - `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
-- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
 - `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients
 - `errors.M2M_CLIENT_NOT_FOUND` — `404` — not retryable — `/clients` delete or reset: the `clientId` does not exist in the caller's tenant (another tenant's client included)
 - `errors.MALFORMED_REQUEST` — `400` — not retryable — grouped-stats request body could not be read or decoded (invalid JSON, unknown top-level field, non-RFC 3339 `pointInTime`)

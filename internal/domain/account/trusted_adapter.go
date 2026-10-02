@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -24,24 +26,32 @@ func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request)
 	return true
 }
 
-// trustedKeyMutationError maps a Register / Get / Delete / Invalidate /
+// trustedKeyStoreError maps a Register / Get / List / Delete / Invalidate /
 // Reactivate failure to a response. A KID that is not registered for this
 // tenant keeps 404 TRUSTED_KEY_NOT_FOUND; every other failure routes through
 // common.Internal, so a KV write or read that failed because storage was
 // unavailable surfaces as a retryable 503 with its cause logged rather than
 // as "the key does not exist" — an answer that reads as a completed lookup
 // and stops the caller retrying.
-func trustedKeyMutationError(err error) *common.AppError {
+func trustedKeyStoreError(err error) *common.AppError {
 	if errors.Is(err, auth.ErrTrustedKeyNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found")
 	}
-	// A refusal the store itself classified (the per-tenant cap on
-	// reactivation) keeps its status and code.
+	// A refusal the store itself classified (the per-tenant cap) keeps its
+	// status and code.
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
 		return appErr
 	}
-	return common.Internal("trusted-key store mutation failed", err)
+	return common.Internal("trusted-key store failed", err)
+}
+
+// logTrustedKeyChange writes the INFO line of a trusted-key change: tenant,
+// kid, and the attributed principal and executor of the request.
+func logTrustedKeyChange(r *http.Request, msg string, tID spi.TenantID, kid string) {
+	att, exe := spi.AttributionFor(r.Context())
+	slog.Info(msg, "pkg", "account", "tenant", string(tID), "kid", kid,
+		"attributedId", att.ID, "attributedKind", string(att.Kind), "executorId", exe.ID, "executorKind", string(exe.Kind))
 }
 
 func (h *Handler) gateTrustedKeyFeature(w http.ResponseWriter, r *http.Request) bool {
@@ -76,10 +86,6 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, errCode, jwkErr.Error()))
 		return
 	}
-	if req.Audience != "human" && req.Audience != "client" {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
-		return
-	}
 	now := time.Now()
 	validFrom := now
 	if req.ValidFrom != nil {
@@ -96,19 +102,6 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
 	}
-	var grace int64
-	if req.InvalidateGracePeriodSec != nil {
-		grace = *req.InvalidateGracePeriodSec
-		if grace < 0 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalidateGracePeriodSec must be >= 0"))
-			return
-		}
-		if grace > MaxGracePeriodSec {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("invalidateGracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
-			return
-		}
-	}
 	invalidate := false
 	if req.InvalidatePrevious != nil {
 		invalidate = *req.InvalidatePrevious
@@ -118,15 +111,16 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		issuers = *req.Issuers
 	}
 	vt := validTo
+	tID := tenantFromCtx(r)
 	tk := &auth.TrustedKey{
-		KID: req.KeyId, TenantID: tenantFromCtx(r), JWK: req.Jwk, PublicKey: pub,
-		Audience: string(req.Audience), Issuers: issuers,
-		Active: true, ValidFrom: validFrom, ValidTo: &vt,
+		KID: req.KeyId, TenantID: tID, JWK: req.Jwk, PublicKey: pub,
+		Issuers: issuers, Active: true, ValidFrom: validFrom, ValidTo: &vt,
 	}
-	if err := h.trustedKeyStore.Register(r.Context(), tk, auth.RotateOptions{Invalidate: invalidate, GracePeriodSec: grace}); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+	if err := h.trustedKeyStore.Register(r.Context(), tk, invalidate); err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key registered", tID, tk.KID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTrustedKeyResponse(tk))
 }
@@ -167,7 +161,6 @@ func toTrustedKeyResponse(tk *auth.TrustedKey) genapi.TrustedKeyResponseDto {
 	resp := genapi.TrustedKeyResponseDto{
 		KeyId: tk.KID, LegalEntityId: string(tk.TenantID),
 		Jwk:       tk.JWK,
-		Audience:  genapi.TrustedKeyResponseDtoAudience(tk.Audience),
 		Active:    tk.Active,
 		ValidFrom: tk.ValidFrom,
 	}
@@ -192,8 +185,11 @@ func (h *Handler) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
 	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
-	tID := tenantFromCtx(r)
-	keys := h.trustedKeyStore.List(tID)
+	keys, err := h.trustedKeyStore.List(r.Context(), tenantFromCtx(r))
+	if err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
+		return
+	}
 	out := make([]genapi.TrustedKeyResponseDto, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, toTrustedKeyResponse(k))
@@ -218,9 +214,10 @@ func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Delete(r.Context(), tID, keyId); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key deleted", tID, keyId)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -238,31 +235,14 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
-	var grace int64
-	if r.ContentLength != 0 {
-		var req genapi.InvalidateKeyRequestDto
-		if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
-			return
-		}
-		if req.GracePeriodSec != nil {
-			grace = *req.GracePeriodSec
-			if grace < 0 {
-				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
-				return
-			}
-			if grace > MaxGracePeriodSec {
-				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-					fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
-				return
-			}
-		}
-	}
+	// The request has no body: trusted keys have no grace period, and
+	// invalidation ends the key at once.
 	tID := tenantFromCtx(r)
-	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId, grace); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId); err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key invalidated", tID, keyId)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -307,12 +287,13 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Reactivate(r.Context(), tID, keyId, validFrom, validTo); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key reactivated", tID, keyId)
 	tk, err := h.trustedKeyStore.Get(r.Context(), tID, keyId)
 	if err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

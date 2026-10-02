@@ -6,7 +6,7 @@ import "sync"
 // coalesces triggers that arrive mid-run into exactly one trailing rerun.
 // Unlike a drop-style singleflight, a trigger is never lost: state observed
 // after the triggering event is always re-read by the trailing run. Used by
-// the trusted-key gossip ping handler, where a dropped trigger would
+// the signing-key gossip ping handler, where a dropped trigger would
 // silently downgrade revocation propagation to backstop latency.
 type coalescingRunner struct {
 	mu      sync.Mutex

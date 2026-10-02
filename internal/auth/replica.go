@@ -41,14 +41,14 @@ type kvWrite struct {
 }
 
 type replicaConfig[R any] struct {
-	name      string // log prefix, e.g. "trusted-key"
+	name      string // log prefix, e.g. "signing-key"
 	namespace string
 	topic     string
-	// decode turns one entry into the copy's key and record. ok=false skips
-	// the entry (counted at load); err leaves it out of the copy with an ERROR,
-	// on the initial load as on a re-read: the key it held is refused (fail
-	// closed), and one bad record never stops a node starting.
-	decode      func(kvKey string, data []byte) (copyKey string, rec R, ok bool, err error)
+	// decode turns one entry into the copy's key and record. It never fails:
+	// a record that does not decode is still represented in the copy (the
+	// signing-key store classifies it as broken, so its key is refused), and
+	// one bad record never stops a node starting.
+	decode      func(kvKey string, data []byte) (copyKey string, rec R)
 	interval    time.Duration
 	broadcaster spi.ClusterBroadcaster
 	metrics     ReconcileMetrics
@@ -87,8 +87,6 @@ type kvReplica[R any] struct {
 	epoch    time.Time    // monotonic reference for staleness
 	lastOK   atomic.Int64 // time.Since(epoch) at the last successful re-read
 	failures atomic.Int64
-
-	skippedAtLoad int
 }
 
 func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaConfig[R]) (*kvReplica[R], error) {
@@ -103,7 +101,7 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
 	}
-	r.recs, r.skippedAtLoad = r.build(entries)
+	r.recs = r.build(entries)
 	r.stampOK()
 	if cfg.broadcaster != nil {
 		cfg.broadcaster.Subscribe(cfg.topic, r.handlePing)
@@ -111,23 +109,13 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	return r, nil
 }
 
-func (r *kvReplica[R]) build(entries map[string][]byte) (map[string]R, int) {
+func (r *kvReplica[R]) build(entries map[string][]byte) map[string]R {
 	recs := make(map[string]R, len(entries))
-	skipped := 0
 	for kvKey, data := range entries {
-		k, rec, ok, err := r.cfg.decode(kvKey, data)
-		if err != nil {
-			slog.Error(r.cfg.name+" record does not decode; its key is refused until the record is fixed or deleted",
-				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
-			continue
-		}
-		if !ok {
-			skipped++
-			continue
-		}
+		k, rec := r.cfg.decode(kvKey, data)
 		recs[k] = rec
 	}
-	return recs, skipped
+	return recs
 }
 
 // read runs fn with the copy under the read lock. fn must not keep the map.
@@ -169,7 +157,7 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 			}
 			return fmt.Errorf("failed to list %s records: %w", r.cfg.name, err)
 		}
-		fresh, _ := r.build(entries)
+		fresh := r.build(entries)
 		swapped := func() bool {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -304,44 +292,6 @@ func (r *kvReplica[R]) mutate(fn func() (apply func(recs map[string]R), wrote bo
 		r.broadcast()
 	}
 	return err
-}
-
-// loadOne reads one record through to the store and puts it in the copy,
-// unless a change committed while it read — then it reads again, so an older
-// read never overwrites a newer copy. found=false: absent or skipped.
-func (r *kvReplica[R]) loadOne(ctx context.Context, kvKey string) (R, bool, error) {
-	var zero R
-	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
-		gen := r.gen.Load()
-		data, err := r.kv.Get(noTx(ctx), r.cfg.namespace, kvKey)
-		if errors.Is(err, spi.ErrNotFound) {
-			return zero, false, nil
-		}
-		if err != nil {
-			return zero, false, fmt.Errorf("failed to read %s record: %w", r.cfg.name, err)
-		}
-		k, rec, ok, err := r.cfg.decode(kvKey, data)
-		if err != nil {
-			return zero, false, fmt.Errorf("failed to decode %s record: %w", r.cfg.name, err)
-		}
-		if !ok {
-			return zero, false, nil
-		}
-		stored := func() bool {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			if r.gen.Load() != gen {
-				return false
-			}
-			r.recs[k] = rec
-			r.gen.Add(1)
-			return true
-		}()
-		if stored {
-			return rec, true, nil
-		}
-	}
-	return zero, false, errReconcileContention
 }
 
 // writeAll applies writes in order. If one fails it restores that write

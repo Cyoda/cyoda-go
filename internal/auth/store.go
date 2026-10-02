@@ -44,24 +44,24 @@ func (kp *KeyPair) Verifies(now time.Time) bool {
 	return kp.InWindow(now) && (kp.Active || kp.ValidTo != nil)
 }
 
-// TrustedKey holds a trusted external public key.
+// TrustedKey holds a trusted external public key: the key an application
+// signs the user assertions of its tenant with.
 type TrustedKey struct {
 	KID       string
 	TenantID  spi.TenantID
 	JWK       map[string]any
 	PublicKey *rsa.PublicKey
-	Audience  string
 	Issuers   []string
 	Active    bool
 	ValidFrom time.Time
 	ValidTo   *time.Time
 }
 
-// RotateOptions controls sibling invalidation when a trusted key is
-// registered.
-type RotateOptions struct {
-	Invalidate     bool
-	GracePeriodSec int64
+// Verifies reports whether the key may verify a subject token at now: active
+// and inside its window [ValidFrom, ValidTo). Trusted keys have no grace
+// period, so an inactive key never verifies.
+func (tk *TrustedKey) Verifies(now time.Time) bool {
+	return tk.Active && !now.Before(tk.ValidFrom) && windowOpen(tk.ValidTo, now)
 }
 
 // M2MClient represents a machine-to-machine client.
@@ -100,37 +100,39 @@ type KeyStore interface {
 	Delete(ctx context.Context, kid string) error
 }
 
-// ErrTrustedKeyNotFound is returned by a TrustedKeyStore's Delete / Invalidate
-// / Reactivate when the KID is not registered for the calling tenant. Adapters
-// classify with errors.Is: it is the one failure of those three that means 404.
-// Anything else is the store failing, not the key being absent — a distinction
-// that has to survive, or a storage outage reads to the caller as "your key is
-// gone".
+// ErrTrustedKeyNotFound is returned by a TrustedKeyStore when the KID is not
+// registered for the calling tenant, and by GetForVerification also when the
+// key may not verify now. Adapters classify with errors.Is: it is the one
+// failure that means 404 on the admin endpoints and 400 on the token
+// exchange. Anything else is the store failing, not the key being absent — a
+// distinction that has to survive, or a storage outage reads to the caller as
+// "your key is gone".
 var ErrTrustedKeyNotFound = errors.New("trusted key not found")
 
-// TrustedKeyStore manages trusted external public keys. Register, Delete,
-// Invalidate and Reactivate take a context because a cluster-backed
-// implementation reads authoritative state through to the store on every
-// call: an admin decision is never made on a possibly stale node copy. Get
-// also takes a context, but is not one of those store-read methods: it
-// serves the node copy when the copy is not stale, and reads through to the
-// store only on a copy miss or while stale — a compromise for a method both
-// admin handlers and ordinary lookups share. GetForVerification stays
-// copy-only with no context — it is the hot, high-volume path, and a key's
-// presence there is bounded by reconciliation, not by a need for ground
-// truth on every call.
+// TrustedKeyStore manages trusted external public keys, one set per tenant.
+// Key ids are unique within a tenant only, and every method acts on
+// tenantID's keys alone: another tenant's key with the same kid is absent.
+// Every method reads or writes the store itself — there is no node copy —
+// so a change is in force on every node when the call returns. A store
+// failure is returned wrapped, so a storage-unavailable error keeps its
+// marker (interface{ StorageUnavailable() bool }).
 type TrustedKeyStore interface {
-	Register(ctx context.Context, tk *TrustedKey, opts RotateOptions) error
+	// Register adds or replaces tk (an upsert on its tenant and kid). With
+	// invalidatePrevious, every other key of the tenant is invalidated at
+	// once.
+	Register(ctx context.Context, tk *TrustedKey, invalidatePrevious bool) error
 	Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error)
-	List(tenantID spi.TenantID) []*TrustedKey
+	List(ctx context.Context, tenantID spi.TenantID) ([]*TrustedKey, error)
 	// GetForVerification returns the key a subject token names, for the
-	// token-exchange grant. The key is found only in tenantID — the tenant of
-	// the client exchanging the token — and only while within its validity
-	// window; otherwise the error wraps ErrTrustedKeyNotFound. A key's tenant
-	// is the tenant that registered it, never a claim in the token it signs.
-	GetForVerification(tenantID spi.TenantID, kid string) (*TrustedKey, error)
+	// token-exchange grant, read from the store on every call. The key is
+	// found only in tenantID — the tenant of the client exchanging the
+	// token — and only while it Verifies; otherwise the error wraps
+	// ErrTrustedKeyNotFound. A key's tenant is the tenant that registered
+	// it, never a claim in the token it signs.
+	GetForVerification(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error)
 	Delete(ctx context.Context, tenantID spi.TenantID, kid string) error
-	Invalidate(ctx context.Context, tenantID spi.TenantID, kid string, gracePeriodSec int64) error
+	// Invalidate ends the key at once: trusted keys have no grace period.
+	Invalidate(ctx context.Context, tenantID spi.TenantID, kid string) error
 	Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error
 }
 
@@ -194,16 +196,17 @@ func graceExpiry(current *time.Time, now time.Time, gracePeriodSec int64) *time.
 	return &expiry
 }
 
-// capReached reports whether tenantID already has max keys that can verify —
-// active, or in a grace period until ValidTo — not counting exceptKID, the key
-// being registered or reactivated. max <= 0 means unbounded.
-func capReached(keys map[string]*TrustedKey, tenantID spi.TenantID, exceptKID string, max int, now time.Time) bool {
+// capReached reports whether keys — one tenant's keys — already hold max
+// slots, not counting exceptKID, the key being registered or reactivated. A
+// key holds a slot while it is active and its window has not ended: it
+// verifies now, or will once its window opens. max <= 0 means unbounded.
+func capReached(keys []*TrustedKey, exceptKID string, max int, now time.Time) bool {
 	if max <= 0 {
 		return false
 	}
 	count := 0
 	for _, k := range keys {
-		if k.TenantID == tenantID && k.KID != exceptKID && windowOpen(k.ValidTo, now) {
+		if k.KID != exceptKID && k.Active && windowOpen(k.ValidTo, now) {
 			count++
 		}
 	}
@@ -214,9 +217,8 @@ func errTrustedKeyCapReached() error {
 	return common.Operational(http.StatusBadRequest, common.ErrCodeTrustedKeyCapReached, "trusted-key cap reached for tenant")
 }
 
-// windowOpen reports whether a key whose window ends at validTo is still
-// within it: the lazy expiry filter the verification path applies, and the
-// test for which siblings a rotation still has to end.
+// windowOpen reports whether a key whose window ends at validTo has not yet
+// ended.
 func windowOpen(validTo *time.Time, now time.Time) bool {
 	return validTo == nil || now.Before(*validTo)
 }

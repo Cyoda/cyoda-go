@@ -163,17 +163,17 @@ failed create deletes a record that may never have been written) rely on it.
 The fix is [cyoda-go-cassandra#105](https://github.com/Cyoda/cyoda-go-cassandra/pull/105)
 (merged to its `main` as `1f53fb5`); the first cyoda-go-cassandra release that
 contains it is the minimum for this version.
-M2M clients (and the signing keys) depend on cross-node read-your-writes,
+M2M clients, trusted keys (and the signing keys) depend on cross-node read-your-writes,
 which on cassandra holds only at `QUORUM` or `LOCAL_QUORUM`;
 cyoda-go-cassandra#104 tracks refusing every other level.
 Also for `v0.9.0`: signing key pairs are now stored and shared by the cluster
-in the SYSTEM-tenant KV store the same way trusted keys already were. Both
-stores' node copies are rebuilt in full from a KV `List` of the namespace on
-every node's initial load and on every periodic re-read. A multi-record admin
-write (a key-pair rotation, a trusted-key registration that invalidates a
-predecessor) also calls `List`, but only to decide which sibling records to
-end — the write then patches just the records it touched into the node copy,
-never a full rebuild. `cyoda-go-cassandra` must include its fix for `List`
+in the SYSTEM-tenant KV store. Their node copy is rebuilt in full from a KV
+`List` of the namespace on every node's initial load and on every periodic
+re-read. A key-pair rotation also calls `List`, but only to decide which
+sibling records to end — the write then patches just the records it touched
+into the node copy, never a full rebuild. Trusted keys keep no node copy: a
+registration calls `List` on the tenant's namespace for the cap and, with
+`invalidatePrevious`, to decide which sibling records to end. `cyoda-go-cassandra` must include its fix for `List`
 returning a partial result on a per-key read failure to run this version:
 without it, a missing sibling in a rotation's `List` read would stay active.
 Separately, and more mildly: a missing bootstrap-state record in any node's

@@ -267,7 +267,7 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// The SYSTEM-tenant KV store holds the cluster's auth state: signing
-		// key pairs and trusted keys.
+		// key pairs, trusted keys and M2M clients.
 		systemCtx := spi.WithUserContext(context.Background(), &spi.UserContext{
 			UserID:   "system",
 			UserName: "System",
@@ -283,18 +283,13 @@ func New(cfg Config) *App {
 		}
 		// D7 invariant — broadcaster MUST be non-nil when cluster mode is
 		// enabled. Checked here (before the auth service is constructed) so
-		// the key stores are never constructed with a missing broadcaster in
-		// cluster mode.
+		// the signing-key store is never constructed with a missing
+		// broadcaster in cluster mode.
 		if cfg.Cluster.Enabled && gossipReg == nil {
 			slog.Error("startup failure", "phase", "auth-broadcaster-missing")
 			os.Exit(1)
 		}
 
-		trustedMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.trustedkeys")
-		if err != nil {
-			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
-			os.Exit(1)
-		}
 		signingMetrics, err := auth.NewOTelReconcileMetrics(observability.Meter(), "auth.signingkeys")
 		if err != nil {
 			slog.Error("startup failure", "phase", "auth-reconcile-metrics-init", "error", err.Error())
@@ -315,7 +310,6 @@ func New(cfg Config) *App {
 			KV:                kvStore,
 			Broadcaster:       authBroadcaster,
 			ReconcileInterval: cfg.IAM.AuthCacheReconcileInterval,
-			TrustedKeyMetrics: trustedMetrics,
 			SigningKeyMetrics: signingMetrics,
 		})
 		if err != nil {

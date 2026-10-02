@@ -847,24 +847,6 @@ func (e ProcessorDefinitionDtoType) Valid() bool {
 	}
 }
 
-// Defines values for RegisterTrustedKeyRequestDtoAudience.
-const (
-	RegisterTrustedKeyRequestDtoAudienceClient RegisterTrustedKeyRequestDtoAudience = "client"
-	RegisterTrustedKeyRequestDtoAudienceHuman  RegisterTrustedKeyRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the RegisterTrustedKeyRequestDtoAudience enum.
-func (e RegisterTrustedKeyRequestDtoAudience) Valid() bool {
-	switch e {
-	case RegisterTrustedKeyRequestDtoAudienceClient:
-		return true
-	case RegisterTrustedKeyRequestDtoAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ScheduleFunctionDtoResultKind.
 const (
 	Schedule ScheduleFunctionDtoResultKind = "Schedule"
@@ -1291,24 +1273,6 @@ const (
 func (e TokenResponseDtoTokenType) Valid() bool {
 	switch e {
 	case Bearer:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for TrustedKeyResponseDtoAudience.
-const (
-	TrustedKeyResponseDtoAudienceClient TrustedKeyResponseDtoAudience = "client"
-	TrustedKeyResponseDtoAudienceHuman  TrustedKeyResponseDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the TrustedKeyResponseDtoAudience enum.
-func (e TrustedKeyResponseDtoAudience) Valid() bool {
-	switch e {
-	case TrustedKeyResponseDtoAudienceClient:
-		return true
-	case TrustedKeyResponseDtoAudienceHuman:
 		return true
 	default:
 		return false
@@ -2380,7 +2344,7 @@ type GroupedStatsRequest_Condition struct {
 	union json.RawMessage
 }
 
-// InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
+// InvalidateKeyRequestDto Body of the key-pair invalidate request. Trusted keys have no grace period, and their invalidate request has no body.
 type InvalidateKeyRequestDto struct {
 	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once.
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
@@ -2609,12 +2573,7 @@ type ReactivateKeyRequestDto struct {
 
 // RegisterTrustedKeyRequestDto defines model for RegisterTrustedKeyRequestDto.
 type RegisterTrustedKeyRequestDto struct {
-	Audience RegisterTrustedKeyRequestDtoAudience `json:"audience"`
-
-	// InvalidateGracePeriodSec Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true): each keeps at most this long, and never past its current validTo. Default is 0 (immediate invalidation).
-	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
-
-	// InvalidatePrevious If true, invalidates all other keys for the same audience belonging to the caller's tenant. Enables atomic key rotation.
+	// InvalidatePrevious If true, invalidates every other key of the tenant at once.
 	InvalidatePrevious *bool `json:"invalidatePrevious,omitempty"`
 
 	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
@@ -2623,7 +2582,7 @@ type RegisterTrustedKeyRequestDto struct {
 	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
+	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs.
 	KeyId string `json:"keyId"`
 
 	// ValidFrom When the key becomes valid. Defaults to current time if not specified.
@@ -2632,9 +2591,6 @@ type RegisterTrustedKeyRequestDto struct {
 	// ValidTo When the key expires. Defaults to the system-configured maximum validity.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
-type RegisterTrustedKeyRequestDtoAudience string
 
 // ScheduleFunctionDto A Function callout that computes a scheduled transition's firing
 // time (and optionally its expiry) per entity, in place of a static
@@ -3137,15 +3093,14 @@ type TransitionScheduleDto struct {
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
-	// Active Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
-	Active   bool                          `json:"active"`
-	Audience TrustedKeyResponseDtoAudience `json:"audience"`
-	Issuers  *[]string                     `json:"issuers,omitempty"`
+	// Active Whether the key is currently active. False after invalidation; true after reactivation.
+	Active  bool      `json:"active"`
+	Issuers *[]string `json:"issuers,omitempty"`
 
 	// Jwk The registered public key in JWK format (RFC 7517). Contains only public key components.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier
+	// KeyId Key identifier, unique within the tenant
 	KeyId string `json:"keyId"`
 
 	// LegalEntityId The tenant this key is bound to
@@ -3157,9 +3112,6 @@ type TrustedKeyResponseDto struct {
 	// ValidTo When this key expires
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// TrustedKeyResponseDtoAudience defines model for TrustedKeyResponseDto.Audience.
-type TrustedKeyResponseDtoAudience string
 
 // UniqueKeyDto A composite unique key definition over one or more scalar leaf fields.
 type UniqueKeyDto struct {
@@ -4217,9 +4169,6 @@ type ReactivateJwtKeyPairJSONRequestBody = ReactivateKeyRequestDto
 
 // RegisterTrustedKeyJSONRequestBody defines body for RegisterTrustedKey for application/json ContentType.
 type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
-
-// InvalidateTrustedKeyJSONRequestBody defines body for InvalidateTrustedKey for application/json ContentType.
-type InvalidateTrustedKeyJSONRequestBody = InvalidateKeyRequestDto
 
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto

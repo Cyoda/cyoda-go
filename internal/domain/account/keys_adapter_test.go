@@ -94,14 +94,11 @@ func newTestKeyStore(t *testing.T) *auth.KVKeyStore {
 	return ks
 }
 
-// newTestTrustedStore is a KVTrustedKeyStore over a fresh in-memory KV store.
-func newTestTrustedStore(t *testing.T, opts ...auth.KVTrustedKeyStoreOption) *auth.KVTrustedKeyStore {
+// newTestTrustedStore is a KVTrustedKeyStore with no cap over a fresh
+// in-memory KV store.
+func newTestTrustedStore(t *testing.T) *auth.KVTrustedKeyStore {
 	t.Helper()
-	ts, err := auth.NewKVTrustedKeyStore(systemCtx(), newMemoryKV(t), opts...)
-	if err != nil {
-		t.Fatalf("trusted key store: %v", err)
-	}
-	return ts
+	return auth.NewKVTrustedKeyStore(newMemoryKV(t), 0)
 }
 
 func newHandler(t *testing.T) (*account.Handler, *auth.KVKeyStore, auth.TrustedKeyStore) {

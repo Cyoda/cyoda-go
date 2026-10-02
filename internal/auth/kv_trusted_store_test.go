@@ -1,18 +1,13 @@
 package auth_test
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
-	"math/big"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -32,14 +27,8 @@ func systemCtx() context.Context {
 }
 
 func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
-	// Shared KV backend (simulates restart — same storage, new store instance).
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
+	kvStore := mustNewMemoryKV(t, ctx)
 	key1, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
@@ -50,50 +39,25 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 		KID:       "persist-key-1",
 		TenantID:  spi.SystemTenantID,
 		PublicKey: &key1.PublicKey,
-		Audience:  "api://my-service",
 		Issuers:   []string{"https://issuer.example.com", "https://backup-issuer.example.com"},
 		Active:    true,
 		ValidFrom: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
 		ValidTo:   &expiry,
 	}
 
-	// --- Instance 1: register key ---
-	store1, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 1): %v", err)
-	}
-
-	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
+	store1 := auth.NewKVTrustedKeyStore(kvStore, 0)
+	if err := store1.Register(ctx, tk, false); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 
-	// Verify it's accessible on instance 1.
-	got, err := store1.Get(ctx, spi.SystemTenantID, "persist-key-1")
-	if err != nil {
-		t.Fatalf("Get on instance 1: %v", err)
-	}
-	if got.KID != "persist-key-1" || got.Audience != "api://my-service" || !got.Active {
-		t.Errorf("instance 1: unexpected key: KID=%s Audience=%s Active=%v", got.KID, got.Audience, got.Active)
-	}
-
-	// --- Instance 2: new store from same KV backend (simulates restart) ---
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
-	}
-
+	// A second instance over the same KV store (a restart, or another node).
+	store2 := auth.NewKVTrustedKeyStore(kvStore, 0)
 	got2, err := store2.Get(ctx, spi.SystemTenantID, "persist-key-1")
 	if err != nil {
-		t.Fatalf("Get on instance 2 (after simulated restart): %v", err)
+		t.Fatalf("Get on instance 2: %v", err)
 	}
-	if got2.KID != "persist-key-1" {
-		t.Errorf("expected KID persist-key-1, got %s", got2.KID)
-	}
-	if got2.Audience != "api://my-service" {
-		t.Errorf("expected audience api://my-service, got %s", got2.Audience)
-	}
-	if !got2.Active {
-		t.Error("expected key to be active")
+	if got2.KID != "persist-key-1" || !got2.Active {
+		t.Errorf("unexpected key: KID=%s Active=%v", got2.KID, got2.Active)
 	}
 	if len(got2.Issuers) != 2 || got2.Issuers[0] != "https://issuer.example.com" {
 		t.Errorf("expected 2 issuers, got %v", got2.Issuers)
@@ -104,137 +68,51 @@ func TestKVTrustedKeyStore_PersistsAcrossInstances(t *testing.T) {
 	if got2.ValidTo == nil || *got2.ValidTo != expiry {
 		t.Errorf("expected ValidTo %v, got %v", expiry, got2.ValidTo)
 	}
-	// Verify the RSA public key round-trips correctly.
-	if got2.PublicKey == nil {
-		t.Fatal("expected non-nil PublicKey")
-	}
-	if got2.PublicKey.N.Cmp(key1.PublicKey.N) != 0 || got2.PublicKey.E != key1.PublicKey.E {
+	if got2.PublicKey == nil || got2.PublicKey.N.Cmp(key1.PublicKey.N) != 0 || got2.PublicKey.E != key1.PublicKey.E {
 		t.Error("public key mismatch after round-trip")
 	}
 }
 
-// TestKVTrustedKeyStore_CrossNodeVisibility simulates two nodes sharing the same
-// KV backend. A key registered on node-1's store must be visible on node-2's
-// store WITHOUT restarting node-2. This is the multi-node OBO token exchange bug:
-// client registers trusted key via node-1 (LB), token exchange hits node-2 (LB),
-// node-2's cache doesn't have the key → "unknown trusted key".
-func TestKVTrustedKeyStore_CrossNodeVisibility(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
+// A key registered through one node's store verifies through another's at
+// once: there is no node copy to bring up to date.
+func TestKVTrustedKeyStore_RegisterVisibleOnEveryNodeAtOnce(t *testing.T) {
+	kv := mustNewMemoryKV(t, systemCtx())
+	a, b := auth.NewKVTrustedKeyStore(kv, 0), auth.NewKVTrustedKeyStore(kv, 0)
+	if err := a.Register(systemCtx(), newTrustedKey(t, "acme", "k1", time.Now().Add(-time.Minute)), false); err != nil {
+		t.Fatal(err)
 	}
-
-	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
-
-	// Both stores created from the same KV backend (simulates two nodes at startup)
-	store1, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (node-1): %v", err)
-	}
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (node-2): %v", err)
-	}
-
-	// Register key on node-1 AFTER both stores are created
-	tk := &auth.TrustedKey{
-		KID:       "cross-node-key",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &key1.PublicKey,
-		Audience:  "api://test",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
-		t.Fatalf("Register on node-1: %v", err)
-	}
-
-	// Node-2 must see the key without restart
-	got, err := store2.Get(ctx, spi.SystemTenantID, "cross-node-key")
-	if err != nil {
-		t.Fatalf("Get on node-2 should find key registered on node-1: %v", err)
-	}
-	if got.KID != "cross-node-key" {
-		t.Errorf("KID = %q, want %q", got.KID, "cross-node-key")
+	if _, err := b.GetForVerification(systemCtx(), "acme", "k1"); err != nil {
+		t.Fatalf("node b: %v", err)
 	}
 }
 
 func TestKVTrustedKeyStore_DeletePersists(t *testing.T) {
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
-	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tk := &auth.TrustedKey{
-		KID:       "del-key",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &key1.PublicKey,
-		Audience:  "test",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-
-	store1, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
+	kvStore := mustNewMemoryKV(t, ctx)
+	store1 := auth.NewKVTrustedKeyStore(kvStore, 0)
+	if err := store1.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "del-key", time.Now()), false); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	if err := store1.Delete(ctx, spi.SystemTenantID, "del-key"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-
-	// New instance should not see the deleted key.
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
-	}
-	_, err = store2.Get(ctx, spi.SystemTenantID, "del-key")
-	if err == nil {
-		t.Fatal("expected error for deleted key on new instance, got nil")
+	store2 := auth.NewKVTrustedKeyStore(kvStore, 0)
+	if _, err := store2.Get(ctx, spi.SystemTenantID, "del-key"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("deleted key on instance 2: err = %v, want ErrTrustedKeyNotFound", err)
 	}
 }
 
 func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
-	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tk := &auth.TrustedKey{
-		KID:       "toggle-key",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &key1.PublicKey,
-		Audience:  "test",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-
-	store1, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-	if err := store1.Register(ctx, tk, auth.RotateOptions{}); err != nil {
+	kvStore := mustNewMemoryKV(t, ctx)
+	store1 := auth.NewKVTrustedKeyStore(kvStore, 0)
+	if err := store1.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "toggle-key", time.Now()), false); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := store1.Invalidate(ctx, spi.SystemTenantID, "toggle-key", 0); err != nil {
+	if err := store1.Invalidate(ctx, spi.SystemTenantID, "toggle-key"); err != nil {
 		t.Fatalf("Invalidate: %v", err)
 	}
-
-	// New instance should see inactive key.
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
-	}
+	store2 := auth.NewKVTrustedKeyStore(kvStore, 0)
 	got, err := store2.Get(ctx, spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
@@ -243,16 +121,11 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 		t.Error("expected key to be inactive after persist")
 	}
 
-	// Reactivate and verify persists. Must supply a valid future validTo.
 	future := time.Now().Add(24 * time.Hour)
 	if err := store2.Reactivate(ctx, spi.SystemTenantID, "toggle-key", time.Now(), future); err != nil {
 		t.Fatalf("Reactivate: %v", err)
 	}
-	store3, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 3): %v", err)
-	}
-	got3, err := store3.Get(ctx, spi.SystemTenantID, "toggle-key")
+	got3, err := auth.NewKVTrustedKeyStore(kvStore, 0).Get(ctx, spi.SystemTenantID, "toggle-key")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -262,301 +135,187 @@ func TestKVTrustedKeyStore_InvalidateReactivatePersists(t *testing.T) {
 }
 
 // TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys verifies that the store
-// rejects Register once the configured cap is reached — defence against
-// memory/storage exhaustion via runaway trusted-key registration.
+// rejects Register once the configured cap is reached.
 func TestKVTrustedKeyStore_RegisterRespectsMaxTrustedKeys(t *testing.T) {
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
-	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore, auth.WithMaxTrustedKeys(3))
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-
+	store := auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, ctx), 3)
 	for i := 0; i < 3; i++ {
-		key, _ := rsa.GenerateKey(rand.Reader, 2048)
-		tk := &auth.TrustedKey{
-			KID:       "cap-key-" + string(rune('a'+i)),
-			TenantID:  spi.SystemTenantID,
-			PublicKey: &key.PublicKey,
-			Audience:  "svc",
-			Active:    true,
-			ValidFrom: time.Now().UTC(),
-		}
-		if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
+		if err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "cap-key-"+string(rune('a'+i)), time.Now()), false); err != nil {
 			t.Fatalf("Register %d: %v", i, err)
 		}
 	}
-
-	// Fourth registration must fail with a 400 Bad Request AppError.
-	overflowKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	overflow := &auth.TrustedKey{
-		KID:       "cap-key-overflow",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &overflowKey.PublicKey,
-		Audience:  "svc",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	err = store.Register(ctx, overflow, auth.RotateOptions{})
-	if err == nil {
-		t.Fatal("expected Register to reject 4th key when MaxTrustedKeys=3, got nil")
-	}
+	err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "cap-key-overflow", time.Now()), false)
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
 		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
 	}
-	if appErr.Status != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", appErr.Status)
-	}
-	if appErr.Code != common.ErrCodeTrustedKeyCapReached {
-		t.Errorf("code = %q, want %q", appErr.Code, common.ErrCodeTrustedKeyCapReached)
+	if appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeTrustedKeyCapReached {
+		t.Errorf("status=%d code=%q, want 400 %s", appErr.Status, appErr.Code, common.ErrCodeTrustedKeyCapReached)
 	}
 }
 
-// TestKVTrustedKeyStore_RegisterUpsertsSameKID pins the cyoda-cloud trusted-key
-// upsert contract. Same-tenant + same KID is the in-place replace path: the
-// new JWK material atomically replaces the old record under the same KID.
-// The endpoint is idempotent on KID — retrying a partially-failed
-// registration must succeed, not 409.
-func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
-	factory := memory.NewStoreFactory()
+// A rotation (invalidatePrevious) ends every other key of the tenant, so the
+// tenant holds one verifying key afterwards: the cap never refuses it.
+func TestKVTrustedKeyStore_RotationAtCapIsNotRefused(t *testing.T) {
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
+	store := auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, ctx), 2)
+	for _, kid := range []string{"a", "b"} {
+		if err := store.Register(ctx, newTrustedKey(t, "acme", kid, time.Now().Add(-time.Minute)), false); err != nil {
+			t.Fatalf("register %s: %v", kid, err)
+		}
 	}
+	if err := store.Register(ctx, newTrustedKey(t, "acme", "c", time.Now().Add(-time.Minute)), true); err != nil {
+		t.Fatalf("rotation at the cap: %v", err)
+	}
+	for _, kid := range []string{"a", "b"} {
+		if _, err := store.GetForVerification(ctx, "acme", kid); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+			t.Errorf("%s after rotation: err = %v, want ErrTrustedKeyNotFound", kid, err)
+		}
+	}
+	if _, err := store.GetForVerification(ctx, "acme", "c"); err != nil {
+		t.Fatalf("rotated-in key: %v", err)
+	}
+}
 
-	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-
-	originalKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	original := &auth.TrustedKey{
-		KID:       "rotate-kid",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &originalKey.PublicKey,
-		Audience:  "original-aud",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	if err := store.Register(ctx, original, auth.RotateOptions{}); err != nil {
+// TestKVTrustedKeyStore_RegisterUpsertsSameKID pins the upsert contract:
+// same tenant + same KID replaces the record, so a retried registration
+// succeeds.
+func TestKVTrustedKeyStore_RegisterUpsertsSameKID(t *testing.T) {
+	ctx := systemCtx()
+	kvStore := mustNewMemoryKV(t, ctx)
+	store := auth.NewKVTrustedKeyStore(kvStore, 0)
+	if err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "rotate-kid", time.Now()), false); err != nil {
 		t.Fatalf("first Register: %v", err)
 	}
-
-	// Re-register with new JWK material under the same KID. Per the cloud
-	// upsert contract this must succeed (not 409) and replace the record.
-	rotatedKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	rotated := &auth.TrustedKey{
-		KID:       "rotate-kid",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &rotatedKey.PublicKey,
-		Audience:  "rotated-aud",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
+	rotated := newTrustedKey(t, spi.SystemTenantID, "rotate-kid", time.Now())
+	rotated.Issuers = []string{"https://rotated.example.com"}
+	if err := store.Register(ctx, rotated, false); err != nil {
+		t.Fatalf("re-Register (upsert): %v", err)
 	}
-	if err := store.Register(ctx, rotated, auth.RotateOptions{}); err != nil {
-		t.Fatalf("re-Register (upsert): expected nil, got %v", err)
-	}
-
-	got, err := store.Get(ctx, spi.SystemTenantID, "rotate-kid")
+	got, err := auth.NewKVTrustedKeyStore(kvStore, 0).Get(ctx, spi.SystemTenantID, "rotate-kid")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if got.Audience != "rotated-aud" {
-		t.Errorf("audience = %q, want %q (upsert did not replace)", got.Audience, "rotated-aud")
-	}
-	if got.PublicKey.N.Cmp(rotatedKey.PublicKey.N) != 0 {
-		t.Error("modulus mismatch — upsert did not replace the JWK material")
-	}
-
-	// Persistence: a fresh store loaded from the same KV must see the
-	// rotated key, not the original.
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
-	}
-	got2, err := store2.Get(ctx, spi.SystemTenantID, "rotate-kid")
-	if err != nil {
-		t.Fatalf("Get on instance 2: %v", err)
-	}
-	if got2.Audience != "rotated-aud" {
-		t.Errorf("persisted audience = %q, want %q", got2.Audience, "rotated-aud")
+	if got.PublicKey.N.Cmp(rotated.PublicKey.N) != 0 || len(got.Issuers) != 1 || got.Issuers[0] != "https://rotated.example.com" {
+		t.Errorf("upsert did not replace the record: %+v", got)
 	}
 }
 
-// TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot guards an
-// adjacent invariant: an upsert (re-Register on an existing KID) must not
-// be blocked by a full registry cap, because the result does not grow the
-// registry. Without this, key rotation against a cap-saturated registry
-// would erroneously 409 with "registry full".
+// TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot: an upsert on an
+// existing KID is not blocked by a full cap, because it does not grow the
+// tenant's keys; a new KID still is.
 func TestKVTrustedKeyStore_RegisterUpsertDoesNotConsumeCapSlot(t *testing.T) {
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
-	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
-	}
-
-	store, err := auth.NewKVTrustedKeyStore(ctx, kvStore, auth.WithMaxTrustedKeys(2))
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-
-	for i, kid := range []string{"cap-a", "cap-b"} {
-		key, _ := rsa.GenerateKey(rand.Reader, 2048)
-		tk := &auth.TrustedKey{
-			KID:       kid,
-			TenantID:  spi.SystemTenantID,
-			PublicKey: &key.PublicKey,
-			Audience:  "svc",
-			Active:    true,
-			ValidFrom: time.Now().UTC(),
-		}
-		if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
-			t.Fatalf("Register %d (%s): %v", i, kid, err)
+	store := auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, ctx), 2)
+	for _, kid := range []string{"cap-a", "cap-b"} {
+		if err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, kid, time.Now()), false); err != nil {
+			t.Fatalf("Register %s: %v", kid, err)
 		}
 	}
-
-	// Registry now at cap (2/2). An upsert on cap-a must succeed.
-	rotatedKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	rotated := &auth.TrustedKey{
-		KID:       "cap-a",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &rotatedKey.PublicKey,
-		Audience:  "rotated",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
+	if err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "cap-a", time.Now()), false); err != nil {
+		t.Fatalf("upsert at the cap: %v", err)
 	}
-	if err := store.Register(ctx, rotated, auth.RotateOptions{}); err != nil {
-		t.Fatalf("upsert on cap-saturated registry: expected nil, got %v", err)
-	}
-
-	// Inserting a *new* KID (cap-c) must still be rejected — registry full.
-	newKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-	novel := &auth.TrustedKey{
-		KID:       "cap-c",
-		TenantID:  spi.SystemTenantID,
-		PublicKey: &newKey.PublicKey,
-		Audience:  "svc",
-		Active:    true,
-		ValidFrom: time.Now().UTC(),
-	}
-	err = store.Register(ctx, novel, auth.RotateOptions{})
-	if err == nil {
-		t.Fatal("expected Register of new KID at cap to be rejected, got nil")
-	}
+	err := store.Register(ctx, newTrustedKey(t, spi.SystemTenantID, "cap-c", time.Now()), false)
 	var appErr *common.AppError
-	if !errors.As(err, &appErr) {
-		t.Fatalf("expected *common.AppError, got %T: %v", err, err)
-	}
-	if appErr.Status != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", appErr.Status)
+	if !errors.As(err, &appErr) || appErr.Status != http.StatusBadRequest {
+		t.Fatalf("new KID at the cap: err = %v, want a 400 AppError", err)
 	}
 }
 
 func TestKVTrustedKeyStore_ListPersists(t *testing.T) {
-	factory := memory.NewStoreFactory()
 	ctx := systemCtx()
-	kvStore, err := factory.KeyValueStore(ctx)
+	kvStore := mustNewMemoryKV(t, ctx)
+	store1 := auth.NewKVTrustedKeyStore(kvStore, 0)
+	for _, kid := range []string{"list-2", "list-1"} {
+		if err := store1.Register(ctx, newTrustedKey(t, spi.SystemTenantID, kid, time.Now()), false); err != nil {
+			t.Fatalf("Register %s: %v", kid, err)
+		}
+	}
+	all, err := auth.NewKVTrustedKeyStore(kvStore, 0).List(ctx, spi.SystemTenantID)
 	if err != nil {
-		t.Fatalf("KeyValueStore: %v", err)
+		t.Fatalf("List: %v", err)
 	}
-
-	key1, _ := rsa.GenerateKey(rand.Reader, 2048)
-	key2, _ := rsa.GenerateKey(rand.Reader, 2048)
-
-	store1, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-	if err := store1.Register(ctx, &auth.TrustedKey{
-		KID: "list-1", TenantID: spi.SystemTenantID, PublicKey: &key1.PublicKey, Audience: "a", Active: true, ValidFrom: time.Now().UTC(),
-	}, auth.RotateOptions{}); err != nil {
-		t.Fatalf("Register list-1: %v", err)
-	}
-	if err := store1.Register(ctx, &auth.TrustedKey{
-		KID: "list-2", TenantID: spi.SystemTenantID, PublicKey: &key2.PublicKey, Audience: "b", Active: true, ValidFrom: time.Now().UTC(),
-	}, auth.RotateOptions{}); err != nil {
-		t.Fatalf("Register list-2: %v", err)
-	}
-
-	// New instance should list both.
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kvStore)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore (instance 2): %v", err)
-	}
-	all := store2.List(spi.SystemTenantID)
-	if len(all) != 2 {
-		t.Errorf("expected 2 keys on new instance, got %d", len(all))
+	if len(all) != 2 || all[0].KID != "list-1" || all[1].KID != "list-2" {
+		t.Errorf("List = %v, want list-1, list-2 in kid order", all)
 	}
 }
 
-func TestKVTrustedKeyStore_TenantScopedKeyEncoding(t *testing.T) {
+// The storage layout: one namespace per tenant ("trusted-keys:<tenant>"),
+// keyed by kid, and no audience in the record.
+func TestKVTrustedKeyStore_PerTenantNamespaceLayout(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	store, err := auth.NewKVTrustedKeyStore(ctx, kv)
-	if err != nil {
-		t.Fatalf("new: %v", err)
-	}
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tID := spi.TenantID("tenant-a")
-	tk := &auth.TrustedKey{KID: "k1", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "k1"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	if err := store.Register(ctx, tk, auth.RotateOptions{}); err != nil {
+	store := auth.NewKVTrustedKeyStore(kv, 0)
+	if err := store.Register(ctx, newTrustedKey(t, "tenant-a", "k1", time.Now()), false); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	all, err := kv.List(ctx, "trusted-keys")
+	all, err := kv.List(ctx, "trusted-keys:tenant-a")
 	if err != nil {
 		t.Fatalf("kv list: %v", err)
 	}
-	if _, ok := all["tenant-a:k1"]; !ok {
-		t.Errorf("expected key 'tenant-a:k1' in KV; keys: %v", mapKeys(all))
+	data, ok := all["k1"]
+	if !ok || len(all) != 1 {
+		t.Fatalf("namespace trusted-keys:tenant-a holds %v, want exactly k1", mapKeys(all))
+	}
+	var rec map[string]any
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, has := rec["audience"]; has {
+		t.Errorf("record carries an audience: %s", data)
+	}
+	if rec["tenantID"] != "tenant-a" || rec["kid"] != "k1" {
+		t.Errorf("record = %s", data)
 	}
 }
 
-func TestKVTrustedKeyStore_NoCrossTenantCachePollution(t *testing.T) {
+// A record is bound to the namespace and KV key it is stored under: a
+// record copied into another tenant's namespace is not that tenant's key.
+// It does not decode — a store error, never a key that verifies.
+func TestKVTrustedKeyStore_RecordBoundToItsNamespace(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tA := spi.TenantID("tenant-a")
-	tB := spi.TenantID("tenant-b")
-	tk := &auth.TrustedKey{KID: "k1", TenantID: tA, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "k1"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = store.Register(ctx, tk, auth.RotateOptions{})
-	if _, err := store.Get(ctx, tA, "k1"); err != nil {
-		t.Fatalf("A.Get: %v", err)
+	store := auth.NewKVTrustedKeyStore(kv, 0)
+	if err := store.Register(ctx, newTrustedKey(t, "tenant-a", "k1", time.Now().Add(-time.Minute)), false); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := store.Get(ctx, tB, "k1"); err == nil {
-		t.Error("B.Get(k1) leaked A's key")
+	data, err := kv.Get(ctx, "trusted-keys:tenant-a", "k1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := store.Get(ctx, tA, "k1"); err != nil {
-		t.Errorf("A.Get post-B failure: %v", err)
+	if err := kv.Put(ctx, "trusted-keys:tenant-b", "k1", data); err != nil {
+		t.Fatal(err)
+	}
+	if err := kv.Put(ctx, "trusted-keys:tenant-a", "k2", data); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		tenant spi.TenantID
+		kid    string
+	}{{"tenant-b", "k1"}, {"tenant-a", "k2"}} {
+		if _, err := store.GetForVerification(ctx, c.tenant, c.kid); err == nil || errors.Is(err, auth.ErrTrustedKeyNotFound) {
+			t.Errorf("%s/%s: err = %v, want a decode error", c.tenant, c.kid, err)
+		}
+	}
+	list, err := store.List(ctx, "tenant-b")
+	if err != nil || len(list) != 0 {
+		t.Errorf("tenant-b list = %v, %v; want empty", list, err)
 	}
 }
 
 func TestKVTrustedKeyStore_RoundTripsTenantIDAndJWK(t *testing.T) {
 	ctx := systemCtx()
 	kv := mustNewMemoryKV(t, ctx)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	tID := spi.TenantID("t1")
-	originalJWK := map[string]any{"kty": "RSA", "kid": "k", "extra": "field"}
-	tk := &auth.TrustedKey{KID: "k", TenantID: tID, PublicKey: &priv.PublicKey, JWK: originalJWK, Audience: "human", Active: true, ValidFrom: time.Now()}
-	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	_ = store.Register(ctx, tk, auth.RotateOptions{})
-	store2, err := auth.NewKVTrustedKeyStore(ctx, kv)
-	if err != nil {
-		t.Fatalf("reload: %v", err)
+	tk := newTrustedKey(t, "t1", "k", time.Now())
+	tk.JWK = map[string]any{"kty": "RSA", "kid": "k", "extra": "field"}
+	if err := auth.NewKVTrustedKeyStore(kv, 0).Register(ctx, tk, false); err != nil {
+		t.Fatal(err)
 	}
-	got, err := store2.Get(ctx, tID, "k")
+	got, err := auth.NewKVTrustedKeyStore(kv, 0).Get(ctx, "t1", "k")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.TenantID != tID {
+	if got.TenantID != "t1" {
 		t.Errorf("TenantID lost: %q", got.TenantID)
 	}
 	if got.JWK["extra"] != "field" {
@@ -582,14 +341,11 @@ func mustNewMemoryKV(t *testing.T, ctx context.Context) spi.KeyValueStore {
 	return kv
 }
 
-// newTestTrustedStore is a KVTrustedKeyStore over a fresh in-memory KV store.
-func newTestTrustedStore(t *testing.T, opts ...auth.KVTrustedKeyStoreOption) *auth.KVTrustedKeyStore {
+// newTestTrustedStore is a KVTrustedKeyStore with no cap over a fresh
+// in-memory KV store.
+func newTestTrustedStore(t *testing.T) *auth.KVTrustedKeyStore {
 	t.Helper()
-	s, err := auth.NewKVTrustedKeyStore(systemCtx(), mustNewMemoryKV(t, systemCtx()), opts...)
-	if err != nil {
-		t.Fatalf("NewKVTrustedKeyStore: %v", err)
-	}
-	return s
+	return auth.NewKVTrustedKeyStore(mustNewMemoryKV(t, systemCtx()), 0)
 }
 
 // newTestAuthService builds an AuthService over a fresh in-memory KV store;
@@ -604,41 +360,7 @@ func newTestAuthService(t *testing.T, cfg auth.AuthConfig) *auth.AuthService {
 	return svc
 }
 
-func TestKVTrustedKeyStore_LoadAll_SkipsOldShape_EmitsWARN(t *testing.T) {
-	ctx := systemCtx()
-	kv := mustNewMemoryKV(t, ctx)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
-	rec := map[string]any{
-		"kid": "old1", "audience": "human", "active": true, "validFrom": time.Now(),
-		"n": base64.RawURLEncoding.EncodeToString(priv.PublicKey.N.Bytes()),
-		"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(priv.PublicKey.E)).Bytes()),
-	}
-	data, _ := json.Marshal(rec)
-	if err := kv.Put(ctx, "trusted-keys", "old1", data); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	if err := kv.Put(ctx, "trusted-keys", "old2", data); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
-	defer slog.SetDefault(prev)
-	store, err := auth.NewKVTrustedKeyStore(ctx, kv)
-	if err != nil {
-		t.Fatalf("new: %v", err)
-	}
-	if got := store.List(spi.TenantID("any")); len(got) != 0 {
-		t.Errorf("legacy entries should not surface; got %d", len(got))
-	}
-	if !strings.Contains(buf.String(), "pre-v0.8.0 trusted-key entries") {
-		t.Errorf("expected WARN; got: %s", buf.String())
-	}
-	if !strings.Contains(buf.String(), "count=2") {
-		t.Errorf("expected count=2; got: %s", buf.String())
-	}
-}
-
+// failingKV fails a Put of KV key failOn, in any namespace.
 type failingKV struct {
 	spi.KeyValueStore
 	failOn string
@@ -651,31 +373,33 @@ func (f *failingKV) Put(ctx context.Context, ns, key string, value []byte) error
 	return f.KeyValueStore.Put(ctx, ns, key, value)
 }
 
-// TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange verifies that if the
-// new-key KV write itself fails (before any sibling flips), no state changes.
-func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
+// A rotation writes the previous keys first and the new key last: when the
+// new key's write fails, the new key is absent and the previous key is
+// already ended — fail closed; a retry completes the rotation.
+func TestKVTrustedKeyStore_RotationNewKeyWriteFailureFailsClosed(t *testing.T) {
 	ctx := systemCtx()
 	mem := mustNewMemoryKV(t, ctx)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
 	tID := spi.TenantID("t")
-	pre, _ := auth.NewKVTrustedKeyStore(ctx, mem)
-	a := &auth.TrustedKey{KID: "a", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "a"}, Audience: "human", Active: true, ValidFrom: time.Now()}
-	_ = pre.Register(ctx, a, auth.RotateOptions{})
-
-	// Inject failure on the NEW KEY write (key 't:b'). No sibling should be touched.
-	kv := &failingKV{KeyValueStore: mem, failOn: auth.TrustedKeyKVKeyForTesting(tID, "b")}
-	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	b := &auth.TrustedKey{KID: "b", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA", "kid": "b"}, Audience: "human", Active: true, ValidFrom: time.Now().Add(1 * time.Second)}
-	err := store.Register(ctx, b, auth.RotateOptions{Invalidate: true, GracePeriodSec: 60})
-	if err == nil {
+	if err := auth.NewKVTrustedKeyStore(mem, 0).Register(ctx, newTrustedKey(t, tID, "a", time.Now().Add(-time.Minute)), false); err != nil {
+		t.Fatal(err)
+	}
+	store := auth.NewKVTrustedKeyStore(&failingKV{KeyValueStore: mem, failOn: "b"}, 0)
+	b := newTrustedKey(t, tID, "b", time.Now().Add(-time.Minute))
+	if err := store.Register(ctx, b, true); err == nil {
 		t.Fatal("expected error from new-key KV write failure")
 	}
-	if _, e := store.Get(ctx, tID, "b"); e == nil {
-		t.Error("new key b should NOT be visible after its own write failed")
+	if _, err := store.Get(ctx, tID, "b"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Errorf("new key b after its own write failed: err = %v, want ErrTrustedKeyNotFound", err)
 	}
-	gotA, _ := store.Get(ctx, tID, "a")
-	if gotA == nil || !gotA.Active {
-		t.Errorf("sibling a should still be active (no flip attempted): %+v", gotA)
+	if _, err := store.GetForVerification(ctx, tID, "a"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Errorf("previous key a still verifies: err = %v", err)
+	}
+	retry := auth.NewKVTrustedKeyStore(mem, 0)
+	if err := retry.Register(ctx, b, true); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	if _, err := retry.GetForVerification(ctx, tID, "b"); err != nil {
+		t.Fatalf("b after retry: %v", err)
 	}
 }
 
@@ -685,30 +409,96 @@ func TestKVTrustedKeyStore_NewKeyWriteFailure_NoStateChange(t *testing.T) {
 // bypassing the adapter cannot accidentally create an immortal key.
 func TestKVTrustedKeyStore_Reactivate_RejectsZeroValidTo(t *testing.T) {
 	ctx := systemCtx()
-	kv := mustNewMemoryKV(t, ctx)
-	store, _ := auth.NewKVTrustedKeyStore(ctx, kv)
-	priv, _ := rsa.GenerateKey(rand.Reader, 2048)
+	store := newTestTrustedStore(t)
 	tID := spi.TenantID("t1")
 	past := time.Now().Add(-1 * time.Hour)
-	tk := &auth.TrustedKey{KID: "k", TenantID: tID, PublicKey: &priv.PublicKey, JWK: map[string]any{"kty": "RSA"}, Audience: "human", Active: false, ValidFrom: past, ValidTo: &past}
-	_ = store.Register(ctx, tk, auth.RotateOptions{})
-
-	// Zero validTo must be rejected.
+	tk := newTrustedKey(t, tID, "k", past)
+	tk.Active, tk.ValidTo = false, &past
+	if err := store.Register(ctx, tk, false); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Reactivate(ctx, tID, "k", time.Now(), time.Time{}); err == nil {
 		t.Error("expected error for zero validTo")
 	}
-	// Past validTo must be rejected.
 	if err := store.Reactivate(ctx, tID, "k", past.Add(-1*time.Hour), past); err == nil {
 		t.Error("expected error for past validTo")
 	}
-	// validTo before validFrom must be rejected.
 	future := time.Now().Add(24 * time.Hour)
 	wayFuture := time.Now().Add(48 * time.Hour)
 	if err := store.Reactivate(ctx, tID, "k", wayFuture, future); err == nil {
 		t.Error("expected error for validTo < validFrom")
 	}
-	// Valid call must succeed.
 	if err := store.Reactivate(ctx, tID, "k", time.Now(), future); err != nil {
 		t.Errorf("valid Reactivate failed: %v", err)
+	}
+}
+
+func TestKVTrustedKeyStore_SameKidInTwoTenants(t *testing.T) {
+	kv := mustNewMemoryKV(t, systemCtx())
+	s := auth.NewKVTrustedKeyStore(kv, 10)
+	ka, kb := generateTestKey(t), generateTestKey(t)
+	for tenant, key := range map[spi.TenantID]*rsa.PrivateKey{"acme": ka, "beta": kb} {
+		if err := s.Register(systemCtx(), &auth.TrustedKey{KID: "k1", TenantID: tenant,
+			PublicKey: &key.PublicKey, Active: true, ValidFrom: time.Now().Add(-time.Minute)}, false); err != nil {
+			t.Fatalf("register in %s: %v", tenant, err)
+		}
+	}
+	got, err := s.GetForVerification(systemCtx(), "acme", "k1")
+	if err != nil || got.PublicKey.N.Cmp(ka.PublicKey.N) != 0 {
+		t.Fatalf("acme k1 = %v, %v; want acme's key", got, err)
+	}
+	list, err := s.List(systemCtx(), "beta")
+	if err != nil || len(list) != 1 || list[0].PublicKey.N.Cmp(kb.PublicKey.N) != 0 {
+		t.Fatalf("beta list = %v, %v", list, err)
+	}
+}
+
+func TestKVTrustedKeyStore_InvalidateEndsAtOnce(t *testing.T) {
+	kv := mustNewMemoryKV(t, systemCtx())
+	s := auth.NewKVTrustedKeyStore(kv, 10)
+	key := generateTestKey(t)
+	_ = s.Register(systemCtx(), &auth.TrustedKey{KID: "k1", TenantID: "acme", PublicKey: &key.PublicKey,
+		Active: true, ValidFrom: time.Now().Add(-time.Minute)}, false)
+	if err := s.Invalidate(systemCtx(), "acme", "k1"); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	if _, err := s.GetForVerification(systemCtx(), "acme", "k1"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("after invalidate: %v, want ErrTrustedKeyNotFound", err)
+	}
+	// A second store instance over the same KV (another node) agrees at once.
+	other := auth.NewKVTrustedKeyStore(kv, 10)
+	if _, err := other.GetForVerification(systemCtx(), "acme", "k1"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+		t.Fatalf("other node after invalidate: %v", err)
+	}
+}
+
+func TestKVTrustedKeyStore_ListKeepsUnavailableMarker(t *testing.T) {
+	s := auth.NewKVTrustedKeyStore(brokenKV{}, 10) // the storage-unavailable fake in kv_m2m_store_test.go
+	_, err := s.List(systemCtx(), "acme")
+	var su interface{ StorageUnavailable() bool }
+	if !errors.As(err, &su) || !su.StorageUnavailable() {
+		t.Fatalf("List error lost its storage-unavailable marker: %v", err)
+	}
+}
+
+// The exchange's read keeps the storage-unavailable marker too, and is never
+// read as "no such key".
+func TestKVTrustedKeyStore_GetForVerificationKeepsUnavailableMarker(t *testing.T) {
+	s := auth.NewKVTrustedKeyStore(brokenKV{}, 10)
+	_, err := s.GetForVerification(systemCtx(), "acme", "k1")
+	var su interface{ StorageUnavailable() bool }
+	if errors.Is(err, auth.ErrTrustedKeyNotFound) || !errors.As(err, &su) || !su.StorageUnavailable() {
+		t.Fatalf("err = %v, want a storage-unavailable store error", err)
+	}
+}
+
+// A kid outside the trusted-key grammar comes from an untrusted subject
+// token header: it is refused as not found without reaching the store.
+func TestKVTrustedKeyStore_GetForVerificationRefusesMalformedKidWithoutReading(t *testing.T) {
+	s := auth.NewKVTrustedKeyStore(brokenKV{}, 10) // any read would error
+	for _, kid := range []string{"", "a b", "a:b", "a/b", "\x00", string(make([]byte, 129))} {
+		if _, err := s.GetForVerification(systemCtx(), "acme", kid); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
+			t.Errorf("%q: err = %v, want ErrTrustedKeyNotFound without a store read", kid, err)
+		}
 	}
 }
