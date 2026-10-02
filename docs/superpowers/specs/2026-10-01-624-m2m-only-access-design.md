@@ -510,6 +510,9 @@ Waivers:
 - Mock-mode `501` on `POST /clients`: unit only; the e2e suite runs in JWT mode.
 - Concurrency (exchange racing key invalidation, secret reset racing a cached
   grant): isolated single-backend e2e, not parity.
+- Scheduled fire armed by an OBO request inside its own joined transaction:
+  parity covers the direct case only; the compute test client has no OBO token
+  support. Unit, e2e and gRPC cover the joined case.
 - Cassandra: attribution persistence (`AttributedKind`, `Executor`, `ArmedBy`)
   is not recorded by the cassandra backend. The cassandra pin bump to this SPI
   waits for that support; until then the attribution parity rows run on
