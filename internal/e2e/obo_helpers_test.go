@@ -38,8 +38,13 @@ type oboSigner struct {
 // oboSigners caches one oboSigner per (server, tenant, admin signing key).
 // The signing key is part of the key because a per-test stack signs its
 // admin tokens with a key of its own and can reuse a port a finished stack
-// held. The client and the trusted key are never deleted: each tenant holds
-// at most one of each, far under its caps.
+// held. On the shared server the client and the trusted key are never
+// deleted: the tenant holds one of each for the run, far under its caps. A
+// harness stack's signer belongs to the test that asked for it — the test's
+// name is part of the key — and is deleted when that test ends: every stack
+// of the package stores into the one database, under the same tenant as the
+// shared server, so a key left behind by each stack would fill the tenant's
+// trusted-key cap.
 var oboSigners = struct {
 	sync.Mutex
 	m map[string]*oboSigner
@@ -98,6 +103,18 @@ func oboTokenOn(t *testing.T, baseURL, adminToken, user string) string {
 	return out.AccessToken
 }
 
+// oboClientOf is the id of the on-behalf-of client an OBO token was issued
+// to: its act.sub, the executor every write the token makes records.
+func oboClientOf(t *testing.T, oboTok string) string {
+	t.Helper()
+	act, _ := decodeJWTPayload(t, oboTok)["act"].(map[string]any)
+	id, _ := act["sub"].(string)
+	if id == "" {
+		t.Fatal("oboClientOf: the token carries no act.sub")
+	}
+	return id
+}
+
 // oboSignerFor returns the cached oboSigner of tenant on baseURL, creating
 // it as adminToken on first use.
 func oboSignerFor(t *testing.T, baseURL, adminToken, tenant string) *oboSigner {
@@ -108,6 +125,10 @@ func oboSignerFor(t *testing.T, baseURL, adminToken, tenant string) *oboSigner {
 	}
 	adminKID, _ := parsed.Header["kid"].(string)
 	cacheKey := baseURL + "|" + tenant + "|" + adminKID
+	testOwned := baseURL != serverURL
+	if testOwned {
+		cacheKey += "|" + t.Name()
+	}
 
 	oboSigners.Lock()
 	defer oboSigners.Unlock()
@@ -138,6 +159,22 @@ func oboSignerFor(t *testing.T, baseURL, adminToken, tenant string) *oboSigner {
 
 	s := &oboSigner{clientID: cred.id, secret: cred.secret, key: key, kid: kid}
 	oboSigners.m[cacheKey] = s
+	if testOwned {
+		// Registered after the stack's own cleanups, so these run first,
+		// while the stack still serves.
+		deleteClientAtCleanup(t, baseURL, cred.id, func() string { return adminToken })
+		t.Cleanup(func() {
+			del := doAuthAgainst(t, baseURL, adminToken, http.MethodDelete, "/api/oauth/keys/trusted/"+kid, "")
+			delRaw, _ := io.ReadAll(del.Body)
+			del.Body.Close()
+			if del.StatusCode != http.StatusOK {
+				t.Errorf("cleanup: delete trusted key %s: %d %s", kid, del.StatusCode, delRaw)
+			}
+			oboSigners.Lock()
+			defer oboSigners.Unlock()
+			delete(oboSigners.m, cacheKey)
+		})
+	}
 	return s
 }
 

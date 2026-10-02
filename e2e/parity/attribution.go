@@ -377,3 +377,98 @@ func mustChanges(t *testing.T, c *client.Client, entityID uuid.UUID) []client.En
 	}
 	return changes
 }
+
+// oboClientIDOf is the id of the on-behalf-of client an OBO token was issued
+// to (its act.sub): the executor every write under the token records.
+func oboClientIDOf(t *testing.T, oboTok string) string {
+	t.Helper()
+	act, _ := tokenClaims(t, oboTok)["act"].(map[string]any)
+	id, _ := act["sub"].(string)
+	if id == "" {
+		t.Fatal("the on-behalf-of token carries no act.sub")
+	}
+	return id
+}
+
+// assertOBOAttribution checks that entry records alice, of kind user, executed
+// by a service principal — the one named execID when it is non-empty.
+func assertOBOAttribution(t *testing.T, entry *client.EntityChangeMeta, label, execID string) {
+	t.Helper()
+	if entry == nil {
+		t.Fatalf("%s: no CREATE change", label)
+	}
+	if entry.User != "alice" || entry.AttributedKind != "user" {
+		t.Errorf("%s: attributed {%q, %q}; want {alice, user}", label, entry.User, entry.AttributedKind)
+	}
+	if entry.ExecutedBy == nil {
+		t.Fatalf("%s: missing executedBy: %+v", label, entry)
+	}
+	if entry.ExecutedBy.Kind != "service" {
+		t.Errorf("%s: executor kind = %q; want service", label, entry.ExecutedBy.Kind)
+	}
+	if execID != "" && entry.ExecutedBy.ID != execID {
+		t.Errorf("%s: executor id = %q; want %q", label, entry.ExecutedBy.ID, execID)
+	}
+}
+
+// RunAttributionOBOWrite pins on-behalf-of attribution across backends: an
+// entity created with alice's on-behalf-of token records alice, of kind user,
+// executed by the OBO client that holds the token.
+func RunAttributionOBOWrite(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "attr-obo-write"
+	setupSimpleWorkflow(t, admin, modelName, 1)
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	id, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, modelName, 1, `{"name":"x","amount":1,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("create as alice (OBO): %v", err)
+	}
+	assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, id), "CREATE"), "OBO write", oboClientIDOf(t, alice))
+}
+
+// RunAttributionOBOWriteBack pins compute write-back attribution inside an
+// on-behalf-of transaction across backends: alice's on-behalf-of token creates
+// the primary; its SYNC processor's callback, made with the compute client's
+// own token, creates a secondary joined to alice's transaction. The secondary
+// records alice — the transaction's origin — executed by the compute client,
+// a service principal that is neither alice nor the OBO client.
+func RunAttributionOBOWriteBack(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "attr-obo-wb-secondary"
+	const primary = "attr-obo-wb-primary"
+	cbSetupModel(t, admin, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, admin, primary, cbSampleCreateSecondary,
+		cbPrimaryProcWorkflow("attr-obo-wb-wf", "cb-create-secondary", "SYNC", cbContext(secondary, "attr-obo-wb-mark")))
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	oboID := oboClientIDOf(t, alice)
+	primaryID, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create as alice (OBO): %v", err)
+	}
+	prim, err := admin.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	secIDStr, _ := prim.Data["secondaryId"].(string)
+	if secIDStr == "" {
+		t.Fatalf("primary data missing secondaryId (callback did not create secondary): data=%+v", prim.Data)
+	}
+	secID, err := uuid.Parse(secIDStr)
+	if err != nil {
+		t.Fatalf("parse secondaryId %q: %v", secIDStr, err)
+	}
+
+	assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, primaryID), "CREATE"), "primary OBO write", oboID)
+	sec := findChangeByType(mustChanges(t, admin, secID), "CREATE")
+	assertOBOAttribution(t, sec, "secondary write-back", "")
+	if sec.ExecutedBy.ID == "alice" || sec.ExecutedBy.ID == oboID {
+		t.Errorf("secondary write-back executor id = %q; want the compute client, neither alice nor the OBO client %q",
+			sec.ExecutedBy.ID, oboID)
+	}
+}

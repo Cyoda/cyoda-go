@@ -6,6 +6,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A callback authenticated with an on-behalf-of token may join only a
+  transaction begun for the same user (`403 FORBIDDEN` otherwise).** The
+  transaction token binds no caller, and an on-behalf-of write records its own
+  user; a compute node presenting one user's transaction token with another
+  user's on-behalf-of token is refused (`403 FORBIDDEN`, "an on-behalf-of
+  request may join only its own user's transaction"; over gRPC, the RPC's
+  error envelope with that message). A compute client's own token joins as
+  before, and its writes record the transaction's user, executed by the
+  compute client. An on-behalf-of write records the user (`attributedKind`
+  `user`) with the on-behalf-of client as `executedBy`.
+
 - **Every API operation requires `ROLE_M2M`, except account, client,
   trusted-key, key-pair and `/admin` operations (guarded by their admin or
   operator rule) and `GET /account`.** The exempt account operation is

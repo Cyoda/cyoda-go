@@ -25,6 +25,7 @@ import (
 //	forged / bad-HMAC token              → 401 UNAUTHORIZED
 //	pass with no callout and number      → 401 UNAUTHORIZED
 //	token tenant ≠ caller tenant         → 403 FORBIDDEN
+//	OBO caller, another user's tx        → 403 FORBIDDEN
 //	empty token (control)                → 2xx standalone
 //
 // Single-node uses an EPHEMERAL signer secret, so tokens the server will accept
@@ -331,4 +332,53 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 			t.Fatal("timeout: primary create did not complete after release")
 		}
 	})
+}
+
+// TestCallbackJoin_OBOOtherUser_403: alice's on-behalf-of token creates X; X's
+// SYNC processor calls back with the pass of alice's transaction but presents
+// bob's on-behalf-of token. The pass binds no caller, and an OBO write records
+// its own user, so admitting it would record bob inside alice's transaction:
+// the join is refused 403 FORBIDDEN and no Y exists.
+func TestCallbackJoin_OBOOtherUser_403(t *testing.T) {
+	h := newCallbackHarness(t)
+
+	const primary = "cbj-obo-other-primary"
+	const secondary = "cbj-obo-other-secondary"
+	h.SetupModelWithWorkflow(t, secondary, secondaryWorkflow)
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	bob := oboTokenOn(t, h.baseURL, h.token(t), "bob")
+	results := make(chan callbackResult, 1)
+	h.RegisterProc("cbj-obo-other-proc", func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.CreateEntityAs(bob, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("callback as bob: %w", err)
+		}
+		results <- res
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, procCascadeWF("cbj-obo-other", "cbj-obo-other-proc", "SYNC", ""))
+
+	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("create X as alice (OBO): %d %s", status, body)
+	}
+
+	var res callbackResult
+	select {
+	case res = <-results:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: processor did not call back")
+	}
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("callback as bob: %d; want 403 (body: %s)", res.StatusCode, res.Body)
+	}
+	if code := problemErrorCode(res.Body); code != "FORBIDDEN" {
+		t.Errorf("errorCode = %q; want FORBIDDEN (body: %s)", code, res.Body)
+	}
+	if d := problemDetail(t, res.Body); !strings.Contains(d, "an on-behalf-of request may join only its own user's transaction") {
+		t.Errorf("detail = %q; want it to name the own-user rule", d)
+	}
+	if n := h.countEntities(t, secondary); n != 0 {
+		t.Fatalf("%d %s entities exist; want none", n, secondary)
+	}
 }

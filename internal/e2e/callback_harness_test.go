@@ -230,6 +230,9 @@ func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure fu
 	// callback_txjoin_errors_test.go), rather than reaching into the store
 	// directly.
 	cfg.IAM.M2MAdminRoleEnabled = true
+	// TrustedKeyRegistrationEnabled so a test can mint on-behalf-of tokens on
+	// this stack (oboTokenOn registers the application's trusted key).
+	cfg.IAM.TrustedKeyRegistrationEnabled = true
 	// IMPORTANT: do NOT set cfg.ExternalProcessing — leaving it nil selects the
 	// owner's loop over the real dispatcher, which mints and attaches the cyodatxtoken.
 

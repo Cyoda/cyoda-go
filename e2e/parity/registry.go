@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 224 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 226 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -363,6 +363,11 @@ var allTests = []NamedTest{
 	{"AttributionExecutorRoundTrip", RunAttributionExecutorRoundTrip},
 	{"AttributionScheduledArmedByFire", RunAttributionScheduledArmedByFire},
 	{"AttributionCascadeJoinedWrite", RunAttributionCascadeJoinedWrite},
+	// On-behalf-of: an OBO write records its user executed by the OBO client;
+	// a compute write-back in that user's transaction records the user
+	// executed by the compute client.
+	{"AttributionOBOWrite", RunAttributionOBOWrite},
+	{"AttributionOBOWriteBack", RunAttributionOBOWriteBack},
 
 	// Spec §10 backend-agnostic scenarios that lacked a dedicated named
 	// parity scenario (search_type_directed.go). Data-field temporal

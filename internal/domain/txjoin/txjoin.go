@@ -180,10 +180,20 @@ func (j *Joiner) Verify(tok string) (*Pass, error) {
 // three 404 causes are deliberately one answer: a transaction that never
 // existed does not read differently from one that has finished.
 //
+// An on-behalf-of request — a principal with an Executor — joins only a
+// transaction whose origin is its own user. The pass binds no caller, and an
+// on-behalf-of write attributes to its own user rather than to the
+// transaction's origin, so without this check a compute node presenting the
+// pass with another user's on-behalf-of token would be recorded as that user
+// inside the first user's transaction. It runs after Join, which supplies the
+// origin, and before the fence, so a refused request absorbs nothing. A
+// service client's join is unchecked: its writes attribute to the origin.
+//
 // Error mapping:
 //
 //	spi.ErrTxTenantMismatch                      → 403 FORBIDDEN
 //	spi.ErrTxNotFound/RolledBack/AlreadyCommitted → 404 TRANSACTION_NOT_FOUND
+//	an on-behalf-of request, another origin       → 403 FORBIDDEN
 //	a pass that is no longer current              → 410 CALLOUT_SUPERSEDED
 func (j *Joiner) join(ctx context.Context, pass *Pass) (context.Context, error) {
 	claims := pass.claims
@@ -198,6 +208,14 @@ func (j *Joiner) join(ctx context.Context, pass *Pass) (context.Context, error) 
 			return ctx, common.Operational(http.StatusNotFound, common.ErrCodeTransactionNotFound, "transaction not found or no longer active")
 		default:
 			return ctx, common.Internal("failed to join transaction", err)
+		}
+	}
+
+	if uc := spi.GetUserContext(ctx); uc != nil && uc.Executor != nil {
+		own := spi.Principal{ID: uc.UserID, Kind: uc.Kind}
+		if tx := spi.GetTransaction(joined); tx == nil || tx.Origin != own {
+			return ctx, common.Operational(http.StatusForbidden, common.ErrCodeForbidden,
+				"an on-behalf-of request may join only its own user's transaction")
 		}
 	}
 
@@ -241,10 +259,10 @@ func (j *Joiner) Run(ctx context.Context, tok string, handler func(ctx context.C
 // the transaction's users are its current compute node's callbacks, one at a
 // time.
 //
-// Order: verify (done) → Join (tenant) → Admit → take the lock, which is where
-// the queue's cap is applied → Check under the lock → handler → release. The
-// check under the lock is the one that gives
-// the right to touch the transaction: the owner's wait takes the same lock, so
+// Order: verify (done) → Join (tenant) → an on-behalf-of request's own-user
+// check → Admit → take the lock, which is where the queue's cap is applied →
+// Check under the lock → handler → release. The check under the lock is the
+// one that gives the right to touch the transaction: the owner's wait takes the same lock, so
 // a request either passed this check before the number rose — and the owner
 // waits for it — or is refused here. The engine gives the lock up for the
 // length of a callout of the callback's own through the handle installed here

@@ -24,7 +24,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
-	"github.com/cyoda-platform/cyoda-go/app"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -88,8 +87,7 @@ func TestStream_UserToken_PermissionDenied(t *testing.T) {
 }
 
 func TestStream_OBOToken_PermissionDenied(t *testing.T) {
-	// The OBO client needs a trusted key, and registering one needs the gate.
-	h := newCalloutHarness(t, func(cfg *app.Config) { cfg.IAM.TrustedKeyRegistrationEnabled = true })
+	h := newCalloutHarness(t, nil)
 	tok := oboTokenOn(t, h.baseURL, h.token(t), "alice")
 	if got := openStreamCode(t, h, tok); got != codes.PermissionDenied {
 		t.Fatalf("stream opened with an on-behalf-of token: %v, want PermissionDenied", got)
