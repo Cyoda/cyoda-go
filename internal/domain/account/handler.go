@@ -9,12 +9,9 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 type Handler struct {
-	authSvc         contract.AuthenticationService
-	authzSvc        contract.AuthorizationService
 	keyStore        auth.KeyStore
 	trustedKeyStore auth.TrustedKeyStore
 	m2mClientStore  auth.M2MClientStore
@@ -22,12 +19,9 @@ type Handler struct {
 	operator        auth.OperatorGuard
 }
 
-func New(authSvc contract.AuthenticationService, authzSvc contract.AuthorizationService,
-	keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClientStore auth.M2MClientStore,
+func New(keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClientStore auth.M2MClientStore,
 	iam auth.IAMFeatures, operator auth.OperatorGuard) *Handler {
 	return &Handler{
-		authSvc:         authSvc,
-		authzSvc:        authzSvc,
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
 		m2mClientStore:  m2mClientStore,

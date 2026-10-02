@@ -16,7 +16,7 @@ import (
 // the gracePeriodSec of the key-pair invalidate endpoint. Trusted keys have
 // no grace period.
 func TestGracePeriodRangeError_NamesInvalidateGracePeriodSec(t *testing.T) {
-	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	h := account.New(newTestKeyStore(t), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
 
 	for _, grace := range []string{"-1", "9999999999"} {
 		t.Run("issue/"+grace, func(t *testing.T) {

@@ -64,7 +64,7 @@ func keyPairCalls(h *account.Handler, uc *spi.UserContext) map[string]func() *ht
 
 func TestKeyPairEndpoints_RefuseTenantAdmin(t *testing.T) {
 	ks := newTestKeyStore(t)
-	h := account.New(nil, nil, ks, newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	h := account.New(ks, newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
 	for name, call := range keyPairCalls(h, adminUC()) { // adminUC: ROLE_ADMIN in tenant t1
 		t.Run(name, func(t *testing.T) {
 			w := call()
@@ -81,7 +81,7 @@ func TestKeyPairEndpoints_RefuseTenantAdmin(t *testing.T) {
 }
 
 func TestKeyPairEndpoints_AdmitPlatformOperator(t *testing.T) {
-	h := account.New(nil, nil, newTestKeyStore(t), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	h := account.New(newTestKeyStore(t), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
 	w := keyPairCalls(h, operatorUC())["issue"]()
 	if w.Code != http.StatusOK {
 		t.Fatalf("issue as operator: status = %d, body %s", w.Code, w.Body.String())
@@ -90,7 +90,7 @@ func TestKeyPairEndpoints_AdmitPlatformOperator(t *testing.T) {
 
 func TestKeyPairEndpoints_MockGuard_Answer501(t *testing.T) {
 	mockUC := &spi.UserContext{UserID: "mock-user-001", Tenant: spi.Tenant{ID: "mock-tenant"}, Roles: []string{"ROLE_ADMIN", "ROLE_M2M"}}
-	h := account.New(nil, nil, nil, nil, nil, auth.DefaultIAMFeatures(), auth.MockOperatorGuard())
+	h := account.New(nil, nil, nil, auth.DefaultIAMFeatures(), auth.MockOperatorGuard())
 	for name, call := range keyPairCalls(h, mockUC) {
 		t.Run(name, func(t *testing.T) {
 			if w := call(); w.Code != http.StatusNotImplemented {

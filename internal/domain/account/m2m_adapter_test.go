@@ -44,7 +44,7 @@ func newM2MAdapterFixture(t *testing.T, flagOn bool) *Handler {
 	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.M2MAdminRoleEnabled = flagOn
-	return New(nil, nil, nil, nil, newM2MStore(t, feats.M2MClientMaxPerTenant), feats, auth.OperatorGuard{})
+	return New(nil, nil, newM2MStore(t, feats.M2MClientMaxPerTenant), feats, auth.OperatorGuard{})
 }
 
 // seedClient creates clientID in tenant directly in the handler's store and
@@ -222,7 +222,7 @@ func TestListTechnicalUsers_NoUserContext_Returns401Unauthorized(t *testing.T) {
 
 func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
-	h := New(nil, nil, nil, nil, nil, feats, auth.OperatorGuard{}) // explicitly nil store
+	h := New(nil, nil, nil, feats, auth.OperatorGuard{}) // explicitly nil store
 
 	req := withTenantAdminCtx(httptest.NewRequest(http.MethodGet, "/clients", nil), tenantA)
 	rr := httptest.NewRecorder()
@@ -243,7 +243,7 @@ func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 // middleware would flip healthFlag to false permanently on the first request.
 func TestM2MAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
-	h := New(nil, nil, nil, nil, nil, feats, auth.OperatorGuard{}) // explicit nil store
+	h := New(nil, nil, nil, feats, auth.OperatorGuard{}) // explicit nil store
 
 	cases := []struct {
 		name string
@@ -793,7 +793,7 @@ func TestM2MAdapter_SecretResponsesAreNotCacheable(t *testing.T) {
 
 func TestCreateTechnicalUser_AtCap_Returns400CapReached(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
-	h := New(nil, nil, nil, nil, newM2MStore(t, 1), feats, auth.OperatorGuard{})
+	h := New(nil, nil, newM2MStore(t, 1), feats, auth.OperatorGuard{})
 	for i, want := range []int{http.StatusOK, http.StatusBadRequest} {
 		rr := httptest.NewRecorder()
 		h.CreateTechnicalUser(rr, withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA), genapi.CreateTechnicalUserParams{})
@@ -876,7 +876,7 @@ func m2mOperations(h *Handler) map[string]func() *httptest.ResponseRecorder {
 // four operations — never 404 "client not found" — and the response carries
 // none of the storage error's text.
 func TestM2MAdapter_StorageUnavailable_Returns503(t *testing.T) {
-	h := New(nil, nil, nil, nil, failingM2MStore{err: m2mUnavailableErr{}}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	h := New(nil, nil, failingM2MStore{err: m2mUnavailableErr{}}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
 	for name, call := range m2mOperations(h) {
 		t.Run(name, func(t *testing.T) {
 			rr := call()
@@ -895,7 +895,7 @@ func TestM2MAdapter_StorageUnavailable_Returns503(t *testing.T) {
 
 // Any other store failure is 500 with a ticket and a generic message.
 func TestM2MAdapter_StoreFailure_Returns500WithTicket(t *testing.T) {
-	h := New(nil, nil, nil, nil, failingM2MStore{err: errors.New("disk on fire at " + storeOutage)}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	h := New(nil, nil, failingM2MStore{err: errors.New("disk on fire at " + storeOutage)}, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
 	for name, call := range m2mOperations(h) {
 		t.Run(name, func(t *testing.T) {
 			rr := call()

@@ -519,7 +519,7 @@ func New(cfg Config) *App {
 		accountTrustedKeyStore = authSvc.TrustedKeyStore()
 		accountM2MStore = authSvc.M2MClientStore()
 	}
-	accountHandler := account.New(a.authService, a.authzService, accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
+	accountHandler := account.New(accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
 	server.Account = accountHandler
 
 	// Build HTTP handler

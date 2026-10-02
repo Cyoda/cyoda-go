@@ -30,7 +30,7 @@ func TestTrustedKeyChanges_WriteInfoLines(t *testing.T) {
 	ts := newTestTrustedStore(t)
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	h := account.New(nil, nil, newTestKeyStore(t), ts, nil, feats, auth.OperatorGuard{})
+	h := account.New(newTestKeyStore(t), ts, nil, feats, auth.OperatorGuard{})
 	uc := &spi.UserContext{
 		UserID: "alice", UserName: "alice", Kind: spi.PrincipalUser,
 		Executor: &spi.Principal{ID: "obo-1", Kind: spi.PrincipalService},
