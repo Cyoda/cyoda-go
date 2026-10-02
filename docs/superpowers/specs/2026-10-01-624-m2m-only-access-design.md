@@ -106,10 +106,13 @@ data. Mock mode's principal carries `ROLE_M2M`.
   authenticated without bcrypt. The client record is read from the store on
   every request, so a reset or delete takes effect at once.
 - **bcrypt bound.** At most `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`
-  bcrypt comparisons run at once per node (default: the number of CPUs). A
+  bcrypt comparisons run at once per node (default: the CPUs the process may
+  use, `GOMAXPROCS`, which follows a container CPU limit). A
   request that cannot get a slot within 1 s answers `503` with `Retry-After`.
   Unknown client ids and wrong secrets keep paying one bcrypt, so a lookup
-  costs the same either way.
+  costs the same either way. Hashing a new secret (`POST /clients`, secret
+  reset) takes a slot from the same bound; when none is free within 1 s it
+  answers `503 SERVER_BUSY` with `Retry-After` and writes nothing.
 - **Per-client fairness.** After authentication, a token bucket per client per
   node: `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` (default 600, `0` = unlimited),
   shared by both grants. Over the limit: `429` with `Retry-After`. At 600 per
@@ -383,7 +386,7 @@ Both return nothing.
 |---|---|---|
 | `CYODA_JWT_EXPIRY_SECONDS` | 300 | 1–3600 |
 | `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | 600 | ≥ 0 (0 = unlimited) |
-| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | number of CPUs | ≥ 1 |
+| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | `GOMAXPROCS` | ≥ 1 |
 | `CYODA_IAM_MOCK_KIND` | `service` | user, service, system |
 
 Help topics, `README.md`, `DefaultConfig()` and the config registry change
@@ -448,6 +451,7 @@ changes, which `CHANGELOG.md` lists under Breaking.
 | `onBehalfOf=true` in tenant `PLATFORM` | 400 | `BAD_REQUEST` |
 | cap reached | 400 | `M2M_CLIENT_CAP_REACHED` |
 | mock mode | 501 | `NOT_IMPLEMENTED` |
+| bcrypt slots full | 503 | `SERVER_BUSY` (`Retry-After`) |
 | store failure | 500 / 503 | ticketed |
 
 ### 12.3 Trusted keys
