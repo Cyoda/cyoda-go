@@ -167,6 +167,9 @@ var ErrM2MClientExists = errors.New("m2m client already exists")
 // to generate or hash a secret, which wraps no KV error.
 type M2MClientStore interface {
 	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string, onBehalfOf bool) (secret string, err error)
+	// Authenticate is ErrInvalidClient for no such client or a wrong
+	// secret, and ErrSecretCheckBusy when the node has no secret-check
+	// capacity left to decide.
 	Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error)
 	// Lookup returns clientID's record without checking a secret: the current
 	// record as the store holds it. ErrM2MClientNotFound when clientID is

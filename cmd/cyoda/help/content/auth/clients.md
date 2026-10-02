@@ -141,7 +141,7 @@ Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `
 
 ## STORAGE AND CONSISTENCY
 
-Clients are stored in the cluster's database. A stored client holds a bcrypt hash of its secret, never the secret itself. No node keeps a copy: each `/clients` call, and each `/oauth/token` request with a well-formed client id, reads the store. So:
+Clients are stored in the cluster's database. A stored client holds a bcrypt hash of its secret, never the secret itself. No node keeps a copy: each `/clients` call, and each `/oauth/token` request with a well-formed client id, reads the store. To spare a repeat token request the bcrypt check, a node remembers the SHA-256 of the last secret that matched each client's stored hash (never the secret itself); it accepts that secret again only while the record it has just read still carries the same hash. So:
 
 - A create, reset or delete takes effect on every node of the cluster when its call returns `200`. A new client can get a token from any node at once. After a reset, the old secret gets `401 invalid_client` on every node; after a delete, so does the client.
 - Clients survive a restart of a node or of the whole cluster. The exception is the `memory` storage backend, which keeps nothing across a restart.

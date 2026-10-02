@@ -6190,6 +6190,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "429":
+          description: Too Many Requests - slow_down (the client has used its
+            per-node limit of token requests per minute, counted across both
+            grants after the client authenticates). Retry after the
+            Retry-After delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
         "500":
           description: Internal Server Error - server_error (ticket in
             error_description, generic message) - the client or trusted-key
@@ -6201,7 +6215,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "503":
           description: Service Unavailable - temporarily_unavailable (the client
-            store or the trusted-key store is unavailable). Retry after the
+            store or the trusted-key store is unavailable, or no client-secret
+            check slot freed up within 1 second). Retry after the
             Retry-After delay.
           headers:
             Retry-After:
@@ -9276,6 +9291,7 @@ components:
             - server_error
             - temporarily_unavailable
             - method_not_allowed
+            - slow_down
           example: invalid_request
         error_description:
           type: string

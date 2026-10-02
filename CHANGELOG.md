@@ -820,6 +820,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- `POST /oauth/token` bounds concurrent secret checks per node
+  (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the CPU count;
+  `503` when busy) and limits each client per node
+  (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600; `429 slow_down`).
+
 - **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
   resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,
   `TRUSTED_KEY_NOT_FOUND`, `MODEL_NOT_FOUND`). The `errors.NOT_FOUND` help

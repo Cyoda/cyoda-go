@@ -3,6 +3,7 @@ package app_test
 import (
 	"os"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -69,6 +70,16 @@ func renderMillis(d time.Duration) string {
 	return strconv.FormatInt(int64(d/time.Millisecond), 10)
 }
 
+// renderCPUCount renders a default that is the machine's CPU count as the
+// table spells it, "number of CPUs"; any other value as the integer, so a
+// fixed default in config.go still fails the binding.
+func renderCPUCount(n int) string {
+	if n == runtime.NumCPU() {
+		return "number of CPUs"
+	}
+	return strconv.Itoa(n)
+}
+
 // defaultFor maps each root var to the rendered default DefaultConfig()
 // yields under an empty env. Every non-preConfig root var MUST have an
 // entry — the coverage assertion below enforces it.
@@ -123,22 +134,24 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_KEEPALIVE_TIMEOUT":        strconv.Itoa(c.GRPC.KeepAliveTimeout),
 
 		// --- auth ---
-		"CYODA_IAM_MODE":                             c.IAM.Mode,
-		"CYODA_IAM_MOCK_ROLES":                       strings.Join(c.IAM.MockRoles, ","),
-		"CYODA_IAM_MOCK_KIND":                        c.IAM.MockKind,
-		"CYODA_JWT_SIGNING_KEY":                      "", // secret
-		"CYODA_JWT_ISSUER":                           c.IAM.JWTIssuer,
-		"CYODA_JWT_AUDIENCE":                         c.IAM.JWTAudience,
-		"CYODA_JWT_EXPIRY_SECONDS":                   strconv.Itoa(c.IAM.JWTExpiry),
-		"CYODA_REQUIRE_JWT":                          strconv.FormatBool(c.IAM.RequireJWT),
-		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED": strconv.FormatBool(c.IAM.TrustedKeyRegistrationEnabled),
-		"CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT":       strconv.Itoa(c.IAM.TrustedKeyMaxPerTenant),
-		"CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS":    strconv.Itoa(c.IAM.TrustedKeyMaxValidityDays),
-		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":   strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
-		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":    strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
-		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":           strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
-		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT":        strconv.Itoa(c.IAM.M2MClientMaxPerTenant),
-		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":        renderDuration(c.IAM.AuthCacheReconcileInterval),
+		"CYODA_IAM_MODE":                               c.IAM.Mode,
+		"CYODA_IAM_MOCK_ROLES":                         strings.Join(c.IAM.MockRoles, ","),
+		"CYODA_IAM_MOCK_KIND":                          c.IAM.MockKind,
+		"CYODA_JWT_SIGNING_KEY":                        "", // secret
+		"CYODA_JWT_ISSUER":                             c.IAM.JWTIssuer,
+		"CYODA_JWT_AUDIENCE":                           c.IAM.JWTAudience,
+		"CYODA_JWT_EXPIRY_SECONDS":                     strconv.Itoa(c.IAM.JWTExpiry),
+		"CYODA_REQUIRE_JWT":                            strconv.FormatBool(c.IAM.RequireJWT),
+		"CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED":   strconv.FormatBool(c.IAM.TrustedKeyRegistrationEnabled),
+		"CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT":         strconv.Itoa(c.IAM.TrustedKeyMaxPerTenant),
+		"CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS":      strconv.Itoa(c.IAM.TrustedKeyMaxValidityDays),
+		"CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES":     strconv.Itoa(c.IAM.TrustedKeyMaxJWKProperties),
+		"CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS":      strconv.Itoa(c.IAM.KeypairDefaultValidityDays),
+		"CYODA_IAM_M2M_ADMIN_ROLE_ENABLED":             strconv.FormatBool(c.IAM.M2MAdminRoleEnabled),
+		"CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT":          strconv.Itoa(c.IAM.M2MClientMaxPerTenant),
+		"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE":          strconv.Itoa(c.IAM.TokenRequestsPerMinute),
+		"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": renderCPUCount(c.IAM.TokenMaxConcurrentSecretChecks),
+		"CYODA_AUTH_CACHE_RECONCILE_INTERVAL":          renderDuration(c.IAM.AuthCacheReconcileInterval),
 
 		// --- cors ---
 		"CYODA_CORS_ENABLED":         strconv.FormatBool(c.CORS.Enabled),

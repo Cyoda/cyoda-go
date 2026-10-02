@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"runtime"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -21,6 +22,13 @@ type AuthConfig struct {
 	Broadcaster       spi.ClusterBroadcaster // nil on a single node
 	ReconcileInterval time.Duration          // re-read interval of the signing-key store; <= 0 uses the default
 	SigningKeyMetrics ReconcileMetrics       // nil: no metrics
+
+	// TokenRequestsPerMinute limits each client's token requests on this
+	// node, across both grants; 0: no limit.
+	TokenRequestsPerMinute int
+	// MaxConcurrentSecretChecks bounds the bcrypt comparisons the token
+	// endpoint runs at once on this node; <= 0: the number of CPUs.
+	MaxConcurrentSecretChecks int
 }
 
 // AuthService wires together the auth stores and serves the public auth
@@ -70,7 +78,11 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	if err != nil {
 		return nil, err
 	}
-	m2mStore := NewKVM2MClientStore(config.KV, config.IAMFeatures.M2MClientMaxPerTenant)
+	slots := config.MaxConcurrentSecretChecks
+	if slots <= 0 {
+		slots = runtime.NumCPU()
+	}
+	m2mStore := NewKVM2MClientStore(config.KV, config.IAMFeatures.M2MClientMaxPerTenant, SecretCheckLimit{Slots: slots, Wait: secretCheckWait})
 
 	// Public mux: token issuance and JWKS (no auth required). A stale JWKS
 	// answer asks the caller to retry after one re-read interval.
@@ -78,7 +90,7 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
 	// Every method reaches the token handler, which answers its own
 	// OAuth-shaped 405 for anything but POST.
-	publicMux.Handle("/oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds))
+	publicMux.Handle("/oauth/token", NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds, config.TokenRequestsPerMinute))
 
 	return &AuthService{
 		keyStore:     keyStore,

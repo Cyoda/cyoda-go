@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
@@ -30,6 +31,9 @@ func m2mSysCtx() context.Context {
 	})
 }
 
+// testSecretLimit is the secret-check bound of the stores these tests build.
+var testSecretLimit = auth.SecretCheckLimit{Slots: 4, Wait: time.Second}
+
 // newM2MStore is the shipped store over a fresh in-memory KV store.
 func newM2MStore(t *testing.T, maxPerTenant int) *auth.KVM2MClientStore {
 	t.Helper()
@@ -37,7 +41,7 @@ func newM2MStore(t *testing.T, maxPerTenant int) *auth.KVM2MClientStore {
 	if err != nil {
 		t.Fatalf("memory KV: %v", err)
 	}
-	return auth.NewKVM2MClientStore(kv, maxPerTenant)
+	return auth.NewKVM2MClientStore(kv, maxPerTenant, testSecretLimit)
 }
 
 func newM2MAdapterFixture(t *testing.T, flagOn bool) *Handler {

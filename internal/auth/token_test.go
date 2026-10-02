@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	signingKey := newBootstrap(t)
 	keyStore := newTestKeyStore(t, signingKey)
 	trustedKeyStore := newTestTrustedStore(t)
-	m2mStore := auth.NewKVM2MClientStore(mustNewMemoryKV(t, systemCtx()), 0)
+	m2mStore := auth.NewKVM2MClientStore(mustNewMemoryKV(t, systemCtx()), 0, testSecretLimit)
 
 	// The application's assertion-signing key, registered in the tenant.
 	trustedKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -95,7 +96,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
 		m2mStore:        m2mStore,
-		handler:         auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry),
+		handler:         auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry, 0),
 		clientID:        clientID,
 		clientSecret:    clientSecret,
 		oboID:           oboID,
@@ -110,7 +111,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 // withHandler replaces env's handler with one built from env's stores and
 // the given audience and expiry.
 func (e *testTokenEnv) withHandler(audience string, expiry int) *testTokenEnv {
-	e.handler = auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry)
+	e.handler = auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry, 0)
 	return e
 }
 
@@ -275,11 +276,11 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 		code       string
 		retryAfter string
 	}{
-		"unavailable": {auth.NewKVM2MClientStore(brokenKV{}, 0), http.StatusServiceUnavailable, "temporarily_unavailable", "1"},
+		"unavailable": {auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), http.StatusServiceUnavailable, "temporarily_unavailable", "1"},
 		"other":       {failingM2MStore{err: errors.New("disk on fire")}, http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry)
+			h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry, 0)
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 			if rr.Code != c.status {
@@ -307,7 +308,7 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 // answer 503.
 func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0), testIssuer, "", testExpiry)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), testIssuer, "", testExpiry, 0)
 	for _, raw := range []string{"a%00b", "%FF", strings.Repeat("A", 101), "a%3Ab"} {
 		req := makeTokenRequest("client_credentials", "Basic "+base64.StdEncoding.EncodeToString([]byte(raw+":x")), nil)
 		rr := httptest.NewRecorder()
@@ -934,7 +935,7 @@ func TestTokenExchange_TrustedKeyStoreUnavailable_503(t *testing.T) {
 		"other":       {errors.New("failed to read trusted key: disk on fire"), http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry)
+			h := auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry, 0)
 			rr := httptest.NewRecorder()
 			form := url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}}
 			h.ServeHTTP(rr, makeTokenRequest(tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret), form))
@@ -1004,8 +1005,8 @@ func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) { return ni
 func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	env := setupTokenEnv(t)
 	cause := errors.New("hsm unreachable at 10.0.0.5:8443")
-	selectFails := auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry)
-	signFails := auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry)
+	selectFails := auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
+	signFails := auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
 	cc := func() *http.Request {
 		return makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
 	}
@@ -1100,5 +1101,60 @@ func TestTokenEndpoint_TokenResponsesAreNotCacheable(t *testing.T) {
 				t.Errorf("Pragma = %q, want no-cache", got)
 			}
 		})
+	}
+}
+
+// §4.1: after authentication each client has a token bucket, shared by both
+// grants. Over the limit the answer is 429 slow_down with a Retry-After of
+// at least one second; other clients are still served. A request refused
+// before the bucket (an OBO client asking for client_credentials) takes
+// nothing from it.
+func TestToken_PerClientBucket_429(t *testing.T) {
+	env := setupTokenEnv(t)
+	env.handler = auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 1)
+
+	if rr := env.clientCredentials(t, env.clientID, env.clientSecret); rr.Code != http.StatusOK {
+		t.Fatalf("first request: %d %s", rr.Code, rr.Body.String())
+	}
+	rr := env.clientCredentials(t, env.clientID, env.clientSecret)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("second request: %d %s, want 429", rr.Code, rr.Body.String())
+	}
+	if n, err := strconv.Atoi(rr.Header().Get("Retry-After")); err != nil || n < 1 {
+		t.Errorf("Retry-After = %q, want an integer >= 1", rr.Header().Get("Retry-After"))
+	}
+	if got := decodeResponse(t, rr)["error"]; got != "slow_down" {
+		t.Errorf("error = %v, want slow_down", got)
+	}
+
+	// The OBO client: its refused client_credentials request does not empty
+	// its bucket, its exchange is served, and its next exchange is refused.
+	if rr := env.clientCredentials(t, env.oboID, env.oboSecret); rr.Code != http.StatusBadRequest {
+		t.Fatalf("OBO client_credentials: %d %s, want 400", rr.Code, rr.Body.String())
+	}
+	if rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {env.assertion(t, nil)}}); rr.Code != http.StatusOK {
+		t.Fatalf("another client's exchange: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {env.assertion(t, nil)}})
+	if rr.Code != http.StatusTooManyRequests || decodeResponse(t, rr)["error"] != "slow_down" {
+		t.Fatalf("second exchange: %d, want 429 slow_down", rr.Code)
+	}
+}
+
+// §12.1: bcrypt slots full is 503 temporarily_unavailable with
+// Retry-After: 1, never 401 or a ticketed 500.
+func TestToken_SecretCheckBusy_503(t *testing.T) {
+	env := setupTokenEnv(t)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, failingM2MStore{err: auth.ErrSecretCheckBusy}, testIssuer, "", testExpiry, 0)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Retry-After"); got != "1" {
+		t.Errorf("Retry-After = %q, want 1", got)
+	}
+	if got := decodeResponse(t, rr)["error"]; got != "temporarily_unavailable" {
+		t.Errorf("error = %v, want temporarily_unavailable", got)
 	}
 }

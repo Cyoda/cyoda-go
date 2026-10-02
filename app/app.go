@@ -311,6 +311,9 @@ func New(cfg Config) *App {
 			Broadcaster:       authBroadcaster,
 			ReconcileInterval: cfg.IAM.AuthCacheReconcileInterval,
 			SigningKeyMetrics: signingMetrics,
+
+			TokenRequestsPerMinute:    cfg.IAM.TokenRequestsPerMinute,
+			MaxConcurrentSecretChecks: cfg.IAM.TokenMaxConcurrentSecretChecks,
 		})
 		if err != nil {
 			slog.Error("startup failure",

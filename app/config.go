@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -291,6 +292,17 @@ type IAMConfig struct {
 	// M2MClientMaxPerTenant — see auth.IAMFeatures.M2MClientMaxPerTenant.
 	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
 	M2MClientMaxPerTenant int
+
+	// TokenRequestsPerMinute limits each client's POST /oauth/token requests
+	// on one node, across both grants; over it the answer is 429 slow_down.
+	// env CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE, default 600; 0=unlimited.
+	TokenRequestsPerMinute int
+
+	// TokenMaxConcurrentSecretChecks bounds the bcrypt comparisons
+	// POST /oauth/token runs at once on one node; a request that gets no slot
+	// within 1 s answers 503. env CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS,
+	// default the number of CPUs; at least 1.
+	TokenMaxConcurrentSecretChecks int
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -385,26 +397,28 @@ func DefaultConfig() Config {
 		},
 		StartupTimeout: envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
-			Mode:                          envString("CYODA_IAM_MODE", "mock"),
-			MockUserID:                    "mock-user-001",
-			MockUserName:                  "Mock User",
-			MockTenantID:                  "mock-tenant",
-			MockTenantName:                "Mock Tenant",
-			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "service"),
-			JWTSigningKey:                 jwt.SigningKeyPEM,
-			JWTIssuer:                     jwt.Issuer,
-			JWTAudience:                   jwt.Audience,
-			JWTExpiry:                     jwt.ExpirySeconds,
-			RequireJWT:                    envBool("CYODA_REQUIRE_JWT", false),
-			TrustedKeyRegistrationEnabled: envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
-			TrustedKeyMaxPerTenant:        envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
-			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
-			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
-			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
-			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
-			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
-			M2MClientMaxPerTenant:         envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
+			Mode:                           envString("CYODA_IAM_MODE", "mock"),
+			MockUserID:                     "mock-user-001",
+			MockUserName:                   "Mock User",
+			MockTenantID:                   "mock-tenant",
+			MockTenantName:                 "Mock Tenant",
+			MockRoles:                      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			MockKind:                       envString("CYODA_IAM_MOCK_KIND", "service"),
+			JWTSigningKey:                  jwt.SigningKeyPEM,
+			JWTIssuer:                      jwt.Issuer,
+			JWTAudience:                    jwt.Audience,
+			JWTExpiry:                      jwt.ExpirySeconds,
+			RequireJWT:                     envBool("CYODA_REQUIRE_JWT", false),
+			TrustedKeyRegistrationEnabled:  envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
+			TrustedKeyMaxPerTenant:         envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
+			TrustedKeyMaxValidityDays:      envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
+			TrustedKeyMaxJWKProperties:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
+			KeypairDefaultValidityDays:     envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
+			AuthCacheReconcileInterval:     envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
+			M2MAdminRoleEnabled:            envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			M2MClientMaxPerTenant:          envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
+			TokenRequestsPerMinute:         envInt("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", 600),
+			TokenMaxConcurrentSecretChecks: envInt("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", runtime.NumCPU()),
 		},
 		Cluster: cluster.Config{
 			// Enabled defaults false for easier onboarding — NOT because multi-node is
@@ -989,6 +1003,12 @@ func ValidateIAM(iam IAMConfig) error {
 	// Unconditional: a bad explicit interval is a config error in any mode.
 	if iam.AuthCacheReconcileInterval < time.Second {
 		return fmt.Errorf("CYODA_AUTH_CACHE_RECONCILE_INTERVAL must be >= 1s, got %s", iam.AuthCacheReconcileInterval)
+	}
+	if iam.TokenRequestsPerMinute < 0 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE must be >= 0 (0 = unlimited), got %d", iam.TokenRequestsPerMinute)
+	}
+	if iam.TokenMaxConcurrentSecretChecks < 1 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS must be >= 1, got %d", iam.TokenMaxConcurrentSecretChecks)
 	}
 	// Mock mode needs no further validation.
 	if iam.Mode == "mock" {

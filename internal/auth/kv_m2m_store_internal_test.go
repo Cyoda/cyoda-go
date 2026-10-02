@@ -4,9 +4,13 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
+
+// testSecretLimit is the secret-check bound of the stores these tests build.
+var testSecretLimit = SecretCheckLimit{Slots: 4, Wait: time.Second}
 
 type countingKV struct {
 	spi.KeyValueStore
@@ -23,7 +27,7 @@ func (c *countingKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
 func TestKVM2M_AuthenticateReadShape(t *testing.T) {
 	mem := newReplicaKV(t)
 	ckv := &countingKV{KeyValueStore: mem}
-	s := NewKVM2MClientStore(ckv, 0)
+	s := NewKVM2MClientStore(ckv, 0, testSecretLimit)
 	sec, _ := s.Create(replicaSystemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
 	_, _ = s.Create(replicaSystemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
 	_ = mem.Delete(replicaSystemCtx(), m2mClientIndexNamespace, "C2") // C2: record without index

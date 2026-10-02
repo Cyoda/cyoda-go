@@ -96,6 +96,8 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", Topic: "auth", Type: "int", Default: "365", Description: "Default validity of a keypair issued via POST /oauth/keys/keypair without validTo. The bootstrap signing key has no window unless the key-pair API gave it one."},
 	{Name: "CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", Topic: "auth", Type: "bool", Default: "false", Description: "Gates the withAdminRole=true query parameter on POST /clients."},
 	{Name: "CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", Topic: "auth", Type: "int", Default: "100", Description: "Per-tenant cap on M2M clients; 0 means unbounded."},
+	{Name: "CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", Topic: "auth", Type: "int", Default: "600", Description: "Token requests each M2M client may make per minute on one node, across both grants (burst of the same size); over it POST /oauth/token answers 429 slow_down with Retry-After. 0 means unlimited; a negative value refuses to start."},
+	{Name: "CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", Topic: "auth", Type: "int", Default: "number of CPUs", Description: "Client-secret (bcrypt) checks POST /oauth/token runs at once on one node; a request that gets no slot within 1s answers 503 temporarily_unavailable with Retry-After. Must be >= 1; startup fails otherwise."},
 	{Name: "CYODA_AUTH_CACHE_RECONCILE_INTERVAL", Topic: "auth", Type: "duration", Default: "1m", Description: "Periodic KV-reconcile interval for the signing-key cache; jittered ±10%; verification fails closed after 10× this without a successful reconcile."},
 
 	// --- cors ---

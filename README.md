@@ -110,6 +110,8 @@ The `/api/account` response confirms the token's tenant and roles. With that tok
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
+| `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Token requests each M2M client may make per minute on one node, across both grants; over it `POST /oauth/token` returns `429 slow_down` with `Retry-After`. `0` means unlimited; a negative value refuses to start. |
+| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | number of CPUs | Client-secret (bcrypt) checks `POST /oauth/token` runs at once on one node; a request that gets no slot within 1 s returns `503 temporarily_unavailable` with `Retry-After`. Must be at least `1`. |
 
 In mock mode, `CYODA_IAM_MOCK_KIND` (default `service`) sets the principal kind
 (`user`/`service`/`system`) on the mock default UserContext. The default makes

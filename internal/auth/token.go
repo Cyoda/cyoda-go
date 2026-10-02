@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,17 +52,20 @@ type tokenHandler struct {
 	issuer          string
 	audience        string // empty: no aud claim
 	expirySeconds   int
+	buckets         *clientBuckets // per-client limit on this node
 }
 
 // NewTokenHandler creates the token endpoint handler. audience, when not
 // empty, is set as the aud claim of every issued token: a server that checks
 // the audience (CYODA_JWT_AUDIENCE) must accept its own tokens.
+// requestsPerMinute limits each authenticated client on this node, across
+// both grants; 0: no limit.
 func NewTokenHandler(
 	keyStore KeyStore,
 	trustedKeyStore TrustedKeyStore,
 	m2mStore M2MClientStore,
 	issuer, audience string,
-	expirySeconds int,
+	expirySeconds, requestsPerMinute int,
 ) http.Handler {
 	return &tokenHandler{
 		keyStore:        keyStore,
@@ -70,6 +74,7 @@ func NewTokenHandler(
 		issuer:          issuer,
 		audience:        audience,
 		expirySeconds:   expirySeconds,
+		buckets:         newClientBuckets(requestsPerMinute),
 	}
 }
 
@@ -112,10 +117,15 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A store failure is the server failing, not the credentials being
-	// wrong: it never answers 401.
+	// wrong: it never answers 401. Neither does a node with no free
+	// secret-check slot: that is a retryable 503.
 	client, err := h.m2mStore.Authenticate(r.Context(), clientID, secret)
 	if errors.Is(err, ErrInvalidClient) {
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+		return
+	}
+	if errors.Is(err, ErrSecretCheckBusy) {
+		writeTokenRetry(w, http.StatusServiceUnavailable, "temporarily_unavailable", 1)
 		return
 	}
 	if err != nil {
@@ -138,10 +148,24 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// takeToken takes one request from client's bucket on this node. An empty
+// bucket answers 429 slow_down with Retry-After: the whole seconds until a
+// token is there, at least one; the caller then stops.
+func (h *tokenHandler) takeToken(w http.ResponseWriter, client *M2MClient) bool {
+	ok, wait := h.buckets.allow(client.ClientID, time.Now())
+	if !ok {
+		writeTokenRetry(w, http.StatusTooManyRequests, "slow_down", int(math.Ceil(wait.Seconds())))
+	}
+	return ok
+}
+
 // handleClientCredentials issues a client its own token (§4.2).
 func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Request, client *M2MClient) {
 	if client.OnBehalfOf {
 		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "this client may only exchange user assertions")
+		return
+	}
+	if !h.takeToken(w, client) {
 		return
 	}
 
@@ -165,6 +189,9 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 	// Refused before the assertion is read.
 	if !client.OnBehalfOf {
 		writeTokenError(w, http.StatusBadRequest, "unauthorized_client", "this client may not exchange user assertions")
+		return
+	}
+	if !h.takeToken(w, client) {
 		return
 	}
 
@@ -434,13 +461,14 @@ func writeTokenStoreError(w http.ResponseWriter, op string, cause error) {
 		"op", op,
 		"cause", cause,
 	)
-	writeTokenRetry(w, http.StatusServiceUnavailable, "temporarily_unavailable")
+	writeTokenRetry(w, http.StatusServiceUnavailable, "temporarily_unavailable", 1)
 }
 
-// writeTokenRetry answers a refusal the client may retry (temporarily_unavailable
-// with the meaning of RFC 6749 §4.1.2.1), with Retry-After: 1.
-func writeTokenRetry(w http.ResponseWriter, status int, code string) {
-	w.Header().Set("Retry-After", "1")
+// writeTokenRetry answers a refusal the client may retry —
+// temporarily_unavailable with the meaning of RFC 6749 §4.1.2.1, or
+// slow_down — with Retry-After: seconds, at least 1.
+func writeTokenRetry(w http.ResponseWriter, status int, code string, seconds int) {
+	w.Header().Set("Retry-After", strconv.Itoa(max(seconds, 1)))
 	writeTokenError(w, status, code, "")
 }
 

@@ -168,6 +168,23 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   start. Creates on several nodes at the same moment can each pass the check,
   so a tenant can exceed the cap by at most one client per node.
   (default: `100`)
+- `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` — token requests each M2M client may
+  make per minute on one node, counted across both grants, with a burst of
+  the same size. The limit applies after the client has authenticated; over
+  it `POST /oauth/token` returns `429` with error `slow_down` and a
+  `Retry-After` header (whole seconds until the next request is allowed).
+  Each node counts on its own. `0` means unlimited; a negative value refuses
+  to start. (default: `600`)
+- `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` — client-secret checks
+  (bcrypt) `POST /oauth/token` runs at once on one node. A request that gets
+  no slot within 1 second returns `503` with error `temporarily_unavailable`
+  and `Retry-After: 1`. Every request with an unknown client id or a wrong
+  secret pays one check, so a lookup costs the same either way. A node keeps
+  a cache of secrets it has verified: a request whose secret matches the
+  cache, and whose client record (read from the store on every request)
+  still carries the hash it was verified against, skips the check; a secret
+  reset or a client delete takes effect on the next request. Must be at
+  least `1`; startup fails otherwise. (default: the number of CPUs)
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
   that can verify. It counts every active key whose `validTo` has not passed;
   an invalidated key frees its slot at once (trusted keys have no grace

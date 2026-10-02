@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -222,6 +223,48 @@ func TestValidateIAM_ReconcileIntervalFloor(t *testing.T) {
 	iam.Mode = "mock"
 	if err := ValidateIAM(iam); err != nil {
 		t.Fatalf("1s interval must be accepted: %v", err)
+	}
+}
+
+func TestDefaultConfig_TokenEndpointCost(t *testing.T) {
+	for _, k := range []string{"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", "CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS"} {
+		t.Setenv(k, "") // restored after the test
+		os.Unsetenv(k)
+	}
+	iam := DefaultConfig().IAM
+	if iam.TokenRequestsPerMinute != 600 {
+		t.Errorf("default TokenRequestsPerMinute = %d, want 600", iam.TokenRequestsPerMinute)
+	}
+	if iam.TokenMaxConcurrentSecretChecks != runtime.NumCPU() {
+		t.Errorf("default TokenMaxConcurrentSecretChecks = %d, want %d (the CPU count)", iam.TokenMaxConcurrentSecretChecks, runtime.NumCPU())
+	}
+	t.Setenv("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", "0")
+	t.Setenv("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", "3")
+	iam = DefaultConfig().IAM
+	if iam.TokenRequestsPerMinute != 0 || iam.TokenMaxConcurrentSecretChecks != 3 {
+		t.Errorf("env override: requests/min %d, secret checks %d, want 0 and 3", iam.TokenRequestsPerMinute, iam.TokenMaxConcurrentSecretChecks)
+	}
+	if err := ValidateIAM(iam); err != nil {
+		t.Errorf("0 requests/min (unlimited) and 3 secret checks refused: %v", err)
+	}
+}
+
+// A negative per-client limit and fewer than one concurrent secret check
+// each refuse to start, in either mode.
+func TestValidateIAM_TokenEndpointCost(t *testing.T) {
+	for _, mode := range []string{"mock", "jwt"} {
+		for k, v := range map[string]string{
+			"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE":          "-1",
+			"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": "0",
+		} {
+			t.Run(mode+"/"+k, func(t *testing.T) {
+				t.Setenv("CYODA_IAM_MODE", mode)
+				t.Setenv(k, v)
+				if err := ValidateIAM(DefaultConfig().IAM); err == nil {
+					t.Fatalf("%s=%s accepted", k, v)
+				}
+			})
+		}
 	}
 }
 

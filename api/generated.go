@@ -410,6 +410,7 @@ const (
 	InvalidRequest         ErrorResponseDtoError = "invalid_request"
 	MethodNotAllowed       ErrorResponseDtoError = "method_not_allowed"
 	ServerError            ErrorResponseDtoError = "server_error"
+	SlowDown               ErrorResponseDtoError = "slow_down"
 	TemporarilyUnavailable ErrorResponseDtoError = "temporarily_unavailable"
 	UnauthorizedClient     ErrorResponseDtoError = "unauthorized_client"
 	UnsupportedGrantType   ErrorResponseDtoError = "unsupported_grant_type"
@@ -427,6 +428,8 @@ func (e ErrorResponseDtoError) Valid() bool {
 	case MethodNotAllowed:
 		return true
 	case ServerError:
+		return true
+	case SlowDown:
 		return true
 	case TemporarilyUnavailable:
 		return true

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"hash/fnv"
@@ -46,15 +47,26 @@ const undoTimeout = 30 * time.Second
 // working and the one from before both resets works again; and the cap can be
 // exceeded by one record per node. All are documented (cyoda help auth
 // clients).
+//
+// Authenticate keeps a per-node cache of verified secrets and runs every
+// bcrypt comparison in one of a bounded number of slots (see Authenticate).
 type KVM2MClientStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int
 	createLocks  [tenantLockStripes]sync.Mutex
+	verified     *verifiedSecretCache
+	slots        *secretSlots
 }
 
 // NewKVM2MClientStore returns a store over kv. maxPerTenant <= 0: no cap.
-func NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int) *KVM2MClientStore {
-	return &KVM2MClientStore{kv: kv, maxPerTenant: maxPerTenant}
+// limit bounds the bcrypt comparisons Authenticate runs at once.
+func NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int, limit SecretCheckLimit) *KVM2MClientStore {
+	return &KVM2MClientStore{
+		kv:           kv,
+		maxPerTenant: maxPerTenant,
+		verified:     newVerifiedSecretCache(maxVerifiedSecrets),
+		slots:        newSecretSlots(limit),
+	}
 }
 
 // noTx removes any transaction from ctx.
@@ -99,25 +111,37 @@ func (s *KVM2MClientStore) getRecord(ctx context.Context, t spi.TenantID, id str
 	return c, data, true, nil
 }
 
-// burnBcrypt compares against the dummy hash so a request with no usable
-// client costs what a wrong secret costs.
-func burnBcrypt(secret string) { _ = bcrypt.CompareHashAndPassword(dummyHash, []byte(secret)) }
+// burnBcrypt compares against the dummy hash, in a slot, so a request with
+// no usable client costs what a wrong secret costs.
+func (s *KVM2MClientStore) burnBcrypt(ctx context.Context, secret string) error {
+	return s.slots.run(ctx, func() { _ = bcrypt.CompareHashAndPassword(dummyHash, []byte(secret)) })
+}
 
 // Authenticate returns the client whose id and secret match. Every request
-// that reaches a decision makes two KV reads and one bcrypt comparison, so
-// the server's own work does not depend on whether the id exists. A backend
-// can take longer to read a present key than a missing one (on cassandra a
-// hit is two queries and a miss one), which can let a caller who already
-// holds an id confirm that it exists. Client ids are not secret (a token's
-// sub) and generated ids are 80-bit random, so this does not allow
-// enumeration. An id outside the grammar makes no read, so it never reaches
-// the store or its error text.
-// ErrInvalidClient: no such client or wrong secret. Any other error is the
-// store failing.
+// that reaches a decision makes two KV reads, so the server's reads do not
+// depend on whether the id exists. A backend can take longer to read a
+// present key than a missing one (on cassandra a hit is two queries and a
+// miss one), which can let a caller who already holds an id confirm that it
+// exists. Client ids are not secret (a token's sub) and generated ids are
+// 80-bit random, so this does not allow enumeration. An id outside the
+// grammar makes no read, so it never reaches the store or its error text.
+//
+// The secret is checked against the record just read, never a copy. A
+// secret whose SHA-256 this node cached when it last matched the record's
+// current HashedSecret is accepted without bcrypt; a reset or a delete
+// changes or removes the record, so it takes effect on the next request on
+// every node. Any other request makes one bcrypt comparison — against the
+// record's hash, or against a dummy hash for an unknown or malformed id, so
+// a lookup costs the same either way — in one of the node's slots.
+//
+// ErrInvalidClient: no such client or wrong secret. ErrSecretCheckBusy: no
+// slot freed up within the wait. Any other error is the store failing.
 func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error) {
 	ctx = noTx(ctx)
 	if !ValidClientID(clientID) {
-		burnBcrypt(secret)
+		if err := s.burnBcrypt(ctx, secret); err != nil {
+			return nil, err
+		}
 		return nil, ErrInvalidClient
 	}
 	tenant, found, err := s.getIndex(ctx, clientID)
@@ -139,12 +163,27 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 		return nil, err
 	}
 	if c == nil {
-		burnBcrypt(secret)
+		s.verified.drop(clientID)
+		if err := s.burnBcrypt(ctx, secret); err != nil {
+			return nil, err
+		}
 		return nil, ErrInvalidClient
 	}
-	if bcrypt.CompareHashAndPassword([]byte(c.HashedSecret), []byte(secret)) != nil {
+	sum := sha256.Sum256([]byte(secret))
+	if s.verified.hit(clientID, c.HashedSecret, sum) {
+		return c, nil
+	}
+	var mismatch error
+	if err := s.slots.run(ctx, func() {
+		mismatch = bcrypt.CompareHashAndPassword([]byte(c.HashedSecret), []byte(secret))
+	}); err != nil {
+		return nil, err
+	}
+	if mismatch != nil {
+		s.verified.drop(clientID)
 		return nil, ErrInvalidClient
 	}
+	s.verified.put(clientID, c.HashedSecret, sum)
 	return c, nil
 }
 
