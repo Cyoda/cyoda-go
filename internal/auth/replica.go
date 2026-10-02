@@ -166,12 +166,17 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 		gen := r.gen.Load()
 		entries, err := r.kv.List(noTx(ctx), r.cfg.namespace)
 		if err != nil {
-			if ctx.Err() != nil {
-				// ctx ended while the List call was in flight — the owner
-				// is tearing this replica down, or (direct Reconcile
-				// callers) the caller's own deadline passed. Mirrors
-				// reapExpiredSnapshotsTick's same check: not a store
-				// failure, so no failure count and no log line for it.
+			if r.ctx.Err() != nil {
+				// The replica's OWN lifetime ended while the List call was
+				// in flight — the owner tearing this replica down — not
+				// just this call's ctx (which reconcileOnce derives from
+				// r.ctx via a per-tick WithTimeout, and a direct caller may
+				// pass anything). Mirrors reapExpiredSnapshotsTick's same
+				// check, scoped to the right ctx: not a store failure, so
+				// no failure count and no log line for it. Checking the
+				// call's own ctx instead would also swallow a hung store
+				// that merely outlasted its own deadline while r.ctx stayed
+				// alive — exactly the failure an operator needs to see.
 				return fmt.Errorf("failed to list %s records: %w", r.cfg.name, err)
 			}
 			r.logReconcileFailure(err)

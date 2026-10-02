@@ -342,15 +342,29 @@ func (f *fakeReconcileMetrics) SetReconcileStalenessSeconds(float64) {}
 
 // TestReplica_ReconcileSuppressesLogAndMetricWhenCtxEnds covers the minor
 // fix mirroring reapExpiredSnapshotsTick's own `if ctx.Err() != nil {
-// return }`: a reconcile that fails because its own ctx ended (the owner
-// tearing the replica down, racing an in-flight List) is not a store
-// failure, so it must not log a "reconcile failed" line or bump the
-// consecutive-failure metric. A reconcile that fails for a genuine store
-// reason, on a live ctx, still must do both — checked in the same test so a
-// change that silences logging unconditionally would also be caught.
+// return }` — scoped to r.ctx specifically, not whatever ctx this call
+// happened to receive: a reconcile that fails because the REPLICA's own
+// lifetime ended (the owner tearing it down, racing an in-flight List) is
+// not a store failure, so it must not log a "reconcile failed" line or bump
+// the consecutive-failure metric. The ctx passed to Reconcile here is the
+// same object as r.ctx, so cancelling it is cancelling the replica's own
+// lifetime — not just this one call's. A reconcile that fails for a genuine
+// store reason while r.ctx is still alive still must log and bump —
+// checked first, in the same test, so a change that silences logging
+// unconditionally would also be caught. (The case where only this call's
+// own ctx ends — e.g. a hung store's deadline — while r.ctx stays alive is
+// covered separately, by TestReplica_ReconcileLogsAndBumpsMetricOnHungStoreWhileOwnerCtxAlive;
+// suppressing that case too was the bug this split exists to avoid.)
 func TestReplica_ReconcileSuppressesLogAndMetricWhenCtxEnds(t *testing.T) {
 	kv := &failingListKV{KeyValueStore: newReplicaKV(t)}
-	r := newStringReplica(t, kv, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fm := &fakeReconcileMetrics{}
 	r.cfg.metrics = fm
 	kv.fail.Store(true)
@@ -360,28 +374,90 @@ func TestReplica_ReconcileSuppressesLogAndMetricWhenCtxEnds(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already done before Reconcile is even called
-	if err := r.Reconcile(ctx); err == nil {
-		t.Fatal("want an error from the failing store")
-	}
-	if buf.String() != "" {
-		t.Fatalf("a ctx-ended reconcile logged a failure line: %s", buf.String())
-	}
-	if n := fm.failureBumps.Load(); n != 0 {
-		t.Fatalf("a ctx-ended reconcile bumped the failure metric %d times, want 0", n)
-	}
-
-	// Sanity: a genuine failure on a live ctx still logs and bumps the
-	// metric, so the suppression above is ctx-specific, not blanket.
+	// First, while r.ctx (== ctx) is still alive: a genuine store failure
+	// must still log and bump the metric.
 	if err := r.Reconcile(context.Background()); err == nil {
 		t.Fatal("want an error from the failing store")
 	}
-	if buf.String() == "" {
-		t.Fatal("a genuine store failure on a live ctx logged nothing")
+	logged := buf.String()
+	if logged == "" {
+		t.Fatal("a genuine store failure while r.ctx is alive logged nothing")
 	}
 	if n := fm.failureBumps.Load(); n != 1 {
 		t.Fatalf("a genuine store failure bumped the failure metric %d times, want 1", n)
+	}
+
+	// Now end r.ctx itself — the replica's own lifetime, not just this next
+	// call's: the same failing store must no longer log or bump.
+	cancel()
+	if err := r.Reconcile(ctx); err == nil {
+		t.Fatal("want an error from the failing store")
+	}
+	if got := buf.String(); got != logged {
+		t.Fatalf("a reconcile with r.ctx already ended logged another failure line: %s", got)
+	}
+	if n := fm.failureBumps.Load(); n != 1 {
+		t.Fatalf("a reconcile with r.ctx already ended bumped the failure metric again: got %d, want still 1", n)
+	}
+}
+
+// hangingListKV simulates a store call that hangs until its own ctx ends (a
+// partition, an exhausted pool) and fails with that ctx's own error — never
+// with an error of its own. Used to prove Reconcile distinguishes "this
+// call's ctx ended because the store hung" from "the replica's owner ended
+// its lifetime (r.ctx)": only the latter is suppressed from logging and
+// metrics. Construction's own List call must go through unaffected (it has
+// nothing to hang against yet), so hang starts false and the test flips it
+// once construction returns.
+type hangingListKV struct {
+	spi.KeyValueStore
+	hang atomic.Bool
+}
+
+func (h *hangingListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	if !h.hang.Load() {
+		return h.KeyValueStore.List(ctx, ns)
+	}
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// TestReplica_ReconcileLogsAndBumpsMetricOnHungStoreWhileOwnerCtxAlive is
+// the RED-first regression for the bug the reviewer's mutation probe found:
+// reconcileOnce derives its per-call ctx via context.WithTimeout(r.ctx,
+// interval), so a store that merely hangs until that per-call deadline — a
+// partition, an exhausted connection pool — made List fail with
+// DeadlineExceeded while r.ctx (the replica's own lifetime) was still very
+// much alive. A fix that checks that per-call ctx's Err() instead of
+// r.ctx's cannot tell those two apart, and silently drops the failure
+// count, the staleness gauge and the log line for a real, ongoing store
+// outage — exactly the kind of failure an operator most needs to see.
+func TestReplica_ReconcileLogsAndBumpsMetricOnHungStoreWhileOwnerCtxAlive(t *testing.T) {
+	kv := &hangingListKV{KeyValueStore: newReplicaKV(t)}
+	r, err := newKVReplica(replicaSystemCtx(), kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 20 * time.Millisecond, // the per-call deadline reconcileOnce derives
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fm := &fakeReconcileMetrics{}
+	r.cfg.metrics = fm
+	kv.hang.Store(true) // r.ctx (replicaSystemCtx()) stays alive for the whole test
+
+	var buf lockedBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	r.reconcileOnce() // the per-call ctx (WithTimeout(r.ctx, 20ms)) times out;
+	// r.ctx itself never does.
+
+	if buf.String() == "" {
+		t.Fatal("a hung store (per-call deadline exceeded, owner ctx alive) logged nothing")
+	}
+	if n := fm.failureBumps.Load(); n != 1 {
+		t.Fatalf("a hung store bumped the failure metric %d times, want 1", n)
 	}
 }
 
@@ -423,7 +499,18 @@ func TestReplica_PingTriggersReRead(t *testing.T) {
 
 func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	kv := &failingListKV{KeyValueStore: newReplicaKV(t)}
-	r := newStringReplica(t, kv, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		cancel()
+		r.Wait()
+	}()
 	kv.fail.Store(true)
 	// Longer than stalenessMultiplier(10) x the 50ms interval: a naive
 	// "has the bound elapsed" check would already call this stale, even
@@ -432,7 +519,9 @@ func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	if r.Stale() {
 		t.Fatal("stale before the loop started")
 	}
-	r.Start()
+	if !r.Start() {
+		t.Fatal("Start returned false on first call")
+	}
 	if r.Stale() {
 		t.Fatal("stale immediately after Start: the gap before Start counted")
 	}
@@ -588,9 +677,9 @@ func (k *gatedListKV) List(ctx context.Context, ns string) (map[string][]byte, e
 // TestReplica_WaitBlocksUntilInFlightTickFinishes is a gated-fake proof (not
 // a count, which a no-op Wait can still pass by accident) that Wait does
 // not return while the periodic loop's own List call is still in flight.
-// Mutation-tested: making kvReplica.Wait a no-op turns this RED (see
-// mutation-red-wait-noop.log) — cancel alone stops the loop eventually, but
-// does not block the caller until the in-flight read actually finishes.
+// Mutation-tested: making kvReplica.Wait a no-op turns this RED — cancel
+// alone stops the loop eventually, but does not block the caller until the
+// in-flight read actually finishes.
 func TestReplica_WaitBlocksUntilInFlightTickFinishes(t *testing.T) {
 	var waitReturned atomic.Bool
 	kv := &gatedListKV{
@@ -650,8 +739,7 @@ func TestReplica_WaitBlocksUntilInFlightTickFinishes(t *testing.T) {
 // ping-triggered counterpart: Wait must not return while a reconcile that a
 // gossip ping triggered is still in flight. Isolated from the periodic loop
 // — Start is never called — so this exercises only kvReplica.Wait's call to
-// r.ping.Wait(). Mutation-tested: removing that call turns this RED (see
-// mutation-red-pingwait-removed.log).
+// r.ping.Wait(). Mutation-tested: removing that call turns this RED.
 func TestReplica_WaitBlocksUntilInFlightPingReconcileFinishes(t *testing.T) {
 	var waitReturned atomic.Bool
 	kv := &gatedListKV{
