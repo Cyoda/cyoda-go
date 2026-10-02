@@ -870,7 +870,7 @@ CYODA_REQUIRE_JWT=true
 CYODA_JWT_SIGNING_KEY_FILE=/etc/secrets/signing.pem
 CYODA_JWT_ISSUER=https://auth.example.com
 CYODA_JWT_AUDIENCE=cyoda-api
-CYODA_JWT_EXPIRY_SECONDS=3600
+CYODA_JWT_EXPIRY_SECONDS=300
 ```
 
 **First admin token (JWT auth, same environment as the server):**
