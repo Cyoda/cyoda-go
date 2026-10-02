@@ -71,7 +71,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	// the in-process KeyStore. No JWKS URL, no http.Client.
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
 
-	uc, err := validator.Validate(tokenResp.AccessToken)
+	uc, _, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -110,14 +110,14 @@ func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
 	}
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
 
-	if _, err := validator.Validate(tok); err != nil {
+	if _, _, err := validator.Validate(tok); err != nil {
 		t.Fatalf("token rejected while its key pair is in its window: %v", err)
 	}
 	// End the window; the key pair stays active.
 	if _, err := svc.KeyStore().Reactivate(ctx, kp.KID, from, now.Add(-time.Minute)); err != nil {
 		t.Fatalf("end the window: %v", err)
 	}
-	if _, err := validator.Validate(tok); err == nil {
+	if _, _, err := validator.Validate(tok); err == nil {
 		t.Fatal("token accepted after its key pair's window ended")
 	}
 }

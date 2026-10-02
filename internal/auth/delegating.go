@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // ErrAuthenticationFailed is the generic client-facing auth failure sentinel.
@@ -49,7 +50,10 @@ func NewDelegatingAuthenticator(validator *JWKSValidator) *DelegatingAuthenticat
 // enumeration signal, and emits a single slog.Warn record with a structured
 // `reason` field plus operator-relevant context (remote address, request
 // method/path). No token material or other PII is logged.
-func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Request) (*spi.UserContext, error) {
+//
+// On success it returns ctx carrying the principal and, for a
+// client-credentials token that carries cgen, the client-token marker.
+func (a *DelegatingAuthenticator) Authenticate(ctx context.Context, r *http.Request) (context.Context, error) {
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		logAuthFailure(r, authReasonMissingHeader, nil)
@@ -67,13 +71,17 @@ func (a *DelegatingAuthenticator) Authenticate(_ context.Context, r *http.Reques
 		return nil, ErrAuthenticationFailed
 	}
 
-	uc, err := a.validator.Validate(token)
+	uc, ct, err := a.validator.Validate(token)
 	if err != nil {
 		logAuthFailure(r, authReasonTokenInvalid, err)
 		return nil, ErrAuthenticationFailed
 	}
 
-	return uc, nil
+	ctx = spi.WithUserContext(ctx, uc)
+	if ct != nil {
+		ctx = contract.WithClientToken(ctx, *ct)
+	}
+	return ctx, nil
 }
 
 // logAuthFailure emits exactly one structured slog.Warn record describing the

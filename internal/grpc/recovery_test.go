@@ -445,8 +445,8 @@ type fixedAuthService struct {
 	uc *spi.UserContext
 }
 
-func (a *fixedAuthService) Authenticate(context.Context, *http.Request) (*spi.UserContext, error) {
-	return a.uc, nil
+func (a *fixedAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	return spi.WithUserContext(ctx, a.uc), nil
 }
 
 // startRecoveryTestServer builds a real, network-listening gRPC server wired

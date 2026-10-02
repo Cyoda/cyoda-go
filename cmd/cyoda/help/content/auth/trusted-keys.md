@@ -145,7 +145,7 @@ A subject token you sign with a trusted-key private key must carry:
 - `caas_org_id` — must equal the M2M client's tenant, which is also the tenant that registered the key.
 - `exp` and `iat` — required; `nbf` is honoured if present.
 - `iss` — checked only when the key was registered with `issuers`; it must then be one of them.
-- `user_roles` (or `roles`) — the roles the issued token carries.
+- Roles (`user_roles`, `roles`) are ignored: the issued token carries the M2M client's roles.
 
 Cyoda does not mint subject tokens — you sign them. The claim shape of the token cyoda issues is in `auth.tokens`.
 

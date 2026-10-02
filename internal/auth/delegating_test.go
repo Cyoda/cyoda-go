@@ -14,6 +14,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func generateTestPEM(t *testing.T) string {
@@ -86,7 +90,7 @@ func TestAuthService_FullFlow(t *testing.T) {
 	// the production validator's path (no HTTP JWKS fetch).
 	validator := NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda")
 
-	uc, err := validator.Validate(accessToken)
+	uc, _, err := validator.Validate(accessToken)
 	if err != nil {
 		t.Fatalf("token validation failed: %v", err)
 	}
@@ -142,9 +146,16 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	uc, err := authn.Authenticate(context.Background(), req)
+	ctx, err := authn.Authenticate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
+	}
+	uc := spi.GetUserContext(ctx)
+	if uc == nil {
+		t.Fatal("authenticated context carries no UserContext")
+	}
+	if ct, ok := contract.ClientTokenFrom(ctx); ok {
+		t.Errorf("a token without cgen yielded a client-token marker: %+v", ct)
 	}
 
 	if uc.UserID != "user-42" {
@@ -155,6 +166,50 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	}
 	if len(uc.Roles) != 1 || uc.Roles[0] != "ROLE_USER" {
 		t.Errorf("expected roles [ROLE_USER], got %v", uc.Roles)
+	}
+}
+
+// TestDelegatingAuthenticator_ClientTokenMarker: a client-credentials token
+// carrying cgen puts the client-token marker in the authenticated context,
+// beside the service principal.
+func TestDelegatingAuthenticator_ClientTokenMarker(t *testing.T) {
+	svc := newTestAuthService(t, AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+	})
+	kp, signer, err := svc.KeyStore().Signer()
+	if err != nil {
+		t.Fatalf("failed to get the signing key pair: %v", err)
+	}
+	now := time.Now()
+	token, err := Sign(context.Background(), map[string]any{
+		"sub":          "CLIENT0000000001",
+		"iss":          "cyoda",
+		"caas_user_id": "CLIENT0000000001",
+		"caas_org_id":  "tenant-42",
+		"scopes":       []string{"ROLE_M2M"},
+		"cgen":         5,
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+	}, signer, kp.KID)
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+	authn := NewDelegatingAuthenticator(NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda"))
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	ctx, err := authn.Authenticate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
+	if uc := spi.GetUserContext(ctx); uc == nil || uc.Kind != spi.PrincipalService || uc.UserID != "CLIENT0000000001" {
+		t.Fatalf("UserContext = %+v, want service principal CLIENT0000000001", uc)
+	}
+	want := contract.ClientToken{ClientID: "CLIENT0000000001", Gen: 5}
+	if ct, ok := contract.ClientTokenFrom(ctx); !ok || ct != want {
+		t.Fatalf("ClientTokenFrom = %+v, %v; want %+v, true", ct, ok, want)
 	}
 }
 

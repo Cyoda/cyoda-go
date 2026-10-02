@@ -346,6 +346,15 @@ func TestTokenExchangeValid(t *testing.T) {
 	if act["sub"] != env.clientID {
 		t.Errorf("expected act.sub %q, got %v", env.clientID, act["sub"])
 	}
+	// The roles are the client's, carried in scopes; the assertion's
+	// user_roles are not copied, so the validator maps the token to a user
+	// acting through the client.
+	if scopes, _ := parsed.Claims["scopes"].([]any); len(scopes) != 2 || scopes[0] != "admin" || scopes[1] != "reader" {
+		t.Errorf("scopes = %v, want the client's roles [admin reader]", parsed.Claims["scopes"])
+	}
+	if _, has := parsed.Claims["user_roles"]; has {
+		t.Errorf("user_roles = %v, want absent", parsed.Claims["user_roles"])
+	}
 	if parsed.Claims["aud"] != "cyoda-api" {
 		t.Errorf("expected aud %q, got %v", "cyoda-api", parsed.Claims["aud"])
 	}

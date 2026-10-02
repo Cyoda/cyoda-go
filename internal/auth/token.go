@@ -211,10 +211,6 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	subOrgID, _ := parsed.Claims["caas_org_id"].(string)
-	subRoles := parsed.Claims["user_roles"]
-	if subRoles == nil {
-		subRoles = parsed.Claims["roles"]
-	}
 
 	// Tenant boundary check: the subject must be a principal of the client's
 	// tenant, which is also the tenant of the key that signed it.
@@ -237,7 +233,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		"iss":          h.issuer,
 		"caas_user_id": subjectSub,
 		"caas_org_id":  subOrgID,
-		"user_roles":   subRoles,
+		"scopes":       client.Roles, // the client's roles; the assertion's are ignored
 		"act":          map[string]any{"sub": client.ClientID},
 		"caas_tier":    "unlimited",
 		"exp":          oboNow.Add(time.Duration(h.expirySeconds) * time.Second).Unix(),

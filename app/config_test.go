@@ -191,6 +191,14 @@ func TestValidateSearchJobStaleAfter_AcceptsAtOrAboveFourXInterval(t *testing.T)
 	}
 }
 
+func TestDefaultConfig_MockKindIsService(t *testing.T) {
+	t.Setenv("CYODA_IAM_MOCK_KIND", "") // restored after the test
+	os.Unsetenv("CYODA_IAM_MOCK_KIND")
+	if got := DefaultConfig().IAM.MockKind; got != "service" {
+		t.Fatalf("default IAM.MockKind = %q, want service", got)
+	}
+}
+
 func TestDefaultConfig_AuthCacheReconcileInterval(t *testing.T) {
 	cfg := DefaultConfig()
 	if cfg.IAM.AuthCacheReconcileInterval != 60*time.Second {

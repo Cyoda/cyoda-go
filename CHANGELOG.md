@@ -86,6 +86,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   store; `GET /oauth/keys/trusted` can answer `500`/`503`.** See `cyoda help
   auth trusted-keys`.
 
+- **Tokens are mapped strictly: a token with both `scopes` and `user_roles`,
+  or with `act` but no `scopes`, is refused. `CYODA_IAM_MOCK_KIND` defaults
+  to `service`.** A token with `act` is a user acting through the client
+  named in `act.sub`, which must be an object holding a client id; a token
+  with `scopes` and no `act` is a client; a token with `user_roles` is the
+  operator's `cyoda token`. A `cgen` claim must be a non-negative integer.
+  The token exchange now issues OBO tokens with the M2M client's roles in
+  `scopes`; the subject token's roles are ignored.
+
 - **Signing key pairs are shared and persisted by the cluster.** See
   `cyoda help config auth` ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-pairs.md`.

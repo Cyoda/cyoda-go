@@ -258,8 +258,9 @@ type IAMConfig struct {
 	MockRoles      []string
 	// MockKind is the spi.PrincipalKind (as a string — "user", "service", or
 	// "system") assigned to the mock-mode default UserContext. CYODA_IAM_MOCK_KIND,
-	// default "user". Lets local/CI setups exercise service/system-attributed
-	// code paths without standing up real JWT auth.
+	// default "service": every mock-mode caller is a client, as every caller
+	// is in jwt mode. "user" and "system" let local/CI setups exercise
+	// user- or system-attributed code paths without standing up real JWT auth.
 	MockKind      string
 	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
@@ -390,7 +391,7 @@ func DefaultConfig() Config {
 			MockTenantID:                  "mock-tenant",
 			MockTenantName:                "Mock Tenant",
 			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "user"),
+			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "service"),
 			JWTSigningKey:                 jwt.SigningKeyPEM,
 			JWTIssuer:                     jwt.Issuer,
 			JWTAudience:                   jwt.Audience,

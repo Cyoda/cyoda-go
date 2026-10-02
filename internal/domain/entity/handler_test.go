@@ -1653,8 +1653,8 @@ func TestGetEntityChangesMetadata_AttributionModern(t *testing.T) {
 	if user, _ := entry["user"].(string); user != "mock-user-001" {
 		t.Errorf("user: got %v, want mock-user-001", entry["user"])
 	}
-	if kind, _ := entry["attributedKind"].(string); kind != "user" {
-		t.Errorf("attributedKind: got %v, want user", entry["attributedKind"])
+	if kind, _ := entry["attributedKind"].(string); kind != "service" {
+		t.Errorf("attributedKind: got %v, want service", entry["attributedKind"])
 	}
 	executedBy, ok := entry["executedBy"].(map[string]any)
 	if !ok {
@@ -1663,8 +1663,8 @@ func TestGetEntityChangesMetadata_AttributionModern(t *testing.T) {
 	if id, _ := executedBy["id"].(string); id != "mock-user-001" {
 		t.Errorf("executedBy.id: got %v, want mock-user-001", executedBy["id"])
 	}
-	if kind, _ := executedBy["kind"].(string); kind != "user" {
-		t.Errorf("executedBy.kind: got %v, want user", executedBy["kind"])
+	if kind, _ := executedBy["kind"].(string); kind != "service" {
+		t.Errorf("executedBy.kind: got %v, want service", executedBy["kind"])
 	}
 }
 

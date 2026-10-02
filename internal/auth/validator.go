@@ -2,11 +2,13 @@ package auth
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // JWKSValidator validates JWT tokens against a KeySource. The transport —
@@ -42,59 +44,74 @@ func NewValidatorFromSource(src KeySource, issuer string) *JWKSValidator {
 	return &JWKSValidator{source: src, issuer: issuer}
 }
 
-// Validate parses and validates a JWT token string, returning a UserContext on success.
-func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, error) {
+// Validate parses and validates a JWT token string. On success it returns the
+// principal and, for a client-credentials token that carries cgen, the
+// client-token marker (nil otherwise).
+func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, *contract.ClientToken, error) {
 	parsed, err := Parse(tokenString)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse token: %w", err)
+		return nil, nil, fmt.Errorf("failed to parse token: %w", err)
 	}
 
 	if err := EnsureAlgRS256(parsed.Header); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	kid, ok := parsed.Header["kid"].(string)
 	if !ok || kid == "" {
-		return nil, fmt.Errorf("%w: missing kid in token header", ErrClaimsFailure)
+		return nil, nil, fmt.Errorf("%w: missing kid in token header", ErrClaimsFailure)
 	}
 
 	publicKey, err := v.source.GetKey(kid)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve key %q: %w", kid, err)
+		return nil, nil, fmt.Errorf("failed to resolve key %q: %w", kid, err)
 	}
 
 	if err := Verify(parsed.SigningInput, parsed.Signature, publicKey); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrSignatureFailure, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrSignatureFailure, err)
 	}
 
 	if err := ValidateClaims(parsed.Claims, 30*time.Second); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
+		return nil, nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
 	}
 
 	iss, _ := parsed.Claims["iss"].(string)
 	if iss != v.issuer {
-		return nil, fmt.Errorf("%w: token iss=%q, expected %q", ErrIssuerMismatch, iss, v.issuer)
+		return nil, nil, fmt.Errorf("%w: token iss=%q, expected %q", ErrIssuerMismatch, iss, v.issuer)
 	}
 
-	v.mu.RLock()
-	audience := v.audience
-	v.mu.RUnlock()
+	audience := func() string {
+		v.mu.RLock()
+		defer v.mu.RUnlock()
+		return v.audience
+	}()
 	if audience != "" {
 		if err := checkAudience(parsed.Claims["aud"], audience); err != nil {
-			return nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
+			return nil, nil, fmt.Errorf("%w: %w", ErrClaimsFailure, err)
 		}
 	}
 
-	uc, err := v.buildUserContext(parsed.Claims)
+	uc, ct, err := v.buildUserContext(parsed.Claims)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build user context: %w", err)
+		return nil, nil, fmt.Errorf("failed to build user context: %w", err)
 	}
 
-	return uc, nil
+	return uc, ct, nil
 }
 
-// buildUserContext extracts user information from JWT claims.
-func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContext, error) {
+// buildUserContext maps the claims of a verified token to the principal and,
+// for a client-credentials token that carries cgen, the client-token marker:
+//
+//	act + scopes, no user_roles        → user caas_user_id, roles scopes, executor the act.sub client
+//	scopes, no act, no user_roles      → service caas_user_id, roles scopes; marker {caas_user_id, cgen} iff cgen
+//	user_roles, no act, no scopes      → user caas_user_id, roles user_roles (the operator's token)
+//	neither scopes nor user_roles      → user caas_user_id, no roles
+//
+// Every other combination of act, scopes and user_roles is refused, so each
+// accepted token maps to exactly one row. No error carries a claim value: the
+// errors reach slog via logAuthFailure's detail field, and claims are
+// attacker-chosen.
+func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContext, *contract.ClientToken, error) {
 	// A caas_user_id that is present names the user, so it must be a string
 	// and it must pass the check. Only an absent caas_user_id falls back to
 	// sub; an empty or malformed one never does, because that would put a
@@ -103,13 +120,13 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	if raw, present := claims["caas_user_id"]; present {
 		s, ok := raw.(string)
 		if !ok {
-			return nil, fmt.Errorf("caas_user_id claim rejected: %w: not a string", common.ErrInvalidUserID)
+			return nil, nil, fmt.Errorf("caas_user_id claim rejected: %w: not a string", common.ErrInvalidUserID)
 		}
 		userID = s
 	} else {
 		userID, _ = claims["sub"].(string)
 		if userID == "" {
-			return nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
+			return nil, nil, fmt.Errorf("missing user identity (caas_user_id or sub claim)")
 		}
 	}
 	// The same format check applies to sub; it also rejects a present but
@@ -117,12 +134,12 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	// reaches slog via logAuthFailure's detail field, and the claim is
 	// attacker-chosen.
 	if err := common.ValidateUserID(userID); err != nil {
-		return nil, fmt.Errorf("caas_user_id/sub claim rejected: %w", err)
+		return nil, nil, fmt.Errorf("caas_user_id/sub claim rejected: %w", err)
 	}
 
 	orgID, _ := claims["caas_org_id"].(string)
 	if orgID == "" {
-		return nil, fmt.Errorf("missing caas_org_id claim")
+		return nil, nil, fmt.Errorf("missing caas_org_id claim")
 	}
 
 	// The tenant door. The caas_org_id claim is the only place a tenant id
@@ -134,39 +151,98 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	// The error deliberately carries no part of the claim: it reaches slog via
 	// logAuthFailure's detail field, and the claim is attacker-chosen.
 	if err := common.ValidateTenantID(spi.TenantID(orgID)); err != nil {
-		return nil, fmt.Errorf("caas_org_id claim rejected: %w", err)
+		return nil, nil, fmt.Errorf("caas_org_id claim rejected: %w", err)
 	}
 
-	// Kind branches on claim-KEY presence, not on how many roles it carries:
-	// an OBO token's user_roles key marks a human principal even when the
-	// array is empty (an unprivileged user is still a user). Only a token
-	// that carries scopes but no user_roles key at all is a service
-	// (client_credentials) principal. Absent both, default to user — the
-	// attribution-safe choice when no signal says otherwise.
-	kind := spi.PrincipalUser
-	if _, hasUserRoles := claims["user_roles"]; !hasUserRoles {
-		if _, hasScopes := claims["scopes"]; hasScopes {
-			kind = spi.PrincipalService
+	// The row is chosen by which claim KEYS are present, never by how many
+	// roles a claim carries: an empty scopes array still makes a client.
+	actRaw, hasAct := claims["act"]
+	scopes, hasScopes := claims["scopes"]
+	userRoles, hasUserRoles := claims["user_roles"]
+	cgenRaw, hasCgen := claims["cgen"]
+
+	switch {
+	case hasScopes && hasUserRoles:
+		return nil, nil, fmt.Errorf("token carries both scopes and user_roles")
+	case hasAct && !hasScopes:
+		return nil, nil, fmt.Errorf("act claim without scopes")
+	}
+
+	var gen uint64
+	if hasCgen {
+		g, err := secretGeneration(cgenRaw)
+		if err != nil {
+			return nil, nil, err
 		}
+		gen = g
 	}
 
-	// OBO tokens carry user_roles, client_credentials tokens carry scopes.
-	// Try user_roles first (OBO), fall back to scopes (client_credentials).
-	roles := extractStringSlice(claims["user_roles"])
-	if len(roles) == 0 {
-		roles = extractStringSlice(claims["scopes"])
-	}
-
-	return &spi.UserContext{
+	uc := &spi.UserContext{
 		UserID:   userID,
 		UserName: userID,
-		Kind:     kind,
+		Kind:     spi.PrincipalUser,
 		Tenant: spi.Tenant{
 			ID:   spi.TenantID(orgID),
 			Name: orgID,
 		},
-		Roles: roles,
-	}, nil
+	}
+	var ct *contract.ClientToken
+
+	switch {
+	case hasAct:
+		// On behalf of a user: the user is the principal, the client in
+		// act.sub executes for them.
+		clientID, err := actorClientID(actRaw)
+		if err != nil {
+			return nil, nil, err
+		}
+		uc.Roles = extractStringSlice(scopes)
+		uc.Executor = &spi.Principal{ID: clientID, Kind: spi.PrincipalService}
+	case hasScopes:
+		// A client acting for itself.
+		uc.Kind = spi.PrincipalService
+		uc.Roles = extractStringSlice(scopes)
+		if hasCgen {
+			ct = &contract.ClientToken{ClientID: userID, Gen: gen}
+		}
+	case hasUserRoles:
+		// The operator's offline token.
+		uc.Roles = extractStringSlice(userRoles)
+	}
+	if uc.Roles == nil { // no roles claim, or one that is not an array
+		uc.Roles = []string{}
+	}
+
+	return uc, ct, nil
+}
+
+// actorClientID returns the client id in an act claim, which must be a JSON
+// object whose sub is a client id.
+func actorClientID(raw any) (string, error) {
+	act, ok := raw.(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("act claim rejected: not an object")
+	}
+	sub, ok := act["sub"].(string)
+	if !ok || !ValidClientID(sub) {
+		return "", fmt.Errorf("act claim rejected: sub is not a client id")
+	}
+	return sub, nil
+}
+
+// maxExactGen is the largest integer a JSON number decoded as float64 still
+// holds exactly.
+const maxExactGen = 1 << 53
+
+// secretGeneration returns the cgen claim as a uint64. JSON numbers decode as
+// float64, so only a non-negative integral value no larger than maxExactGen is
+// a generation; anything else is refused rather than rounded.
+func secretGeneration(raw any) (uint64, error) {
+	f, ok := raw.(float64)
+	if !ok || f < 0 || f != math.Trunc(f) || f > maxExactGen {
+		return 0, fmt.Errorf("cgen claim rejected: not a non-negative integer")
+	}
+	return uint64(f), nil
 }
 
 // checkAudience verifies that the token's aud claim contains the expected

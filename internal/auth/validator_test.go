@@ -52,7 +52,7 @@ func TestJWKSValidator_ValidToken(t *testing.T) {
 
 	token := signTestToken(t, key, kid, claims)
 
-	uc, err := v.Validate(token)
+	uc, _, err := v.Validate(token)
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestJWKSValidator_ExpiredToken(t *testing.T) {
 
 	token := signTestToken(t, key, kid, claims)
 
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}
@@ -114,7 +114,7 @@ func TestJWKSValidator_UnknownKid(t *testing.T) {
 	// Sign with a kid that is not in the key source.
 	token := signTestToken(t, key, "unknown-kid", claims)
 
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for unknown kid, got nil")
 	}
@@ -142,83 +142,9 @@ func TestJWKSValidator_InvalidSignature(t *testing.T) {
 
 	token := signTestToken(t, otherKey, kid, claims)
 
-	_, err = v.Validate(token)
+	_, _, err = v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for invalid signature, got nil")
-	}
-}
-
-func TestJWKSValidator_PrincipalKind(t *testing.T) {
-	key, kid := setupTestJWKS(t)
-
-	issuer := "test-issuer"
-	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
-
-	baseClaims := func() map[string]any {
-		return map[string]any{
-			"iss":          issuer,
-			"exp":          float64(time.Now().Add(time.Hour).Unix()),
-			"iat":          float64(time.Now().Unix()),
-			"caas_user_id": "user-42",
-			"caas_org_id":  "org-7",
-		}
-	}
-
-	tests := []struct {
-		name    string
-		mutate  func(map[string]any)
-		wantKnd spi.PrincipalKind
-	}{
-		{
-			name: "user_roles present",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{"ROLE_ADMIN"}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name: "user_roles present but empty array — key presence, not len",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name: "scopes only — service",
-			mutate: func(c map[string]any) {
-				c["scopes"] = []any{"read"}
-			},
-			wantKnd: spi.PrincipalService,
-		},
-		{
-			name: "both user_roles and scopes present — user",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{"ROLE_ADMIN"}
-				c["scopes"] = []any{"read"}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name:    "neither claim present — attribution-safe default user",
-			mutate:  func(c map[string]any) {},
-			wantKnd: spi.PrincipalUser,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			claims := baseClaims()
-			tt.mutate(claims)
-			token := signTestToken(t, key, kid, claims)
-
-			uc, err := v.Validate(token)
-			if err != nil {
-				t.Fatalf("Validate failed: %v", err)
-			}
-			if uc.Kind != tt.wantKnd {
-				t.Errorf("Kind = %q, want %q", uc.Kind, tt.wantKnd)
-			}
-		})
 	}
 }
 
@@ -251,7 +177,7 @@ func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 			}
 			tok := signTestToken(t, key, kid, claims)
 
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err == nil {
 				t.Fatalf("Validate accepted tenant %q, got UserContext %+v", org, uc)
 			}
@@ -292,7 +218,7 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 			}
 			tok := signTestToken(t, key, kid, claims)
 
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err != nil {
 				t.Fatalf("Validate(%q) = %v, want nil", org, err)
 			}
@@ -331,7 +257,7 @@ func TestValidator_RejectsUserClaimOutsideCheck(t *testing.T) {
 				"scopes":       []any{"read"},
 			}
 			tok := signTestToken(t, key, kid, claims)
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err == nil {
 				t.Fatalf("Validate accepted user id %q, got UserContext %+v", user, uc)
 			}
@@ -363,7 +289,7 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 		"scopes":      []any{"read"},
 	}
 	tok := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(tok)
+	_, _, err := v.Validate(tok)
 	if err == nil {
 		t.Fatal("Validate accepted control character in sub fallback")
 	}
@@ -394,7 +320,7 @@ func TestValidator_RejectsReservedSystemUserID(t *testing.T) {
 				"caas_org_id": "org-7",
 				"scopes":      []any{"read"},
 			}
-			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
 				t.Fatalf("Validate accepted the reserved id as %q", uc.UserID)
 			}
@@ -429,7 +355,7 @@ func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 				"scopes":       []any{"read"},
 			}
 			tok := signTestToken(t, key, kid, claims)
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err != nil {
 				t.Fatalf("Validate(%q) = %v, want nil", user, err)
 			}
@@ -456,7 +382,7 @@ func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
 		"caas_org_id":  "org-7",
 		"scopes":       []any{"read"},
 	}
-	uc, err := v.Validate(signTestToken(t, key, kid, claims))
+	uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 	if err == nil {
 		t.Fatalf("Validate accepted the token as %q, want a rejection", uc.UserID)
 	}
@@ -491,7 +417,7 @@ func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 				"caas_org_id":  "org-7",
 				"scopes":       []any{"read"},
 			}
-			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
 				t.Fatalf("Validate accepted a %s caas_user_id as %q, want a rejection", name, uc.UserID)
 			}

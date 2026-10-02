@@ -76,10 +76,11 @@ func TestMockIAMDefaultUserHasM2MAndAdminRoles(t *testing.T) {
 	a := app.New(app.DefaultConfig())
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	uc, err := a.AuthenticationService().Authenticate(context.Background(), req)
+	ctx, err := a.AuthenticationService().Authenticate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
+	uc := spi.GetUserContext(ctx)
 	if !spi.HasRole(uc.Roles, "ROLE_M2M") {
 		t.Errorf("default mock user missing ROLE_M2M (roles=%v) — gRPC streaming will be denied", uc.Roles)
 	}
@@ -98,10 +99,11 @@ func TestMockIAMReturnsDefensiveCopy(t *testing.T) {
 	svc := mockiam.NewAuthenticationService(defaultUser)
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	uc1, err := svc.Authenticate(context.Background(), req)
+	ctx1, err := svc.Authenticate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
+	uc1 := spi.GetUserContext(ctx1)
 
 	// Mutate the returned UserContext.
 	uc1.UserID = "mutated"
@@ -110,10 +112,11 @@ func TestMockIAMReturnsDefensiveCopy(t *testing.T) {
 
 	// Subsequent call should return unmodified values.
 	req2 := httptest.NewRequest(http.MethodGet, "/", nil)
-	uc2, err := svc.Authenticate(context.Background(), req2)
+	ctx2, err := svc.Authenticate(context.Background(), req2)
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
 	}
+	uc2 := spi.GetUserContext(ctx2)
 
 	if uc2.UserID != "test-user" {
 		t.Errorf("expected UserID=test-user, got %s", uc2.UserID)

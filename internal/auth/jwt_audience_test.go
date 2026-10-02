@@ -35,7 +35,7 @@ func TestJWKSValidator_AcceptsMatchingAudienceString(t *testing.T) {
 	claims["aud"] = expectedAud
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token with matching aud: %v", err)
 	}
 }
@@ -55,7 +55,7 @@ func TestJWKSValidator_AcceptsMatchingAudienceArray(t *testing.T) {
 	claims["aud"] = []any{"other-service", expectedAud, "yet-another"}
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token with aud array containing expected: %v", err)
 	}
 }
@@ -73,7 +73,7 @@ func TestJWKSValidator_RejectsWrongAudience(t *testing.T) {
 	claims["aud"] = "other-svc"
 
 	token := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted token with wrong aud")
 	}
@@ -96,7 +96,7 @@ func TestJWKSValidator_RejectsMissingAudienceWhenConfigured(t *testing.T) {
 	// No "aud" claim.
 
 	token := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted token with missing aud")
 	}
@@ -120,7 +120,7 @@ func TestJWKSValidator_NoAudienceCheckWhenUnconfigured(t *testing.T) {
 	claims["aud"] = "anything-goes"
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token when no aud was configured: %v", err)
 	}
 }

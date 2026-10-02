@@ -85,7 +85,7 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	// Validate the token in-process via the AuthService's own KeyStore —
 	// the production validator's path (no HTTP JWKS fetch).
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
-	uc, err := validator.Validate(tokenResp.AccessToken)
+	uc, _, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate token: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	// Validate the token issued by node A using node B's own KeyStore (shared
 	// KV). This fails if KID is random per node (the original bug).
 	validatorB := auth.NewValidatorFromSource(auth.NewLocalKeySource(svcB.KeyStore()), "cyoda")
-	uc, err := validatorB.Validate(tokenResp.AccessToken)
+	uc, _, err := validatorB.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Node B failed to validate token from node A: %v", err)
 	}

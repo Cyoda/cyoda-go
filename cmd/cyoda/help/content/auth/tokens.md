@@ -102,7 +102,7 @@ Key constraints:
 - The subject token must be signed by a trusted key registered in the M2M client's own tenant (`auth.trusted-keys`). A key registered by another tenant is not found → `400 invalid_grant`.
 - The subject token's `caas_org_id` must match the M2M client's tenant. Tenant mismatch → `403 access_denied`.
 - The subject token's `sub` becomes the issued token's user identifier, so it must pass the user-identifier rule in `config.auth` (1 to 255 characters; no control character, noncharacter or U+FFFD; not beginning with the reserved word `oidc:`). Otherwise → `400 invalid_grant`.
-- The issued OBO token carries `sub` = the subject's `sub`, `user_roles` from the subject token, and an `act` claim `{"sub": "<m2m client_id>"}` identifying the actor.
+- The issued OBO token carries `sub` = the subject's `sub`, `scopes` = the M2M client's roles (the subject token's roles are ignored), and an `act` claim `{"sub": "<m2m client_id>"}` identifying the actor.
 - Subject token must already be valid (signature, not expired).
 
 ## TOKEN
@@ -119,10 +119,10 @@ Claim shape for cyoda-minted tokens:
 - `jti` (string UUID) — Unique token ID.
 - `caas_org_id` (string) — Tenant scope: a tenant id matching the tenant grammar in `config.auth` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`), or the token is rejected with `401`. Every API call is constrained to this tenant.
 - `caas_user_id` (string) — User identifier. For M2M tokens this duplicates `sub` (= `client_id`). When it is absent, `sub` is the user identifier instead; when it is present, it must be a non-empty string and `sub` is not consulted. Either way the value must pass the user-identifier rule (1 to 255 characters; no control character, noncharacter or U+FFFD; not beginning with the reserved word `oidc:`), or the token is rejected with `401`; see `config.auth`.
-- `scopes` (string array) — **`client_credentials` only.** The M2M client's roles (e.g. `ROLE_M2M`, `ROLE_ADMIN`); a token that carries `scopes` and no `user_roles` is a service principal.
-- `user_roles` (string array) — Roles of a person token: OBO and `cyoda token`. Its presence marks a user principal. Federated OIDC tokens carry roles from the provider's configured `rolesClaim` (default `roles`; per-provider override available — see `auth.oidc`).
+- `scopes` (string array) — **`client_credentials` and OBO.** The M2M client's roles (e.g. `ROLE_M2M`, `ROLE_ADMIN`). A token that carries `scopes` and no `act` is the client itself, a service principal; with `act` it is a user acting through that client.
+- `user_roles` (string array) — Roles of a `cyoda token` person token. Its presence marks a user principal. A token that carries both `scopes` and `user_roles`, or `act` and `user_roles`, is rejected with `401`.
 - `caas_tier` (string) — Tier label, on tokens from `/oauth/token`. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers. `cyoda token` tokens carry none.
-- `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens.
+- `act` (object) — **OBO only.** `{"sub": "<m2m client_id>"}` identifying the M2M actor that exchanged the user token. Absent on `client_credentials` tokens. A token whose `act` is not an object, whose `act.sub` is not a client id, or that carries `act` without `scopes` is rejected with `401`.
 
 Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap key from `CYODA_JWT_SIGNING_KEY`, or an issued key pair if one is active and wins selection. The `kid` header points at that signing key pair, shared by every node of the cluster (`/oauth/keys/*`). Federated OIDC tokens are validated against the registered provider's JWKS — never signed by cyoda. A trusted key only verifies the subject token of a token exchange; it is never checked on an API call.
 
