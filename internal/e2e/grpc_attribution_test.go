@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -14,9 +15,10 @@ import (
 // grpc_attribution_test.go — on-behalf-of attribution and the own-user join
 // rule through the gRPC door (EntityManage): an OBO create records the user
 // and the OBO client; a compute write-back joined to the user's transaction
-// records the user and the compute client; an OBO callback joining another
-// user's transaction is refused through the RPC's error envelope. The pass is
-// never logged.
+// records the user and the compute client; an OBO create that arms a
+// scheduled transition stamps ScheduledTask.ArmedBy with the OBO user; an OBO
+// callback joining another user's transaction is refused through the RPC's
+// error envelope. The pass is never logged.
 
 // createEntityGRPCAs issues an EntityCreateRequest over EntityManage under
 // bearer, joined to pass when it is non-empty, and returns the response
@@ -114,6 +116,35 @@ func TestGRPCAttribution_OBOWriteBack(t *testing.T) {
 		t.Fatal("timeout: write-back processor did not create Y")
 	}
 	assertAttribution(t, findChangeByType(h.getChanges(t, yID), "CREATE"), "Y gRPC write-back", "alice", "user", "service", computeID)
+}
+
+// TestGRPCAttribution_ScheduledOBOArmed: an EntityManage create under alice's
+// on-behalf-of token, whose workflow arms a far-future scheduled transition,
+// stamps the durable ScheduledTask.ArmedBy with alice — never the OBO client —
+// through the gRPC door exactly as it does through HTTP (spec §13: "scheduled
+// fire armed by an OBO request, directly ... (gRPC)"). farFutureTimerWF keeps
+// the timer armed (never due) for the length of the test, so the row can be
+// inspected directly rather than waiting on the scheduler.
+func TestGRPCAttribution_ScheduledOBOArmed(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	const model = "grpc-attr-sched-obo-armed"
+	h.SetupModelWithWorkflow(t, model, farFutureTimerWF("grpc-attr-sched-obo-armed-wf"))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	env, id, err := h.createEntityGRPCAs(alice, "", model, 1, `{"name":"x","amount":1,"status":"new"}`)
+	if err != nil || !env.Success {
+		t.Fatalf("EntityManage create as alice (OBO): %s %v", describeEnv(env), err)
+	}
+
+	var armedID, armedKind string
+	if err := dbPool.QueryRow(context.Background(),
+		`SELECT armed_by_id, armed_by_kind FROM scheduled_tasks WHERE entity_id=$1`, id,
+	).Scan(&armedID, &armedKind); err != nil {
+		t.Fatalf("inspect scheduled_task for %s: %v", id, err)
+	}
+	if armedID != "alice" || armedKind != "user" {
+		t.Errorf("armed timer principal = {%q,%q}; want {alice,user} (the OBO user, never the OBO client)", armedID, armedKind)
+	}
 }
 
 // TestGRPCCallbackJoin_OBOOtherUser_Forbidden: alice's on-behalf-of token

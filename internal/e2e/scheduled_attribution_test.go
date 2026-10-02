@@ -12,18 +12,21 @@ import (
 
 // scheduled_attribution_test.go — single-backend (postgres) e2e coverage for
 // attribution of SCHEDULED-fire follow-on actions (spec
-// docs/superpowers/specs/2026-07-22-attribute-followon-actions-design.md §5).
+// docs/superpowers/specs/2026-10-01-624-m2m-only-access-design.md §7.4).
 //
-// A scheduled transition is armed by whoever's causal origin was in effect at
-// arm time (spi.ResolveOrigin -> ScheduledTask.ArmedBy, arm.go), and fired
-// later by the platform scheduler. The claimed task carries ArmedBy, and
-// FireScheduledTransition stamps the fired anchor's attributed principal from
-// it and its EXECUTOR as the system principal {id:"system", kind:"system"} —
-// never the literal string "scheduler". These tests drive real timers (short
-// DelayMs / fireAfterMs) through the full HTTP+gRPC stack on a stack with a
-// live scheduler and a database of its own (newSchedulerCallbackHarness), wait
-// for the scheduler to fire, and assert the recorded {attributed, executor}
-// pair on GET /entity/{id}/changes.
+// A scheduled transition is armed by whoever's write ATTRIBUTES to at arm time
+// (spi.AttributionFor -> ScheduledTask.ArmedBy, arm.go) — not the transaction's
+// origin (spi.ResolveOrigin): the two differ for a user-kind caller writing
+// inside a transaction begun by someone else, and for an on-behalf-of
+// principal, which arms with the OBO user and never inherits a transaction's
+// origin. The task is fired later by the platform scheduler. The claimed task
+// carries ArmedBy, and FireScheduledTransition stamps the fired anchor's
+// attributed principal from it and its EXECUTOR as the system principal
+// {id:"system", kind:"system"} — never the literal string "scheduler". These
+// tests drive real timers (short DelayMs / fireAfterMs) through the full
+// HTTP+gRPC stack on a stack with a live scheduler and a database of its own
+// (newSchedulerCallbackHarness), wait for the scheduler to fire, and assert the
+// recorded {attributed, executor} pair on GET /entity/{id}/changes.
 //
 // Reused helpers: mintUserToken / createEntityAs / getChanges /
 // findChangeByType / assertAttribution (attribution_test.go),
@@ -103,6 +106,118 @@ func TestAttribution_ScheduledUserArmed(t *testing.T) {
 	assertNoSchedulerString(t, h, xID)
 }
 
+// --- Scenario 1b: an OBO request arms a timer directly ------------------------
+
+// TestAttribution_ScheduledOBOArmed: alice's on-behalf-of token DIRECTLY
+// creates an entity (not joined to anyone else's transaction) whose init
+// cascade lands it in a state with a short-DelayMs scheduled transition.
+// spi.AttributionFor never lets an OBO write inherit a transaction's origin,
+// so the timer arms with alice, never the OBO client. The fired anchor must
+// attribute to alice, executed by the system principal — the "directly" half
+// of spec §13's "scheduled fire armed by an OBO request, directly and inside
+// its own joined transaction" row; TestAttribution_D3_OBOKeepsOwnUser covers
+// the joined half (an OBO callback joining its own transaction).
+func TestAttribution_ScheduledOBOArmed(t *testing.T) {
+	h, _ := newSchedulerCallbackHarness(t, nil)
+
+	const model = "attr-sched-obo-armed"
+	wf := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "attr-sched-obo-armed-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
+				"Closed": {}
+			}
+		}]
+	}`
+	h.SetupModelWithWorkflow(t, model, wf)
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	xID, status, body := h.createEntityAs(t, alice, model, 1, `{"name":"x","amount":1,"status":"new"}`)
+	if status != http.StatusOK {
+		t.Fatalf("create as alice (OBO): %d %s", status, body)
+	}
+
+	anchor := awaitFiredAnchor(t, h, xID, "Closed")
+	assertAttribution(t, anchor, "scheduled fire anchor (OBO-armed)", "alice", "user", firedSchedExecKind, firedSchedExecID)
+	assertNoSchedulerString(t, h, xID)
+}
+
+// --- Scenario 1c: a compute write-back in alice's transaction arms a timer ----
+
+// TestAttribution_ScheduledArmedByWriteBack: alice creates the primary; its
+// SYNC processor writes a secondary back through the compute client's own
+// (service-kind, no OBO Executor) token, joined to alice's transaction. The
+// secondary's init cascade lands it in a state with a short-DelayMs scheduled
+// transition, armed inside that same joined transaction. ArmedBy must be
+// alice — the transaction's origin spi.AttributionFor inherits for a plain
+// service executor — never the compute client that staged the write. Spec
+// §13: "scheduled fire armed by a compute write-back in alice's transaction:
+// ArmedBy alice".
+func TestAttribution_ScheduledArmedByWriteBack(t *testing.T) {
+	h, _ := newSchedulerCallbackHarness(t, nil)
+
+	const primary = "attr-sched-wb-primary"
+	const secondary = "attr-sched-wb-secondary"
+	secondaryWF := `{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": "attr-sched-wb-y-wf", "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
+				"Closed": {}
+			}
+		}]
+	}`
+	h.SetupModelWithWorkflow(t, secondary, secondaryWF)
+
+	compute := h.computeBearer(t)
+	yIDs := make(chan string, 1)
+	h.RegisterProc("attr-sched-wb-proc", func(rc *reqCtx) (map[string]any, error) {
+		res, err := rc.CreateEntityAs(compute, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+		if err != nil {
+			return nil, fmt.Errorf("write-back create Y: %w", err)
+		}
+		if res.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("write-back create Y status=%d body=%s", res.StatusCode, res.Body)
+		}
+		yIDs <- res.EntityID
+		return nil, nil
+	})
+	h.SetupModelWithWorkflow(t, primary, procCascadeWF("attr-sched-wb", "attr-sched-wb-proc", "SYNC", ""))
+
+	alice := h.mintUserToken(t, "alice", "ROLE_USER")
+	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("create X as alice: %d %s", status, body)
+	}
+
+	var yID string
+	select {
+	case yID = <-yIDs:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout: write-back processor did not create Y")
+	}
+
+	// The write-back CREATE itself attributes to alice, executed by the
+	// compute client — a different principal from alice.
+	created := findChangeByType(h.getChanges(t, yID), "CREATE")
+	assertAttribution(t, created, "Y write-back create", "alice", "user", "service", "")
+	if ex, _ := created["executedBy"].(map[string]any); ex != nil {
+		if id, _ := ex["id"].(string); id == "alice" {
+			t.Errorf("Y write-back create: executedBy.id = %q; want the compute client, not alice", id)
+		}
+	}
+
+	// The fired anchor must carry alice (ArmedBy = the transaction's origin),
+	// never the compute client that staged the write-back.
+	anchor := awaitFiredAnchor(t, h, yID, "Closed")
+	assertAttribution(t, anchor, "Y fired anchor (write-back armed, ArmedBy alice)", "alice", "user", firedSchedExecKind, firedSchedExecID)
+	assertNoSchedulerString(t, h, yID)
+}
+
 // --- Scenario 2: a fire that arms a further hop stays user-rooted -------------
 
 // TestAttribution_ScheduledChain: alice arms hop 1 (Open -[AutoClose]-> Mid);
@@ -160,16 +275,18 @@ func TestAttribution_ScheduledChain(t *testing.T) {
 
 // --- Scenario 3: the fired anchor is stamped from ArmedBy, not stale meta -----
 
-// TestAttribution_ScheduledAnchorStamped: regression for the stale-meta bug
-// (fire_scheduled.go: the anchor must be stamped from the durable ArmedBy
-// BEFORE the cascade, not left carrying whatever principal last wrote the
-// entity). The entity Y is CREATED by bob (a processor callback presenting
-// bob's OBO user token, joined into alice's transaction — the D3 divergence:
-// a user-kind executor records itself, so Y's create version writer is bob),
-// while the timer armed on Y in that same transaction carries the CHAIN ORIGIN
-// alice (spec §5.2). When the timer fires, the anchor must carry alice
-// (ArmedBy) — DIFFERENT from bob, the previous version's writer — proving the
-// fire re-stamps rather than inheriting the loaded entity's stale meta.
+// TestAttribution_ScheduledAnchorStamped: regression for arming falling back
+// to the CHAIN origin instead of the write's own spi.AttributionFor result
+// (the behavior spi.ResolveOrigin-based arming had, and the exact thing this
+// task's switch to spi.AttributionFor eliminates — see arm.go). The entity Y
+// is CREATED by bob (a processor callback presenting bob's own plain user
+// token — NOT on-behalf-of — joined into alice's transaction: a user-kind
+// executor records itself, so Y's create version writer is bob), and the
+// AutoClose timer armed on Y in that SAME write must carry bob too — never
+// alice, the transaction's origin / the chain that launched the cascade. A
+// regression that reintroduced spi.ResolveOrigin at the arm site would make
+// this fail by stamping alice instead. When the timer fires, the anchor must
+// carry bob (ArmedBy), executed by the system principal.
 func TestAttribution_ScheduledAnchorStamped(t *testing.T) {
 	h, _ := newSchedulerCallbackHarness(t, nil)
 
@@ -192,9 +309,10 @@ func TestAttribution_ScheduledAnchorStamped(t *testing.T) {
 	bob := h.mintUserToken(t, "bob", "ROLE_USER")
 	yIDs := make(chan string, 1)
 	h.RegisterProc("attr-sched-stamp-proc", func(rc *reqCtx) (map[string]any, error) {
-		// Joined (rc.token present) BUT presenting bob's user token → D3: Y's
-		// create version writer is bob; the AutoClose timer, armed in the same
-		// tx, inherits the chain origin alice as ArmedBy.
+		// Joined (rc.token present) presenting bob's own plain user token: a
+		// user-kind executor records itself (spi.AttributionFor never lets it
+		// inherit the transaction's origin), so both Y's create version AND the
+		// AutoClose timer armed in the same write carry bob, not alice.
 		res, err := rc.CreateEntityAs(bob, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
 		if err != nil {
 			return nil, fmt.Errorf("stamp create Y: %w", err)
@@ -219,16 +337,18 @@ func TestAttribution_ScheduledAnchorStamped(t *testing.T) {
 		t.Fatal("timeout: processor did not create Y")
 	}
 
-	// The previous version's writer (Y's CREATE) is bob.
+	// Y's CREATE version writer is bob (a user-kind executor records itself).
 	created := findChangeByType(h.getChanges(t, yID), "CREATE")
-	assertAttribution(t, created, "Y create (D3 executor bob)", "bob", "user", "user", "bob")
+	assertAttribution(t, created, "Y create (joined, user executor bob)", "bob", "user", "user", "bob")
 
-	// The fired anchor carries alice (ArmedBy / chain origin), NOT bob (the
-	// entity's last writer / stale meta), executed by the system principal.
+	// The fired anchor must carry bob (ArmedBy, from the SAME write as the
+	// create above), NEVER alice — the transaction's origin / the chain that
+	// launched the cascade, and what spi.ResolveOrigin-based arming would have
+	// stamped here before this task's switch to spi.AttributionFor.
 	anchor := awaitFiredAnchor(t, h, yID, "Closed")
-	assertAttribution(t, anchor, "Y fired anchor (stamped from ArmedBy)", "alice", "user", firedSchedExecKind, firedSchedExecID)
-	if u, _ := anchor["user"].(string); u == "bob" {
-		t.Errorf("stale-meta regression: fired anchor attributes to bob (the previous version's writer), not the arming principal alice")
+	assertAttribution(t, anchor, "Y fired anchor (stamped from ArmedBy)", "bob", "user", firedSchedExecKind, firedSchedExecID)
+	if u, _ := anchor["user"].(string); u == "alice" {
+		t.Errorf("chain-origin regression: fired anchor attributes to alice (the transaction's origin), not the arming write's own attributed user bob")
 	}
 	assertNoSchedulerString(t, h, yID)
 }
@@ -320,8 +440,8 @@ func TestAttribution_ScheduledArmedBySpoofIgnored(t *testing.T) {
 	// 4c: with a WELL-FORMED (timing-only) schedule.function result, the task
 	// still arms to the true origin (alice) and the fire attributes to her —
 	// the callout decides WHEN the task fires, the platform decides WHO it is
-	// attributed to (arm.go's armViaFunction: ArmedBy = ResolveOrigin(ctx),
-	// never the Function result).
+	// attributed to (arm.go's armViaFunction: ArmedBy = AttributionFor(ctx)'s
+	// attributed return, never the Function result).
 	t.Run("ValidFunctionResultArmsTrueOrigin", func(t *testing.T) {
 		h, s := newSchedulerCallbackHarness(t, nil)
 		const model = "attr-sched-spoof-fn-valid"
