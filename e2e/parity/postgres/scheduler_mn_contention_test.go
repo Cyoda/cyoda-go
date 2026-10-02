@@ -4,6 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -48,8 +51,9 @@ type contentionTenant struct {
 //   - the sibling that did not fire is removed with SCHEDULED_TRANSITION_CANCEL
 //     when the entity leaves Open; no task is left, none FAILED;
 //   - every pnode, the isolated one included, held claims;
-//   - tenants take turns within a claim call: each pnode's first claim, made
-//     while both tenants have many due tasks, holds one task of each.
+//   - tenants take turns within a claim call: a pnode's first claim of two
+//     tasks, made while both tenants have many due tasks, holds one task of
+//     each, and at least one pnode's first claim is of two tasks.
 func TestSchedulerMN_ClaimContention(t *testing.T) {
 	t.Parallel()
 	const (
@@ -57,6 +61,11 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		isolated  = 2
 		perTenant = 45
 		delayMs   = 10000
+		// sleepMs is every processor's run time: no run ends sooner than
+		// sleepMs after its claim committed.
+		sleepMs = 200
+		// createWorkers bounds the concurrent creates.
+		createWorkers = 16
 	)
 	secret := make([]byte, 32)
 	if _, err := rand.Read(secret); err != nil {
@@ -94,7 +103,7 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	const model = "mn-contention"
 	slow := func(tag string, idempotent bool) map[string]any {
 		p := mnProc("slow-configurable", "SYNC", tag, idempotent, 10000)
-		p["config"].(map[string]any)["context"] = `{"sleep_ms":200}`
+		p["config"].(map[string]any)["context"] = fmt.Sprintf(`{"sleep_ms":%d}`, sleepMs)
 		return p
 	}
 	var tenants []*contentionTenant
@@ -131,17 +140,54 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		tenants = append(tenants, ct)
 	}
 
-	createdFrom := time.Now()
+	// Each entity's tasks are due delayMs after its create, so the due
+	// instants spread over exactly as long as the creates take, and the
+	// freeze below must cover that spread. The creates run concurrently:
+	// done one after another, the spread is the sum of every request's
+	// latency, which under parallel load (other suites starting containers
+	// and building servers) grows past what the freeze can cover.
+	type createJob struct {
+		ct *contentionTenant
+		i  int
+	}
+	jobs := make(chan createJob)
+	var createWG sync.WaitGroup
+	var createMu sync.Mutex
+	var createErrs []error
 	for _, ct := range tenants {
-		for i := 0; i < perTenant; i++ {
-			id, err := ct.c.CreateEntity(t, model, 1, mnSample)
-			if err != nil {
-				t.Fatalf("CreateEntity %d: %v", i, err)
+		ct.ids = make([]uuid.UUID, perTenant)
+	}
+	createdFrom := time.Now()
+	for w := 0; w < createWorkers; w++ {
+		createWG.Add(1)
+		go func() {
+			defer createWG.Done()
+			for j := range jobs {
+				id, err := j.ct.c.CreateEntity(t, model, 1, mnSample)
+				if err != nil {
+					func() {
+						createMu.Lock()
+						defer createMu.Unlock()
+						createErrs = append(createErrs, fmt.Errorf("CreateEntity %d of tenant %s: %w", j.i, j.ct.tenant.ID, err))
+					}()
+					continue
+				}
+				j.ct.ids[j.i] = id // each job owns its slot
 			}
-			ct.ids = append(ct.ids, id)
+		}()
+	}
+	// Interleave the tenants so that neither one's tasks are all due first.
+	for i := 0; i < perTenant; i++ {
+		for _, ct := range tenants {
+			jobs <- createJob{ct: ct, i: i}
 		}
 	}
+	close(jobs)
+	createWG.Wait()
 	createdTo := time.Now()
+	if len(createErrs) > 0 {
+		t.Fatalf("creating the entities: %v", errors.Join(createErrs...))
+	}
 
 	// Freeze every pnode only around the due instants: from 500ms before the
 	// first task is due until 300ms after the last one is, then resume them
@@ -152,6 +198,7 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	const delay = delayMs * time.Millisecond
 	stopAt := createdFrom.Add(delay - 500*time.Millisecond)
 	resumeAt := createdTo.Add(delay + 300*time.Millisecond)
+	t.Logf("creating the entities took %s, so the pnodes are frozen for %s", createdTo.Sub(createdFrom), resumeAt.Sub(stopAt))
 	if freeze := resumeAt.Sub(stopAt); freeze > 8*time.Second {
 		t.Fatalf("creating the entities took %s, so the pnodes would be frozen for %s; the freeze must stay under 8s", createdTo.Sub(createdFrom), freeze)
 	}
@@ -169,14 +216,29 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	time.Sleep(time.Until(resumeAt)) // wait for every due time, not an assertion
 
 	// Watch the table while the tasks run. Only the watcher writes its maps;
-	// they are read after wg.Wait(). No processor answers before 200ms
-	// after its claim, so a snapshot whose statement started within 150ms of
-	// the resume shows each pnode's first claim whole: with two slots and the
-	// whole set due, that first claim fills both, and the pnode claims again
-	// only when a run ends.
+	// they are read after wg.Wait().
+	//
+	// A pnode's first claim is read from the first snapshot that shows any
+	// of its claims. The previous complete snapshot showed none, so every
+	// claim this one shows committed after that previous snapshot was taken.
+	// No run ends sooner than sleepMs after its claim committed, so when this
+	// snapshot ended less than sleepMs after the previous one started, every
+	// task of the pnode's first claim is still RUNNING in it. The window is
+	// measured between the watcher's own snapshots, not from the resume: how
+	// soon after the resume a pnode first claims depends on the load the test
+	// runs under.
+	//
+	// The snapshot can also show a second claim: the three pnodes rank the
+	// same due tasks, a rival's row locks make a claim take fewer tasks than
+	// it has free slots, and the pnode claims the rest on its next scan, 50ms
+	// later. The rows one claim call wrote share their xmin, its transaction
+	// id, and a later claim's transaction id is higher; no other write
+	// reaches a RUNNING row before its processor answers. So the first claim
+	// is the rows with the lowest xmin.
 	tenantIDs := []string{tenants[0].tenant.ID, tenants[1].tenant.ID}
 	owners := map[string]int{}             // claim_owner -> RUNNING rows seen
 	firstClaim := map[string][]string{}    // claim_owner -> tenants of its first claim
+	firstSeen := map[string]string{}       // claim_owner -> its first snapshot's rows, tenant@xmin
 	claims := map[string]map[string]bool{} // tenant/task -> claim tokens seen
 	taskEntity := map[string]string{}      // tenant/task -> entity id
 	doubles := 0
@@ -184,6 +246,10 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	var stopOnce sync.Once
 	var wg sync.WaitGroup
 	wg.Add(1)
+	// The pnodes are frozen and nothing is due before the freeze, so no
+	// task of these tenants is RUNNING yet: this instant stands in for a
+	// complete snapshot showing no claims.
+	prevStart := time.Now()
 	go func() {
 		defer wg.Done()
 		for {
@@ -194,38 +260,71 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 			}
 			startedAt := time.Now()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			rows, err := s.db.Query(ctx, `SELECT claim_owner::text, claim_token::text, tenant_id, entity_id, id FROM scheduled_tasks
+			rows, err := s.db.Query(ctx, `SELECT claim_owner::text, claim_token::text, tenant_id, entity_id, id, xmin::text FROM scheduled_tasks
 				WHERE tenant_id = ANY($1) AND status = 'RUNNING'`, tenantIDs)
 			if err != nil {
 				cancel()
 				continue
 			}
+			complete := true
 			perEntity := map[string]int{}
-			perOwner := map[string][]string{}
+			type claimedRow struct {
+				tenant string
+				xmin   uint64
+			}
+			perOwner := map[string][]claimedRow{}
 			for rows.Next() {
-				var o, tok, tn, e, id string
-				if rows.Scan(&o, &tok, &tn, &e, &id) == nil {
-					perEntity[tn+"/"+e]++
-					if claims[tn+"/"+id] == nil {
-						claims[tn+"/"+id] = map[string]bool{}
-					}
-					claims[tn+"/"+id][tok] = true
-					taskEntity[tn+"/"+id] = e
-					perOwner[o] = append(perOwner[o], tn)
+				var o, tok, tn, e, id, xminText string
+				if rows.Scan(&o, &tok, &tn, &e, &id, &xminText) != nil {
+					complete = false
+					continue
 				}
+				xmin, perr := strconv.ParseUint(xminText, 10, 64)
+				if perr != nil {
+					complete = false
+					continue
+				}
+				perEntity[tn+"/"+e]++
+				if claims[tn+"/"+id] == nil {
+					claims[tn+"/"+id] = map[string]bool{}
+				}
+				claims[tn+"/"+id][tok] = true
+				taskEntity[tn+"/"+id] = e
+				perOwner[o] = append(perOwner[o], claimedRow{tenant: tn, xmin: xmin})
 			}
 			rows.Close()
+			if rows.Err() != nil {
+				complete = false
+			}
 			cancel()
+			endedAt := time.Now()
 			for _, n := range perEntity {
 				if n > 1 {
 					doubles++
 				}
 			}
-			for o, tns := range perOwner {
-				if _, seen := owners[o]; !seen && startedAt.Before(resumeAt.Add(150*time.Millisecond)) {
-					firstClaim[o] = tns
+			// An incomplete snapshot may miss rows: it can neither show a
+			// first claim whole nor stand as the snapshot before one.
+			inWindow := complete && endedAt.Sub(prevStart) < sleepMs*time.Millisecond
+			for o, rs := range perOwner {
+				if _, seen := owners[o]; !seen && inWindow {
+					first := rs[0].xmin
+					shown := make([]string, 0, len(rs))
+					for _, r := range rs {
+						first = min(first, r.xmin)
+						shown = append(shown, fmt.Sprintf("%s@%d", r.tenant, r.xmin))
+					}
+					for _, r := range rs {
+						if r.xmin == first {
+							firstClaim[o] = append(firstClaim[o], r.tenant)
+						}
+					}
+					firstSeen[o] = strings.Join(shown, " ")
 				}
-				owners[o] += len(tns)
+				owners[o] += len(rs)
+			}
+			if complete {
+				prevStart = startedAt
 			}
 		}
 	}()
@@ -300,7 +399,7 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		}
 		pairs++
 		if tns[0] == tns[1] {
-			t.Errorf("pnode %d's first claim took two tasks of one tenant while the other tenant had due tasks: tenants do not take turns", s.ownerNode(t, o))
+			t.Errorf("pnode %d's first claim took two tasks of one tenant while the other tenant had due tasks: tenants do not take turns (its first snapshot, tenant@xmin: %s)", s.ownerNode(t, o), firstSeen[o])
 		}
 	}
 	if pairs == 0 {
