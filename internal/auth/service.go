@@ -48,8 +48,11 @@ type AuthService struct {
 }
 
 // NewAuthService builds the stores over the KV store and loads the signing
-// key pairs; a failed load fails. Start runs the signing-key store's re-read
-// loop. The trusted-key and M2M client stores keep no node copy.
+// key pairs; a failed load fails. ctx bounds the signing-key store's
+// background work: Start's periodic re-read loop runs until ctx ends, and a
+// gossip-ping-triggered reconcile checks the same ctx before touching the
+// store, so cancelling it stops both. The trusted-key and M2M client stores
+// keep no node copy and start no loop.
 func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error) {
 	// Apply defaults only for a wholly unset IAMFeatures, so callers that
 	// don't set the field (e.g. tests) still get the default IAM limits,
@@ -105,15 +108,16 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	}, nil
 }
 
-// Start runs the signing-key store's re-read loop until ctx ends.
-func (s *AuthService) Start(ctx context.Context) {
-	s.keyStore.Start(ctx)
+// Start runs the signing-key store's re-read loop until the ctx
+// NewAuthService was constructed with ends.
+func (s *AuthService) Start() {
+	s.keyStore.Start()
 }
 
 // Wait blocks until the goroutine Start started has exited, and then until
 // any gossip-ping-triggered reconcile already in flight has also finished.
-// Call it after cancelling Start's ctx, before closing the KV store Start
-// reads from; it returns immediately if Start was never called.
+// Call it after cancelling the construction ctx, before closing the KV store
+// it reads from; it returns immediately if Start was never called.
 func (s *AuthService) Wait() {
 	s.keyStore.Wait()
 }

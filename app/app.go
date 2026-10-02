@@ -311,16 +311,15 @@ func New(cfg Config) *App {
 			// cacheBroadcaster above).
 			authBroadcaster = gossipReg
 		}
-		// authLoopCtx is the signing-key replica's own construction context
-		// AND Start's loop-stop signal — the same object, passed to both.
-		// That is what lets one cancel (stopAuthLoops, below) reach both
-		// consumers: Start's periodic loop exits on it directly, and the
-		// replica's reconcileOnce checks this same ctx before any
-		// gossip-ping-triggered re-read, so a ping that arrives after
-		// teardown (its subscription is never unsubscribed) sees it already
-		// done and makes no store call. Deliberately not systemCtx:
-		// systemCtx is also the context every other auth store call runs
-		// on and must stay uncancelled for the lifetime of those calls.
+		// authLoopCtx bounds all of the signing-key replica's background
+		// work: NewAuthService's Start runs the periodic loop until it ends,
+		// and a gossip-ping-triggered reconcile checks the same ctx before
+		// touching the store, so cancelling it (stopAuthLoops, below) stops
+		// both — a ping that arrives after teardown (its subscription is
+		// never unsubscribed) sees it already done and makes no store call.
+		// Deliberately not systemCtx: systemCtx is also the context every
+		// other auth store call runs on and must stay uncancelled for the
+		// lifetime of those calls.
 		authLoopCtx, authLoopCancel := context.WithCancel(context.Background())
 		authSvc, err = auth.NewAuthService(authLoopCtx, auth.AuthConfig{
 			SigningKeyPEM:     cfg.IAM.JWTSigningKey,
@@ -344,12 +343,15 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		// Periodic re-read of the signing-key store (the trusted-key and
-		// M2M client stores keep no node copy, so they need no loop).
-		// stopAuthLoops cancels authLoopCtx and waits for both the loop
-		// goroutine and any in-flight ping-triggered reconcile to exit, and
-		// Close calls it before the store factory closes, so no tick and no
-		// ping-triggered re-read reaches a closing store.
-		authSvc.Start(authLoopCtx)
+		// M2M client stores keep no node copy, so they need no loop). Start
+		// takes no ctx of its own — it runs on authLoopCtx, the ctx
+		// NewAuthService was just constructed with, so there is one source
+		// of this background work's lifetime, not two. stopAuthLoops
+		// cancels authLoopCtx and waits for both the loop goroutine and any
+		// in-flight ping-triggered reconcile to exit, and Close calls it
+		// before the store factory closes, so no tick and no ping-triggered
+		// re-read reaches a closing store.
+		authSvc.Start()
 		a.stopAuthLoops = func() {
 			authLoopCancel()
 			authSvc.Wait()

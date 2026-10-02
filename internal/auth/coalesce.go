@@ -1,6 +1,9 @@
 package auth
 
-import "sync"
+import (
+	"log/slog"
+	"sync"
+)
 
 // coalescingRunner runs at most one execution of a job at a time and
 // coalesces triggers that arrive mid-run into exactly one trailing rerun.
@@ -43,41 +46,56 @@ func (c *coalescingRunner) Trigger(run func()) {
 	if !start {
 		return
 	}
-	go func() {
-		next := run
-		for {
-			next()
-			var again bool
-			next, again = func() (func(), bool) {
-				c.mu.Lock()
-				defer c.mu.Unlock()
-				if c.dirty {
-					c.dirty = false
-					p := c.pending
-					c.pending = nil
-					return p, true
-				}
-				c.running = false
-				close(c.done)
-				return nil, false
-			}()
-			if !again {
-				return
-			}
+	go c.runLoop(run)
+}
+
+// runLoop executes run, then any trailing run a Trigger queued while it was
+// in flight, until none remain.
+func (c *coalescingRunner) runLoop(run func()) {
+	for {
+		next, again := c.runOnce(run)
+		if !again {
+			return
 		}
+		run = next
+	}
+}
+
+// runOnce runs one job and reports what to do next. Its bookkeeping — check
+// for a trailing run, or clear running and close done — happens in a
+// deferred block, so a run that panics still clears running and closes
+// done: a panicking run cannot hang a concurrent Wait or leave the runner
+// permanently reporting itself busy.
+func (c *coalescingRunner) runOnce(run func()) (next func(), again bool) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("coalescingRunner: a triggered run panicked", "pkg", "auth", "panic", rec)
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.dirty {
+			c.dirty = false
+			next = c.pending
+			c.pending = nil
+			again = true
+			return
+		}
+		c.running = false
+		close(c.done)
 	}()
+	run()
+	return
 }
 
 // Wait blocks until any run in flight at the moment it is called — including
 // a trailing run already queued by a Trigger that arrived mid-flight — has
-// finished. Returns immediately if nothing is running. Production shutdown
-// behaviour (kvReplica.Wait calls it), not a test hook: a caller that has
-// already stopped triggering new runs (cancelled the ctx reconcileOnce
+// finished. Returns immediately if nothing is running. A caller that has
+// already stopped triggering new runs (e.g. cancelled the ctx reconcileOnce
 // checks) uses it to be sure a run already under way — one that could still
 // be mid-store-call — has actually returned before anything it was reading
 // closes. It does not wait for a Trigger that arrives after Wait has already
-// observed the runner idle; making that safe is the caller's job (see
-// kvReplica's ctx-done guard), not this runner's.
+// observed the runner idle; the caller is responsible for making that safe
+// (kvReplica's ctx-done guard does this).
 func (c *coalescingRunner) Wait() {
 	done := func() chan struct{} {
 		c.mu.Lock()

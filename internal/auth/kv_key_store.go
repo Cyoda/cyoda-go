@@ -78,6 +78,11 @@ type KVKeyStore struct {
 	lastIgnored []string
 }
 
+// NewKVKeyStore loads the signing-key store and classifies every record
+// already in it. ctx bounds all of this store's background work: Start's
+// periodic re-read loop runs until ctx ends, and a gossip-ping-triggered
+// reconcile checks the same ctx before touching the store, so cancelling it
+// stops both — there is no separate ctx for Start to take.
 func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConfig) (*KVKeyStore, error) {
 	kid, err := DeriveKID(&cfg.Bootstrap.PublicKey)
 	if err != nil {
@@ -113,12 +118,15 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 
 // ReconcileInterval is the store's re-read interval, the default applied.
 func (s *KVKeyStore) ReconcileInterval() time.Duration { return s.rep.cfg.interval }
-func (s *KVKeyStore) Start(ctx context.Context)        { s.rep.Start(ctx) }
+
+// Start runs the periodic re-read until the ctx NewKVKeyStore was
+// constructed with ends.
+func (s *KVKeyStore) Start() { s.rep.Start() }
 
 // Wait blocks until the goroutine Start started has exited, and then until
 // any gossip-ping-triggered reconcile already in flight has also finished.
-// Call it after cancelling Start's ctx (the same ctx the store was
-// constructed with); it returns immediately if Start was never called.
+// Call it after cancelling the construction ctx; it returns immediately if
+// Start was never called.
 func (s *KVKeyStore) Wait() { s.rep.Wait() }
 
 type bootstrapView struct {

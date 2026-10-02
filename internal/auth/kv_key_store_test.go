@@ -159,18 +159,29 @@ func TestKVKeyStore_UndecodableRecordStopsSigning(t *testing.T) {
 }
 
 func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
-	ctx := systemCtx()
+	// A cancellable construction ctx, not the fixed systemCtx(): Start now
+	// runs on it directly, so the test must be able to end it itself, or
+	// the periodic loop below (ticking every 20ms against a store that
+	// stays "down" for the rest of the process) outlives this test and
+	// pollutes whatever later test captures the global slog default next.
+	ctx, cancel := context.WithCancel(systemCtx())
+	var s *auth.KVKeyStore
+	defer func() {
+		cancel()
+		if s != nil {
+			s.Wait()
+		}
+	}()
 	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, ctx)}
 	boot := newBootstrap(t)
-	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot, ReconcileInterval: 20 * time.Millisecond})
+	var err error
+	s, err = auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot, ReconcileInterval: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
 	issued := issueWindow(t, s, time.Now().Add(time.Hour), time.Now().Add(2*time.Hour))
 	kv.fail.Store(true)
-	loop, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.Start(loop)
+	s.Start()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		_, err := s.Published()

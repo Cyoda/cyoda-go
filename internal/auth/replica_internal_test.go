@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -326,6 +327,64 @@ func TestReplica_ReconcileYieldsToLocalChange(t *testing.T) {
 	}
 }
 
+// fakeReconcileMetrics counts calls instead of recording OTel gauges, so a
+// test can assert whether a failure was counted at all.
+type fakeReconcileMetrics struct {
+	failureBumps atomic.Int32
+	lastFailures atomic.Int32
+}
+
+func (f *fakeReconcileMetrics) SetReconcileConsecutiveFailures(n int) {
+	f.failureBumps.Add(1)
+	f.lastFailures.Store(int32(n))
+}
+func (f *fakeReconcileMetrics) SetReconcileStalenessSeconds(float64) {}
+
+// TestReplica_ReconcileSuppressesLogAndMetricWhenCtxEnds covers the minor
+// fix mirroring reapExpiredSnapshotsTick's own `if ctx.Err() != nil {
+// return }`: a reconcile that fails because its own ctx ended (the owner
+// tearing the replica down, racing an in-flight List) is not a store
+// failure, so it must not log a "reconcile failed" line or bump the
+// consecutive-failure metric. A reconcile that fails for a genuine store
+// reason, on a live ctx, still must do both — checked in the same test so a
+// change that silences logging unconditionally would also be caught.
+func TestReplica_ReconcileSuppressesLogAndMetricWhenCtxEnds(t *testing.T) {
+	kv := &failingListKV{KeyValueStore: newReplicaKV(t)}
+	r := newStringReplica(t, kv, nil)
+	fm := &fakeReconcileMetrics{}
+	r.cfg.metrics = fm
+	kv.fail.Store(true)
+
+	var buf lockedBuf
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(prev)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before Reconcile is even called
+	if err := r.Reconcile(ctx); err == nil {
+		t.Fatal("want an error from the failing store")
+	}
+	if buf.String() != "" {
+		t.Fatalf("a ctx-ended reconcile logged a failure line: %s", buf.String())
+	}
+	if n := fm.failureBumps.Load(); n != 0 {
+		t.Fatalf("a ctx-ended reconcile bumped the failure metric %d times, want 0", n)
+	}
+
+	// Sanity: a genuine failure on a live ctx still logs and bumps the
+	// metric, so the suppression above is ctx-specific, not blanket.
+	if err := r.Reconcile(context.Background()); err == nil {
+		t.Fatal("want an error from the failing store")
+	}
+	if buf.String() == "" {
+		t.Fatal("a genuine store failure on a live ctx logged nothing")
+	}
+	if n := fm.failureBumps.Load(); n != 1 {
+		t.Fatalf("a genuine store failure bumped the failure metric %d times, want 1", n)
+	}
+}
+
 type listHookKV struct {
 	spi.KeyValueStore
 	onList func()
@@ -373,9 +432,7 @@ func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	if r.Stale() {
 		t.Fatal("stale before the loop started")
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	r.Start(ctx)
+	r.Start()
 	if r.Stale() {
 		t.Fatal("stale immediately after Start: the gap before Start counted")
 	}
@@ -396,18 +453,24 @@ func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 }
 
 // TestReplica_WaitBlocksUntilLoopExits proves the production API App.Close
-// needs: a cancelled Start context eventually stops the goroutine, and Wait
-// blocks until it has, so a caller that cancels then Waits can rely on no
-// further reconcile tick running afterward — including against a store that
-// is itself being torn down concurrently with the cancel.
+// needs: cancelling r.ctx eventually stops the goroutine, and Wait blocks
+// until it has, so a caller that cancels then Waits can rely on no further
+// reconcile tick running afterward — including against a store that is
+// itself being torn down concurrently with the cancel.
 func TestReplica_WaitBlocksUntilLoopExits(t *testing.T) {
 	kv := &listHookKV{KeyValueStore: newReplicaKV(t)}
 	var listCount atomic.Int64
 	kv.onList = func() { listCount.Add(1) }
-	r := newStringReplica(t, kv, nil) // construction's own List call counts as 1
 
 	ctx, cancel := context.WithCancel(context.Background())
-	if !r.Start(ctx) {
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err) // construction's own List call counts as 1
+	}
+	if !r.Start() {
 		t.Fatal("Start returned false on first call")
 	}
 
@@ -451,15 +514,13 @@ func TestReplica_WaitReturnsImmediatelyWithoutStart(t *testing.T) {
 }
 
 // TestReplica_PingAfterCancelAndWaitCausesNoStoreRead proves the other half
-// of the production shutdown contract Wait exists for: after the owner
-// cancels Start's ctx and calls Wait, a gossip ping that arrives afterward
-// (the broadcaster subscription set up at construction is never torn down)
-// must not read the store at all — not even once, and no failure log for
-// one. This holds only because the replica's own construction ctx is the
-// SAME object passed to Start (the contract app.go's authLoopCtx now
-// follows): reconcileOnce checks that ctx directly, so a ping-triggered
-// reconcile sees it already done regardless of whether the periodic loop or
-// the ping triggered it.
+// of the production shutdown contract Wait exists for: after r.ctx is
+// cancelled and Wait returns, a gossip ping that arrives afterward (the
+// broadcaster subscription set up at construction is never torn down) must
+// not read the store at all — not even once, and no failure log for one.
+// reconcileOnce checks r.ctx directly, so a ping-triggered reconcile sees it
+// already done regardless of whether the periodic loop or the ping
+// triggered it.
 func TestReplica_PingAfterCancelAndWaitCausesNoStoreRead(t *testing.T) {
 	kv := &listHookKV{KeyValueStore: newReplicaKV(t)}
 	var listCount atomic.Int64
@@ -473,7 +534,7 @@ func TestReplica_PingAfterCancelAndWaitCausesNoStoreRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !r.Start(ctx) {
+	if !r.Start() {
 		t.Fatal("Start returned false on first call")
 	}
 
@@ -489,6 +550,156 @@ func TestReplica_PingAfterCancelAndWaitCausesNoStoreRead(t *testing.T) {
 
 	if got := listCount.Load(); got != before {
 		t.Fatalf("a gossip ping after cancel+Wait read the store: before=%d after=%d", before, got)
+	}
+}
+
+// gatedListKV blocks the List call at and after skipFirst (construction's
+// own List call, counted from 1, passes straight through unblocked) until
+// release is closed, signalling entered the moment it is inside the gate.
+// The read of waitReturned right after release fires, with its outcome
+// recorded in failed and checked closed right after — never a direct
+// t.Error/t.Fatal from this goroutine, which could otherwise race the test
+// function's own return (the testing package panics if a *T is used after
+// its test has returned, which is worse than just the race it would mask).
+// The test itself asserts on failed only after checked confirms the read
+// happened.
+type gatedListKV struct {
+	spi.KeyValueStore
+	skipFirst    int
+	calls        atomic.Int32
+	entered      chan struct{}
+	release      chan struct{}
+	checked      chan struct{}
+	waitReturned *atomic.Bool
+	failed       atomic.Bool
+}
+
+func (k *gatedListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	if int(k.calls.Add(1)) <= k.skipFirst {
+		return k.KeyValueStore.List(ctx, ns)
+	}
+	close(k.entered)
+	<-k.release
+	k.failed.Store(k.waitReturned.Load())
+	close(k.checked)
+	return k.KeyValueStore.List(ctx, ns)
+}
+
+// TestReplica_WaitBlocksUntilInFlightTickFinishes is a gated-fake proof (not
+// a count, which a no-op Wait can still pass by accident) that Wait does
+// not return while the periodic loop's own List call is still in flight.
+// Mutation-tested: making kvReplica.Wait a no-op turns this RED (see
+// mutation-red-wait-noop.log) — cancel alone stops the loop eventually, but
+// does not block the caller until the in-flight read actually finishes.
+func TestReplica_WaitBlocksUntilInFlightTickFinishes(t *testing.T) {
+	var waitReturned atomic.Bool
+	kv := &gatedListKV{
+		KeyValueStore: newReplicaKV(t), skipFirst: 1,
+		entered: make(chan struct{}), release: make(chan struct{}), checked: make(chan struct{}),
+		waitReturned: &waitReturned,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Start() {
+		t.Fatal("Start returned false on first call")
+	}
+
+	select {
+	case <-kv.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the periodic tick never reached the store")
+	}
+
+	cancel()
+	waitDone := make(chan struct{})
+	go func() {
+		r.Wait()
+		waitReturned.Store(true)
+		close(waitDone)
+	}()
+	// A no-op Wait returns essentially immediately; give it a generous
+	// window to do so before releasing the gate, so the mutation reliably
+	// shows red rather than racing it.
+	time.Sleep(100 * time.Millisecond)
+
+	close(kv.release)
+	select {
+	case <-kv.checked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the gated List call never reached its check")
+	}
+	if kv.failed.Load() {
+		t.Fatal("Wait returned while the in-flight tick's store read was still unresolved")
+	}
+
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait never returned after the in-flight tick finished")
+	}
+}
+
+// TestReplica_WaitBlocksUntilInFlightPingReconcileFinishes is the
+// ping-triggered counterpart: Wait must not return while a reconcile that a
+// gossip ping triggered is still in flight. Isolated from the periodic loop
+// — Start is never called — so this exercises only kvReplica.Wait's call to
+// r.ping.Wait(). Mutation-tested: removing that call turns this RED (see
+// mutation-red-pingwait-removed.log).
+func TestReplica_WaitBlocksUntilInFlightPingReconcileFinishes(t *testing.T) {
+	var waitReturned atomic.Bool
+	kv := &gatedListKV{
+		KeyValueStore: newReplicaKV(t), skipFirst: 1,
+		entered: make(chan struct{}), release: make(chan struct{}), checked: make(chan struct{}),
+		waitReturned: &waitReturned,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r, err := newKVReplica(ctx, kv, replicaConfig[string]{
+		name: "test", namespace: "ns", topic: "t", decode: stringDecode,
+		interval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.handlePing(nil) // triggers reconcileOnce on r.ping's own goroutine
+
+	select {
+	case <-kv.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the ping-triggered reconcile never reached the store")
+	}
+
+	cancel()
+	waitDone := make(chan struct{})
+	go func() {
+		r.Wait()
+		waitReturned.Store(true)
+		close(waitDone)
+	}()
+	time.Sleep(100 * time.Millisecond) // see the sibling test for why
+
+	close(kv.release)
+	select {
+	case <-kv.checked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the gated List call never reached its check")
+	}
+	if kv.failed.Load() {
+		t.Fatal("Wait returned while the in-flight ping reconcile's store read was still unresolved")
+	}
+
+	select {
+	case <-waitDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Wait never returned after the in-flight ping reconcile finished")
 	}
 }
 
