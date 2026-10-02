@@ -152,16 +152,13 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 
 // streamPrincipal returns the caller and its client-token marker when the
 // caller may open a stream: a client-credentials token of kind service with
-// no executor. ROLE_M2M is not checked here: the server's stream interceptor
-// (StreamRequireM2M) refuses a caller without it before any stream handler
-// runs. An on-behalf-of token states a user, not a compute node, and never
-// opens one. No caller at all is Unauthenticated; any other refusal is
-// PermissionDenied.
+// no executor. A UserContext's presence and ROLE_M2M are not checked here:
+// the server's stream interceptors (StreamAuthInterceptor, StreamRequireM2M)
+// refuse a caller without either before any stream handler runs. An
+// on-behalf-of token states a user, not a compute node, and never opens one.
+// Every refusal here is PermissionDenied.
 func streamPrincipal(ctx context.Context) (*spi.UserContext, contract.ClientToken, error) {
 	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return nil, contract.ClientToken{}, status.Error(codes.Unauthenticated, "no user context")
-	}
 	ct, marked := contract.ClientTokenFrom(ctx)
 	if uc.Kind != spi.PrincipalService || uc.Executor != nil || !marked {
 		return nil, contract.ClientToken{}, status.Error(codes.PermissionDenied, "a compute node must connect with its own client's token")

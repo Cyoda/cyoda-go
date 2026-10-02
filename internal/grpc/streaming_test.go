@@ -1083,7 +1083,8 @@ func TestHasRole(t *testing.T) {
 // TestStartStreaming_Guard: only a compute node's own client-credentials
 // token opens a stream — kind service, no executor, and the client-token
 // marker. Every other principal is refused before the join event is read.
-// ROLE_M2M is the stream interceptor's check (TestRoleInterceptor_*).
+// A UserContext's presence and ROLE_M2M are the stream interceptors' checks
+// (TestInterceptor_NoPrincipalIsUnauthenticated, TestRoleInterceptor_*).
 func TestStartStreaming_Guard(t *testing.T) {
 	client := func() *spi.UserContext {
 		return &spi.UserContext{UserID: "C1", Kind: spi.PrincipalService,
@@ -1092,28 +1093,26 @@ func TestStartStreaming_Guard(t *testing.T) {
 	cases := []struct {
 		name string
 		ctx  func() context.Context
-		want codes.Code
 	}{
-		{"no user context", context.Background, codes.Unauthenticated},
 		{"user kind", func() context.Context {
 			uc := client()
 			uc.Kind = spi.PrincipalUser
 			return guardContext(uc, true)
-		}, codes.PermissionDenied},
+		}},
 		{"on-behalf-of: executor set", func() context.Context {
 			uc := client()
 			uc.UserID, uc.Kind = "alice", spi.PrincipalUser
 			uc.Executor = &spi.Principal{ID: "C1", Kind: spi.PrincipalService}
 			return guardContext(uc, true)
-		}, codes.PermissionDenied},
+		}},
 		{"on-behalf-of: executor set on a service principal", func() context.Context {
 			uc := client()
 			uc.Executor = &spi.Principal{ID: "C2", Kind: spi.PrincipalService}
 			return guardContext(uc, true)
-		}, codes.PermissionDenied},
+		}},
 		{"no client-token marker", func() context.Context {
 			return guardContext(client(), false)
-		}, codes.PermissionDenied},
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1130,15 +1129,15 @@ func TestStartStreaming_Guard(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				cancel()
 				<-done
-				t.Fatalf("StartStreaming admitted the principal, want %v", tc.want)
+				t.Fatal("StartStreaming admitted the principal, want PermissionDenied")
 			}
-			if got := status.Code(err); got != tc.want {
-				t.Fatalf("StartStreaming = %v (%v), want %v", got, err, tc.want)
+			if got := status.Code(err); got != codes.PermissionDenied {
+				t.Fatalf("StartStreaming = %v (%v), want PermissionDenied", got, err)
 			}
 			if len(stream.recvCh) != 1 {
 				t.Errorf("the join event was read before the refusal")
 			}
-			if tc.want == codes.PermissionDenied && status.Convert(err).Message() != "a compute node must connect with its own client's token" {
+			if status.Convert(err).Message() != "a compute node must connect with its own client's token" {
 				t.Errorf("message = %q", status.Convert(err).Message())
 			}
 		})
