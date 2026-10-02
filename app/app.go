@@ -57,7 +57,6 @@ type App struct {
 	storeFactory       spi.StoreFactory
 	transactionManager spi.TransactionManager
 	authService        contract.AuthenticationService
-	authzService       contract.AuthorizationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
 	txGate             *txgate.Registry // per-tx application gate serialising joined callbacks and the owner's commit
@@ -378,7 +377,6 @@ func New(cfg Config) *App {
 		}
 		a.authService = mockiam.NewAuthenticationService(defaultUser)
 	}
-	a.authzService = mockiam.NewAuthorizationService()
 
 	a.memberRegistry = internalgrpc.NewMemberRegistry()
 	// One lock registry and one fence per process: both callback doors, the
@@ -881,10 +879,7 @@ func (a *App) AuthenticationService() contract.AuthenticationService {
 // AuthService returns the underlying *auth.AuthService when JWT IAM mode is
 // active, or nil when running in mock IAM mode. Exposed for tests that
 // inspect the auth stores.
-func (a *App) AuthService() *auth.AuthService { return a.authSvc }
-func (a *App) AuthorizationService() contract.AuthorizationService {
-	return a.authzService
-}
+func (a *App) AuthService() *auth.AuthService               { return a.authSvc }
 func (a *App) WorkflowEngine() *workflow.Engine             { return a.workflowEngine }
 func (a *App) SearchService() *search.SearchService         { return a.searchService }
 func (a *App) AuditService() contract.AuditService          { return a.auditService }

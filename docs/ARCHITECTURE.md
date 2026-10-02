@@ -79,7 +79,7 @@ internal/
   admin/                  Admin listener (/livez, /readyz, /metrics)
   common/                 AppError formatting, error codes, diagnostics, tags, concrete UUIDGenerator
   contract/               Consumer-side interfaces internal to cyoda-go:
-                          AuthenticationService, AuthorizationService, AuditService,
+                          AuthenticationService, AuditService,
                           ExternalProcessingService, ClusterService, NodeRegistry
   match/                  gjson-based predicate match engine (consumed by memory plugin;
                           operates on the predicate.Condition AST)
@@ -208,7 +208,6 @@ Interfaces between cyoda-go's own layers — HTTP middleware, services, cluster:
 ```go
 // Auth — consumed by internal/api/middleware, implemented by internal/auth and iam/mock
 type AuthenticationService interface { ... }
-type AuthorizationService interface { ... }
 
 // Audit — consumed by domain services, implemented by internal/domain/audit
 type AuditService interface { ... }
@@ -1927,7 +1926,7 @@ operator, needed for the signing key-pair endpoints and the runtime controls
 
 ### 7.4 Authorization
 
-Authorization is done by route guards. `contract.AuthorizationService` has one implementation, the permissive stub `mockiam.NewAuthorizationService()`, and no request path calls it.
+Authorization is done by route guards.
 
 **`ROLE_M2M` on every data route.** Every authenticated route requires `ROLE_M2M` in the caller's roles, except an allow-list (`internal/api/route_guard.go`): `GET /account`, the client and trusted-key operations (guarded by `RequireAdmin`) and the key-pair operations (guarded by the operator guard). The generated router wraps every other operation in `RequireM2M` (`internal/api/chimux.go`); the hand-registered data routes (transitions, grouped statistics) are wrapped too, and the `/admin/*` routes, which are not, carry the operator guard. A caller without the role gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") before the transaction-join middleware runs, so it joins nothing. Over gRPC, `UnaryRequireM2M` and `StreamRequireM2M` refuse every method and stream with `PermissionDenied`; gRPC has no allow-listed method. Tests check every OpenAPI operation and hand-registered route against the rule (`app/route_classification_test.go`), and every gRPC method and stream (`internal/grpc/role_interceptor_test.go`).
 

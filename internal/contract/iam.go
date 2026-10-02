@@ -3,8 +3,6 @@ package contract
 import (
 	"context"
 	"net/http"
-
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
 type AuthenticationService interface {
@@ -32,9 +30,4 @@ func WithClientToken(ctx context.Context, ct ClientToken) context.Context {
 func ClientTokenFrom(ctx context.Context) (ClientToken, bool) {
 	ct, ok := ctx.Value(clientTokenKey{}).(ClientToken)
 	return ct, ok
-}
-
-type AuthorizationService interface {
-	HasRole(ctx context.Context, user *spi.UserContext, role string) bool
-	CheckAccess(ctx context.Context, user *spi.UserContext, resource string, operation string) error
 }

@@ -89,7 +89,6 @@ func TestDIWiring(t *testing.T) {
 		{"StoreFactory", a.StoreFactory() != nil},
 		{"TransactionManager", a.TransactionManager() != nil},
 		{"AuthenticationService", a.AuthenticationService() != nil},
-		{"AuthorizationService", a.AuthorizationService() != nil},
 		{"WorkflowEngine", a.WorkflowEngine() != nil},
 		{"SearchService", a.SearchService() != nil},
 		{"AuditService", a.AuditService() != nil},
