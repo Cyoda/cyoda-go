@@ -3,6 +3,7 @@ package middleware
 import (
 	"net/http"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
@@ -20,7 +21,9 @@ func Auth(authService contract.AuthenticationService) func(http.Handler) http.Ha
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			ctx, err := authService.Authenticate(r.Context(), r)
-			if err != nil {
+			// A success without a principal is a failure: no request runs
+			// unattributed.
+			if err != nil || spi.GetUserContext(ctx) == nil {
 				common.WriteError(w, r, common.Operational(http.StatusUnauthorized, common.ErrCodeUnauthorized, "authentication failed"))
 				return
 			}

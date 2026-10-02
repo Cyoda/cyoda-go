@@ -66,6 +66,18 @@ func TestValidator_Mapping(t *testing.T) {
 		{"cgen fractional", base(map[string]any{"scopes": []string{"ROLE_M2M"}, "cgen": 1.5}), "", nil, nil, nil, true},
 		{"cgen string", base(map[string]any{"scopes": []string{"ROLE_M2M"}, "cgen": "3"}), "", nil, nil, nil, true},
 		{"cgen beyond exact float range", base(map[string]any{"scopes": []string{"ROLE_M2M"}, "cgen": float64(1<<53) * 2}), "", nil, nil, nil, true},
+		{"cgen 2^53", base(map[string]any{"scopes": []string{"ROLE_M2M"}, "cgen": float64(1 << 53)}), "", nil, nil, nil, true},
+		{"cgen 2^53-1", base(map[string]any{"caas_user_id": "CLIENT0000000001", "scopes": []string{"ROLE_M2M"}, "cgen": float64(1<<53 - 1)}),
+			spi.PrincipalService, []string{"ROLE_M2M"}, nil, &contract.ClientToken{ClientID: "CLIENT0000000001", Gen: 1<<53 - 1}, false},
+		{"cgen with caas_user_id not a client id", base(map[string]any{"caas_user_id": "alice@example", "scopes": []string{"ROLE_M2M"}, "cgen": 1}), "", nil, nil, nil, true},
+		{"scopes a string", base(map[string]any{"scopes": "ROLE_M2M"}), "", nil, nil, nil, true},
+		{"scopes a number", base(map[string]any{"scopes": 1}), "", nil, nil, nil, true},
+		{"scopes null", base(map[string]any{"scopes": nil}), "", nil, nil, nil, true},
+		{"scopes with a non-string item", base(map[string]any{"scopes": []any{"ROLE_M2M", 1}}), "", nil, nil, nil, true},
+		{"obo scopes a string", base(map[string]any{"act": map[string]any{"sub": "OBOCLIENT0000001"}, "scopes": "ROLE_M2M"}), "", nil, nil, nil, true},
+		{"user_roles a string", base(map[string]any{"user_roles": "ROLE_ADMIN"}), "", nil, nil, nil, true},
+		{"user_roles a number", base(map[string]any{"user_roles": 1}), "", nil, nil, nil, true},
+		{"user_roles with a non-string item", base(map[string]any{"user_roles": []any{"ROLE_ADMIN", true}}), "", nil, nil, nil, true},
 		{"act sub not a client id", base(map[string]any{"act": map[string]any{"sub": "not a client"}, "scopes": []string{"ROLE_M2M"}}), "", nil, nil, nil, true},
 	}
 	for _, tc := range cases {

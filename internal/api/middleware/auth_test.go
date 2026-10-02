@@ -37,7 +37,31 @@ func (s *stubAuthService) Authenticate(ctx context.Context, _ *http.Request) (co
 	return ctx, nil
 }
 
-// TestAuthMiddleware_HandlerSeesAuthenticatedContext: the handler runs with
+// bareCtxAuthService reports success but returns a context with no principal.
+type bareCtxAuthService struct{}
+
+func (bareCtxAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	return ctx, nil
+}
+
+// TestAuthMiddleware_NoPrincipalIs401: an authentication service that
+// reports success without putting a principal in the context does not let
+// the request through.
+func TestAuthMiddleware_NoPrincipalIs401(t *testing.T) {
+	handler := middleware.Auth(bareCtxAuthService{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler reached without a principal")
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/test", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "authentication failed") {
+		t.Errorf("body = %q, want the generic authentication failure", rec.Body.String())
+	}
+}
+
+// TestAuthMiddleware_HandlerSeesAuthenticatedContext:the handler runs with
 // the context Authenticate returned, so it sees both the principal and the
 // client-token marker.
 func TestAuthMiddleware_HandlerSeesAuthenticatedContext(t *testing.T) {

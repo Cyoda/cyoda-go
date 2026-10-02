@@ -108,7 +108,10 @@ func (v *JWKSValidator) Validate(tokenString string) (*spi.UserContext, *contrac
 //	neither scopes nor user_roles      → user caas_user_id, no roles
 //
 // Every other combination of act, scopes and user_roles is refused, so each
-// accepted token maps to exactly one row. No error carries a claim value: the
+// accepted token maps to exactly one row. Also refused: a scopes or
+// user_roles claim that is not an array of strings, a cgen that is not an
+// integer in [0, 2^53), and a cgen token whose caas_user_id is not a client
+// id. No error carries a claim value: the
 // errors reach slog via logAuthFailure's detail field, and claims are
 // attacker-chosen.
 func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContext, *contract.ClientToken, error) {
@@ -185,6 +188,7 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 			ID:   spi.TenantID(orgID),
 			Name: orgID,
 		},
+		Roles: []string{},
 	}
 	var ct *contract.ClientToken
 
@@ -196,21 +200,30 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 		if err != nil {
 			return nil, nil, err
 		}
-		uc.Roles = extractStringSlice(scopes)
+		if uc.Roles, err = roleList("scopes", scopes); err != nil {
+			return nil, nil, err
+		}
 		uc.Executor = &spi.Principal{ID: clientID, Kind: spi.PrincipalService}
 	case hasScopes:
 		// A client acting for itself.
 		uc.Kind = spi.PrincipalService
-		uc.Roles = extractStringSlice(scopes)
+		var err error
+		if uc.Roles, err = roleList("scopes", scopes); err != nil {
+			return nil, nil, err
+		}
 		if hasCgen {
+			// The marker names a client, so the id must be one.
+			if !ValidClientID(userID) {
+				return nil, nil, fmt.Errorf("caas_user_id claim rejected: a token with cgen must name a client id")
+			}
 			ct = &contract.ClientToken{ClientID: userID, Gen: gen}
 		}
 	case hasUserRoles:
 		// The operator's offline token.
-		uc.Roles = extractStringSlice(userRoles)
-	}
-	if uc.Roles == nil { // no roles claim, or one that is not an array
-		uc.Roles = []string{}
+		var err error
+		if uc.Roles, err = roleList("user_roles", userRoles); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	return uc, ct, nil
@@ -230,16 +243,17 @@ func actorClientID(raw any) (string, error) {
 	return sub, nil
 }
 
-// maxExactGen is the largest integer a JSON number decoded as float64 still
-// holds exactly.
-const maxExactGen = 1 << 53
+// genLimit bounds the cgen claim: 2^53. Every integer below it decodes from
+// JSON to a float64 that no other integer decodes to; 2^53 itself does not
+// (2^53+1 decodes to the same float64), so it is excluded.
+const genLimit = 1 << 53
 
 // secretGeneration returns the cgen claim as a uint64. JSON numbers decode as
-// float64, so only a non-negative integral value no larger than maxExactGen is
-// a generation; anything else is refused rather than rounded.
+// float64, so only a non-negative integral value below genLimit is a
+// generation; anything else is refused rather than rounded.
 func secretGeneration(raw any) (uint64, error) {
 	f, ok := raw.(float64)
-	if !ok || f < 0 || f != math.Trunc(f) || f > maxExactGen {
+	if !ok || f < 0 || f != math.Trunc(f) || f >= genLimit {
 		return 0, fmt.Errorf("cgen claim rejected: not a non-negative integer")
 	}
 	return uint64(f), nil
@@ -277,25 +291,22 @@ func checkAudience(claim any, expected string) error {
 	}
 }
 
-// extractStringSlice converts a claim value to []string, handling both []interface{} and []string.
-func extractStringSlice(v any) []string {
-	if v == nil {
-		return nil
+// roleList returns a roles claim (scopes or user_roles) as a []string. The
+// claim must be a JSON array of strings; an empty array is no roles. Any other
+// shape is refused rather than read as no roles. Claims come from
+// json.Unmarshal, so a JSON array is always []any.
+func roleList(name string, raw any) ([]string, error) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s claim rejected: not an array of strings", name)
 	}
-	switch val := v.(type) {
-	case []string:
-		result := make([]string, len(val))
-		copy(result, val)
-		return result
-	case []any:
-		result := make([]string, 0, len(val))
-		for _, item := range val {
-			if s, ok := item.(string); ok {
-				result = append(result, s)
-			}
+	roles := make([]string, 0, len(items))
+	for _, item := range items {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s claim rejected: not an array of strings", name)
 		}
-		return result
-	default:
-		return nil
+		roles = append(roles, s)
 	}
+	return roles, nil
 }

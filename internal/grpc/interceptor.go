@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -86,7 +87,11 @@ func authenticateFromMetadata(ctx context.Context, authSvc contract.Authenticati
 		return nil, err
 	}
 
+	// A success without a principal is a failure: no call runs unattributed.
 	uc := spi.GetUserContext(authCtx)
+	if uc == nil {
+		return nil, errors.New("authentication returned no principal")
+	}
 	slog.Debug("gRPC auth succeeded", "pkg", "grpc", "userId", uc.UserID, "tenantId", string(uc.Tenant.ID))
 	return authCtx, nil
 }

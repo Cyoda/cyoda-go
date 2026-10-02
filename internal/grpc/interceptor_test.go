@@ -41,7 +41,41 @@ func (m *mockAuthService) Authenticate(ctx context.Context, _ *http.Request) (co
 	return ctx, nil
 }
 
-// TestInterceptor_ClientTokenMarkerReachesHandler: both interceptors hand the
+// bareCtxAuthService reports success but returns a context with no principal.
+type bareCtxAuthService struct{}
+
+func (bareCtxAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	return ctx, nil
+}
+
+// TestInterceptor_NoPrincipalIsUnauthenticated: an authentication service
+// that reports success without a principal in the context is refused, on
+// unary calls and on streams, instead of reaching the handler (or panicking).
+func TestInterceptor_NoPrincipalIsUnauthenticated(t *testing.T) {
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs("authorization", "Bearer t"))
+	assertUnauthenticated := func(t *testing.T, err error) {
+		t.Helper()
+		if st, ok := status.FromError(err); !ok || st.Code() != codes.Unauthenticated || st.Message() != "authentication failed" {
+			t.Fatalf("err = %v, want Unauthenticated \"authentication failed\"", err)
+		}
+	}
+	t.Run("unary", func(t *testing.T) {
+		_, err := UnaryAuthInterceptor(bareCtxAuthService{})(ctx, "req", &googlegrpc.UnaryServerInfo{FullMethod: "/t.S/M"}, func(context.Context, any) (any, error) {
+			t.Fatal("handler reached without a principal")
+			return nil, nil
+		})
+		assertUnauthenticated(t, err)
+	})
+	t.Run("stream", func(t *testing.T) {
+		err := StreamAuthInterceptor(bareCtxAuthService{})(nil, &mockServerStream{ctx: ctx}, &googlegrpc.StreamServerInfo{FullMethod: "/t.S/S"}, func(any, googlegrpc.ServerStream) error {
+			t.Fatal("handler reached without a principal")
+			return nil
+		})
+		assertUnauthenticated(t, err)
+	})
+}
+
+// TestInterceptor_ClientTokenMarkerReachesHandler:both interceptors hand the
 // handler the context Authenticate returned, so the client-token marker
 // travels beside the principal on unary calls and on streams.
 func TestInterceptor_ClientTokenMarkerReachesHandler(t *testing.T) {
