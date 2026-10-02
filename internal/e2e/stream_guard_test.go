@@ -109,6 +109,20 @@ func TestStream_ClientTokenWithoutROLE_M2M(t *testing.T) {
 	}
 }
 
+// A service token with ROLE_M2M but no cgen claim carries no client-token
+// marker: it names no client generation the stream could re-check, so it is
+// refused. Only the marker check refuses this token.
+func TestStream_ServiceTokenWithoutCgen_PermissionDenied(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "no-cgen", "test-tenant", "no-cgen", []string{"ROLE_M2M"})
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+	if got := openStreamCode(t, h, tok); got != codes.PermissionDenied {
+		t.Fatalf("stream opened without a client-token marker: %v, want PermissionDenied", got)
+	}
+}
+
 func TestStream_ClientDeleted_ClosesUnauthenticated(t *testing.T) {
 	t.Parallel()
 	h := newCalloutHarness(t, nil)

@@ -26,7 +26,7 @@ Every feature follows this flow:
    c. Refactor — all tests stay green
    d. Commit
 3. Run E2E tests:
-   - If Docker socket is available: run directly (go test ./internal/e2e/), or `make test-full` for the whole suite
+   - If Docker socket is available: run directly (`go test -timeout 30m ./internal/e2e/...` — the package takes ~10 min, which is `go test`'s default timeout), or `make test-full` for the whole suite
    - If sandboxed without Docker: human operator runs E2E tests and provides feedback
 4. Code review (code-reviewer)
    -> Fix all Critical/Important findings

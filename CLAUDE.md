@@ -30,7 +30,8 @@ add or update E2E tests in `internal/e2e/` to cover the change through the full 
 E2E tests are self-contained: `TestMain` starts a PostgreSQL container via testcontainers-go
 and an in-process `httptest.Server` with JWT auth — no external instance needed.
 Run `make test-full`, which includes them (requires Docker running). To iterate on
-E2E alone, `go test ./internal/e2e/...` is fine — but do not read a green from it
+E2E alone, `go test -timeout 30m ./internal/e2e/...` is fine (the package takes ~10 min,
+which is `go test`'s default timeout) — but do not read a green from it
 as whole-suite verification, and do not add `-v`.
 For API/gRPC features the bar is **full coverage** — happy path AND every documented
 status/error code on a running backend, plus a cross-backend parity scenario for

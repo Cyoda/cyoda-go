@@ -394,14 +394,17 @@ never by reactivation. None of this ends an open stream (see below).
   token of another tenant* under *A leaked platform admin-client secret*
   below.
 
-Revoking a key pair ends no open connection. A compute-node gRPC stream opens only with an M2M client's
-own `client_credentials` token, and after that it checks its client, not its
-token: once a minute it closes if the client was deleted or its secret
-reset. So a stream opened with a token the leaked key signed keeps running
-while the client it names stands: reset that client's secret, or restart
-every node to end open streams. On the memory backend a restart loses all data, an invalidation
-of the bootstrap key included: if you revoked the bootstrap key, give every
-node a new `CYODA_JWT_SIGNING_KEY` at that restart.
+Revoking a key pair ends no open connection. A compute-node gRPC stream
+opens only with an M2M client's own `client_credentials` token, and after
+that it checks its client, not its token: once a minute it closes if the
+client was deleted or its secret reset. Whoever holds a leaked signing key
+can sign such a token for any existing client at its current secret
+generation, and a stream opened with it keeps running while that client
+stands. So reset the secret of every client whose streams you cannot vouch
+for, or restart every node to end open streams. On the memory backend a
+restart loses all data, an invalidation of the bootstrap key included: if
+you revoked the bootstrap key, give every node a new
+`CYODA_JWT_SIGNING_KEY` at that restart.
 
 A grace period already running is cut short by invalidating the key pair again
 with 0, or by `DELETE`; a deleted key pair never verifies.

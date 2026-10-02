@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 )
 
 // mockBidiStream simulates a BidiStreamingServer for testing StartStreaming.
@@ -170,15 +173,6 @@ func guardContext(uc *spi.UserContext, marked bool) context.Context {
 		ctx = contract.WithClientToken(ctx, contract.ClientToken{ClientID: "C1", Gen: 1})
 	}
 	return ctx
-}
-
-func nonM2MContext(tenantID spi.TenantID) context.Context {
-	return spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID:   "user-1",
-		UserName: "alice",
-		Tenant:   spi.Tenant{ID: tenantID, Name: "Test Tenant"},
-		Roles:    []string{"ROLE_USER"},
-	})
 }
 
 // --- tests ---
@@ -447,46 +441,6 @@ func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
 	close(stop)
 	cancel()
 	<-done
-}
-
-func TestStreaming_NoRoleM2M_PermissionDenied(t *testing.T) {
-	svc := newServiceForTest()
-	ctx := nonM2MContext("tenant-1")
-
-	stream := newMockBidiStream(ctx)
-
-	err := svc.StartStreaming(stream)
-	if err == nil {
-		t.Fatal("expected error for non-M2M user")
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got %v", err)
-	}
-	if st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied, got %v", st.Code())
-	}
-}
-
-func TestStreaming_NoUserContext_Unauthenticated(t *testing.T) {
-	svc := newServiceForTest()
-	ctx := context.Background() // no UserContext
-
-	stream := newMockBidiStream(ctx)
-
-	err := svc.StartStreaming(stream)
-	if err == nil {
-		t.Fatal("expected error for missing user context")
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got %v", err)
-	}
-	if st.Code() != codes.Unauthenticated {
-		t.Errorf("expected Unauthenticated, got %v", st.Code())
-	}
 }
 
 func TestStreaming_FirstMessageNotJoin_InvalidArgument(t *testing.T) {
@@ -1270,6 +1224,60 @@ func TestRecheckClient(t *testing.T) {
 			}
 			if err != nil && strings.Contains(status.Convert(err).Message(), "decode") {
 				t.Errorf("status message leaks the store error: %q", status.Convert(err).Message())
+			}
+		})
+	}
+}
+
+// TestStartStreaming_MockMode: the context mock IAM mode builds for every
+// request opens a stream when the mock principal is of kind service (the
+// default, pinned by app TestDefaultConfig_MockKindIsService) with ROLE_M2M,
+// even though its marker carries generation 0 and no store exists to check
+// it; with kind user (CYODA_IAM_MOCK_KIND=user) the stream is refused.
+func TestStartStreaming_MockMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind spi.PrincipalKind
+		want codes.Code
+	}{
+		{"kind service joins", spi.PrincipalService, codes.OK},
+		{"kind user is refused", spi.PrincipalUser, codes.PermissionDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authSvc := mockiam.NewAuthenticationService(&spi.UserContext{
+				UserID: "mock-user-001", UserName: "Mock User", Kind: tc.kind,
+				Tenant: spi.Tenant{ID: "mock-tenant", Name: "Mock Tenant"},
+				Roles:  []string{"ROLE_ADMIN", "ROLE_M2M"},
+			})
+			authCtx, err := authSvc.Authenticate(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil))
+			if err != nil {
+				t.Fatalf("mock Authenticate: %v", err)
+			}
+			ctx, cancel := context.WithCancel(authCtx)
+			defer cancel()
+			svc := newServiceForTest() // m2mStore nil, as app.New wires mock mode
+			stream := newMockBidiStream(ctx)
+			stream.enqueue(makeJoinEvent(t, "mock-tenant", []string{"go"}))
+			done := make(chan error, 1)
+			go func() { done <- svc.StartStreaming(stream) }()
+
+			if tc.want == codes.OK {
+				if ce := stream.waitForSent(t, 2*time.Second); ce.Type != CalculationMemberGreetEvent {
+					t.Fatalf("first event = %s, want the greet", ce.Type)
+				}
+				stream.closeRecv()
+				<-done
+				return
+			}
+			select {
+			case err := <-done:
+				if got := status.Code(err); got != tc.want {
+					t.Fatalf("StartStreaming = %v (%v), want %v", got, err, tc.want)
+				}
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatalf("StartStreaming admitted the principal, want %v", tc.want)
 			}
 		})
 	}

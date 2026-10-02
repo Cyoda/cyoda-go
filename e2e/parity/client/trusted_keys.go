@@ -26,6 +26,13 @@ func (c *Client) InvalidateTrustedKeyRaw(t *testing.T, kid string) (int, []byte,
 	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/trusted/"+url.PathEscape(kid)+"/invalidate", nil)
 }
 
+// ReactivateTrustedKeyRaw issues POST /api/oauth/keys/trusted/{keyId}/reactivate
+// with the given body (validFrom, validTo).
+func (c *Client) ReactivateTrustedKeyRaw(t *testing.T, kid string, body map[string]any) (int, []byte, error) {
+	t.Helper()
+	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/trusted/"+url.PathEscape(kid)+"/reactivate", body)
+}
+
 // DeleteTrustedKeyRaw issues DELETE /api/oauth/keys/trusted/{keyId}.
 func (c *Client) DeleteTrustedKeyRaw(t *testing.T, kid string) (int, []byte, error) {
 	t.Helper()

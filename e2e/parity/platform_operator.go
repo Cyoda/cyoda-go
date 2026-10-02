@@ -103,6 +103,7 @@ func RunOBOTokenCannotAdminister(t *testing.T, fixture BackendFixture) {
 	}{
 		{"list clients", func() (int, []byte, error) { return obo.ListClientsRaw(t) }},
 		{"create client", func() (int, []byte, error) { return obo.CreateClientRaw(t, false, false) }},
+		{"create OBO client", func() (int, []byte, error) { return obo.CreateClientRaw(t, false, true) }},
 		{"delete client", func() (int, []byte, error) { return obo.DeleteClientRaw(t, cred.ID) }},
 		{"reset secret", func() (int, []byte, error) { return obo.ResetClientSecretRaw(t, cred.ID) }},
 		{"list trusted keys", func() (int, []byte, error) { return obo.ListTrustedKeysRaw(t) }},
@@ -110,6 +111,9 @@ func RunOBOTokenCannotAdminister(t *testing.T, fixture BackendFixture) {
 			return obo.RegisterTrustedKeyRaw(t, map[string]any{"keyId": kid})
 		}},
 		{"invalidate trusted key", func() (int, []byte, error) { return obo.InvalidateTrustedKeyRaw(t, kid) }},
+		{"reactivate trusted key", func() (int, []byte, error) {
+			return obo.ReactivateTrustedKeyRaw(t, kid, map[string]any{"validTo": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+		}},
 		{"delete trusted key", func() (int, []byte, error) { return obo.DeleteTrustedKeyRaw(t, kid) }},
 	}
 	for _, call := range calls {
