@@ -197,11 +197,11 @@ td:first-child{font-weight:500;width:24%}
   <section class="ref" aria-labelledby="life-h">
     <h2 id="life-h">Token lifetime and revocation</h2>
     <ol>
-      <li>A cyoda token lives <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. An OBO token never lives past its assertion's <code>exp</code>. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until it nears expiry.</li>
+      <li>A cyoda token lives at most <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. A <code>cyoda token</code> lives 15 minutes by default, cut to that bound. An OBO token never lives past its assertion's <code>exp</code>. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until it nears expiry.</li>
       <li>Every grant reads the client, and every exchange reads the client and the trusted key, from the shared store. Resetting a secret, deleting a client, or invalidating or deleting a trusted key stops new tokens at once on every node.</li>
       <li>Tokens issued before the change stay valid until they expire, at most the token lifetime.</li>
       <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, or if the client's secret was reset after the token that opened it was issued. If the store cannot be read, the stream closes as unavailable and the node reconnects.</li>
-      <li>Issuing a new signing key pair and invalidating every other one, the bootstrap key included, ends every cyoda token signed before, for every tenant. It is the platform operator's last resort.</li>
+      <li>Issuing a new signing key pair and invalidating every other one with no grace period, the bootstrap key included, ends every cyoda token signed before, for every tenant. It is the platform operator's last resort.</li>
     </ol>
   </section>
 

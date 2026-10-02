@@ -1841,7 +1841,7 @@ type EntityChangeAuditEventDto struct {
 	// EntityModel Type of the entity related to this event (model.version)
 	EntityModel *string `json:"entityModel,omitempty"`
 
-	// ExecutedBy The principal that actually staged the change, independent of the attributed actor. Present when known.
+	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
 	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred
@@ -2800,7 +2800,7 @@ type StateMachineAuditEventDto struct {
 	// terminal abort event in the audit log.
 	EventType *StateMachineAuditEventDtoEventType `json:"eventType,omitempty"`
 
-	// ExecutedBy The principal that actually staged the change, independent of the attributed actor. Present when known.
+	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
 	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred

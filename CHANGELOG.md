@@ -91,7 +91,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   never read; a form body over 1 MiB or one that does not parse is
   `400 invalid_request`. Error descriptions are fixed and never repeat the
   user id, tenant or key id. `ErrorResponseDto.error` drops `invalid_grant`
-  and `invalid_scope` (never sent) and adds `temporarily_unavailable`.
+  (no longer sent) and `invalid_scope` (never sent) and adds
+  `temporarily_unavailable`.
 
 - **The OIDC provider endpoints (`/oauth/oidc/providers*`), their error codes
   and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only

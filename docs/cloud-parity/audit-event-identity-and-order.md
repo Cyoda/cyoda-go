@@ -39,8 +39,10 @@ change is for) and the executor (who made it). See
   **`StateMachineAuditEventDto.executedBy`** — `AuditPrincipalDto`
   `{id, kind}`, both required when present: the principal that executed the
   request. Present when one was recorded.
-- **`StateMachineAuditEventDto.actor`** — new on state-machine events, the
-  same `AuditActorInfoDto` as on entity-change events. The engine stamps the
+- **`StateMachineAuditEventDto.actor`** — not a new field (it comes from the
+  shared `AuditEventDto`); what is new is that cyoda-go fills it on
+  state-machine events, with the same `AuditActorInfoDto` as on entity-change
+  events. The engine stamps the
   attributed principal and the executor on each state-machine event when it
   records it (`spi.StateMachineEvent.Attributed` / `Executor`), so the
   events of one transaction carry the identities of the request that made
@@ -110,8 +112,8 @@ where in the stack it is minted.
 
 ## 5. What Cloud must do
 
-- Add `kind` to the audit actor, `executedBy` to entity-change and
-  state-machine events, and `actor` to state-machine events (§1a).
+- Add `kind` to the audit actor and `executedBy` to entity-change and
+  state-machine events, and fill `actor` on state-machine events (§1a).
 - Add `version` to the entity-change event DTO, populated from the entity
   change's version (transaction) number.
 - Expose the existing `timeUuid` as `eventId` on the state-machine event DTO,

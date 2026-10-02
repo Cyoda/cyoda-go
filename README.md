@@ -107,7 +107,7 @@ The `/api/account` response confirms the token's tenant and roles. With that tok
 
 | Env var | Default | Effect |
 |---------|---------|--------|
-| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Lifetime of every token cyoda-go issues, in seconds, and the upper bound of `cyoda token --ttl`. Must be an integer from 1 to 3600; any other value refuses to start. A token exchange's token also ends no later than its assertion's `exp`. |
+| `CYODA_JWT_EXPIRY_SECONDS` | `300` | Maximum lifetime of a token cyoda-go issues, in seconds (`cyoda token --ttl` and an on-behalf-of token can be shorter), and the upper bound of `cyoda token --ttl`. Must be an integer from 1 to 3600; any other value refuses to start. A token exchange's token also ends no later than its assertion's `exp`. |
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
@@ -120,7 +120,7 @@ every mock-mode caller a client, as in `jwt` mode; `user` or `system` lets
 local/CI setups exercise user- or system-attributed code paths without real
 JWT auth.
 
-### Access
+## Access
 
 Only M2M clients connect to cyoda-go; users never call it directly. An
 application signs its own users in, decides what each user may do, and calls
@@ -153,7 +153,12 @@ walks through each scenario; `cyoda help auth` is the reference.
 
 The signing-key cache pushes updates to peers on write and falls back to a
 periodic KV-reconcile if a broadcast is missed. No node keeps a copy of a
-trusted key or an M2M client: every call reads the store.
+trusted key or an M2M client: every token request and every client or
+trusted-key call reads the store, so a delete, a secret reset or a key
+invalidation stops new tokens at once on every node. Tokens already issued
+keep verifying until their `exp` (a compute-node stream closes within a
+minute instead); to cut them off, see *A leaked platform admin-client secret*
+in `cyoda help config auth`.
 
 | Env var | Default | Effect |
 |---------|---------|--------|

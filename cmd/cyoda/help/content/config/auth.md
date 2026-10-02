@@ -215,11 +215,19 @@ broadcasts. `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` sets that interval; each tick 
 reconcile herd. A cache that goes 10× this interval without a successful
 reconcile fails closed on verification rather than serving a potentially stale
 answer: it refuses every token (`401`) and answers JWKS with `503`.
-No node keeps a copy of a trusted key or an M2M client: every call, the
-token exchange included, reads the store, so a change is in force on every
-node when the call returns. (The verified-secret cache under
-`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` holds only the SHA-256 of a
-secret that matched; the client record is still read on every request.)
+No node keeps a copy of a trusted key or an M2M client: every token request
+and every client or trusted-key call reads the store, so a change applies to
+the next token request on every node once the call returns. Tokens already
+issued keep verifying until their `exp`: an API request is not checked
+against the client store. The exception is a compute-node stream, which
+re-reads its client every 60 seconds and closes once the client is deleted or
+its secret reset. To cut off tokens already issued, see *A leaked platform
+admin-client secret* below. (Each node also keeps a verified-secret cache,
+always on and bounded to a fixed number of entries: each entry holds the
+SHA-256 of a secret that matched and the stored hash it matched, and is used
+only while the client record just read still carries that hash.
+`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` sets the bcrypt slots, not the
+cache.)
 
 - `CYODA_AUTH_CACHE_RECONCILE_INTERVAL` — reconcile interval for the signing-key cache
   (default: `60s`, floor: `1s`)

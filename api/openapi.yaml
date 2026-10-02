@@ -11486,8 +11486,9 @@ components:
                 recreate; (entityId, version) identifies the event.
             executedBy:
               $ref: "#/components/schemas/AuditPrincipalDto"
-              description: The principal that actually staged the change,
-                independent of the attributed actor. Present when known.
+              description: The principal that executed the request,
+                independent of the attributed principal. Present only when
+                one was recorded.
       required:
         - changeType
         - microsTime
@@ -11579,8 +11580,9 @@ components:
                 when it recorded the event. The same on every read.
             executedBy:
               $ref: "#/components/schemas/AuditPrincipalDto"
-              description: The principal that actually staged the change,
-                independent of the attributed actor. Present when known.
+              description: The principal that executed the request,
+                independent of the attributed principal. Present only when
+                one was recorded.
       required:
         - eventId
         - eventType
