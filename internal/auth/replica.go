@@ -84,6 +84,13 @@ type kvReplica[R any] struct {
 	ping        coalescingRunner
 	loopStarted atomic.Bool
 
+	// loopMu guards loopDone. loopDone is set once, by Start, before its
+	// goroutine runs, and closed by that goroutine on exit; Wait reads it
+	// under the same lock so a Wait that races a concurrent Start never sees
+	// a half-initialized value.
+	loopMu   sync.Mutex
+	loopDone chan struct{}
+
 	epoch    time.Time    // monotonic reference for staleness
 	lastOK   atomic.Int64 // time.Since(epoch) at the last successful re-read
 	failures atomic.Int64
@@ -215,7 +222,11 @@ func (r *kvReplica[R]) reconcileOnce() {
 	_ = r.Reconcile(ctx)
 }
 
-// Start runs the periodic re-read until ctx ends. Returns false if it already runs.
+// Start runs the periodic re-read until ctx ends. Returns false if it already
+// runs. The caller owns ctx's lifetime: cancelling it stops the loop, and
+// Wait blocks until the goroutine below has actually exited, so a caller
+// that cancels then Waits can rely on no further tick running afterward —
+// including one against a store the caller is concurrently closing.
 func (r *kvReplica[R]) Start(ctx context.Context) bool {
 	if !r.loopStarted.CompareAndSwap(false, true) {
 		return false
@@ -223,7 +234,12 @@ func (r *kvReplica[R]) Start(ctx context.Context) bool {
 	// A gap between construction and Start must not count toward staleness:
 	// the loop's own clock starts now, not at construction time.
 	r.stampOK()
+	done := make(chan struct{})
+	r.loopMu.Lock()
+	r.loopDone = done
+	r.loopMu.Unlock()
 	go func() {
+		defer close(done)
 		for {
 			timer := time.NewTimer(jitteredInterval(r.cfg.interval))
 			select {
@@ -236,6 +252,18 @@ func (r *kvReplica[R]) Start(ctx context.Context) bool {
 		}
 	}()
 	return true
+}
+
+// Wait blocks until the goroutine started by Start has exited. It returns
+// immediately if Start was never called (e.g. startup failed before reaching
+// it): nothing is running, so there is nothing to wait for.
+func (r *kvReplica[R]) Wait() {
+	r.loopMu.Lock()
+	done := r.loopDone
+	r.loopMu.Unlock()
+	if done != nil {
+		<-done
+	}
 }
 
 // jitteredInterval returns d × [0.9, 1.1).

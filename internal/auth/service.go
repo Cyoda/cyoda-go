@@ -110,6 +110,13 @@ func (s *AuthService) Start(ctx context.Context) {
 	s.keyStore.Start(ctx)
 }
 
+// Wait blocks until the goroutine Start started has exited. Call it after
+// cancelling Start's ctx, before closing the KV store Start reads from; it
+// returns immediately if Start was never called.
+func (s *AuthService) Wait() {
+	s.keyStore.Wait()
+}
+
 // Handler returns the HTTP handler for public auth endpoints (token, JWKS).
 func (s *AuthService) Handler() http.Handler {
 	return s.handler

@@ -115,6 +115,10 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 func (s *KVKeyStore) ReconcileInterval() time.Duration { return s.rep.cfg.interval }
 func (s *KVKeyStore) Start(ctx context.Context)        { s.rep.Start(ctx) }
 
+// Wait blocks until the goroutine Start started has exited. Call it after
+// cancelling Start's ctx; it returns immediately if Start was never called.
+func (s *KVKeyStore) Wait() { s.rep.Wait() }
+
 type bootstrapView struct {
 	usable bool // false: deleted, or its stored state cannot be read
 	pair   KeyPair

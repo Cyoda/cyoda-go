@@ -78,6 +78,11 @@ type App struct {
 	// Shutdown and Close call it.
 	stopSearchReapers     func()
 	stopSearchReapersOnce sync.Once
+	// stopAuthLoops cancels the auth service's signing-key re-read loop and
+	// waits for it to exit (nil in mock IAM mode, where there is no loop).
+	// stopAuthLoopsOnce makes it idempotent — both Shutdown and Close call it.
+	stopAuthLoops     func()
+	stopAuthLoopsOnce sync.Once
 	// searchPool is the bounded worker pool async-search submissions run
 	// on, sized from cfg.SearchAsync. Shutdown drains it (bounded by
 	// searchDrainBudget) before aborting whatever async jobs are still
@@ -327,9 +332,19 @@ func New(cfg Config) *App {
 				"error", err.Error())
 			os.Exit(1)
 		}
-		// Periodic KV re-read of both key stores; systemCtx is
-		// process-lifetime, so the loops run until exit.
-		authSvc.Start(systemCtx)
+		// Periodic re-read of the signing-key store (the trusted-key and
+		// M2M client stores keep no node copy, so they need no loop). Runs
+		// under its own cancelable context, not systemCtx — systemCtx is
+		// also the context store calls run on, and App owns this loop's
+		// lifetime independently of that: stopAuthLoops below cancels it and
+		// waits for the goroutine to exit, and Close calls it before the
+		// store factory closes, so no tick reaches a closing store.
+		authLoopCtx, authLoopCancel := context.WithCancel(context.Background())
+		authSvc.Start(authLoopCtx)
+		a.stopAuthLoops = func() {
+			authLoopCancel()
+			authSvc.Wait()
+		}
 		// The built-in IAM holds a copy of the cluster's signing keys on every
 		// node, so the validator reads public keys directly from that copy. No
 		// loopback JWKS fetch, no HTTP client, no attack surface on that path.
@@ -892,6 +907,17 @@ func (a *App) stopSearchReaperLoop() {
 	a.stopSearchReapersOnce.Do(a.stopSearchReapers)
 }
 
+// stopAuthLoop cancels the auth service's signing-key re-read loop and waits
+// for it to exit. Idempotent: safe to call from both Shutdown and Close
+// (sync.Once runs the stop once, and a second caller waits for it to
+// finish). A no-op in mock IAM mode, where stopAuthLoops is nil.
+func (a *App) stopAuthLoop() {
+	if a.stopAuthLoops == nil {
+		return
+	}
+	a.stopAuthLoopsOnce.Do(a.stopAuthLoops)
+}
+
 // Close performs graceful shutdown of all backend resources.
 //
 // Close is the single teardown path for storeFactory and the gRPC server;
@@ -909,9 +935,11 @@ func (a *App) Close() error {
 	// Shutdown does not leave it claiming and heartbeating against a store
 	// that is closing. After Shutdown this does nothing.
 	a.DrainScheduler(context.Background())
-	// Stop the reaper first so a node whose store is closing does not keep
-	// sweeping on the claim ticker against a store being torn down.
+	// Stop the reaper and the auth re-read loop first so a node whose store
+	// is closing does not keep sweeping or reconciling against a store being
+	// torn down.
 	a.stopSearchReaperLoop()
+	a.stopAuthLoop()
 	var err error
 	if a.storeFactory != nil {
 		err = a.storeFactory.Close()
@@ -961,6 +989,7 @@ func (a *App) Shutdown() {
 		a.scheduler.Stop()
 	}
 	a.stopSearchReaperLoop()
+	a.stopAuthLoop()
 	if a.searchPool != nil {
 		drainCtx, cancel := context.WithTimeout(context.Background(), searchDrainBudget)
 		a.searchPool.Drain(drainCtx)

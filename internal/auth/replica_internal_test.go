@@ -395,6 +395,61 @@ func TestReplica_StaleOnlyAfterLoopStartsAndBound(t *testing.T) {
 	}
 }
 
+// TestReplica_WaitBlocksUntilLoopExits proves the production API App.Close
+// needs: a cancelled Start context eventually stops the goroutine, and Wait
+// blocks until it has, so a caller that cancels then Waits can rely on no
+// further reconcile tick running afterward — including against a store that
+// is itself being torn down concurrently with the cancel.
+func TestReplica_WaitBlocksUntilLoopExits(t *testing.T) {
+	kv := &listHookKV{KeyValueStore: newReplicaKV(t)}
+	var listCount atomic.Int64
+	kv.onList = func() { listCount.Add(1) }
+	r := newStringReplica(t, kv, nil) // construction's own List call counts as 1
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if !r.Start(ctx) {
+		t.Fatal("Start returned false on first call")
+	}
+
+	// Wait for at least one periodic tick, so the loop is demonstrably
+	// running before it is stopped.
+	deadline := time.Now().Add(2 * time.Second)
+	for listCount.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("periodic reconcile never ticked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	r.Wait() // must not return before the loop goroutine has exited
+
+	after := listCount.Load()
+	time.Sleep(300 * time.Millisecond) // several intervals' worth of margin
+	if got := listCount.Load(); got != after {
+		t.Fatalf("a reconcile tick ran after Wait returned: at-wait=%d now=%d", after, got)
+	}
+}
+
+// TestReplica_WaitReturnsImmediatelyWithoutStart covers the case where a
+// component is constructed but Start is never called (e.g. a construction
+// failure elsewhere aborts startup before Start runs): Wait must not block
+// forever.
+func TestReplica_WaitReturnsImmediatelyWithoutStart(t *testing.T) {
+	kv := newReplicaKV(t)
+	r := newStringReplica(t, kv, nil)
+	done := make(chan struct{})
+	go func() {
+		r.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Wait blocked forever when Start was never called")
+	}
+}
+
 type failingListKV struct {
 	spi.KeyValueStore
 	fail atomic.Bool
