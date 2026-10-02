@@ -106,116 +106,124 @@ func TestAttribution_ScheduledUserArmed(t *testing.T) {
 	assertNoSchedulerString(t, h, xID)
 }
 
-// --- Scenario 1b: an OBO request arms a timer directly ------------------------
+// --- Scenario 1b/1c: an OBO request, and a compute write-back, arm a timer ----
 
-// TestAttribution_ScheduledOBOArmed: alice's on-behalf-of token DIRECTLY
-// creates an entity (not joined to anyone else's transaction) whose init
-// cascade lands it in a state with a short-DelayMs scheduled transition.
-// spi.AttributionFor never lets an OBO write inherit a transaction's origin,
-// so the timer arms with alice, never the OBO client. The fired anchor must
-// attribute to alice, executed by the system principal — the "directly" half
-// of spec §13's "scheduled fire armed by an OBO request, directly and inside
-// its own joined transaction" row; TestAttribution_D3_OBOKeepsOwnUser covers
-// the joined half (an OBO callback joining its own transaction).
-func TestAttribution_ScheduledOBOArmed(t *testing.T) {
+// TestAttribution_ScheduledArmedByPrincipalShapes covers the two remaining
+// arming shapes spec §13 requires beyond the plain-user case above, as
+// subtests sharing ONE scheduler stack. newSchedulerCallbackHarness creates a
+// real database and a live scheduler, and this file already has several; one
+// more pair of fresh stacks measurably destabilized this package's
+// resource-sensitive tests elsewhere (observed: TestSchedPool_AsyncSearchReclaimNotStarved's
+// tight pool-exhaustion timing missed its window only when a third new stack
+// joined the suite, and not with either two alone). The two scenarios here
+// are independent (different models, run sequentially — no t.Parallel), so
+// sharing one stack between them is safe and halves the added footprint.
+func TestAttribution_ScheduledArmedByPrincipalShapes(t *testing.T) {
 	h, _ := newSchedulerCallbackHarness(t, nil)
 
-	const model = "attr-sched-obo-armed"
-	wf := `{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "attr-sched-obo-armed-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
-				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
-				"Closed": {}
-			}
-		}]
-	}`
-	h.SetupModelWithWorkflow(t, model, wf)
+	// OBOArmed: alice's on-behalf-of token DIRECTLY creates an entity (not
+	// joined to anyone else's transaction) whose init cascade lands it in a
+	// state with a short-DelayMs scheduled transition. spi.AttributionFor
+	// never lets an OBO write inherit a transaction's origin, so the timer
+	// arms with alice, never the OBO client. The fired anchor must attribute
+	// to alice, executed by the system principal — the "directly" half of
+	// spec §13's "scheduled fire armed by an OBO request, directly and inside
+	// its own joined transaction" row; TestAttribution_D3_OBOKeepsOwnUser
+	// covers the joined half (an OBO callback joining its own transaction).
+	t.Run("OBOArmed", func(t *testing.T) {
+		const model = "attr-sched-obo-armed"
+		wf := `{
+			"importMode": "REPLACE",
+			"workflows": [{
+				"version": "1.1", "name": "attr-sched-obo-armed-wf", "initialState": "NONE", "active": true,
+				"states": {
+					"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+					"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
+					"Closed": {}
+				}
+			}]
+		}`
+		h.SetupModelWithWorkflow(t, model, wf)
 
-	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
-	xID, status, body := h.createEntityAs(t, alice, model, 1, `{"name":"x","amount":1,"status":"new"}`)
-	if status != http.StatusOK {
-		t.Fatalf("create as alice (OBO): %d %s", status, body)
-	}
-
-	anchor := awaitFiredAnchor(t, h, xID, "Closed")
-	assertAttribution(t, anchor, "scheduled fire anchor (OBO-armed)", "alice", "user", firedSchedExecKind, firedSchedExecID)
-	assertNoSchedulerString(t, h, xID)
-}
-
-// --- Scenario 1c: a compute write-back in alice's transaction arms a timer ----
-
-// TestAttribution_ScheduledArmedByWriteBack: alice creates the primary; its
-// SYNC processor writes a secondary back through the compute client's own
-// (service-kind, no OBO Executor) token, joined to alice's transaction. The
-// secondary's init cascade lands it in a state with a short-DelayMs scheduled
-// transition, armed inside that same joined transaction. ArmedBy must be
-// alice — the transaction's origin spi.AttributionFor inherits for a plain
-// service executor — never the compute client that staged the write. Spec
-// §13: "scheduled fire armed by a compute write-back in alice's transaction:
-// ArmedBy alice".
-func TestAttribution_ScheduledArmedByWriteBack(t *testing.T) {
-	h, _ := newSchedulerCallbackHarness(t, nil)
-
-	const primary = "attr-sched-wb-primary"
-	const secondary = "attr-sched-wb-secondary"
-	secondaryWF := `{
-		"importMode": "REPLACE",
-		"workflows": [{
-			"version": "1.1", "name": "attr-sched-wb-y-wf", "initialState": "NONE", "active": true,
-			"states": {
-				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
-				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
-				"Closed": {}
-			}
-		}]
-	}`
-	h.SetupModelWithWorkflow(t, secondary, secondaryWF)
-
-	compute := h.computeBearer(t)
-	yIDs := make(chan string, 1)
-	h.RegisterProc("attr-sched-wb-proc", func(rc *reqCtx) (map[string]any, error) {
-		res, err := rc.CreateEntityAs(compute, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
-		if err != nil {
-			return nil, fmt.Errorf("write-back create Y: %w", err)
+		alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+		xID, status, body := h.createEntityAs(t, alice, model, 1, `{"name":"x","amount":1,"status":"new"}`)
+		if status != http.StatusOK {
+			t.Fatalf("create as alice (OBO): %d %s", status, body)
 		}
-		if res.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("write-back create Y status=%d body=%s", res.StatusCode, res.Body)
-		}
-		yIDs <- res.EntityID
-		return nil, nil
+
+		anchor := awaitFiredAnchor(t, h, xID, "Closed")
+		assertAttribution(t, anchor, "scheduled fire anchor (OBO-armed)", "alice", "user", firedSchedExecKind, firedSchedExecID)
+		assertNoSchedulerString(t, h, xID)
 	})
-	h.SetupModelWithWorkflow(t, primary, procCascadeWF("attr-sched-wb", "attr-sched-wb-proc", "SYNC", ""))
 
-	alice := h.mintUserToken(t, "alice", "ROLE_USER")
-	if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
-		t.Fatalf("create X as alice: %d %s", status, body)
-	}
+	// WriteBackArmed: alice creates the primary; its SYNC processor writes a
+	// secondary back through the compute client's own (service-kind, no OBO
+	// Executor) token, joined to alice's transaction. The secondary's init
+	// cascade lands it in a state with a short-DelayMs scheduled transition,
+	// armed inside that same joined transaction. ArmedBy must be alice — the
+	// transaction's origin spi.AttributionFor inherits for a plain service
+	// executor — never the compute client that staged the write. Spec §13:
+	// "scheduled fire armed by a compute write-back in alice's transaction:
+	// ArmedBy alice".
+	t.Run("WriteBackArmed", func(t *testing.T) {
+		const primary = "attr-sched-wb-primary"
+		const secondary = "attr-sched-wb-secondary"
+		secondaryWF := `{
+			"importMode": "REPLACE",
+			"workflows": [{
+				"version": "1.1", "name": "attr-sched-wb-y-wf", "initialState": "NONE", "active": true,
+				"states": {
+					"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+					"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
+					"Closed": {}
+				}
+			}]
+		}`
+		h.SetupModelWithWorkflow(t, secondary, secondaryWF)
 
-	var yID string
-	select {
-	case yID = <-yIDs:
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout: write-back processor did not create Y")
-	}
+		compute := h.computeBearer(t)
+		yIDs := make(chan string, 1)
+		h.RegisterProc("attr-sched-wb-proc", func(rc *reqCtx) (map[string]any, error) {
+			res, err := rc.CreateEntityAs(compute, secondary, 1, `{"name":"y","amount":1,"status":"new"}`)
+			if err != nil {
+				return nil, fmt.Errorf("write-back create Y: %w", err)
+			}
+			if res.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("write-back create Y status=%d body=%s", res.StatusCode, res.Body)
+			}
+			yIDs <- res.EntityID
+			return nil, nil
+		})
+		h.SetupModelWithWorkflow(t, primary, procCascadeWF("attr-sched-wb", "attr-sched-wb-proc", "SYNC", ""))
 
-	// The write-back CREATE itself attributes to alice, executed by the
-	// compute client — a different principal from alice.
-	created := findChangeByType(h.getChanges(t, yID), "CREATE")
-	assertAttribution(t, created, "Y write-back create", "alice", "user", "service", "")
-	if ex, _ := created["executedBy"].(map[string]any); ex != nil {
-		if id, _ := ex["id"].(string); id == "alice" {
-			t.Errorf("Y write-back create: executedBy.id = %q; want the compute client, not alice", id)
+		alice := h.mintUserToken(t, "alice", "ROLE_USER")
+		if _, status, body := h.createEntityAs(t, alice, primary, 1, `{"name":"x","amount":100,"status":"new"}`); status != http.StatusOK {
+			t.Fatalf("create X as alice: %d %s", status, body)
 		}
-	}
 
-	// The fired anchor must carry alice (ArmedBy = the transaction's origin),
-	// never the compute client that staged the write-back.
-	anchor := awaitFiredAnchor(t, h, yID, "Closed")
-	assertAttribution(t, anchor, "Y fired anchor (write-back armed, ArmedBy alice)", "alice", "user", firedSchedExecKind, firedSchedExecID)
-	assertNoSchedulerString(t, h, yID)
+		var yID string
+		select {
+		case yID = <-yIDs:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout: write-back processor did not create Y")
+		}
+
+		// The write-back CREATE itself attributes to alice, executed by the
+		// compute client — a different principal from alice.
+		created := findChangeByType(h.getChanges(t, yID), "CREATE")
+		assertAttribution(t, created, "Y write-back create", "alice", "user", "service", "")
+		if ex, _ := created["executedBy"].(map[string]any); ex != nil {
+			if id, _ := ex["id"].(string); id == "alice" {
+				t.Errorf("Y write-back create: executedBy.id = %q; want the compute client, not alice", id)
+			}
+		}
+
+		// The fired anchor must carry alice (ArmedBy = the transaction's
+		// origin), never the compute client that staged the write-back.
+		anchor := awaitFiredAnchor(t, h, yID, "Closed")
+		assertAttribution(t, anchor, "Y fired anchor (write-back armed, ArmedBy alice)", "alice", "user", firedSchedExecKind, firedSchedExecID)
+		assertNoSchedulerString(t, h, yID)
+	})
 }
 
 // --- Scenario 2: a fire that arms a further hop stays user-rooted -------------

@@ -124,7 +124,12 @@ func TestGRPCAttribution_OBOWriteBack(t *testing.T) {
 // through the gRPC door exactly as it does through HTTP (spec §13: "scheduled
 // fire armed by an OBO request, directly ... (gRPC)"). farFutureTimerWF keeps
 // the timer armed (never due) for the length of the test, so the row can be
-// inspected directly rather than waiting on the scheduler.
+// inspected directly rather than waiting on the scheduler. This stack's
+// scheduler is disabled (newCalloutHarness default) and shares the package's
+// database (callback_harness_test.go), so the armed row is explicitly deleted
+// at the end — nothing on this stack or the shared TestMain server would ever
+// claim or cancel it otherwise (TestScheduledTaskWrites_DeleteEntity_RemovesItsTasks
+// confirms deletion cancels an entity's scheduled tasks).
 func TestGRPCAttribution_ScheduledOBOArmed(t *testing.T) {
 	h := newCalloutHarness(t, nil)
 	const model = "grpc-attr-sched-obo-armed"
@@ -135,6 +140,11 @@ func TestGRPCAttribution_ScheduledOBOArmed(t *testing.T) {
 	if err != nil || !env.Success {
 		t.Fatalf("EntityManage create as alice (OBO): %s %v", describeEnv(env), err)
 	}
+	t.Cleanup(func() {
+		if env, err := h.deleteEntityGRPC(id); err != nil || !env.Success {
+			t.Errorf("cleanup: delete %s: %s %v", id, describeEnv(env), err)
+		}
+	})
 
 	var armedID, armedKind string
 	if err := dbPool.QueryRow(context.Background(),
