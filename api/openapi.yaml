@@ -6144,7 +6144,9 @@ paths:
           description: Bad request - unsupported_grant_type (grant_type missing or
             not supported); unauthorized_client (client_credentials by an
             on-behalf-of client, or a token exchange by any other client); or
-            invalid_request (a malformed body; on the token exchange, a
+            invalid_request (a Content-Type other than
+            application/x-www-form-urlencoded, a body over 1 MiB or one that
+            does not parse as a form; on the token exchange, a
             forbidden RFC 8693 parameter - actor_token, actor_token_type,
             resource, audience, scope, requested_token_type - even empty, a
             subject_token_type other than the JWT type, a malformed assertion,
@@ -6159,10 +6161,10 @@ paths:
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
             client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
-            wrong secret). Carries WWW-Authenticate Basic.
+            wrong secret). Carries WWW-Authenticate Basic realm="cyoda".
           headers:
             WWW-Authenticate:
-              description: The client authentication scheme, Basic.
+              description: The client authentication scheme and realm, Basic realm="cyoda".
               schema:
                 type: string
           content:
@@ -6177,7 +6179,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "405":
-          description: Method Not Allowed - method_not_allowed (only POST is accepted)
+          description: Method Not Allowed - method_not_allowed (only POST is
+            accepted). Carries Allow POST.
+          headers:
+            Allow:
+              description: The allowed method, POST.
+              schema:
+                type: string
           content:
             application/json:
               schema:

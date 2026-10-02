@@ -220,6 +220,12 @@ func signWithHeader(t *testing.T, key *rsa.PrivateKey, header, claims map[string
 	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
+// oauthErr renders the error fields of a token response for a failure
+// message — never the whole body, which on a 200 carries a token.
+func oauthErr(body map[string]any) string {
+	return fmt.Sprintf("%v / %v", body["error"], body["error_description"])
+}
+
 // numClaim returns a numeric claim as an int64.
 func numClaim(t *testing.T, claims map[string]any, name string) int64 {
 	t.Helper()
@@ -374,7 +380,7 @@ func TestTokenClientCredentialsUnknownClient(t *testing.T) {
 	}
 }
 
-// Every 401 carries WWW-Authenticate: Basic and the fixed description,
+// Every 401 carries WWW-Authenticate: Basic realm="cyoda" and the fixed description,
 // whatever made the client authentication fail.
 func TestToken_401CarriesWWWAuthenticate(t *testing.T) {
 	env := setupTokenEnv(t)
@@ -391,8 +397,8 @@ func TestToken_401CarriesWWWAuthenticate(t *testing.T) {
 			if rr.Code != http.StatusUnauthorized {
 				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 			}
-			if got := rr.Header().Get("WWW-Authenticate"); got != "Basic" {
-				t.Errorf("WWW-Authenticate = %q, want Basic", got)
+			if got := rr.Header().Get("WWW-Authenticate"); got != `Basic realm="cyoda"` {
+				t.Errorf(`WWW-Authenticate = %q, want Basic realm="cyoda"`, got)
 			}
 			resp := decodeResponse(t, rr)
 			if resp["error"] != "invalid_client" || resp["error_description"] != "client authentication failed" {
@@ -475,6 +481,8 @@ func TestTokenExchange_Refusals(t *testing.T) {
 	cases := []tc{
 		{"non-OBO client", plain, with(ok), 400, unauthorized, descNotOBO},
 		{"non-OBO client, garbage token", plain, with("not-a-jwt"), 400, unauthorized, descNotOBO},
+		// The client check precedes the parameter check.
+		{"non-OBO client, actor_token", plain, with(ok, "actor_token", "x"), 400, unauthorized, descNotOBO},
 		{"actor_token", obo, with(ok, "actor_token", "x"), 400, invalidReq, descParam},
 		{"empty scope present", obo, with(ok, "scope", ""), 400, invalidReq, descParam},
 		{"resource", obo, with(ok, "resource", "x"), 400, invalidReq, descParam},
@@ -528,7 +536,7 @@ func TestTokenExchange_Refusals(t *testing.T) {
 			rr := env.exchange(t, id, sec, c.form())
 			body := decodeResponse(t, rr)
 			if rr.Code != c.status || body["error"] != c.code {
-				t.Fatalf("got %d %v, want %d %s", rr.Code, body, c.status, c.code)
+				t.Fatalf("got %d %v, want %d %s", rr.Code, oauthErr(body), c.status, c.code)
 			}
 			if body["error_description"] != c.desc {
 				t.Errorf("error_description = %v, want %q", body["error_description"], c.desc)
@@ -638,7 +646,7 @@ func TestTokenExchange_IssuerAllowList(t *testing.T) {
 			resp := decodeResponse(t, rr)
 			if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" ||
 				resp["error_description"] != "subject token signature or issuer rejected" {
-				t.Fatalf("got %d %v", rr.Code, resp)
+				t.Fatalf("got %d %v", rr.Code, oauthErr(resp))
 			}
 		})
 	}
@@ -650,7 +658,7 @@ func assertRefusedKey(t *testing.T, rr *httptest.ResponseRecorder) {
 	t.Helper()
 	resp := decodeResponse(t, rr)
 	if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != "unknown or inactive trusted key" {
-		t.Fatalf("got %d %v, want 400 invalid_request / unknown or inactive trusted key", rr.Code, resp)
+		t.Fatalf("got %d %v, want 400 invalid_request / unknown or inactive trusted key", rr.Code, oauthErr(resp))
 	}
 }
 
@@ -697,7 +705,7 @@ func TestTokenExchange_SameKidOtherTenantsKey(t *testing.T) {
 	rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}})
 	resp := decodeResponse(t, rr)
 	if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != "subject token signature or issuer rejected" {
-		t.Fatalf("got %d %v", rr.Code, resp)
+		t.Fatalf("got %d %v", rr.Code, oauthErr(resp))
 	}
 }
 
@@ -784,6 +792,7 @@ func TestToken_MalformedBody_400(t *testing.T) {
 	}
 }
 
+// RFC 9110 §15.5.6: a 405 names the allowed method.
 func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	env := setupTokenEnv(t)
 	req := httptest.NewRequest(http.MethodGet, "/oauth/token", nil)
@@ -791,6 +800,111 @@ func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	env.handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed || decodeResponse(t, rr)["error"] != "method_not_allowed" {
 		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	if got := rr.Header().Get("Allow"); got != http.MethodPost {
+		t.Errorf("Allow = %q, want POST", got)
+	}
+}
+
+// RFC 6749 §3.2: the request body is application/x-www-form-urlencoded. Any
+// other Content-Type, or none, is 400 invalid_request — checked before the
+// client authenticates, so even a request without credentials gets it and
+// the body is never read. A charset parameter is accepted.
+func TestToken_ContentTypeMustBeForm(t *testing.T) {
+	env := setupTokenEnv(t)
+	const desc = "the request body must be application/x-www-form-urlencoded"
+	form := "grant_type=client_credentials"
+	for name, c := range map[string]struct {
+		contentType, body, auth string
+	}{
+		"json":                 {"application/json", `{"grant_type":"client_credentials"}`, basicAuth(env.clientID, env.clientSecret)},
+		"missing":              {"", form, basicAuth(env.clientID, env.clientSecret)},
+		"text":                 {"text/plain", form, basicAuth(env.clientID, env.clientSecret)},
+		"multipart":            {"multipart/form-data; boundary=x", "--x\r\n", basicAuth(env.clientID, env.clientSecret)},
+		"unparsable":           {"application/x-www-form-urlencoded; =", form, basicAuth(env.clientID, env.clientSecret)},
+		"json, no credentials": {"application/json", `{}`, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(c.body))
+			if c.contentType != "" {
+				req.Header.Set("Content-Type", c.contentType)
+			}
+			if c.auth != "" {
+				req.Header.Set("Authorization", c.auth)
+			}
+			rr := httptest.NewRecorder()
+			env.handler.ServeHTTP(rr, req)
+			resp := decodeResponse(t, rr)
+			if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != desc {
+				t.Fatalf("got %d %v, want 400 invalid_request / %s", rr.Code, oauthErr(resp), desc)
+			}
+		})
+	}
+	t.Run("charset accepted", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
+		req.Header.Set("Authorization", basicAuth(env.clientID, env.clientSecret))
+		rr := httptest.NewRecorder()
+		env.handler.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// Grant parameters are read from the form body only: a forbidden RFC 8693
+// parameter in the query string is still refused, and a grant_type in the
+// query string is not a grant_type.
+func TestToken_QueryStringParameters(t *testing.T) {
+	env := setupTokenEnv(t)
+	post := func(t *testing.T, query, id, secret string, form url.Values) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token?"+query, strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", basicAuth(id, secret))
+		rr := httptest.NewRecorder()
+		env.handler.ServeHTTP(rr, req)
+		return rr
+	}
+	t.Run("actor_token in the query", func(t *testing.T) {
+		rr := post(t, "actor_token=x", env.oboID, env.oboSecret, url.Values{
+			"grant_type": {tokenExchangeGrant}, "subject_token_type": {jwtTokenType},
+			"subject_token": {env.assertion(t, nil)},
+		})
+		resp := decodeResponse(t, rr)
+		if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != "unsupported parameter" {
+			t.Fatalf("got %d %v, want 400 invalid_request / unsupported parameter", rr.Code, oauthErr(resp))
+		}
+	})
+	t.Run("grant_type in the query", func(t *testing.T) {
+		rr := post(t, "grant_type=client_credentials", env.clientID, env.clientSecret, url.Values{})
+		if resp := decodeResponse(t, rr); rr.Code != http.StatusBadRequest || resp["error"] != "unsupported_grant_type" {
+			t.Fatalf("got %d %v, want 400 unsupported_grant_type", rr.Code, oauthErr(resp))
+		}
+	})
+}
+
+// The bounds are inclusive where the spec says "at most" and skewed by 30 s:
+// exp − iat == 300, iat 20 s ahead and nbf 20 s ahead are all accepted.
+func TestTokenExchange_BoundsAccepted(t *testing.T) {
+	env := setupTokenEnv(t)
+	for name, mutate := range map[string]func(c map[string]any){
+		"exp - iat == 300": func(c map[string]any) {
+			now := time.Now().Unix()
+			c["iat"], c["exp"] = now, now+300
+		},
+		"iat 20 s ahead": func(c map[string]any) {
+			iat := time.Now().Add(20 * time.Second).Unix()
+			c["iat"], c["exp"] = iat, iat+120
+		},
+		"nbf 20 s ahead": func(c map[string]any) { c["nbf"] = time.Now().Add(20 * time.Second).Unix() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {env.assertion(t, mutate)}})
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+			}
+		})
 	}
 }
 
@@ -861,6 +975,21 @@ func (f failingKeyStore) Reactivate(context.Context, string, time.Time, time.Tim
 }
 func (f failingKeyStore) Delete(context.Context, string) error { return f.err }
 
+// failingSignerKeyStore selects a key whose signer fails to sign.
+type failingSignerKeyStore struct {
+	failingKeyStore
+}
+
+func (f failingSignerKeyStore) Signer() (*auth.KeyPair, auth.Signer, error) {
+	return &auth.KeyPair{KID: "k1"}, failingSigner{f.err}, nil
+}
+
+// failingSigner fails every signature with err.
+type failingSigner struct{ err error }
+
+func (f failingSigner) Public() crypto.PublicKey                     { return nil }
+func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) { return nil, f.err }
+
 // TestTokenEndpoint_ServerErrorCarriesTicket pins Gate 3 for this endpoint:
 // every 5xx carries a generic message plus a ticket UUID and no internals.
 // The OAuth2 body shape has no dedicated field, so the ticket rides in
@@ -875,17 +1004,26 @@ func (f failingKeyStore) Delete(context.Context, string) error { return f.err }
 func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	env := setupTokenEnv(t)
 	cause := errors.New("hsm unreachable at 10.0.0.5:8443")
-	h := auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry)
+	selectFails := auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry)
+	signFails := auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry)
+	cc := func() *http.Request {
+		return makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
+	}
+	exchange := func() *http.Request {
+		return makeTokenRequest(tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret),
+			url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}})
+	}
 
-	for name, req := range map[string]func() *http.Request{
-		"client_credentials": func() *http.Request {
-			return makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
-		},
-		"token_exchange": func() *http.Request {
-			return makeTokenRequest(tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret),
-				url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}})
-		},
+	for name, c := range map[string]struct {
+		h   http.Handler
+		req func() *http.Request
+		op  string
+	}{
+		"client_credentials, signer selection": {selectFails, cc, "op=keyStore.Signer"},
+		"token_exchange, signer selection":     {selectFails, exchange, "op=keyStore.Signer"},
+		"client_credentials, signing":          {signFails, cc, "op=sign"},
 	} {
+		h, req := c.h, c.req
 		t.Run(name, func(t *testing.T) {
 			var logBuf bytes.Buffer
 			prevLogger := slog.Default()
@@ -919,6 +1057,9 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 			}
 			if !strings.Contains(logged, "hsm unreachable") {
 				t.Errorf("the underlying cause is missing from the log record:\n%s", logged)
+			}
+			if !strings.Contains(logged, c.op+" ") {
+				t.Errorf("the log record does not name %s:\n%s", c.op, logged)
 			}
 		})
 	}

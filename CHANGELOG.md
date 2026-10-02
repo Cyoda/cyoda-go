@@ -18,12 +18,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   assertion's `exp` and now + `CYODA_JWT_EXPIRY_SECONDS`; the only accepted
   `subject_token_type` is `urn:ietf:params:oauth:token-type:jwt`; a client
   store that is unavailable answers `503 temporarily_unavailable` with
-  `Retry-After` (was `500`); a `401` carries `WWW-Authenticate: Basic`; a
+  `Retry-After` (was `500`); a `401` carries `WWW-Authenticate: Basic realm="cyoda"`; a
   method other than `POST` is the endpoint's OAuth-shaped
-  `405 method_not_allowed` (a `GET` used to fall through to the
+  `405 method_not_allowed` with `Allow: POST` (a `GET` used to fall through to the
   authenticated API and answer `401`); `grant_type`, `subject_token` and
   `subject_token_type` are read from the form body only, never the query
-  string; a body that is not a form is `400 invalid_request`. Error descriptions are fixed and never repeat the
+  string; a request whose `Content-Type` is not
+  `application/x-www-form-urlencoded` (a `charset` parameter is accepted)
+  is `400 invalid_request` before the client authenticates, and its body is
+  never read; a form body over 1 MiB or one that does not parse is
+  `400 invalid_request`. Error descriptions are fixed and never repeat the
   user id, tenant or key id. `ErrorResponseDto.error` drops `invalid_grant`
   and `invalid_scope` (never sent) and adds `temporarily_unavailable`.
 

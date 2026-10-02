@@ -143,8 +143,8 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 	}
 	id, _ := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
-	if got := resp.Header.Get("WWW-Authenticate"); got != "Basic" {
-		t.Errorf("WWW-Authenticate = %q, want Basic", got)
+	if got := resp.Header.Get("WWW-Authenticate"); got != `Basic realm="cyoda"` {
+		t.Errorf(`WWW-Authenticate = %q, want Basic realm="cyoda"`, got)
 	}
 	assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 }

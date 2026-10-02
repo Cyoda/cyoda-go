@@ -78,6 +78,8 @@ func TestToken_TokenExchange_Refusals(t *testing.T) {
 	}
 	cases := []tc{
 		{name: "non-OBO client", plain: true, subject: ok, status: 400, code: "unauthorized_client", desc: descNoExchange},
+		// The client check precedes the parameter check.
+		{name: "non-OBO client, actor_token", plain: true, subject: ok, extra: []string{"actor_token", "x"}, status: 400, code: "unauthorized_client", desc: descNoExchange},
 		{name: "actor_token", subject: ok, extra: []string{"actor_token", "x"}, status: 400, code: "invalid_request", desc: descParam},
 		{name: "actor_token_type", subject: ok, extra: []string{"actor_token_type", "x"}, status: 400, code: "invalid_request", desc: descParam},
 		{name: "resource", subject: ok, extra: []string{"resource", "x"}, status: 400, code: "invalid_request", desc: descParam},
@@ -238,9 +240,54 @@ func TestToken_Method_405(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			if got := resp.Header.Get("Allow"); got != http.MethodPost {
+				t.Errorf("Allow = %q, want POST", got)
+			}
 			assertOAuthError(t, resp, http.StatusMethodNotAllowed, "method_not_allowed")
 		})
 	}
+}
+
+// TestToken_ContentTypeMustBeForm: the body must be
+// application/x-www-form-urlencoded (a charset parameter is fine); a JSON
+// body or none declared is 400 invalid_request, before the client
+// authenticates.
+func TestToken_ContentTypeMustBeForm(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: requires Docker + PostgreSQL")
+	}
+	id, secret := createClient(t, false, false)
+	post := func(t *testing.T, contentType, body string) *http.Response {
+		t.Helper()
+		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodPost, serverURL+"/api/oauth/token", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		req.SetBasicAuth(id, secret)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resp
+	}
+	const desc = "the request body must be application/x-www-form-urlencoded"
+	t.Run("json", func(t *testing.T) {
+		assertOAuthErrorDesc(t, post(t, "application/json", `{"grant_type":"client_credentials"}`),
+			http.StatusBadRequest, "invalid_request", desc)
+	})
+	t.Run("missing", func(t *testing.T) {
+		assertOAuthErrorDesc(t, post(t, "", "grant_type=client_credentials"), http.StatusBadRequest, "invalid_request", desc)
+	})
+	t.Run("charset accepted", func(t *testing.T) {
+		resp := post(t, "application/x-www-form-urlencoded; charset=utf-8", "grant_type=client_credentials")
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status %d, want 200", resp.StatusCode)
+		}
+	})
 }
 
 // TestToken_TokenExchange_InvalidatedKeyEndsAtOnce: trusted keys have no

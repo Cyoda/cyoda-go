@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,6 +24,9 @@ const (
 	grantTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
 	tokenTypeJWT       = "urn:ietf:params:oauth:token-type:jwt"
 )
+
+// formMediaType is the only request media type the endpoint accepts.
+const formMediaType = "application/x-www-form-urlencoded"
 
 // Bounds on a user assertion presented to the token exchange.
 const (
@@ -80,9 +84,21 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // ServeHTTP authenticates the client, then serves the grant it asks for. A
 // plain or admin client may only use client_credentials, an on-behalf-of
 // client only the token exchange.
+//
+// Order: method (405) → Content-Type (400) → client authentication (401) →
+// body. The first three read headers only, so a body that is not a form is
+// never read, and no body is read before the client has authenticated.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
 		writeTokenError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
+		return
+	}
+
+	// RFC 6749 §3.2: the request body is application/x-www-form-urlencoded.
+	// Any other media type, or none, is refused without reading the body.
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != formMediaType {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "the request body must be application/x-www-form-urlencoded")
 		return
 	}
 
@@ -296,7 +312,12 @@ func issuerListed(issuers []string, iss any) bool {
 func (h *tokenHandler) mintAndRespond(w http.ResponseWriter, r *http.Request, claims map[string]any, now, exp time.Time, exchanged bool) {
 	token, err := h.mint(r, claims, now, exp)
 	if err != nil {
-		writeTokenServerError(w, "mint", err)
+		op := "sign"
+		var mf signerFailure
+		if errors.As(err, &mf) {
+			op = "keyStore.Signer"
+		}
+		writeTokenServerError(w, op, err)
 		return
 	}
 	body := map[string]any{
@@ -310,12 +331,21 @@ func (h *tokenHandler) mintAndRespond(w http.ResponseWriter, r *http.Request, cl
 	writeTokenResponse(w, http.StatusOK, body)
 }
 
+// signerFailure marks a mint failure as the key store failing to select a
+// signer, as opposed to the signer failing to sign; the 500's log names
+// which.
+type signerFailure struct{ err error }
+
+func (f signerFailure) Error() string { return "failed to select a signing key: " + f.err.Error() }
+func (f signerFailure) Unwrap() error { return f.err }
+
 // mint signs claims with the current signing key, after setting iss, iat,
-// exp, jti, caas_tier and, when configured, aud.
+// exp, jti, caas_tier and, when configured, aud. A failure to select the key
+// is a signerFailure.
 func (h *tokenHandler) mint(r *http.Request, claims map[string]any, now time.Time, exp time.Time) (string, error) {
 	kp, signer, err := h.keyStore.Signer()
 	if err != nil {
-		return "", err
+		return "", signerFailure{err}
 	}
 	claims["iss"], claims["iat"], claims["exp"], claims["jti"], claims["caas_tier"] =
 		h.issuer, now.Unix(), exp.Unix(), uuid.NewString(), "unlimited"
@@ -351,8 +381,8 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 }
 
 // writeTokenError writes an OAuth-shaped error (RFC 6749 §5.2). A 401
-// carries WWW-Authenticate: Basic, the scheme the endpoint authenticates
-// clients with.
+// carries WWW-Authenticate: Basic realm="cyoda", the scheme the endpoint
+// authenticates clients with (RFC 7617 §2 requires the realm).
 func writeTokenError(w http.ResponseWriter, status int, errCode, description string) {
 	resp := map[string]string{"error": errCode}
 	if description == "" {
@@ -364,7 +394,7 @@ func writeTokenError(w http.ResponseWriter, status int, errCode, description str
 	resp["error_description"] = description
 	SetNoStore(w.Header())
 	if status == http.StatusUnauthorized {
-		w.Header().Set("WWW-Authenticate", "Basic")
+		w.Header().Set("WWW-Authenticate", `Basic realm="cyoda"`)
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

@@ -48,6 +48,9 @@ func TestAuthService_TokenEndpointNonPostIs405(t *testing.T) {
 		if rr.Code != http.StatusMethodNotAllowed || body["error"] != "method_not_allowed" {
 			t.Fatalf("%s: %d %s, want 405 method_not_allowed", m, rr.Code, rr.Body.String())
 		}
+		if got := rr.Header().Get("Allow"); got != http.MethodPost {
+			t.Errorf("%s: Allow = %q, want POST", m, got)
+		}
 	}
 }
 
