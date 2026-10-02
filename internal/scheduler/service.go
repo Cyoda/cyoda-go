@@ -927,7 +927,16 @@ func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) 
 		EntityID:      r.task.EntityID,
 		State:         state,
 		TransactionID: txID,
-		Details:       fmt.Sprintf("Scheduled transition %q failed: %s", r.task.Transition, f.Reason),
+		// Attributed/Executor mirror the fire path's own events (spec §13):
+		// the task's arming principal, executed by the system. Recorded as
+		// stored, with no fallback for an empty ArmedBy — both arm sites
+		// always set it from spi.AttributionFor on an authenticated or
+		// system context, so an empty value never occurs in practice; a
+		// substitute identity on a failure's audit record would misattribute
+		// it rather than degrade gracefully.
+		Attributed: r.task.ArmedBy,
+		Executor:   common.SystemPrincipal(),
+		Details:    fmt.Sprintf("Scheduled transition %q failed: %s", r.task.Transition, f.Reason),
 		Data: map[string]any{
 			"transition":  r.task.Transition,
 			"sourceState": r.task.SourceState,

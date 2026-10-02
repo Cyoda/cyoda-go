@@ -247,6 +247,16 @@ func TestSchedRun_UnsafeFailureFails(t *testing.T) {
 			t.Errorf("SCHEDULED_TRANSITION_FAIL data[%q] = %v; want %v (data %v)", k, data[k], want, data)
 		}
 	}
+	// actor/executedBy (spec §13): attributed to the principal that armed
+	// the task (the model's create request), executed by the system —
+	// mirroring a scheduled firing's own audit events.
+	ev := smEventsOfType(h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_FAIL")[0]
+	if actor, _ := ev["actor"].(map[string]any); actor["id"] == nil || actor["id"] == "" {
+		t.Errorf("SCHEDULED_TRANSITION_FAIL actor = %v, want a non-empty id (the arming principal)", ev["actor"])
+	}
+	if executedBy, _ := ev["executedBy"].(map[string]any); executedBy["id"] != "system" || executedBy["kind"] != "system" {
+		t.Errorf("SCHEDULED_TRANSITION_FAIL executedBy = %v, want {id:system kind:system}", ev["executedBy"])
+	}
 	awaitSchedulerLiveFor(t, h, 3*fixtureutil.TunedRetryDelay)
 	if n := len(cn.Received()); n != 1 {
 		t.Errorf("the unsafe processor was sent %d times; want 1", n)
