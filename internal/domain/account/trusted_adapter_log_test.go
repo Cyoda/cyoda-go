@@ -19,8 +19,8 @@ import (
 
 // Register, invalidate, reactivate and delete each write one INFO line
 // naming the tenant, the kid, the attributed principal and the executor. The
-// request here is an on-behalf-of one: alice, executed by the client obo-1,
-// so the two must differ in the line.
+// request here is an admin client's own: an on-behalf-of principal never
+// administers, so the client is both.
 func TestTrustedKeyChanges_WriteInfoLines(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -32,10 +32,9 @@ func TestTrustedKeyChanges_WriteInfoLines(t *testing.T) {
 	feats.TrustedKeyRegistrationEnabled = true
 	h := account.New(newTestKeyStore(t), ts, nil, feats, auth.OperatorGuard{})
 	uc := &spi.UserContext{
-		UserID: "alice", UserName: "alice", Kind: spi.PrincipalUser,
-		Executor: &spi.Principal{ID: "obo-1", Kind: spi.PrincipalService},
-		Tenant:   spi.Tenant{ID: "t1", Name: "t1"},
-		Roles:    []string{"ROLE_ADMIN"},
+		UserID: "admin-1", UserName: "admin-1", Kind: spi.PrincipalService,
+		Tenant: spi.Tenant{ID: "t1", Name: "t1"},
+		Roles:  []string{"ROLE_ADMIN", "ROLE_M2M"},
 	}
 	req := func(method string, body []byte) *http.Request {
 		var r *http.Request
@@ -77,8 +76,8 @@ func TestTrustedKeyChanges_WriteInfoLines(t *testing.T) {
 		}
 		want := map[string]string{
 			"level": "INFO", "pkg": "account", "tenant": "t1", "kid": "k",
-			"attributedId": "alice", "attributedKind": "user",
-			"executorId": "obo-1", "executorKind": "service",
+			"attributedId": "admin-1", "attributedKind": "service",
+			"executorId": "admin-1", "executorKind": "service",
 		}
 		for k, v := range want {
 			if line[k] != v {

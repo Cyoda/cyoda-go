@@ -81,7 +81,7 @@ service CloudEventsService {
 }
 ```
 
-**startStreaming** — bidirectional streaming RPC for compute member lifecycle. Requires `ROLE_M2M`. First message must be `CalculationMemberJoinEvent`. Server sends processor and criteria requests; client sends responses and keep-alive acknowledgments.
+**startStreaming** — bidirectional streaming RPC for compute member lifecycle. Requires the compute node's own M2M client token (see COMPUTE MEMBER PROTOCOL). First message must be `CalculationMemberJoinEvent`. Server sends processor and criteria requests; client sends responses and keep-alive acknowledgments.
 
 **entityModelManage** — unary RPC for entity model operations. Accepts: `EntityModelImportRequest`, `EntityModelExportRequest`, `EntityModelTransitionRequest`, `EntityModelDeleteRequest`, `EntityModelGetAllRequest`, `EntityModelSetUniqueKeysRequest`. It is not a transaction-routed RPC: a `tx-token` metadata value joins nothing here. A request that changes a model — import, transition, delete, set unique keys — and carries one is refused in its own response envelope with `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION`, before anything is read or written; the read-only export and get-all pass.
 
@@ -200,7 +200,7 @@ The compute member protocol allows external processes to serve as workflow proce
 
 **Join sequence:**
 
-1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. Token must carry `ROLE_M2M`.
+1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. The token must be the compute node's own M2M client token from the `client_credentials` grant (`POST /oauth/token`, see `cyoda help auth tokens`): a service principal holding `ROLE_M2M`. An on-behalf-of token from the token exchange states a user, not a compute node, and is refused with `codes.PermissionDenied`, as is a token from `cyoda token` or any other token that is not a client's own. In mock IAM mode the mock principal opens a stream when `CYODA_IAM_MOCK_KIND` is `service` (the default) and `CYODA_IAM_MOCK_ROLES` holds `ROLE_M2M`.
 2. Client sends `CalculationMemberJoinEvent` as the first message:
 
 ```json
@@ -518,6 +518,8 @@ A callout may be tried on more than one member. **Every try carries the same `re
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
+**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, every 60 seconds the stream reads its client from the store. It closes with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued, so a stream ends within a minute of `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret`. A compute node whose secret was reset reconnects with a token fetched with the new secret. When the store cannot be read the stream closes with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
+
 In cluster mode each node tells its peers which tags its members serve, per tenant. A node tries its own matching members first and then hands the callout, with the tries that are left, to a peer that advertises the tag — see `cyoda help cluster`.
 
 ## ERRORS
@@ -525,7 +527,9 @@ In cluster mode each node tells its peers which tags its members serve, per tena
 gRPC error codes returned by the service:
 
 - `codes.Unauthenticated` — missing or invalid `authorization` metadata
-- `codes.PermissionDenied` — `ROLE_M2M` required for `startStreaming`; tenant mismatch on join
+- `codes.PermissionDenied` — `startStreaming` opened with a token that is not a compute node's own M2M client token (an on-behalf-of token, no `ROLE_M2M`, not a service principal); tenant mismatch on join
+- `codes.Unauthenticated` on an open stream — the client re-check found the stream's client deleted or its secret reset (see *Client re-check*)
+- `codes.Unavailable` on an open stream — the client re-check could not read the client store; the compute node reconnects
 - `codes.InvalidArgument` — first message is not `CalculationMemberJoinEvent`; malformed CloudEvent; invalid join payload
 - `codes.DeadlineExceeded` — member timed out (keep-alive timeout exceeded)
 - `codes.Internal` — server-side error constructing a response CloudEvent

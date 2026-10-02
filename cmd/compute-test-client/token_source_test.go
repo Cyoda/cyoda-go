@@ -20,7 +20,7 @@ func TestComputeClientRefreshesTokenBeforeExpiry(t *testing.T) {
 			return
 		}
 		n := calls.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("tok-%d", n), "token_type": "Bearer", "expires_in": 1})
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("tok-%d", n), "token_type": "Bearer", "expires_in": 2})
 	}))
 	defer srv.Close()
 	src := newTokenSource(srv.URL, "C1", "s")
@@ -28,7 +28,7 @@ func TestComputeClientRefreshesTokenBeforeExpiry(t *testing.T) {
 	if err != nil || first != "tok-1" {
 		t.Fatalf("first = %q, %v", first, err)
 	}
-	time.Sleep(900 * time.Millisecond) // past 80 % of 1 s
+	time.Sleep(1800 * time.Millisecond) // past 80 % of 2 s
 	second, err := src.Token()
 	if err != nil || second == first {
 		t.Fatalf("second = %q, %v; want a refreshed token", second, err)
@@ -70,14 +70,14 @@ func TestTokenSourceFailsClosedPastRefreshPoint(t *testing.T) {
 			http.Error(w, `{"error":"invalid_client"}`, http.StatusUnauthorized)
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-1", "token_type": "Bearer", "expires_in": 1})
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-1", "token_type": "Bearer", "expires_in": 2})
 	}))
 	defer srv.Close()
 	src := newTokenSource(srv.URL, "C1", "s")
 	if _, err := src.Token(); err != nil {
 		t.Fatalf("first Token(): %v", err)
 	}
-	time.Sleep(900 * time.Millisecond)
+	time.Sleep(1800 * time.Millisecond) // past 80 % of 2 s
 	if tok, err := src.Token(); err == nil || tok != "" {
 		t.Fatalf("Token() past the refresh point with a failing endpoint = %q, %v; want an error and no token", tok, err)
 	}

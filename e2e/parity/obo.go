@@ -63,13 +63,24 @@ func NewOBOClient(t *testing.T, baseURL string, tenant Tenant) *OBOClient {
 // assertion is a valid user assertion for user, signed with o's key.
 func (o *OBOClient) assertion(t *testing.T, user string) string {
 	t.Helper()
+	return o.assertionWith(t, user, nil)
+}
+
+// assertionWith is assertion with the claims in override set over the valid
+// ones before signing.
+func (o *OBOClient) assertionWith(t *testing.T, user string, override map[string]any) string {
+	t.Helper()
 	now := time.Now()
-	tok, err := auth.Sign(context.Background(), map[string]any{
+	claims := map[string]any{
 		"sub": user, "iss": "parity-app", "aud": o.issuer, "caas_org_id": o.tenant,
 		"iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": uuid.NewString(),
 		// Roles in the assertion never reach the issued token.
 		"user_roles": []string{"ROLE_ADMIN"},
-	}, auth.NewRSASigner(o.key), o.kid)
+	}
+	for k, v := range override {
+		claims[k] = v
+	}
+	tok, err := auth.Sign(context.Background(), claims, auth.NewRSASigner(o.key), o.kid)
 	if err != nil {
 		t.Fatalf("sign assertion: %v", err)
 	}
@@ -103,6 +114,17 @@ func OBOToken(t *testing.T, fixture BackendFixture, tenant Tenant, user string) 
 		t.Fatalf("exchange: %d %s", code, body)
 	}
 	return accessToken(t, body)
+}
+
+// exchangeAsserting runs the token exchange in tenant for an assertion of
+// user "mallory" whose claims in override replace the valid ones. It creates
+// an OBO client and a trusted key in tenant with tenant.Token, and returns the
+// status and body. A 200 body carries a token: never log it.
+func exchangeAsserting(t *testing.T, fixture BackendFixture, tenant Tenant, override map[string]any) (int, []byte, error) {
+	t.Helper()
+	o := NewOBOClient(t, fixture.BaseURL(), tenant)
+	return client.NewClient(fixture.BaseURL(), "").ExchangeTokenRaw(t, o.id, o.secret,
+		url.Values{"subject_token": {o.assertionWith(t, "mallory", override)}})
 }
 
 // RunOBOExchange: an OBO client of a fresh tenant exchanges an assertion for

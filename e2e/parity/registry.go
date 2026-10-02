@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 223 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 224 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -450,6 +450,10 @@ var allTests = []NamedTest{
 	// a user assertion for a token of that user carrying the client as
 	// act.sub and the client's roles only; a plain client is refused.
 	{"OBOExchange", RunOBOExchange},
+
+	// An on-behalf-of token never administers: every client and trusted-key
+	// route of its tenant answers 403 FORBIDDEN.
+	{"OBOTokenCannotAdminister", RunOBOTokenCannotAdminister},
 }
 
 // Register appends additional NamedTests to the canonical list at init time.

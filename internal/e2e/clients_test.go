@@ -302,6 +302,34 @@ func TestE2E_Clients_NonAdmin_403(t *testing.T) {
 	}
 }
 
+// TestE2E_Clients_OBOToken_403: an on-behalf-of token never administers —
+// every client route and every trusted-key route answers 403 FORBIDDEN, and
+// the client it aimed at still authenticates.
+func TestE2E_Clients_OBOToken_403(t *testing.T) {
+	id, secret := createClient(t, false, false)
+	obo := oboToken(t, "mallory")
+	const kid = "e2e-obo-refused"
+	for _, op := range []struct{ name, method, path, body string }{
+		{"list clients", http.MethodGet, "/clients", ""},
+		{"create client", http.MethodPost, "/clients", ""},
+		{"create OBO client", http.MethodPost, "/clients?onBehalfOf=true", ""},
+		{"delete client", http.MethodDelete, "/clients/" + id, ""},
+		{"reset secret", http.MethodPut, "/clients/" + id + "/secret", ""},
+		{"list trusted keys", http.MethodGet, "/oauth/keys/trusted", ""},
+		{"register trusted key", http.MethodPost, "/oauth/keys/trusted", `{"keyId":"` + kid + `"}`},
+		{"invalidate trusted key", http.MethodPost, "/oauth/keys/trusted/" + kid + "/invalidate", ""},
+		{"reactivate trusted key", http.MethodPost, "/oauth/keys/trusted/" + kid + "/reactivate", "{}"},
+		{"delete trusted key", http.MethodDelete, "/oauth/keys/trusted/" + kid, ""},
+	} {
+		t.Run(op.name, func(t *testing.T) {
+			assertOBORefusedAdmin(t, requestAs(t, obo, op.method, op.path, bodyBytes(op.body)))
+		})
+	}
+	if code := statusForToken(t, id, secret); code != http.StatusOK {
+		t.Errorf("client after the refused delete and reset: %d, want 200", code)
+	}
+}
+
 // TestE2E_Clients_IDOutsideGrammar_400 asserts that DELETE and PUT .../secret
 // answer 400 BAD_REQUEST for a path id outside the client-id grammar.
 func TestE2E_Clients_IDOutsideGrammar_400(t *testing.T) {

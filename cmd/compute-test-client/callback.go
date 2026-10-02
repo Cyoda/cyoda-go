@@ -131,7 +131,7 @@ func (c *callbackClient) do(ctx context.Context, method, path, body, txToken, if
 	}
 	bearer, err := c.token()
 	if err != nil {
-		return cbResult{}, fmt.Errorf("callback bearer: %w", err)
+		return cbResult{}, fmt.Errorf("failed to get a callback bearer: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")

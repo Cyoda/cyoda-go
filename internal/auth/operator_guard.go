@@ -32,12 +32,16 @@ func MockOperatorGuard() OperatorGuard { return OperatorGuard{anyTenant: true} }
 
 // Require reports whether the caller is a platform operator. Otherwise it
 // writes 401 UNAUTHORIZED (no UserContext: the auth middleware was bypassed)
-// or 403 FORBIDDEN, and returns false.
+// or 403 FORBIDDEN, and returns false. An on-behalf-of principal is refused
+// in every mode.
 func (g OperatorGuard) Require(w http.ResponseWriter, r *http.Request) bool {
 	uc := spi.GetUserContext(r.Context())
 	if uc == nil {
 		common.WriteError(w, r, common.Operational(
 			http.StatusUnauthorized, common.ErrCodeUnauthorized, "authentication failed"))
+		return false
+	}
+	if refuseOnBehalfOf(w, r, uc) {
 		return false
 	}
 	if !spi.HasRole(uc.Roles, "ROLE_ADMIN") || (!g.anyTenant && uc.Tenant.ID != PlatformTenantID) {

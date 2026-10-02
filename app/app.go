@@ -679,8 +679,9 @@ func New(cfg Config) *App {
 	// proxy reports a client hang-up, so proxied disconnects stay silent.
 	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
 
-	// gRPC server — uses inner handler (without context path prefix)
-	a.grpcServer = internalgrpc.NewServer(a.authService, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
+	// gRPC server — uses inner handler (without context path prefix). The
+	// client store is nil in mock IAM mode, so no member stream is re-checked.
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
 
 	return a
 }

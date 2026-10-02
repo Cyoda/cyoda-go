@@ -1842,7 +1842,7 @@ Two modes, selected via `CYODA_IAM_MODE`:
 
 `mockiam.NewAuthenticationService(defaultUser)` -- returns a fixed `UserContext` for every request. Used for development and testing.
 
-Default mock user: `mock-user-001`, tenant `mock-tenant`, roles `[ROLE_ADMIN, ROLE_M2M]` (override via `CYODA_IAM_MOCK_ROLES`). The defaults grant admin HTTP access and gRPC streaming (which requires `ROLE_M2M`).
+Default mock user: `mock-user-001`, kind `service` (override via `CYODA_IAM_MOCK_KIND`), tenant `mock-tenant`, roles `[ROLE_ADMIN, ROLE_M2M]` (override via `CYODA_IAM_MOCK_ROLES`). The context carries a client-token marker. The defaults grant admin HTTP access and gRPC streaming. Mock mode has no client store, so an open stream is not re-checked.
 
 ### 7.2 JWT Mode
 
@@ -1924,7 +1924,7 @@ The `<tenantID>` half is a **canonical lowercase UUID**, and the adapter — the
 
 ### 7.4 Authorization
 
-Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint enforces `ROLE_M2M` for calculation members.
+Currently `mockiam.NewAuthorizationService()` -- a permissive stub. The gRPC streaming endpoint admits only a compute node's own client-credentials token: kind `service`, `ROLE_M2M`, no `Executor`, and the client-token marker; anything else is `PermissionDenied`. Every 60 s an open stream reads its client through `M2MClientStore.Lookup` and closes with `Unauthenticated` when the client is gone, in another tenant, or its `SecretGen` differs from the marker's, and with `Unavailable` when the store cannot be read. `RequireAdmin` and the operator guard refuse any principal with an `Executor` (an on-behalf-of token) with `403 FORBIDDEN`.
 
 ### 7.5 Admin listener authentication
 

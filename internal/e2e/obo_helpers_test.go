@@ -251,3 +251,21 @@ func assertOAuthErrorDesc(t *testing.T, resp *http.Response, wantStatus int, wan
 		t.Fatalf("content-type %q, want application/json", resp.Header.Get("Content-Type"))
 	}
 }
+
+// assertOBORefusedAdmin checks the 403 FORBIDDEN an on-behalf-of token gets
+// on an administration route, with the detail that names the refusal, which
+// tells it apart from the 403 a principal without ROLE_ADMIN gets.
+func assertOBORefusedAdmin(t *testing.T, resp *http.Response) {
+	t.Helper()
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("on-behalf-of token: %d, want 403: %s", resp.StatusCode, withheld(resp.StatusCode, raw))
+	}
+	if code := problemErrorCode(string(raw)); code != "FORBIDDEN" {
+		t.Errorf("errorCode %q, want FORBIDDEN: %s", code, raw)
+	}
+	if d := problemDetail(t, string(raw)); !strings.Contains(d, "on-behalf-of tokens cannot administer") {
+		t.Errorf("detail %q, want it to name on-behalf-of tokens", d)
+	}
+}

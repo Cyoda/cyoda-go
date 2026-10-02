@@ -11,6 +11,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
@@ -24,6 +25,7 @@ type CloudEventsServiceImpl struct {
 	cyodapb.UnimplementedCloudEventsServiceServer
 	registry          *MemberRegistry
 	authSvc           contract.AuthenticationService
+	m2mStore          auth.M2MClientStore // nil in mock IAM mode: no client re-check
 	txMgr             spi.TransactionManager
 	entityHandler     *entity.Handler
 	modelHandler      *model.Handler
@@ -52,6 +54,8 @@ type KeepAliveConfig struct {
 // NewServer creates a new gRPC server with auth interceptors and the
 // CloudEventsService registered. When otelEnabled is true, OTel tracing
 // is added via a stats handler before the auth interceptors.
+// m2mStore is the client store every member stream re-checks its client
+// against; nil in mock IAM mode, where no stream is re-checked.
 // j is the join layer: the tx-route interceptor hands it every request that
 // carries a pass, and it joins the transaction, refuses a pass that no longer
 // names the callout that compute node holds, and holds the transaction's lock
@@ -66,6 +70,7 @@ type KeepAliveConfig struct {
 // tests that don't care about health-flag observation.
 func NewServer(
 	authSvc contract.AuthenticationService,
+	m2mStore auth.M2MClientStore,
 	registry *MemberRegistry,
 	txMgr spi.TransactionManager,
 	entityHandler *entity.Handler,
@@ -120,6 +125,7 @@ func NewServer(
 	svc := &CloudEventsServiceImpl{
 		registry:          registry,
 		authSvc:           authSvc,
+		m2mStore:          m2mStore,
 		txMgr:             txMgr,
 		entityHandler:     entityHandler,
 		modelHandler:      modelHandler,

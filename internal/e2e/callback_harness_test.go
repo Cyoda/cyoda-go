@@ -896,6 +896,9 @@ type computeMember struct {
 	ctx    context.Context // ends when the cnode stops or closes its stream
 	cancel context.CancelFunc
 	done   chan struct{}
+	// endErr is the error the stream's Recv ended with. Written by the
+	// receive loop before done closes; read it only after done is closed.
+	endErr error
 
 	// sendMu serialises stream.Send — gRPC bidi streams are not safe for
 	// concurrent Send, and calc requests are handled on concurrent goroutines
@@ -968,6 +971,7 @@ func newComputeMember(t *testing.T, h *callbackHarness, spec memberSpec) *comput
 		for {
 			ce, err := stream.Recv()
 			if err != nil {
+				m.endErr = err
 				return // stream closed / context cancelled
 			}
 			evtType, payload, perr := internalgrpc.ParseCloudEvent(ce)

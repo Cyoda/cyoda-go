@@ -53,6 +53,17 @@ func TestPlatformOperator_TenantAdmin_403(t *testing.T) {
 	}
 }
 
+// TestPlatformOperator_OBOToken_403: an on-behalf-of token is refused on every
+// operator route, with the refusal that names on-behalf-of tokens.
+func TestPlatformOperator_OBOToken_403(t *testing.T) {
+	obo := oboToken(t, "mallory")
+	for _, ep := range operatorEndpoints() {
+		t.Run(ep.name, func(t *testing.T) {
+			assertOBORefusedAdmin(t, requestAs(t, obo, ep.method, ep.path, bodyBytes(ep.body)))
+		})
+	}
+}
+
 func TestPlatformOperator_PlatformWithoutAdmin_403(t *testing.T) {
 	tok, err := platformTokenRaw("ROLE_M2M")
 	if err != nil {

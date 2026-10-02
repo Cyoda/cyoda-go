@@ -24,6 +24,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -440,13 +441,19 @@ func (m *recoveryTrackingTxMgr) openTxIDs() []string {
 // fixedAuthService is a contract.AuthenticationService test double that
 // authenticates any request as the same fixed principal, regardless of the
 // bearer token presented. Real JWT validation is exercised elsewhere
-// (internal/auth); this test is only about panic recovery.
+// (internal/auth); this test is only about panic recovery. A principal of
+// kind service is authenticated as a client token, with the client-token
+// marker a member stream requires.
 type fixedAuthService struct {
 	uc *spi.UserContext
 }
 
 func (a *fixedAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
-	return spi.WithUserContext(ctx, a.uc), nil
+	ctx = spi.WithUserContext(ctx, a.uc)
+	if a.uc.Kind == spi.PrincipalService {
+		ctx = contract.WithClientToken(ctx, contract.ClientToken{ClientID: a.uc.UserID, Gen: 1})
+	}
+	return ctx, nil
 }
 
 // startRecoveryTestServer builds a real, network-listening gRPC server wired
@@ -490,8 +497,9 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 		UserID:   "recovery-test-user",
 		UserName: "Recovery Test",
 		Tenant:   spi.Tenant{ID: "recovery-tenant", Name: "Recovery Tenant"},
-		// ROLE_M2M in addition to ADMIN: the member stream refuses a principal
-		// without it, and the keep-alive tests join over this same fixture.
+		// A client token with ROLE_M2M: the member stream refuses any other
+		// principal, and the keep-alive tests join over this same fixture.
+		Kind:  spi.PrincipalService,
 		Roles: []string{"ADMIN", "ROLE_M2M"},
 	}
 	authSvc := &fixedAuthService{uc: uc}
@@ -502,7 +510,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	}
 
 	registry := NewMemberRegistry()
-	srv := NewServer(authSvc, registry, tracker, entityHandler, modelHandler, searchSvc,
+	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
 		false, 0, true, healthFlag, ka)
 

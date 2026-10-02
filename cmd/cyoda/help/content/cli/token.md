@@ -27,7 +27,7 @@ Whoever holds the signing key can already sign any first-party token cyoda-go ac
 
 The token names a person: `sub` and `caas_user_id` are `--user`, `caas_org_id` is `--tenant`, the roles are in `user_roles`. It carries `iss` from `CYODA_JWT_ISSUER` and, when `CYODA_JWT_AUDIENCE` is set, `aud`.
 
-The token serves HTTP calls and unary gRPC calls. With the default roles it does not open a compute-node stream: that needs `ROLE_M2M`. A compute node should use an M2M client, which can fetch new tokens itself.
+The token serves HTTP calls and unary gRPC calls. It never opens a compute-node stream, whatever its roles: a stream opens only with an M2M client's own `client_credentials` token. A compute node uses an M2M client, which can fetch new tokens itself.
 
 The key-pair endpoints, OIDC reload and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
 

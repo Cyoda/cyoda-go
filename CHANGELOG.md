@@ -6,6 +6,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **A compute node must connect with its own client-credentials token (kind
+  service, `ROLE_M2M`); an on-behalf-of token cannot open a stream or
+  administer. A stream closes within a minute after its client is deleted or
+  its secret reset.** `startStreaming` with any other token — an on-behalf-of
+  token, a `cyoda token`, a token without `ROLE_M2M` — is
+  `codes.PermissionDenied`. Every 60 s an open stream reads its client and
+  closes with `codes.Unauthenticated` when the client is gone or its secret
+  generation changed, and with `codes.Unavailable` when the client store
+  cannot be read; the opening token's expiry does not end a stream. The
+  tenant admin routes (`/clients*`, `/oauth/keys/trusted*`) and the platform
+  operator routes answer an on-behalf-of token with `403 FORBIDDEN`
+  ("on-behalf-of tokens cannot administer"), whatever its roles.
+
 - **`POST /oauth/token`: the token exchange is for on-behalf-of clients only
   and client credentials for the others (`400 unauthorized_client`); exchange
   failures answer `invalid_request` (was `invalid_grant`); the assertion must
@@ -821,6 +834,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   be told apart. See `cyoda help audit`.
 
 ### Changed
+
+- The compute test client (`cmd/compute-test-client`) authenticates with
+  `CYODA_COMPUTE_CLIENT_ID` / `CYODA_COMPUTE_CLIENT_SECRET` (the
+  `client_credentials` grant, refreshing its token before it expires)
+  instead of `CYODA_COMPUTE_TOKEN`.
 
 - `POST /oauth/token` bounds concurrent secret checks per node
   (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the number of CPUs

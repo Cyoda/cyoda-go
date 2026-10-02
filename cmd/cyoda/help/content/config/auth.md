@@ -394,11 +394,12 @@ never by reactivation. None of this ends an open stream (see below).
   token of another tenant* under *A leaked platform admin-client secret*
   below.
 
-Revoking a key pair, or invalidating or deleting an OIDC provider, ends no
-open connection. A compute-node gRPC stream is authenticated only when it
-opens, so a stream opened with the leaked token (it needs `ROLE_M2M`, which
-an OIDC token can carry too) keeps running: restart every node to end open
-streams. On the memory backend a restart loses all data, an invalidation
+Revoking a key pair ends no open connection. A compute-node gRPC stream opens only with an M2M client's
+own `client_credentials` token, and after that it checks its client, not its
+token: once a minute it closes if the client was deleted or its secret
+reset. So a stream opened with a token the leaked key signed keeps running
+while the client it names stands: reset that client's secret, or restart
+every node to end open streams. On the memory backend a restart loses all data, an invalidation
 of the bootstrap key included: if you revoked the bootstrap key, give every
 node a new `CYODA_JWT_SIGNING_KEY` at that restart.
 
@@ -556,9 +557,10 @@ block until step 6.
   `<name>` is the chart's StatefulSet and `<n>` the pod's ordinal.
 - Once the block is in place, restart every node (on the memory backend,
   see above). A block can leave connections to the nodes running, and a
-  gRPC stream is authenticated only when it opens, so it outlives any
-  change to keys or clients. The restart ends every connection and
-  stream.
+  gRPC stream is authenticated when it opens and afterwards checks only
+  that its client stands, so it outlives any change to keys and runs for
+  up to a minute after its client is deleted or its secret reset. The
+  restart ends every connection and stream.
 
 **2. Get in** with a platform-operator token: `cyoda token --tenant
 PLATFORM` while the bootstrap key verifies, an unexpired operator token
