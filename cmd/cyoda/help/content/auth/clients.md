@@ -123,7 +123,7 @@ Response (`200 OK`):
 }
 ```
 
-Deletion stops new token issuance at once on every node. Tokens the client already holds remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS` (300 s by default): a request is not checked against the client store. A compute-node stream opened with the client's token closes within a minute (see `grpc`).
+Deletion stops new token issuance at once on every node. Tokens the client already holds remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS` (300 s by default): a request is not checked against the client store. A compute-node stream opened with the client's token closes within a minute, and the client's tokens can no longer open one (see `grpc`).
 
 ### Reset a client secret
 
@@ -134,7 +134,7 @@ curl -X PUT https://cyoda.example.com/api/clients/${CLIENT_ID}/secret \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation, carrying the new `client_secret`. Capture it before the connection closes. Existing JWTs minted with the previous secret remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS`; only new `/oauth/token` requests need the new secret. A compute-node stream opened with a token issued before the reset closes within a minute, because the reset changes the client's secret generation (`cgen`, see `auth.tokens`).
+Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation, carrying the new `client_secret`. Capture it before the connection closes. Existing JWTs minted with the previous secret remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS`; only new `/oauth/token` requests need the new secret. A compute-node stream opened with a token issued before the reset closes within a minute, and such a token can no longer open one, because the reset changes the client's secret generation (`cgen`, see `auth.tokens`).
 
 ## TOKEN
 

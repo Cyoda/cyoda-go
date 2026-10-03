@@ -331,11 +331,16 @@ A job keeps the submitting request's `UserContext`, executor included.
 ## 8. Compute streams
 
 - Guard: §5.4.
-- Every 60 s (constant), the stream reads its client from the store by the
+- Once when the stream opens, before the member is registered, and then
+  every 60 s (constant), the stream reads its client from the store by the
   marker's client id (new `M2MClientStore.Lookup(clientID)`: record without
-  secret check). It closes with `Unauthenticated` when the client is absent,
-  its tenant differs from the stream's, or its `SecretGen` differs from the
-  marker's `cgen`. A store error closes the stream with `Unavailable`.
+  secret check). It refuses or closes the stream with `Unauthenticated` when
+  the client is absent, its tenant differs from the stream's, or its
+  `SecretGen` differs from the marker's `cgen`. A store error refuses or
+  closes the stream with `Unavailable`. A refused stream registers no member
+  and logs no join.
+- Each read is bounded by the 60 s interval; a read that does not answer in
+  time is a store error (`Unavailable`).
 - Mock mode has no client store; the re-check does not run.
 
 ## 9. Removals
@@ -487,8 +492,10 @@ other member of the request is dropped.
 |---|---|
 | no or invalid token | `Unauthenticated` |
 | not kind service, no `ROLE_M2M`, an OBO token, or no client-token marker | `PermissionDenied` |
+| check at open: client gone, tenant differs, generation changed | stream refused, `Unauthenticated` |
+| check at open: store error or read past its deadline | stream refused, `Unavailable` |
 | re-check: client gone, tenant differs, generation changed | stream closed, `Unauthenticated` |
-| re-check: store error | stream closed, `Unavailable` |
+| re-check: store error or read past its deadline | stream closed, `Unavailable` |
 
 ## 13. Test coverage matrix
 

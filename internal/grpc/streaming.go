@@ -22,8 +22,9 @@ import (
 )
 
 // clientRecheckInterval is how often a stream re-reads its client from the
-// store. A stream outlives the token that opened it, so this bounds how long
-// a deleted client, or one whose secret was reset, keeps a stream open.
+// store, and the deadline of each read. A stream outlives the token that
+// opened it, so this bounds how long a deleted client, or one whose secret
+// was reset, keeps a stream open.
 const clientRecheckInterval = 60 * time.Second
 
 // StartStreaming implements the bidirectional streaming RPC for calculation
@@ -71,7 +72,17 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
-	// 5. Build the greet and register. Register publishes the member and
+	// 5. Check the client once before the member exists: a client deleted or
+	// reset since its token was issued never joins. Mock mode has no client
+	// store and no check.
+	if s.m2mStore != nil {
+		if err := s.recheckClient(ctx, ct, tenantID); err != nil {
+			slog.Info("member stream refused by client check", "pkg", "grpc", "clientId", ct.ClientID, "reason", err)
+			return err
+		}
+	}
+
+	// 6. Build the greet and register. Register publishes the member and
 	// then starts its writer with the greet as the first event on the wire,
 	// so the member is already visible when the client holds the greet, and
 	// a dispatch routed the instant the member is visible still queues
@@ -94,7 +105,7 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	defer s.registry.Unregister(member)
 	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
 
-	// 6. Keep-alive loop and receive goroutine. Both evict the member to end
+	// 7. Keep-alive loop and receive goroutine. Both evict the member to end
 	// the stream; neither ever blocks on it.
 	kaCtx, kaCancel := context.WithCancel(ctx)
 	defer kaCancel()
@@ -105,7 +116,7 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	recvCh := make(chan *cepb.CloudEvent)
 	go s.receiveLoop(stream, member, recvCh)
 
-	// 7. Main loop. Eviction — by keep-alive timeout, write stall, send
+	// 8. Main loop. Eviction — by keep-alive timeout, write stall, send
 	// failure, client close, or a contained panic — is the only exit.
 	// Returning is what makes grpc-go cancel the stream and unblock a raw
 	// send stuck in the HTTP/2 write window.
@@ -167,8 +178,9 @@ func streamPrincipal(ctx context.Context) (*spi.UserContext, contract.ClientToke
 }
 
 // clientRecheckLoop re-reads the stream's client every clientRecheckInterval
-// and evicts the member the first time recheckClient refuses it. It checks
-// the client only: the opening token's expiry does not end a stream.
+// after the check at open, and evicts the member the first time
+// recheckClient refuses it. It checks the client only: the opening token's
+// expiry does not end a stream.
 func (s *CloudEventsServiceImpl) clientRecheckLoop(ctx context.Context, member *Member, ct contract.ClientToken, tenant spi.TenantID) {
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -198,9 +210,13 @@ func (s *CloudEventsServiceImpl) clientRecheckLoop(ctx context.Context, member *
 
 // recheckClient reports whether the stream's client still stands: nil if so,
 // status Unauthenticated if the client is gone, in another tenant or its
-// secret was reset, status Unavailable if the store cannot be read.
+// secret was reset, status Unavailable if the store cannot be read. The read
+// is bounded by clientRecheckInterval: a read that does not answer in time is
+// a store that cannot be read.
 func (s *CloudEventsServiceImpl) recheckClient(ctx context.Context, ct contract.ClientToken, tenant spi.TenantID) error {
-	c, err := s.m2mStore.Lookup(ctx, ct.ClientID)
+	readCtx, cancel := context.WithTimeout(ctx, clientRecheckInterval)
+	defer cancel()
+	c, err := s.m2mStore.Lookup(readCtx, ct.ClientID)
 	if errors.Is(err, auth.ErrM2MClientNotFound) {
 		return status.Error(codes.Unauthenticated, "the client was deleted")
 	}

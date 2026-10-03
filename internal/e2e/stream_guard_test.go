@@ -4,7 +4,9 @@ package e2e_test
 //
 // Only a compute node's own client-credentials token opens a stream; an
 // on-behalf-of token, or a token without ROLE_M2M, is refused with
-// PermissionDenied. Every minute an open stream re-reads its client and
+// PermissionDenied. The client is read once before the member is registered,
+// and a token whose client is deleted or reset is refused with
+// Unauthenticated. Every minute an open stream re-reads its client and
 // closes with Unauthenticated once the client is deleted or its secret reset.
 //
 // Waiver: the "tenant differs" and "store error" re-check rows are covered by
@@ -142,6 +144,45 @@ func TestStream_SecretReset_ClosesUnauthenticated(t *testing.T) {
 	}
 	_ = resp.Body.Close() // the body holds the new secret: never read into a message
 	assertStreamEnds(t, m, codes.Unauthenticated)
+}
+
+// A token issued before its client was deleted, or before its secret was
+// reset, cannot open a stream: the client is checked once before the member
+// is registered, so the stream is refused at once with Unauthenticated
+// rather than greeted and closed by the first periodic re-check.
+func TestStream_StaleClientToken_RefusedAtOpen(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	for _, tc := range []struct {
+		name  string
+		stale func(t *testing.T, id string)
+	}{
+		{"client deleted", func(t *testing.T, id string) {
+			if code, body := h.deleteClient(t, h.token(t), id); code != http.StatusOK {
+				t.Fatalf("delete the client: %d %s", code, body)
+			}
+		}},
+		{"secret reset", func(t *testing.T, id string) {
+			resp := h.doAuthBearer(t, h.token(t), http.MethodPut, "/api/clients/"+id+"/secret", "", "")
+			if code := resp.StatusCode; code != http.StatusOK {
+				t.Fatalf("reset the client's secret: %d %s", code, h.readBody(t, resp))
+			}
+			_ = resp.Body.Close() // the body holds the new secret: never read into a message
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, raw := h.postClient(t, h.token(t))
+			if code != http.StatusOK {
+				t.Fatalf("create client: %d %s", code, withheld(code, raw))
+			}
+			cred := decodeCredential(t, "create client", raw)
+			deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
+			tok := h.fetchTokenFor(t, cred.id, cred.secret)
+			tc.stale(t, cred.id)
+			if got := openStreamCode(t, h, tok); got != codes.Unauthenticated {
+				t.Fatalf("stream opened with a stale client token: %v, want Unauthenticated", got)
+			}
+		})
+	}
 }
 
 // joinOwnClient creates a client on h, joins a compute member with that

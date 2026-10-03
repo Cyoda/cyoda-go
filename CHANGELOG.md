@@ -57,13 +57,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A compute node must connect with its own client-credentials token (kind
   service, `ROLE_M2M`); an on-behalf-of token cannot open a stream or
-  administer. A stream closes within a minute after its client is deleted or
-  its secret reset.** `startStreaming` with any other token — an on-behalf-of
+  administer. A token whose client is deleted or reset cannot open a stream,
+  and a stream closes within a minute after its client is deleted or its
+  secret reset.** `startStreaming` with any other token — an on-behalf-of
   token, a `cyoda token`, a token without `ROLE_M2M` — is
-  `codes.PermissionDenied`. Every 60 s an open stream reads its client and
-  closes with `codes.Unauthenticated` when the client is gone or its secret
-  generation changed, and with `codes.Unavailable` when the client store
-  cannot be read; the opening token's expiry does not end a stream. The
+  `codes.PermissionDenied`. A stream reads its client once before the member
+  joins and then every 60 s, and is refused or closed with
+  `codes.Unauthenticated` when the client is gone or its secret generation
+  changed, and with `codes.Unavailable` when the client store cannot be read
+  or the read does not answer within 60 s; the opening token's expiry does
+  not end a stream. The
   tenant admin routes (`/clients*`, `/oauth/keys/trusted*`) and the platform
   operator routes answer an on-behalf-of token with `403 FORBIDDEN`
   ("on-behalf-of tokens cannot administer"), whatever its roles.

@@ -75,8 +75,9 @@ life on both grants.
 - An OBO token never administers: client, trusted-key, key-pair and
   platform-operator operations answer it `403 FORBIDDEN` whatever its roles.
 - An OBO token never opens a compute stream (`PermissionDenied`). A stream
-  needs a client's own `client_credentials` token; it re-reads its client
-  every 60 s and closes when the client is gone or its secret was reset.
+  needs a client's own `client_credentials` token; it reads its client once
+  before the member joins and then every 60 s (each read bounded by 60 s),
+  and is refused or closed when the client is gone or its secret was reset.
 - An OBO request joins only a transaction begun for its own user: `403
   FORBIDDEN` over HTTP, the RPC's error envelope over gRPC.
 

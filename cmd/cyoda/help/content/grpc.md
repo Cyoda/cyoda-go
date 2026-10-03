@@ -542,7 +542,7 @@ A callout may be tried on more than one member. **Every try carries the same `re
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
-**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, every 60 seconds the stream reads its client from the store. It closes with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued, so a stream ends within a minute of `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret`. A compute node whose secret was reset reconnects with a token fetched with the new secret. When the store cannot be read the stream closes with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
+**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, the stream reads its client from the store once when it opens, before the member joins, and then every 60 seconds. It is refused, or closed, with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued: a token issued before `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret` cannot open a stream, and an open stream ends within a minute of either. A compute node whose secret was reset reconnects with a token fetched with the new secret. When the store cannot be read, or a read does not answer within 60 seconds, the stream is refused or closed with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
 
 In cluster mode each node tells its peers which tags its members serve, per tenant. A node tries its own matching members first and then hands the callout, with the tries that are left, to a peer that advertises the tag — see `cyoda help cluster`.
 
@@ -552,8 +552,8 @@ gRPC error codes returned by the service:
 
 - `codes.Unauthenticated` — missing or invalid `authorization` metadata
 - `codes.PermissionDenied` — `startStreaming` opened with a token that is not a compute node's own M2M client token (an on-behalf-of token, no `ROLE_M2M`, not a service principal); tenant mismatch on join
-- `codes.Unauthenticated` on an open stream — the client re-check found the stream's client deleted or its secret reset (see *Client re-check*)
-- `codes.Unavailable` on an open stream — the client re-check could not read the client store; the compute node reconnects
+- `codes.Unauthenticated` when a stream opens, or on an open stream — the client check found the stream's client deleted, in another tenant, or its secret reset (see *Client re-check*)
+- `codes.Unavailable` when a stream opens, or on an open stream — the client check could not read the client store, or the read did not answer within 60 seconds; the compute node reconnects
 - `codes.InvalidArgument` — first message is not `CalculationMemberJoinEvent`; malformed CloudEvent; invalid join payload
 - `codes.DeadlineExceeded` — member timed out (keep-alive timeout exceeded)
 - `codes.Internal` — server-side error constructing a response CloudEvent
