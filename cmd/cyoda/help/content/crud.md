@@ -383,7 +383,7 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 
 - `changeType`: `CREATE`, `UPDATE`, or `DELETE`
 - `user`: the attributed principal's id — who the change is for; `attributedKind`: its kind (`user`, `service` or `system`)
-- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns `user` only.
+- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns the same three fields in each change's `changeMeta`.
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity

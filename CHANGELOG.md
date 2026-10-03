@@ -663,6 +663,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **gRPC change history carries the attributed kind and the executor.**
+  `EntityChangesMetadataGetRequest` answers each change's `changeMeta` with
+  `attributedKind` and `executedBy` `{id, kind}`, as
+  `GET /entity/{entityId}/changes` does; both are absent on a change recorded
+  without attribution. The CloudEvents schema `common/EntityChangeMeta.json`
+  gains the two optional properties.
+
 - **`cyoda help auth integration`: the application integration guide.** Step
   by step for a backend acting for its users, background jobs, compute nodes
   and the tenant admin: the exact requests, claims and settings, the

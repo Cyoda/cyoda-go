@@ -381,8 +381,17 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 
 // Metadata about entity changes including transaction information and change type.
 type EntityChangeMetaJson struct {
+	// Kind of the attributed principal in user. Open value set; known values are
+	// user, service and system. Absent when the change recorded no attribution.
+	AttributedKind *string `json:"attributedKind,omitempty" yaml:"attributedKind,omitempty" mapstructure:"attributedKind,omitempty"`
+
 	// Type of change that was made to the entity.
 	ChangeType EntityChangeMetaJsonChangeType `json:"changeType" yaml:"changeType" mapstructure:"changeType"`
+
+	// The principal that executed the change, independent of attribution: for an
+	// on-behalf-of request, the on-behalf-of client. Absent when the change recorded
+	// no attribution.
+	ExecutedBy *EntityChangeMetaJsonExecutedBy `json:"executedBy,omitempty" yaml:"executedBy,omitempty" mapstructure:"executedBy,omitempty"`
 
 	// Number of fields changed in the entity for this change.
 	FieldsChangedCount *int `json:"fieldsChangedCount,omitempty" yaml:"fieldsChangedCount,omitempty" mapstructure:"fieldsChangedCount,omitempty"`
@@ -393,7 +402,7 @@ type EntityChangeMetaJson struct {
 	// UUID of the transaction that made this change.
 	TransactionID *string `json:"transactionId,omitempty" yaml:"transactionId,omitempty" mapstructure:"transactionId,omitempty"`
 
-	// User who made the change.
+	// User who made the change: the attributed principal.
 	User string `json:"user" yaml:"user" mapstructure:"user"`
 }
 
@@ -426,6 +435,39 @@ func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityChangeMetaJsonChangeType, v)
 	}
 	*j = EntityChangeMetaJsonChangeType(v)
+	return nil
+}
+
+// The principal that executed the change, independent of attribution: for an
+// on-behalf-of request, the on-behalf-of client. Absent when the change recorded
+// no attribution.
+type EntityChangeMetaJsonExecutedBy struct {
+	// Id of the executing principal.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Kind of the executing principal. Open value set; known values are user, service
+	// and system.
+	Kind string `json:"kind" yaml:"kind" mapstructure:"kind"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityChangeMetaJsonExecutedBy) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityChangeMetaJsonExecutedBy: required")
+	}
+	if _, ok := raw["kind"]; raw != nil && !ok {
+		return fmt.Errorf("field kind in EntityChangeMetaJsonExecutedBy: required")
+	}
+	type Plain EntityChangeMetaJsonExecutedBy
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityChangeMetaJsonExecutedBy(plain)
 	return nil
 }
 

@@ -3,19 +3,23 @@ package e2e_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 	"time"
 
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
+	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
 // grpc_attribution_test.go — on-behalf-of attribution and the own-user join
 // rule through the gRPC door (EntityManage): an OBO create records the user
-// and the OBO client; a compute write-back joined to the user's transaction
-// records the user and the compute client; an OBO create that arms a
+// and the OBO client, read back over HTTP and over the gRPC change history;
+// a compute write-back joined to the user's transaction records the user and
+// the compute client; an OBO create that arms a
 // scheduled transition stamps ScheduledTask.ArmedBy with the OBO user, both
 // directly and when the OBO callback joins its own transaction; an OBO
 // callback joining another user's transaction is refused through the RPC's
@@ -77,6 +81,68 @@ func TestGRPCAttribution_OBOWrite(t *testing.T) {
 		t.Fatalf("EntityManage create as alice (OBO): %s %v", describeEnv(env), err)
 	}
 	assertAttribution(t, findChangeByType(h.getChanges(t, id), "CREATE"), "gRPC OBO write", "alice", "user", "service", oboClientOf(t, alice))
+
+	// The gRPC change history carries the same attribution as the HTTP one.
+	var created *events.EntityChangeMetaJson
+	for _, m := range h.getChangesGRPC(t, h.token(t), id) {
+		if m.ChangeType == events.EntityChangeMetaJsonChangeTypeCREATE {
+			created = &m
+			break
+		}
+	}
+	if created == nil {
+		t.Fatal("gRPC change history: no CREATE entry")
+	}
+	if created.User != "alice" {
+		t.Errorf("gRPC change history: user = %q, want alice", created.User)
+	}
+	if created.AttributedKind == nil || *created.AttributedKind != "user" {
+		t.Errorf("gRPC change history: attributedKind = %v, want user", created.AttributedKind)
+	}
+	want := events.EntityChangeMetaJsonExecutedBy{ID: oboClientOf(t, alice), Kind: "service"}
+	if created.ExecutedBy == nil || *created.ExecutedBy != want {
+		t.Errorf("gRPC change history: executedBy = %+v, want %+v", created.ExecutedBy, want)
+	}
+}
+
+// getChangesGRPC reads an entity's change history over the gRPC door
+// (EntitySearchCollection, EntityChangesMetadataGetRequest) under bearer and
+// returns the entries newest first.
+func (h *callbackHarness) getChangesGRPC(t *testing.T, bearer, entityID string) []events.EntityChangeMetaJson {
+	t.Helper()
+	reqCE, err := internalgrpc.NewCloudEvent(internalgrpc.EntityChangesMetadataGetRequest, map[string]any{
+		"id":       "grpc-attribution-changes",
+		"entityId": entityID,
+	})
+	if err != nil {
+		t.Fatalf("build changes request: %v", err)
+	}
+	stream, err := cyodapb.NewCloudEventsServiceClient(h.apiConn).EntitySearchCollection(h.grpcCtxAs(bearer, ""), reqCE)
+	if err != nil {
+		t.Fatalf("EntitySearchCollection (changes): %v", err)
+	}
+	var out []events.EntityChangeMetaJson
+	for {
+		ce, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return out
+		}
+		if err != nil {
+			t.Fatalf("receive changes: %v", err)
+		}
+		_, raw, err := internalgrpc.ParseCloudEvent(ce)
+		if err != nil {
+			t.Fatalf("parse changes response: %v", err)
+		}
+		var resp events.EntityChangesMetadataResponseJson
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			t.Fatalf("decode changes response: %v: %s", err, raw)
+		}
+		if !resp.Success {
+			t.Fatalf("changes response success=false: %s", raw)
+		}
+		out = append(out, resp.ChangeMeta)
+	}
 }
 
 // TestGRPCAttribution_OBOWriteBack: alice's on-behalf-of token creates X; X's

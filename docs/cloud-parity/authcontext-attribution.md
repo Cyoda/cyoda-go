@@ -79,6 +79,18 @@ claims, a `system` or `user` executor, an absent or unrecognized
   `executedBy` entirely (never emitted as JSON `null`); `user` renders as
   today.
 
+The gRPC door carries the same pair. The CloudEvents schema
+`common/EntityChangeMeta.json` (the `changeMeta` of every
+`EntityChangesMetadataResponse` to an `EntityChangesMetadataGetRequest`) has
+two optional properties:
+
+- `attributedKind` — string, open value set (`user`/`service`/`system`).
+- `executedBy` — object `{id, kind}`, both strings and both required when
+  the object is present; `kind` is an open value set like `attributedKind`.
+
+Each is present exactly when the HTTP read returns it, and absent otherwise.
+`user` stays required and unchanged.
+
 ## 2a. Attributed/executor pair on edge messages
 
 `POST /message/new/{subject}` no longer reads a caller-supplied sender
@@ -144,7 +156,9 @@ Emit `authtype`/`authid` (attributed), `authexectype`/`authexecid`
 the dispatching node and forwarded unchanged (including the
 `service_account` → `service` rename and the fail-loud behaviour on a
 missing id or an unset kind); surface `attributedKind`/`executedBy` on
-change-history reads per §2 and on edge messages per §2a; and implement the
+change-history reads per §2 — over HTTP and in the gRPC `EntityChangeMeta`,
+whose two new schema properties Cloud's generated types must add — and on
+edge messages per §2a; and implement the
 attribution paths in §3 identically — on-behalf-of attribution and its join
 rule, cascade origin propagation, durable scheduled-arming attribution, and
 the CBD-detached handover boundary. Tracked with

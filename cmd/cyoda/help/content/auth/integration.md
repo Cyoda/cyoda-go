@@ -260,7 +260,7 @@ Go compute nodes can use the public package `github.com/cyoda-platform/cyoda-go/
 
 ## WHAT CYODA RECORDS
 
-- Entity change history, `GET /entity/{entityId}/changes`: `user` (the attributed id), `attributedKind`, and `executedBy {id, kind}`. Over gRPC, `EntityChangesMetadataGetRequest` returns `user` only.
+- Entity change history, `GET /entity/{entityId}/changes`: `user` (the attributed id), `attributedKind`, and `executedBy {id, kind}`. Over gRPC, `EntityChangesMetadataGetRequest` returns the same three fields in each change's `changeMeta`.
 - Audit events, `GET /audit/entity/{entityId}`: `actor {id, name, kind, legalId}` and `executedBy {id, kind}`, for entity changes and state-machine events. `actor.name` repeats `actor.id`: cyoda has no display names, and an assertion cannot set one. `externalId` is never set.
 - Messages, `GET /message/{messageId}`: `userId`, `attributedKind` and `executedBy`.
 - Async search jobs belong to the tenant, not to the user: any principal of the tenant that knows a job id can read its results.

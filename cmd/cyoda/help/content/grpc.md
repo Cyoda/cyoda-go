@@ -532,9 +532,12 @@ principal), `ExecutorType`/`ExecutorID` (the executor) and `Roles`.
 executor is a `service` and `role` is in `authclaims`. The attributed principal
 plays no part in it, so a scheduled fire (executor `system`) never passes.
 
-`EntityChangesMetadataGetRequest` returns each change's `user` (the attributed
-id) only; `GET /api/entity/{entityId}/changes` also returns its kind and the
-executor (see `cyoda help crud`).
+`EntityChangesMetadataGetRequest` returns, in each change's `changeMeta`, the
+same attribution as `GET /api/entity/{entityId}/changes` (see
+`cyoda help crud`): `user` (the attributed id), `attributedKind` (its kind) and
+`executedBy` `{id, kind}` (the executor). `attributedKind` and `executedBy` are
+absent on a change recorded without attribution. The schema is
+`common/EntityChangeMeta.json` (`cyoda help cloudevents json`).
 
 ## KEEPALIVE
 
