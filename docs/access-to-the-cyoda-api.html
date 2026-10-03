@@ -84,6 +84,14 @@ th,td{text-align:left;vertical-align:top;padding:10px 14px;border-bottom:1px sol
 th{font-family:var(--cond);font-weight:600;font-size:14px;color:var(--ink-2)}
 tr:last-child td{border-bottom:0}
 td:first-child{font-weight:500;width:24%}
+pre{margin:0;background:var(--surface);border:1px solid var(--rule);border-radius:8px;padding:12px 14px;overflow-x:auto;font-family:var(--mono);font-size:12.5px;line-height:1.5}
+pre code{font-size:inherit}
+.ref h3{margin-top:6px}
+.ref ul{margin:0;padding-left:22px;display:grid;gap:6px}
+.toc{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:14px}
+.toc a{color:var(--req);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+.note{color:var(--ink-2);font-size:14px}
 /* svg */
 .lane-bg-a{fill:var(--lane-a)} .lane-bg-b{fill:var(--lane-b)}
 .lane-title{font:600 13.5px var(--cond);fill:var(--ink)}
@@ -115,6 +123,10 @@ td:first-child{font-weight:500;width:24%}
       <div class="flow" aria-label="Client flow"><b>Client</b><span>client id + secret</span><i>→</i><span>client_credentials</span><i>→</i><span>cyoda token for the client</span><i>→</i><span>API</span></div>
       <div class="flow" aria-label="On-behalf-of flow"><b>For a user</b><span>app authorizes the action</span><i>→</i><span>app signs an assertion for the user</span><i>→</i><span>client exchanges it</span><i>→</i><span>cyoda token: client's rights, user's identity</span><i>→</i><span>API</span></div>
     </div>
+    <p>This page is the integration guide for application teams. The same guide, with every exact request, is the help topic <code>cyoda help auth integration</code>; the reference topics are <code>cyoda help auth tokens</code>, <code>auth clients</code>, <code>auth trusted-keys</code>, <code>grpc</code>, <code>audit</code> and <code>config auth</code>.</p>
+    <nav class="toc" aria-label="Contents">
+      <a href="#scenario">Scenarios</a><a href="#bound-h">Responsibilities</a><a href="#terms-h">Terms</a><a href="#steps-h">Integrate, step by step</a><a href="#ex-h">The token exchange</a><a href="#rec-h">What is recorded</a><a href="#ident-h">Identity in a compute node</a><a href="#err-h">Errors and retries</a><a href="#life-h">Lifetime and revocation</a><a href="#rot-h">Rotation</a><a href="#inc-h">Incidents</a><a href="#app-h">Rules for the application</a><a href="#local-h">Running it locally</a><a href="#move-h">Moving from OIDC</a>
+    </nav>
   </header>
 
   <div class="legend" aria-label="Legend">
@@ -138,7 +150,7 @@ td:first-child{font-weight:500;width:24%}
           <tr><td>Who the user is</td><td>The application, with any sign-in method it chooses.</td></tr>
           <tr><td>What the user may do</td><td>The application, before it acts for the user. cyoda-go has no per-user permissions.</td></tr>
           <tr><td>Which tenant a request acts in</td><td>cyoda-go: always the client's own tenant. No request can name another; only a platform operator's <code>cyoda token</code>, signed offline with the signing key, names its tenant.</td></tr>
-          <tr><td>What the client may do</td><td>cyoda-go, from the client's roles and permissions: data access (<code>ROLE_M2M</code>), tenant administration (<code>ROLE_ADMIN</code>), joining as a compute node, acting for users.</td></tr>
+          <tr><td>What the client may do</td><td>cyoda-go, from three things only. <code>ROLE_M2M</code> reaches every data operation of the client's tenant (every entity, model and workflow import included), and lets a client's own token open a compute-node stream with any tags. <code>ROLE_ADMIN</code> adds the tenant's client and trusted-key administration. The on-behalf-of permission makes a client one that only exchanges user assertions. There is no finer split: treat every client secret as access to all of the tenant's data.</td></tr>
           <tr><td>Rules inside a workflow that need the user</td><td>The application's processors and criteria, which receive the user and the client with each callout, for example to keep the submitter of a request from approving it.</td></tr>
         </tbody>
       </table>
@@ -160,9 +172,70 @@ td:first-child{font-weight:500;width:24%}
           <tr><td>Attributed user</td><td>Who a change is for: the user named in an OBO token; for a compute node's write-back, the user of the transaction it joined; otherwise the caller. Shown as <code>actor</code> in audit events.</td></tr>
           <tr><td>Executor</td><td>Who actually made a change: the M2M client whose token made the call, <code>system</code> for a scheduled firing, or the operator's user for a <code>cyoda token</code>. Shown as <code>executedBy</code>.</td></tr>
           <tr><td>Platform operator</td><td><code>ROLE_ADMIN</code> in the tenant <code>PLATFORM</code>. Manages signing keys and node-wide settings. Whoever holds <code>CYODA_JWT_SIGNING_KEY</code> can sign a token for any tenant with <code>cyoda token</code>.</td></tr>
+          <tr><td>Legal entity, <code>legalId</code>, <code>joinedLegalEntityId</code></td><td>cyoda's API name for a tenant; each holds a tenant id.</td></tr>
+          <tr><td><code>caas_*</code> claims</td><td>"Cyoda as a Service": <code>caas_org_id</code> is the tenant, <code>caas_user_id</code> the principal's id, <code>caas_tier</code> a tier label (always <code>unlimited</code> in cyoda-go). cyoda-go and Cyoda Cloud share this token format.</td></tr>
+          <tr><td>Principal, kind</td><td>Whoever a request runs as. Its kind is <code>user</code> (a person), <code>service</code> (an M2M client acting as itself: a service principal) or <code>system</code> (cyoda itself, for scheduled firings).</td></tr>
+          <tr><td><code>kid</code>, JWK</td><td><code>kid</code> is the JWT header field that names the signing key. A JWK (RFC 7517) is a public key written as JSON; RFC 7518 defines its RSA members and <code>RS256</code>.</td></tr>
+          <tr><td><code>act</code>, <code>cgen</code></td><td><code>act</code> is the claim in an OBO token that names the acting client. <code>cgen</code> is the client's secret generation in a <code>client_credentials</code> token; a compute-node stream uses it to notice a secret reset.</td></tr>
+          <tr><td>Callout, callback</td><td>A callout is a request cyoda sends to a compute node (run a processor, evaluate a criterion, compute a function). A callback is an API request the compute node makes while it handles one.</td></tr>
+          <tr><td>Transaction token (pass), joined transaction</td><td>The token a callout carries (<code>cyodatxtoken</code>). A callback that echoes it (<code>X-Tx-Token</code> header, <code>tx-token</code> metadata) runs in the callout's transaction: the joined transaction. Some reference topics call the token a pass.</td></tr>
+          <tr><td>Transaction origin</td><td>The principal recorded when a transaction began: the attributed principal of the request that began it.</td></tr>
+          <tr><td>Cascade</td><td>The further transitions, processors and criteria a request sets off inside cyoda; they carry the identity of that request.</td></tr>
+          <tr><td>Commit-before-dispatch</td><td>A processor mode that commits the work so far before calling the compute node. With <code>startNewTxOnDispatch: false</code> its callout carries no transaction token.</td></tr>
+          <tr><td>CloudEvents Auth Context</td><td>A CloudEvents extension naming the principal behind an event. cyoda attaches <code>authtype</code>, <code>authid</code>, <code>authclaims</code> from it, with the kind <code>service</code> where the extension's list says <code>service_account</code>, plus its own <code>authexectype</code> and <code>authexecid</code>.</td></tr>
+          <tr><td>RFC 6749, 7591, 8693</td><td>OAuth 2.0 (the token endpoint, <code>client_credentials</code>, the error shape); OAuth dynamic client registration, whose field names the client-creation response borrows; OAuth token exchange.</td></tr>
+          <tr><td>Bootstrap key, <code>PLATFORM</code></td><td>The bootstrap key is the signing key pair derived from <code>CYODA_JWT_SIGNING_KEY</code>. <code>PLATFORM</code> is the platform operator's tenant; applications do not use it.</td></tr>
         </tbody>
       </table>
     </div>
+  </section>
+
+
+  <section class="ref" aria-labelledby="steps-h">
+    <h2 id="steps-h">Integrate an application, step by step</h2>
+    <p>The common shape: a backend that calls cyoda for signed-in users, background jobs that work for no user, compute nodes that run your processors, and a tenant admin who provisions the rest. Every command below keeps secrets off the command line (<code>-K-</code>, <code>-H @-</code> read them from standard input).</p>
+
+    <h3>1. Tenant and first admin client — platform operator</h3>
+    <p>cyoda has no tenant registry: a tenant exists as soon as a token names it, and only <code>cyoda token</code> can name one. The node that takes the create call needs <code>CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true</code>.</p>
+<pre><code>ADMIN_TOKEN=$(cyoda token --tenant acme)    # on a host that holds CYODA_JWT_SIGNING_KEY
+curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=true" \
+  -H @- &lt;&lt;&lt;"Authorization: Bearer ${ADMIN_TOKEN}"</code></pre>
+
+    <h3>2. One client per part — tenant admin</h3>
+<pre><code>curl -X POST "https://cyoda.example.com/api/clients?onBehalfOf=true" \
+  -H @- &lt;&lt;&lt;"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"     # the backend
+curl -X POST https://cyoda.example.com/api/clients \
+  -H @- &lt;&lt;&lt;"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"     # each compute node, job, script</code></pre>
+    <p>Each answer carries <code>client_id</code> (16 characters), <code>client_secret</code> (64 hex characters, shown once), <code>roles</code>, <code>onBehalfOf</code> and the <code>grant_type</code> the client uses. A client has no name: store id and secret at once in your secret store, under a name that says which part uses them. Provision idempotently by creating a client only for a part the store has none for; reconcile by listing <code>GET /clients</code> and deleting every id the store does not hold. A tenant holds at most <code>CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT</code> clients (100). Your application takes its tenant id from configuration; the tenant admin reads it from <code>GET /account</code>.</p>
+
+    <h3>3. Trusted key — tenant admin</h3>
+<pre><code>openssl genrsa -out app-key.pem 2048
+N=$(openssl rsa -in app-key.pem -noout -modulus | cut -d= -f2 \
+    | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
+  -H @- -H "Content-Type: application/json" \
+  -d "{\"keyId\":\"app-key-2026-10\",\"jwk\":{\"kty\":\"RSA\",\"n\":\"${N}\",\"e\":\"AQAB\",\"alg\":\"RS256\"}}" \
+  &lt;&lt;&lt;"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"</code></pre>
+    <p>The <code>keyId</code> matches <code>^[A-Za-z0-9._-]{1,128}$</code> and becomes the <code>kid</code> you sign with. Registration needs <code>CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true</code> on every node. Without <code>validTo</code> a key is valid <code>CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS</code> days (365) from <code>validFrom</code>. Any OBO client of the tenant can use any active trusted key of the tenant.</p>
+
+    <h3>4. Act for a signed-in user — backend</h3>
+    <p>After your application has authorized the action, sign an assertion — header <code>alg: RS256</code>, <code>kid</code>; claims <code>sub</code> (your stable user id, recorded byte for byte, never <code>system</code>), <code>caas_org_id</code> (your tenant), <code>aud</code> (<code>CYODA_JWT_ISSUER</code>, default <code>cyoda</code>; <code>CYODA_JWT_AUDIENCE</code> plays no part), <code>iat</code>, <code>exp</code> ≤ <code>iat</code> + 300 — and exchange it:</p>
+<pre><code>curl -X POST https://cyoda.example.com/api/oauth/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+  -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
+  -K- &lt;&lt;EOF
+user = "${OBO_CLIENT_ID}:${OBO_CLIENT_SECRET}"
+data = "subject_token=${USER_ASSERTION}"
+EOF</code></pre>
+    <p>The answer: <code>access_token</code>, <code>token_type: Bearer</code>, <code>expires_in</code>, <code>issued_token_type: urn:ietf:params:oauth:token-type:jwt</code>. Client authentication is HTTP Basic only; form fields <code>client_id</code>/<code>client_secret</code> are not read (<code>401</code>). Cache one token per user and exchange again when less than a minute remains, or once after a <code>401</code>. Each client may make <code>CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE</code> (600) token requests per minute per node: about 3000 concurrently active users per node at 300-second tokens.</p>
+
+    <h3>5. Work for no user — jobs and scripts</h3>
+    <p>A plain client and <code>client_credentials</code> (HTTP Basic, <code>grant_type=client_credentials</code>). Changes are recorded as the client's own. Never use an OBO token for work no user asked for, nor a plain client for work a user asked for.</p>
+
+    <h3>6. Connect a compute node</h3>
+    <p>Open <code>startStreaming</code> with the node's own <code>client_credentials</code> token in metadata <code>authorization</code>, and join with your tags and <code>joinedLegalEntityId</code> = your tenant. The stream outlives its token; cyoda re-checks the client every 60 seconds. Authenticate each callback with the node's current client token, and echo <code>cyodatxtoken</code> as <code>X-Tx-Token</code> / <code>tx-token</code> when the callback must run in the callout's transaction. On <code>Unauthenticated</code> (client deleted or secret reset) re-read the credentials, fetch a token and reconnect, and stop if a fresh token is refused again; on <code>Unavailable</code> reconnect with backoff; <code>PermissionDenied</code> is a configuration error. The <code>CYODA_COMPUTE_*</code> variables are the convention of cyoda's own test compute node; cyoda does not read them.</p>
+    <p class="note">Feature flags (<code>CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED</code>, <code>CYODA_IAM_M2M_ADMIN_ROLE_ENABLED</code>) are read by each node at startup, and the node that takes a call decides: set them on every node. Neither affects tokens: an exchange works with every key registered while registration was on, on every node.</p>
   </section>
 
   <section class="ref" aria-labelledby="ex-h">
@@ -171,11 +244,12 @@ td:first-child{font-weight:500;width:24%}
       <li>The client authenticates with its id and secret, and must hold the on-behalf-of permission. Each node bounds how many secret checks run at once and answers 503 when busy; a per-client rate limit (429) applies to every grant and exchange. Both answers carry <code>Retry-After</code>.</li>
       <li><code>subject_token_type</code> is <code>urn:ietf:params:oauth:token-type:jwt</code>; other RFC 8693 parameters, such as <code>actor_token</code>, are refused.</li>
       <li>The trusted key named by the assertion's <code>kid</code> is read from the shared store, in the client's tenant; a key of another tenant is never found. If the store cannot be read, the exchange is refused: 503 when the store reports itself unavailable, 500 for any other failure.</li>
-      <li>The assertion's RS256 signature, <code>exp</code> and <code>iat</code> (both required, at most 5 minutes apart, 30 seconds of clock skew), <code>nbf</code> if present, <code>aud</code>, its issuer if the key lists issuers, and <code>caas_org_id</code> = the client's tenant are checked. A tenant mismatch is 403; every other failure is 400.</li>
+      <li>The assertion's RS256 signature, <code>exp</code> and <code>iat</code> (both required, at most 5 minutes apart, 30 seconds of clock skew), <code>nbf</code> if present, <code>aud</code> (must contain <code>CYODA_JWT_ISSUER</code>), its issuer if the key lists issuers, and <code>caas_org_id</code> = the client's tenant are checked. <code>typ</code>, <code>jti</code> and every other claim are ignored; an assertion can be exchanged again until it expires.</li>
       <li><code>sub</code> must be a valid user id and not the reserved id <code>system</code>.</li>
       <li>The OBO token: <code>sub</code> = the user, <code>act.sub</code> = the client, the client's roles (any roles in the assertion are ignored), and <code>exp</code> no later than the assertion's <code>exp</code> or <code>CYODA_JWT_EXPIRY_SECONDS</code> from now, whichever is earlier.</li>
       <li>An on-behalf-of client only exchanges: <code>client_credentials</code> refuses it. An OBO token cannot open a compute-node stream.</li>
     </ol>
+    <p>Answers: <code>200</code> with the token; <code>400</code> for a malformed request, a refused parameter, a bad or unknown key, a bad signature or claim, or a bad <code>sub</code> (<code>invalid_request</code>), a wrong grant for the client (<code>unauthorized_client</code>) or an unknown grant (<code>unsupported_grant_type</code>); <code>401 invalid_client</code> for failed client authentication; <code>403 access_denied</code> for a tenant mismatch; <code>405</code> for a method other than POST; <code>429 slow_down</code> over the per-client rate; <code>503 temporarily_unavailable</code> when the client or trusted-key store cannot be read or no secret-check slot frees up within 1 second; <code>500 server_error</code> with a ticket for any other store failure or a signing failure. Every <code>error_description</code> is a fixed string listed in <code>cyoda help auth tokens</code>.</p>
   </section>
 
   <section class="ref" aria-labelledby="rec-h">
@@ -194,15 +268,87 @@ td:first-child{font-weight:500;width:24%}
     <p>Both identities appear wherever a change is reported: entity change history (<code>GET /entity/{id}/changes</code>), audit events (<code>GET /audit/entity/{id}</code>), messages (<code>GET /message/{id}</code>), and every callout to a compute node, including callouts another node forwards. A callout also carries the executor's roles. A scheduled task keeps the user it was armed for, and fires with executor <code>system</code>.</p>
   </section>
 
+
+  <section class="ref" aria-labelledby="ident-h">
+    <h2 id="ident-h">Identity in a compute node</h2>
+    <p>Every callout carries <code>authtype</code>/<code>authid</code> (the attributed principal), <code>authexectype</code>/<code>authexecid</code> (the executor) and <code>authclaims</code> (the executor's roles, absent for <code>system</code>; never the user's roles).</p>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Situation</th><th>authtype / authid</th><th>authexectype / authexecid</th></tr></thead>
+        <tbody>
+          <tr><td>OBO request for alice, and its cascade</td><td><code>user</code> / alice</td><td><code>service</code> / the OBO client</td></tr>
+          <tr><td>A client's own request, and its cascade</td><td><code>service</code> / the client</td><td><code>service</code> / the client</td></tr>
+          <tr><td>Compute callback that joins the transaction (transaction token + its own client token), and its cascade</td><td>the transaction origin: alice for an OBO request's transaction, the client for a client's, the arming principal for a scheduled firing</td><td><code>service</code> / the compute node's client</td></tr>
+          <tr><td>Compute callback without a transaction token (an independent request, e.g. from a commit-before-dispatch processor with <code>startNewTxOnDispatch: false</code>), and its cascade</td><td><code>service</code> / the compute node's client</td><td><code>service</code> / the compute node's client</td></tr>
+          <tr><td>Request with an OBO token from a compute node that holds an OBO client of its own</td><td><code>user</code> / the asserted user</td><td><code>service</code> / that OBO client (joins only its own user's transaction)</td></tr>
+          <tr><td>Scheduled firing</td><td>the principal that armed it</td><td><code>system</code> / <code>system</code></td></tr>
+          <tr><td>Commit-before-dispatch processor with <code>startNewTxOnDispatch: false</code> inside a scheduled firing</td><td><code>system</code> / <code>system</code></td><td><code>system</code> / <code>system</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Segregation of duties: "the submitter may not approve"</h3>
+    <ol>
+      <li>Require <code>authtype == "user"</code>: a client's own work and cyoda's own are not a person approving.</li>
+      <li>Require <code>authexectype == "service"</code>: a scheduled firing carries the user who armed it in <code>authid</code>, with executor <code>system</code>; that user did not approve now.</li>
+      <li>Compare <code>authid</code> with the submitter's id byte for byte: copy <code>authid</code> into the entity when the user submits, or read the submit change's <code>actor.id</code> (with <code>actor.kind == "user"</code>) from <code>GET /audit/entity/{entityId}</code>. Nothing is normalised.</li>
+      <li>Optionally require <code>authexecid</code> to be one of your OBO client ids, kept in configuration and updated on rotation. A write-back cascade's callouts name the compute node's client as executor and fail such a check.</li>
+    </ol>
+    <p>Go compute nodes can use the public package <code>github.com/cyoda-platform/cyoda-go/api/grpc/authctx</code>: <code>Type</code>/<code>ID</code>, <code>ExecutorType</code>/<code>ExecutorID</code>, <code>Roles</code>, and <code>Require(ce, role)</code>, which is true only for a <code>service</code> executor holding the role — it says nothing about the user. Change history over HTTP (<code>GET /entity/{entityId}/changes</code>) returns <code>user</code>, <code>attributedKind</code> and <code>executedBy</code>; over gRPC, <code>EntityChangesMetadataGetRequest</code> returns <code>user</code> only. Audit <code>actor.name</code> repeats <code>actor.id</code>; <code>externalId</code> is never set. Async search jobs belong to the tenant, not to a user.</p>
+  </section>
+
+  <section class="ref" aria-labelledby="err-h">
+    <h2 id="err-h">Errors and retries</h2>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Answer</th><th>Meaning and action</th></tr></thead>
+        <tbody>
+          <tr><td><code>/oauth/token</code> 400, 403, 405</td><td>The request or the setup is wrong. Do not retry; fix it. The fixed <code>error_description</code> names the cause.</td></tr>
+          <tr><td><code>/oauth/token</code> 401 <code>invalid_client</code></td><td>Wrong or revoked credentials. Re-read them once; then stop and alert.</td></tr>
+          <tr><td><code>/oauth/token</code> 429 <code>slow_down</code></td><td>Per-client, per-node budget used. Wait <code>Retry-After</code>; cache tokens per user.</td></tr>
+          <tr><td><code>/oauth/token</code> 503 <code>temporarily_unavailable</code></td><td>Store unreadable or no secret-check slot. Wait <code>Retry-After</code> and retry with backoff.</td></tr>
+          <tr><td><code>/oauth/token</code> 500 <code>server_error</code></td><td>Store or signing failure, ticket in <code>error_description</code>. Retry a few times with backoff; if it persists, give the ticket to the operator. The token endpoint changes nothing, so retries are safe.</td></tr>
+          <tr><td>Data call 401 / <code>Unauthenticated</code></td><td>Decided before any handler and before any transaction is joined: the request did nothing. Get a new token and send it again, once, even a write. A second 401 is a configuration error.</td></tr>
+          <tr><td>Data call 403 / <code>PermissionDenied</code></td><td>Missing <code>ROLE_M2M</code>, an OBO token on an admin route, or an OBO request joining another user's transaction; decided before the operation reads or writes anything. Not retryable.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="ref" aria-labelledby="life-h">
     <h2 id="life-h">Token lifetime and revocation</h2>
     <ol>
-      <li>A cyoda token lives at most <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. A <code>cyoda token</code> lives 15 minutes by default, cut to that bound. An OBO token never lives past its assertion's <code>exp</code>. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until it nears expiry.</li>
+      <li>A token from <code>/oauth/token</code> lives at most <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. An OBO token also ends no later than its assertion's <code>exp</code>; because an assertion lives at most 300 seconds, an OBO token never lives more than 300 seconds past its assertion's <code>iat</code>, whatever <code>CYODA_JWT_EXPIRY_SECONDS</code> says. The operator's CLI command <code>cyoda token</code> signs tokens that live 15 minutes by default, or <code>CYODA_JWT_EXPIRY_SECONDS</code> when that is shorter. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until less than about a minute of its life remains.</li>
       <li>Every grant reads the client, and every exchange reads the client and the trusted key, from the shared store. Resetting a secret, deleting a client, or invalidating or deleting a trusted key stops new tokens at once on every node.</li>
       <li>Tokens issued before the change stay valid until they expire, at most the token lifetime.</li>
       <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, or if the client's secret was reset after the token that opened it was issued. If the store cannot be read, the stream closes as unavailable and the node reconnects.</li>
       <li>Issuing a new signing key pair and invalidating every other one with no grace period, the bootstrap key included, ends every cyoda token signed before, for every tenant. It is the platform operator's last resort.</li>
     </ol>
+  </section>
+
+
+  <section class="ref" aria-labelledby="rot-h">
+    <h2 id="rot-h">Rotation</h2>
+    <ol>
+      <li><b>Client secret without downtime.</b> Create a second client of the same kind (it needs a free slot under the per-tenant cap), roll every instance onto it, then delete the old client. A reset (<code>PUT /clients/{clientId}/secret</code>) instead refuses the old secret at once and closes the old streams within 60 seconds; use it when a short outage is acceptable or the secret leaked.</li>
+      <li><b>Trusted key.</b> Register the new key under a new <code>keyId</code>, switch the backend to it, and invalidate or delete the old key once no assertion signed with it can be in flight (300 seconds). <code>invalidatePrevious: true</code> on registration ends every other key at once.</li>
+    </ol>
+  </section>
+
+  <section class="ref" aria-labelledby="inc-h">
+    <h2 id="inc-h">Incidents</h2>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>What leaked</th><th>Do this</th></tr></thead>
+        <tbody>
+          <tr><td>The trusted key's private key</td><td>Invalidate the key (exchanges stop at once on every node), register a new one, roll the backend. With any OBO client secret of the tenant it mints tokens for any user, so rotate OBO secrets stored with it. Issued OBO tokens end within 300 seconds of their assertion's <code>iat</code>.</td></tr>
+          <tr><td>An OBO client's secret</td><td>Alone it gives no token. Reset or rotate it; if the private key may have leaked too, see above.</td></tr>
+          <tr><td>A plain client's secret</td><td>Full read and write of the tenant's data, and compute-node joins. Reset or delete at once. Issued tokens live at most <code>CYODA_JWT_EXPIRY_SECONDS</code>; streams close within 60 seconds.</td></tr>
+          <tr><td>An admin client's secret</td><td>Follow <em>A leaked admin token of another tenant</em> in <code>cyoda help config auth</code>, with the operator.</td></tr>
+          <tr><td>A cyoda token</td><td>Valid until <code>exp</code>. Only the operator can end it sooner, by revoking the signing key pair named by its <code>kid</code> (every token it signed, all tenants): <em>Emergency revocation of a leaked token</em> in <code>cyoda help config auth</code>.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Then review the changes and audit events whose <code>executedBy.id</code> is the leaked client.</p>
   </section>
 
   <section class="ref" aria-labelledby="app-h">
@@ -211,9 +357,50 @@ td:first-child{font-weight:500;width:24%}
       <li>Authorize every user action before acting for the user. cyoda-go applies the client's rights, not the user's.</li>
       <li>Sign an assertion only for a user the application has authenticated, and give it a short <code>exp</code>, a few minutes at most.</li>
       <li>Keep the trusted key's private key, client secrets and cyoda tokens on the server. They must never reach a browser or mobile app.</li>
-      <li>Use one client per job: one with the on-behalf-of permission for user requests, a plain client for background work, a separate client for each compute node, and an admin client only for administration.</li>
-      <li>Connect compute nodes over TLS: processors rely on the user and client identity in each callout.</li>
+      <li>Use one client per job: one with the on-behalf-of permission for user requests, a plain client for background work, a separate client for each compute node, and an admin client only for administration. This lets you rotate or revoke each part alone and makes the executor name the part; it does not narrow what each plain client may do.</li>
+      <li>Connect through TLS. cyoda's HTTP and gRPC listeners serve plaintext and have no TLS of their own: TLS is terminated by the ingress, gateway or service mesh in front of them (the Helm chart's <code>ingress.http.tls</code> and <code>ingress.grpc.tls</code>), and every client and compute node verifies the server certificate. Processors may rely on the user and client identity in a callout only over such a connection. Plaintext is for localhost or a private Docker network during development.</li>
+      <li>Never let an assertion leave the backend: cyoda does not check <code>jti</code>, so anyone holding an unexpired assertion and the OBO client's secret can exchange it again.</li>
     </ol>
+  </section>
+
+  <section class="ref" aria-labelledby="local-h">
+    <h2 id="local-h">Running it locally</h2>
+    <p><b>Mock mode</b> (<code>CYODA_IAM_MODE=mock</code>, the default) runs every request, with or without a token, as user <code>mock-user-001</code> in tenant <code>mock-tenant</code>, kind <code>CYODA_IAM_MOCK_KIND</code> (default <code>service</code>), roles <code>CYODA_IAM_MOCK_ROLES</code>. Callouts carry <code>mock-user-001</code> as both principals, with that kind. With kind <code>user</code> or <code>system</code>, <code>authctx.Require</code> never passes and compute streams are refused. Mock mode has no client store: <code>/oauth/token</code> issues no token and the client and trusted-key endpoints answer <code>501</code>. <b>On-behalf-of access cannot be exercised in mock mode.</b></p>
+    <p><b>On-behalf-of end to end in jwt mode</b> (also in Docker Compose, with the same variables on the service): the help topic <code>cyoda help auth integration</code> has the full script. In short:</p>
+<pre><code>openssl genrsa -out signing.pem 2048
+export CYODA_IAM_MODE=jwt CYODA_JWT_SIGNING_KEY_FILE=$PWD/signing.pem \
+  CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true
+cyoda &amp;
+ADMIN_TOKEN=$(cyoda token --tenant acme --roles ROLE_ADMIN,ROLE_M2M)
+# create the OBO client, register the app key (step 3), then sign an assertion:
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+NOW=$(date +%s)
+HDR=$(printf '{"alg":"RS256","kid":"app-key-1"}' | b64url)
+PAY=$(jq -cn --argjson iat "$NOW" --argjson exp "$((NOW+300))" \
+  '{sub:"alice",caas_org_id:"acme",aud:"cyoda",iat:$iat,exp:$exp}' | b64url)
+SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -binary | b64url)
+# exchange "$HDR.$PAY.$SIG" as in step 4, then call GET /api/account with the token</code></pre>
+  </section>
+
+  <section class="ref" aria-labelledby="move-h">
+    <h2 id="move-h">Moving from OIDC and forwarded identity-provider tokens</h2>
+    <div class="tablebox">
+      <table>
+        <thead><tr><th>Before</th><th>Now</th></tr></thead>
+        <tbody>
+          <tr><td>Forward the user's IdP token to cyoda</td><td>Refused with <code>401</code>. Users still sign in to your application with your IdP; your backend becomes an OBO client and asserts the user's id (for example the IdP's <code>sub</code>).</td></tr>
+          <tr><td><code>/oauth/oidc/providers</code> and registration scripts</td><td>Removed (<code>404</code>). Delete the scripts. Stored provider records are left unread.</td></tr>
+          <tr><td><code>CYODA_OIDC_*</code> settings</td><td>Ignored, with no warning. Remove them.</td></tr>
+          <tr><td>The bootstrap client (<code>CYODA_BOOTSTRAP_*</code>)</td><td>Ignored, with no warning; no client is created and its old credentials get <code>401</code>. The operator signs the first admin token with <code>cyoda token</code>.</td></tr>
+          <tr><td>One client for everything</td><td>An OBO client for the backend, a plain client per compute node and job, an admin client for provisioning.</td></tr>
+          <tr><td>Roles from the IdP</td><td>Never reach cyoda. Your application authorizes; cyoda applies the client's roles.</td></tr>
+          <tr><td><code>oidc:</code> user-id prefix</td><td>Not reserved: a user id is exactly what you assert.</td></tr>
+          <tr><td><code>X-User-ID</code> on <code>POST /message</code></td><td>Gone: the OBO token carries the user.</td></tr>
+          <tr><td>Compute node reads <code>authid</code> as the caller</td><td>Read <code>authexecid</code> for the executor; <code>authid</code> is the user, <code>authclaims</code> the executor's roles.</td></tr>
+          <tr><td>Trusted keys registered by an earlier release</td><td>Not read: register them again.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </div>
 
@@ -257,7 +444,7 @@ td:first-child{font-weight:500;width:24%}
      ],
      notes:[
       ["The tenant comes from the creator","Clients and trusted keys are created in the tenant of the admin token that created them. No request can name another tenant."],
-      ["Least privilege","A plain client gets ROLE_M2M only. Acting for users needs the on-behalf-of permission. Admin clients also need CYODA_IAM_M2M_ADMIN_ROLE_ENABLED; trusted keys need CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED."],
+      ["One client per part","A plain client holds ROLE_M2M, which reaches all of the tenant's data; acting for users needs the on-behalf-of permission. Admin clients also need CYODA_IAM_M2M_ADMIN_ROLE_ENABLED; trusted keys need CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED, on every node."],
       ["Secrets are shown once","Each part of the application stores its own client's secret; the trusted key's private key never leaves the application."]
      ]},
 

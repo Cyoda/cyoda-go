@@ -146,8 +146,16 @@ it cannot protect data from an application that is itself compromised.
   never accepted as a bearer token.
 
 The platform operator's first admin token comes from `cyoda token` (see
-*First real call*). [`docs/access-to-the-cyoda-api.html`](docs/access-to-the-cyoda-api.html)
-walks through each scenario; `cyoda help auth` is the reference.
+*First real call*).
+
+**Integrating an application?** `cyoda help auth integration` is the
+step-by-step guide: which clients to create, how to register a trusted key,
+how to sign and exchange user assertions, how compute nodes connect and read
+the user and executor of each callout, every token-endpoint error with its
+retry rule, rotation, incidents, a local end-to-end recipe, and the move from
+forwarded identity-provider tokens.
+[`docs/access-to-the-cyoda-api.html`](docs/access-to-the-cyoda-api.html) is
+the same guide with scenario diagrams; `cyoda help auth` is the reference.
 
 ### Auth cache reconciliation
 
