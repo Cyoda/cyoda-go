@@ -3,7 +3,7 @@ module github.com/cyoda-platform/cyoda-go/plugins/postgres
 go 1.26.7
 
 require (
-	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261002234350-768cfb0aae64
+	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261003134844-7d96ed62792b
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6
