@@ -77,6 +77,39 @@ func TestValidateIAM_RejectsUnknownMode(t *testing.T) {
 	}
 }
 
+// CYODA_IAM_MOCK_KIND accepts only the three principal kinds; anything else
+// refuses to start, in either mode.
+func TestValidateIAM_MockKind(t *testing.T) {
+	for _, mode := range []string{"mock", "jwt"} {
+		for _, kind := range []string{"user", "service", "system"} {
+			t.Run(mode+"/"+kind+" accepted", func(t *testing.T) {
+				cfg := DefaultConfig()
+				cfg.IAM.RequireJWT = false
+				cfg.IAM.Mode = mode
+				cfg.IAM.MockKind = kind
+				if err := ValidateIAM(cfg.IAM); err != nil {
+					t.Fatalf("expected nil; got %v", err)
+				}
+			})
+		}
+		for _, kind := range []string{"", "Service", "admin", "service "} {
+			t.Run(fmt.Sprintf("%s/%q refused", mode, kind), func(t *testing.T) {
+				cfg := DefaultConfig()
+				cfg.IAM.RequireJWT = false
+				cfg.IAM.Mode = mode
+				cfg.IAM.MockKind = kind
+				err := ValidateIAM(cfg.IAM)
+				if err == nil {
+					t.Fatalf("kind %q: expected an error, got nil", kind)
+				}
+				if !strings.Contains(err.Error(), "CYODA_IAM_MOCK_KIND") {
+					t.Errorf("error should name CYODA_IAM_MOCK_KIND: %v", err)
+				}
+			})
+		}
+	}
+}
+
 func TestValidateIAM_AcceptsJWTWithoutRequireJWT(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.IAM.RequireJWT = false

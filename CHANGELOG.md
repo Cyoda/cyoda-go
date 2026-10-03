@@ -190,7 +190,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **Tokens are mapped strictly: a token with both `scopes` and `user_roles`,
   or with `act` but no `scopes`, is refused. `CYODA_IAM_MOCK_KIND` defaults
-  to `service`.** A token with `act` is a user acting through the client
+  to `service`, and any value but `user`, `service` or `system` refuses to
+  start.** A token with `act` is a user acting through the client
   named in `act.sub`, which must be an object holding a client id; a token
   with `scopes` and no `act` is a client; a token with `user_roles` is the
   operator's `cyoda token`. A `cgen` claim must be a non-negative integer.

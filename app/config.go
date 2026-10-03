@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -262,6 +263,7 @@ type IAMConfig struct {
 	// default "service": every mock-mode caller is a client, as every caller
 	// is in jwt mode. "user" and "system" let local/CI setups exercise
 	// user- or system-attributed code paths without standing up real JWT auth.
+	// Any other value refuses to start (ValidateIAM).
 	MockKind      string
 	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
@@ -1000,6 +1002,13 @@ func ValidateIAM(iam IAMConfig) error {
 	// case) would otherwise run every request as the mock admin.
 	if iam.Mode != "mock" && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_IAM_MODE=%q is not supported (expected \"mock\" or \"jwt\")", iam.Mode)
+	}
+	// Unconditional: a bad mock kind is a config error in any mode. app.New
+	// casts it to the mock principal's kind unchecked.
+	switch spi.PrincipalKind(iam.MockKind) {
+	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
+	default:
+		return fmt.Errorf("CYODA_IAM_MOCK_KIND=%q is not supported (expected \"user\", \"service\" or \"system\")", iam.MockKind)
 	}
 	// Unconditional: a bad explicit interval is a config error in any mode.
 	if iam.AuthCacheReconcileInterval < time.Second {

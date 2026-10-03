@@ -39,7 +39,8 @@ startup unless JWT mode is properly configured.
   mock mode: `user`, `service`, or `system`. The default, `service`, makes
   every mock-mode caller a client, as in `jwt` mode. `user` and `system` let
   local/CI setups exercise user- or system-attributed code paths without
-  standing up real JWT auth. (default: `service`)
+  standing up real JWT auth. Any other value, in either mode, refuses to
+  start. (default: `service`)
 
 When running in mock mode, the binary emits a prominent `MOCK AUTH IS ACTIVE`
 warning banner at startup so operators see the security posture of the running
