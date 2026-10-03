@@ -112,13 +112,13 @@ The `/api/account` response confirms the token's tenant and roles. With that tok
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
 | `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Token requests each M2M client may make per minute on one node, across both grants; over it `POST /oauth/token` returns `429 slow_down` with `Retry-After`. `0` means unlimited; a negative value refuses to start. |
-| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | the number of CPUs the process may use (GOMAXPROCS) | Client-secret (bcrypt) operations that run at once on one node: `POST /oauth/token` checks and the secret hashing of `POST /clients` and the secret reset. An operation that gets no slot within 1 s returns `503` with `Retry-After` (`temporarily_unavailable` on the token endpoint, `SERVER_BUSY` on `/clients`). Must be at least `1`. |
+| `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | the number of CPUs the process may use (GOMAXPROCS) | Client-secret (bcrypt) operations that run at once on one node: `POST /oauth/token` checks and the secret hashing of `POST /clients` and the secret reset. An operation that gets no slot within 1 s returns `503` with `Retry-After` (`temporarily_unavailable` on the token endpoint, `SERVER_BUSY` on `/clients`). Must be at least `1`. The bound protects the node, not the endpoint: put a per-source rate limit in front of `/api/oauth/token` at the ingress. |
 
 In mock mode, `CYODA_IAM_MOCK_KIND` (default `service`) sets the principal kind
 (`user`/`service`/`system`) on the mock default UserContext. The default makes
 every mock-mode caller a client, as in `jwt` mode; `user` or `system` lets
 local/CI setups exercise user- or system-attributed code paths without real
-JWT auth.
+JWT auth. Any other value, in either mode, refuses to start.
 
 ## Access
 
