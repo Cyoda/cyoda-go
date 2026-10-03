@@ -177,7 +177,7 @@ On the token exchange only, after the checks above:
 
 Signing the token can fail too: `500 server_error` with a ticket.
 
-`GET /api/.well-known/jwks.json` (the JWKS document lives under `CYODA_CONTEXT_PATH`, like `/api/oauth/token`) answers `503` with `Retry-After` while the node's key copy is stale.
+`GET /api/.well-known/jwks.json` (the JWKS document lives under `CYODA_CONTEXT_PATH`, like `/api/oauth/token`) answers `503` with `Retry-After` while the node's key copy is stale. It is a standard JWK Set (RFC 7517) of cyoda's signing keys, served without authentication; it is not described in the OpenAPI document, which covers the API operations. Applications do not need it to call cyoda — cyoda verifies its own tokens — but can use it to verify a cyoda token's signature themselves.
 
 **Rate-limit the token endpoint at ingress.** `/oauth/token` authenticates callers that are not yet authenticated, and each request with an unknown client id or a wrong secret costs one bcrypt comparison. cyoda bounds that work per node with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`; past the bound it answers `503 temporarily_unavailable` and does no more work (it fails closed). The bound protects the node's CPU, not the endpoint's availability: a flood of bad credentials can keep legitimate clients getting `503`. The per-client `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` limit applies only after a client authenticates, so it does not stop such a flood. Deployments must put a per-source rate limit in front of `/api/oauth/token` at the ingress, gateway or load balancer.
 
@@ -187,4 +187,4 @@ Signing the token can fail too: `500 server_error` with a ticket.
 - `auth.trusted-keys` — register the public key your application signs user assertions with
 - `cli.token` — sign an admin token offline with the signing key
 - `config.auth` — `CYODA_JWT_*` and the user-identifier rule
-- `openapi` — `cyoda help openapi tags` and look for the `IAM` tag
+- `openapi` — `cyoda help openapi tags`: `/oauth/token` is under the `User, Machine` tag (`user-machine`)

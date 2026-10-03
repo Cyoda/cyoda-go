@@ -2948,13 +2948,10 @@ type SystemAuditEventDtoSeverity string
 
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId The client identifier for the M2M client. Generated ids are 16 characters from 0-9 and A-V.
 	ClientId string `json:"client_id"`
 
-	// ClientIdIssuedAt Time at which the client identifier was issued, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section 3.2.1.
-	ClientIdIssuedAt *int64 `json:"client_id_issued_at,omitempty"`
-
-	// ClientSecret The client secret for authentication
+	// ClientSecret The client secret for authentication, 64 lower-case hex characters. Returned only by this response; store it at once.
 	ClientSecret string `json:"client_secret"`
 
 	// ClientSecretExpiresAt Time at which the client secret will expire, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch), or 0 if it will not expire. Per RFC 7591 Section 3.2.1, this field is required when a client_secret is issued.

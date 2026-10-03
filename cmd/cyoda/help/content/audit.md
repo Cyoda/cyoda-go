@@ -100,12 +100,15 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
 **StateMachineAuditEventDto** fields (discriminated by `auditEventType: "StateMachine"`):
 
-- `eventType`: one of `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`
+- `eventType`: one of `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`, and for scheduled transitions `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`, `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL` (see `cyoda help scheduled-tasks`)
 - `eventId`: a time-based UUID assigned by the server when it recorded the event. Unique per event and the same value on every read, on this endpoint and on the workflow-finished endpoint below.
 - `state`: entity state at the time of the event
-- `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`.
+- `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types, `TRANSITION_MAKE` included). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`.
+- `details`: a human-readable text. For `TRANSITION_MAKE` it reads `Transition "<name>": <from> → <to>`, and `state` is the state the transition left; the transition name appears nowhere else on the event, and entity change history (`GET /entity/{entityId}/changes`) carries no transition name at all. The text is for people, not a parsing contract.
 - `actor`: the attributed principal the transition ran for (see `AuditActorInfoDto.kind` below). Present when the engine recorded one.
 - `executedBy`: `{id, kind}` — the principal that actually ran the transition, independent of `actor`. Present when the engine recorded one.
+
+State machine events are recorded best effort: a failure to record one is logged at WARN and does not fail the operation, so an audit trail can miss an event. Do not build an authorization check on finding one; record what a check needs in the entity itself (see `cyoda help auth integration`, *READING IDENTITY IN A COMPUTE NODE*).
 
 ### Actor and executor
 

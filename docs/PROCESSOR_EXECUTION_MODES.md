@@ -264,13 +264,17 @@ rejects this flag for any other execution mode.
   duration of the dispatch.
 - **Attribution handover.** With no live transaction, the platform tracks
   no causal chain for these callbacks — each is an ordinary direct request,
-  attributed to whatever identity it presents (its own service credentials,
-  or an OBO user token it forwards). The dispatch's AuthContext carries the
-  causal principal as its attributed principal (`authid`/`authtype`, with
-  the executor in `authexecid`/`authexectype` — see
-  `docs/cloud-parity/authcontext-attribution.md`), so an application wanting
-  user-level attribution on its callback writes must present that identity
-  itself; the platform provides no separate carrier for this mode.
+  attributed to the identity it presents. With the compute node's own client
+  token, that is the compute node's client, as both attributed principal and
+  executor. A compute node never receives a user's token: the dispatch's
+  AuthContext carries the causal principal only as attributes (`authid`/
+  `authtype`, with the executor in `authexecid`/`authexectype` — see
+  `docs/cloud-parity/authcontext-attribution.md`). To record a callback write
+  for that user, the compute node must hold the credentials of an
+  on-behalf-of client of the tenant and an active trusted key of the tenant,
+  sign an assertion for `authid`, and write with the exchanged token (see
+  `cyoda help auth integration`); the platform provides no separate carrier
+  for this mode.
 
 #### `startNewTxOnDispatch = true`
 

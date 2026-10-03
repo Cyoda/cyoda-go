@@ -485,7 +485,9 @@ two principals: the **attributed** principal — who the work is for — and the
 Context extension, with one difference in values: cyoda's kinds are `"user"`,
 `"service"` and `"system"`, where that extension's list uses
 `service_account` for a service. `authexectype` and `authexecid` are cyoda's
-own attributes, outside the extension.
+own attributes, outside the extension. Each is an entry of the CloudEvent's
+`attributes` map whose `CloudEventAttributeValue` holds a string
+(`ce_string`); an absent attribute has no entry.
 
 Two terms the list below uses. A **pass** is the transaction token
 (`cyodatxtoken`) a callout carries; a callback that echoes it joins the
@@ -508,7 +510,15 @@ Per path, the attributed principal / the executor are:
 - a request with an on-behalf-of token, from a compute node that holds an
   on-behalf-of client of its own: the asserted user (`user`) / that client
   (`service`); with a pass it may join only a transaction whose origin is that
-  user;
+  user (the origin's id equal to the token's user id, and its kind `user`;
+  the on-behalf-of client is not compared);
+- a commit-before-dispatch processor with `startNewTxOnDispatch: true`: the
+  new transaction keeps the origin of the one committed before the dispatch,
+  so the callout carries the principals of the request that reached it, and a
+  callback that presents its pass is attributed to that origin, executed by
+  the compute node's client;
+- a request with a `cyoda token` (the platform operator's): the token's user
+  (`user`) / the same (`user`), with the token's roles in `authclaims`;
 - a scheduled fire, and every callout of its cascade: the principal that
   armed the timer / `system` (`system`). This includes the callout of a
   commit-before-dispatch processor with `startNewTxOnDispatch: false`, which
@@ -526,9 +536,13 @@ attributes is set out in `cyoda help auth integration` (*READING IDENTITY IN A
 COMPUTE NODE*).
 
 The public Go package `github.com/cyoda-platform/cyoda-go/api/grpc/authctx`
-reads these attributes for a compute node: `Type`/`ID` (the attributed
-principal), `ExecutorType`/`ExecutorID` (the executor) and `Roles`.
-`Require(ce, role)` is a fail-closed role gate: it reports `true` only when the
+reads these attributes for a compute node. Every function takes a
+`*cloudevents.CloudEvent` from `github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents`
+(the protobuf `io.cloudevents.v1.CloudEvent`): `Type(ce) string` and
+`ID(ce) string` (the attributed principal), `ExecutorType(ce) string` and
+`ExecutorID(ce) string` (the executor), each `""` when absent, and
+`Roles(ce) []string` (nil when absent). `Require(ce, role string) bool` is a
+fail-closed role gate: it reports `true` only when the
 executor is a `service` and `role` is in `authclaims`. The attributed principal
 plays no part in it, so a scheduled fire (executor `system`) never passes.
 
@@ -591,6 +605,9 @@ gRPC error codes returned by the service:
 - `codes.InvalidArgument` — first message is not `CalculationMemberJoinEvent`; malformed CloudEvent; invalid join payload
 - `codes.DeadlineExceeded` — member timed out (keep-alive timeout exceeded)
 - `codes.Internal` — server-side error constructing a response CloudEvent
+- `codes.Unavailable` — the node is shutting down: on SIGTERM it stops accepting streams and closes the open ones within 10 seconds; also when the member was replaced by a new stream with its member id, or a send to it failed
+
+What a compute node does on each: on `Unauthenticated`, read its current credentials, fetch a new token and reconnect, and stop (alert, no loop) if a fresh token is refused again; on `Unavailable` and `Internal`, reconnect with backoff, through the load balancer, to any node; on `DeadlineExceeded`, reconnect at once and fix the cause (read the stream continuously, answer keep-alives); on `PermissionDenied` and `InvalidArgument`, fix the configuration or the client and do not reconnect in a loop.
 
 Within `text_data` payloads, errors are reported as:
 

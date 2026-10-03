@@ -96,6 +96,7 @@ All are optional query parameters.
 
 - `errors.BAD_REQUEST` — `400` — an invalid `status`, an invalid `modelName`, a `modelVersion` without `modelName`, an out-of-range `modelVersion` or `limit`, or an unreadable `entityId` or `cursor`
 - `errors.UNAUTHORIZED` — `401` — missing or invalid bearer token
+- `errors.FORBIDDEN` — `403` — the token lacks `ROLE_M2M` (a `cyoda token` signed without `--roles ROLE_ADMIN,ROLE_M2M`, for example)
 - `errors.SERVER_ERROR` — `500` — internal failure; the response carries a ticket id, never the cause
 - `errors.STORAGE_UNAVAILABLE` — `503` — a transient storage outage; retryable
 

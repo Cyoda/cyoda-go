@@ -169,7 +169,10 @@ clients that applications and compute nodes use (`POST /clients`). See
 These environment variables tune the IAM admin endpoints under `/oauth/keys/*` and `/clients`.
 Each node reads them at startup, and the node that takes a request decides by
 its own value: in a cluster, give every node the same values, or calls behind a
-load balancer succeed or fail depending on the node they reach.
+load balancer succeed or fail depending on the node they reach. The Helm chart
+has no dedicated values for them: set them with `extraEnv` (see
+`cyoda help helm`), which gives every replica the same value and rolls the
+pods.
 
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` — gates all 5 endpoints under
   `/oauth/keys/trusted/*`. When `false`, every trusted-key endpoint returns
@@ -354,7 +357,7 @@ default `validFrom`; see above).
   secret: it can create clients and trusted keys, and a request is not
   checked against the client store.
 - If it carries `ROLE_ADMIN` in another tenant, follow *A leaked admin
-  token of another tenant* under *A leaked platform admin-client secret*
+  token of a tenant other than PLATFORM* under *A leaked platform admin-client secret*
   below.
 
 Revoking a key pair ends no open connection. A compute-node gRPC stream
@@ -435,9 +438,13 @@ or resetting its secret does not end a token they hold: it verifies until its
 compute-node stream checks its client, once a minute (see below). Contain
 first, then clean up, verify and restore.
 
-**A leaked admin token of another tenant.** Follow this procedure with the
-token in place of the secret, and apply steps 2, 3, 5 and 6 to that tenant as
-well as to `PLATFORM`. Its holder can create clients and trusted keys in
+**A leaked admin token of a tenant other than PLATFORM.** This procedure
+blocks the API for every tenant. When the leaked tokens may run until their
+`exp` and you can tell which credentials of the tenant are still good, the
+tenant can contain the leak itself instead, without blocking anyone (see
+`cyoda help auth integration`, *ADMIN-CLIENT LEAK*). Otherwise follow this
+procedure with the token in place of the secret, and apply steps 2, 3, 5 and
+6 to that tenant as well as to `PLATFORM`. Its holder can create clients and trusted keys in
 the tenant as the flags allow; with both an on-behalf-of client and a
 trusted key of the tenant, it can get tokens for any user id of the tenant,
 with that client's roles. The client and trusted-key endpoints act on the
@@ -452,8 +459,10 @@ caller's own tenant, so you need an admin token of that tenant.
   client cap apply): step 5 needs it, unless you use the *Alternative to
   step 4*.
 - Step 5: use an admin client of the tenant whose new secret you hold, or,
-  after the *Alternative to step 4*, `cyoda token --tenant <id>`. Read the
-  log lines step 5 names with the tenant's id in place of `PLATFORM`.
+  after the *Alternative to step 4*, `cyoda token --tenant <id> --roles
+  ROLE_ADMIN,ROLE_M2M` (the default `cyoda token` holds `ROLE_ADMIN` only,
+  and the data step 5 compares needs `ROLE_M2M`). Read the log lines step 5
+  names with the tenant's id in place of `PLATFORM`.
 - Step 6: delete the admin client you created in the tenant, or give it to
   the tenant.
 
@@ -592,7 +601,9 @@ transitions keep firing during the block: a change whose `executedBy` has
 `kind` `system` is such a firing, not an API call (match the kind, not
 the id: the kind of a token's principal is always `user` or `service`, and
 `system` is a reserved user id no token carries). List the scheduled tasks of each of those tenants
-(`GET /scheduled-tasks`, with an admin token of the tenant), and end any
+(`GET /scheduled-tasks`, with a token of the tenant that holds `ROLE_M2M`,
+such as an admin client's or `cyoda token --tenant <id> --roles
+ROLE_ADMIN,ROLE_M2M`), and end any
 you do not recognise: move its entity out of the transition's source
 state with a manual transition, delete the entity, or import the workflow
 without that scheduled transition (see `cyoda help workflows`). Any other

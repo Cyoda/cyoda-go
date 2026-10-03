@@ -9263,17 +9263,20 @@ components:
       properties:
         client_id:
           type: string
-          description: The client identifier for the M2M client
-          example: abc523BCD
+          description: The client identifier for the M2M client. Generated
+            ids are 16 characters from 0-9 and A-V.
+          example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
           pattern: ^[A-Za-z0-9]+$
         client_secret:
           type: string
-          description: The client secret for authentication
-          example: mySecretKey123
-          maxLength: 255
-          minLength: 8
+          description: The client secret for authentication, 64 lower-case hex
+            characters. Returned only by this response; store it at once.
+          example: 9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab
+          maxLength: 64
+          minLength: 64
+          pattern: ^[0-9a-f]{64}$
         grant_type:
           type: string
           description: "The OAuth2 grant type this client uses:
@@ -9294,16 +9297,10 @@ components:
         roles:
           type: array
           description: The roles assigned to the M2M client
-          example: "[M2M]"
+          example:
+            - ROLE_M2M
           items:
             type: string
-        client_id_issued_at:
-          type: integer
-          format: int64
-          description: "Time at which the client identifier was issued, as the number of
-            seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section
-            3.2.1. "
-          example: 1709913600
         onBehalfOf:
           type: boolean
           description: "Whether this is an on-behalf-of (OBO) client: it may
@@ -11206,7 +11203,7 @@ components:
         clientId:
           type: string
           description: The client identifier for the M2M client
-          example: abc523BCD
+          example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
           pattern: ^[A-Za-z0-9]+$
@@ -11223,7 +11220,8 @@ components:
         roles:
           type: array
           description: The roles assigned to the M2M client
-          example: "[M2M]"
+          example:
+            - ROLE_M2M
           items:
             type: string
         onBehalfOf:
@@ -12066,7 +12064,7 @@ components:
         clientId:
           type: string
           description: Client Id
-          example: abc523BCD
+          example: GC2693985CC61NUU
       required:
         - clientId
         - message

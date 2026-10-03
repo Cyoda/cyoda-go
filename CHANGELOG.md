@@ -883,6 +883,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the `keyId` rule (`^[A-Za-z0-9._-]{1,128}$`), the setting that enables them
   (`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`) and the default `validTo`
   (`validFrom` plus `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days).
+  `TechnicalUserCredentialsDto` no longer declares `client_id_issued_at`,
+  which is never sent; `client_secret` is declared as the 64 lower-case hex
+  characters the server generates, and the `roles` examples are arrays.
 
 - A scheduled transition records as `armedBy` the attributed principal of the
   write that armed it.
