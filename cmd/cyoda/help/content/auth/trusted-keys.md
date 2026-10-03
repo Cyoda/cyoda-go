@@ -70,6 +70,8 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
 
 Optional fields: `issuers` (when set, the subject token's `iss` must be one of them), `validFrom`, `validTo`, and `invalidatePrevious` (invalidates every other key of the tenant at once). Response (`200 OK`) echoes the registered key shape plus lifecycle metadata.
 
+The JWK is an RSA public key with a modulus of at least 2048 bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi` or `oth`) is refused with `400 BAD_REQUEST`, and the detail names the member. cyoda stores and returns only the public members `kty`, `kid` (set to the `keyId`), `n` and `e`, plus `alg` and `use` when you send them (as strings); every other member you send is dropped.
+
 The key belongs to the tenant of the admin who registers it. Pick a stable, descriptive `keyId`: it becomes the `kid` header you set when signing. Key ids are unique within a tenant only — another tenant may register the same `keyId` for its own, independent key. Registering a `keyId` your tenant already has replaces that key (an upsert), so a retried registration succeeds.
 
 ### List trusted keys
@@ -161,6 +163,7 @@ Management endpoints:
 - `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — registering or reactivating a key would exceed the per-tenant cap; delete or invalidate an old key first.
 - `errors.STORAGE_UNAVAILABLE` (`503`, retryable) — the store could not be read or written, on any of the endpoints, the list included. Any other store failure is `500` with a ticket.
 - `errors.UNSUPPORTED_KEY_TYPE` (`400`) — `kty` is not `"RSA"`.
+- `errors.BAD_REQUEST` (`400`) — on register: the body is malformed; the `keyId` has the wrong form; the JWK carries a private member, has a modulus under 2048 bits, or has a non-string `alg` or `use`; or the validity window is out of range.
 - `errors.UNAUTHORIZED` (`401`) — caller lacks a valid bearer for the management call.
 - `errors.FORBIDDEN` (`403`) — the caller's token lacks `ROLE_ADMIN`, or is an on-behalf-of token.
 

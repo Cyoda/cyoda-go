@@ -5829,6 +5829,13 @@ paths:
         verifying subject tokens immediately.
 
 
+        The JWK must be an RSA public key with a modulus of at least 2048
+        bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`,
+        `qi`, `oth`) is refused. cyoda stores and returns only the public
+        members `kty`, `kid` (the `keyId`), `n` and `e`, plus `alg` and `use`
+        when given; any other member of the request is dropped.
+
+
         Requires ROLE_ADMIN. Disabled by default — enable via
 
         `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
@@ -5849,7 +5856,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
+          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, a JWK that carries a private member (the detail names it), an RSA modulus under 2048 bits, a non-string `alg` or `use`, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -9957,8 +9964,9 @@ components:
         jwk:
           type: object
           additionalProperties: true
-          description: "The registered public key in JWK format (RFC 7517). Contains only
-            public key components. "
+          description: "The registered public key in JWK format (RFC 7517): `kty`,
+            `kid`, `n` and `e`, plus `alg` and `use` when they were registered.
+            No other member is stored or returned. "
         keyId:
           type: string
           description: Key identifier, unique within the tenant
@@ -9994,11 +10002,13 @@ components:
         jwk:
           type: object
           additionalProperties: true
-          description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
-            public key components only. Supported key types: RSA (`kty: "RSA"`),
-            EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
-            7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is
-            honoured in this version.'
+          description: 'A JSON Web Key (JWK) as defined in RFC 7517. Only RSA
+            (`kty: "RSA"`) is honoured in this version, with a modulus of at
+            least 2048 bits. A JWK that carries a private member (`d`, `p`,
+            `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only
+            the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are
+            stored; any other member is dropped. See RFC 7517 and RFC 7518 for
+            field definitions.'
           example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
             n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
         issuers:

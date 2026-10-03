@@ -176,6 +176,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   store; `GET /oauth/keys/trusted` can answer `500`/`503`.** See `cyoda help
   auth trusted-keys`.
 
+- **Trusted-key registration refuses a JWK with a private member or a small
+  modulus, and stores only the public members.** A JWK that carries `d`,
+  `p`, `q`, `dp`, `dq`, `qi` or `oth` is `400 BAD_REQUEST`, and the detail
+  names the member; an RSA modulus under 2048 bits is `400 BAD_REQUEST`; a
+  non-string `alg` or `use` is `400 BAD_REQUEST`. Before, the request's JWK
+  was stored as sent and returned by register and list, private members
+  included. Now register and list return, and the store holds, only `kty`,
+  `kid` (the `keyId`), `n` and `e`, plus `alg` and `use` when sent.
+
 - **Tokens are mapped strictly: a token with both `scopes` and `user_roles`,
   or with `act` but no `scopes`, is refused. `CYODA_IAM_MOCK_KIND` defaults
   to `service`.** A token with `act` is a user acting through the client

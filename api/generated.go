@@ -2600,7 +2600,7 @@ type RegisterTrustedKeyRequestDto struct {
 	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of at least 2048 bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
 	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs.
@@ -3127,7 +3127,7 @@ type TrustedKeyResponseDto struct {
 	Active  bool      `json:"active"`
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk The registered public key in JWK format (RFC 7517). Contains only public key components.
+	// Jwk The registered public key in JWK format (RFC 7517): `kty`, `kid`, `n` and `e`, plus `alg` and `use` when they were registered. No other member is stored or returned.
 	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Key identifier, unique within the tenant

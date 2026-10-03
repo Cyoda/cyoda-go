@@ -829,6 +829,90 @@ func TestTrusted_RegisterNonRSA_400UnsupportedKeyType(t *testing.T) {
 	assertProblemJSON(t, resp, http.StatusBadRequest, "UNSUPPORTED_KEY_TYPE")
 }
 
+// TestTrusted_RegisterPrivateMember_400: a JWK carrying a private RSA member
+// is 400 BAD_REQUEST, and the detail names the member.
+func TestTrusted_RegisterPrivateMember_400(t *testing.T) {
+	kid := fmt.Sprintf("e2e-priv-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
+	jwk := rsaJWK(t, kid)
+	jwk["d"] = "AQAB"
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{"keyId": kid, "jwk": jwk}))
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(raw), `private member \"d\"`) {
+		t.Errorf("detail does not name the private member d: %s", raw)
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestTrusted_RegisterSmallModulus_400: an RSA modulus under 2048 bits is
+// 400 BAD_REQUEST.
+func TestTrusted_RegisterSmallModulus_400(t *testing.T) {
+	kid := fmt.Sprintf("e2e-small-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
+	n := make([]byte, 255) // 2040 bits
+	for i := range n {
+		n[i] = 0xFF
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{
+		"keyId": kid,
+		"jwk": map[string]any{
+			"kty": "RSA", "kid": kid,
+			"n": base64.RawURLEncoding.EncodeToString(n),
+			"e": base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x00, 0x01}),
+		},
+	}))
+	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestE2E_TrustedKey_StoresOnlyPublicMembers: register and list return only
+// the JWK's public members; any other member of the request is dropped.
+func TestE2E_TrustedKey_StoresOnlyPublicMembers(t *testing.T) {
+	kid := fmt.Sprintf("e2e-pub-%d", time.Now().UnixNano())
+	deleteTrustedKeyOnCleanup(t, kid)
+	jwk := rsaJWK(t, kid)
+	jwk["alg"] = "RS256"
+	jwk["x5c"] = []any{"MIIB"}
+	allowed := map[string]bool{"kty": true, "kid": true, "n": true, "e": true, "alg": true, "use": true}
+	check := func(where string, got map[string]any) {
+		t.Helper()
+		for m := range got {
+			if !allowed[m] {
+				t.Errorf("%s: jwk carries member %q", where, m)
+			}
+		}
+		if got["n"] != jwk["n"] || got["alg"] != "RS256" {
+			t.Errorf("%s: jwk = %+v", where, got)
+		}
+	}
+	resp := adminRequest(t, "POST", "/oauth/keys/trusted", mustJSON(t, map[string]any{"keyId": kid, "jwk": jwk}))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("register: %d %s", resp.StatusCode, raw)
+	}
+	var reg genapi.TrustedKeyResponseDto
+	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil {
+		t.Fatal(err)
+	}
+	check("register", reg.Jwk)
+
+	list := adminRequest(t, "GET", "/oauth/keys/trusted", nil)
+	defer list.Body.Close()
+	var keys []genapi.TrustedKeyResponseDto
+	if err := json.NewDecoder(list.Body).Decode(&keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range keys {
+		if k.KeyId == kid {
+			check("list", k.Jwk)
+			return
+		}
+	}
+	t.Fatalf("key %s not listed", kid)
+}
+
 // TestTrustedKey_CapReached_400: registering one key past the per-tenant cap
 // (CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT) is 400 TRUSTED_KEY_CAP_REACHED. It
 // runs in a tenant of its own, so filling that tenant's cap does not affect

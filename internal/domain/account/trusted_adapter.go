@@ -81,7 +81,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
-	pub, errCode, jwkErr := parseTrustedJWK(req.Jwk, req.KeyId, h.iam.TrustedKeyMaxJWKProperties)
+	pub, publicJWK, errCode, jwkErr := parseTrustedJWK(req.Jwk, req.KeyId, h.iam.TrustedKeyMaxJWKProperties)
 	if jwkErr != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, errCode, jwkErr.Error()))
 		return
@@ -113,7 +113,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	vt := validTo
 	tID := tenantFromCtx(r)
 	tk := &auth.TrustedKey{
-		KID: req.KeyId, TenantID: tID, JWK: req.Jwk, PublicKey: pub,
+		KID: req.KeyId, TenantID: tID, JWK: publicJWK, PublicKey: pub,
 		Issuers: issuers, Active: true, ValidFrom: validFrom, ValidTo: &vt,
 	}
 	if err := h.trustedKeyStore.Register(r.Context(), tk, invalidate); err != nil {
@@ -125,36 +125,62 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(toTrustedKeyResponse(tk))
 }
 
-func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.PublicKey, code string, err error) {
+// privateJWKMembers are the RSA private-key members of a JWK (RFC 7518
+// §6.3.2). A trusted key is a public key: a JWK carrying any of them is
+// refused, so the server never holds the private half.
+var privateJWKMembers = []string{"d", "p", "q", "dp", "dq", "qi", "oth"}
+
+// parseTrustedJWK validates a trusted-key JWK and returns its public key and
+// the JWK to store and return: kty, kid (the keyId), n and e, plus alg and use
+// when given. Every other member of the request is dropped.
+func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.PublicKey, public map[string]any, code string, err error) {
 	if len(jwk) > maxProps {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk has too many properties (%d > %d)", len(jwk), maxProps)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk has too many properties (%d > %d)", len(jwk), maxProps)
+	}
+	for _, m := range privateJWKMembers {
+		if _, ok := jwk[m]; ok {
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk must not contain the private member %q", m)
+		}
 	}
 	ktyAny, ok := jwk["kty"]
 	if !ok {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk missing kty")
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk missing kty")
 	}
 	kty, _ := ktyAny.(string)
 	if kty == "" {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk kty must be a string")
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk kty must be a string")
 	}
 	if kty != "RSA" {
-		return nil, common.ErrCodeUnsupportedKeyType, fmt.Errorf("only RSA JWKs supported (v0.8.0)")
+		return nil, nil, common.ErrCodeUnsupportedKeyType, fmt.Errorf("only RSA JWKs supported")
 	}
 	if rawKid, ok := jwk["kid"]; ok {
 		s, _ := rawKid.(string)
 		if s != keyId {
-			return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
 		}
 	}
 	raw, err := json.Marshal(jwk)
 	if err != nil {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
 	}
 	pubKey, err := auth.ParseRSAPublicKeyFromJWK(raw)
 	if err != nil {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
 	}
-	return pubKey, "", nil
+	// ParseRSAPublicKeyFromJWK accepted n and e, so both are strings.
+	public = map[string]any{"kty": kty, "kid": keyId, "n": jwk["n"], "e": jwk["e"]}
+	for _, m := range []string{"alg", "use"} {
+		v, ok := jwk[m]
+		if !ok {
+			continue
+		}
+		s, isString := v.(string)
+		if !isString {
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk %s must be a string", m)
+		}
+		public[m] = s
+	}
+	return pubKey, public, "", nil
 }
 
 func toTrustedKeyResponse(tk *auth.TrustedKey) genapi.TrustedKeyResponseDto {

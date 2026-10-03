@@ -461,7 +461,17 @@ changes, which `CHANGELOG.md` lists under Breaking.
 ### 12.3 Trusted keys
 
 Statuses as in the current OpenAPI document, except: no cross-tenant 409; `GET` list adds `500` / `503`;
-invalidate takes no body.
+invalidate takes no body. Register adds these `400` causes:
+
+| Cause | Status | Code |
+|---|---|---|
+| JWK carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`); the detail names it | 400 | `BAD_REQUEST` |
+| RSA modulus under 2048 bits | 400 | `BAD_REQUEST` |
+| `alg` or `use` present and not a string | 400 | `BAD_REQUEST` |
+
+Register stores, and register and list return, only the public members
+`kty`, `kid` (the `keyId`), `n`, `e`, and `alg` / `use` when given; every
+other member of the request is dropped.
 
 ### 12.4 Other routes
 

@@ -29,6 +29,11 @@ calls. Only cyoda's own signing keys verify bearer tokens.
   for an independent key; there is no cross-tenant `409`.
 - Register is an upsert on `(tenant, kid)`, so a retried registration
   succeeds.
+- Register accepts a public key only: a JWK that carries a private member
+  (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is `400 BAD_REQUEST`, and the
+  detail names the member; an RSA modulus under 2048 bits is `400
+  BAD_REQUEST`. The store holds, and register and list return, only `kty`,
+  `kid`, `n`, `e`, and `alg` / `use` when given.
 - Trusted keys have no grace period and no `audience`. Invalidating a key
   ends it at once, and the invalidate request has no body;
   `invalidatePrevious` on register ends every other key of the tenant at
@@ -67,3 +72,7 @@ tenant, user and roles from the token's claims. Tracked in CP-3974.
    period and `audience` of trusted keys.
 3. Apply the cap to reactivation as well as registration, or record the
    difference.
+4. Refuse a JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`,
+   `qi`, `oth`) with `400 BAD_REQUEST` naming the member, refuse an RSA
+   modulus under 2048 bits with `400 BAD_REQUEST`, and store and return only
+   the public members `kty`, `kid`, `n`, `e`, `alg`, `use`.
