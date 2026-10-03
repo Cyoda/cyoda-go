@@ -154,6 +154,33 @@ func TestRegisterTrustedKey_MinimalPublicMembers(t *testing.T) {
 	}
 }
 
+// The stored and returned n and e are the ones the key verifies with, even
+// when the request spells the members in another letter case: the JWK parser
+// matches member names without regard to case, so copying the request's
+// exact-case "n" and "e" would list nulls beside a working key.
+func TestRegisterTrustedKey_ListsTheModulusItVerifiesWith(t *testing.T) {
+	h := enabledHandler(t)
+	jwk := rsaJWK(t, "k1")
+	n, e := jwk["n"], jwk["e"]
+	delete(jwk, "n")
+	delete(jwk, "e")
+	jwk["N"], jwk["E"] = n, e
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: jwk})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	var reg genapi.TrustedKeyResponseDto
+	_ = json.Unmarshal(w.Body.Bytes(), &reg)
+	if reg.Jwk["n"] != n || reg.Jwk["e"] != e {
+		t.Errorf("jwk n=%v e=%v, want the verifying modulus and exponent", reg.Jwk["n"], reg.Jwk["e"])
+	}
+	if got := jwkMembers(reg.Jwk); got != "e kid kty n" {
+		t.Errorf("jwk members = %q, want e kid kty n", got)
+	}
+}
+
 // alg and use, when present, are strings.
 func TestRegisterTrustedKey_NonStringAlgOrUse_400(t *testing.T) {
 	for _, member := range []string{"alg", "use"} {

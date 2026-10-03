@@ -2,10 +2,12 @@ package account
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"time"
 
@@ -167,8 +169,15 @@ func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.P
 	if err != nil {
 		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
 	}
-	// ParseRSAPublicKeyFromJWK accepted n and e, so both are strings.
-	public = map[string]any{"kty": kty, "kid": keyId, "n": jwk["n"], "e": jwk["e"]}
+	// n and e come from the parsed key, not the request: the parser matches
+	// member names without regard to case, so the request's own "n" and "e"
+	// may be absent while the key still verifies.
+	public = map[string]any{
+		"kty": kty,
+		"kid": keyId,
+		"n":   base64.RawURLEncoding.EncodeToString(pubKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pubKey.E)).Bytes()),
+	}
 	for _, m := range []string{"alg", "use"} {
 		v, ok := jwk[m]
 		if !ok {
