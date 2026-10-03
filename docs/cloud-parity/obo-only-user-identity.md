@@ -2,7 +2,7 @@
 
 cyoda-go **defines** the contract; Cyoda Cloud aligns to it.
 
-CaaS ticket: to be filed
+CaaS ticket: [CP-3982](https://cyoda1.atlassian.net/browse/CP-3982)
 
 ## Rule
 
