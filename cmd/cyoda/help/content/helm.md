@@ -156,6 +156,8 @@ Annotations on the gRPC Ingress object.
 **`ingress.grpc.tls`** — list — default `[]`
 TLS configuration for the gRPC Ingress.
 
+**Rate-limit `/api/oauth/token` at the Gateway or Ingress.** The token endpoint authenticates callers that are not yet authenticated, with bcrypt. Each node bounds that work with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` and answers `503` past the bound (it fails closed), so a flood of bad credentials can keep legitimate clients getting `503`. The chart does not render a rate limit. Configure a per-source rate limit for the `/api/oauth/token` path on the operator-provided Gateway (or with Ingress annotations, depending on the controller). See `cyoda help auth tokens`.
+
 **`monitoring.metricsBearer.existingSecret`** — string — default `""`
 Name of an operator-managed Secret containing the static bearer token for `GET /metrics` authentication. When empty, the chart auto-generates the Secret. GitOps safety guard applies.
 

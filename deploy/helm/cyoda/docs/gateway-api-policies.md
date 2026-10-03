@@ -56,6 +56,16 @@ spec:
 needed). For cluster-wide enforcement use `type: Global` and supply a
 `backendRefs` to a Redis instance.
 
+**The token endpoint needs a per-source rate limit.** `/api/oauth/token`
+authenticates callers that are not yet authenticated, with bcrypt. Each
+cyoda node bounds that work with
+`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` and answers `503` past
+the bound (it fails closed), so a flood of bad credentials can keep
+legitimate clients getting `503`. Put a per-source-IP limit like the one
+above on the token path — on its own route if the rest of the API needs
+a different limit (see "Pattern: separate routes per concern" below).
+See `cyoda help auth tokens`.
+
 ### JWT auth (SecurityPolicy)
 
 Require an RS256 JWT signed by your IdP for every request to the HTTP

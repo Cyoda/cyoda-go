@@ -158,6 +158,8 @@ The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "erro
 
 `GET /.well-known/jwks.json` answers `503` with `Retry-After` while the node's key copy is stale.
 
+**Rate-limit the token endpoint at ingress.** `/oauth/token` authenticates callers that are not yet authenticated, and each request with an unknown client id or a wrong secret costs one bcrypt comparison. cyoda bounds that work per node with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`; past the bound it answers `503 temporarily_unavailable` and does no more work (it fails closed). The bound protects the node's CPU, not the endpoint's availability: a flood of bad credentials can keep legitimate clients getting `503`. The per-client `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` limit applies only after a client authenticates, so it does not stop such a flood. Deployments must put a per-source rate limit in front of `/api/oauth/token` at the ingress, gateway or load balancer.
+
 ## SEE ALSO
 
 - `auth.clients` — provision the plain, admin and on-behalf-of clients

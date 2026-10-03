@@ -189,6 +189,15 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   reset or a client delete takes effect on the next request. Must be at
   least `1`; startup fails otherwise. (default: the number of CPUs the
   process may use (GOMAXPROCS), which follows a container CPU limit)
+
+  The token endpoint authenticates callers that are not yet authenticated,
+  with bcrypt. This bound keeps that work from taking every CPU of a node;
+  past it the endpoint answers `503` (it fails closed), so a flood of bad
+  credentials can keep legitimate clients getting `503`.
+  `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` counts only after a client has
+  authenticated and does not stop such a flood. Deployments must put a
+  per-source rate limit in front of `/api/oauth/token` at the ingress,
+  gateway or load balancer.
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
   that can verify. It counts every active key whose `validTo` has not passed;
   an invalidated key frees its slot at once (trusted keys have no grace
@@ -220,8 +229,8 @@ and every client or trusted-key call reads the store, so a change applies to
 the next token request on every node once the call returns. Tokens already
 issued keep verifying until their `exp`: an API request is not checked
 against the client store. The exception is a compute-node stream, which
-re-reads its client every 60 seconds and closes once the client is deleted or
-its secret reset. To cut off tokens already issued, see *A leaked platform
+reads its client when it opens and every 60 seconds after, and is refused or
+closed once the client is deleted or its secret reset. To cut off tokens already issued, see *A leaked platform
 admin-client secret* below. (Each node also keeps a verified-secret cache,
 always on and bounded to a fixed number of entries: each entry holds the
 SHA-256 of a secret that matched and the stored hash it matched, and is used
