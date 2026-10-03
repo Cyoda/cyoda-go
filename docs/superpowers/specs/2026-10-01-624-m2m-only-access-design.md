@@ -373,14 +373,19 @@ API vocabulary (`e2e/externalapi`), or a different OIDC (cosign keyless
 signing in `.github/workflows`, `.goreleaser.yaml`, `scripts/install.sh`; the
 gateway's own OIDC in `deploy/helm/cyoda/docs/gateway-api-policies.md`),
 or the test that proves the removed provider routes stay removed
-(`app/removed_routes_test.go`):
+(`app/removed_routes_test.go`), or the integration guide's migration section,
+which names OIDC, `CYODA_OIDC_*` and `X-User-ID` to tell applications what to
+remove (`cmd/cyoda/help/content/auth/integration.md`,
+`docs/access-to-the-cyoda-api.html`):
 
 ```
 X=(':!docs/superpowers' ':!docs/audits' ':!docs/PRD.md' ':!docs/release-notes'
    ':!docs/analysis' ':!docs/adr' ':!docs/cloud-parity' ':!CHANGELOG.md'
    ':!.github' ':!docs/cyoda' ':!e2e/externalapi' ':!.goreleaser.yaml'
    ':!scripts/install.sh' ':!deploy/helm/cyoda/docs/gateway-api-policies.md'
-   ':!app/removed_routes_test.go')
+   ':!app/removed_routes_test.go'
+   ':!cmd/cyoda/help/content/auth/integration.md'
+   ':!docs/access-to-the-cyoda-api.html')
 git grep -niI 'oidc' -- . "${X[@]}"
 git grep -nI -e KEY_OWNED_BY_DIFFERENT_TENANT -e CYODA_OIDC_ -e X-User-ID \
   -e BOOTSTRAP_AUDIENCE -e ValidateFirstPartyUserID -e ChainedValidator \
