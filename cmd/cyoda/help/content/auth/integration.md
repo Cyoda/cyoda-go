@@ -352,7 +352,7 @@ Afterwards, review what the credentials did: entity changes and audit events who
 - `user` — `authctx.Require` never passes, and a compute-node stream is refused (`PermissionDenied`).
 - `system` — the same refusals as `user`. `authclaims` still carries the mock roles.
 
-Mock mode has no client store: `POST /oauth/token` issues no token and answers `501 NOT_IMPLEMENTED`, provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_M2M` (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is `403 FORBIDDEN` ("this operation requires ROLE_M2M") instead. The client and trusted-key endpoints are reached without `ROLE_M2M` and so answer `501`/`404 FEATURE_DISABLED` regardless of `CYODA_IAM_MOCK_ROLES` (trusted keys answer `404 FEATURE_DISABLED` while their flag is off). **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
+Mock mode has no client store: `POST /oauth/token` issues no token and answers `501 NOT_IMPLEMENTED`, provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_M2M` (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is `403 FORBIDDEN` ("this operation requires ROLE_M2M") instead. The client and trusted-key endpoints need no `ROLE_M2M` but check `ROLE_ADMIN` first: they answer `501` (trusted keys `404 FEATURE_DISABLED` while their flag is off) provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_ADMIN` (the default does), and `403 FORBIDDEN` otherwise. **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
 
 **On-behalf-of end to end, in jwt mode, on one machine** (needs `openssl`, `xxd`, `jq` and `curl`):
 
