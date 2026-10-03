@@ -107,15 +107,18 @@ The `/api/account` response confirms the token's tenant and roles. With that tok
 
 | Env var | Default | Effect |
 |---------|---------|--------|
+| `CYODA_JWT_ISSUER` | `cyoda` | The `iss` of every token cyoda-go issues, and the value every user assertion's `aud` must contain. It names this deployment, not an identity provider. An empty value refuses to start. |
 | `CYODA_JWT_EXPIRY_SECONDS` | `300` | Maximum lifetime of a token cyoda-go issues, in seconds (`cyoda token --ttl` and an on-behalf-of token can be shorter), and the upper bound of `cyoda token --ttl`. Must be an integer from 1 to 3600; any other value refuses to start. A token exchange's token also ends no later than its assertion's `exp`. |
 | `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` | `false` | When `true`, enables the 5 `/oauth/keys/trusted/*` admin endpoints. When `false`, those endpoints return `404 FEATURE_DISABLED`. |
+| `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` | `10` | Per-tenant cap on trusted keys that can verify (active, `validTo` not passed); registering or reactivating past it returns `400 TRUSTED_KEY_CAP_REACHED`. `0` means unbounded. |
+| `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` | `365` | Validity, in days from `validFrom`, of a trusted key registered without `validTo` (not a cap on a `validTo` you send). Rotate keys before it ends. |
 | `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` | `false` | When `true`, `POST /clients?withAdminRole=true` may grant `ROLE_ADMIN` to created M2M clients. When `false` (default), that request shape returns `404 FEATURE_DISABLED`. |
 | `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` | `100` | Per-tenant cap on M2M clients; `POST /clients` at the cap returns `400 M2M_CLIENT_CAP_REACHED`. `0` means unbounded; a negative value refuses to start. |
 | `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` | `600` | Token requests each M2M client may make per minute on one node, across both grants; over it `POST /oauth/token` returns `429 slow_down` with `Retry-After`. `0` means unlimited; a negative value refuses to start. |
 | `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` | the number of CPUs the process may use (GOMAXPROCS) | Client-secret (bcrypt) operations that run at once on one node: `POST /oauth/token` checks and the secret hashing of `POST /clients` and the secret reset. An operation that gets no slot within 1 s returns `503` with `Retry-After` (`temporarily_unavailable` on the token endpoint, `SERVER_BUSY` on `/clients`). Must be at least `1`. The bound protects the node, not the endpoint: put a per-source rate limit in front of `/api/oauth/token` at the ingress. |
 
 In mock mode, `CYODA_IAM_MOCK_KIND` (default `service`) sets the principal kind
-(`user`/`service`/`system`) on the mock default UserContext. The default makes
+(`user`/`service`/`system`) of the fixed mock principal every request runs as. The default makes
 every mock-mode caller a client, as in `jwt` mode; `user` or `system` lets
 local/CI setups exercise user- or system-attributed code paths without real
 JWT auth. Any other value, in either mode, refuses to start.

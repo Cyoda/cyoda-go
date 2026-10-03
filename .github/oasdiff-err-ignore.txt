@@ -194,3 +194,7 @@ error at api/openapi.yaml, in API POST /oauth/token removed the enum value `urn:
 # (was 366 days): no token outlives it, so a longer grace only kept a revoked key verifying.
 error at api/openapi.yaml, in API POST /oauth/keys/keypair the `invalidateGracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].
 error at api/openapi.yaml, in API POST /oauth/keys/keypair/{keyId}/invalidate the `gracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].
+#
+# POST /oauth/token always required grant_type: a request without it answers
+# 400 unsupported_grant_type. The document now says so; the wire is unchanged.
+error at api/openapi.yaml, in API POST /oauth/token the request property `grant_type` became required [request-property-became-required].

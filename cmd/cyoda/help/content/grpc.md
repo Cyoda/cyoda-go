@@ -28,8 +28,8 @@ grpc — gRPC service contract for compute members and entity management.
 ## SYNOPSIS
 
 ```
-grpcurl -plaintext localhost:9090 list
-grpcurl -plaintext localhost:9090 org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
 ```
 
 ## DESCRIPTION
@@ -46,7 +46,7 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 **Transport**: plaintext TCP. The listener has no TLS of its own. In production, TLS is terminated by the ingress, gateway or service mesh in front of it (the Helm chart's `ingress.grpc.tls`); compute nodes connect through it and verify the server certificate, and only then may they rely on the identity attributes of a callout. Plaintext is for localhost or a private Docker network during development.
 
-**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API. Both mock IAM and JWT modes apply identically to gRPC connections — the auth interceptor extracts the `authorization` metadata value, builds an `http.Request` with that `Authorization` header, and delegates to the configured `AuthenticationService`.
+**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API, and it is checked exactly as an HTTP request's `Authorization` header is, in mock and JWT mode alike: the same tokens are accepted, a missing or invalid one answers `codes.Unauthenticated`, and every method and stream then requires `ROLE_M2M` (`codes.PermissionDenied` otherwise). See `cyoda help auth`.
 
 **OTel tracing**: when `CYODA_OTEL_ENABLED=true`, the gRPC server installs an `otelgrpc.NewServerHandler()` stats handler that creates spans for every inbound RPC.
 
@@ -212,7 +212,7 @@ The compute member protocol allows external processes to serve as workflow proce
 }
 ```
 
-`joinedLegalEntityId` must match the tenant ID in the bearer token. When present and mismatched, the server returns `codes.PermissionDenied`. When absent, the server uses the token's tenant ID implicitly. Include `joinedLegalEntityId` in all join messages — clients that omit it against a strict server may fail if validation is tightened.
+`joinedLegalEntityId` is optional. The member always joins the tenant of its bearer token. When the field is present it must equal that tenant id exactly, or the server returns `codes.PermissionDenied` and registers nothing; when it is absent, nothing is checked. Sending it makes a misconfigured tenant fail loudly at join time instead of leaving the member waiting for callouts that never come.
 
 3. Server registers the member and responds with `CalculationMemberGreetEvent`:
 
@@ -605,7 +605,7 @@ gRPC error codes returned by the service:
 - `codes.InvalidArgument` — first message is not `CalculationMemberJoinEvent`; malformed CloudEvent; invalid join payload
 - `codes.DeadlineExceeded` — member timed out (keep-alive timeout exceeded)
 - `codes.Internal` — server-side error constructing a response CloudEvent
-- `codes.Unavailable` — the node is shutting down: on SIGTERM it stops accepting streams and closes the open ones within 10 seconds; also when the member was replaced by a new stream with its member id, or a send to it failed
+- `codes.Unavailable` — the node is shutting down: on SIGTERM it stops accepting streams and closes the open ones within 10 seconds; also when a send to the member failed
 
 What a compute node does on each: on `Unauthenticated`, read its current credentials, fetch a new token and reconnect, and stop (alert, no loop) if a fresh token is refused again; on `Unavailable` and `Internal`, reconnect with backoff, through the load balancer, to any node; on `DeadlineExceeded`, reconnect at once and fix the cause (read the stream continuously, answer keep-alives); on `PermissionDenied` and `InvalidArgument`, fix the configuration or the client and do not reconnect in a loop.
 
@@ -637,7 +637,13 @@ Errors a compute member sees on a callback:
 - `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended
 - `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
-- `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all
+- `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all (detail "invalid transaction token"); a callback whose bearer token fails gets the same code with the detail "authentication failed"
+- `errors.FORBIDDEN` — `403` — the transaction belongs to another tenant, or an on-behalf-of callback names a transaction whose origin is not its user
+- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — the node that holds the transaction could not be reached; the transaction is likely lost, so stop working on that callout (the operation that began it fails, and its own client may run it again)
+- `errors.TOO_MANY_JOINED_REQUESTS` — `503` — more than `CYODA_CALLOUT_JOINED_MAX_WAITERS` callbacks wait on the transaction; retryable after a short back-off
+- `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — the callback's answer would pass `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; page the read instead
+
+These are the HTTP statuses. Over gRPC, an error about the transaction or the callback comes in the RPC's error envelope (`success: false`, `error.code` `CLIENT_ERROR`, `error.message` starting with the code above), not as a gRPC status; a failing bearer token is the gRPC status `codes.Unauthenticated`, and a missing `ROLE_M2M` `codes.PermissionDenied`.
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — the callback's write reached a `COMMIT_BEFORE_DISPATCH` processor
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — the callback asked to change a model or its workflows
 
@@ -646,14 +652,16 @@ Errors a compute member sees on a callback:
 **List services (plaintext, no auth):**
 
 ```
-grpcurl -plaintext localhost:9090 list
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list
 ```
 
 **List methods on CloudEventsService:**
 
 ```
-grpcurl -plaintext localhost:9090 list org.cyoda.cloud.api.grpc.CloudEventsService
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list org.cyoda.cloud.api.grpc.CloudEventsService
 ```
+
+The `-import-path ./proto` examples below need the two proto files on disk: write them with `cyoda help grpc proto` (it prints `cyoda-cloud-api.proto` and `cloudevents.proto`, separated by comments) and save them as `./proto/cyoda/cyoda-cloud-api.proto` and `./proto/cloudevents/cloudevents.proto`. The server does not serve gRPC reflection, so every `grpcurl` call, `list` included, needs the proto files.
 
 **Describe the CloudEventsService:**
 

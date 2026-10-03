@@ -37,8 +37,8 @@ startup unless JWT mode is properly configured.
 
 - `CYODA_IAM_MOCK_ROLES` — comma-separated default user roles assigned to all requests
   in mock mode (default: `ROLE_ADMIN,ROLE_M2M`)
-- `CYODA_IAM_MOCK_KIND` — principal kind assigned to the default UserContext in
-  mock mode: `user`, `service`, or `system`. The default, `service`, makes
+- `CYODA_IAM_MOCK_KIND` — principal kind of the fixed mock-mode principal
+  every request runs as: `user`, `service`, or `system`. The default, `service`, makes
   every mock-mode caller a client, as in `jwt` mode. `user` and `system` let
   local/CI setups exercise user- or system-attributed code paths without
   standing up real JWT auth. Any other value, in either mode, refuses to
@@ -66,7 +66,8 @@ signal that requests are unauthenticated.
   that does not start with `-----BEGIN` is decoded as base64); required in jwt mode.
   Also derives the key that encrypts stored signing key pairs, so treat it as
   the root secret. Replacing it retires every issued key pair sealed by the
-  wrapped vault (see *JWT signing keypair rotation*).
+  wrapped vault — the encryption of stored key pairs under a key derived from
+  `CYODA_JWT_SIGNING_KEY` (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
 - `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`): cyoda's own name, set on every
   token cyoda issues and required on every token it accepts. It names this
@@ -316,7 +317,7 @@ verify on every node until the key pair's `validTo`.
 **Emergency revocation of a leaked token:** revoke the key pair named by
 the `kid` in the token's header. Every token cyoda-go accepts was signed by
 one of its own key pairs, the bootstrap key or an issued one, and JWKS
-(`/.well-known/jwks.json`) lists each key pair until it can no longer
+(`GET /api/.well-known/jwks.json`, under `CYODA_CONTEXT_PATH`) lists each key pair until it can no longer
 verify. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
 from `POST /oauth/token` while it wins signer selection
@@ -475,7 +476,7 @@ the clients and trusted keys you need after the last restart, once
 `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` and
 `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` are set the way they will
 stay. In step 5, JWKS lists the bootstrap key of the latest
-`CYODA_JWT_SIGNING_KEY`, and `/current` names it.
+`CYODA_JWT_SIGNING_KEY`, and `/current` (`GET /api/oauth/keys/keypair/current`, the key pair that signs now) names it.
 
 **1. Contain.** Stop client requests to the HTTP and gRPC APIs, on
 connections already open too, and leave the traffic between nodes open, so
@@ -557,7 +558,7 @@ signing key below.
   active and inside its window (see *No signer* below).
 - Once every node has applied the rotation (see *Shared and persisted*
   above), invalidate with `gracePeriodSec: 0` every key id that
-  `/.well-known/jwks.json` lists, except the new pair and any key pairs
+  `/api/.well-known/jwks.json` lists, except the new pair and any key pairs
   you deliberately keep active. Keep only key ids you know.
 - This always includes the bootstrap key: it still verifies the tokens
   it signed, whatever `CYODA_JWT_SIGNING_KEY` says now.

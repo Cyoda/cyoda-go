@@ -432,12 +432,29 @@ helm install cyoda ./deploy/helm/cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
   --set extraEnv[0].name=CYODA_OTEL_ENABLED \
-  --set extraEnv[0].value=true \
+  --set-string extraEnv[0].value=true \
   --set extraEnv[1].name=OTEL_EXPORTER_OTLP_ENDPOINT \
   --set extraEnv[1].value=http://otel-collector.monitoring.svc.cluster.local:4318 \
   --set extraEnv[2].name=OTEL_SERVICE_NAME \
   --set extraEnv[2].value=cyoda
 ```
+
+An environment value must be a string. `--set` reads `true`, `false` and numbers as YAML scalars of those types, which the chart's schema refuses for `extraEnv[].value`; pass such values with `--set-string`, or quote them in a values file (`value: "true"`).
+
+**With trusted-key registration and admin clients enabled (via extraEnv):**
+
+The chart has no dedicated values for the IAM feature flags. Every replica gets the same value, and changing it rolls the pods, which the flags need because each node reads them at startup (see `cyoda help auth integration`).
+
+```
+helm upgrade cyoda ./deploy/helm/cyoda \
+  --namespace cyoda --reuse-values \
+  --set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED \
+  --set-string extraEnv[0].value=true \
+  --set extraEnv[1].name=CYODA_IAM_M2M_ADMIN_ROLE_ENABLED \
+  --set-string extraEnv[1].value=true
+```
+
+With `--reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.
 
 **With ServiceMonitor for Prometheus Operator:**
 

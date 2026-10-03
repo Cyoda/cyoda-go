@@ -668,25 +668,24 @@ paths:
         can authenticate it once created.
 
 
-        The created user will have M2M role permissions, necessary for getting
-        the bearer token.
+        The created client always holds ROLE_M2M, which every data operation
+        requires. It is created in the caller's own tenant; no request names
+        another tenant.
 
 
-        When `withAdminRole` is set to `true`, the M2M client will additionally
-        receive ROLE_ADMIN in its own tenant,
+        When `withAdminRole` is `true`, the client also receives ROLE_ADMIN in
+        that tenant, which opens the tenant's client and trusted-key endpoints
+        (trusted-key registration also requires
+        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`). This requires
+        `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true` on the node that takes the
+        call; otherwise the answer is `404` with error code
+        `FEATURE_DISABLED`. Any tenant admin can create an admin client in
+        its own tenant. An admin client created in the tenant `PLATFORM` is a
+        platform operator and reaches the key-pair and `/admin/*` endpoints.
 
-        opening that tenant's admin endpoints (e.g., trusted key
-        registration, which also requires
-        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`). Since the client is
-        created in the caller's own tenant, only a caller who is already a
-        platform operator (`ROLE_ADMIN` in `PLATFORM`) can create one there;
-        that client is then itself a platform operator, with access to the
-        platform-operator endpoints (e.g., key-pair management, reload).
 
-        This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
-        flag to be set to `true`;
-
-        otherwise, a `404` response with error code `FEATURE_DISABLED` is returned.
+        When `onBehalfOf` is `true`, the client may only exchange user
+        assertions (token exchange) and never holds ROLE_ADMIN.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -5859,7 +5858,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, a JWK that carries a private member (the detail names it), an RSA modulus under 2048 bits, a non-string `alg` or `use`, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
+          description: "Bad request — BAD_REQUEST: malformed body; invalid keyId format; a JWK with more members than CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES (default 20), with a private member (the detail names it), without kty, n or e, with a kid other than the keyId, with an RSA modulus under 2048 or over 4096 bits, with a public exponent that is not a positive odd integer, or with a non-string alg or use; validTo not after validFrom; or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo). UNSUPPORTED_KEY_TYPE: non-RSA JWK. TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -6151,18 +6150,25 @@ paths:
               properties:
                 grant_type:
                   type: string
-                  description: The OAuth 2.0 grant type
+                  description: The OAuth 2.0 grant type. Required; missing or
+                    any other value is 400 unsupported_grant_type.
                   enum:
                     - client_credentials
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
-                  description: The user assertion to exchange
+                  description: The user assertion to exchange. Required for the
+                    token exchange (400 invalid_request without it); not read
+                    by client_credentials.
                 subject_token_type:
                   type: string
-                  description: The type of the subject token
+                  description: The type of the subject token. Required for the
+                    token exchange (400 invalid_request without it); not read
+                    by client_credentials.
                   enum:
                     - urn:ietf:params:oauth:token-type:jwt
+              required:
+                - grant_type
       responses:
         "200":
           description: Access token issued successfully
@@ -9956,7 +9962,10 @@ components:
       properties:
         active:
           type: boolean
-          description: Whether the key is currently active. False after invalidation; true after reactivation.
+          description: Whether the key is active. False after invalidation;
+            true after reactivation. It does not change when validTo passes,
+            but a key outside its validFrom..validTo window verifies no
+            assertion whatever this value says.
         issuers:
           type: array
           example:
@@ -9985,7 +9994,11 @@ components:
         validTo:
           type: string
           format: date-time
-          description: When this key expires
+          description: When this key expires. Every registration and
+            reactivation sets it (registration defaults it to validFrom plus
+            CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days), so cyoda-go always
+            returns it. Exchanges with the key fail once it passes; rotate
+            before then.
           example: 2026-02-01T10:00:00.000Z
       required:
         - active
@@ -10005,8 +10018,9 @@ components:
           type: object
           additionalProperties: true
           description: 'A JSON Web Key (JWK) as defined in RFC 7517. Only RSA
-            (`kty: "RSA"`) is honoured in this version, with a modulus of at
-            least 2048 bits. A JWK that carries a private member (`d`, `p`,
+            (`kty: "RSA"`) is honoured in this version, with a modulus of 2048
+            to 4096 bits and a positive odd public exponent. A `kid`, if
+            present, must equal `keyId`. A JWK that carries a private member (`d`, `p`,
             `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only
             the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are
             stored; any other member is dropped. See RFC 7517 and RFC 7518 for
@@ -10019,9 +10033,10 @@ components:
             e: AQAB
         issuers:
           type: array
-          description: "List of allowed issuer URIs. When this parameter is configured,
-            the JWT must contain an iss claim, and its value must match one of
-            the entries in this list. "
+          description: "List of accepted issuer values. When it is set, the
+            assertion must carry an iss claim exactly equal to one of the
+            entries. The entries are plain strings compared byte for byte; no
+            URI form is required. "
           example:
             - https://my-app.local/
           items:

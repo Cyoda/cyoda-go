@@ -2594,10 +2594,10 @@ type RegisterTrustedKeyRequestDto struct {
 	// InvalidatePrevious If true, invalidates every other key of the tenant at once.
 	InvalidatePrevious *bool `json:"invalidatePrevious,omitempty"`
 
-	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
+	// Issuers List of accepted issuer values. When it is set, the assertion must carry an iss claim exactly equal to one of the entries. The entries are plain strings compared byte for byte; no URI form is required.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of at least 2048 bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of 2048 to 4096 bits and a positive odd public exponent. A `kid`, if present, must equal `keyId`. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
 	Jwk map[string]interface{} `json:"jwk"`
 
 	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format).
@@ -3111,7 +3111,7 @@ type TransitionScheduleDto struct {
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
-	// Active Whether the key is currently active. False after invalidation; true after reactivation.
+	// Active Whether the key is active. False after invalidation; true after reactivation. It does not change when validTo passes, but a key outside its validFrom..validTo window verifies no assertion whatever this value says.
 	Active  bool      `json:"active"`
 	Issuers *[]string `json:"issuers,omitempty"`
 
@@ -3127,7 +3127,7 @@ type TrustedKeyResponseDto struct {
 	// ValidFrom When this key became valid
 	ValidFrom time.Time `json:"validFrom"`
 
-	// ValidTo When this key expires
+	// ValidTo When this key expires. Every registration and reactivation sets it (registration defaults it to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days), so cyoda-go always returns it. Exchanges with the key fail once it passes; rotate before then.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
 
@@ -3962,13 +3962,13 @@ type SetEntityModelChangeLevelParamsChangeLevel string
 
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
 type GetTechnicalUserTokenFormdataBody struct {
-	// GrantType The OAuth 2.0 grant type
-	GrantType *GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type,omitempty" json:"grant_type,omitempty"`
+	// GrantType The OAuth 2.0 grant type. Required; missing or any other value is 400 unsupported_grant_type.
+	GrantType GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type" json:"grant_type"`
 
-	// SubjectToken The user assertion to exchange
+	// SubjectToken The user assertion to exchange. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
 	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
 
-	// SubjectTokenType The type of the subject token
+	// SubjectTokenType The type of the subject token. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
 	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
 }
 

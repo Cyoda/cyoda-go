@@ -120,7 +120,7 @@ State machine events are recorded best effort: a failure to record one is logged
 
 Retrieves the `STATE_MACHINE_FINISH` audit event for a specific entity and transaction. Provides direct access to the workflow outcome without scanning all audit events.
 
-A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a joined callback's loopback save emits its own START/FINISH pair when it updates an entity whose workflow already ran earlier in the same transaction. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
+A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a compute node's callback that saves, inside the same transaction, an entity whose workflow already ran earlier in it (a processor writing its entity back) runs that workflow again and records its own START/FINISH pair. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
 
 - `entityId` (path): UUID
 - `transactionId` (path): UUID

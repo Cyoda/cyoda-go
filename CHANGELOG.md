@@ -886,6 +886,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `TechnicalUserCredentialsDto` no longer declares `client_id_issued_at`,
   which is never sent; `client_secret` is declared as the 64 lower-case hex
   characters the server generates, and the `roles` examples are arrays.
+  `POST /oauth/token` marks `grant_type` required (a request without it was
+  always `400 unsupported_grant_type`) and says `subject_token` and
+  `subject_token_type` are required for the exchange; `POST /clients`
+  describes `withAdminRole` and `onBehalfOf` as they behave; the trusted-key
+  register `400` list, `jwk`, `issuers`, `active` and `validTo` descriptions
+  match the server (modulus 2048–4096 bits, `kid` = `keyId`, member cap,
+  `active` unaffected by expiry).
 
 - A scheduled transition records as `armedBy` the attributed principal of the
   write that armed it.
