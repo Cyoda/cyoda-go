@@ -197,8 +197,11 @@ func TestE2E_Clients_ClientCredentialsRoundtrip(t *testing.T) {
 	}
 }
 
+// A reset refuses the old secret even when the node holds it in its
+// verified-secret cache.
 func TestE2E_Clients_ResetSecretRotatesAuth(t *testing.T) {
 	id, secret := createClient(t, false, false)
+	getToken(t, id, secret) // warms the verified-secret cache
 
 	rResp := adminRequest(t, "PUT", "/clients/"+id+"/secret", nil)
 	defer rResp.Body.Close()
@@ -224,8 +227,12 @@ func TestE2E_Clients_ResetSecretRotatesAuth(t *testing.T) {
 	}
 }
 
+// A delete refuses the next grant even when the node holds the client's
+// secret in its verified-secret cache: the client record is read on every
+// request, and the cache never stands in for it.
 func TestE2E_Clients_DeleteInvalidatesToken(t *testing.T) {
 	id, secret := createClient(t, false, false)
+	getToken(t, id, secret) // warms the verified-secret cache
 
 	delResp := adminRequest(t, "DELETE", "/clients/"+id, nil)
 	defer delResp.Body.Close()
