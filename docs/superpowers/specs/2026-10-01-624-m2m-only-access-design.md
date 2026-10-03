@@ -528,8 +528,12 @@ Waivers:
 - `503` on store unavailability and `500` on other store and signing failures:
   unit only; a running backend cannot be made to fail these reads on demand.
 - Mock-mode `501` on `POST /clients`: unit only; the e2e suite runs in JWT mode.
+- Compute-stream client check store errors, and a check read that does not
+  answer within its deadline: unit only; a running backend cannot be made to
+  fail or stall that read on demand.
 - Concurrency (exchange racing key invalidation, secret reset racing a cached
-  grant): isolated single-backend e2e, not parity.
+  grant, bcrypt slots full on `/oauth/token` and `POST /clients`): isolated
+  single-backend e2e, not parity.
 - §12.4, an OBO principal on an admin or operator route: the gRPC column
   does not apply. The admin, client, trusted-key, key-pair and `/admin`
   routes are HTTP-only; no gRPC entry point exists.

@@ -152,6 +152,9 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 // NOTE: every token-exchange refusal is covered by
 // TestToken_TokenExchange_Refusals in token_exchange_test.go.
 //
-// NOTE: 503 temporarily_unavailable and 500 server_error are store and
-// signing failures a running backend cannot be made to produce on demand;
-// they are covered by the unit tests in internal/auth/token_test.go.
+// NOTE: 503 temporarily_unavailable for a store that cannot be read, and 500
+// server_error for other store and signing failures, are failures a running
+// backend cannot be made to produce on demand; they are covered by the unit
+// tests in internal/auth/token_test.go. 503 temporarily_unavailable for no
+// free secret-check slot is covered on a stack of its own by
+// TestSecretCheckBound_NoFreeSlot_503.

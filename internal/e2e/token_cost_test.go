@@ -5,11 +5,8 @@ package e2e_test
 // answers 429 slow_down. Each test uses clients of its own, so no other test
 // shares a cache entry or a bucket with it.
 //
-// Coverage waiver: the bcrypt-busy 503 (no secret-check slot within the wait)
-// is covered by unit tests only (internal/auth TestSecretCheck_* and
-// TestToken_SecretCheckBusy_503). A running server cannot be made to exhaust
-// its slots on demand without a load test whose outcome depends on the
-// machine's speed, which would be flaky.
+// The bcrypt-busy 503 (no secret-check slot within the wait) is covered on a
+// stack of its own, by TestSecretCheckBound_NoFreeSlot_503.
 
 import (
 	"encoding/json"
