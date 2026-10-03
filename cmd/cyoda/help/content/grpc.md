@@ -509,10 +509,10 @@ Per path, the attributed principal / the executor are:
   on-behalf-of client of its own: the asserted user (`user`) / that client
   (`service`); with a pass it may join only a transaction whose origin is that
   user;
-- a scheduled fire: the principal that armed the timer / `system` (`system`).
-  The callout of a commit-before-dispatch processor with
-  `startNewTxOnDispatch: false` inside a fire runs outside the fire's
-  transaction and carries `system` / `system`;
+- a scheduled fire, and every callout of its cascade: the principal that
+  armed the timer / `system` (`system`). This includes the callout of a
+  commit-before-dispatch processor with `startNewTxOnDispatch: false`, which
+  is dispatched outside a transaction;
 - a callout handed over to another node: the principals the dispatching node
   computed.
 

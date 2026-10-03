@@ -284,3 +284,52 @@ func TestCalloutIdentity_ScheduledFire(t *testing.T) {
 	}
 	awaitCallbackEntityState(t, h, id, "Done", scheduledFireTimeout)
 }
+
+// TestCalloutIdentity_ScheduledFireCBDOutsideTx: a timer armed by alice's
+// on-behalf-of request fires a commit-before-dispatch processor with
+// startNewTxOnDispatch false, so the processor is dispatched with no
+// transaction. Its callout is still for alice, the arming principal, and
+// executed by the system; the write that applies the processor's result is
+// alice's, executed by the system.
+func TestCalloutIdentity_ScheduledFireCBDOutsideTx(t *testing.T) {
+	h, _ := newSchedulerCallbackHarness(t, nil)
+	model := uniq("cid-sched-cbd")
+	seen := make(chan calloutAuth, 4)
+	h.RegisterProc("cid-sched-cbd-proc", func(rc *reqCtx) (map[string]any, error) {
+		sendCalloutAuth(seen, rc)
+		return map[string]any{"name": "Test Order", "amount": 777, "status": "draft"}, nil
+	})
+	proc := sProc("cid-sched-cbd-proc", "COMMIT_BEFORE_DISPATCH", "", true)
+	proc["config"].(map[string]any)["startNewTxOnDispatch"] = false
+	h.SetupModelWithWorkflow(t, model, fireOpenToDone("cid-sched-cbd-wf", 300, 0, proc))
+
+	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")
+	id, status, body := h.createEntityAs(t, alice, model, 1, workflowSampleModel)
+	if status != http.StatusOK {
+		t.Fatalf("create as alice (OBO): %d %s", status, body)
+	}
+
+	got := awaitCalloutAuth(t, seen, scheduledFireTimeout)
+	assertCalloutAuth(t, "scheduled fire, CBD outside a transaction", got, "alice", "user", firedSchedExecID, firedSchedExecKind)
+	if got.claimsPresent {
+		t.Errorf("scheduled fire, CBD outside a transaction: authclaims = %q, want absent: the system holds no roles", got.claims)
+	}
+
+	awaitCallbackEntityState(t, h, id, "Done", scheduledFireTimeout)
+	if amount, _ := h.GetEntityData(t, id)["amount"].(float64); amount != 777 {
+		t.Fatalf("amount = %v, want 777: the processor's result was not applied", amount)
+	}
+	// Every write of the fire — TX_pre's and the one applying the result in
+	// TX_post — is alice's, executed by the system.
+	updates := 0
+	for _, c := range h.getChanges(t, id) {
+		if ct, _ := c["changeType"].(string); ct != "UPDATE" {
+			continue
+		}
+		updates++
+		assertAttribution(t, c, "scheduled fire write", "alice", "user", firedSchedExecKind, firedSchedExecID)
+	}
+	if updates == 0 {
+		t.Fatal("no UPDATE change recorded for the fire")
+	}
+}

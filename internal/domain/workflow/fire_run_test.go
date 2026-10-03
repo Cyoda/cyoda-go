@@ -190,6 +190,63 @@ func TestFireScheduled_SelfLoopReArmsWithSameArmedBy(t *testing.T) {
 	}
 }
 
+// TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy: a scheduled fire's
+// commit-before-dispatch processor with startNewTxOnDispatch false is
+// dispatched with no transaction. The callout identity is computed from the
+// dispatch context with spi.AttributionFor (internal/grpc IdentityFrom); it
+// must still name the task's ArmedBy as the attributed principal, from the
+// ambient origin the fire seeds, and the system as the executor.
+func TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy(t *testing.T) {
+	type seen struct {
+		attributed, executor spi.Principal
+		inTx                 bool
+	}
+	got := make(chan seen, 1)
+	ext := &scriptedExtProc{processor: func(ctx context.Context, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		a, e := spi.AttributionFor(ctx)
+		got <- seen{attributed: a, executor: e, inTx: spi.GetTransaction(ctx) != nil}
+		return nil, nil
+	}}
+	env := newRunEnv(t, ext)
+	const entityID = "cbd-armedby-e1"
+	proc := safeProc("cbd", "COMMIT_BEFORE_DISPATCH")
+	noNewTx := false
+	proc.Config.StartNewTxOnDispatch = &noNewTx
+	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{proc}, nil)})
+	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
+	now := env.nowMs()
+	armedBy := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, entityID, "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: entityID,
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		ArmedAt: now, ArmedBy: armedBy,
+	})
+	claimed := env.claimOne(t, testOwner, false)
+
+	fireCtx := spi.WithUserContext(env.ctx, common.SystemUserContextValue(testTenant))
+	r := newTestRun(env.sts, claimed).fire(env.engine, fireCtx, claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	var s seen
+	select {
+	case s = <-got:
+	default:
+		t.Fatal("the processor was never dispatched")
+	}
+	if s.inTx {
+		t.Fatal("the processor was dispatched inside a transaction; this test needs the dispatch outside one")
+	}
+	if s.attributed != armedBy {
+		t.Errorf("callout attributed = %+v, want the task's ArmedBy %+v", s.attributed, armedBy)
+	}
+	if s.executor != common.SystemPrincipal() {
+		t.Errorf("callout executor = %+v, want %+v", s.executor, common.SystemPrincipal())
+	}
+}
+
 func TestFireScheduled_CriterionErrorIsASafeFailure(t *testing.T) {
 	ext := &scriptedExtProc{criterion: func(context.Context) (bool, string, error) {
 		return false, "", errors.New("criterion member failed")

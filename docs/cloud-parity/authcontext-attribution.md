@@ -25,7 +25,7 @@ principal would violate correctness-over-availability.
 | a client's own request | the client / `service` | the client / `service` |
 | a processor write-back joined to a transaction, and its cascades | the transaction's origin | the compute client / `service` |
 | a CBD-detached callback of a compute client | that client / `service` | that client / `service` |
-| a scheduled fire | `ArmedBy` | `system` / `system` |
+| a scheduled fire, and its cascades — including a commit-before-dispatch processor dispatched outside a transaction | `ArmedBy` | `system` / `system` |
 | a callout forwarded to another node | as computed on the dispatching node | as computed on the dispatching node |
 
 **Wire break:** `authtype` previously emitted `user` / `service_account`,
@@ -147,7 +147,9 @@ pair as change history, on the message's `header`:
   client). The
   callout's AuthContext (§1) carries the causal principal as its attributed
   principal (`authid`/`authtype`) so the application can self-attribute if
-  it chooses; the platform adds no carrier mechanism for this mode.
+  it chooses — inside a scheduled fire, the arming principal (`ArmedBy`),
+  executed by `system`, although the dispatch has no transaction; the
+  platform adds no carrier mechanism for this mode.
 
 ## 4. Cloud obligation
 

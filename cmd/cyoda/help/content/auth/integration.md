@@ -244,7 +244,7 @@ The values, per situation (attributed / executor):
 - A compute node's callback that joins a transaction (it presents the transaction token with its own client token), and its cascade: the transaction origin — alice for a transaction an OBO request for alice began, the client for one a client began, the arming principal for a scheduled firing — / `service` the compute node's client.
 - A compute node's independent request (no transaction token), including the callback of a commit-before-dispatch processor with `startNewTxOnDispatch: false`, and its cascade: `service` the compute node's client / the same.
 - A request with an OBO token from a compute node that holds an OBO client of its own: `user` the asserted user / `service` that OBO client. It may join only a transaction whose origin is that user.
-- A scheduled firing: the principal that armed it (the attributed principal of the arming request: alice if an OBO request for alice armed it, the client if a client's own request did) / `system` `system`. The callout of a commit-before-dispatch processor with `startNewTxOnDispatch: false` inside a firing runs outside the firing's transaction and carries `system` / `system`.
+- A scheduled firing, and every callout of its cascade: the principal that armed it (the attributed principal of the arming request: alice if an OBO request for alice armed it, the client if a client's own request did) / `system` `system`. This includes the callout of a commit-before-dispatch processor with `startNewTxOnDispatch: false`, which is dispatched outside a transaction.
 - A callout another node runs: the values the dispatching node computed.
 
 **Segregation of duties ("the submitter may not approve").** In the approval processor or criterion:

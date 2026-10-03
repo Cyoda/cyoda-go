@@ -281,8 +281,7 @@ EOF</code></pre>
           <tr><td>Compute callback that joins the transaction (transaction token + its own client token), and its cascade</td><td>the transaction origin: alice for an OBO request's transaction, the client for a client's, the arming principal for a scheduled firing</td><td><code>service</code> / the compute node's client</td></tr>
           <tr><td>Compute callback without a transaction token (an independent request, e.g. from a commit-before-dispatch processor with <code>startNewTxOnDispatch: false</code>), and its cascade</td><td><code>service</code> / the compute node's client</td><td><code>service</code> / the compute node's client</td></tr>
           <tr><td>Request with an OBO token from a compute node that holds an OBO client of its own</td><td><code>user</code> / the asserted user</td><td><code>service</code> / that OBO client (joins only its own user's transaction)</td></tr>
-          <tr><td>Scheduled firing</td><td>the principal that armed it</td><td><code>system</code> / <code>system</code></td></tr>
-          <tr><td>Commit-before-dispatch processor with <code>startNewTxOnDispatch: false</code> inside a scheduled firing</td><td><code>system</code> / <code>system</code></td><td><code>system</code> / <code>system</code></td></tr>
+          <tr><td>Scheduled firing, and every callout of its cascade, including a commit-before-dispatch processor with <code>startNewTxOnDispatch: false</code> (dispatched outside a transaction)</td><td>the principal that armed it</td><td><code>system</code> / <code>system</code></td></tr>
         </tbody>
       </table>
     </div>
