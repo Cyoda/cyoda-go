@@ -189,3 +189,8 @@ error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} api path remo
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate api path removed without deprecation [api-path-removed-without-deprecation].
 error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate api path removed without deprecation [api-path-removed-without-deprecation].
 error at api/openapi.yaml, in API POST /oauth/token removed the enum value `urn:ietf:params:oauth:token-type:access_token` of the request property `subject_token_type` [request-property-enum-value-removed].
+#
+# A key pair's invalidation grace period is capped at 3600 s, the longest token lifetime
+# (was 366 days): no token outlives it, so a longer grace only kept a revoked key verifying.
+error at api/openapi.yaml, in API POST /oauth/keys/keypair the `invalidateGracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].
+error at api/openapi.yaml, in API POST /oauth/keys/keypair/{keyId}/invalidate the `gracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].

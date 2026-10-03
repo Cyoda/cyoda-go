@@ -23,6 +23,8 @@ inside its window, from `validFrom` (inclusive) to `validTo` (exclusive):
   `validTo`. A grace period of 0, the default (`gracePeriodSec` /
   `invalidateGracePeriodSec` omitted), ends verification at once;
   invalidating again with 0, or `DELETE`, cuts a running grace period short.
+  The grace period is at most 3600 s, the longest token lifetime, which no
+  token outlives; a larger value is `400 BAD_REQUEST`.
   JWKS publishes a key pair until it can no longer verify.
 
 `POST /oauth/keys/keypair` refuses, with `400 BAD_REQUEST`:
@@ -88,6 +90,9 @@ Cloud to adopt:
 2. **Never lengthen `validTo`.** Cloud sets `validTo` to now plus the grace
    period unconditionally; cyoda-go never moves it past the key pair's
    current `validTo`.
+3. **Cap the grace period at the longest token lifetime.** cyoda-go refuses a
+   grace period over 3600 s with `400 BAD_REQUEST`: no token lives longer, so
+   a longer grace only keeps a revoked key verifying.
 
 The default grace period differs, by design of each surface: cyoda-go's is 0
 (revocation takes effect at once unless a grace period is asked for); Cloud's

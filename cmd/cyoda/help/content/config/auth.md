@@ -278,7 +278,9 @@ unless reactivated. Tokens it signed keep verifying until the end of its
 grace period: `invalidateGracePeriodSec: N` on a rotation, or
 `gracePeriodSec: N` on `POST /oauth/keys/keypair/{keyId}/invalidate`, sets
 its `validTo` to N seconds from now, never later than its current
-`validTo`. The default is 0: it stops verifying at once on the node that
+`validTo`. N is at most 3600, the longest token lifetime
+(`CYODA_JWT_EXPIRY_SECONDS`), which no token outlives; a larger N is
+`400 BAD_REQUEST`. The default is 0: it stops verifying at once on the node that
 takes the call, and on each other node once that node applies the change
 (see *Shared and persisted* below), plus the clock offset between nodes: the
 node that takes the call stamps `validTo` from its own clock, and each node

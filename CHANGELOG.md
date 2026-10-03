@@ -167,6 +167,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-window.md`.
 
+- **A key pair's invalidation grace period is at most 3600 s, the longest
+  token lifetime (was 366 days).** `gracePeriodSec` on
+  `POST /oauth/keys/keypair/{keyId}/invalidate` and
+  `invalidateGracePeriodSec` on `POST /oauth/keys/keypair` over 3600 are
+  `400 BAD_REQUEST`; the OpenAPI maximum of both is 3600. No token outlives
+  3600 s, so a longer grace only kept a revoked key verifying.
+
 - **Signing key pairs have no audience: `audience` is removed from key-pair
   issue and from `GET /oauth/keys/keypair/current`, and
   `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed.** The newest active key pair

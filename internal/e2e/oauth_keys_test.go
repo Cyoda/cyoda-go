@@ -18,6 +18,7 @@ import (
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // requestAs issues a request to serverURL+"/api"+path with token as bearer.
@@ -786,6 +787,60 @@ func TestKeys_InvalidateKeyPair_BadGrace_400(t *testing.T) {
 		"gracePeriodSec": int64(-1),
 	}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+}
+
+// TestKeys_KeyPairGraceOverCap_400: a key pair's invalidation grace period is
+// capped at the longest token lifetime (3600 s); one second more is 400
+// BAD_REQUEST on invalidate and on issue. Both checks run before the store is
+// touched, so nothing changes.
+func TestKeys_KeyPairGraceOverCap_400(t *testing.T) {
+	over := int64(auth.MaxJWTExpirySeconds + 1)
+	t.Run("invalidate", func(t *testing.T) {
+		resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+unknownKeyPairID+"/invalidate", mustJSON(t, map[string]any{
+			"gracePeriodSec": over,
+		}))
+		assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	})
+	t.Run("issue", func(t *testing.T) {
+		resp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{
+			"algorithm": "RS256", "invalidateCurrent": true, "invalidateGracePeriodSec": over,
+		}))
+		if resp.StatusCode == http.StatusOK {
+			// A regression issued a key pair on the shared server: delete it so
+			// it does not stay the signer for later tests.
+			var issued genapi.JwtKeyPairResponseDto
+			_ = json.NewDecoder(resp.Body).Decode(&issued)
+			resp.Body.Close()
+			del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+			del.Body.Close()
+			t.Fatalf("invalidateGracePeriodSec %d accepted, want 400 BAD_REQUEST", over)
+		}
+		assertProblemJSON(t, resp, http.StatusBadRequest, "BAD_REQUEST")
+	})
+}
+
+// TestE2E_InvalidateKeyPair_GraceAtCap: a grace period of exactly the
+// longest token lifetime is accepted.
+func TestE2E_InvalidateKeyPair_GraceAtCap(t *testing.T) {
+	issueResp := operatorRequest(t, "POST", "/oauth/keys/keypair", mustJSON(t, map[string]any{"algorithm": "RS256"}))
+	var issued genapi.JwtKeyPairResponseDto
+	_ = json.NewDecoder(issueResp.Body).Decode(&issued)
+	issueResp.Body.Close()
+	if issueResp.StatusCode != http.StatusOK {
+		t.Fatalf("issue: got %d", issueResp.StatusCode)
+	}
+	t.Cleanup(func() {
+		del := operatorRequest(t, "DELETE", "/oauth/keys/keypair/"+issued.KeyId, nil)
+		del.Body.Close()
+	})
+	resp := operatorRequest(t, "POST", "/oauth/keys/keypair/"+issued.KeyId+"/invalidate", mustJSON(t, map[string]any{
+		"gracePeriodSec": int64(auth.MaxJWTExpirySeconds),
+	}))
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("invalidate with grace %d: got %d: %s", auth.MaxJWTExpirySeconds, resp.StatusCode, raw)
+	}
 }
 
 // TestKeys_InvalidateKeyPair_UnknownId_404 verifies that invalidating a

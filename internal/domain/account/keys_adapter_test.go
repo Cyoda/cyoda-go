@@ -479,17 +479,6 @@ func TestReactivateJwtKeyPair_ResponseIncludesActiveTrue(t *testing.T) {
 	}
 }
 
-func TestInvalidateJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
-	h, ks, _ := newHandler(t)
-	kp := issueCurrent(t, ks)
-	w := httptest.NewRecorder()
-	// Value above the 1-year cap → must be rejected before multiplying by time.Second
-	h.InvalidateJwtKeyPair(w, operatorReq(t, "POST", "/", []byte(`{"gracePeriodSec":9999999999}`)), kp.KID)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
-	}
-}
-
 // A key pair issued ahead of time cannot also invalidate the current one: the
 // current key would stop at once and the new one could not sign until its
 // validFrom, leaving no signing key in between. The
@@ -536,37 +525,48 @@ func TestIssueJwtKeyPair_ValidToInPast_Rejected(t *testing.T) {
 	}
 }
 
-func TestIssueJwtKeyPair_GracePeriodOverflow_Rejected(t *testing.T) {
-	h, _, _ := newHandler(t)
-	body := []byte(`{"algorithm":"RS256","invalidateCurrent":true,"invalidateGracePeriodSec":9999999999}`)
-	w := httptest.NewRecorder()
-	h.IssueJwtKeyPair(w, operatorReq(t, "POST", "/", body))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status=%d want 400 (overflow guard)", w.Code)
+// A key pair's invalidation grace period is capped at the longest token
+// lifetime: no token outlives it, so a longer grace would only keep a revoked
+// key verifying. Exactly at the cap is accepted; one over, or a value that
+// would overflow now + grace, is refused.
+func TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
+	h, ks, _ := newHandler(t)
+	for _, tc := range []struct {
+		grace int64
+		want  int
+	}{
+		{auth.MaxJWTExpirySeconds, http.StatusOK},
+		{auth.MaxJWTExpirySeconds + 1, http.StatusBadRequest},
+		{9999999999, http.StatusBadRequest},
+	} {
+		kp := issueCurrent(t, ks)
+		w := httptest.NewRecorder()
+		body := []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, tc.grace))
+		h.InvalidateJwtKeyPair(w, operatorReq(t, "POST", "/", body), kp.KID)
+		if w.Code != tc.want {
+			t.Errorf("gracePeriodSec %d: status=%d want %d; body=%s", tc.grace, w.Code, tc.want, w.Body.String())
+		}
 	}
 }
 
-// TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary pins the > vs >= comparison:
-// exactly at cap is accepted; one over cap is rejected.
-func TestInvalidateJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
+// The same cap holds for invalidateGracePeriodSec on issue.
+func TestIssueJwtKeyPair_GracePeriodAtCapBoundary(t *testing.T) {
 	h, ks, _ := newHandler(t)
-	kp := issueCurrent(t, ks)
-
-	// Exactly at cap: accept.
-	w := httptest.NewRecorder()
-	body := []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec))
-	h.InvalidateJwtKeyPair(w, operatorReq(t, "POST", "/", body), kp.KID)
-	if w.Code != http.StatusOK {
-		t.Errorf("at-cap (%d): status=%d want 200", account.MaxGracePeriodSec, w.Code)
-	}
-
-	// One over cap: reject.
-	kp = issueCurrent(t, ks)
-	w = httptest.NewRecorder()
-	body = []byte(fmt.Sprintf(`{"gracePeriodSec":%d}`, account.MaxGracePeriodSec+1))
-	h.InvalidateJwtKeyPair(w, operatorReq(t, "POST", "/", body), kp.KID)
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("one-over-cap: status=%d want 400", w.Code)
+	for _, tc := range []struct {
+		grace int64
+		want  int
+	}{
+		{auth.MaxJWTExpirySeconds, http.StatusOK},
+		{auth.MaxJWTExpirySeconds + 1, http.StatusBadRequest},
+		{9999999999, http.StatusBadRequest},
+	} {
+		issueCurrent(t, ks)
+		w := httptest.NewRecorder()
+		body := []byte(fmt.Sprintf(`{"algorithm":"RS256","invalidateCurrent":true,"invalidateGracePeriodSec":%d}`, tc.grace))
+		h.IssueJwtKeyPair(w, operatorReq(t, "POST", "/", body))
+		if w.Code != tc.want {
+			t.Errorf("invalidateGracePeriodSec %d: status=%d want %d; body=%s", tc.grace, w.Code, tc.want, w.Body.String())
+		}
 	}
 }
 

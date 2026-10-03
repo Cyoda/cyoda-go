@@ -10050,10 +10050,12 @@ components:
             invalidation; its validTo becomes now plus this, never later than
             its current validTo. Default is 0 (it stops verifying at once).
             Invalidating the key again with 0 ends a running grace period at
-            once.
-          example: 3600
+            once. At most 3600, the longest token lifetime
+            (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value
+            is 400 BAD_REQUEST.
+          example: 300
           minimum: 0
-          maximum: 31622400
+          maximum: 3600
     ReactivateKeyRequestDto:
       type: object
       properties:
@@ -10158,10 +10160,12 @@ components:
           description: Number of seconds the invalidated key-pairs keep verifying tokens;
             each one's validTo becomes now plus this, never later than its
             current validTo. Default is 0 (they stop verifying at once). Only
-            applicable when invalidateCurrent is true.
-          example: 36000
+            applicable when invalidateCurrent is true. At most 3600, the
+            longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token
+            outlives. A larger value is 400 BAD_REQUEST.
+          example: 300
           minimum: 0
-          maximum: 31622400
+          maximum: 3600
       required:
         - algorithm
     ExternalizedProcessorConfigDto:

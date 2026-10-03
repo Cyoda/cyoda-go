@@ -11,12 +11,19 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+// MaxJWTExpirySeconds is the longest token lifetime, the largest
+// CYODA_JWT_EXPIRY_SECONDS accepted: 3600 seconds (1 hour). A revoked
+// client's issued tokens end within this lifetime, so the cap bounds how long
+// a revocation takes to take full effect; it also caps a key pair's
+// invalidation grace period, which no token outlives.
+const MaxJWTExpirySeconds = 3600
+
 // AuthConfig holds configuration for the AuthService.
 type AuthConfig struct {
 	SigningKeyPEM     string                 // PEM-encoded RSA private key: the bootstrap key
 	Issuer            string                 // CYODA_JWT_ISSUER: iss on issued tokens
 	Audience          string                 // CYODA_JWT_AUDIENCE; set as aud on issued tokens when not empty
-	ExpirySeconds     int                    // CYODA_JWT_EXPIRY_SECONDS: token lifetime, default 300, at most 3600
+	ExpirySeconds     int                    // CYODA_JWT_EXPIRY_SECONDS: token lifetime, default 300, at most MaxJWTExpirySeconds
 	IAMFeatures       IAMFeatures            // IAM feature surface for /oauth/keys/* and bootstrap key config
 	KV                spi.KeyValueStore      // SYSTEM-tenant KV store; required
 	Broadcaster       spi.ClusterBroadcaster // nil on a single node

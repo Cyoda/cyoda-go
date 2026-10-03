@@ -497,6 +497,15 @@ other member of the request is dropped.
 | re-check: client gone, tenant differs, generation changed | stream closed, `Unauthenticated` |
 | re-check: store error or read past its deadline | stream closed, `Unavailable` |
 
+### 12.6 Key pairs
+
+A key pair's invalidation grace period is capped at `MaxJWTExpirySeconds`
+(3600), the longest token lifetime: no token outlives it.
+
+| Cause | Status | Code |
+|---|---|---|
+| `gracePeriodSec` on invalidate, or `invalidateGracePeriodSec` on issue, over 3600 | 400 | `BAD_REQUEST` |
+
 ## 13. Test coverage matrix
 
 | Scenario | Unit | E2E (postgres) | Parity | gRPC |
@@ -521,6 +530,7 @@ other member of the request is dropped.
 | trusted-key invalidation ends exchanges at once on every node | ✓ | ✓ multi-node | — | — |
 | lifetime default 300, maximum 3600, `expires_in` computed | ✓ | ✓ | — | — |
 | key-pair `audience` removed | ✓ | ✓ | ✓ | — |
+| §12.6 key-pair grace capped at 3600 | ✓ | ✓ | — | — |
 | mock kind default `service`: compute node joins in mock mode | ✓ | — | — | — |
 
 Waivers:

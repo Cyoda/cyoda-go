@@ -2367,7 +2367,7 @@ type GroupedStatsRequest_Condition struct {
 
 // InvalidateKeyRequestDto Body of the key-pair invalidate request. Trusted keys have no grace period, and their invalidate request has no body.
 type InvalidateKeyRequestDto struct {
-	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once.
+	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
 }
 
@@ -2379,7 +2379,7 @@ type IssueJwtKeyPairRequestDto struct {
 	// InvalidateCurrent If true, invalidates every issued key-pair whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
-	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true.
+	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// ValidFrom When the key-pair becomes valid. Defaults to current date-time if not specified.
