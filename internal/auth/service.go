@@ -14,9 +14,9 @@ import (
 // AuthConfig holds configuration for the AuthService.
 type AuthConfig struct {
 	SigningKeyPEM     string                 // PEM-encoded RSA private key: the bootstrap key
-	Issuer            string                 // e.g., "cyoda"
+	Issuer            string                 // CYODA_JWT_ISSUER: iss on issued tokens
 	Audience          string                 // CYODA_JWT_AUDIENCE; set as aud on issued tokens when not empty
-	ExpirySeconds     int                    // e.g., 3600
+	ExpirySeconds     int                    // CYODA_JWT_EXPIRY_SECONDS: token lifetime, default 300, at most 3600
 	IAMFeatures       IAMFeatures            // IAM feature surface for /oauth/keys/* and bootstrap key config
 	KV                spi.KeyValueStore      // SYSTEM-tenant KV store; required
 	Broadcaster       spi.ClusterBroadcaster // nil on a single node

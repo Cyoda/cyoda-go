@@ -11,10 +11,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
-// JWKSValidator validates JWT tokens against a KeySource. The transport —
-// in-process lookup, HTTPS JWKS fetch, or any future alternative — is pluggable
-// behind KeySource; the validator itself only owns issuer, audience, and claims
-// validation.
+// JWKSValidator validates JWT tokens: the signature against a key from its
+// KeySource, then the issuer, the audience and the claims.
 type JWKSValidator struct {
 	source   KeySource
 	issuer   string
@@ -22,15 +20,10 @@ type JWKSValidator struct {
 	audience string
 }
 
-// SetExpectedAudience configures the audience value that tokens must
-// carry in their aud claim. An empty string disables the check (matches
-// pre-hardening behaviour). When set, tokens with a non-matching or
-// missing aud are rejected. The check accepts aud as either a string
-// or a JSON array of strings (RFC 7519 §4.1.3).
-//
-// This is a setter rather than a constructor argument so existing
-// callers without an audience configured continue to build, and so
-// production wiring can opt-in via CYODA_JWT_AUDIENCE at startup.
+// SetExpectedAudience sets the audience tokens must carry in their aud
+// claim (CYODA_JWT_AUDIENCE). An empty string disables the check. When set,
+// a token with a non-matching or missing aud is rejected. The check accepts
+// aud as either a string or a JSON array of strings (RFC 7519 §4.1.3).
 func (v *JWKSValidator) SetExpectedAudience(aud string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -38,8 +31,7 @@ func (v *JWKSValidator) SetExpectedAudience(aud string) {
 }
 
 // NewValidatorFromSource returns a JWKSValidator that resolves keys via the
-// given KeySource. This is the preferred constructor — callers decide where
-// keys come from (in-process, external JWKS, etc).
+// given KeySource.
 func NewValidatorFromSource(src KeySource, issuer string) *JWKSValidator {
 	return &JWKSValidator{source: src, issuer: issuer}
 }
