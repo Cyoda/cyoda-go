@@ -109,7 +109,7 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
 ### Actor and executor
 
-`AuditActorInfoDto` (the `actor` field on both event kinds) carries `id`, `legalId`, `name`, and `kind` — an open value set, known values `user`, `service`, and `system`. `kind` is empty on a legacy event recorded before attribution was stamped.
+`AuditActorInfoDto` (the `actor` field on both event kinds) carries `id`, `legalId`, `name`, and `kind` — an open value set, known values `user`, `service`, and `system`. `kind` is empty on a legacy event recorded before attribution was stamped. `legalId` is the tenant. `name` repeats `id`: cyoda-go has no display names, and a user assertion cannot set one. The schema's optional `externalId` is never set by cyoda-go. `id` is the user id exactly as the on-behalf-of client asserted it, never normalised, so a segregation-of-duties check compares it byte for byte with a callout's `authid` (see `cyoda help auth integration`).
 
 `executedBy` is an `AuditPrincipalDto` — `{id, kind}`, both populated when present. It names the principal that actually made the change, which can differ from `actor`: e.g. an on-behalf-of (OBO) write attributes to the user (`actor`) but is executed by the OBO client (`executedBy`, `kind: "service"`); a cascade write executed by a compute node inside another principal's transaction attributes to that transaction's origin but is executed by the compute node's service identity.
 

@@ -5,6 +5,8 @@ stability: stable
 see_also:
   - config
   - run
+  - auth
+  - auth.integration
 ---
 
 # config.auth
@@ -42,6 +44,15 @@ startup unless JWT mode is properly configured.
   standing up real JWT auth. Any other value, in either mode, refuses to
   start. (default: `service`)
 
+In mock mode every request, with or without a token, runs as one fixed
+principal: user id `mock-user-001`, tenant `mock-tenant`, kind
+`CYODA_IAM_MOCK_KIND`, roles `CYODA_IAM_MOCK_ROLES`. It has no separate
+executor, so it is both the attributed principal and the executor of every
+change and callout. Mock mode has no client store: `POST /oauth/token` issues
+no token, the client and trusted-key endpoints answer `501 NOT_IMPLEMENTED`,
+and on-behalf-of access cannot be exercised (see `cyoda help auth integration`,
+*RUNNING IT LOCALLY*).
+
 When running in mock mode, the binary emits a prominent `MOCK AUTH IS ACTIVE`
 warning banner at startup so operators see the security posture of the running
 instance. `CYODA_SUPPRESS_BANNER=true` silences both the startup banner and the
@@ -51,18 +62,22 @@ signal that requests are unauthenticated.
 
 ### JWT mode (`CYODA_IAM_MODE=jwt`)
 
-- `CYODA_JWT_SIGNING_KEY` — RSA private key in PEM format; required in jwt mode.
+- `CYODA_JWT_SIGNING_KEY` — RSA private key, PEM or base64-encoded PEM (a value
+  that does not start with `-----BEGIN` is decoded as base64); required in jwt mode.
   Also derives the key that encrypts stored signing key pairs, so treat it as
   the root secret. Replacing it retires every issued key pair sealed by the
   wrapped vault (see *JWT signing keypair rotation*).
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY` (takes precedence)
-- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`). Unset means the default; an
-  empty value stops the server at startup and makes `cyoda token` exit 1.
-  (default: `cyoda`)
+- `CYODA_JWT_ISSUER` — JWT issuer claim (`iss`): cyoda's own name, set on every
+  token cyoda issues and required on every token it accepts. It names this
+  deployment, not an identity provider. A user assertion's `aud` must contain
+  it. Unset means the default; an empty value stops the server at startup and
+  makes `cyoda token` exit 1. (default: `cyoda`)
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs,
   also set as `aud` on every token cyoda-go issues (`POST /oauth/token`, both
   grants, and `cyoda token`); empty string disables the audience check and
-  issued tokens carry no `aud` (default: empty)
+  issued tokens carry no `aud`. It plays no part in a user assertion, whose
+  `aud` must contain `CYODA_JWT_ISSUER`. (default: empty)
 - `CYODA_JWT_EXPIRY_SECONDS` — token lifetime in seconds, and the upper bound
   of `cyoda token --ttl`. Unset or empty means the default. Otherwise it must
   be an integer from 1 to 3600; any other value stops the
@@ -152,10 +167,14 @@ clients that applications and compute nodes use (`POST /clients`). See
 ### IAM features
 
 These environment variables tune the IAM admin endpoints under `/oauth/keys/*` and `/clients`.
+Each node reads them at startup, and the node that takes a request decides by
+its own value: in a cluster, give every node the same values, or calls behind a
+load balancer succeed or fail depending on the node they reach.
 
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` — gates all 5 endpoints under
   `/oauth/keys/trusted/*`. When `false`, every trusted-key endpoint returns
-  `404 FEATURE_DISABLED`. (default: `false`)
+  `404 FEATURE_DISABLED`. It does not gate the token exchange: keys registered
+  while it was on keep verifying assertions, on every node. (default: `false`)
 - `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` — gates the `withAdminRole=true`
   query parameter on `POST /clients`. When `false` (default), that request
   shape returns `404` with error code `FEATURE_DISABLED` and no client is
@@ -203,9 +222,10 @@ These environment variables tune the IAM admin endpoints under `/oauth/keys/*` a
   that can verify. It counts every active key whose `validTo` has not passed;
   an invalidated key frees its slot at once (trusted keys have no grace
   period). `0` means unbounded. (default: `10`)
-- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` — default validity for trusted
-  keys when the registration request omits `validTo`. No clamp on
-  user-supplied `validTo` values. (default: `365`)
+- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` — the validity, in days from
+  `validFrom`, of a trusted key registered without `validTo`. Despite its name
+  it is not a maximum: a `validTo` in the request is not limited by it.
+  (default: `365`)
 - `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` — caps the number of properties
   in a registered JWK to guard against absurdly large payloads. (default: `20`)
 - `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` — default validity of a key pair
@@ -793,7 +813,7 @@ CYODA_IAM_MOCK_ROLES=ROLE_ADMIN,ROLE_M2M
 CYODA_IAM_MODE=jwt
 CYODA_REQUIRE_JWT=true
 CYODA_JWT_SIGNING_KEY_FILE=/etc/secrets/signing.pem
-CYODA_JWT_ISSUER=https://auth.example.com
+CYODA_JWT_ISSUER=https://cyoda.example.com
 CYODA_JWT_AUDIENCE=cyoda-api
 CYODA_JWT_EXPIRY_SECONDS=300
 ```
@@ -821,3 +841,5 @@ CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true
 
 - config
 - run
+- auth
+- auth.integration

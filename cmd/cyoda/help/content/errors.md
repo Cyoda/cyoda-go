@@ -128,7 +128,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TX_COORDINATOR_NOT_CONFIGURED` — `503` — not retryable — distributed transaction coordinator is disabled or misconfigured on this node
 - `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID
 - `errors.TX_REQUIRED` — `400` — not retryable — operation requires a transaction context but none was provided
-- `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, signature is invalid, or issuer is untrusted
+- `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, or the token is not one cyoda signed and accepts
 - `errors.UNIQUE_VIOLATION` — `409` — not retryable — a write would duplicate a declared composite unique key
 - `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.
 - `errors.UNSUPPORTED_KEY_TYPE` — `400` — not retryable — JWK `kty` not supported in this version.

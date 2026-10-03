@@ -227,7 +227,7 @@ The WebSocket API is served by Cyoda Cloud over STOMP. The concrete WebSocket en
 - `domainCondition` — map of `ColumnCategory` → field key → condition; organized by category (`SPECIAL`, `ROOT`, `INDEX`, `DATA`)
 - `expressionCondition` — `GroupConditionDto` — alternative condition format using `AND`/`OR`/`NOT` groups
 - `selectedFields` — optional list of value map keys to include; null returns all fields
-- `userId` — string — user ID for authenticated context and permission-filtered entity access
+- `userId` — string — user ID of the authenticated context. cyoda-go has no per-user data permissions (see `cyoda help auth`): access is decided by the calling client's tenant and roles
 
 Condition pushdown by category:
 

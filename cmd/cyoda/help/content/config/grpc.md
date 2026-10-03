@@ -17,9 +17,10 @@ config.grpc — gRPC listener settings and compute-node credentials.
 ## SYNOPSIS
 
 cyoda exposes a gRPC endpoint for compute-node integration. The listener port is configured
-via `CYODA_GRPC_PORT`. External compute nodes authenticate as an M2M client
-(`CYODA_COMPUTE_CLIENT_ID`, `CYODA_COMPUTE_CLIENT_SECRET`) and connect to the endpoint
-specified by `CYODA_COMPUTE_GRPC_ENDPOINT`.
+via `CYODA_GRPC_PORT`. The listener serves plaintext: TLS comes from the ingress,
+gateway or service mesh in front of it. External compute nodes authenticate as an M2M
+client of their own (see `cyoda help auth integration`). The `CYODA_COMPUTE_*` variables
+below are read by compute-node clients, not by the server.
 
 ## OPTIONS
 
@@ -105,7 +106,14 @@ too. These three are described in `config cluster`.
 
 ### Compute-node client
 
-These variables are used by compute-node clients that connect to a running cyoda instance.
+These variables are the convention of cyoda's own test compute node
+(`cmd/compute-test-client`, used by the parity test suites). The server does
+not read them, and a compute node you write may take its endpoint and
+credentials from any configuration. A compute node opens the stream with its
+client's own `client_credentials` token, and sends that token as the bearer on
+every callback, together with the callout's transaction token (`X-Tx-Token`
+header or `tx-token` metadata) when the callback joins the callout's
+transaction.
 
 - `CYODA_COMPUTE_GRPC_ENDPOINT` — gRPC endpoint for the compute node to connect to,
   e.g. `localhost:9090` (required when running as a compute client)

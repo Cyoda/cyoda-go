@@ -16,6 +16,7 @@ see_also:
   - errors.CALLOUT_SUPERSEDED
   - errors.COMMIT_IN_JOINED_TRANSACTION
   - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
+  - auth.integration
 ---
 
 # grpc
@@ -43,7 +44,7 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 **Endpoint**: `host:CYODA_GRPC_PORT` (default `localhost:9090`).
 
-**Transport**: plaintext TCP by default. TLS termination is handled by the ingress or service mesh in production deployments.
+**Transport**: plaintext TCP. The listener has no TLS of its own. In production, TLS is terminated by the ingress, gateway or service mesh in front of it (the Helm chart's `ingress.grpc.tls`); compute nodes connect through it and verify the server certificate, and only then may they rely on the identity attributes of a callout. Plaintext is for localhost or a private Docker network during development.
 
 **Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API. Both mock IAM and JWT modes apply identically to gRPC connections — the auth interceptor extracts the `authorization` metadata value, builds an `http.Request` with that `Authorization` header, and delegates to the configured `AuthenticationService`.
 
@@ -230,7 +231,7 @@ The compute member protocol allows external processes to serve as workflow proce
 - Read the stream continuously — a member that stops reading is treated as frozen and evicted after `CYODA_KEEPALIVE_TIMEOUT` seconds, and every callout in flight on it fails with `COMPUTE_MEMBER_DISCONNECTED`.
 - Write to the stream from one goroutine at a time — the gRPC streaming API forbids concurrent sends on one stream.
 - Answer requests, acknowledge events, or echo the server's keep-alive at least once per `CYODA_KEEPALIVE_TIMEOUT` seconds.
-- Echo the transaction token (`cyodatxtoken`) on every callback — see `cyoda help cluster` for how the HTTP and gRPC doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
+- Authenticate every callback with the compute node's own client token (a current `client_credentials` token of its client), and echo the transaction token (`cyodatxtoken`) on every callback that must run in the callout's transaction — see `cyoda help cluster` for how the HTTP (`X-Tx-Token`) and gRPC (`tx-token`) doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
 - Expect callbacks of one transaction to run **one after another**. Every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
 - Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 - Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
@@ -470,40 +471,70 @@ because its client went away.
 
 **Auth context on dispatched events:**
 
-The server attaches CloudEvent Auth Context extension attributes to every
-dispatched request. They name two principals: the **attributed** principal —
-who the work is for — and the **executor** — who does it.
+The server attaches identity attributes to every dispatched request. They name
+two principals: the **attributed** principal — who the work is for — and the
+**executor** — who does it.
 
 - `authtype` / `authid` — the attributed principal's kind and id.
 - `authexectype` / `authexecid` — the executor's kind and id.
-- `authclaims` — the executor's roles, comma separated. Absent when the
-  executor has no roles (the `system` executor of a scheduled fire).
+- `authclaims` — the executor's roles, comma separated, never the user's: for
+  an on-behalf-of request they are the on-behalf-of client's roles. Absent when
+  the executor has no roles (the `system` executor of a scheduled fire).
 
-Per path, the attributed principal and the executor are:
+`authtype`, `authid` and `authclaims` are attributes of the CloudEvents Auth
+Context extension, with one difference in values: cyoda's kinds are `"user"`,
+`"service"` and `"system"`, where that extension's list uses
+`service_account` for a service. `authexectype` and `authexecid` are cyoda's
+own attributes, outside the extension.
 
-- an on-behalf-of request, and its cascades: the user (`user`), executed by
-  the on-behalf-of client (`service`);
-- a client's own request: the client (`service`) in both;
-- a processor write-back joined to a transaction, and its cascades: the
-  transaction's origin, executed by the compute client (`service`);
-- a callback of a commit-before-dispatch processor (no pass): the calling
-  client (`service`) in both;
-- a scheduled fire: the principal that armed the timer, executed by
-  `system` (`system`).
+Two terms the list below uses. A **pass** is the transaction token
+(`cyodatxtoken`) a callout carries; a callback that echoes it joins the
+callout's transaction. A transaction's **origin** is the principal recorded
+when the transaction began: the attributed principal of the request that
+began it — the user for an on-behalf-of request, the client for a client's own
+request, the arming principal for a scheduled fire.
 
-The kinds are `"user"`, `"service"` or `"system"` — the principals' explicit
-kinds, never sniffed from roles. The node that dispatches a callout computes
-both principals once; a callout handed over to another node carries them,
-and that node attaches them as received. Dispatch fails closed — no callout
-is sent — when either principal has no id or a kind that is unset or
-unrecognized, so a bogus or absent principal never reaches a compute node.
+Per path, the attributed principal / the executor are:
 
-The `api/grpc/authctx` package reads these attributes for a compute node:
-`Type`/`ID` (the attributed principal), `ExecutorType`/`ExecutorID` (the
-executor) and `Roles`. `Require(ce, role)` is a fail-closed role gate: it
-reports `true` only when the executor is a `service` and `role` is in
-`authclaims`. The attributed principal plays no part in it, so a scheduled
-fire (executor `system`) never passes.
+- an on-behalf-of request for a user, and every callout of its cascade: the
+  user (`user`) / the on-behalf-of client (`service`);
+- a client's own request, and its cascade: the client (`service`) / the same;
+- a callback that presents a pass with the compute node's own client token
+  (a write-back joined to the transaction), and its cascade: the
+  transaction's origin / the compute node's client (`service`);
+- a callback without a pass — an independent request, such as the callback of
+  a commit-before-dispatch processor with `startNewTxOnDispatch: false` — and
+  its cascade: the compute node's client (`service`) / the same;
+- a request with an on-behalf-of token, from a compute node that holds an
+  on-behalf-of client of its own: the asserted user (`user`) / that client
+  (`service`); with a pass it may join only a transaction whose origin is that
+  user;
+- a scheduled fire: the principal that armed the timer / `system` (`system`).
+  The callout of a commit-before-dispatch processor with
+  `startNewTxOnDispatch: false` inside a fire runs outside the fire's
+  transaction and carries `system` / `system`;
+- a callout handed over to another node: the principals the dispatching node
+  computed.
+
+The kinds are the principals' explicit kinds, never sniffed from roles. The
+node that dispatches a callout computes both principals once; a callout handed
+over to another node carries them, and that node attaches them as received.
+Dispatch fails closed — no callout is sent — when either principal has no id
+or a kind that is unset or unrecognized, so a bogus or absent principal never
+reaches a compute node. A segregation-of-duties check built on these
+attributes is set out in `cyoda help auth integration` (*READING IDENTITY IN A
+COMPUTE NODE*).
+
+The public Go package `github.com/cyoda-platform/cyoda-go/api/grpc/authctx`
+reads these attributes for a compute node: `Type`/`ID` (the attributed
+principal), `ExecutorType`/`ExecutorID` (the executor) and `Roles`.
+`Require(ce, role)` is a fail-closed role gate: it reports `true` only when the
+executor is a `service` and `role` is in `authclaims`. The attributed principal
+plays no part in it, so a scheduled fire (executor `system`) never passes.
+
+`EntityChangesMetadataGetRequest` returns each change's `user` (the attributed
+id) only; `GET /api/entity/{entityId}/changes` also returns its kind and the
+executor (see `cyoda help crud`).
 
 ## KEEPALIVE
 
@@ -542,7 +573,7 @@ A callout may be tried on more than one member. **Every try carries the same `re
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
-**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, the stream reads its client from the store once when it opens, before the member joins, and then every 60 seconds. It is refused, or closed, with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued: a token issued before `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret` cannot open a stream, and an open stream ends within a minute of either. A compute node whose secret was reset reconnects with a token fetched with the new secret. When the store cannot be read, or a read does not answer within 60 seconds, the stream is refused or closed with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
+**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, the stream reads its client from the store once when it opens, before the member joins, and then every 60 seconds. It is refused, or closed, with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued: a token issued before `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret` cannot open a stream, and an open stream ends within a minute of either. A compute node whose secret was reset reconnects with a token fetched with the new secret; if a freshly fetched token is refused again, its client is gone, and it stops rather than reconnecting in a loop. When the store cannot be read, or a read does not answer within 60 seconds, the stream is refused or closed with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
 
 In cluster mode each node tells its peers which tags its members serve, per tenant. A node tries its own matching members first and then hands the callout, with the tries that are left, to a peer that advertises the tag — see `cyoda help cluster`.
 

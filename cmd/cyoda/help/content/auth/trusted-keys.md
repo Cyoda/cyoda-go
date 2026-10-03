@@ -5,6 +5,7 @@ stability: evolving
 version_added: 0.8.0
 see_also:
   - auth
+  - auth.integration
   - auth.tokens
   - config.auth
   - errors.TRUSTED_KEY_NOT_FOUND
@@ -29,7 +30,7 @@ Register the public key once. For each user, your application signs a short JWT 
 
 A trusted-key JWT is used **only** as the subject token of that grant. cyoda does not accept it as a bearer token on API calls.
 
-**Feature flag.** The 5 trusted-key endpoints under `/oauth/keys/trusted/*` are **off by default**. The operator must set `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` to enable them; otherwise every endpoint returns `404 FEATURE_DISABLED`. This is intentional — trusted keys move the trust boundary, and that posture should be explicit.
+**Feature flag.** The 5 trusted-key endpoints under `/oauth/keys/trusted/*` are **off by default**. The operator must set `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` to enable them; otherwise every endpoint returns `404 FEATURE_DISABLED`. This is intentional — trusted keys move the trust boundary, and that posture should be explicit. Each node reads the flag at startup and the node that takes a call decides by its own value, so in a cluster set it on every node. The flag gates the management endpoints only: the token exchange works with every key registered while it was on, on every node, whatever that node's flag.
 
 ## PREREQUISITES
 
@@ -38,7 +39,7 @@ A trusted-key JWT is used **only** as the subject token of that grant. cyoda doe
 - `CYODA_IAM_MODE=jwt`.
 - `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` (gate; see callout above).
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` (default `10`) — per-tenant cap on trusted keys that can verify. It counts every active key whose `validTo` has not passed, including one whose `validFrom` is still ahead. Trusted keys have no grace period: an invalidated key frees its slot at once. A registration with `invalidatePrevious` ends every other key of the tenant, so it is never refused by the cap. Reactivating a key is held to the same cap. To register or reactivate at the cap, delete or invalidate an old key first.
-- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — default validity for trusted keys when not specified at registration.
+- `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` (default `365`) — the validity, in days from `validFrom`, of a key registered without `validTo`. Despite its name it is not a maximum: a `validTo` you send is not limited by it.
 
 **Client (you) needs:**
 
@@ -53,8 +54,10 @@ A trusted-key JWT is used **only** as the subject token of that grant. cyoda doe
 ```bash
 # Generate a keypair locally
 openssl genrsa -out signing.pem 2048
-openssl rsa -in signing.pem -pubout -out signing.pub
-# Convert the public key to a JWK with your tooling of choice.
+# The JWK modulus n: the public modulus, base64url without padding.
+N=$(openssl rsa -in signing.pem -noout -modulus | cut -d= -f2 \
+    | xxd -r -p | openssl base64 -A | tr '+/' '-_' | tr -d '=')
+# openssl genrsa uses the public exponent 65537, whose JWK form is "AQAB".
 
 # -H @- reads the header from stdin: a command line is visible to other
 # local users, stdin is not.
@@ -63,7 +66,7 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
   -H "Content-Type: application/json" \
   -d '{
         "keyId": "my-signing-key-2026-06",
-        "jwk":   { "kty": "RSA", "n": "<base64url-modulus>", "e": "AQAB" }
+        "jwk":   { "kty": "RSA", "n": "<the value of N>", "e": "AQAB" }
       }' \
   <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
@@ -72,7 +75,7 @@ Optional fields: `issuers` (when set, the subject token's `iss` must be one of t
 
 The JWK is an RSA public key with a modulus of at least 2048 bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi` or `oth`) is refused with `400 BAD_REQUEST`, and the detail names the member. cyoda stores and returns only the public members `kty`, `kid` (set to the `keyId`), `n` and `e`, plus `alg` and `use` when you send them (as strings); every other member you send is dropped.
 
-The key belongs to the tenant of the admin who registers it. Pick a stable, descriptive `keyId`: it becomes the `kid` header you set when signing. Key ids are unique within a tenant only — another tenant may register the same `keyId` for its own, independent key. Registering a `keyId` your tenant already has replaces that key (an upsert), so a retried registration succeeds.
+The key belongs to the tenant of the admin who registers it. Pick a stable, descriptive `keyId`: it becomes the `kid` header you set when signing. A `keyId` is 1 to 128 characters from `A`–`Z`, `a`–`z`, `0`–`9`, `.`, `_` and `-` (`^[A-Za-z0-9._-]{1,128}$`); the path `{keyId}` of the other endpoints follows the same rule. If the JWK carries a `kid`, it must equal the `keyId`. A trusted key belongs to the tenant, not to a client: any on-behalf-of client of the tenant can exchange assertions signed with any active key of the tenant. Key ids are unique within a tenant only — another tenant may register the same `keyId` for its own, independent key. Registering a `keyId` your tenant already has replaces that key (an upsert), so a retried registration succeeds.
 
 ### List trusted keys
 
@@ -150,7 +153,8 @@ A subject token you sign with a trusted-key private key must carry:
 - `aud` — must contain `CYODA_JWT_ISSUER` (a string or an array).
 - `exp` and `iat` — required, with `exp − iat` at most 300 seconds; `nbf` is honoured if present. Every time claim is checked with 30 seconds of clock skew.
 - `iss` — checked only when the key was registered with `issuers`; it must then be one of them.
-- Roles (`user_roles`, `roles`) are ignored: the issued token carries the client's roles.
+- Roles (`user_roles`, `roles`) are ignored: the issued token carries the client's roles. Every other claim is ignored too, and so is the header's `typ`.
+- `jti` is not checked, and cyoda keeps no record of used assertions: an assertion can be exchanged again until it expires. Sign a fresh one for each exchange, with a short life, and keep it on your server.
 
 Cyoda does not mint subject tokens — you sign them. The claim shape of the token cyoda issues is in `auth.tokens`.
 
@@ -163,7 +167,7 @@ Management endpoints:
 - `errors.TRUSTED_KEY_CAP_REACHED` (`400`) — registering or reactivating a key would exceed the per-tenant cap; delete or invalidate an old key first.
 - `errors.STORAGE_UNAVAILABLE` (`503`, retryable) — the store could not be read or written, on any of the endpoints, the list included. Any other store failure is `500` with a ticket.
 - `errors.UNSUPPORTED_KEY_TYPE` (`400`) — `kty` is not `"RSA"`.
-- `errors.BAD_REQUEST` (`400`) — on register: the body is malformed; the `keyId` has the wrong form; the JWK carries a private member, has a modulus under 2048 bits, or has a non-string `alg` or `use`; or the validity window is out of range.
+- `errors.BAD_REQUEST` (`400`) — on register: the body is malformed; the `keyId` does not match `^[A-Za-z0-9._-]{1,128}$` ("invalid keyId format", also on the other endpoints' path); the JWK carries a private member, has more than `CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES` members, has no `kty`, has a `kid` other than the `keyId`, has a modulus under 2048 bits, or has a non-string `alg` or `use`; or the validity window is out of range or `validTo` is not after `validFrom`.
 - `errors.UNAUTHORIZED` (`401`) — caller lacks a valid bearer for the management call.
 - `errors.FORBIDDEN` (`403`) — the caller's token lacks `ROLE_ADMIN`, or is an on-behalf-of token.
 

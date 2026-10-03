@@ -365,19 +365,25 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
   {
     "changeType": "UPDATE",
     "timeOfChange": "2025-08-02T09:00:00Z",
-    "user": "admin",
+    "user": "alice",
+    "attributedKind": "user",
+    "executedBy": {"id": "GC2693985CC61NUU", "kind": "service"},
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
   },
   {
     "changeType": "CREATE",
     "timeOfChange": "2025-08-01T10:00:00Z",
-    "user": "admin",
+    "user": "K3V0Q8B1D2E4F6G7",
+    "attributedKind": "service",
+    "executedBy": {"id": "K3V0Q8B1D2E4F6G7", "kind": "service"},
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
 ```
 
 - `changeType`: `CREATE`, `UPDATE`, or `DELETE`
+- `user`: the attributed principal's id — who the change is for; `attributedKind`: its kind (`user`, `service` or `system`)
+- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns `user` only.
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
