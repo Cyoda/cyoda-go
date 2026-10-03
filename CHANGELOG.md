@@ -1637,6 +1637,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
 
+- **`cyoda help` accepts a topic's dotted id as a single argument** (e.g.
+  `cyoda help auth.tokens`), matching the form every `see_also` list and the
+  HTTP help endpoint already use. Previously only the space-separated form
+  (`cyoda help auth tokens`) resolved.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking
