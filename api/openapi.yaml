@@ -6251,9 +6251,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "501":
           description: Not implemented — returned when the IAM subsystem is not
-            active (`CYODA_IAM_MODE` ≠ `jwt`). Mock IAM mode issues no token;
-            the body is a problem detail with errorCode NOT_IMPLEMENTED, not
-            an OAuth error.
+            active (`CYODA_IAM_MODE` ≠ `jwt`), provided `CYODA_IAM_MOCK_ROLES`
+            includes `ROLE_M2M` (the default does) — the endpoint requires
+            that role before the mock-mode handler runs, so without it the
+            request is rejected earlier as 403 instead. Mock IAM mode issues
+            no token; the body is a problem detail with errorCode
+            NOT_IMPLEMENTED, not an OAuth error.
           content:
             application/problem+json:
               schema:
