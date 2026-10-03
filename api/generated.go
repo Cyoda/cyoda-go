@@ -1251,15 +1251,12 @@ func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 
 // Defines values for TokenResponseDtoIssuedTokenType.
 const (
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt         TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the TokenResponseDtoIssuedTokenType enum.
 func (e TokenResponseDtoIssuedTokenType) Valid() bool {
 	switch e {
-	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
@@ -2603,13 +2600,13 @@ type RegisterTrustedKeyRequestDto struct {
 	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of at least 2048 bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs.
+	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format).
 	KeyId string `json:"keyId"`
 
 	// ValidFrom When the key becomes valid. Defaults to current time if not specified.
 	ValidFrom *time.Time `json:"validFrom,omitempty"`
 
-	// ValidTo When the key expires. Defaults to the system-configured maximum validity.
+	// ValidTo When the key expires. Defaults to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days (365 by default); a value that is given is not limited by that setting.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
 
@@ -2996,20 +2993,14 @@ type TechnicalUserDto struct {
 
 // TokenResponseDto defines model for TokenResponseDto.
 type TokenResponseDto struct {
-	// AccessToken The JWT access token for API authentication
+	// AccessToken The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
 	AccessToken string `json:"access_token"`
 
-	// ExpiresIn The access token's remaining lifetime in seconds (its exp minus now)
+	// ExpiresIn The access token's remaining lifetime in seconds (its exp minus now), at most CYODA_JWT_EXPIRY_SECONDS, which is at most 3600. No refresh token is issued; request a new token before this runs out.
 	ExpiresIn int32 `json:"expires_in"`
 
 	// IssuedTokenType The type of the issued token (present only for token-exchange responses, per RFC 8693)
 	IssuedTokenType *TokenResponseDtoIssuedTokenType `json:"issued_token_type,omitempty"`
-
-	// RefreshToken The refresh token for obtaining new access tokens
-	RefreshToken *string `json:"refresh_token,omitempty"`
-
-	// Scope The scope of the access token, as per RFC 6749 Section 3.3. See https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-	Scope *string `json:"scope,omitempty"`
 
 	// TokenType The type of token issued (currently always 'Bearer')
 	TokenType TokenResponseDtoTokenType `json:"token_type"`

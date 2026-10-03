@@ -5836,9 +5836,12 @@ paths:
         when given; any other member of the request is dropped.
 
 
-        Requires ROLE_ADMIN. Disabled by default — enable via
-
-        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
+        Requires ROLE_ADMIN. Disabled by default — the operator enables it with
+        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` on every node. If
+        `validTo` is omitted, it defaults to `validFrom` plus
+        `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days (365 by default); a
+        `validTo` that is given is not limited by that setting. If `validFrom`
+        is omitted, it defaults to now.
       operationId: registerTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -5911,7 +5914,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to delete
+          description: "The key ID of the trusted key to delete. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
@@ -5977,7 +5980,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to invalidate
+          description: "The key ID of the trusted key to invalidate. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
@@ -6043,7 +6046,7 @@ paths:
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to reactivate
+          description: "The key ID of the trusted key to reactivate. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
@@ -9914,8 +9917,8 @@ components:
       properties:
         access_token:
           type: string
-          description: The JWT access token for API authentication
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          description: The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
+          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
           pattern: ^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$
         token_type:
           type: string
@@ -9926,25 +9929,17 @@ components:
         expires_in:
           type: integer
           format: int32
-          description: The access token's remaining lifetime in seconds (its exp minus now)
+          description: The access token's remaining lifetime in seconds (its exp
+            minus now), at most CYODA_JWT_EXPIRY_SECONDS, which is at most 3600.
+            No refresh token is issued; request a new token before this runs out.
           example: 300
-          maximum: 86400
+          maximum: 3600
           minimum: 1
-        refresh_token:
-          type: string
-          description: The refresh token for obtaining new access tokens
-          example: dGhpc2lzYXJlZnJlc2h0b2tlbg==
-        scope:
-          type: string
-          description: The scope of the access token, as per RFC 6749 Section 3.3. See
-            https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-          example: ROLE_M2M
         issued_token_type:
           type: string
           description: The type of the issued token (present only for token-exchange
             responses, per RFC 8693)
           enum:
-            - urn:ietf:params:oauth:token-type:access_token
             - urn:ietf:params:oauth:token-type:jwt
       required:
         - access_token
@@ -9958,7 +9953,8 @@ components:
           description: Whether the key is currently active. False after invalidation; true after reactivation.
         issuers:
           type: array
-          example: "[https://my-app.local/]"
+          example:
+            - https://my-app.local/
           items:
             type: string
         jwk:
@@ -9996,8 +9992,8 @@ components:
       properties:
         keyId:
           type: string
-          description: Key identifier, unique within the caller's tenant. Will be
-            matched against the `kid` header in JWTs.
+          description: "Key identifier, unique within the caller's tenant. Will be
+            matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           example: my-app-key-1
         jwk:
           type: object
@@ -10009,14 +10005,19 @@ components:
             the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are
             stored; any other member is dropped. See RFC 7517 and RFC 7518 for
             field definitions.'
-          example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
-            n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
+          example:
+            kty: RSA
+            kid: my-app-key-1
+            alg: RS256
+            n: 0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM...
+            e: AQAB
         issuers:
           type: array
           description: "List of allowed issuer URIs. When this parameter is configured,
             the JWT must contain an iss claim, and its value must match one of
             the entries in this list. "
-          example: "[https://my-app.local/]"
+          example:
+            - https://my-app.local/
           items:
             type: string
         validFrom:
@@ -10028,8 +10029,9 @@ components:
         validTo:
           type: string
           format: date-time
-          description: "When the key expires. Defaults to the system-configured maximum
-            validity. "
+          description: "When the key expires. Defaults to validFrom plus
+            CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days (365 by default); a
+            value that is given is not limited by that setting. "
           example: 2026-10-15T10:00:00.000Z
         invalidatePrevious:
           type: boolean

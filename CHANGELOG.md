@@ -10,9 +10,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   through an on-behalf-of client.** cyoda-go has no per-user permissions: an
   on-behalf-of client exchanges a user assertion its application signed for
   a token with the client's roles, and every change, audit event, callout
-  and message records the user and the client. See `cyoda help auth tokens`
-  and `docs/access-to-the-cyoda-api.html`; the entries below give each
-  change.
+  and message records the user and the client. Application teams start with
+  `cyoda help auth integration` — the step-by-step integration guide, with a
+  section on moving from OIDC and forwarded identity-provider tokens — and
+  `docs/access-to-the-cyoda-api.html`; the entries below give each change.
 
 - **`POST /message` no longer reads `X-User-ID`; a message records the
   attributed user and the executor of the request, returned as `userId`,
@@ -662,6 +663,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **`cyoda help auth integration`: the application integration guide.** Step
+  by step for a backend acting for its users, background jobs, compute nodes
+  and the tenant admin: the exact requests, claims and settings, the
+  attributes a compute node receives and a segregation-of-duties recipe, every
+  `/oauth/token` error description with its retry rule, secret and key
+  rotation, an incident playbook, mock mode, a local end-to-end on-behalf-of
+  recipe, and the move from OIDC. `docs/access-to-the-cyoda-api.html` carries
+  the same guide with its scenario diagrams.
+
 - **`cyoda token` signs a short-lived admin token offline.**
   `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
   signs a person token (`user_roles`, default `ROLE_ADMIN`; user `operator`;
@@ -858,6 +868,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   be told apart. See `cyoda help audit`.
 
 ### Changed
+
+- OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
+  which `POST /oauth/token` never sends; `expires_in` has the maximum 3600
+  and `issued_token_type` the one value it takes,
+  `urn:ietf:params:oauth:token-type:jwt`. The trusted-key operations state
+  the `keyId` rule (`^[A-Za-z0-9._-]{1,128}$`), the setting that enables them
+  (`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`) and the default `validTo`
+  (`validFrom` plus `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days).
 
 - A scheduled transition records as `armedBy` the attributed principal of the
   write that armed it.
