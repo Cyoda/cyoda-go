@@ -49,9 +49,9 @@ principal: user id `mock-user-001`, tenant `mock-tenant`, kind
 `CYODA_IAM_MOCK_KIND`, roles `CYODA_IAM_MOCK_ROLES`. It has no separate
 executor, so it is both the attributed principal and the executor of every
 change and callout. Mock mode has no client store: `POST /oauth/token` issues
-no token, the client and trusted-key endpoints answer `501 NOT_IMPLEMENTED`,
-and on-behalf-of access cannot be exercised (see `cyoda help auth integration`,
-*RUNNING IT LOCALLY*).
+no token and answers `501 NOT_IMPLEMENTED`, as do the client and trusted-key
+endpoints, and on-behalf-of access cannot be exercised (see
+`cyoda help auth integration`, *RUNNING IT LOCALLY*).
 
 When running in mock mode, the binary emits a prominent `MOCK AUTH IS ACTIVE`
 warning banner at startup so operators see the security posture of the running

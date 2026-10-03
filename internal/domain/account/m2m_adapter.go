@@ -40,8 +40,7 @@ func generateClientID() (string, error) {
 // store is not wired (mock IAM mode). All four /clients adapters call this.
 func (h *Handler) requireM2MStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.m2mClientStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "M2M client management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "M2M client management")
 		return false
 	}
 	return true

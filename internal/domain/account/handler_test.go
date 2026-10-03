@@ -1,7 +1,9 @@
 package account_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -9,6 +11,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 )
 
@@ -91,15 +94,40 @@ func TestHandlerReturns501(t *testing.T) {
 	}
 }
 
-// TestGetTechnicalUserToken_Returns500_RoutingRegression verifies that the
-// defensive stub returns 500 (not 501): arriving here means the public mux
-// failed to intercept POST /oauth/token before chi could dispatch it.
-func TestGetTechnicalUserToken_Returns500_RoutingRegression(t *testing.T) {
+// TestGetTechnicalUserToken_MockMode_Returns501 verifies the generated
+// router's POST /oauth/token handler. It is reached only in mock IAM mode: in
+// JWT IAM mode the token handler on the public mux takes every method on the
+// path first. Mock mode issues no token, so the answer is 501 NOT_IMPLEMENTED,
+// and the expected path logs nothing at WARN or above.
+func TestGetTechnicalUserToken_MockMode_Returns501(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
 	h := account.New(nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("POST", "/oauth/token", nil)
 	h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500, got %d; body: %s", w.Code, w.Body.String())
+
+	if w.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want 501; body: %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Detail     string         `json:"detail"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v; body: %s", err, w.Body.String())
+	}
+	if code, _ := body.Properties["errorCode"].(string); code != common.ErrCodeNotImplemented {
+		t.Errorf("errorCode = %q, want %q", code, common.ErrCodeNotImplemented)
+	}
+	const wantDetail = "NOT_IMPLEMENTED: token issuance requires JWT IAM mode"
+	if body.Detail != wantDetail {
+		t.Errorf("detail = %q, want %q", body.Detail, wantDetail)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("logged at WARN or above on the expected path:\n%s", logs.String())
 	}
 }

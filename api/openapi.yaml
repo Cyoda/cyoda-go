@@ -6243,6 +6243,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          description: Not implemented — returned when the IAM subsystem is not
+            active (`CYODA_IAM_MODE` ≠ `jwt`). Mock IAM mode issues no token;
+            the body is a problem detail with errorCode NOT_IMPLEMENTED, not
+            an OAuth error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "503":
           description: Service Unavailable - temporarily_unavailable (the client
             store or the trusted-key store is unavailable, or no client-secret

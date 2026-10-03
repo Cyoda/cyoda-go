@@ -281,6 +281,33 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
+// TestMockMode_TokenEndpoint_Returns501: mock IAM mode mounts no token
+// handler, so POST /oauth/token reaches the generated router, which answers
+// 501 NOT_IMPLEMENTED: mock mode issues no token.
+func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	a := app.New(cfg)
+	srv := httptest.NewServer(a.Handler())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("token request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Properties map[string]any `json:"properties"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusNotImplemented || body.Properties["errorCode"] != "NOT_IMPLEMENTED" {
+		t.Fatalf("mock-mode POST /oauth/token: status %d errorCode %v, want 501 NOT_IMPLEMENTED",
+			resp.StatusCode, body.Properties["errorCode"])
+	}
+}
+
 // jwtAppWithKey is jwtApp, also returning the signing key.
 func jwtAppWithKey(t *testing.T) (*app.App, *rsa.PrivateKey) {
 	t.Helper()

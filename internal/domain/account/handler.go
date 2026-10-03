@@ -1,8 +1,6 @@
 package account
 
 import (
-	"errors"
-	"log/slog"
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -32,6 +30,14 @@ func New(keyStore auth.KeyStore, trustedKeyStore auth.TrustedKeyStore, m2mClient
 
 func (h *Handler) stub(w http.ResponseWriter, r *http.Request) {
 	common.WriteError(w, r, common.Operational(http.StatusNotImplemented, common.ErrCodeNotImplemented, "not yet implemented"))
+}
+
+// writeRequiresJWTMode answers 501 NOT_IMPLEMENTED for a feature that exists
+// only in JWT IAM mode. In mock IAM mode its store is not wired, and the
+// feature names what is missing ("token issuance", "key management", …).
+func writeRequiresJWTMode(w http.ResponseWriter, r *http.Request, feature string) {
+	common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
+		common.ErrCodeNotImplemented, feature+" requires JWT IAM mode"))
 }
 
 func (h *Handler) AccountGet(w http.ResponseWriter, r *http.Request) {
@@ -72,16 +78,11 @@ func (h *Handler) AccountSubscriptionsGet(w http.ResponseWriter, r *http.Request
 	h.stub(w, r)
 }
 
-// GetTechnicalUserToken — defensive interface-satisfaction stub for
-// POST /oauth/token. The real handler is the auth-service token handler
-// mounted on the public mux at app/app.go (the /oauth/token entry, every
-// method), which intercepts before the chi router can reach this method. Arriving
-// here means a routing regression — log + 500.
+// GetTechnicalUserToken is the generated router's POST /oauth/token. In JWT
+// IAM mode the auth-service token handler on the public mux (app/app.go, the
+// /oauth/token entry, every method) takes the path before the generated
+// router sees it, so this method runs only in mock IAM mode, which issues no
+// token.
 func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
-	slog.WarnContext(r.Context(),
-		"chi /oauth/token reached — should be intercepted by public mux; routing regression?",
-		"method", r.Method, "path", r.URL.Path)
-	common.WriteError(w, r,
-		common.Internal("getTechnicalUserToken-unreachable",
-			errors.New("routing regression: chi served POST /oauth/token")))
+	writeRequiresJWTMode(w, r, "token issuance")
 }

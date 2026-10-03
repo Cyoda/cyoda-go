@@ -21,8 +21,7 @@ import (
 // trusted-key store wasn't wired (e.g. mock IAM mode). All 5 trusted-key adapters call this.
 func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.trustedKeyStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "trusted-key management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "trusted-key management")
 		return false
 	}
 	return true

@@ -1025,6 +1025,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **`POST /oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
+  Mock mode issues no token; the endpoint answered `500` with a ticket and
+  logged a routing error. It now answers `501` with the detail "token
+  issuance requires JWT IAM mode", like the client and trusted-key
+  endpoints, and logs nothing. JWT mode is unchanged.
+
 - **Responses that carry a credential are never cached.** Every
   `POST /oauth/token` response (both grants, success and error) and the
   plaintext secret from `POST /clients` and `PUT /clients/{clientId}/secret`

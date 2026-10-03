@@ -20,8 +20,7 @@ import (
 // store wasn't wired (e.g. mock IAM mode). All 5 keypair adapters call this.
 func (h *Handler) requireKeyStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.keyStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "key management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "key management")
 		return false
 	}
 	return true

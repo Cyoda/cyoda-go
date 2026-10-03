@@ -324,7 +324,7 @@ Afterwards, review what the credentials did: entity changes and audit events who
 - `user` — `authctx.Require` never passes, and a compute-node stream is refused (`PermissionDenied`).
 - `system` — the same refusals as `user`.
 
-Mock mode has no client store: `POST /oauth/token` issues no token, and the client and trusted-key endpoints answer `501 NOT_IMPLEMENTED` (trusted keys answer `404 FEATURE_DISABLED` while their flag is off). **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
+Mock mode has no client store: `POST /oauth/token` issues no token and answers `501 NOT_IMPLEMENTED`, as do the client and trusted-key endpoints (trusted keys answer `404 FEATURE_DISABLED` while their flag is off). **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
 
 **On-behalf-of end to end, in jwt mode, on one machine** (needs `openssl`, `xxd`, `jq` and `curl`):
 
