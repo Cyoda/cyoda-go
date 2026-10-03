@@ -18,7 +18,7 @@ cli.help — the cyoda help subsystem and topic-tree contract.
 
 ## DESCRIPTION
 
-`cyoda help` is the built-in documentation browser. Topics are organized in a dot-separated tree (`cli`, `cli.serve`, `config.database`, etc.). Invoking `cyoda help` with no arguments prints a summary of all top-level topics. Invoking it with one or more topic segments, as separate words, navigates the tree: `cyoda help config database` shows the topic whose id is `config.database`. The CLI does not accept the dotted id itself; the HTTP endpoint below does.
+`cyoda help` is the built-in documentation browser. Topics are organized in a dot-separated tree (`cli`, `cli.serve`, `config.database`, etc.). Invoking `cyoda help` with no arguments prints a summary of all top-level topics. Invoking it with one or more topic segments navigates the tree, either as separate words (`cyoda help config database`) or as a single dotted id (`cyoda help config.database`); both resolve to the topic whose id is `config.database`. The dotted id is only recognized when passed as one argument — `cyoda help config.database` works, but quoting it across multiple shell words does not combine them. The HTTP endpoint below accepts the same dotted id, plus a slash form.
 
 The help content is embedded in the binary at build time — no network access or external files are needed.
 
@@ -186,6 +186,9 @@ cyoda help cli
 
 # Show the serve subtopic
 cyoda help cli serve
+
+# Show the serve subtopic using its dotted id instead
+cyoda help cli.serve
 
 # Output JSON for the full topic tree
 cyoda help --format=json

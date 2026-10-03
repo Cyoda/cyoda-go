@@ -34,7 +34,7 @@ The common shape of an application:
 - **compute nodes** that run your workflow processors and criteria over the gRPC stream (each uses a plain client of its own);
 - a **tenant admin** who provisions the clients and keys above (uses an admin client).
 
-The reference topics hold the full tables: `cyoda help auth tokens` (the token endpoint, every claim and every error), `cyoda help auth clients` (client lifecycle), `cyoda help auth trusted-keys` (key registration), `cyoda help grpc` (the compute-node protocol), `cyoda help audit` (recorded identities), `cyoda help config auth` (server settings and operator procedures). The CLI takes a topic's parts as separate words: `cyoda help auth tokens`. The dotted form `auth.tokens` is the topic's id, which the CLI does not accept but the HTTP help endpoint does (see `cyoda help cli help`).
+The reference topics hold the full tables: `cyoda help auth tokens` (the token endpoint, every claim and every error), `cyoda help auth clients` (client lifecycle), `cyoda help auth trusted-keys` (key registration), `cyoda help grpc` (the compute-node protocol), `cyoda help audit` (recorded identities), `cyoda help config auth` (server settings and operator procedures). The CLI takes a topic's parts as separate words (`cyoda help auth tokens`) or as its dotted id in a single argument (`cyoda help auth.tokens`); both resolve to the same topic, matching the HTTP help endpoint (see `cyoda help cli help`).
 
 ## GLOSSARY
 

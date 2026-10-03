@@ -52,6 +52,33 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 		return writeTreeSummary(tree, out, style)
 	}
 
+	if code, ok := dispatchTopic(tree, positional, format, isTTY, style, out); ok {
+		return code
+	}
+
+	// Dotted fallback: see_also lists and the HTTP help endpoint name
+	// topics in dotted form (e.g. "auth.tokens"), so a single argument
+	// that doesn't resolve as given is retried split on ".". Only a
+	// single positional argument is eligible — multiple arguments are
+	// never recombined, so "cli serve.extra" is not reinterpreted.
+	dotted := positional
+	if len(positional) == 1 && strings.Contains(positional[0], ".") {
+		split := strings.Split(positional[0], ".")
+		if code, ok := dispatchTopic(tree, split, format, isTTY, style, out); ok {
+			return code
+		}
+		dotted = split
+	}
+
+	writeUnknownTopicError(tree, dotted, out)
+	return 2
+}
+
+// dispatchTopic resolves positional against the topic tree and, failing
+// that, against registered topic actions. ok is false when neither
+// resolves, in which case the caller decides how to report it (directly,
+// or after retrying a dotted single argument split into segments).
+func dispatchTopic(tree *Tree, positional []string, format string, isTTY bool, style string, out io.Writer) (code int, ok bool) {
 	// "config all" is both a registered action (HTTP, and the generic
 	// CLI action dispatch below) and a CLI special-case here — the
 	// special-case runs first so plain-text is the CLI default and
@@ -60,14 +87,14 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 	if len(positional) == 2 && positional[0] == "config" && positional[1] == "all" {
 		switch format {
 		case "json":
-			return writeConfigAllJSON(out)
+			return writeConfigAllJSON(out), true
 		case "auto", "", "text":
-			return writeConfigAllText(out)
+			return writeConfigAllText(out), true
 		default:
 			// markdown/yaml are valid help formats generally but meaningless
 			// for this flat listing — reject rather than silently return text.
 			fmt.Fprintf(out, "cyoda help config all: --format=%s not supported; use text or json\n", format)
-			return 2
+			return 2, true
 		}
 	}
 
@@ -82,7 +109,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 			parent := tree.Find(parentPath)
 			if parent != nil {
 				if entry, ok := lookupAction(parent.DottedPath(), actionName); ok {
-					return entry.Handler(out)
+					return entry.Handler(out), true
 				}
 				// Dynamic action resolvers: the openapi
 				// topic accepts any tag slug as an action, resolved at
@@ -92,7 +119,7 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 				// tags')" for discoverability.
 				if parent.DottedPath() == "openapi" {
 					if handler, ok := lookupOpenAPITagAction(actionName, format); ok {
-						return handler(out)
+						return handler(out), true
 					}
 				}
 				// Topic exists but the action name is unknown — improve the error.
@@ -103,21 +130,20 @@ func RunHelp(tree *Tree, args []string, out io.Writer, version string, isTTY boo
 					}
 					fmt.Fprintf(out, "cyoda help %s: unknown action %q. Available actions: %s%s\n",
 						strings.Join(parentPath, " "), actionName, strings.Join(avail, ", "), hint)
-					return 2
+					return 2, true
 				}
 			}
 		}
-		writeUnknownTopicError(tree, positional, out)
-		return 2
+		return 0, false
 	}
 
 	switch resolveFormat(format, isTTY) {
 	case "json":
-		return writeTopicJSON(topic, out)
+		return writeTopicJSON(topic, out), true
 	case "markdown":
-		return writeTopicMarkdown(topic, out)
+		return writeTopicMarkdown(topic, out), true
 	default:
-		return writeTopicText(topic, out, style)
+		return writeTopicText(topic, out, style), true
 	}
 }
 
