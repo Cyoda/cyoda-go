@@ -9,5 +9,5 @@ case "$skill" in
   superpowers:writing-plans) f=gate-writing-plans.md ;;
   *) exit 0 ;;
 esac
-ctx=$(cat "${CLAUDE_PROJECT_DIR}/.claude/rules/$f" 2>/dev/null) || exit 0
+ctx=$(cat "${CLAUDE_PROJECT_DIR}/.claude/gates/$f" 2>/dev/null) || exit 0
 jq -n --arg c "$ctx" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$c,permissionDecision:"allow"}}'

@@ -19,7 +19,7 @@ Defined in `internal/common/error_codes.go`. Refer to that file — do not maint
 
 - Accumulate via `common.AddWarning(ctx, msg)` and `common.AddError(ctx, msg)`.
 - Surfaced in gRPC `warnings` array and HTTP response body.
-- Processor/criteria response warnings and errors MUST be propagated.
+- Propagate processor/criteria response warnings and errors to the caller.
 
 ## Rules
 

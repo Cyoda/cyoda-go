@@ -22,7 +22,7 @@ These are STOP-and-verify checkpoints. Do not proceed past a gate without comple
 ### Gate 1: TDD is mandatory
 Do not write implementation code without a failing test driving it.
 Use `superpowers:test-driven-development` skill for all feature and bugfix work.
-See `.claude/rules/tdd.md` for the full protocol.
+See `.claude/rules/tdd.md` for what this project adds to it.
 
 ### Gate 2: E2E test coverage
 When adding or changing user-facing behavior (API responses, workflow semantics, error codes),
@@ -115,28 +115,21 @@ guard that consistency, they don't define behaviour.
 ## Workflow
 
 ### New feature
-brainstorming → writing-plans → subagent-driven-development → verification-before-completion → requesting-code-review → security-review → PR/merge
+brainstorming → writing-plans → subagent-driven-development → verification-before-completion → requesting-code-review → cyoda-go-security-audit → PR/merge
 
 ### Bugfix
-test-driven-development → verification-before-completion → requesting-code-review → security-review → PR/merge
+test-driven-development → verification-before-completion → requesting-code-review → cyoda-go-security-audit → PR/merge
 
 ### Receiving review feedback
 receiving-code-review
 
-All workflow skills are in the `superpowers:` namespace.
-Security review uses `antigravity-bundle-security-engineer:security-auditor` —
-an audit method (trace data flow across trust boundaries, find privileged logic
-that bypasses database-level protection, hunt IDOR on global resources), which
-is what this codebase needs. Not
-`antigravity-bundle-security-developer:cc-skill-security-review`: that is a
-generic Next.js / Supabase / Solana checklist — CSRF tokens, file uploads, `localStorage`, wallet signatures — and
-has almost nothing to say about a Go storage engine.
+The workflow skills are in the `superpowers:` namespace, except
+`cyoda-go-security-audit`, which is this project's own skill
+(`.claude/skills/cyoda-go-security-audit/`) — not the built-in `/security-review`.
 
-The security review is a gate, not a nicety, and the `security` CI job is a
-scanner rather than a substitute for it. Run it against Gate 3's rules: no
-credentials logged at any level, tenant isolation verified on **every** data
-path, input validated at boundaries, 4xx carrying domain detail while 5xx carry
-a generic message and a ticket UUID with no internals.
+The security audit is a gate, not a nicety, and the `security` CI job is a
+scanner rather than a substitute for it. The skill checks Gate 3's rules on
+every trust boundary the change touches.
 
 Do not skip steps. Brainstorming prevents building the wrong thing.
 TDD prevents shipping untested code. Verification prevents false "done" claims.
@@ -144,7 +137,7 @@ Review and security audit prevent defects reaching main.
 
 **The review gates need a *fresh-context* reviewer, and this is a standing
 request from the user to dispatch one.** `requesting-code-review` and the
-brainstorming design review (`.claude/rules/gate-brainstorming.md`) both depend
+brainstorming design review (`.claude/gates/gate-brainstorming.md`) both depend
 on a reviewer that has not seen the working context; running them inline defeats
 their purpose. Treat reaching either gate as the user having asked for a subagent
 on that task — no need to ask again. If anything still prevents dispatching one,
