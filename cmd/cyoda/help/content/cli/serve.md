@@ -57,7 +57,7 @@ Variables read specifically during server boot (not covered by the config subtop
 ## EXIT CODES
 
 - `0` — clean shutdown after SIGINT or SIGTERM.
-- `1` — startup failure, or a server that failed while running (`server group exited with error` in the log). Startup failures include: IAM validation failed (`CYODA_REQUIRE_JWT` contract not met), OTel SDK initialization error, a gRPC, HTTP or admin port that cannot be bound, or backend connection failure during `app.New`.
+- `1` — startup failure, or a server that failed while running (`server group exited with error` in the log). Startup failures include: a setting that `Config.Validate` rejects (`startup failure` in the log, `phase=config-validation`) — for example an unsupported `CYODA_IAM_MODE` or an unmet `CYODA_REQUIRE_JWT` contract — OTel SDK initialization error, a gRPC, HTTP or admin port that cannot be bound, or backend connection failure during `app.New`.
 - `2` — hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on this path.
 
 ## EXAMPLES

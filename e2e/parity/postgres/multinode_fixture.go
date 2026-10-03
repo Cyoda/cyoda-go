@@ -27,7 +27,14 @@ import (
 type pgMultiNode struct {
 	baseURLs []string
 	keySet   *fixtureutil.JWTKeySet
-	nodeLogs []*fixtureutil.SyncBuffer
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under; the nodes share one store, so one client serves
+	// every node.
+	computeCreds *fixtureutil.ComputeCredentials
+	// computeClientID is the M2M client the fixture's own compute client
+	// authenticates as.
+	computeClientID string
+	nodeLogs        []*fixtureutil.SyncBuffer
 	// killNode SIGKILLs node i (see fixtureutil.ClusterLaunchResult.KillNode).
 	// Exposed via the KillNode method, off the shared MultiNodeFixture
 	// interface — a crash test type-asserts for it.
@@ -58,7 +65,7 @@ func (f *pgMultiNode) StartComputeClient(t *testing.T, node int, spec parity.Com
 	if node < 0 || node >= len(f.baseURLs) || node >= len(f.grpcEndpoints) {
 		t.Fatalf("StartComputeClient: pnode %d out of range (cluster has %d)", node, len(f.baseURLs))
 	}
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoints[node], f.baseURLs[node], spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoints[node], f.baseURLs[node], spec)
 }
 
 // BaseURLs implements multinode.MultiNodeFixture.
@@ -87,6 +94,12 @@ func (f *pgMultiNode) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
+// PlatformOperator implements multinode.MultiNodeFixture.
+func (f *pgMultiNode) PlatformOperator(t *testing.T) parity.Tenant {
+	t.Helper()
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
+}
+
 // ComputeUser mints a USER-kind JWT (caas_user_id == userID) scoped to the
 // compute-test-client's tenant — a human origin whose cascades still dispatch
 // to the registered gRPC member. Used by cross-node attribution scenarios that
@@ -97,6 +110,11 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 	t.Helper()
 	return fixtureutil.MintComputeUserJWT(t, f.keySet, userID, roles...)
 }
+
+// ComputeServiceID is the M2M client the fixture's own compute client
+// authenticates as — the executor id of its callbacks. Part of the optional
+// attribution capability, like ComputeUser.
+func (f *pgMultiNode) ComputeServiceID() string { return f.computeClientID }
 
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
 // snapshot. Its callers are Incarnation, which reads the scheduler's start
@@ -261,15 +279,17 @@ func MustSetupMultiNodeWithOpts(t *testing.T, n int, extraEnv []string, launch f
 	}
 
 	return &pgMultiNode{
-		baseURLs:      result.BaseURLs,
-		keySet:        ks,
-		nodeLogs:      result.NodeLogs,
-		killNode:      result.KillNode,
-		signalNode:    result.SignalNode,
-		awaitNodeExit: result.AwaitNodeExit,
-		containerID:   pgContainer.GetContainerID(),
-		connStr:       connStr,
-		computeBin:    result.ComputeBin,
-		grpcEndpoints: result.GRPCEndpoints,
+		baseURLs:        result.BaseURLs,
+		keySet:          ks,
+		computeCreds:    fixtureutil.NewComputeCredentials(ks),
+		computeClientID: result.ComputeClientID,
+		nodeLogs:        result.NodeLogs,
+		killNode:        result.KillNode,
+		signalNode:      result.SignalNode,
+		awaitNodeExit:   result.AwaitNodeExit,
+		containerID:     pgContainer.GetContainerID(),
+		connStr:         connStr,
+		computeBin:      result.ComputeBin,
+		grpcEndpoints:   result.GRPCEndpoints,
 	}, cleanup
 }

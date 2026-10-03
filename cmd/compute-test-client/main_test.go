@@ -443,7 +443,7 @@ func TestCatalog_CreateSecondaryRecord_RecordsTheAnswerAndSucceeds(t *testing.T)
 		t.Fatal("cb-create-secondary-record callback processor not registered")
 	}
 	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p"}`)},
-		cbConfig{SecondaryModel: "sec", SecondaryVersion: 1, Marker: "m"}, "the-pass", newCallbackClient(door.URL, "bearer"))
+		cbConfig{SecondaryModel: "sec", SecondaryVersion: 1, Marker: "m"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
 	if err != nil {
 		t.Fatalf("processor must succeed whatever the callback answered: %v", err)
 	}
@@ -478,7 +478,7 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 		t.Fatal("cb-write-self callback processor not registered")
 	}
 	out, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{"name":"p","status":"new"}`)},
-		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, "bearer"))
+		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(door.URL, staticToken("bearer")))
 	if err != nil {
 		t.Fatalf("processor: %v", err)
 	}
@@ -498,7 +498,7 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 	}))
 	defer failing.Close()
 	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
-		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, "bearer")); err == nil {
+		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
 		t.Fatal("a refused write must fail the processor")
 	}
 }

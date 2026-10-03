@@ -35,7 +35,7 @@ Use it to create M2M clients: POST /api/clients.
     kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "cyoda.fullname" . }} 9091:metrics &
     BEARER=$(kubectl -n {{ .Release.Namespace }} get secret {{ include "cyoda.metricsBearerSecretName" . }} \
       -o jsonpath='{.data.{{ .Values.monitoring.metricsBearer.existingSecretKey }}}' | base64 -d)
-    curl -H "Authorization: Bearer $BEARER" http://localhost:9091/metrics | head
+    curl -H @- http://localhost:9091/metrics <<<"Authorization: Bearer $BEARER" | head
 {{- if .Values.monitoring.serviceMonitor.enabled }}
   Prometheus scrapes via the rendered ServiceMonitor, which references
   Secret {{ include "cyoda.metricsBearerSecretName" . }} via bearerTokenSecret — no

@@ -540,26 +540,67 @@ for mode-specific semantics.
 
 ## 8. Authentication and Authorization
 
+### Access model
+
+Only M2M clients reach cyoda-go. Users never call it directly: an application
+signs its own users in, decides what each user may do, and calls cyoda-go for
+them. cyoda-go has no per-user data permissions. It records what an
+authenticated client states about the user and does not verify the user; like
+a database, it cannot protect data from an application that is itself
+compromised. The decision record is ADR 0004
+(`docs/adr/0004-m2m-only-access-with-on-behalf-of-identity.md`); the
+application integration guide is `cyoda help auth integration`, with
+`docs/access-to-the-cyoda-api.html`.
+
+| Client | Roles | Grant |
+|--------|-------|-------|
+| Plain M2M client | `ROLE_M2M` (every data operation requires it) | `client_credentials` |
+| Admin M2M client | `ROLE_M2M`, `ROLE_ADMIN` (manages the tenant's clients and trusted keys) | `client_credentials` |
+| On-behalf-of (OBO) client | `ROLE_M2M`, never `ROLE_ADMIN`, never in tenant `PLATFORM` | token exchange (RFC 8693) only |
+
+An application acting for a user signs a short user assertion (RS256,
+`exp − iat` ≤ 300 s, `aud` = `CYODA_JWT_ISSUER`, `caas_org_id` = its tenant,
+`sub` = the user id) with a **trusted key** its tenant admin registered, and
+its OBO client exchanges the assertion at `POST /oauth/token`. The issued
+token names the user as subject and the client in `act`, and carries the
+client's roles, never roles from the assertion. A trusted key verifies only
+such an assertion, in its own tenant; it is never accepted as a bearer token.
+
+Every change, audit event, callout and message records two principals: the
+**attributed** principal (who the work is for) and the **executor** (who made
+it): the user and the OBO client for an OBO request; the client twice for a
+client's own request; the transaction's origin and the compute client for a
+compute node's write-back; the arming principal and `system` for a scheduled
+firing.
+
+The one other token source is the platform operator's offline `cyoda token`,
+signed with `CYODA_JWT_SIGNING_KEY`, which solves the first-admin problem: the
+first M2M clients of a tenant are created with it. The platform operator holds
+`ROLE_ADMIN` in the tenant `PLATFORM` and manages signing key pairs and node
+settings.
+
 ### Modes
 
 | Mode | Configuration | Behavior |
 |------|--------------|----------|
-| **Mock** | `CYODA_IAM_MODE=mock` (default) | All requests auto-authenticated as a default user. Zero setup. |
-| **JWT** | `CYODA_IAM_MODE=jwt` | Real OAuth 2.0 with RS256 JWT tokens |
+| **Mock** | `CYODA_IAM_MODE=mock` (default) | Every request runs as one fixed principal (`mock-user-001` in `mock-tenant`, kind `CYODA_IAM_MOCK_KIND`, roles `CYODA_IAM_MOCK_ROLES`). No tokens, no clients. Zero setup. |
+| **JWT** | `CYODA_IAM_MODE=jwt` | RS256 tokens signed by cyoda-go's own key pairs |
 
 ### JWT Mode Capabilities
 
 | Capability | Endpoint | Description |
 |------------|----------|-------------|
-| **Token issuance** | `POST /oauth/token` | `client_credentials` grant |
-| **OBO exchange** | `POST /oauth/token` | RFC 8693 token exchange — a service acting on behalf of a user |
-| **JWKS** | `GET /.well-known/jwks.json` | Public key discovery for token verification |
-| **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create, delete, reset secret for machine-to-machine clients |
-| **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs |
-| **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register external signing keys for cross-system trust |
-| **First admin token** | `cyoda token` | Signs a short-lived admin token offline with `CYODA_JWT_SIGNING_KEY` (solves chicken-and-egg: the first M2M clients are created with it) |
+| **Token issuance** | `POST /oauth/token` | `client_credentials` for plain and admin clients |
+| **OBO exchange** | `POST /oauth/token` | RFC 8693 token exchange, for OBO clients only |
+| **JWKS** | `GET /.well-known/jwks.json` | Public keys of cyoda-go's signing key pairs |
+| **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create (`withAdminRole`, `onBehalfOf`), list, delete, reset secret; tenant admin |
+| **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs; platform operator |
+| **Trusted keys** | `POST/GET/DELETE /oauth/keys/trusted/...` | Register, invalidate, reactivate, delete the public keys user assertions are signed with; tenant admin, behind `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED` |
+| **First admin token** | `cyoda token` | Signs a short-lived admin token offline with `CYODA_JWT_SIGNING_KEY` |
 
 ### Token Claims
+
+A `client_credentials` token:
 
 ```json
 {
@@ -567,57 +608,44 @@ for mode-specific semantics.
   "sub": "<client_id>",
   "jti": "<unique_id>",
   "iat": 1711700000,
-  "exp": 1711703600,
-  "caas_user_id": "<user_id>",
+  "exp": 1711700300,
+  "caas_user_id": "<client_id>",
   "caas_org_id": "<tenant_id>",
-  "scopes": "ROLE_ADMIN,ROLE_M2M",
+  "scopes": ["ROLE_M2M"],
+  "cgen": 1,
   "caas_tier": "unlimited"
 }
-
 ```
 
-`aud` is added, set to `CYODA_JWT_AUDIENCE`, when that variable is set.
+An OBO token carries the user as `sub` and `caas_user_id`, the client as
+`act: {"sub": "<client_id>"}`, the client's roles in `scopes`, and no `cgen`.
+A `cyoda token` carries `user_roles` instead of `scopes`. `aud` is added, set
+to `CYODA_JWT_AUDIENCE`, when that variable is set. Tokens live
+`CYODA_JWT_EXPIRY_SECONDS` (default 300, at most 3600); an OBO token never
+outlives its assertion. There are no refresh tokens.
 
-### Per-Tenant OIDC Provider Registry
+### Validation
 
-In JWT mode, each tenant can register one or more external Identity Providers (IdPs) whose JWTs cyoda-go will accept alongside its own locally-issued tokens. This enables single-sign-on scenarios where users authenticate through an external IdP (e.g. Okta, Keycloak, Azure AD) and present those tokens directly to cyoda-go — no token exchange required.
+Every token is checked in-process against cyoda-go's own signing key pairs:
+signature (RS256 only), `iss` = `CYODA_JWT_ISSUER`, `aud` when
+`CYODA_JWT_AUDIENCE` is set, `exp`/`iat`/`nbf` with 30 s of skew, the tenant
+and user-id rules, and a strict claim mapping (`act` + `scopes` → a user acting
+through a client; `scopes` → a client; `user_roles` → the operator's token).
+No network call is made on the request path. A token from any other issuer,
+an identity provider's included, is refused with `401`.
 
-**What you can do with OIDC providers:**
-
-- **Register** a provider by supplying its URL, accepted issuer values, expected audiences, and (optionally) a custom roles claim name.
-- **List, register, update, delete** providers through the `/oauth/oidc/providers` REST surface (7 endpoints, `ROLE_ADMIN` required).
-- **Invalidate** a provider to suspend JWT acceptance without removing the record; **reactivate** to restore it.
-- **Reload** to force a fresh JWKS fetch and evict the node-local cache — useful after an IdP rotates its signing keys outside the normal TTL window.
-
-Provider records are per-tenant; a tenant's OIDC configuration is invisible to other tenants.
-
-**Validation chain.** When a JWT arrives, cyoda-go first checks whether the `iss` claim matches the locally-configured issuer (`CYODA_JWT_ISSUER`). If not, it searches the requesting tenant's registered providers for one whose `issuers` list matches. A match triggers external JWKS validation; no match rejects the token.
-
-**External-issuer token structure.** Tokens from a registered OIDC provider follow the standard JWT format. The roles claim name is configurable per-provider (defaults to `CYODA_OIDC_ROLES_CLAIM`):
-
-```json
-{
-  "iss": "https://auth.example.com",
-  "sub": "user@example.com",
-  "aud": ["cyoda-api"],
-  "iat": 1750000000,
-  "exp": 1750003600,
-  "roles": ["ROLE_ADMIN"]
-}
-```
-
-Cyoda-go maps the extracted roles to its standard `ROLE_ADMIN` / `ROLE_M2M` role set. The `caas_org_id` tenant claim required for local tokens is not required from external issuers — tenant affinity is determined by which tenant registered the matching provider.
-
-### Delegating Authenticator
-
-The authenticator routes by `iss` (issuer) claim:
-- **Local tokens** (issuer matches configured `CYODA_JWT_ISSUER`): Extract roles from `scopes` claim.
-- **Registered OIDC provider tokens** (issuer matches a provider in the requesting tenant's OIDC registry): Validate via the provider's JWKS endpoint; extract roles from the provider's configured `rolesClaim`.
-- **Trusted external key tokens** (legacy path; see Trusted Keys above): Extract roles from `user_roles` claim.
+Token issuance reads the client, and the trusted key, from the shared store on
+every request, so a client delete, a secret reset or a key invalidation stops
+new tokens at once on every node; issued tokens end within their lifetime.
 
 ### gRPC Authentication
 
-gRPC calls authenticate via `Authorization` metadata. The same JWT validation applies, including the OIDC provider chain. Calculation members must authenticate with `ROLE_M2M` tokens.
+gRPC calls authenticate via `authorization` metadata with the same validation.
+A compute node opens its stream with its own client's `client_credentials`
+token (kind service, `ROLE_M2M`); the stream re-checks the client every 60 s
+and closes when the client is deleted or its secret reset. Callouts carry the
+attributed principal (`authtype`, `authid`), the executor (`authexectype`,
+`authexecid`) and the executor's roles (`authclaims`).
 
 ---
 
@@ -859,7 +887,7 @@ Authoritative code list: `internal/common/error_codes.go`. Per-code semantics, H
 
 ### OpenTelemetry
 
-OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. When `CYODA_OTEL_ENABLED=true`, HTTP requests are auto-traced via `otelhttp`, and transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are also traced when `CYODA_OTEL_ENABLED=true`. Plugins may add their own plugin-namespaced spans and metrics as their hot-path semantics warrant. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling. Metrics are also exposed via an always-on Prometheus scrape endpoint (`/metrics`) with no collector required, including the OIDC subsystem metric set; OTLP push remains opt-in via `CYODA_OTEL_ENABLED`.
+OpenTelemetry instrumentation is implemented end-to-end. Traces, metrics, and log correlation use the OTel SDK with OTLP HTTP exporters. When `CYODA_OTEL_ENABLED=true`, HTTP requests are auto-traced via `otelhttp`, and transaction lifecycle operations (`tx.begin`, `tx.commit`, `tx.rollback`, `tx.savepoint`) produce spans with duration/active/conflict metrics regardless of which plugin is active (the core wraps the plugin's `TransactionManager` with a tracing decorator). Workflow engine and externalized processor dispatch are also traced when `CYODA_OTEL_ENABLED=true`. Plugins may add their own plugin-namespaced spans and metrics as their hot-path semantics warrant. A Grafana / Prometheus / Tempo dashboard ships with the bundled docker environment. Standard OTel environment variables (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, `OTEL_TRACES_SAMPLER`) configure export and sampling. Metrics are also exposed via an always-on Prometheus scrape endpoint (`/metrics`) with no collector required, OTLP push remains opt-in via `CYODA_OTEL_ENABLED`.
 
 ---
 

@@ -13,6 +13,9 @@ func (stubNoComputeClients) BaseURLs() []string                     { return []s
 func (stubNoComputeClients) NodeCount() int                         { return 2 }
 func (stubNoComputeClients) NewTenant(*testing.T) parity.Tenant     { return parity.Tenant{ID: "t"} }
 func (stubNoComputeClients) ComputeTenant(*testing.T) parity.Tenant { return parity.Tenant{ID: "t"} }
+func (stubNoComputeClients) PlatformOperator(*testing.T) parity.Tenant {
+	return parity.Tenant{ID: "PLATFORM"}
+}
 
 var _ MultiNodeFixture = stubNoComputeClients{}
 

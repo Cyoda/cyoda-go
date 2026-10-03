@@ -29,6 +29,9 @@ var keyPairIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // MatchesKeyPairIDPattern reports whether kid has the form of a key-pair KID.
 func MatchesKeyPairIDPattern(kid string) bool { return keyPairIDPattern.MatchString(kid) }
 
+// MinRSAModulusBits is the smallest RSA modulus a JWK may carry.
+const MinRSAModulusBits = 2048
+
 // ParseRSAPublicKeyFromJWK is the exported form for adapter consumption.
 // Returns a generic error on non-RSA kty; callers needing the specific
 // UNSUPPORTED_KEY_TYPE response should check kty before calling.
@@ -61,6 +64,10 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if len(nBytes) > maxModulusBytes {
 		return nil, fmt.Errorf("rsa modulus too large: %d bytes (max %d)", len(nBytes), maxModulusBytes)
 	}
+	n := new(big.Int).SetBytes(nBytes)
+	if n.BitLen() < MinRSAModulusBits {
+		return nil, fmt.Errorf("rsa modulus too small: %d bits (min %d)", n.BitLen(), MinRSAModulusBits)
+	}
 	eBytes, err := decodeBase64URL(jwk.E)
 	if err != nil {
 		return nil, fmt.Errorf("invalid e: %w", err)
@@ -69,7 +76,7 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &rsa.PublicKey{N: new(big.Int).SetBytes(nBytes), E: e}, nil
+	return &rsa.PublicKey{N: n, E: e}, nil
 }
 
 // validateRSAPublicExponent enforces the integrity invariants on an RSA

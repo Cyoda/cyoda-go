@@ -236,11 +236,9 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 
 	// Anchor stamp, before any processor can flush the entity: attributed to
-	// the arming principal (system for legacy rows), executed by the system.
+	// the arming principal, executed by the system. Both arm sites set
+	// ArmedBy from spi.AttributionFor on the arming write's context.
 	armed := cur.ArmedBy
-	if armed == (spi.Principal{}) {
-		armed = common.SystemPrincipal()
-	}
 	entity.Meta.ChangeUser = armed.ID
 	entity.Meta.ChangeUserKind = armed.Kind
 	entity.Meta.ChangeExecutor = common.SystemPrincipal()

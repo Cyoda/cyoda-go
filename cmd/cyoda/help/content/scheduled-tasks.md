@@ -31,7 +31,7 @@ Context path prefix is `CYODA_CONTEXT_PATH` (default `/api`). Requires `Authoriz
 
 A scheduled workflow transition arms a task each time the entity enters the transition's source state. `GET /scheduled-tasks` lists the caller's tenant's scheduled-transition tasks that still exist: `WAITING`, `RUNNING` or `FAILED`. A task that fired, was declined, expired or was cancelled is removed; its outcome is in the entity's audit trail (see the `audit` topic), not here.
 
-Results are sorted by `scheduledTime`, then `taskId`, ascending, and paged with an opaque cursor. Filters combine with AND. A `modelName`, `modelVersion` or `entityId` naming an unknown model or entity, or one of another tenant, returns an empty list rather than an error. Any authenticated user of the calling tenant may call this endpoint; the tenant is always the token's — no parameter selects a different one.
+Results are sorted by `scheduledTime`, then `taskId`, ascending, and paged with an opaque cursor. Filters combine with AND. A `modelName`, `modelVersion` or `entityId` naming an unknown model or entity, or one of another tenant, returns an empty list rather than an error. Any caller of the tenant whose token holds `ROLE_M2M` may call this endpoint; the tenant is always the token's — no parameter selects a different one.
 
 ## PARAMETERS
 
@@ -90,12 +90,13 @@ All are optional query parameters.
 - `lastError`: for a `FAILED` task, present with the failure's text (pairs with `failedTime`), even when the text is empty. For every other status, present when `lastAttemptTime` is set, paired with it. Client-safe text — a `CODE: detail` message, a compute node's own message, or `internal error [ticket: <uuid>]`.
 - `failureReason`: present when `status` is `FAILED`. Open value set; accept a value not listed here. Known values: `UNSAFE_WORK_NOT_COMPLETED` — a processor not declared `idempotent` was handed to a compute node and the run did not commit, so it is not repeated; `OWNER_LOST_REPEATEDLY` — the node running the task was lost too many times; `EXPIRED_AFTER_FAILED_ATTEMPTS` — `expiresTime` passed after a failed attempt or a lost node; `RUN_PANICKED` — the run failed with an internal error; `STOPPED_AFTER_PARTIAL_COMMIT` — the run committed the entity into another state and then stopped.
 - `failedTime`: present when `status` is `FAILED`.
-- `armedBy`: the principal whose write armed the task — `{id, kind}`, `kind` one of `user`, `service`, `system`. Present when known.
+- `armedBy`: the attributed principal of the write that armed the task — `{id, kind}`, `kind` one of `user`, `service`, `system`. For an on-behalf-of write this is the on-behalf-of user, never the client that holds the token. Present when known.
 
 ## ERRORS
 
 - `errors.BAD_REQUEST` — `400` — an invalid `status`, an invalid `modelName`, a `modelVersion` without `modelName`, an out-of-range `modelVersion` or `limit`, or an unreadable `entityId` or `cursor`
 - `errors.UNAUTHORIZED` — `401` — missing or invalid bearer token
+- `errors.FORBIDDEN` — `403` — the token lacks `ROLE_M2M` (a `cyoda token` signed without `--roles ROLE_ADMIN,ROLE_M2M`, for example)
 - `errors.SERVER_ERROR` — `500` — internal failure; the response carries a ticket id, never the cause
 - `errors.STORAGE_UNAVAILABLE` — `503` — a transient storage outage; retryable
 
@@ -105,7 +106,7 @@ All are optional query parameters.
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?status=WAITING"
 ```
 
@@ -113,19 +114,19 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?entityId=$ENTITY_ID"
 ```
 
 **Filter to one model version and page through the results:**
 
 ```
-NEXT=$(curl -s -H "Authorization: Bearer $TOKEN" \
+NEXT=$(curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?modelName=order&modelVersion=1&limit=10" \
   | jq -r '.pagination.nextCursor')
 
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/scheduled-tasks?modelName=order&modelVersion=1&limit=10&cursor=$NEXT"
 ```
 

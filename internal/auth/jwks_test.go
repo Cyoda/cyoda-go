@@ -78,7 +78,7 @@ func TestJWKS_OneActiveKey(t *testing.T) {
 func TestJWKS_InvalidatedKeyNotIncluded(t *testing.T) {
 	ctx := replicaSystemCtx()
 	store := newTestKeyStore(t, loadFixtureKey(t))
-	kp, err := store.Issue(ctx, IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour)})
+	kp, err := store.Issue(ctx, IssueRequest{ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,12 +121,12 @@ func TestJWKS_GracePeriodKeyIncluded(t *testing.T) {
 		{testKID("grace-1"), false, &future}, // grace period — published
 		{testKID("expired-1"), false, &past}, // window ended — excluded
 	} {
-		rec := issuedRecordFull(t, v, tc.kid, "client", tc.active, from, tc.validTo)
+		rec := issuedRecordFull(t, v, tc.kid, tc.active, from, tc.validTo)
 		if err := kv.Put(ctx, signingKeysNamespace, tc.kid, rec); err != nil {
 			t.Fatal(err)
 		}
 	}
-	store, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	store, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}

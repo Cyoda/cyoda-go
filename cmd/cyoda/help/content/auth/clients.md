@@ -5,6 +5,7 @@ stability: evolving
 version_added: 0.8.0
 see_also:
   - auth
+  - auth.integration
   - auth.tokens
   - cli.token
   - config.auth
@@ -12,6 +13,7 @@ see_also:
   - errors.M2M_CLIENT_CAP_REACHED
   - errors.FEATURE_DISABLED
   - errors.STORAGE_UNAVAILABLE
+  - errors.SERVER_BUSY
   - errors.UNAUTHORIZED
   - errors.FORBIDDEN
 ---
@@ -26,7 +28,7 @@ auth.clients — provision and manage machine-to-machine (M2M) clients that auth
 
 You want a backend service or CI job to call cyoda APIs. Register an M2M client to obtain a `client_id` + `client_secret`. Your service then mints JWTs via `POST /api/oauth/token` (documented in `auth.tokens`) and presents them as `Authorization: Bearer …` on every request.
 
-Use this path when you control both the service and its cyoda registration. For user-facing flows, federate via `auth.oidc` instead.
+Use this path when you control both the service and its cyoda registration. For an application that calls cyoda for its signed-in users, create an on-behalf-of client (see ON-BEHALF-OF (OBO) CLIENTS) and register a trusted key (`auth.trusted-keys`).
 
 ## PREREQUISITES
 
@@ -39,9 +41,21 @@ Use this path when you control both the service and its cyoda registration. For 
 
 **Client (you) needs:**
 
-- An `Authorization: Bearer …` token with `ROLE_ADMIN`. Every `/clients` endpoint (list, create, delete, reset-secret) requires admin role today.
+- An `Authorization: Bearer …` token with `ROLE_ADMIN`. Every `/clients` endpoint (list, create, delete, reset-secret) requires it. A token from the token exchange is refused (`403`) whatever its roles.
 - The created client is scoped to the caller's tenant — there is no per-request tenant parameter on these endpoints.
 - A tenant holds at most `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients (default `100`, `0` = no cap). See STORAGE AND CONSISTENCY.
+
+## ON-BEHALF-OF (OBO) CLIENTS
+
+`POST /clients?onBehalfOf=true` creates an on-behalf-of client: one that may only exchange a user assertion for a cyoda token (the token-exchange grant), never `client_credentials`. Use this for an application that acts for its own end users rather than as itself.
+
+Rules, enforced on every create:
+
+- `onBehalfOf` is set once, at creation, and is immutable — there is no way to flip it later; delete the client and create a new one instead.
+- An on-behalf-of client never holds `ROLE_ADMIN`: `withAdminRole=true` combined with `onBehalfOf=true` is refused with `400 BAD_REQUEST`.
+- An on-behalf-of client never exists in the `PLATFORM` tenant: `onBehalfOf=true` requested there is refused with `400 BAD_REQUEST`.
+
+`TechnicalUserDto` (list) and `TechnicalUserCredentialsDto` (create, reset) both carry `onBehalfOf`. For an on-behalf-of client, `grant_type` in the credentials DTO is `urn:ietf:params:oauth:grant-type:token-exchange` instead of `client_credentials`.
 
 ## REQUEST FLOW
 
@@ -49,26 +63,29 @@ The 4 `/clients` operations: provision, list, delete, reset-secret. Field names 
 
 ### Provision a client
 
-The request takes no body. `withAdminRole` is a query parameter; the only role the new client receives unconditionally is `ROLE_M2M`, and `ROLE_ADMIN` is added when `withAdminRole=true` AND the IAM feature is enabled.
+The request takes no body. `withAdminRole` and `onBehalfOf` are query parameters; the only role the new client receives unconditionally is `ROLE_M2M`, `ROLE_ADMIN` is added when `withAdminRole=true` AND the IAM feature is enabled, and the two are never combined (see ON-BEHALF-OF (OBO) CLIENTS).
 
 ```bash
 curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=false" \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`) — schema `TechnicalUserCredentialsDto`:
 
 ```json
 {
-  "client_id":                "abc523BCD",
-  "client_secret":            "mySecretKey123",
+  "client_id":                "GC2693985CC61NUU",
+  "client_secret":            "9f2c…(64 hex characters)…41ab",
   "grant_type":               "client_credentials",
   "client_secret_expires_at": 0,
-  "roles":                    ["ROLE_M2M"]
+  "roles":                    ["ROLE_M2M"],
+  "onBehalfOf":               false
 }
 ```
 
-**`client_secret` is shown only at creation time.** Capture it now; the server cannot return it again. `client_secret_expires_at = 0` means the secret does not expire (per RFC 7591 §3.2.1).
+**`client_secret` is shown only at creation time.** Capture it now; the server cannot return it again. `client_secret_expires_at = 0` means the secret does not expire (per RFC 7591 §3.2.1, the OAuth dynamic client registration standard whose field names these DTOs borrow). A generated `client_id` is 16 characters from `0`–`9` and `A`–`V`; a generated `client_secret` is 64 lower-case hex characters.
+
+A client has no name or label. Store the `client_id` and `client_secret` in your deployment's secret store as soon as you create them, under a name that says which part of your application uses them; that store is your inventory. To provision idempotently, create a client only for a part the store has no credentials for, and reconcile by listing the clients and deleting every `clientId` the store does not hold (see `auth.integration`, STEP 2).
 
 A tenant that already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients gets `400 M2M_CLIENT_CAP_REACHED` and no client is created. Delete a client to free a slot.
 
@@ -76,7 +93,7 @@ A tenant that already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients gets `
 
 ```bash
 curl -X GET https://cyoda.example.com/api/clients \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `clientId`:
@@ -84,10 +101,11 @@ Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `cli
 ```json
 [
   {
-    "clientId":       "abc523BCD",
+    "clientId":       "GC2693985CC61NUU",
     "creationDate":   "2026-06-17T10:02:27.88Z",
     "lastUpdateDate": "2026-06-17T10:02:27.88Z",
-    "roles":          ["ROLE_M2M"]
+    "roles":          ["ROLE_M2M"],
+    "onBehalfOf":     false
   }
 ]
 ```
@@ -96,7 +114,7 @@ Response (`200 OK`) — array of `TechnicalUserDto` (no secrets), sorted by `cli
 
 ```bash
 curl -X DELETE https://cyoda.example.com/api/clients/${CLIENT_ID} \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
 Response (`200 OK`):
@@ -104,11 +122,11 @@ Response (`200 OK`):
 ```json
 {
   "message":  "M2M client deleted successfully",
-  "clientId": "abc523BCD"
+  "clientId": "GC2693985CC61NUU"
 }
 ```
 
-The deleted client's tokens remain valid until their natural `exp`; deletion stops new token issuance.
+Deletion stops new token issuance at once on every node. Tokens the client already holds remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS` (300 s by default): a request is not checked against the client store. A compute-node stream opened with the client's token closes within a minute, and the client's tokens can no longer open one (see `grpc`).
 
 ### Reset a client secret
 
@@ -116,10 +134,10 @@ Rotates `client_secret` for an existing client. The verb is `PUT`, not `POST`.
 
 ```bash
 curl -X PUT https://cyoda.example.com/api/clients/${CLIENT_ID}/secret \
-  -H "Authorization: Bearer ${ADMIN_TOKEN}"
+  -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 ```
 
-Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation, carrying the new `client_secret`. Capture it before the connection closes. Existing JWTs minted with the previous secret remain valid until their natural `exp`; only new `/oauth/token` requests need the new secret.
+Response (`200 OK`) is `TechnicalUserCredentialsDto` — same shape as creation, carrying the new `client_secret`. Capture it before the connection closes. A reset ends the old secret at once, so every instance that still holds it fails until it gets the new one. To rotate without a gap, create a second client, move every instance onto it, then delete the old client; this needs one free slot under the cap (see `auth.integration`, ROTATION). Existing JWTs minted with the previous secret remain valid until their `exp`, at most `CYODA_JWT_EXPIRY_SECONDS`; only new `/oauth/token` requests need the new secret. A compute-node stream opened with a token issued before the reset closes within a minute, and such a token can no longer open one, because the reset changes the client's secret generation (`cgen`, see `auth.tokens`).
 
 ## TOKEN
 
@@ -127,7 +145,7 @@ Clients are not tokens. After provisioning, the client uses `auth.tokens` (the `
 
 ## STORAGE AND CONSISTENCY
 
-Clients are stored in the cluster's database. A stored client holds a bcrypt hash of its secret, never the secret itself. No node keeps a copy: each `/clients` call, and each `/oauth/token` request with a well-formed client id, reads the store. So:
+Clients are stored in the cluster's database. A stored client holds a bcrypt hash of its secret, never the secret itself. No node keeps a copy: each `/clients` call, and each `/oauth/token` request with a well-formed client id, reads the store. To spare a repeat token request the bcrypt check, a node remembers the SHA-256 of the last secret that matched each client's stored hash (never the secret itself); it accepts that secret again only while the record it has just read still carries the same hash. So:
 
 - A create, reset or delete takes effect on every node of the cluster when its call returns `200`. A new client can get a token from any node at once. After a reset, the old secret gets `401 invalid_client` on every node; after a delete, so does the client.
 - Clients survive a restart of a node or of the whole cluster. The exception is the `memory` storage backend, which keeps nothing across a restart.
@@ -148,15 +166,16 @@ A stored client that cannot be read back (a damaged record) is left out of `GET 
 
 ## ERRORS
 
-- `errors.UNAUTHORIZED` (`401`) — bearer token missing, expired, signature invalid, or issuer untrusted.
-- `errors.FORBIDDEN` (`403`) — caller lacks `ROLE_ADMIN` (required for every `/clients` endpoint today).
+- `errors.UNAUTHORIZED` (`401`) — bearer token missing, expired or not signed by one of cyoda's key pairs, or its `iss` is not `CYODA_JWT_ISSUER`.
+- `errors.FORBIDDEN` (`403`) — caller lacks `ROLE_ADMIN` (required for every `/clients` endpoint), or the caller's token is an on-behalf-of token.
 - `errors.M2M_CLIENT_NOT_FOUND` (`404`) — delete or reset: the referenced `clientId` does not exist or belongs to a different tenant. A reset also answers it for a client left without its index entry by the reset-and-delete race above.
 - `errors.M2M_CLIENT_CAP_REACHED` (`400`) — create: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients.
 - `errors.FEATURE_DISABLED` (`404`) — `withAdminRole=true` requested with `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=false`.
-- `errors.BAD_REQUEST` (`400`) — query-string parameter invalid (e.g. malformed `withAdminRole` value), or a `clientId` in the path that does not match `^[A-Za-z0-9]{1,100}$`.
+- `errors.BAD_REQUEST` (`400`) — query-string parameter invalid (e.g. malformed `withAdminRole` or `onBehalfOf` value); `withAdminRole=true` combined with `onBehalfOf=true`; `onBehalfOf=true` requested in the `PLATFORM` tenant; or a `clientId` in the path that does not match `^[A-Za-z0-9]{1,100}$`.
 - `errors.NOT_IMPLEMENTED` (`501`) — `CYODA_IAM_MODE` is not `jwt`.
 - `errors.SERVER_ERROR` (`500`) — any of the four operations: the store failed, or a damaged record or index entry blocks the operation (see above). The body carries a generic message and a `ticket`.
 - `errors.STORAGE_UNAVAILABLE` (`503`) — any of the four operations: the store reports itself unavailable. Retryable.
+- `errors.SERVER_BUSY` (`503`, with `Retry-After: 1`) — create or reset: the node had no free slot to hash the new secret within 1 second (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, shared with the token endpoint's secret checks). Nothing was written: no client is created, and a reset leaves the old secret in force. Retryable.
 
 ## SEE ALSO
 

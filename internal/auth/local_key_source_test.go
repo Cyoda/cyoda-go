@@ -10,7 +10,7 @@ import (
 
 func TestLocalKeySource_ReturnsPublicKeyForRegisteredKID(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
-	kp := issueWindow(t, ks, "client", time.Now(), time.Now().Add(time.Hour))
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 
 	src := auth.NewLocalKeySource(ks)
 	got, err := src.GetKey(kp.KID)
@@ -67,7 +67,7 @@ func TestLocalKeySource_InvalidatedKeyVerifiesThroughGrace(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
 	src := auth.NewLocalKeySource(ks)
 
-	withGrace := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	withGrace := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 	if err := ks.Invalidate(systemCtx(), withGrace.KID, 3600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestLocalKeySource_InvalidatedKeyVerifiesThroughGrace(t *testing.T) {
 		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
 	}
 
-	noGrace := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	noGrace := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 	if err := ks.Invalidate(systemCtx(), noGrace.KID, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestLocalKeySource_InvalidatedKeyVerifiesThroughGrace(t *testing.T) {
 func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
 	src := auth.NewLocalKeySource(ks)
-	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestLocalKeySource_DeleteDuringGraceEndsVerification(t *testing.T) {
 func TestLocalKeySource_ReactivateDuringGrace(t *testing.T) {
 	ks := newTestKeyStore(t, newBootstrap(t))
 	src := auth.NewLocalKeySource(ks)
-	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
 		t.Fatal(err)
 	}
@@ -129,25 +129,28 @@ func TestLocalKeySource_ReactivateDuringGrace(t *testing.T) {
 	}
 }
 
-// An invalidated key pair never signs, even inside its grace period.
+// An invalidated key pair never signs, even inside its grace period: the
+// bootstrap key, always a candidate, signs instead.
 func TestKVKeyStore_InvalidatedKeyInGraceNeverSigns(t *testing.T) {
-	ks := newTestKeyStore(t, newBootstrap(t))
+	boot := newBootstrap(t)
+	ks := newTestKeyStore(t, boot)
 	src := auth.NewLocalKeySource(ks)
-	kp := issueWindow(t, ks, "human", time.Now(), time.Now().Add(time.Hour))
+	kp := issueWindow(t, ks, time.Now(), time.Now().Add(time.Hour))
 	if err := ks.Invalidate(systemCtx(), kp.KID, 3600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := src.GetKey(kp.KID); err != nil {
 		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
 	}
-	if _, _, err := ks.Signer("human"); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatalf("signer = %v, want none: the only key pair of the audience is invalidated", err)
+	signer, _, err := ks.Signer()
+	if err != nil || signer.KID != bootKID(t, boot) {
+		t.Fatalf("signer = %v, %v; want the bootstrap key — the invalidated key pair must not be chosen even in its grace period", signer, err)
 	}
 }
 
 // The configured signing key follows the grace rule too: invalidated with a
-// grace period it keeps verifying (there is no other key pair, so its
-// audience has no signer), invalidated again with 0 it stops verifying.
+// grace period it keeps verifying (there is no other key pair, so there is no
+// signer), invalidated again with 0 it stops verifying.
 func TestKVKeyStore_BootstrapKeyGracePath(t *testing.T) {
 	boot := newBootstrap(t)
 	ks := newTestKeyStore(t, boot)
@@ -160,7 +163,7 @@ func TestKVKeyStore_BootstrapKeyGracePath(t *testing.T) {
 	if _, err := src.GetKey(kid); err != nil {
 		t.Fatalf("invalidated with grace: still inside the grace period, got %v", err)
 	}
-	if _, _, err := ks.Signer("client"); !errors.Is(err, auth.ErrKeyPairNotFound) {
+	if _, _, err := ks.Signer(); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("signer = %v, want none: the signing key is invalidated and no other key pair exists", err)
 	}
 
@@ -179,9 +182,9 @@ func TestLocalKeySource_RejectsKeyOutsideItsWindow(t *testing.T) {
 	now := time.Now()
 	past, future := now.Add(-time.Hour), now.Add(time.Hour)
 	ks := newTestKeyStore(t, newBootstrap(t))
-	expired := issueWindow(t, ks, "client", now.Add(-2*time.Hour), past)
-	notYet := issueWindow(t, ks, "client", future, future.Add(time.Hour))
-	inWindow := issueWindow(t, ks, "client", past, future)
+	expired := issueWindow(t, ks, now.Add(-2*time.Hour), past)
+	notYet := issueWindow(t, ks, future, future.Add(time.Hour))
+	inWindow := issueWindow(t, ks, past, future)
 
 	src := auth.NewLocalKeySource(ks)
 	for name, kid := range map[string]string{"expired": expired.KID, "not-yet": notYet.KID} {

@@ -14,16 +14,16 @@ import (
 )
 
 // IssueKeyPairRaw issues POST /api/oauth/keys/keypair with the given body
-// (e.g. {"algorithm": "RS256", "audience": "human"}).
+// (e.g. {"algorithm": "RS256"}).
 func (c *Client) IssueKeyPairRaw(t *testing.T, body map[string]any) (int, []byte, error) {
 	t.Helper()
 	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/oauth/keys/keypair", body)
 }
 
-// CurrentKeyPairRaw issues GET /api/oauth/keys/keypair/current?audience=....
-func (c *Client) CurrentKeyPairRaw(t *testing.T, audience string) (int, []byte, error) {
+// CurrentKeyPairRaw issues GET /api/oauth/keys/keypair/current.
+func (c *Client) CurrentKeyPairRaw(t *testing.T) (int, []byte, error) {
 	t.Helper()
-	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/keys/keypair/current?audience="+url.QueryEscape(audience), nil)
+	return c.DoJSONBodyRaw(t, http.MethodGet, "/api/oauth/keys/keypair/current", nil)
 }
 
 // InvalidateKeyPairRaw issues POST /api/oauth/keys/keypair/{id}/invalidate.
@@ -79,14 +79,21 @@ func (c *Client) JWKSKIDs(t *testing.T) (map[string]bool, error) {
 }
 
 // CreateClientRaw creates an M2M client of the caller's tenant via
-// POST /api/clients[?withAdminRole=true]. The response body carries the
-// plaintext secret exactly once (fields client_id, client_secret) — callers
-// must not log it.
-func (c *Client) CreateClientRaw(t *testing.T, withAdminRole bool) (int, []byte, error) {
+// POST /api/clients[?withAdminRole=true][&onBehalfOf=true]. The response body
+// carries the plaintext secret exactly once (fields client_id, client_secret)
+// — callers must not log it. onBehalfOf is never combined with withAdminRole.
+func (c *Client) CreateClientRaw(t *testing.T, withAdminRole, onBehalfOf bool) (int, []byte, error) {
 	t.Helper()
 	path := "/api/clients"
+	var q []string
 	if withAdminRole {
-		path += "?withAdminRole=true"
+		q = append(q, "withAdminRole=true")
+	}
+	if onBehalfOf {
+		q = append(q, "onBehalfOf=true")
+	}
+	if len(q) > 0 {
+		path += "?" + strings.Join(q, "&")
 	}
 	return c.DoJSONBodyRaw(t, http.MethodPost, path, nil)
 }

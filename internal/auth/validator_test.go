@@ -4,14 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"errors"
-	"fmt"
-	"math/big"
-	"net/http"
-	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,24 +14,16 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-func setupTestJWKS(t *testing.T) (*rsa.PrivateKey, string, *httptest.Server) {
+// setupTestJWKS generates an RSA key pair for a fixed test kid. Callers wrap
+// it in a staticKeySource to exercise JWKSValidator without an HTTP JWKS
+// server.
+func setupTestJWKS(t *testing.T) (*rsa.PrivateKey, string) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate key: %v", err)
 	}
-	kid := "test-kid"
-
-	n := base64.RawURLEncoding.EncodeToString(key.N.Bytes())
-	e := base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes())
-	jwksJSON := fmt.Sprintf(`{"keys":[{"kty":"RSA","kid":"%s","use":"sig","alg":"RS256","n":"%s","e":"%s"}]}`, kid, n, e)
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(jwksJSON))
-	}))
-
-	return key, kid, srv
+	return key, "test-kid"
 }
 
 func signTestToken(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
@@ -50,11 +36,10 @@ func signTestToken(t *testing.T, key *rsa.PrivateKey, kid string, claims map[str
 }
 
 func TestJWKSValidator_ValidToken(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -67,7 +52,7 @@ func TestJWKSValidator_ValidToken(t *testing.T) {
 
 	token := signTestToken(t, key, kid, claims)
 
-	uc, err := v.Validate(token)
+	uc, _, err := v.Validate(token)
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}
@@ -90,11 +75,10 @@ func TestJWKSValidator_ValidToken(t *testing.T) {
 }
 
 func TestJWKSValidator_ExpiredToken(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -107,18 +91,17 @@ func TestJWKSValidator_ExpiredToken(t *testing.T) {
 
 	token := signTestToken(t, key, kid, claims)
 
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for expired token, got nil")
 	}
 }
 
 func TestJWKSValidator_UnknownKid(t *testing.T) {
-	key, _, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	claims := map[string]any{
 		"iss":          issuer,
@@ -128,23 +111,22 @@ func TestJWKSValidator_UnknownKid(t *testing.T) {
 		"caas_org_id":  "org-7",
 	}
 
-	// Sign with a kid that is not in the JWKS
+	// Sign with a kid that is not in the key source.
 	token := signTestToken(t, key, "unknown-kid", claims)
 
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for unknown kid, got nil")
 	}
 }
 
 func TestJWKSValidator_InvalidSignature(t *testing.T) {
-	_, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
-	// Sign with a different key than what is served by JWKS
+	// Sign with a different key than what the key source resolves for kid.
 	otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("failed to generate other key: %v", err)
@@ -160,162 +142,9 @@ func TestJWKSValidator_InvalidSignature(t *testing.T) {
 
 	token := signTestToken(t, otherKey, kid, claims)
 
-	_, err = v.Validate(token)
+	_, _, err = v.Validate(token)
 	if err == nil {
 		t.Fatal("expected error for invalid signature, got nil")
-	}
-}
-
-func TestJWKSValidator_CacheRefresh(t *testing.T) {
-	// Start with one key served by JWKS
-	key1, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate key1: %v", err)
-	}
-	kid1 := "kid-1"
-
-	key2, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("failed to generate key2: %v", err)
-	}
-	kid2 := "kid-2"
-
-	// Track which keys to serve; start with key1 only
-	var serveKey2 atomic.Bool
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		keys := []string{
-			fmt.Sprintf(`{"kty":"RSA","kid":"%s","use":"sig","alg":"RS256","n":"%s","e":"%s"}`,
-				kid1,
-				base64.RawURLEncoding.EncodeToString(key1.N.Bytes()),
-				base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key1.E)).Bytes())),
-		}
-
-		if serveKey2.Load() {
-			keys = append(keys, fmt.Sprintf(`{"kty":"RSA","kid":"%s","use":"sig","alg":"RS256","n":"%s","e":"%s"}`,
-				kid2,
-				base64.RawURLEncoding.EncodeToString(key2.N.Bytes()),
-				base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key2.E)).Bytes())))
-		}
-
-		fmt.Fprintf(w, `{"keys":[%s]}`, join(keys, ","))
-	}))
-	defer srv.Close()
-
-	issuer := "test-issuer"
-	// Use a very short TTL so cache goes stale quickly
-	v := auth.NewJWKSValidator(srv.URL, issuer, 1*time.Millisecond)
-
-	claims := map[string]any{
-		"iss":          issuer,
-		"exp":          float64(time.Now().Add(time.Hour).Unix()),
-		"iat":          float64(time.Now().Unix()),
-		"caas_user_id": "user-42",
-		"caas_org_id":  "org-7",
-		"scopes":       []any{"admin"},
-	}
-
-	// Validate with key1 — should work
-	token1 := signTestToken(t, key1, kid1, claims)
-	if _, err := v.Validate(token1); err != nil {
-		t.Fatalf("expected key1 validation to succeed: %v", err)
-	}
-
-	// Token signed with key2 — should fail because key2 not yet served
-	token2 := signTestToken(t, key2, kid2, claims)
-	_, err = v.Validate(token2)
-	if err == nil {
-		t.Fatal("expected key2 validation to fail before key2 is served")
-	}
-
-	// Now serve key2 and wait for cache to go stale
-	serveKey2.Store(true)
-	time.Sleep(5 * time.Millisecond)
-
-	// Now key2 should be found after cache refresh
-	uc, err := v.Validate(token2)
-	if err != nil {
-		t.Fatalf("expected key2 validation to succeed after refresh: %v", err)
-	}
-	if uc.UserID != "user-42" {
-		t.Errorf("expected UserID user-42, got %s", uc.UserID)
-	}
-}
-
-func TestJWKSValidator_PrincipalKind(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
-
-	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
-
-	baseClaims := func() map[string]any {
-		return map[string]any{
-			"iss":          issuer,
-			"exp":          float64(time.Now().Add(time.Hour).Unix()),
-			"iat":          float64(time.Now().Unix()),
-			"caas_user_id": "user-42",
-			"caas_org_id":  "org-7",
-		}
-	}
-
-	tests := []struct {
-		name    string
-		mutate  func(map[string]any)
-		wantKnd spi.PrincipalKind
-	}{
-		{
-			name: "user_roles present",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{"ROLE_ADMIN"}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name: "user_roles present but empty array — key presence, not len",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name: "scopes only — service",
-			mutate: func(c map[string]any) {
-				c["scopes"] = []any{"read"}
-			},
-			wantKnd: spi.PrincipalService,
-		},
-		{
-			name: "both user_roles and scopes present — user",
-			mutate: func(c map[string]any) {
-				c["user_roles"] = []any{"ROLE_ADMIN"}
-				c["scopes"] = []any{"read"}
-			},
-			wantKnd: spi.PrincipalUser,
-		},
-		{
-			name:    "neither claim present — attribution-safe default user",
-			mutate:  func(c map[string]any) {},
-			wantKnd: spi.PrincipalUser,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			claims := baseClaims()
-			tt.mutate(claims)
-			token := signTestToken(t, key, kid, claims)
-
-			uc, err := v.Validate(token)
-			if err != nil {
-				t.Fatalf("Validate failed: %v", err)
-			}
-			if uc.Kind != tt.wantKnd {
-				t.Errorf("Kind = %q, want %q", uc.Kind, tt.wantKnd)
-			}
-		})
 	}
 }
 
@@ -323,11 +152,10 @@ func TestJWKSValidator_PrincipalKind(t *testing.T) {
 // is the one place a tenant id enters cyoda-go on a request, covering HTTP and
 // gRPC alike, so a claim outside the grammar must not produce a UserContext.
 func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	for name, org := range map[string]string{
 		"traversal": "../victim",
@@ -349,7 +177,7 @@ func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 			}
 			tok := signTestToken(t, key, kid, claims)
 
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err == nil {
 				t.Fatalf("Validate accepted tenant %q, got UserContext %+v", org, uc)
 			}
@@ -366,11 +194,10 @@ func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 // TestValidator_AcceptsShippedTenantShapes is the regression half: the grammar
 // must not lock out anything that authenticates today.
 func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	for _, org := range []string{
 		"SYSTEM",
@@ -391,7 +218,7 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 			}
 			tok := signTestToken(t, key, kid, claims)
 
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err != nil {
 				t.Fatalf("Validate(%q) = %v, want nil", org, err)
 			}
@@ -402,15 +229,14 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsUserIDOutsideOIDCShape pins the first-party user claim:
+// TestValidator_RejectsUserClaimOutsideCheck pins the first-party user claim:
 // caas_user_id / sub is attacker-chosen, lands in slog and audit
-// attribution, and must meet the same length+control-char bar as OIDC sub.
-func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+// attribution, and must meet common.ValidateUserID's length+control-char bar.
+func TestValidator_RejectsUserClaimOutsideCheck(t *testing.T) {
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	cases := map[string]string{
 		"newline":  "user\ninjected",
@@ -431,7 +257,7 @@ func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
 				"scopes":       []any{"read"},
 			}
 			tok := signTestToken(t, key, kid, claims)
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err == nil {
 				t.Fatalf("Validate accepted user id %q, got UserContext %+v", user, uc)
 			}
@@ -449,11 +275,10 @@ func TestValidator_RejectsUserIDOutsideOIDCShape(t *testing.T) {
 }
 
 func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	bad := "sub\nvalue"
 	claims := map[string]any{
 		"iss":         issuer,
@@ -464,7 +289,7 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 		"scopes":      []any{"read"},
 	}
 	tok := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(tok)
+	_, _, err := v.Validate(tok)
 	if err == nil {
 		t.Fatal("Validate accepted control character in sub fallback")
 	}
@@ -476,16 +301,15 @@ func TestValidator_RejectsControlCharInSubFallback(t *testing.T) {
 	}
 }
 
-// A first-party token cannot carry a user id beginning with the reserved
-// "oidc:" prefix, from either caas_user_id or the sub fallback: it would name
-// the same user as an OIDC principal.
-func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+// A first-party token cannot carry the reserved user id "system", in any
+// letter case, from either caas_user_id or the sub fallback: it would name
+// the platform system principal.
+func TestValidator_RejectsReservedSystemUserID(t *testing.T) {
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
-	const spoof = "oidc:11111111-2222-3333-4444-555555555555:alice"
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
+	const spoof = "SYSTEM"
 	for name, claim := range map[string]string{"caas_user_id": "caas_user_id", "sub": "sub"} {
 		t.Run(name, func(t *testing.T) {
 			claims := map[string]any{
@@ -496,9 +320,9 @@ func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
 				"caas_org_id": "org-7",
 				"scopes":      []any{"read"},
 			}
-			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
-				t.Fatalf("Validate accepted the reserved prefix as %q", uc.UserID)
+				t.Fatalf("Validate accepted the reserved id as %q", uc.UserID)
 			}
 			if !errors.Is(err, common.ErrInvalidUserID) {
 				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
@@ -508,18 +332,17 @@ func TestValidator_RejectsReservedOIDCPrefix(t *testing.T) {
 }
 
 func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	for _, user := range []string{
 		"user-42",
 		"user-1",
 		strings.Repeat("a", 255),
 		"alice@example.com",
-		"oidc-style/sub",
+		"provider-style/sub",
 		"用户",
 	} {
 		t.Run(user, func(t *testing.T) {
@@ -532,7 +355,7 @@ func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 				"scopes":       []any{"read"},
 			}
 			tok := signTestToken(t, key, kid, claims)
-			uc, err := v.Validate(tok)
+			uc, _, err := v.Validate(tok)
 			if err != nil {
 				t.Fatalf("Validate(%q) = %v, want nil", user, err)
 			}
@@ -546,11 +369,10 @@ func TestValidator_AcceptsShippedUserIDShapes(t *testing.T) {
 // A caas_user_id that is present but fails the check does not fall back to
 // sub: the token named its user, and that user is not admitted.
 func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	claims := map[string]any{
 		"iss":          issuer,
 		"exp":          float64(time.Now().Add(time.Hour).Unix()),
@@ -560,7 +382,7 @@ func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
 		"caas_org_id":  "org-7",
 		"scopes":       []any{"read"},
 	}
-	uc, err := v.Validate(signTestToken(t, key, kid, claims))
+	uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 	if err == nil {
 		t.Fatalf("Validate accepted the token as %q, want a rejection", uc.UserID)
 	}
@@ -573,11 +395,10 @@ func TestValidator_InvalidUserClaimDoesNotFallBackToSub(t *testing.T) {
 // Treating it as absent would substitute sub for the identity the token
 // actually carries. Only an absent caas_user_id falls back to sub.
 func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	for name, val := range map[string]any{
 		"number": float64(42),
 		"bool":   true,
@@ -596,7 +417,7 @@ func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 				"caas_org_id":  "org-7",
 				"scopes":       []any{"read"},
 			}
-			uc, err := v.Validate(signTestToken(t, key, kid, claims))
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
 			if err == nil {
 				t.Fatalf("Validate accepted a %s caas_user_id as %q, want a rejection", name, uc.UserID)
 			}
@@ -605,15 +426,4 @@ func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 			}
 		})
 	}
-}
-
-func join(strs []string, sep string) string {
-	if len(strs) == 0 {
-		return ""
-	}
-	result := strs[0]
-	for _, s := range strs[1:] {
-		result += sep + s
-	}
-	return result
 }

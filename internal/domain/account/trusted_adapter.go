@@ -2,12 +2,16 @@ package account
 
 import (
 	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math/big"
 	"net/http"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -17,31 +21,38 @@ import (
 // trusted-key store wasn't wired (e.g. mock IAM mode). All 5 trusted-key adapters call this.
 func (h *Handler) requireTrustedKeyStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.trustedKeyStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "trusted-key management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "trusted-key management")
 		return false
 	}
 	return true
 }
 
-// trustedKeyMutationError maps a Register / Get / Delete / Invalidate /
+// trustedKeyStoreError maps a Register / Get / List / Delete / Invalidate /
 // Reactivate failure to a response. A KID that is not registered for this
 // tenant keeps 404 TRUSTED_KEY_NOT_FOUND; every other failure routes through
 // common.Internal, so a KV write or read that failed because storage was
 // unavailable surfaces as a retryable 503 with its cause logged rather than
 // as "the key does not exist" — an answer that reads as a completed lookup
 // and stops the caller retrying.
-func trustedKeyMutationError(err error) *common.AppError {
+func trustedKeyStoreError(err error) *common.AppError {
 	if errors.Is(err, auth.ErrTrustedKeyNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeTrustedKeyNotFound, "trusted key not found")
 	}
-	// A refusal the store itself classified (the per-tenant cap on
-	// reactivation) keeps its status and code.
+	// A refusal the store itself classified (the per-tenant cap) keeps its
+	// status and code.
 	var appErr *common.AppError
 	if errors.As(err, &appErr) && appErr.Level == common.LevelOperational {
 		return appErr
 	}
-	return common.Internal("trusted-key store mutation failed", err)
+	return common.Internal("trusted-key store failed", err)
+}
+
+// logTrustedKeyChange writes the INFO line of a trusted-key change: tenant,
+// kid, and the attributed principal and executor of the request.
+func logTrustedKeyChange(r *http.Request, msg string, tID spi.TenantID, kid string) {
+	att, exe := spi.AttributionFor(r.Context())
+	slog.Info(msg, "pkg", "account", "tenant", string(tID), "kid", kid,
+		"attributedId", att.ID, "attributedKind", string(att.Kind), "executorId", exe.ID, "executorKind", string(exe.Kind))
 }
 
 func (h *Handler) gateTrustedKeyFeature(w http.ResponseWriter, r *http.Request) bool {
@@ -63,7 +74,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req genapi.RegisterTrustedKeyRequestDto
-	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -71,13 +82,9 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
-	pub, errCode, jwkErr := parseTrustedJWK(req.Jwk, req.KeyId, h.iam.TrustedKeyMaxJWKProperties)
+	pub, publicJWK, errCode, jwkErr := parseTrustedJWK(req.Jwk, req.KeyId, h.iam.TrustedKeyMaxJWKProperties)
 	if jwkErr != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, errCode, jwkErr.Error()))
-		return
-	}
-	if !isValidKeyPairAudience(string(req.Audience)) {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid audience"))
 		return
 	}
 	now := time.Now()
@@ -96,19 +103,6 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be > validFrom"))
 		return
 	}
-	var grace int64
-	if req.InvalidateGracePeriodSec != nil {
-		grace = *req.InvalidateGracePeriodSec
-		if grace < 0 {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalidateGracePeriodSec must be >= 0"))
-			return
-		}
-		if grace > MaxGracePeriodSec {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("invalidateGracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
-			return
-		}
-	}
 	invalidate := false
 	if req.InvalidatePrevious != nil {
 		invalidate = *req.InvalidatePrevious
@@ -118,56 +112,89 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		issuers = *req.Issuers
 	}
 	vt := validTo
+	tID := tenantFromCtx(r)
 	tk := &auth.TrustedKey{
-		KID: req.KeyId, TenantID: tenantFromCtx(r), JWK: req.Jwk, PublicKey: pub,
-		Audience: string(req.Audience), Issuers: issuers,
-		Active: true, ValidFrom: validFrom, ValidTo: &vt,
+		KID: req.KeyId, TenantID: tID, JWK: publicJWK, PublicKey: pub,
+		Issuers: issuers, Active: true, ValidFrom: validFrom, ValidTo: &vt,
 	}
-	if err := h.trustedKeyStore.Register(r.Context(), tk, auth.RotateOptions{Invalidate: invalidate, GracePeriodSec: grace}); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+	if err := h.trustedKeyStore.Register(r.Context(), tk, invalidate); err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key registered", tID, tk.KID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(toTrustedKeyResponse(tk))
 }
 
-func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.PublicKey, code string, err error) {
+// privateJWKMembers are the RSA private-key members of a JWK (RFC 7518
+// §6.3.2). A trusted key is a public key: a JWK carrying any of them is
+// refused, so the server never holds the private half.
+var privateJWKMembers = []string{"d", "p", "q", "dp", "dq", "qi", "oth"}
+
+// parseTrustedJWK validates a trusted-key JWK and returns its public key and
+// the JWK to store and return: kty, kid (the keyId), n and e, plus alg and use
+// when given. Every other member of the request is dropped.
+func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.PublicKey, public map[string]any, code string, err error) {
 	if len(jwk) > maxProps {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk has too many properties (%d > %d)", len(jwk), maxProps)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk has too many properties (%d > %d)", len(jwk), maxProps)
+	}
+	for _, m := range privateJWKMembers {
+		if _, ok := jwk[m]; ok {
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk must not contain the private member %q", m)
+		}
 	}
 	ktyAny, ok := jwk["kty"]
 	if !ok {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk missing kty")
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk missing kty")
 	}
 	kty, _ := ktyAny.(string)
 	if kty == "" {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk kty must be a string")
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk kty must be a string")
 	}
 	if kty != "RSA" {
-		return nil, common.ErrCodeUnsupportedKeyType, fmt.Errorf("only RSA JWKs supported (v0.8.0)")
+		return nil, nil, common.ErrCodeUnsupportedKeyType, fmt.Errorf("only RSA JWKs supported")
 	}
 	if rawKid, ok := jwk["kid"]; ok {
 		s, _ := rawKid.(string)
 		if s != keyId {
-			return nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
 		}
 	}
 	raw, err := json.Marshal(jwk)
 	if err != nil {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
 	}
 	pubKey, err := auth.ParseRSAPublicKeyFromJWK(raw)
 	if err != nil {
-		return nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
 	}
-	return pubKey, "", nil
+	// n and e come from the parsed key, not the request: the parser matches
+	// member names without regard to case, so the request's own "n" and "e"
+	// may be absent while the key still verifies.
+	public = map[string]any{
+		"kty": kty,
+		"kid": keyId,
+		"n":   base64.RawURLEncoding.EncodeToString(pubKey.N.Bytes()),
+		"e":   base64.RawURLEncoding.EncodeToString(big.NewInt(int64(pubKey.E)).Bytes()),
+	}
+	for _, m := range []string{"alg", "use"} {
+		v, ok := jwk[m]
+		if !ok {
+			continue
+		}
+		s, isString := v.(string)
+		if !isString {
+			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk %s must be a string", m)
+		}
+		public[m] = s
+	}
+	return pubKey, public, "", nil
 }
 
 func toTrustedKeyResponse(tk *auth.TrustedKey) genapi.TrustedKeyResponseDto {
 	resp := genapi.TrustedKeyResponseDto{
 		KeyId: tk.KID, LegalEntityId: string(tk.TenantID),
 		Jwk:       tk.JWK,
-		Audience:  genapi.TrustedKeyResponseDtoAudience(tk.Audience),
 		Active:    tk.Active,
 		ValidFrom: tk.ValidFrom,
 	}
@@ -192,8 +219,11 @@ func (h *Handler) ListTrustedKeys(w http.ResponseWriter, r *http.Request) {
 	if !h.requireTrustedKeyStore(w, r) {
 		return
 	}
-	tID := tenantFromCtx(r)
-	keys := h.trustedKeyStore.List(tID)
+	keys, err := h.trustedKeyStore.List(r.Context(), tenantFromCtx(r))
+	if err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
+		return
+	}
 	out := make([]genapi.TrustedKeyResponseDto, 0, len(keys))
 	for _, k := range keys {
 		out = append(out, toTrustedKeyResponse(k))
@@ -218,9 +248,10 @@ func (h *Handler) DeleteTrustedKey(w http.ResponseWriter, r *http.Request, keyId
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Delete(r.Context(), tID, keyId); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key deleted", tID, keyId)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -238,31 +269,14 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid keyId format"))
 		return
 	}
-	var grace int64
-	if r.ContentLength != 0 {
-		var req genapi.InvalidateKeyRequestDto
-		if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
-			return
-		}
-		if req.GracePeriodSec != nil {
-			grace = *req.GracePeriodSec
-			if grace < 0 {
-				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "gracePeriodSec must be >= 0"))
-				return
-			}
-			if grace > MaxGracePeriodSec {
-				common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-					fmt.Sprintf("gracePeriodSec must be <= %d (366 days = 1 leap year)", MaxGracePeriodSec)))
-				return
-			}
-		}
-	}
+	// The request has no body: trusted keys have no grace period, and
+	// invalidation ends the key at once.
 	tID := tenantFromCtx(r)
-	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId, grace); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId); err != nil {
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key invalidated", tID, keyId)
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -281,7 +295,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	var req genapi.ReactivateKeyRequestDto
-	if err := boundedJSONDecode(w, r, 1<<20, &req); err != nil {
+	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
 		return
 	}
@@ -307,12 +321,13 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Reactivate(r.Context(), tID, keyId, validFrom, validTo); err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
+	logTrustedKeyChange(r, "trusted key reactivated", tID, keyId)
 	tk, err := h.trustedKeyStore.Get(r.Context(), tID, keyId)
 	if err != nil {
-		common.WriteError(w, r, trustedKeyMutationError(err))
+		common.WriteError(w, r, trustedKeyStoreError(err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")

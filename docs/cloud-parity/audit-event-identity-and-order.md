@@ -25,6 +25,36 @@ Two required fields are added to the two audit event DTOs `GET
 Both fields are required on every response; neither is a new filter or query
 parameter.
 
+## 1a. Who: `actor` and `executedBy`
+
+Both event DTOs name two principals: the attributed principal (who the
+change is for) and the executor (who made it). See
+`obo-only-user-identity.md` for the access model and
+`authcontext-attribution.md` for the attribution rules.
+
+- **`EntityChangeAuditEventDto.actor`** — `AuditActorInfoDto` gains `kind`
+  (open value set; known values `user`, `service`, `system`): the attributed
+  principal's kind, never sniffed from roles.
+- **`EntityChangeAuditEventDto.executedBy`** and
+  **`StateMachineAuditEventDto.executedBy`** — `AuditPrincipalDto`
+  `{id, kind}`, both required when present: the principal that executed the
+  request. Present when one was recorded.
+- **`StateMachineAuditEventDto.actor`** — not a new field (it comes from the
+  shared `AuditEventDto`); what is new is that cyoda-go fills it on
+  state-machine events, with the same `AuditActorInfoDto` as on entity-change
+  events. The engine stamps the
+  attributed principal and the executor on each state-machine event when it
+  records it (`spi.StateMachineEvent.Attributed` / `Executor`), so the
+  events of one transaction carry the identities of the request that made
+  them. A system audit event has no executor.
+
+| Situation | `actor` | `executedBy` |
+|---|---|---|
+| on-behalf-of request for alice | alice, `user` | the OBO client, `service` |
+| a client's own request | the client, `service` | the client, `service` |
+| compute write-back inside alice's transaction | alice, `user` | the compute client, `service` |
+| scheduled firing armed by alice | alice, `user` | `system`, `system` |
+
 ## 2. Order
 
 Both platforms sort the merged entity-change / state-machine list by:
@@ -82,6 +112,8 @@ where in the stack it is minted.
 
 ## 5. What Cloud must do
 
+- Add `kind` to the audit actor and `executedBy` to entity-change and
+  state-machine events, and fill `actor` on state-machine events (§1a).
 - Add `version` to the entity-change event DTO, populated from the entity
   change's version (transaction) number.
 - Expose the existing `timeUuid` as `eventId` on the state-machine event DTO,

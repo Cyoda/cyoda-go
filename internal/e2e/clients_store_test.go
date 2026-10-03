@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/cyoda-platform/cyoda-go/app"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 // clients_store_test.go proves the cluster-shared M2M client store end to end
@@ -166,7 +167,8 @@ func TestClientsStore_SurvivesRestart(t *testing.T) {
 }
 
 // capStack opens a stack on a new database with the given per-tenant cap.
-// test-tenant holds the keyStack's client; cap-tenant starts empty.
+// The keyStack's own client lives in PLATFORM; test-tenant and cap-tenant
+// both start empty.
 func capStack(t *testing.T, maxPerTenant int) *callbackHarness {
 	t.Helper()
 	return newKeyStackWith(t, newSchedDB(t), genKey(t), func(cfg *app.Config) {
@@ -197,7 +199,7 @@ func TestClientsStore_Cap(t *testing.T) {
 	if n := len(clientIDsOn(t, h.baseURL, bearer)); n != 2 {
 		t.Fatalf("clients after the refused create: %d, want 2", n)
 	}
-	// The cap is per tenant: test-tenant, holding one client, still creates.
+	// The cap is per tenant: test-tenant, unrelated to cap-tenant's count, still creates.
 	if code, raw := h.postClient(t, h.token(t)); code != http.StatusOK {
 		t.Fatalf("create in another tenant while cap-tenant is at the cap: %d %s, want 200", code, raw)
 	}
@@ -313,12 +315,16 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	}
 	s := newSchedDB(t)
 	h := newKeyStackOn(t, s, genKey(t))
-	const tenantNS, indexNS = "m2m-clients:test-tenant", "m2m-client-ids"
-	admin := h.token(t)
+	// createKeyStackClient (called through newKeyStackOn) provisions the
+	// keyStack's own M2M client in the PLATFORM tenant, so the records this
+	// test drives directly live in PLATFORM's namespace and admin is a
+	// platform-operator token.
+	const tenantNS, indexNS = "m2m-clients:" + string(auth.PlatformTenantID), "m2m-client-ids"
+	admin := h.platformToken(t)
 
 	t.Run("undecodable record", func(t *testing.T) {
 		s.putRawKV(t, tenantNS, "BADREC1", "{")
-		s.putRawKV(t, indexNS, "BADREC1", `{"tenantId":"test-tenant"}`)
+		s.putRawKV(t, indexNS, "BADREC1", `{"tenantId":"`+string(auth.PlatformTenantID)+`"}`)
 		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
 			http.StatusInternalServerError, "server_error")
 		ids := clientIDsOn(t, h.baseURL, admin)
@@ -402,19 +408,19 @@ func TestClientsStore_RawRecords(t *testing.T) {
 
 	t.Run("index entry naming another tenant", func(t *testing.T) {
 		otherID, otherSecret := h.provisionTenant(t, "other-tenant", "other-admin")
-		// A stray record under test-tenant with other-tenant's client id.
+		// A stray record under PLATFORM with other-tenant's client id.
 		s.putRawKV(t, tenantNS, otherID, "{")
 		if code, body := h.deleteClient(t, admin, otherID); code != http.StatusOK {
-			t.Fatalf("test-tenant's delete of its stray record: %d %s, want 200", code, body)
+			t.Fatalf("PLATFORM's delete of its stray record: %d %s, want 200", code, body)
 		}
 		if s.hasRawKV(t, tenantNS, otherID) {
-			t.Fatal("delete left test-tenant's stray record behind")
+			t.Fatal("delete left PLATFORM's stray record behind")
 		}
 		if !s.hasRawKV(t, indexNS, otherID) {
-			t.Fatal("test-tenant's delete removed the index entry of other-tenant's client")
+			t.Fatal("PLATFORM's delete removed the index entry of other-tenant's client")
 		}
 		if code := tokenStatusOn(t, h.baseURL, otherID, otherSecret); code != http.StatusOK {
-			t.Fatalf("other-tenant's client after test-tenant's delete: %d, want 200", code)
+			t.Fatalf("other-tenant's client after PLATFORM's delete: %d, want 200", code)
 		}
 	})
 }

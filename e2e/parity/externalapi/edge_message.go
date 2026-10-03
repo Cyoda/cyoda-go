@@ -20,12 +20,14 @@ func init() {
 const edgeMessagePayload = `{"hello": "world"}`
 
 // edgeMessageHeaderInput returns the header set for tranche-3 file 11.
-// Cyoda-go reads these as HTTP headers; the dictionary embeds them in the body.
+// Cyoda-go reads these as HTTP headers; the dictionary embeds them in the
+// body. userId is no longer one of them (spec §7.5; Ruling 8): it is the
+// caller's attributed identity, not a client-supplied header — see
+// RunExternalAPI_11_01_SaveSingle's separate assertion for that field.
 func edgeMessageHeaderInput() parityclient.MessageHeaderInput {
 	return parityclient.MessageHeaderInput{
 		ContentType:   "application/json",
 		MessageID:     "test-msg-11-01",
-		UserID:        "Larry",
 		ReplyTo:       "Jimmy",
 		Recipient:     "Bobby",
 		CorrelationID: "00000000-0000-0000-0000-000000000001",
@@ -84,11 +86,31 @@ func RunExternalAPI_11_01_SaveSingle(t *testing.T, fixture parity.BackendFixture
 	if !ok {
 		t.Fatalf("GetMessage 'header' is not an object; got %T", rawHeader)
 	}
-	checkHeaderField(t, hdr, "userId", "Larry")
 	checkHeaderField(t, hdr, "replyTo", "Jimmy")
 	checkHeaderField(t, hdr, "recipient", "Bobby")
 	checkHeaderField(t, hdr, "correlationId", "00000000-0000-0000-0000-000000000001")
 	checkHeaderField(t, hdr, "messageId", "test-msg-11-01")
+
+	// userId is the caller's attributed identity (spec §7.5; Ruling 8), not a
+	// client-supplied header: the fixture's tenant token is a direct
+	// (non-OBO) service principal, so userId and executedBy both name it.
+	userID, ok := hdr["userId"].(string)
+	if !ok || userID == "" {
+		t.Fatalf("header.userId missing or empty; header keys: %v", mapKeys(hdr))
+	}
+	if kind := hdr["attributedKind"]; kind != "service" {
+		t.Errorf("header.attributedKind = %v, want service", kind)
+	}
+	executedBy, ok := hdr["executedBy"].(map[string]any)
+	if !ok {
+		t.Fatalf("header.executedBy missing or not an object: %v", hdr["executedBy"])
+	}
+	if got := executedBy["id"]; got != userID {
+		t.Errorf("header.executedBy.id = %v, want %q (direct write: executor == attributed principal)", got, userID)
+	}
+	if got := executedBy["kind"]; got != "service" {
+		t.Errorf("header.executedBy.kind = %v, want service", got)
+	}
 }
 
 // RunExternalAPI_11_02_DeleteSingle — dictionary 11/02.

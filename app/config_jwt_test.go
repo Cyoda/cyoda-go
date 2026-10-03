@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 func base64Std(s string) string {
@@ -23,7 +25,7 @@ func TestLoadJWTSettings_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Issuer != "cyoda" || s.Audience != "" || s.ExpirySeconds != 3600 || s.SigningKeyPEM != "" {
+	if s.Issuer != "cyoda" || s.Audience != "" || s.ExpirySeconds != 300 || s.SigningKeyPEM != "" {
 		t.Fatalf("defaults = %+v", s)
 	}
 }
@@ -55,13 +57,13 @@ func TestLoadJWTSettings_EmptyExpiryIsTheDefault(t *testing.T) {
 	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
 	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
 	s, err := LoadJWTSettings()
-	if err != nil || s.ExpirySeconds != 3600 {
-		t.Fatalf("settings = %+v, err = %v; want expiry 3600", s, err)
+	if err != nil || s.ExpirySeconds != 300 {
+		t.Fatalf("settings = %+v, err = %v; want expiry 300", s, err)
 	}
 }
 
 func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
-	for _, v := range []string{"soon", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1), "9300000000"} {
+	for _, v := range []string{"soon", "0", "-5", strconv.Itoa(auth.MaxJWTExpirySeconds + 1), "9300000000"} {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
 			_, err := LoadJWTSettings()
@@ -70,9 +72,9 @@ func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
 			}
 		})
 	}
-	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", strconv.Itoa(MaxJWTExpirySeconds))
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", strconv.Itoa(auth.MaxJWTExpirySeconds))
 	s, err := LoadJWTSettings()
-	if err != nil || s.ExpirySeconds != MaxJWTExpirySeconds {
+	if err != nil || s.ExpirySeconds != auth.MaxJWTExpirySeconds {
 		t.Fatalf("at the cap: settings = %+v, err = %v", s, err)
 	}
 }
@@ -81,7 +83,7 @@ func TestLoadJWTSettings_ExpiryBounds(t *testing.T) {
 // variables through LoadJWTSettings: a value `cyoda token` refuses is refused
 // at server start too, rather than replaced by the default or accepted.
 func TestDefaultConfig_RefusesBadJWTExpiry(t *testing.T) {
-	for _, v := range []string{"abc", "0", "-5", strconv.Itoa(MaxJWTExpirySeconds + 1)} {
+	for _, v := range []string{"abc", "0", "-5", strconv.Itoa(auth.MaxJWTExpirySeconds + 1)} {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
 			defer func() {

@@ -37,3 +37,17 @@ func TestParseRSAPublicKeyFromJWK_Accepts4096BitModulus(t *testing.T) {
 		t.Fatalf("4096-bit modulus should be accepted, got: %v", err)
 	}
 }
+
+func TestParseRSAPublicKeyFromJWK_RejectsModulusUnder2048Bits(t *testing.T) {
+	// 255 bytes of 0xFF is a 2040-bit modulus.
+	small := make([]byte, 255)
+	for i := range small {
+		small[i] = 0xFF
+	}
+	n := base64.RawURLEncoding.EncodeToString(small)
+	e := base64.RawURLEncoding.EncodeToString([]byte{0x01, 0x00, 0x01})
+	jwk := []byte(`{"kty":"RSA","n":"` + n + `","e":"` + e + `"}`)
+	if _, err := auth.ParseRSAPublicKeyFromJWK(jwk); err == nil {
+		t.Fatal("expected error for a 2040-bit modulus, got nil")
+	}
+}

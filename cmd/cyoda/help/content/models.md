@@ -358,7 +358,7 @@ Entity ingestion here includes data returned by a workflow processor, not just d
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024","laureates":[{"firstname":"John","surname":"Hopfield","id":"1037"}]}' \
   "http://localhost:8080/api/model/import/JSON/SAMPLE_DATA/nobel-prize/1"
@@ -370,7 +370,7 @@ Response: `"1d1e1b10-1155-11f0-bcd5-ae468cd3ed16"`
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/lock"
 ```
 
@@ -378,21 +378,21 @@ curl -s -X PUT \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1/changeLevel/STRUCTURAL"
 ```
 
 **List all models:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/"
 ```
 
 **Export as SIMPLE_VIEW:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/export/SIMPLE_VIEW/nobel-prize/1"
 ```
 
@@ -400,7 +400,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/model/validate/nobel-prize/1"
@@ -410,7 +410,7 @@ curl -s -X POST \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/model/nobel-prize/1"
 ```
 

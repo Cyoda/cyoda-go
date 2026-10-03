@@ -69,7 +69,9 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
       "microsTime": 1754042700000000,
       "entityId": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
       "transactionId": "9f1a2b3c-ed0e-11ee-a357-ae468cd3ed16",
-      "version": 2
+      "version": 2,
+      "actor": {"id": "alice", "name": "alice", "legalId": "acme", "kind": "user"},
+      "executedBy": {"id": "OBOCLIENT0000001", "kind": "service"}
     },
     {
       "auditEventType": "StateMachine",
@@ -80,7 +82,9 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
       "entityId": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
       "state": "APPROVED",
       "data": {"success": true},
-      "eventId": "3f9b6a10-6f5e-11f0-8f3a-0242ac110002"
+      "eventId": "3f9b6a10-6f5e-11f0-8f3a-0242ac110002",
+      "actor": {"id": "alice", "name": "alice", "legalId": "acme", "kind": "user"},
+      "executedBy": {"id": "OBOCLIENT0000001", "kind": "service"}
     }
   ]
 }
@@ -91,20 +95,32 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 - `changeType`: `"CREATE"`, `"UPDATE"`, or `"DELETE"` — the type of entity change
 - `version`: the entity's version number for this change, strictly increasing over the entity's whole history including across a delete and a later recreate. `(entityId, version)` identifies this event.
 - `changes`: before/after diff — **not yet emitted by the server (deferred gap)**; the field is declared in the OpenAPI schema but the server currently omits it from all responses. Do not rely on `changes` being present.
+- `executedBy`: `{id, kind}` — the principal that actually staged the change, independent of `actor` (see below). Present when the engine recorded one.
 - `severity`, `utcTime`, `microsTime`, `entityId`, `transactionId`, `actor` — plus `entityModel`, `consistencyTime`, `details`, `system` — inherited from `AuditEventDto` (see the `openapi` topic for the full schema)
 
 **StateMachineAuditEventDto** fields (discriminated by `auditEventType: "StateMachine"`):
 
-- `eventType`: one of `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`
+- `eventType`: one of `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`, and for scheduled transitions `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`, `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL` (see `cyoda help scheduled-tasks`)
 - `eventId`: a time-based UUID assigned by the server when it recorded the event. Unique per event and the same value on every read, on this endpoint and on the workflow-finished endpoint below.
 - `state`: entity state at the time of the event
-- `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`.
+- `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types, `TRANSITION_MAKE` included). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`.
+- `details`: a human-readable text. For `TRANSITION_MAKE` it reads `Transition "<name>": <from> → <to>`, and `state` is the state the transition left; the transition name appears nowhere else on the event, and entity change history (`GET /entity/{entityId}/changes`) carries no transition name at all. The text is for people, not a parsing contract.
+- `actor`: the attributed principal the transition ran for (see `AuditActorInfoDto.kind` below). Present when the engine recorded one.
+- `executedBy`: `{id, kind}` — the principal that actually ran the transition, independent of `actor`. Present when the engine recorded one.
+
+State machine events are recorded best effort: a failure to record one is logged at WARN and does not fail the operation, so an audit trail can miss an event. Do not build an authorization check on finding one; record what a check needs in the entity itself (see `cyoda help auth integration`, *READING IDENTITY IN A COMPUTE NODE*).
+
+### Actor and executor
+
+`AuditActorInfoDto` (the `actor` field on both event kinds) carries `id`, `legalId`, `name`, and `kind` — an open value set, known values `user`, `service`, and `system`. `kind` is empty on a legacy event recorded before attribution was stamped. `legalId` is the tenant. `name` repeats `id`: cyoda-go has no display names, and a user assertion cannot set one. The schema's optional `externalId` is never set by cyoda-go. `id` is the user id exactly as the on-behalf-of client asserted it, never normalised, so a segregation-of-duties check compares it byte for byte with a callout's `authid` (see `cyoda help auth integration`).
+
+`executedBy` is an `AuditPrincipalDto` — `{id, kind}`, both populated when present. It names the principal that actually made the change, which can differ from `actor`: e.g. an on-behalf-of (OBO) write attributes to the user (`actor`) but is executed by the OBO client (`executedBy`, `kind: "service"`); a cascade write executed by a compute node inside another principal's transaction attributes to that transaction's origin but is executed by the compute node's service identity.
 
 **GET /api/audit/entity/{entityId}/workflow/{transactionId}/finished** — Get workflow finished event
 
 Retrieves the `STATE_MACHINE_FINISH` audit event for a specific entity and transaction. Provides direct access to the workflow outcome without scanning all audit events.
 
-A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a joined callback's loopback save emits its own START/FINISH pair when it updates an entity whose workflow already ran earlier in the same transaction. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
+A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entity — a compute node's callback that saves, inside the same transaction, an entity whose workflow already ran earlier in it (a processor writing its entity back) runs that workflow again and records its own START/FINISH pair. When that happens, this endpoint returns the one that sorts first in the audit order (see Order above; normally the last one recorded).
 
 - `entityId` (path): UUID
 - `transactionId` (path): UUID
@@ -126,7 +142,7 @@ A search that includes `StateMachine` events (the default, or an explicit `event
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID"
 ```
 
@@ -134,7 +150,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?eventType=EntityChange"
 ```
 
@@ -142,19 +158,19 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?transactionId=$TX_ID"
 ```
 
 **Paginate using a cursor:**
 
 ```
-NEXT=$(curl -s -H "Authorization: Bearer $TOKEN" \
+NEXT=$(curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?limit=10" \
   | jq -r '.pagination.nextCursor')
 
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID?limit=10&cursor=$NEXT"
 ```
 
@@ -162,7 +178,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/audit/entity/$ENTITY_ID/workflow/$TX_ID/finished"
 ```
 

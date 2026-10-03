@@ -339,11 +339,14 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 
 // TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor covers §5.2
 // case (b): a service-kind executor staging inside another principal's
-// (user's) transaction arms with the TX ORIGIN, not the service executor —
-// this deliberately differs from the write-stamp rule (spi.AttributionFor),
-// which records the service as ChangeExecutor while inheriting the origin
-// only for ChangeUser. Arming has no executor/attributed split: ArmedBy is
-// always the chain origin.
+// (user's) transaction arms with the TX ORIGIN, not the service executor.
+// arm.go computes ArmedBy via spi.AttributionFor(ctx) and keeps only its
+// attributed return value — for a plain service executor (no OBO Executor
+// field) that is the same tx-origin inheritance AttributionFor already gives
+// the write's ChangeUser; arming simply never records the discarded executor
+// half. See TestReconcile_ArmedByIsTheOBOUser and
+// TestReconcile_ArmedByWriteBackIsTheOrigin for the OBO and write-back cases
+// AttributionFor distinguishes that ResolveOrigin could not.
 func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 	const nowMs = int64(1_700_000_000_000)
 	engine, factory := setupEngineWithClock(t, nowMs)
@@ -403,7 +406,85 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 	}
 	notWant := spi.Principal{ID: "arm-service", Kind: spi.PrincipalService}
 	if task.ArmedBy == notWant {
-		t.Error("ArmedBy must not be the service executor — arming always uses the chain origin")
+		t.Error("ArmedBy must not be the service executor — a service executor's write inherits the transaction's origin")
+	}
+}
+
+// armedBy runs one entity through the AutoClose workflow: the transaction is
+// begun under beginCtx and the entity executed under the UserContext of
+// writerCtx; it returns the armed task's ArmedBy.
+func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, name string) spi.Principal {
+	t.Helper()
+	engine, factory := setupEngineWithClock(t, 1_700_000_000_000)
+	modelRef := spi.ModelRef{EntityName: name, ModelVersion: "1.0"}
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: name + "WF", InitialState: "OPEN", Active: true,
+		States: map[string]spi.StateDefinition{
+			"OPEN":   {Transitions: []spi.TransitionDefinition{{Name: "AutoClose", Next: "CLOSED", Schedule: &spi.TransitionSchedule{DelayMs: 1000}}}},
+			"CLOSED": {},
+		},
+	}
+	saveWorkflow(t, factory, beginCtx, modelRef, []spi.WorkflowDefinition{wf})
+	txMgr, err := factory.TransactionManager(beginCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	txID, txCtx, err := txMgr.Begin(beginCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entity := makeEntity(name+"-e1", modelRef, map[string]any{})
+	entity.Meta.TransactionID = txID
+	if _, err := engine.Execute(spi.WithUserContext(txCtx, writer), entity, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := txMgr.Commit(beginCtx, txID); err != nil {
+		t.Fatal(err)
+	}
+	sts, _ := factory.ScheduledTaskStore(beginCtx)
+	task, found, err := sts.Get(beginCtx, testTenant, taskID(testTenant, name+"-e1", "OPEN", "AutoClose"))
+	if err != nil || !found {
+		t.Fatalf("task: found=%v err=%v", found, err)
+	}
+	return task.ArmedBy
+}
+
+// TestReconcile_ArmedByIsTheWritesAttributedUser covers §5.1/§7.4: ArmedBy is
+// the write's attributed principal (spi.AttributionFor), not the
+// transaction's origin (spi.ResolveOrigin) — alice writes inside a
+// transaction bob began, and the arm stamps alice, not bob.
+func TestReconcile_ArmedByIsTheWritesAttributedUser(t *testing.T) {
+	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
+	got := armedBy(t, armOriginUserCtx("bob"), &alice, "armedby-attr")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
+	}
+}
+
+// TestReconcile_ArmedByIsTheOBOUser covers §5.1/§7.4: an on-behalf-of write
+// arms with the OBO user (alice), never the OBO client executor — true both
+// directly and when the OBO request is joined into its own transaction (from
+// AttributionFor's perspective the two are indistinguishable: what matters is
+// the UserContext in effect at write time, not how the transaction began).
+func TestReconcile_ArmedByIsTheOBOUser(t *testing.T) {
+	alice := *spi.GetUserContext(armOriginUserCtx("alice"))
+	alice.Executor = &spi.Principal{ID: "OBOCLIENT0000001", Kind: spi.PrincipalService}
+	got := armedBy(t, spi.WithUserContext(context.Background(), &alice), &alice, "armedby-obo")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
+	}
+}
+
+// TestReconcile_ArmedByWriteBackIsTheOrigin covers §5.1/§7.4: a compute
+// write-back (service executor, no Executor/OBO field) joined into alice's
+// transaction arms with alice — the transaction's origin — not the compute
+// client's own identity.
+func TestReconcile_ArmedByWriteBackIsTheOrigin(t *testing.T) {
+	compute := &spi.UserContext{UserID: "COMPUTE0000001", Kind: spi.PrincipalService,
+		Tenant: spi.Tenant{ID: testTenant}, Roles: []string{"ROLE_M2M"}}
+	got := armedBy(t, armOriginUserCtx("alice"), compute, "armedby-wb")
+	if want := (spi.Principal{ID: "alice", Kind: spi.PrincipalUser}); got != want {
+		t.Fatalf("ArmedBy = %+v, want %+v", got, want)
 	}
 }
 

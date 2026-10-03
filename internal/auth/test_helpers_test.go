@@ -17,20 +17,6 @@ func encodeSeg(b []byte) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func buildTestJWT(t *testing.T, kid, alg string, claims map[string]any) string {
-	t.Helper()
-	header := map[string]any{"kid": kid, "alg": alg, "typ": "JWT"}
-	hb, err := json.Marshal(header)
-	if err != nil {
-		t.Fatalf("buildTestJWT: marshal header: %v", err)
-	}
-	cb, err := json.Marshal(claims)
-	if err != nil {
-		t.Fatalf("buildTestJWT: marshal claims: %v", err)
-	}
-	return encodeSeg(hb) + "." + encodeSeg(cb) + ".c2ln"
-}
-
 // nowOffset returns a Unix timestamp offset by sec seconds from now.
 func nowOffset(sec int) int64 {
 	return time.Now().Add(time.Duration(sec) * time.Second).Unix()
@@ -48,7 +34,7 @@ func (s staticKeySource) GetKey(kid string) (*rsa.PublicKey, error) {
 }
 
 // newTestJWKSValidator returns a JWKSValidator with an empty key source (no
-// registered kids). Useful for tests that expect ErrUnknownKID or
+// registered kids). Useful for tests that expect a key-resolution failure or
 // ErrClaimsFailure (missing kid) without needing a valid signing key.
 func newTestJWKSValidator(t *testing.T, issuer string) *JWKSValidator {
 	t.Helper()
@@ -90,19 +76,6 @@ func signTokenWithKey(t *testing.T, kid string, priv *rsa.PrivateKey, iss, sub, 
 	return tok
 }
 
-// signTokenWithEphemeralKey generates a fresh RSA key pair (not registered in
-// any validator), signs a token with the given kid, and returns the token.
-// Used to exercise the ErrUnknownKID path: the kid is present in the header
-// but the validator's source has no entry for it.
-func signTokenWithEphemeralKey(t *testing.T, kid, iss, sub, orgID string, expOffsetSec int) string {
-	t.Helper()
-	priv, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("signTokenWithEphemeralKey: generate key: %v", err)
-	}
-	return signTokenWithKey(t, kid, priv, iss, sub, orgID, expOffsetSec)
-}
-
 // signTokenNoKID produces a valid RS256 JWT whose header omits the kid field.
 // The token body and signature are valid; only the header kid is absent.
 func signTokenNoKID(t *testing.T, iss, sub, orgID string, expOffsetSec int) string {
@@ -141,10 +114,10 @@ func signTokenNoKID(t *testing.T, iss, sub, orgID string, expOffsetSec int) stri
 
 // newTestKeyStore is the signing-key store the package's internal tests use:
 // a KVKeyStore over a fresh in-memory KV store, with boot as its bootstrap
-// key for the "client" audience.
+// key.
 func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *KVKeyStore {
 	t.Helper()
-	s, err := NewKVKeyStore(replicaSystemCtx(), newReplicaKV(t), KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(replicaSystemCtx(), newReplicaKV(t), KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ func RunM2MClientVisibleAcrossNodes(t *testing.T, fixture MultiNodeFixture) {
 	a := client.NewClient(urls[0], tenant.Token)
 	ctx := context.Background()
 
-	code, body, err := a.CreateClientRaw(t, false)
+	code, body, err := a.CreateClientRaw(t, false, false)
 	if err != nil || code != http.StatusOK {
 		t.Fatalf("create on A: %d %v", code, err)
 	}

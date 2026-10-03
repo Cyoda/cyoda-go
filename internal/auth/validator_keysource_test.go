@@ -47,7 +47,7 @@ func TestValidator_RoutesKeyLookupThroughInjectedSource(t *testing.T) {
 	}
 	token := signTestToken(t, priv, kid, claims)
 
-	uc, err := v.Validate(token)
+	uc, _, err := v.Validate(token)
 	if err != nil {
 		t.Fatalf("Validate failed: %v", err)
 	}

@@ -478,12 +478,12 @@ func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	s.Unimplemented.IssueJwtKeyPair(w, r)
 }
 
-func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params genapi.GetCurrentJwtKeyPairParams) {
+func (s *Server) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	if s.Account != nil {
-		s.Account.GetCurrentJwtKeyPair(w, r, params)
+		s.Account.GetCurrentJwtKeyPair(w, r)
 		return
 	}
-	s.Unimplemented.GetCurrentJwtKeyPair(w, r, params)
+	s.Unimplemented.GetCurrentJwtKeyPair(w, r)
 }
 
 func (s *Server) DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string) {
@@ -548,60 +548,4 @@ func (s *Server) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, ke
 		return
 	}
 	s.Unimplemented.ReactivateTrustedKey(w, r, keyId)
-}
-
-func (s *Server) ListOidcProviders(w http.ResponseWriter, r *http.Request, params genapi.ListOidcProvidersParams) {
-	if s.Account != nil {
-		s.Account.ListOidcProviders(w, r, params)
-		return
-	}
-	s.Unimplemented.ListOidcProviders(w, r, params)
-}
-
-func (s *Server) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.RegisterOidcProvider(w, r)
-		return
-	}
-	s.Unimplemented.RegisterOidcProvider(w, r)
-}
-
-func (s *Server) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-	if s.Account != nil {
-		s.Account.ReloadOidcProviders(w, r)
-		return
-	}
-	s.Unimplemented.ReloadOidcProviders(w, r)
-}
-
-func (s *Server) DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.DeleteOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.DeleteOidcProvider(w, r, id)
-}
-
-func (s *Server) UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.UpdateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.UpdateOidcProvider(w, r, id)
-}
-
-func (s *Server) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.InvalidateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.InvalidateOidcProvider(w, r, id)
-}
-
-func (s *Server) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID) {
-	if s.Account != nil {
-		s.Account.ReactivateOidcProvider(w, r, id)
-		return
-	}
-	s.Unimplemented.ReactivateOidcProvider(w, r, id)
 }

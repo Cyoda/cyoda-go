@@ -23,7 +23,7 @@ func TestValidateTenantID_Accepts(t *testing.T) {
 		"tenant-A",       // case-varied package fixtures
 		"tenant-a",
 		"123",                                  // Cloud uses bare numerics
-		"caas_mock-oidc-org-test-subject",      // Cloud's caas_<org_id> form
+		"caas_mock-org-test-subject",           // Cloud's caas_<org_id> form
 		"TEST_LEGAL_ENTITY",                    // Cloud fixtures
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",     // Cloud's generated 32-hex id
 		"1a2b3c4d-5e6f-4a8b-9c0d-1e2f3a4b5c6d", // canonical UUID

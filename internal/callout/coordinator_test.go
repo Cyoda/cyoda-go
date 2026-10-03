@@ -3,10 +3,12 @@ package callout
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
@@ -597,5 +599,88 @@ func TestOwner_ReportsEveryTryWithItsOutcome(t *testing.T) {
 	}
 	if got := strings.Join(stats.Tries, ","); got != "no_answer,ok" {
 		t.Errorf("Tries = %s, want no_answer,ok", got)
+	}
+}
+
+// --- the callout's identity ---
+
+// The owner computes who a callout is for and who executes it once, from the
+// caller's context, and both its own cnodes and every peer it hands over to
+// are given that one identity. Here the callout is a processor write-back's
+// cascade: the compute client executes, in alice's transaction.
+func TestOwner_IdentityIsComputedOnceAndGivenToTheLocalTryAndTheHandOver(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerAnswers("cnode-on-p-1"))
+	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: time.Second}, router)
+	own := e.attach(t, "m-1", tenantA, "x", detaches())
+
+	ctx := spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "compute", Kind: spi.PrincipalService, Roles: []string{"ROLE_M2M"},
+		Tenant: spi.Tenant{ID: tenantA},
+	}), &spi.TransactionState{ID: "tx-1", TenantID: tenantA, Origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}})
+
+	if by, err := e.dispatchFunction(ctx, "x", ""); err != nil || by != "cnode-on-p-1" {
+		t.Fatalf("answered by %q, err %v; want the peer's cnode", by, err)
+	}
+
+	want := internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "compute", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+	auth := own.authSeen()
+	if len(auth) != 1 {
+		t.Fatalf("local tries = %d, want 1", len(auth))
+	}
+	for key, v := range map[string]string{"authid": "alice", "authtype": "user", "authexecid": "compute", "authexectype": "service", "authclaims": "ROLE_M2M"} {
+		if auth[0][key] != v {
+			t.Errorf("local try %s = %q, want %q", key, auth[0][key], v)
+		}
+	}
+	calls := router.made()
+	if len(calls) != 1 {
+		t.Fatalf("hand-overs = %+v, want one", calls)
+	}
+	if got := calls[0].identity; !reflect.DeepEqual(got, want) {
+		t.Errorf("hand-over identity = %+v, want %+v", got, want)
+	}
+}
+
+// A scheduled fire's callout: the system executes, with no roles, in the
+// transaction whose origin is the arming user. The owner's own try and the
+// hand-over both carry that identity — the arming user, executed by the
+// system — and no roles, so the cnode is sent no authclaims.
+func TestOwner_AScheduledFiresIdentityIsGivenToTheLocalTryAndTheHandOver(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	router.script("p-1", peerAnswers("cnode-on-p-1"))
+	e := newClusterEnv(t, Config{FixedNumRetries: 1, HandoverAllowance: time.Second}, router)
+	own := e.attach(t, "m-1", tenantA, "x", detaches())
+
+	ctx := spi.WithTransaction(spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "system", Kind: spi.PrincipalSystem, Tenant: spi.Tenant{ID: tenantA},
+	}), &spi.TransactionState{ID: "tx-1", TenantID: tenantA, Origin: spi.Principal{ID: "bob", Kind: spi.PrincipalUser}})
+
+	if by, err := e.dispatchFunction(ctx, "x", ""); err != nil || by != "cnode-on-p-1" {
+		t.Fatalf("answered by %q, err %v; want the peer's cnode", by, err)
+	}
+
+	auth := own.authSeen()
+	if len(auth) != 1 {
+		t.Fatalf("local tries = %d, want 1", len(auth))
+	}
+	want := map[string]string{"authid": "bob", "authtype": "user", "authexecid": "system", "authexectype": "system"}
+	if !reflect.DeepEqual(auth[0], want) {
+		t.Errorf("local try auth context = %v, want %v (no authclaims)", auth[0], want)
+	}
+	calls := router.made()
+	if len(calls) != 1 {
+		t.Fatalf("hand-overs = %+v, want one", calls)
+	}
+	wantID := internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "bob", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "system", Kind: spi.PrincipalSystem},
+	}
+	if got := calls[0].identity; !reflect.DeepEqual(got, wantID) {
+		t.Errorf("hand-over identity = %+v, want %+v", got, wantID)
 	}
 }

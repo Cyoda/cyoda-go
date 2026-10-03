@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -88,7 +89,6 @@ func TestDIWiring(t *testing.T) {
 		{"StoreFactory", a.StoreFactory() != nil},
 		{"TransactionManager", a.TransactionManager() != nil},
 		{"AuthenticationService", a.AuthenticationService() != nil},
-		{"AuthorizationService", a.AuthorizationService() != nil},
 		{"WorkflowEngine", a.WorkflowEngine() != nil},
 		{"SearchService", a.SearchService() != nil},
 		{"AuditService", a.AuditService() != nil},
@@ -281,35 +281,62 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 }
 
-// TestOIDCSubsystemWired verifies that app.New succeeds with the full OIDC
-// subsystem wired in JWT IAM mode. It confirms startup hooks do not crash and
-// that the chained validator is active by sending a request with an invalid
-// token — if the chain is working, the response is 401 (not 500 or 404).
-func TestOIDCSubsystemWired(t *testing.T) {
-	a := jwtApp(t)
+// TestMockMode_TokenEndpoint_Returns501: mock IAM mode mounts no token
+// handler, so POST /oauth/token reaches the generated router, which answers
+// 501 NOT_IMPLEMENTED: mock mode issues no token.
+func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	a := app.New(cfg)
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
 
-	// Confirm the app started without panic (jwtApp would os.Exit on failure).
-	if a.AuthenticationService() == nil {
-		t.Fatal("AuthenticationService is nil — OIDC wiring failed")
-	}
-
-	// A request with a syntactically valid but unrecognised Bearer token should
-	// return 401 (chained validator falls through all validators → auth failure).
-	// 500 would indicate a panic in the chain; 404 would mean the route is
-	// missing entirely.
-	req, _ := http.NewRequest("GET", srv.URL+"/account", nil)
-	req.Header.Set("Authorization", "Bearer not.a.real.token")
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("token request failed: %v", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	var body struct {
+		Properties map[string]any `json:"properties"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != http.StatusNotImplemented || body.Properties["errorCode"] != "NOT_IMPLEMENTED" {
+		t.Fatalf("mock-mode POST /oauth/token: status %d errorCode %v, want 501 NOT_IMPLEMENTED",
+			resp.StatusCode, body.Properties["errorCode"])
+	}
+}
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("want 401 for invalid token with OIDC chain, got %d", resp.StatusCode)
+// jwtAppWithKey is jwtApp, also returning the signing key.
+func jwtAppWithKey(t *testing.T) (*app.App, *rsa.PrivateKey) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
 	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := app.DefaultConfig()
+	cfg.ContextPath = ""
+	cfg.IAM.Mode = "jwt"
+	cfg.IAM.JWTSigningKey = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	cfg.IAM.JWTIssuer = "cyoda"
+	cfg.IAM.JWTExpiry = 3600
+	return app.New(cfg), key
+}
+
+// mintAppToken signs a token for tenant acme with the given roles.
+func mintAppToken(t *testing.T, key *rsa.PrivateKey, roles ...string) string {
+	t.Helper()
+	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
+		Tenant: "acme", UserID: "tester", Roles: roles, TTL: 5 * time.Minute, Issuer: "cyoda"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
 }
 
 func ctxWithTenant(tid spi.TenantID) context.Context {

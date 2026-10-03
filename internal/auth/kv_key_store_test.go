@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,9 +25,9 @@ func newBootstrap(t *testing.T) *rsa.PrivateKey {
 	return k
 }
 
-func newKeyStore(t *testing.T, kv spi.KeyValueStore, boot *rsa.PrivateKey, aud string) *auth.KVKeyStore {
+func newKeyStore(t *testing.T, kv spi.KeyValueStore, boot *rsa.PrivateKey) *auth.KVKeyStore {
 	t.Helper()
-	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: aud})
+	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,16 +45,16 @@ func bootKID(t *testing.T, boot *rsa.PrivateKey) string {
 }
 
 // newTestKeyStore is the signing-key store every package test uses: a
-// KVKeyStore over a fresh in-memory KV store, boot signing for "client".
+// KVKeyStore over a fresh in-memory KV store.
 func newTestKeyStore(t *testing.T, boot *rsa.PrivateKey) *auth.KVKeyStore {
 	t.Helper()
-	return newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
+	return newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot)
 }
 
-// issueWindow issues a key pair of aud with the window [from, to).
-func issueWindow(t *testing.T, s *auth.KVKeyStore, aud string, from, to time.Time) *auth.KeyPair {
+// issueWindow issues a key pair with the window [from, to).
+func issueWindow(t *testing.T, s *auth.KVKeyStore, from, to time.Time) *auth.KeyPair {
 	t.Helper()
-	kp, err := s.Issue(systemCtx(), auth.IssueRequest{Audience: aud, ValidFrom: from, ValidTo: to})
+	kp, err := s.Issue(systemCtx(), auth.IssueRequest{ValidFrom: from, ValidTo: to})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,7 @@ func TestKVKeyStore_ReconcileInterval(t *testing.T) {
 		{5 * time.Second, 5 * time.Second},
 	} {
 		s, err := auth.NewKVKeyStore(systemCtx(), mustNewMemoryKV(t, systemCtx()),
-			auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", ReconcileInterval: tc.configured})
+			auth.KVKeyStoreConfig{Bootstrap: boot, ReconcileInterval: tc.configured})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -83,8 +84,8 @@ func TestKVKeyStore_ReconcileInterval(t *testing.T) {
 
 func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
-	kp, signer, err := s.Signer("client")
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot)
+	kp, signer, err := s.Signer()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,15 +99,12 @@ func TestKVKeyStore_BootstrapSignsByDefault(t *testing.T) {
 	if err != nil || len(pub) != 1 || pub[0].KID != bootKID(t, boot) {
 		t.Fatalf("published = %v, %v", pub, err)
 	}
-	if _, _, err := s.Signer("human"); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatalf("human signer: err = %v, want ErrKeyPairNotFound", err)
-	}
 }
 
 func TestDeriveKID_MatchesBootstrapKID(t *testing.T) {
 	boot := newBootstrap(t)
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot, "client")
-	kp, _, err := s.Signer("client")
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), boot)
+	kp, _, err := s.Signer()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +115,7 @@ func TestDeriveKID_MatchesBootstrapKID(t *testing.T) {
 }
 
 func TestKVKeyStore_UnknownKIDIsNotFound(t *testing.T) {
-	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), newBootstrap(t), "client")
+	s := newKeyStore(t, mustNewMemoryKV(t, systemCtx()), newBootstrap(t))
 	if _, err := s.VerificationKey("nope"); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("err = %v", err)
 	}
@@ -130,11 +128,11 @@ func TestKVKeyStore_UndecodableBootstrapStateRefusesBootstrap(t *testing.T) {
 	boot := newBootstrap(t)
 	kid, _ := auth.DeriveKID(&boot.PublicKey)
 	_ = kv.Put(ctx, "signing-keys", kid, []byte("{"))
-	s := newKeyStore(t, kv, boot, "client")
+	s := newKeyStore(t, kv, boot)
 	if _, err := s.VerificationKey(kid); !errors.Is(err, auth.ErrKeyPairNotFound) {
 		t.Fatalf("verification: err = %v", err)
 	}
-	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrKeyPairBroken) {
+	if _, _, err := s.Signer(); !errors.Is(err, auth.ErrKeyPairBroken) {
 		t.Fatalf("signer: err = %v, want ErrKeyPairBroken", err)
 	}
 }
@@ -151,8 +149,8 @@ func TestKVKeyStore_UndecodableRecordStopsSigning(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
-	s := newKeyStore(t, kv, newBootstrap(t), "client")
-	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrKeyPairBroken) {
+	s := newKeyStore(t, kv, newBootstrap(t))
+	if _, _, err := s.Signer(); !errors.Is(err, auth.ErrKeyPairBroken) {
 		t.Fatalf("err = %v, want ErrKeyPairBroken", err)
 	}
 	if !strings.Contains(buf.String(), undecodableKID) || !strings.Contains(buf.String(), "level=ERROR") {
@@ -161,17 +159,29 @@ func TestKVKeyStore_UndecodableRecordStopsSigning(t *testing.T) {
 }
 
 func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
-	ctx := systemCtx()
+	// A cancellable construction ctx, not the fixed systemCtx(): Start now
+	// runs on it directly, so the test must be able to end it itself, or
+	// the periodic loop below (ticking every 20ms against a store that
+	// stays "down" for the rest of the process) outlives this test and
+	// pollutes whatever later test captures the global slog default next.
+	ctx, cancel := context.WithCancel(systemCtx())
+	var s *auth.KVKeyStore
+	defer func() {
+		cancel()
+		if s != nil {
+			s.Wait()
+		}
+	}()
 	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, ctx)}
 	boot := newBootstrap(t)
-	s, err := auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client", ReconcileInterval: 20 * time.Millisecond})
+	var err error
+	s, err = auth.NewKVKeyStore(ctx, kv, auth.KVKeyStoreConfig{Bootstrap: boot, ReconcileInterval: 20 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
+	issued := issueWindow(t, s, time.Now().Add(time.Hour), time.Now().Add(2*time.Hour))
 	kv.fail.Store(true)
-	loop, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	s.Start(loop)
+	s.Start()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		_, err := s.Published()
@@ -187,10 +197,14 @@ func TestKVKeyStore_StaleFailsClosed(t *testing.T) {
 	if !errors.As(auth.ErrStoreStale, &su) || !su.StorageUnavailable() {
 		t.Fatal("ErrStoreStale must carry the storage-unavailable marker")
 	}
-	if _, err := s.VerificationKey(bootKID(t, boot)); !errors.Is(err, auth.ErrKeyPairNotFound) {
-		t.Fatalf("verification while stale: err = %v", err)
+	// While stale nothing verifies — a kid the last copy holds and a kid it
+	// has never heard of both fail with ErrKeyPairNotFound.
+	for _, kid := range []string{bootKID(t, boot), issued.KID, "0123456789abcdef0123456789abcdef"} {
+		if _, err := s.VerificationKey(kid); !errors.Is(err, auth.ErrKeyPairNotFound) {
+			t.Fatalf("verification of kid %q while stale: err = %v, want ErrKeyPairNotFound", kid, err)
+		}
 	}
-	if _, _, err := s.Signer("client"); !errors.Is(err, auth.ErrStoreStale) {
+	if _, _, err := s.Signer(); !errors.Is(err, auth.ErrStoreStale) {
 		t.Fatalf("signer while stale: err = %v", err)
 	}
 }
@@ -208,8 +222,8 @@ func TestKVKeyStore_NonKIDRecordIsIgnored(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 	boot := newBootstrap(t)
-	s := newKeyStore(t, kv, boot, "client")
-	if kp, _, err := s.Signer("client"); err != nil || kp.KID != bootKID(t, boot) {
+	s := newKeyStore(t, kv, boot)
+	if kp, _, err := s.Signer(); err != nil || kp.KID != bootKID(t, boot) {
 		t.Fatalf("signer = %v, err = %v; want the bootstrap key", kp, err)
 	}
 	if err := s.ReconcileForTest(ctx); err != nil {
@@ -229,13 +243,48 @@ func TestKVKeyStore_NonKIDRecordIsIgnored(t *testing.T) {
 	}
 }
 
+// TestKeyStore_IssuedKeySignsWithoutAudience: an issued, active, in-window key
+// pair is the signer; the bootstrap signs again once it is invalidated.
+func TestKeyStore_IssuedKeySignsWithoutAudience(t *testing.T) {
+	s := newTestKeyStore(t, newBootstrap(t)) // the default vault can issue
+	kp, err := s.Issue(systemCtx(), auth.IssueRequest{ValidFrom: time.Now().Add(-time.Minute), ValidTo: time.Now().Add(time.Hour)})
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	cur, _, err := s.Signer()
+	if err != nil || cur.KID != kp.KID {
+		t.Fatalf("Signer() = %v, %v; want %s", cur, err, kp.KID)
+	}
+	if err := s.Invalidate(systemCtx(), kp.KID, 0); err != nil {
+		t.Fatalf("invalidate: %v", err)
+	}
+	cur, _, err = s.Signer()
+	if err != nil || !cur.Bootstrap {
+		t.Fatalf("after invalidate Signer() = %v, %v; want the bootstrap key", cur, err)
+	}
+}
+
 // Construction fails, and never serves an empty copy, when the initial List
 // fails.
 func TestKVKeyStore_ConstructionFailsWhenListFails(t *testing.T) {
 	kv := &toggleListKV{KeyValueStore: mustNewMemoryKV(t, systemCtx())}
 	kv.fail.Store(true)
-	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t), BootstrapAudience: "client"})
+	s, err := auth.NewKVKeyStore(systemCtx(), kv, auth.KVKeyStoreConfig{Bootstrap: newBootstrap(t)})
 	if err == nil || s != nil {
 		t.Fatalf("store = %v, err = %v; want a construction error", s, err)
 	}
+}
+
+// toggleListKV fails every List call once fail is set, simulating the store
+// going unavailable for a re-read (the initial load still succeeds).
+type toggleListKV struct {
+	spi.KeyValueStore
+	fail atomic.Bool
+}
+
+func (k *toggleListKV) List(ctx context.Context, ns string) (map[string][]byte, error) {
+	if k.fail.Load() {
+		return nil, errors.New("list down")
+	}
+	return k.KeyValueStore.List(ctx, ns)
 }

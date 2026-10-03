@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -212,10 +213,6 @@ func TestHandler_BuildsTheCalloutFromTheRequest(t *testing.T) {
 	if major, minor := call.Number.Next(); major != 5 || minor != 1 {
 		t.Errorf("first try numbered (%d,%d), want (5,1)", major, minor)
 	}
-	uc := spi.GetUserContext(runner.gotCtx)
-	if uc == nil || uc.Tenant.ID != "tenant-1" || uc.UserID != "user-1" || uc.Kind != spi.PrincipalUser {
-		t.Errorf("user context = %+v", uc)
-	}
 	if id, ok := PeerIdentityFromContext(runner.gotCtx); !ok || id.AuthMethod() != "aead-v1" {
 		t.Errorf("peer identity = %+v, %v", id, ok)
 	}
@@ -237,8 +234,65 @@ func TestHandler_ContextCarriesOnlyWhatThePeerSent(t *testing.T) {
 	if uc.Tenant.Name != "" {
 		t.Errorf("Tenant.Name = %q, want empty: the peer sent no tenant name", uc.Tenant.Name)
 	}
-	if len(uc.Roles) != 1 || uc.Roles[0] != "ROLE_USER" {
+	if len(uc.Roles) != 1 || uc.Roles[0] != "ROLE_M2M" {
 		t.Errorf("Roles = %v, want the request's", uc.Roles)
+	}
+}
+
+// The callout the receiving pnode runs carries the identity the owner computed,
+// exactly as received: the attributed principal and the executor, both pairs.
+// The context it runs under is the executor's — the principal that acts on
+// this pnode — and the attributed principal is never recomputed from it.
+func TestHandler_TheCalloutCarriesTheIdentityAsReceived(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	req := validRequest(t, "processor")
+	req.AttributedID, req.AttributedKind = "alice", spi.PrincipalUser
+	req.ExecutorID, req.ExecutorKind = "C9", spi.PrincipalService
+	req.Roles = []string{"ROLE_M2M"}
+	postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
+
+	want := internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "C9", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+	if got := runner.gotCall.Identity; !reflect.DeepEqual(got, want) {
+		t.Errorf("callout identity = %+v, want %+v", got, want)
+	}
+	uc := spi.GetUserContext(runner.gotCtx)
+	if uc == nil || uc.UserID != "C9" || uc.Kind != spi.PrincipalService || uc.Tenant.ID != "tenant-1" || uc.Executor != nil {
+		t.Errorf("user context = %+v, want the executor C9/service of tenant-1", uc)
+	}
+}
+
+// A hand-over that does not name both principals of the callout's identity is
+// refused before any cnode is tried: the receiving pnode never substitutes a
+// principal for one the owner did not send.
+func TestHandler_RefusesAHandOverWithoutTheFullIdentity(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*DispatchCalloutRequest)
+	}{
+		{"no attributed id", func(r *DispatchCalloutRequest) { r.AttributedID = "" }},
+		{"no attributed kind", func(r *DispatchCalloutRequest) { r.AttributedKind = "" }},
+		{"no executor id", func(r *DispatchCalloutRequest) { r.ExecutorID = "" }},
+		{"no executor kind", func(r *DispatchCalloutRequest) { r.ExecutorKind = "" }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := newAEAD(t)
+			runner := &fakeRunner{}
+			req := validRequest(t, "processor")
+			tt.mutate(&req)
+			resp := postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
+			if runner.calls != 0 {
+				t.Errorf("RunLocal called %d times, want 0", runner.calls)
+			}
+			if resp.Outcome != contract.Terminal.String() || resp.TriesUsed == nil || *resp.TriesUsed != 0 {
+				t.Errorf("response = %+v, want a terminal refusal with no try", resp)
+			}
+		})
 	}
 }
 
@@ -551,18 +605,16 @@ func TestHandler_RejectsPlainJSONWithoutAEAD(t *testing.T) {
 	}
 }
 
-// The peer reconstructs a UserContext carrying the SAME principal Kind the
-// originating node had. Without it, the peer's local dispatch — which calls
-// AttachAuthContext just like single-node dispatch — would fail the callout
-// closed on an unset Kind, whatever the originating principal's real kind was.
-func TestHandler_ReconstructsPrincipalKindInContext(t *testing.T) {
+// The peer's UserContext is the executor the owner named, with its kind as
+// sent, whatever that kind is.
+func TestHandler_ReconstructsTheExecutorKindInContext(t *testing.T) {
 	for _, kind := range []spi.PrincipalKind{spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem} {
 		t.Run(string(kind), func(t *testing.T) {
 			auth := newAEAD(t)
 			runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1,
 				Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
 			req := validRequest(t, "processor")
-			req.PrincipalKind = kind
+			req.ExecutorKind = kind
 			postHandOver(t, newHandlerMux(t, runner, auth), auth, req)
 
 			uc := spi.GetUserContext(runner.gotCtx)
@@ -584,4 +636,55 @@ func TestNewAEADPeerAuth_SecretTooShort(t *testing.T) {
 	if !errors.Is(err, ErrSharedSecretTooShort) {
 		t.Errorf("expected ErrSharedSecretTooShort, got %v", err)
 	}
+}
+
+// A scheduled fire's callout handed over to another pnode: the executor is the
+// system, which holds no roles. The identity arrives exactly as sent — no roles
+// invented — and the cnode on the receiving pnode is sent no authclaims.
+func TestHandler_AScheduledFiresIdentityArrivesAsSent(t *testing.T) {
+	scheduled := func(t *testing.T) DispatchCalloutRequest {
+		req := validRequest(t, "processor")
+		req.AttributedID, req.AttributedKind = "bob", spi.PrincipalUser
+		req.ExecutorID, req.ExecutorKind = "system", spi.PrincipalSystem
+		req.Roles = nil
+		return req
+	}
+
+	t.Run("the callout's identity", func(t *testing.T) {
+		auth := newAEAD(t)
+		runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+		postHandOver(t, newHandlerMux(t, runner, auth), auth, scheduled(t))
+
+		want := internalgrpc.CalloutIdentity{
+			Attributed: spi.Principal{ID: "bob", Kind: spi.PrincipalUser},
+			Executor:   spi.Principal{ID: "system", Kind: spi.PrincipalSystem},
+		}
+		if got := runner.gotCall.Identity; !reflect.DeepEqual(got, want) {
+			t.Errorf("callout identity = %+v, want %+v", got, want)
+		}
+		uc := spi.GetUserContext(runner.gotCtx)
+		if uc == nil || uc.UserID != "system" || uc.Kind != spi.PrincipalSystem || len(uc.Roles) != 0 {
+			t.Errorf("user context = %+v, want the system executor with no roles", uc)
+		}
+	})
+
+	t.Run("what the cnode is sent", func(t *testing.T) {
+		signer, err := token.NewSigner(testSecret32)
+		if err != nil {
+			t.Fatalf("NewSigner: %v", err)
+		}
+		reg, cnode := attachedCnode(t, "tenant-1", "python")
+		local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		auth := newAEAD(t)
+		if resp := postHandOver(t, newHandlerMux(t, local, auth), auth, scheduled(t)); resp.Outcome != OutcomeOK {
+			t.Fatalf("%+v", resp)
+		}
+
+		got := cnode.onlyAuth(t)
+		want := map[string]string{"authid": "bob", "authtype": "user", "authexecid": "system", "authexectype": "system"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("auth context = %v, want %v (no authclaims: the system holds no roles)", got, want)
+		}
+	})
 }

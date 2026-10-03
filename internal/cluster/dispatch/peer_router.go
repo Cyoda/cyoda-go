@@ -12,7 +12,6 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
@@ -137,7 +136,7 @@ func (r *PeerRouter) HandOver(ctx context.Context, peer contract.NodeInfo, call 
 func (r *PeerRouter) handOver(ctx context.Context, peer contract.NodeInfo, call internalgrpc.Callout, triesLeft int, major uint32) (HandOverAnswer, string) {
 	// Built afresh for every try: the entity travels as it stands now, never as
 	// an earlier try serialised it.
-	req, err := newHandOverRequest(spi.GetUserContext(ctx), r.selfNodeID, call, triesLeft, major)
+	req, err := newHandOverRequest(r.selfNodeID, call, triesLeft, major)
 	if err != nil {
 		slog.Warn("callout cannot be handed over", "pkg", "dispatch", "kind", call.Kind.String(), "name", call.Name, "requestId", call.RequestID, "err", err)
 		return provedBeforeConnecting(err), contract.Terminal.String()

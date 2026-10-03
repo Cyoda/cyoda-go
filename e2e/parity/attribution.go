@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -191,59 +192,47 @@ func RunAttributionExecutorRoundTrip(t *testing.T, fixture BackendFixture) {
 	}
 }
 
-// RunAttributionScheduledArmedByFire pins scheduled-fire attribution across
-// backends: a task armed by the tenant (ArmedBy = the arming origin) fires
-// later via the platform scheduler; the fired anchor attributes to that arming
-// principal, executed by the SYSTEM principal {system, system} — never the
-// literal "scheduler", and never re-attributed to a different actor. Same on
-// every backend.
-func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
-
-	const modelName = "attr-scheduled-fire"
-	const modelVersion = 1
-	wf := `{
+// scheduledFireWF is a two-state (OPEN -AutoClose-> CLOSED) workflow whose
+// only transition is scheduled: an entity created directly into OPEN arms it
+// at create time.
+func scheduledFireWF(name string) string {
+	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": "attr-scheduled-fire-wf", "initialState": "OPEN", "active": true,
+			"version": "1.1", "name": %q, "initialState": "OPEN", "active": true,
 			"states": {
 				"OPEN":   {"transitions": [{"name": "AutoClose", "next": "CLOSED", "manual": false,
 					"schedule": {"delayMs": 300}}]},
 				"CLOSED": {}
 			}
 		}]
-	}`
-	if err := c.ImportModel(t, modelName, modelVersion, `{"k":1}`); err != nil {
-		t.Fatalf("ImportModel: %v", err)
-	}
-	if err := c.LockModel(t, modelName, modelVersion); err != nil {
-		t.Fatalf("LockModel: %v", err)
-	}
-	if err := c.ImportWorkflow(t, modelName, modelVersion, wf); err != nil {
-		t.Fatalf("ImportWorkflow: %v", err)
-	}
+	}`, name)
+}
 
-	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
-	if err != nil {
-		t.Fatalf("CreateEntity: %v", err)
-	}
+// scheduledFireSecondaryWF is scheduledFireWF reshaped for cbSetupModel: an
+// entity created through a callback always starts in NONE, so an immediate
+// init hop reaches Open before the scheduled AutoClose can arm.
+func scheduledFireSecondaryWF(name string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
+			"states": {
+				"NONE": {"transitions": [{"name": "init", "next": "Open", "manual": false}]},
+				"Open": {"transitions": [{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"delayMs": 300}}]},
+				"Closed": {}
+			}
+		}]
+	}`, name)
+}
 
-	// The arming principal is the entity's creator (the origin in effect at arm
-	// time). The creator's version has a SERVICE executor (the tenant staged
-	// it); capture that principal id.
-	armingPrincipal := changePrincipalOf(t, mustChanges(t, c, entityID), "service", "creator (service executor)")
-
-	// Wait for the platform scheduler to really fire the transition.
-	awaitEntityStateAttr(t, c, entityID, "CLOSED", 15*time.Second)
-
-	// The fired anchor is uniquely identified by its SYSTEM executor — the
-	// platform, not a user or service principal, staged the fire. (Keying on
-	// the executor rather than the CREATE/UPDATE changeType keeps this robust:
-	// backends label the fired version's changeType differently, but the
-	// attribution contract — attributed = ArmedBy origin, executor = system —
-	// is what must hold identically everywhere.)
-	changes := mustChanges(t, c, entityID)
+// firedSystemAnchor returns the newest change entry whose executor is the
+// SYSTEM principal — the platform's scheduled fire, uniquely identified by its
+// executor kind rather than its changeType (backends label the fired
+// version's changeType differently; keying on the executor keeps this robust).
+// Fails the test if none, or more than one, is found.
+func firedSystemAnchor(t *testing.T, changes []client.EntityChangeMeta) *client.EntityChangeMeta {
+	t.Helper()
 	var fired *client.EntityChangeMeta
 	for i := range changes {
 		if changes[i].ExecutedBy != nil && changes[i].ExecutedBy.Kind == "system" {
@@ -254,32 +243,167 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 		}
 	}
 	if fired == nil {
-		t.Fatalf("entity reached CLOSED but no system-executor change (fired anchor) recorded; changes=%+v", changes)
+		t.Fatalf("no system-executor change (fired anchor) recorded; changes=%+v", changes)
 	}
-	if fired.User != armingPrincipal {
+	return fired
+}
+
+// assertScheduledFireAttribution checks the fired anchor's attribution
+// contract: attributed = wantUser/wantKind (the durable ArmedBy), executor =
+// the SYSTEM principal, changeType UPDATE (a re-save of an already-existing
+// entity, derived from row-existence on every backend — never trusted
+// verbatim from a stale caller-supplied value; see .claude/rules/backend
+// divergence-is-a-bug).
+func assertScheduledFireAttribution(t *testing.T, fired *client.EntityChangeMeta, wantUser, wantKind string) {
+	t.Helper()
+	if fired.User != wantUser {
 		t.Errorf("fired anchor attributed user = %q; want %q (the arming principal / durable ArmedBy)",
-			fired.User, armingPrincipal)
+			fired.User, wantUser)
 	}
-	if fired.AttributedKind != "service" {
-		t.Errorf("fired anchor attributedKind = %q; want service (arming principal is a service principal)",
-			fired.AttributedKind)
+	if fired.AttributedKind != wantKind {
+		t.Errorf("fired anchor attributedKind = %q; want %q", fired.AttributedKind, wantKind)
 	}
-	if fired.ExecutedBy.ID != "system" {
+	if fired.ExecutedBy.ID != "system" || fired.ExecutedBy.Kind != "system" {
 		t.Errorf("fired anchor executor = %+v; want {id:system, kind:system} (the platform fired it, not a user/service)",
 			fired.ExecutedBy)
 	}
-	// The fired anchor is a re-save of an already-existing entity (the entity
-	// was CREATEd at c.CreateEntity above), so its changeType must be UPDATE
-	// on every backend — derived from row-existence, never trusted verbatim
-	// from a stale caller-supplied value. This is the cross-backend parity
-	// point: sqlite/postgres already derive changeType this way; a backend
-	// that instead trusts the caller's ChangeType records CREATE here (a real
-	// divergence, not an "accepted" one — see .claude/rules/backend
-	// divergence-is-a-bug convention).
 	if fired.ChangeType != "UPDATE" {
 		t.Errorf("fired anchor changeType = %q; want UPDATE (derived from row-existence, matching sqlite/postgres)",
 			fired.ChangeType)
 	}
+}
+
+// RunAttributionScheduledArmedByFire pins scheduled-fire attribution across
+// backends: a task's ArmedBy is the write's attributed principal at arm time
+// (spi.AttributionFor), and the fired anchor attributes to that principal,
+// executed by the SYSTEM principal {system, system} — never the literal
+// "scheduler", and never re-attributed to a different actor. Same on every
+// backend, across three arming shapes: a direct service-origin write, an
+// on-behalf-of write (ArmedBy the OBO user, never the OBO client or a
+// transaction origin it does not have), and a compute write-back joined into
+// another principal's transaction (ArmedBy that transaction's origin, never
+// the compute client that staged the write).
+func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
+	t.Run("ServiceOrigin", func(t *testing.T) {
+		tenant := fixture.NewTenant(t)
+		c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+		const modelName = "attr-scheduled-fire"
+		const modelVersion = 1
+		if err := c.ImportModel(t, modelName, modelVersion, `{"k":1}`); err != nil {
+			t.Fatalf("ImportModel: %v", err)
+		}
+		if err := c.LockModel(t, modelName, modelVersion); err != nil {
+			t.Fatalf("LockModel: %v", err)
+		}
+		if err := c.ImportWorkflow(t, modelName, modelVersion, scheduledFireWF("attr-scheduled-fire-wf")); err != nil {
+			t.Fatalf("ImportWorkflow: %v", err)
+		}
+
+		entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
+		if err != nil {
+			t.Fatalf("CreateEntity: %v", err)
+		}
+
+		// The arming principal is the entity's creator (the origin in effect at
+		// arm time). The creator's version has a SERVICE executor (the tenant
+		// staged it); capture that principal id.
+		armingPrincipal := changePrincipalOf(t, mustChanges(t, c, entityID), "service", "creator (service executor)")
+
+		// Wait for the platform scheduler to really fire the transition.
+		awaitEntityStateAttr(t, c, entityID, "CLOSED", 15*time.Second)
+		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, c, entityID)), armingPrincipal, "service")
+	})
+
+	// OBOArmed pins spec §13's "directly" half of "scheduled fire armed by an
+	// on-behalf-of request": alice's on-behalf-of token DIRECTLY creates an
+	// entity whose only transition is scheduled. ArmedBy must be alice — never
+	// the OBO client, and never a transaction origin (the create has none to
+	// inherit).
+	t.Run("OBOArmed", func(t *testing.T) {
+		tenant := fixture.NewTenant(t)
+		admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+		const modelName = "attr-scheduled-fire-obo"
+		const modelVersion = 1
+		if err := admin.ImportModel(t, modelName, modelVersion, `{"k":1}`); err != nil {
+			t.Fatalf("ImportModel: %v", err)
+		}
+		if err := admin.LockModel(t, modelName, modelVersion); err != nil {
+			t.Fatalf("LockModel: %v", err)
+		}
+		if err := admin.ImportWorkflow(t, modelName, modelVersion, scheduledFireWF("attr-scheduled-fire-obo-wf")); err != nil {
+			t.Fatalf("ImportWorkflow: %v", err)
+		}
+
+		alice := OBOToken(t, fixture, tenant, "alice")
+		entityID, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, modelName, modelVersion, `{"k":1}`)
+		if err != nil {
+			t.Fatalf("CreateEntity as alice (OBO): %v", err)
+		}
+
+		awaitEntityStateAttr(t, admin, entityID, "CLOSED", 15*time.Second)
+		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, entityID)), "alice", "user")
+	})
+
+	// WriteBackArmed pins spec §13's "scheduled fire armed by a compute
+	// write-back in alice's transaction": alice's on-behalf-of token creates
+	// the primary; its SYNC processor's callback, using the compute client's
+	// OWN token, creates a secondary joined to alice's transaction. ArmedBy
+	// must be alice — that transaction's origin — never the compute client
+	// that staged the write-back. alice is on-behalf-of (OBOToken), matching
+	// how every other "alice" in this spec row is on-behalf-of
+	// (RunAttributionOBOWriteBack), not a plain direct-service tenant.
+	t.Run("WriteBackArmed", func(t *testing.T) {
+		tenant := fixture.ComputeTenant(t)
+		admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+		const secondary = "attr-scheduled-fire-wb-secondary"
+		const primary = "attr-scheduled-fire-wb-primary"
+		const marker = "attr-scheduled-fire-wb-mark"
+		cbSetupModel(t, admin, secondary, cbSampleSecondary, scheduledFireSecondaryWF("attr-scheduled-fire-wb-secondary-wf"))
+		cbSetupModel(t, admin, primary, cbSampleCreateSecondary,
+			cbPrimaryProcWorkflow("attr-scheduled-fire-wb-wf", "cb-create-secondary", "SYNC", cbContext(secondary, marker)))
+
+		alice := OBOToken(t, fixture, tenant, "alice")
+		primaryID, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+		if err != nil {
+			t.Fatalf("primary create as alice (OBO): %v", err)
+		}
+		prim, err := admin.GetEntity(t, primaryID)
+		if err != nil {
+			t.Fatalf("GetEntity primary: %v", err)
+		}
+		secIDStr, _ := prim.Data["secondaryId"].(string)
+		if secIDStr == "" {
+			t.Fatalf("primary data missing secondaryId (callback did not create secondary): data=%+v", prim.Data)
+		}
+		secID, err := uuid.Parse(secIDStr)
+		if err != nil {
+			t.Fatalf("parse secondaryId %q: %v", secIDStr, err)
+		}
+
+		// The primary OBO create attributes to alice, executed by the OBO
+		// client. The secondary's write-back CREATE attributes to alice too
+		// (the chain origin), executed by a DIFFERENT, service principal (the
+		// compute member) — proving ArmedBy below is the chain origin, not
+		// the executor that staged the write.
+		assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, primaryID), "CREATE"), "primary OBO write", oboClientIDOf(t, alice))
+		secCreate := findChangeByType(mustChanges(t, admin, secID), "CREATE")
+		if secCreate == nil {
+			t.Fatalf("no CREATE change for write-back secondary %s", secID)
+		}
+		if secCreate.User != "alice" || secCreate.AttributedKind != "user" {
+			t.Errorf("write-back secondary attributed = {%q,%q}; want {alice,user} (the chain origin)", secCreate.User, secCreate.AttributedKind)
+		}
+		if secCreate.ExecutedBy == nil || secCreate.ExecutedBy.Kind != "service" || secCreate.ExecutedBy.ID == "alice" {
+			t.Errorf("write-back secondary executor = %+v; want a service principal different from alice (the compute member, not the origin itself)",
+				secCreate.ExecutedBy)
+		}
+
+		awaitEntityStateAttr(t, admin, secID, "Closed", 15*time.Second)
+		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, secID)), "alice", "user")
+	})
 }
 
 // changePrincipalOf returns the attributed User of the newest change entry
@@ -376,4 +500,99 @@ func mustChanges(t *testing.T, c *client.Client, entityID uuid.UUID) []client.En
 		t.Fatalf("GetEntityChanges(%s): %v", entityID, err)
 	}
 	return changes
+}
+
+// oboClientIDOf is the id of the on-behalf-of client an OBO token was issued
+// to (its act.sub): the executor every write under the token records.
+func oboClientIDOf(t *testing.T, oboTok string) string {
+	t.Helper()
+	act, _ := tokenClaims(t, oboTok)["act"].(map[string]any)
+	id, _ := act["sub"].(string)
+	if id == "" {
+		t.Fatal("the on-behalf-of token carries no act.sub")
+	}
+	return id
+}
+
+// assertOBOAttribution checks that entry records alice, of kind user, executed
+// by a service principal — the one named execID when it is non-empty.
+func assertOBOAttribution(t *testing.T, entry *client.EntityChangeMeta, label, execID string) {
+	t.Helper()
+	if entry == nil {
+		t.Fatalf("%s: no CREATE change", label)
+	}
+	if entry.User != "alice" || entry.AttributedKind != "user" {
+		t.Errorf("%s: attributed {%q, %q}; want {alice, user}", label, entry.User, entry.AttributedKind)
+	}
+	if entry.ExecutedBy == nil {
+		t.Fatalf("%s: missing executedBy: %+v", label, entry)
+	}
+	if entry.ExecutedBy.Kind != "service" {
+		t.Errorf("%s: executor kind = %q; want service", label, entry.ExecutedBy.Kind)
+	}
+	if execID != "" && entry.ExecutedBy.ID != execID {
+		t.Errorf("%s: executor id = %q; want %q", label, entry.ExecutedBy.ID, execID)
+	}
+}
+
+// RunAttributionOBOWrite pins on-behalf-of attribution across backends: an
+// entity created with alice's on-behalf-of token records alice, of kind user,
+// executed by the OBO client that holds the token.
+func RunAttributionOBOWrite(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "attr-obo-write"
+	setupSimpleWorkflow(t, admin, modelName, 1)
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	id, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, modelName, 1, `{"name":"x","amount":1,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("create as alice (OBO): %v", err)
+	}
+	assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, id), "CREATE"), "OBO write", oboClientIDOf(t, alice))
+}
+
+// RunAttributionOBOWriteBack pins compute write-back attribution inside an
+// on-behalf-of transaction across backends: alice's on-behalf-of token creates
+// the primary; its SYNC processor's callback, made with the compute client's
+// own token, creates a secondary joined to alice's transaction. The secondary
+// records alice — the transaction's origin — executed by the compute client,
+// a service principal that is neither alice nor the OBO client.
+func RunAttributionOBOWriteBack(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.ComputeTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const secondary = "attr-obo-wb-secondary"
+	const primary = "attr-obo-wb-primary"
+	cbSetupModel(t, admin, secondary, cbSampleSecondary, cbSecondaryWorkflow)
+	cbSetupModel(t, admin, primary, cbSampleCreateSecondary,
+		cbPrimaryProcWorkflow("attr-obo-wb-wf", "cb-create-secondary", "SYNC", cbContext(secondary, "attr-obo-wb-mark")))
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	oboID := oboClientIDOf(t, alice)
+	primaryID, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("primary create as alice (OBO): %v", err)
+	}
+	prim, err := admin.GetEntity(t, primaryID)
+	if err != nil {
+		t.Fatalf("GetEntity primary: %v", err)
+	}
+	secIDStr, _ := prim.Data["secondaryId"].(string)
+	if secIDStr == "" {
+		t.Fatalf("primary data missing secondaryId (callback did not create secondary): data=%+v", prim.Data)
+	}
+	secID, err := uuid.Parse(secIDStr)
+	if err != nil {
+		t.Fatalf("parse secondaryId %q: %v", secIDStr, err)
+	}
+
+	assertOBOAttribution(t, findChangeByType(mustChanges(t, admin, primaryID), "CREATE"), "primary OBO write", oboID)
+	sec := findChangeByType(mustChanges(t, admin, secID), "CREATE")
+	assertOBOAttribution(t, sec, "secondary write-back", "")
+	if sec.ExecutedBy.ID == "alice" || sec.ExecutedBy.ID == oboID {
+		t.Errorf("secondary write-back executor id = %q; want the compute client, neither alice nor the OBO client %q",
+			sec.ExecutedBy.ID, oboID)
+	}
 }

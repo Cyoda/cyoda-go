@@ -156,6 +156,24 @@ func suiteToken(t *testing.T) string {
 	return tok
 }
 
+// platformTokenRaw signs a token for the shared server in the PLATFORM tenant
+// with roles. With ROLE_ADMIN it is a platform operator, the only principal
+// the platform-wide admin endpoints accept. It never touches *testing.T.
+func platformTokenRaw(roles ...string) (string, error) {
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "platform-operator",
+		string(auth.PlatformTenantID), "platform-operator", roles)
+}
+
+// platformToken is a platform-operator token for the shared server.
+func platformToken(t *testing.T) string {
+	t.Helper()
+	tok, err := platformTokenRaw("ROLE_ADMIN", "ROLE_M2M")
+	if err != nil {
+		t.Fatalf("sign platform token: %v", err)
+	}
+	return tok
+}
+
 // deleteClientAtCleanup registers a t.Cleanup that deletes the M2M client id
 // through DELETE {baseURL}/api/clients/{id}, authenticated with the token
 // bearer returns when the cleanup runs. The request runs on a context of its
@@ -185,12 +203,20 @@ func deleteClientAtCleanup(t *testing.T, baseURL, id string, bearer func() strin
 
 // createClient creates an M2M client in the suite tenant through POST
 // /clients and returns its id and secret (never log the secret). The client
-// is deleted when the test ends.
-func createClient(t *testing.T, withAdminRole bool) (string, string) {
+// is deleted when the test ends. onBehalfOf requests an on-behalf-of client
+// (?onBehalfOf=true); it is never combined with withAdminRole=true.
+func createClient(t *testing.T, withAdminRole, onBehalfOf bool) (string, string) {
 	t.Helper()
 	path := "/api/clients"
+	var q []string
 	if withAdminRole {
-		path += "?withAdminRole=true"
+		q = append(q, "withAdminRole=true")
+	}
+	if onBehalfOf {
+		q = append(q, "onBehalfOf=true")
+	}
+	if len(q) > 0 {
+		path += "?" + strings.Join(q, "&")
 	}
 	resp := doAuth(t, http.MethodPost, path, "")
 	defer resp.Body.Close()
@@ -350,4 +376,30 @@ func queryDB(t *testing.T, tenantID, sql string, args ...any) int {
 		t.Fatalf("query failed: %v", err)
 	}
 	return count
+}
+
+// assertProblemJSON asserts that resp carries an RFC-9457 ProblemDetail envelope
+// with the expected HTTP status and errorCode in properties.errorCode.
+// It drains and closes the body.
+func assertProblemJSON(t *testing.T, resp *http.Response, wantStatus int, wantCode string) {
+	t.Helper()
+	defer resp.Body.Close()
+	if resp.StatusCode != wantStatus {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, raw)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
+		t.Fatalf("content-type: got %q, want application/problem+json", ct)
+	}
+	var pd struct {
+		Status     int            `json:"status"`
+		Properties map[string]any `json:"properties"`
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	if err := json.Unmarshal(raw, &pd); err != nil {
+		t.Fatalf("unmarshal ProblemDetail: %v; body=%s", err, raw)
+	}
+	if got := fmt.Sprintf("%v", pd.Properties["errorCode"]); got != wantCode {
+		t.Fatalf("errorCode: got %q, want %q; body=%s", got, wantCode, raw)
+	}
 }

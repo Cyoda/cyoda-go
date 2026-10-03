@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/api/grpc/authctx"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
@@ -41,26 +42,23 @@ func txTokenFromCloudEvent(ce *cepb.CloudEvent) string {
 	return v.GetCeString()
 }
 
-// authTypeAttr is the CloudEvents Auth Context extension attribute carrying the
-// executor's principal kind (one of user | service | system). cyoda-go emits it
-// verbatim from the dispatching principal's explicit Kind (internal/grpc/
-// cloudevent.go AttachAuthContext). In the cluster, a forwarded processor
-// dispatch (A→B) reconstructs the SAME authtype on the member-hosting node from
-// the originating node's PrincipalKind (Task 7 forwarding) — without which the
-// re-dispatch would fail closed with an unset Kind.
-const authTypeAttr = "authtype"
+// calloutAuth is the CloudEvents Auth Context a calc request carried
+// (internal/grpc/cloudevent.go AttachAuthContext): the attributed principal
+// (Type, ID) and the executor (ExecType, ExecID). On a callout another pnode
+// forwarded, it is the identity the dispatching pnode computed.
+type calloutAuth struct {
+	Type, ID, ExecType, ExecID string
+}
 
-// authTypeFromCloudEvent extracts the authtype (executor principal kind) from a
-// calc-request CloudEvent, or "" when absent.
-func authTypeFromCloudEvent(ce *cepb.CloudEvent) string {
-	if ce == nil || ce.Attributes == nil {
-		return ""
+// authFromCloudEvent reads the auth context of a calc-request CloudEvent; an
+// absent attribute reads as "".
+func authFromCloudEvent(ce *cepb.CloudEvent) calloutAuth {
+	return calloutAuth{
+		Type:     authctx.Type(ce),
+		ID:       authctx.ID(ce),
+		ExecType: authctx.ExecutorType(ce),
+		ExecID:   authctx.ExecutorID(ce),
 	}
-	v, ok := ce.Attributes[authTypeAttr]
-	if !ok {
-		return ""
-	}
-	return v.GetCeString()
 }
 
 // cbConfig is the per-scenario configuration delivered via the pass-through
@@ -95,22 +93,19 @@ func parseCallbackConfig(parameters json.RawMessage) (cbConfig, error) {
 
 // callbackClient issues HTTP callbacks into cyoda-go, presenting the tx-token as
 // X-Tx-Token so writes/reads join the originating transaction. It authenticates
-// with the compute client's M2M bearer.
+// with the compute client's M2M bearer, asking token for it on every request.
 type callbackClient struct {
 	baseURL string
-	bearer  string
+	token   func() (string, error)
 	hc      *http.Client
 }
 
-// newCallbackClient constructs a callback client, or nil when baseURL is empty
-// (callback processors then report a clear error rather than panicking).
-func newCallbackClient(baseURL, bearer string) *callbackClient {
-	if baseURL == "" {
-		return nil
-	}
+// newCallbackClient constructs a callback client for the cyoda instance at
+// baseURL.
+func newCallbackClient(baseURL string, token func() (string, error)) *callbackClient {
 	return &callbackClient{
 		baseURL: baseURL,
-		bearer:  bearer,
+		token:   token,
 		hc:      &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -132,7 +127,11 @@ func (c *callbackClient) do(ctx context.Context, method, path, body, txToken, if
 	if err != nil {
 		return cbResult{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.bearer)
+	bearer, err := c.token()
+	if err != nil {
+		return cbResult{}, fmt.Errorf("failed to get a callback bearer: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	req.Header.Set("Content-Type", "application/json")
 	if txToken != "" {
 		req.Header.Set("X-Tx-Token", txToken)

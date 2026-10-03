@@ -607,6 +607,18 @@ func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx conte
 			txID := entry.TransactionID
 			changeMeta.TransactionID = &txID
 		}
+		// Attribution, gated as the HTTP door gates it: each field only when
+		// the change recorded it.
+		if entry.AttributedKind != "" {
+			kind := entry.AttributedKind
+			changeMeta.AttributedKind = &kind
+		}
+		if entry.Executor.ID != "" {
+			changeMeta.ExecutedBy = &events.EntityChangeMetaJsonExecutedBy{
+				ID:   entry.Executor.ID,
+				Kind: string(entry.Executor.Kind),
+			}
+		}
 
 		resp := events.EntityChangesMetadataResponseJson{
 			ID:         ce.Id,

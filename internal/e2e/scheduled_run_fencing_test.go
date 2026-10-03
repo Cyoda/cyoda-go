@@ -344,14 +344,23 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 	createOpen(t, h, model, workflowSampleModel)
 	probe := poolProbe(t, h)
 
-	jobID := seedOrphanSearchJob(t, s, model, false)
+	// Seeded AFTER the pool is exhausted (mirrors
+	// TestSchedPool_AsyncSearchClaimNotStalledByOwedWrites below): seeding
+	// first would let the 250ms reclaim sweep claim and finish the job on a
+	// still-free pool, settling its heartbeat before the pool is ever
+	// starved — the exact race this test exists to rule out.
 	release := holdMainPool(t, h, 2)
 	defer release()
 	requirePoolExhausted(t, h, probe)
 
+	jobID := seedOrphanSearchJob(t, s, model, false)
+
 	readJob := func() (epoch int64, hb time.Time) { e, _, hb := readSearchJob(t, s, jobID); return e, hb }
 	awaitDBCondition(t, 10*time.Second, "the reclaim", func() bool { e, _ := readJob(); return e >= 2 })
 	claimed, first := readJob()
+	if _, status, _ := readSearchJob(t, s, jobID); status != "RUNNING" {
+		t.Fatalf("job settled before the main pool was exhausted: status=%s", status)
+	}
 
 	// Three stale windows of heartbeats (one every 250ms) within five seconds:
 	// a heartbeat that stamps once and then waits on the main pool fails here.

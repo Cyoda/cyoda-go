@@ -75,6 +75,15 @@ type cnode struct {
 	mu         sync.Mutex
 	requestIDs []string
 	passes     []string
+	// auth is the auth context of each request, by attribute name.
+	auth []map[string]string
+}
+
+// authSeen returns the auth context of each request the cnode was sent.
+func (n *cnode) authSeen() []map[string]string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]map[string]string(nil), n.auth...)
 }
 
 func (n *cnode) count() int {
@@ -145,6 +154,13 @@ func (e *env) attach(t *testing.T, id string, tenant spi.TenantID, tag string, s
 			defer n.mu.Unlock()
 			n.requestIDs = append(n.requestIDs, body.RequestID)
 			n.passes = append(n.passes, internalgrpc.TxTokenFromCloudEvent(ce))
+			auth := map[string]string{}
+			for _, key := range []string{"authid", "authtype", "authexecid", "authexectype", "authclaims"} {
+				if v, ok := ce.Attributes[key]; ok {
+					auth[key] = v.GetCeString()
+				}
+			}
+			n.auth = append(n.auth, auth)
 		}()
 		if s != nil {
 			if m := e.reg.Get(id); m != nil {

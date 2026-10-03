@@ -3,8 +3,6 @@ package e2e_test
 import (
 	"context"
 	"crypto/rsa"
-	"encoding/json"
-	"io"
 	"net/http"
 	"testing"
 	"time"
@@ -17,18 +15,26 @@ import (
 
 // cyoda_token_test.go proves, end to end against a real PostgreSQL, the
 // admin token `cyoda token` signs offline with the configured signing key:
-// the server accepts it on HTTP and gRPC, refuses it once the signing key is
-// invalidated, keeps accepting it across a rotation, and — with
-// CYODA_JWT_AUDIENCE set — accepts it and the server's own issued tokens only
-// when they carry that audience.
+// the server accepts it on HTTP and gRPC (gRPC serves it only with
+// ROLE_M2M), refuses it once the signing key is invalidated, keeps accepting
+// it across a rotation, and — with CYODA_JWT_AUDIENCE set — accepts it and
+// the server's own issued tokens only when they carry that audience.
 
-// operatorToken signs a token the way `cyoda token` does (auth.MintOperatorToken,
-// its defaults: user operator, ROLE_ADMIN, 15 minutes) for tenant test-tenant.
-// audience "" omits aud.
+// operatorToken signs a token the way `cyoda token --tenant PLATFORM` does
+// (auth.MintOperatorToken, its defaults: user operator, ROLE_ADMIN, 15
+// minutes) for the PLATFORM tenant — a platform operator. audience "" omits
+// aud.
 func operatorToken(t *testing.T, key *rsa.PrivateKey, issuer, audience string) string {
 	t.Helper()
+	return operatorTokenWithRoles(t, key, issuer, audience, "ROLE_ADMIN")
+}
+
+// operatorTokenWithRoles is operatorToken signed with roles, the way
+// `cyoda token --tenant PLATFORM --roles` does.
+func operatorTokenWithRoles(t *testing.T, key *rsa.PrivateKey, issuer, audience string, roles ...string) string {
+	t.Helper()
 	tok, err := auth.MintOperatorToken(context.Background(), key, auth.OperatorTokenRequest{
-		Tenant: "test-tenant", UserID: "operator", Roles: []string{"ROLE_ADMIN"},
+		Tenant: auth.PlatformTenantID, UserID: "operator", Roles: roles,
 		TTL: 15 * time.Minute, Issuer: issuer, Audience: audience,
 	})
 	if err != nil {
@@ -47,8 +53,13 @@ func TestCyodaToken_AcceptedOnHTTPAndUnaryGRPC(t *testing.T) {
 	if code := h.authedStatus(t, tok); code != http.StatusOK {
 		t.Errorf("HTTP: %d, want 200", code)
 	}
-	if err := grpcEntitySearch(h, tok); err != nil {
-		t.Errorf("gRPC refused a cyoda token token: %v", err)
+	// The default roles carry no ROLE_M2M: the token authenticates on gRPC
+	// but no method serves it. Signed with ROLE_M2M, it reaches data.
+	if err := grpcEntitySearch(h, tok); status.Code(err) != codes.PermissionDenied {
+		t.Errorf("gRPC with the default roles: %v, want PermissionDenied", err)
+	}
+	if err := grpcEntitySearch(h, operatorTokenWithRoles(t, key, "cyoda-callback-test", "", "ROLE_ADMIN", "ROLE_M2M")); err != nil {
+		t.Errorf("gRPC refused a cyoda token token with ROLE_M2M: %v", err)
 	}
 }
 
@@ -75,10 +86,10 @@ func TestCyodaToken_RefusedAfterSigningKeyInvalidated(t *testing.T) {
 	}
 }
 
-// TestCyodaToken_SurvivesRotation: a rotation (invalidateCurrent) on the
-// signing key's audience ends the issued key pair it replaces, signs with the
-// new one, and leaves the signing key alone — nothing is written for it, and a
-// cyoda token token is still accepted.
+// TestCyodaToken_SurvivesRotation: a rotation (invalidateCurrent) ends the
+// issued key pair it replaces, signs with the new one, and leaves the signing
+// key alone — nothing is written for it, and a cyoda token token is still
+// accepted.
 func TestCyodaToken_SurvivesRotation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -89,14 +100,14 @@ func TestCyodaToken_SurvivesRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newKeyStackOn(t, s, key)
-	k1 := h.issueKey(t, "client", false)
+	k1 := h.issueKey(t, false)
 	t1 := h.oauthToken(t)
 	if got := tokenKID(t, t1); got != k1 {
 		t.Fatalf("before the rotation the server signs with %s, want %s", got, k1)
 	}
 
-	k2 := h.issueKey(t, "client", true)
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != k2 {
+	k2 := h.issueKey(t, true)
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != k2 {
 		t.Errorf("current after the rotation: %d %s, want 200 %s", code, cur, k2)
 	}
 	if got := tokenKID(t, h.oauthToken(t)); got != k2 {
@@ -144,22 +155,9 @@ func TestIssuedTokens_AcceptedWithConfiguredAudience(t *testing.T) {
 		t.Errorf("client_credentials token: %d, want 200", code)
 	}
 
-	// The trusted key is registered with the harness's own admin token, which
-	// carries the audience; that keeps the registration independent of what
-	// /oauth/token issues.
-	priv := genKey(t)
-	const trustedKID = "e2e-aud-trusted"
-	body, err := json.Marshal(trustedKeyBody(priv, trustedKID))
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp := h.DoAuth(t, http.MethodPost, "/api/oauth/keys/trusted", string(body), "")
-	raw, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("register trusted key: %d %s", resp.StatusCode, raw)
-	}
-	exchanged := h.grantToken(t, exchangeForm(t, priv, trustedKID, "ext-user-1", "test-tenant", []string{"ROLE_USER"}), h.clientID, h.clientSecret)
+	// The OBO token is minted on this stack, whose admin tokens carry the
+	// audience; the assertion's aud is the stack's issuer.
+	exchanged := oboTokenOn(t, h.baseURL, h.token(t), "alice")
 	if code := h.authedStatus(t, exchanged); code != http.StatusOK {
 		t.Errorf("token-exchange token: %d, want 200", code)
 	}

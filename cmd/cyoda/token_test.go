@@ -129,6 +129,41 @@ func TestRunToken_ExplicitTTLAboveShortExpiryExit2(t *testing.T) {
 	}
 }
 
+// Leaving CYODA_JWT_EXPIRY_SECONDS unset uses the real default (300 s, not
+// the old 3600 s): the default 15-minute TTL clamps to it.
+func TestRunToken_DefaultTTLClampsToDefaultExpiry(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d, want 0 (stderr %q)", code, errOut.String())
+	}
+	p, err := auth.Parse(strings.TrimSpace(out.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	exp, _ := p.Claims["exp"].(float64)
+	iat, _ := p.Claims["iat"].(float64)
+	if got := exp - iat; got != 300 {
+		t.Fatalf("exp - iat = %v, want 300 (the default CYODA_JWT_EXPIRY_SECONDS)", got)
+	}
+}
+
+// An explicit --ttl of 2h is refused against the real default expiry (300 s).
+func TestRunToken_ExplicitTTL2hRefusedAgainstDefaultExpiry(t *testing.T) {
+	_, pemText := tokenTestKey(t)
+	setTokenEnv(t, pemText)
+	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "")
+	var out, errOut bytes.Buffer
+	if code := runToken([]string{"--tenant", "acme", "--ttl", "2h"}, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2 (stderr %q)", code, errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Fatalf("stdout must be empty on error: %q", out.String())
+	}
+}
+
 // The --ttl flag error states both bounds, so a sub-second value is told why.
 func TestRunToken_TTLErrorStatesTheBounds(t *testing.T) {
 	_, pemText := tokenTestKey(t)
@@ -148,7 +183,7 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 	for name, args := range map[string][]string{
 		"no tenant":    {},
 		"bad tenant":   {"--tenant", "a:b"},
-		"oidc user":    {"--tenant", "acme", "--user", "oidc:x"},
+		"system user":  {"--tenant", "acme", "--user", "system"},
 		"empty role":   {"--tenant", "acme", "--roles", "ROLE_ADMIN,,ROLE_M2M"},
 		"zero ttl":     {"--tenant", "acme", "--ttl", "0s"},
 		"1ns ttl":      {"--tenant", "acme", "--ttl", "1ns"},
@@ -209,7 +244,7 @@ func TestSetTokenEnv_IgnoresDeveloperEnvFiles(t *testing.T) {
 func TestRunToken_ExpiryOutOfRangeExit1(t *testing.T) {
 	_, pemText := tokenTestKey(t)
 	setTokenEnv(t, pemText)
-	for _, v := range []string{"abc", "0", "31622401", "9300000000"} {
+	for _, v := range []string{"abc", "0", "3601", "9300000000"} {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("CYODA_JWT_EXPIRY_SECONDS", v)
 			var out, errOut bytes.Buffer

@@ -84,7 +84,7 @@ Response: `200 OK`, `application/json` — same shape as a single element of the
 
 ## SPEC SHAPE
 
-The spec declares 72 paths across these tag groups:
+The spec declares 67 paths across these tag groups:
 
 - **Entity Management** — create, update, delete, transition, and stats endpoints under `/entity/`
 - **Entity Model** — model import, export, lock, unlock, delete, changeLevel, and workflow under `/model/`
@@ -94,7 +94,7 @@ The spec declares 72 paths across these tag groups:
 - **Entity, Audit** — audit log retrieval under `/audit/`
 - **Scheduled Tasks** — the tenant's scheduled-transition tasks under `/scheduled-tasks`
 - **Messaging** — message CRUD under `/message/`
-- **IAM** — OAuth token and key management under `/oauth/`. As of v0.8.0, the 10 `/oauth/keys/*` admin operations (keypair + trusted-key lifecycle), the 7 `/oauth/oidc/providers/*` operations, and the 4 `/clients` operations are conformant. Remaining stubbed surface across `/account/*` and adjacent paths is tracked in `docs/cyoda/cloud-divergences.md`.
+- **IAM** — OAuth token and key management under `/oauth/`. As of v0.8.0, the 10 `/oauth/keys/*` admin operations (keypair + trusted-key lifecycle) and the 4 `/clients` operations are conformant. Remaining stubbed surface across `/account/*` and adjacent paths is tracked in `docs/cyoda/cloud-divergences.md`.
 - **SQL Schema** — SQL schema generation and management under `/sql/schema/` (excluded from cyoda-go — see below)
 - **Platform API** — stream-data operations under `/platform-api/stream-data/` (excluded from cyoda-go — see below)
 

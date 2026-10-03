@@ -151,7 +151,6 @@ func newTornHarness(t *testing.T) *tornHarness {
 		// The one-shot startup sweep still runs, harmlessly, before any probe.
 		cfg.SearchJobHeartbeatInterval = time.Hour
 		cfg.SearchJobStaleAfter = 4 * time.Hour
-		cfg.IAM.TrustedKeyRegistrationEnabled = true
 	})
 	return &tornHarness{callbackHarness: h, proxy: proxy}
 }

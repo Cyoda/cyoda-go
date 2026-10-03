@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -258,8 +260,10 @@ type IAMConfig struct {
 	MockRoles      []string
 	// MockKind is the spi.PrincipalKind (as a string — "user", "service", or
 	// "system") assigned to the mock-mode default UserContext. CYODA_IAM_MOCK_KIND,
-	// default "user". Lets local/CI setups exercise service/system-attributed
-	// code paths without standing up real JWT auth.
+	// default "service": every mock-mode caller is a client, as every caller
+	// is in jwt mode. "user" and "system" let local/CI setups exercise
+	// user- or system-attributed code paths without standing up real JWT auth.
+	// Any other value refuses to start (ValidateIAM).
 	MockKind      string
 	JWTSigningKey string // PEM-encoded RSA private key (CYODA_JWT_SIGNING_KEY)
 	JWTIssuer     string // JWT issuer claim (CYODA_JWT_ISSUER)
@@ -275,10 +279,9 @@ type IAMConfig struct {
 	TrustedKeyMaxValidityDays     int
 	TrustedKeyMaxJWKProperties    int
 	KeypairDefaultValidityDays    int
-	BootstrapAudience             string
 
-	// AuthCacheReconcileInterval is the shared periodic KV-reconcile
-	// interval for the per-node auth caches (trusted keys, OIDC providers).
+	// AuthCacheReconcileInterval is the periodic KV-reconcile interval of
+	// the per-node signing-key cache.
 	// Jittered ±10% per tick; the fail-closed staleness bound is fixed at
 	// 10× this value. CYODA_AUTH_CACHE_RECONCILE_INTERVAL, default 60s,
 	// floor 1s.
@@ -292,24 +295,17 @@ type IAMConfig struct {
 	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
 	M2MClientMaxPerTenant int
 
-	// OIDC holds the OIDC provider subsystem configuration.
-	// See OIDCConfig for per-field documentation.
-	OIDC OIDCConfig
-}
+	// TokenRequestsPerMinute limits each client's POST /oauth/token requests
+	// on one node, across both grants; over it the answer is 429 slow_down.
+	// env CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE, default 600; 0=unlimited.
+	TokenRequestsPerMinute int
 
-// OIDCConfig holds the OIDC provider subsystem's configuration per spec §7.
-// All four timeouts are positive Durations; zero values inherit the 5s default
-// applied inside oidc.NewHTTPDiscovery. DefaultRolesClaim is the global default
-// for the roles claim name (per-provider override available via provider.RolesClaim).
-// AllowPrivateNetworks is a test/dev override of the SSRF blocklist; production
-// deployments leave it false.
-type OIDCConfig struct {
-	RequireHTTPS             bool
-	ConnectTimeout           time.Duration
-	SocketTimeout            time.Duration
-	ConnectionRequestTimeout time.Duration
-	AllowPrivateNetworks     bool
-	DefaultRolesClaim        string
+	// TokenMaxConcurrentSecretChecks bounds the bcrypt comparisons
+	// POST /oauth/token runs at once on one node; a request that gets no slot
+	// within 1 s answers 503. env CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS,
+	// default runtime.GOMAXPROCS(0), the CPUs the process may use (it follows a
+	// container CPU limit); at least 1.
+	TokenMaxConcurrentSecretChecks int
 }
 
 // CORSConfig controls cross-origin resource sharing for the public HTTP
@@ -404,35 +400,28 @@ func DefaultConfig() Config {
 		},
 		StartupTimeout: envDuration("CYODA_STARTUP_TIMEOUT", 30*time.Second),
 		IAM: IAMConfig{
-			Mode:                          envString("CYODA_IAM_MODE", "mock"),
-			MockUserID:                    "mock-user-001",
-			MockUserName:                  "Mock User",
-			MockTenantID:                  "mock-tenant",
-			MockTenantName:                "Mock Tenant",
-			MockRoles:                     mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
-			MockKind:                      envString("CYODA_IAM_MOCK_KIND", "user"),
-			JWTSigningKey:                 jwt.SigningKeyPEM,
-			JWTIssuer:                     jwt.Issuer,
-			JWTAudience:                   jwt.Audience,
-			JWTExpiry:                     jwt.ExpirySeconds,
-			RequireJWT:                    envBool("CYODA_REQUIRE_JWT", false),
-			TrustedKeyRegistrationEnabled: envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
-			TrustedKeyMaxPerTenant:        envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
-			TrustedKeyMaxValidityDays:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
-			TrustedKeyMaxJWKProperties:    envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
-			KeypairDefaultValidityDays:    envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
-			BootstrapAudience:             envString("CYODA_JWT_BOOTSTRAP_AUDIENCE", "client"),
-			AuthCacheReconcileInterval:    envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
-			M2MAdminRoleEnabled:           envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
-			M2MClientMaxPerTenant:         envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
-			OIDC: OIDCConfig{
-				RequireHTTPS:             envBool("CYODA_OIDC_REQUIRE_HTTPS", true),
-				ConnectTimeout:           envMillis("CYODA_OIDC_CONNECT_TIMEOUT_MS", 5*time.Second),
-				SocketTimeout:            envMillis("CYODA_OIDC_SOCKET_TIMEOUT_MS", 5*time.Second),
-				ConnectionRequestTimeout: envMillis("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", 5*time.Second),
-				AllowPrivateNetworks:     envBool("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", false),
-				DefaultRolesClaim:        envString("CYODA_OIDC_ROLES_CLAIM", "roles"),
-			},
+			Mode:                           envString("CYODA_IAM_MODE", "mock"),
+			MockUserID:                     "mock-user-001",
+			MockUserName:                   "Mock User",
+			MockTenantID:                   "mock-tenant",
+			MockTenantName:                 "Mock Tenant",
+			MockRoles:                      mockRolesFromEnv([]string{"ROLE_ADMIN", "ROLE_M2M"}),
+			MockKind:                       envString("CYODA_IAM_MOCK_KIND", "service"),
+			JWTSigningKey:                  jwt.SigningKeyPEM,
+			JWTIssuer:                      jwt.Issuer,
+			JWTAudience:                    jwt.Audience,
+			JWTExpiry:                      jwt.ExpirySeconds,
+			RequireJWT:                     envBool("CYODA_REQUIRE_JWT", false),
+			TrustedKeyRegistrationEnabled:  envBool("CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED", false),
+			TrustedKeyMaxPerTenant:         envInt("CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT", 10),
+			TrustedKeyMaxValidityDays:      envInt("CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS", 365),
+			TrustedKeyMaxJWKProperties:     envInt("CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES", 20),
+			KeypairDefaultValidityDays:     envInt("CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS", 365),
+			AuthCacheReconcileInterval:     envDuration("CYODA_AUTH_CACHE_RECONCILE_INTERVAL", 60*time.Second),
+			M2MAdminRoleEnabled:            envBool("CYODA_IAM_M2M_ADMIN_ROLE_ENABLED", false),
+			M2MClientMaxPerTenant:          envInt("CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT", 100),
+			TokenRequestsPerMinute:         envInt("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", 600),
+			TokenMaxConcurrentSecretChecks: envInt("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", runtime.GOMAXPROCS(0)),
 		},
 		Cluster: cluster.Config{
 			// Enabled defaults false for easier onboarding — NOT because multi-node is
@@ -640,10 +629,9 @@ func (c CORSConfig) Mode() string {
 	}
 }
 
-// ValidateCORS verifies the CORS configuration. It is called once at startup
-// (from cmd/cyoda/main.go after slog initialisation) and returns an error
-// for any invalid origin or mode combination. A non-nil return causes the
-// binary to slog the error and os.Exit(1).
+// ValidateCORS verifies the CORS configuration. Checked by Config.Validate at
+// startup, and returns an error for any invalid origin or mode combination.
+// A non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Validation rules (full set):
 //   - Wildcard==true and AllowedOrigins non-empty is a programming error
@@ -670,7 +658,7 @@ func ValidateCORS(c CORSConfig) error {
 
 // validateCORSOrigin returns nil iff o is a well-formed origin acceptable
 // in the allowlist. Rejection rules per spec §"Allowlist normalization
-// and validation". Run once at startup, never on the hot path.
+// and validation". Checked by Config.Validate at startup, never on the hot path.
 func validateCORSOrigin(o string) error {
 	if strings.TrimSpace(o) == "" {
 		return fmt.Errorf("origin %q: empty entry not allowed", o)
@@ -757,9 +745,10 @@ func isASCII(s string) bool {
 // guard. Config is a QA'd artefact rather than untrusted input, so this is
 // an invariant held where it is relied on, not input hardening.
 //
-// The binary keeps its own per-setting calls so its startup diagnostics
-// name the offending setting; it exits before New is ever reached, so the
-// same error is never reported twice.
+// The binary calls Validate in cmd/cyoda/main.go, before printing the
+// startup banner, and app.New calls it again. An invalid config exits in
+// main before New is ever reached, so the error is reported once. Each
+// validator's error names its offending CYODA_* setting.
 func (c Config) Validate() error {
 	if err := ValidateGRPCKeepAlive(c.GRPC); err != nil {
 		return err
@@ -785,7 +774,13 @@ func (c Config) Validate() error {
 	if err := ValidateScheduler(c.Scheduler); err != nil {
 		return err
 	}
-	return ValidateHTTP(c.HTTP)
+	if err := ValidateHTTP(c.HTTP); err != nil {
+		return err
+	}
+	if err := ValidateIAM(c.IAM); err != nil {
+		return err
+	}
+	return ValidateCORS(c.CORS)
 }
 
 // ValidateGRPCKeepAlive rejects a keep-alive interval or timeout that is not
@@ -803,9 +798,8 @@ func ValidateGRPCKeepAlive(c GRPCConfig) error {
 }
 
 // ValidateSearchAsync enforces startup-time correctness for the
-// async-search worker pool sizing. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// async-search worker pool sizing. Checked by Config.Validate at startup;
+// a non-nil return causes the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: an invalid value is a hard
 // error here rather than silently clamped to the default the way
@@ -829,9 +823,9 @@ func ValidateSearchAsync(c SearchAsyncConfig) error {
 }
 
 // ValidateSearchJobHeartbeat enforces startup-time correctness for
-// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Called once at startup (from
-// cmd/cyoda/main.go); a non-nil return causes the binary to slog the error
-// and os.Exit(1).
+// CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL. Checked by Config.Validate at
+// startup; a non-nil return causes the binary to slog the error and
+// os.Exit(1).
 //
 // Config is a QA'd artefact, not runtime input: a non-positive interval is a
 // hard startup error rather than silently clamped to the default, matching
@@ -854,9 +848,9 @@ const staleAfterMinMultiple = 4
 
 // ValidateSearchJobStaleAfter enforces startup-time correctness for
 // CYODA_SEARCH_JOB_STALE_AFTER against CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL.
-// Called once at startup (from cmd/cyoda/main.go), after both
-// ValidateSearchJobHeartbeat has already rejected a non-positive interval;
-// a non-nil return causes the binary to slog the error and os.Exit(1).
+// Checked by Config.Validate at startup, after ValidateSearchJobHeartbeat
+// has already rejected a non-positive interval; a non-nil return causes
+// the binary to slog the error and os.Exit(1).
 //
 // Config is a QA'd artefact: the interval « staleAfter invariant
 // (spi.AsyncSearchStore.ClaimStale's doc comment) is made mechanically
@@ -994,18 +988,37 @@ func ValidateHTTP(c HTTPConfig) error {
 // ValidateIAM enforces startup-time IAM correctness. When CYODA_REQUIRE_JWT
 // is set, mock mode is rejected and the signing key must be present. In JWT
 // mode (regardless of RequireJWT) IAMFeatures are validated so that invalid
-// env values for BootstrapAudience, TrustedKeyMaxPerTenant, MaxValidityDays,
-// etc. fail startup rather than being silently ignored.
-// Callers must invoke this before wiring auth in New().
+// env values for TrustedKeyMaxPerTenant, MaxValidityDays, etc. fail startup
+// rather than being silently ignored. Called from Config.Validate, which New
+// runs before wiring auth.
 func ValidateIAM(iam IAMConfig) error {
 	// RequireJWT demands jwt mode — reject mock so a misconfigured Helm deploy
 	// can never silently fall back to unauthenticated access.
 	if iam.RequireJWT && iam.Mode != "jwt" {
 		return fmt.Errorf("CYODA_REQUIRE_JWT=true but CYODA_IAM_MODE=%q (expected \"jwt\")", iam.Mode)
 	}
+	// Only these two modes exist. app.New wires JWT auth for "jwt" and mock
+	// auth for anything else, so an unrecognised value (a typo, a different
+	// case) would otherwise run every request as the mock admin.
+	if iam.Mode != "mock" && iam.Mode != "jwt" {
+		return fmt.Errorf("CYODA_IAM_MODE=%q is not supported (expected \"mock\" or \"jwt\")", iam.Mode)
+	}
+	// Unconditional: a bad mock kind is a config error in any mode. app.New
+	// casts it to the mock principal's kind unchecked.
+	switch spi.PrincipalKind(iam.MockKind) {
+	case spi.PrincipalUser, spi.PrincipalService, spi.PrincipalSystem:
+	default:
+		return fmt.Errorf("CYODA_IAM_MOCK_KIND=%q is not supported (expected \"user\", \"service\" or \"system\")", iam.MockKind)
+	}
 	// Unconditional: a bad explicit interval is a config error in any mode.
 	if iam.AuthCacheReconcileInterval < time.Second {
 		return fmt.Errorf("CYODA_AUTH_CACHE_RECONCILE_INTERVAL must be >= 1s, got %s", iam.AuthCacheReconcileInterval)
+	}
+	if iam.TokenRequestsPerMinute < 0 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE must be >= 0 (0 = unlimited), got %d", iam.TokenRequestsPerMinute)
+	}
+	if iam.TokenMaxConcurrentSecretChecks < 1 {
+		return fmt.Errorf("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS must be >= 1, got %d", iam.TokenMaxConcurrentSecretChecks)
 	}
 	// Mock mode needs no further validation.
 	if iam.Mode == "mock" {
@@ -1031,7 +1044,6 @@ func (c IAMConfig) AuthIAMFeatures() auth.IAMFeatures {
 		TrustedKeyMaxValidityDays:     c.TrustedKeyMaxValidityDays,
 		TrustedKeyMaxJWKProperties:    c.TrustedKeyMaxJWKProperties,
 		KeypairDefaultValidityDays:    c.KeypairDefaultValidityDays,
-		BootstrapAudience:             c.BootstrapAudience,
 		M2MAdminRoleEnabled:           c.M2MAdminRoleEnabled,
 		M2MClientMaxPerTenant:         c.M2MClientMaxPerTenant,
 	}

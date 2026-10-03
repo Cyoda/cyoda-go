@@ -70,13 +70,16 @@ For **product context** — value proposition, target use cases, scale envelope,
 - Transaction context propagation (gRPC callbacks can join caller's transaction)
 
 ### Authentication & Authorization
+- M2M-only access with on-behalf-of identity: only M2M clients connect; an application authorizes its users and acts for them through an on-behalf-of client, and every change, audit event, callout and message records the user it was for and the client that made it
 - OAuth 2.0 token issuance (`client_credentials`)
-- On-behalf-of token exchange (RFC 8693)
+- On-behalf-of token exchange (RFC 8693) with application-signed user assertions; the token carries the client's roles, never the user's
+- `ROLE_M2M` required on every data operation, HTTP and gRPC
 - JWKS public key endpoint
-- M2M technical user management (create, delete, reset secret)
+- M2M technical user management (create, delete, reset secret), including on-behalf-of clients
+- Token-endpoint cost controls: bounded concurrent secret checks per node, a verified-secret cache, a per-client token bucket
 - JWT key pair management (issue, invalidate, reactivate, delete)
-- Trusted external key registration (persistent across restarts)
-- OIDC provider per-tenant registry (register, list, get, update, invalidate, reactivate, delete, reload). External-IdP JWT validation via chained multi-issuer validator. Cross-node cache eviction via cluster broadcast.
+- Trusted key registration for user assertions (per tenant, persistent across restarts)
+- Offline operator token (`cyoda token`) signed with the signing key
 - Mock mode for zero-setup development
 
 ### Multi-Tenancy

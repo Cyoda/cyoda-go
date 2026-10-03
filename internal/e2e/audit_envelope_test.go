@@ -19,6 +19,6 @@ func TestAudit_Search_NotFound_ProblemDetail(t *testing.T) {
 
 	// Valid UUID for an entity that does not exist → handler emits 404 ENTITY_NOT_FOUND.
 	resp := doAuth(t, http.MethodGet, "/api/audit/entity/00000000-0000-0000-0000-000000000099", "")
-	// assertProblemJSON is defined in oidc_reconciliation_test.go (same package).
+	// assertProblemJSON is defined in helpers_test.go (same package).
 	assertProblemJSON(t, resp, http.StatusNotFound, "ENTITY_NOT_FOUND")
 }

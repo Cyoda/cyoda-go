@@ -24,8 +24,11 @@ func TenantFromContext(ctx context.Context) string {
 }
 
 // systemPrincipalID identifies the platform system principal. Never a real
-// end-user; kind=system.
-const systemPrincipalID = "system"
+// end-user; kind=system. It is the same value ValidateUserID reserves
+// (ReservedSystemUserID), so an outside-supplied id can never collide with
+// it; SystemPrincipal and SystemUserContextValue build it directly rather
+// than through ValidateUserID.
+const systemPrincipalID = ReservedSystemUserID
 
 // SystemPrincipal returns the platform system principal background
 // subsystems act as — one identity shared by every one of them, not a

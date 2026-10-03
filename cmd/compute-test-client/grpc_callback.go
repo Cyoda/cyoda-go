@@ -35,35 +35,40 @@ const (
 )
 
 // grpcCallbackClient issues EntityManage callbacks over gRPC, joining T via the
-// tx-token metadata. It dials a (possibly non-owner) cyoda-go node.
+// tx-token metadata. It dials a (possibly non-owner) cyoda-go node; every call
+// carries the bearer token returns at that moment (bearerCredentials).
 type grpcCallbackClient struct {
 	conn   *grpc.ClientConn
 	client cyodapb.CloudEventsServiceClient
-	bearer string
 }
 
-// newGRPCCallbackClient dials endpoint for EntityManage callbacks, or returns nil
-// when endpoint is empty (the gRPC callback processors then fail loudly).
-func newGRPCCallbackClient(endpoint, bearer string) (*grpcCallbackClient, error) {
-	if endpoint == "" {
-		return nil, nil
-	}
-	conn, err := grpc.NewClient(endpoint, grpc.WithTransportCredentials(insecure.NewCredentials()))
+// newGRPCCallbackClient dials endpoint for EntityManage callbacks.
+func newGRPCCallbackClient(endpoint string, token func() (string, error)) (*grpcCallbackClient, error) {
+	conn, err := grpc.NewClient(endpoint,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithPerRPCCredentials(bearerCredentials{tok: token}),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("dial gRPC callback endpoint %s: %w", endpoint, err)
 	}
 	return &grpcCallbackClient{
 		conn:   conn,
 		client: cyodapb.NewCloudEventsServiceClient(conn),
-		bearer: bearer,
 	}, nil
+}
+
+// withTxToken returns ctx carrying txToken as "tx-token" metadata when it is
+// non-empty; the bearer rides as per-call credentials, not here.
+func withTxToken(ctx context.Context, txToken string) context.Context {
+	if txToken == "" {
+		return ctx
+	}
+	return metadata.AppendToOutgoingContext(ctx, grpcTxTokenKey, txToken)
 }
 
 // close tears down the callback connection.
 func (g *grpcCallbackClient) close() {
-	if g != nil && g.conn != nil {
-		g.conn.Close()
-	}
+	g.conn.Close()
 }
 
 // grpcCBResult is the parsed EntityTransactionResponse envelope of a gRPC callback.
@@ -97,12 +102,7 @@ func (g *grpcCallbackClient) createSecondary(ctx context.Context, cfg cbConfig, 
 		return grpcCBResult{}, fmt.Errorf("build EntityCreateRequest: %w", err)
 	}
 
-	pairs := []string{"authorization", "Bearer " + g.bearer}
-	if txToken != "" {
-		pairs = append(pairs, grpcTxTokenKey, txToken)
-	}
-	md := metadata.Pairs(pairs...)
-	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, md), 15*time.Second)
+	callCtx, cancel := context.WithTimeout(withTxToken(ctx, txToken), 15*time.Second)
 	defer cancel()
 
 	resp, err := g.client.EntityManage(callCtx, ce)
@@ -168,11 +168,7 @@ func (g *grpcCallbackClient) searchSecondary(ctx context.Context, cfg cbConfig, 
 		return 0, fmt.Errorf("build EntitySearchRequest: %w", err)
 	}
 
-	pairs := []string{"authorization", "Bearer " + g.bearer}
-	if txToken != "" {
-		pairs = append(pairs, grpcTxTokenKey, txToken)
-	}
-	callCtx, cancel := context.WithTimeout(metadata.NewOutgoingContext(ctx, metadata.Pairs(pairs...)), 15*time.Second)
+	callCtx, cancel := context.WithTimeout(withTxToken(ctx, txToken), 15*time.Second)
 	defer cancel()
 
 	stream, err := g.client.EntitySearchCollection(callCtx, ce)

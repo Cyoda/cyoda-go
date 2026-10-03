@@ -365,19 +365,25 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
   {
     "changeType": "UPDATE",
     "timeOfChange": "2025-08-02T09:00:00Z",
-    "user": "admin",
+    "user": "alice",
+    "attributedKind": "user",
+    "executedBy": {"id": "GC2693985CC61NUU", "kind": "service"},
     "transactionId": "733e7180-c055-11ef-a357-ae468cd3ed16"
   },
   {
     "changeType": "CREATE",
     "timeOfChange": "2025-08-01T10:00:00Z",
-    "user": "admin",
+    "user": "K3V0Q8B1D2E4F6G7",
+    "attributedKind": "service",
+    "executedBy": {"id": "K3V0Q8B1D2E4F6G7", "kind": "service"},
     "transactionId": "cb91fa80-d4a8-11ee-a357-ae468cd3ed16"
   }
 ]
 ```
 
 - `changeType`: `CREATE`, `UPDATE`, or `DELETE`
+- `user`: the attributed principal's id — who the change is for; `attributedKind`: its kind (`user`, `service` or `system`)
+- `executedBy`: `{id, kind}` — who made the change. The first entry above is an on-behalf-of write for the user `alice`, executed by the on-behalf-of client; the second is a client's own write. `attributedKind` and `executedBy` are absent on a change recorded without attribution. See `cyoda help auth integration` for every case. Over gRPC, `EntityChangesMetadataGetRequest` returns the same three fields in each change's `changeMeta`.
 - `transactionId`: present only when `hasEntity` is true (i.e., entity payload exists at that version)
 
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
@@ -677,7 +683,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"physics","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/nobel-prize/1"
@@ -686,14 +692,14 @@ curl -s -X POST \
 **Read an entity:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
 **Read an entity at a point in time:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16?pointInTime=2025-08-01T10:00:00Z"
 ```
 
@@ -701,7 +707,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -H "If-Match: cb91fa80-d4a8-11ee-a357-ae468cd3ed16" \
   -d '{"category":"chemistry","year":"2024"}' \
@@ -712,7 +718,7 @@ curl -s -X PUT \
 
 ```
 curl -s -X PUT \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"category":"chemistry","year":"2024"}' \
   "http://localhost:8080/api/entity/JSON/74807f00-ed0d-11ee-a357-ae468cd3ed16/APPROVE"
@@ -722,7 +728,7 @@ curl -s -X PUT \
 
 ```
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16"
 ```
 
@@ -731,12 +737,12 @@ curl -s -X DELETE \
 ```
 # Delete all entities for the model:
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1"
 
 # Delete only VALIDATED entities and list the attempted IDs:
 curl -s -X DELETE \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"VALIDATED"}' \
   "http://localhost:8080/api/entity/nobel-prize/1?verbose=true"
@@ -745,21 +751,21 @@ curl -s -X DELETE \
 **List all entities for a model (page 0, size 20):**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/nobel-prize/1?pageSize=20&pageNumber=0"
 ```
 
 **Get entity change history:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16/changes"
 ```
 
 **Get available transitions:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/74807f00-ed0d-11ee-a357-ae468cd3ed16/transitions"
 ```
 
@@ -767,7 +773,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '[{"model":{"name":"nobel-prize","version":1},"payload":"{\"category\":\"physics\",\"year\":\"2024\"}"}]' \
   "http://localhost:8080/api/entity/JSON"
@@ -776,7 +782,7 @@ curl -s -X POST \
 **Get statistics by state for a model:**
 
 ```
-curl -s -H "Authorization: Bearer $TOKEN" \
+curl -s -H @- <<<"Authorization: Bearer $TOKEN" \
   "http://localhost:8080/api/entity/stats/states/nobel-prize/1"
 ```
 
@@ -784,7 +790,7 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "groupBy": ["state", "$.country"],
@@ -802,7 +808,7 @@ curl -s -X POST \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "groupBy": ["$.variantId"],

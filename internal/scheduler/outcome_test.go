@@ -488,6 +488,32 @@ func TestService_FailEventCarriesTheEntityStateAndTheTaskCounters(t *testing.T) 
 	}
 }
 
+// TestService_FailEventCarriesTheArmingPrincipalAndSystemExecutor: the
+// SCHEDULED_TRANSITION_FAIL event is attributed to the task's arming
+// principal, exactly as a scheduled firing's own events are (spec §13), and
+// executed by the system — the same system principal the fire path stamps.
+func TestService_FailEventCarriesTheArmingPrincipalAndSystemExecutor(t *testing.T) {
+	task := dueTask("t1", "task-1")
+	task.ArmedBy = spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	h := newHarness(t, testConfig(), reportFirer(unsafeFailure))
+	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{task} })
+	h.start(t)
+	eventually(t, "the task failed", func() bool { return len(h.fs.failsRecorded()) == 1 })
+	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
+
+	failed := failEvents(t, h, task.TenantID, task.EntityID)
+	if len(failed) != 1 {
+		t.Fatalf("%d SCHEDULED_TRANSITION_FAIL events, want exactly one", len(failed))
+	}
+	e := failed[0]
+	if e.Attributed != task.ArmedBy {
+		t.Errorf("event attributed = %+v, want the task's arming principal %+v", e.Attributed, task.ArmedBy)
+	}
+	if e.Executor != common.SystemPrincipal() {
+		t.Errorf("event executor = %+v, want the system principal %+v", e.Executor, common.SystemPrincipal())
+	}
+}
+
 // storageDown is a plugin's transient-unavailability marker.
 type storageDown struct{}
 

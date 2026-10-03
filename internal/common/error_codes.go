@@ -36,24 +36,23 @@ const (
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
 	// for a condition's literal-vs-field mismatch.
-	ErrCodeIncompatibleType          = "INCOMPATIBLE_TYPE"
-	ErrCodeInvalidChangeLevel        = "INVALID_CHANGE_LEVEL"
-	ErrCodeInvalidFieldPath          = "INVALID_FIELD_PATH"
-	ErrCodeUnauthorized              = "UNAUTHORIZED"
-	ErrCodeForbidden                 = "FORBIDDEN"
-	ErrCodeFeatureDisabled           = "FEATURE_DISABLED"
-	ErrCodeKeyOwnedByDifferentTenant = "KEY_OWNED_BY_DIFFERENT_TENANT"
-	ErrCodeKeypairNotFound           = "KEYPAIR_NOT_FOUND"
-	ErrCodeTrustedKeyCapReached      = "TRUSTED_KEY_CAP_REACHED"
-	ErrCodeTrustedKeyNotFound        = "TRUSTED_KEY_NOT_FOUND"
-	ErrCodeM2MClientNotFound         = "M2M_CLIENT_NOT_FOUND"
-	ErrCodeM2MClientCapReached       = "M2M_CLIENT_CAP_REACHED"
-	ErrCodeUnsupportedAlgorithm      = "UNSUPPORTED_ALGORITHM"
-	ErrCodeUnsupportedKeyType        = "UNSUPPORTED_KEY_TYPE"
-	ErrCodeServerError               = "SERVER_ERROR"
-	ErrCodeNotImplemented            = "NOT_IMPLEMENTED"
-	ErrCodePreconditionRequired      = "PRECONDITION_REQUIRED"
-	ErrCodeUnsupportedMediaType      = "UNSUPPORTED_MEDIA_TYPE"
+	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
+	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
+	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
+	ErrCodeUnauthorized         = "UNAUTHORIZED"
+	ErrCodeForbidden            = "FORBIDDEN"
+	ErrCodeFeatureDisabled      = "FEATURE_DISABLED"
+	ErrCodeKeypairNotFound      = "KEYPAIR_NOT_FOUND"
+	ErrCodeTrustedKeyCapReached = "TRUSTED_KEY_CAP_REACHED"
+	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
+	ErrCodeM2MClientNotFound    = "M2M_CLIENT_NOT_FOUND"
+	ErrCodeM2MClientCapReached  = "M2M_CLIENT_CAP_REACHED"
+	ErrCodeUnsupportedAlgorithm = "UNSUPPORTED_ALGORITHM"
+	ErrCodeUnsupportedKeyType   = "UNSUPPORTED_KEY_TYPE"
+	ErrCodeServerError          = "SERVER_ERROR"
+	ErrCodeNotImplemented       = "NOT_IMPLEMENTED"
+	ErrCodePreconditionRequired = "PRECONDITION_REQUIRED"
+	ErrCodeUnsupportedMediaType = "UNSUPPORTED_MEDIA_TYPE"
 )
 
 const (
@@ -149,6 +148,12 @@ const (
 	// caller's action is identical, and which bound bit is operator
 	// information. Retryable: capacity frees as in-flight jobs complete.
 	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
+	// ErrCodeServerBusy is returned when the node has no capacity left for
+	// the bounded work a request needs within the wait — today, a
+	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
+	// with every CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS slot taken.
+	// Nothing was written. 503 with Retry-After. Retryable.
+	ErrCodeServerBusy = "SERVER_BUSY"
 )
 
 // Grouped statistics — POST /api/entity/stats/{entityName}/{modelVersion}/query.
@@ -256,37 +261,14 @@ const (
 	ErrCodeScheduleFunctionInvalidResult = "SCHEDULE_FUNCTION_INVALID_RESULT"
 )
 
-// OIDC provider management
-const (
-	// ErrCodeOidcInvalidTenant is returned from any OIDC provider operation
-	// whose tenant context carries an ID that is not a UUID in its canonical
-	// lowercase form. OIDC provider ownership requires UUID-shaped legal
-	// entity identifiers (matching the cyoda data model), and the canonical
-	// spelling specifically, because every other subsystem compares a tenant
-	// as raw text — accepting another spelling would alias two distinct
-	// tenants. A tenant whose id is not a UUID (e.g. acme) cannot own OIDC
-	// providers; use a UUID tenant to register, list, update, invalidate,
-	// reactivate or delete one.
-	ErrCodeOidcInvalidTenant     = "OIDC_INVALID_TENANT"
-	ErrCodeOIDCProviderDuplicate = "OIDC_PROVIDER_DUPLICATE"
-	ErrCodeOIDCProviderNotFound  = "OIDC_PROVIDER_NOT_FOUND"
-	ErrCodeOIDCProviderInactive  = "OIDC_PROVIDER_INACTIVE"
-	ErrCodeOIDCSSRFBlocked       = "OIDC_SSRF_BLOCKED"
-)
-
 // Token-validation failures (audience mismatch, claims invalid, iat
 // pre-transition, KID unknown, JWKS unavailable during key resolution) carry
-// no precise OIDC_* code. The bearer-auth middleware uniformly returns a
+// no precise per-cause code. The bearer-auth middleware uniformly returns a
 // problem-detail body with code UNAUTHORIZED and no per-cause distinction; a
-// precise code would enumerate IdP / audience / kid / claim-shape recognition
-// to an unauthenticated caller.
+// precise code would enumerate audience / kid / claim-shape recognition to an
+// unauthenticated caller.
 //
-// Discovery failures at registration time also carry no precise code.
-// Registry warm-up is non-fatal: the provider stays registered, discovery
-// errors log internally, and tokens 401 until the IdP becomes reachable.
-//
-// The per-cause diagnostic path is the server-side log stream — see the
-// auth.oidc help topic.
+// The per-cause diagnostic path is the server-side log stream.
 
 // knownErrorCodes is every error code this build defines. It exists because an
 // error code is part of the contract a client reads: a code arriving from
@@ -330,7 +312,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeInvalidUniqueKey:                 {},
 	ErrCodeInvalidUniqueKeyDefinition:       {},
 	ErrCodeJoinedResponseTooLarge:           {},
-	ErrCodeKeyOwnedByDifferentTenant:        {},
 	ErrCodeKeypairNotFound:                  {},
 	ErrCodeM2MClientCapReached:              {},
 	ErrCodeM2MClientNotFound:                {},
@@ -343,11 +324,6 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeModelNotLocked:                   {},
 	ErrCodeNoComputeMemberForTag:            {},
 	ErrCodeNotImplemented:                   {},
-	ErrCodeOidcInvalidTenant:                {},
-	ErrCodeOIDCProviderDuplicate:            {},
-	ErrCodeOIDCProviderInactive:             {},
-	ErrCodeOIDCProviderNotFound:             {},
-	ErrCodeOIDCSSRFBlocked:                  {},
 	ErrCodePreconditionRequired:             {},
 	ErrCodeScheduleFunctionInvalidResult:    {},
 	ErrCodeSearchJobAlreadyTerminal:         {},
@@ -356,6 +332,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeSearchResultLimit:                {},
 	ErrCodeSearchShardTimeout:               {},
 	ErrCodeSearchTimeout:                    {},
+	ErrCodeServerBusy:                       {},
 	ErrCodeServerError:                      {},
 	ErrCodeStorageUnavailable:               {},
 	ErrCodeTooManyJoinedRequests:            {},

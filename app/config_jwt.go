@@ -7,11 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-)
 
-// MaxJWTExpirySeconds is the largest CYODA_JWT_EXPIRY_SECONDS accepted:
-// 366 days, the same cap as a signing key pair's grace period.
-const MaxJWTExpirySeconds = 366 * 24 * 3600
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
+)
 
 // JWTSettings are the four variables a token signer needs. LoadJWTSettings
 // resolves exactly these, so `cyoda token` does not depend on (or panic over)
@@ -26,8 +24,8 @@ type JWTSettings struct {
 // LoadJWTSettings resolves CYODA_JWT_SIGNING_KEY (or _FILE; PEM or
 // base64-encoded PEM), CYODA_JWT_ISSUER (default "cyoda" when unset; an
 // explicitly empty value is an error), CYODA_JWT_AUDIENCE
-// (default empty) and CYODA_JWT_EXPIRY_SECONDS (default 3600; an integer from
-// 1 to MaxJWTExpirySeconds). Errors name the variable, never its value. The
+// (default empty) and CYODA_JWT_EXPIRY_SECONDS (default 300; an integer from
+// 1 to auth.MaxJWTExpirySeconds). Errors name the variable, never its value. The
 // server (DefaultConfig) and `cyoda token` both read these variables here, so
 // they accept and refuse the same values.
 func LoadJWTSettings() (JWTSettings, error) {
@@ -35,11 +33,11 @@ func LoadJWTSettings() (JWTSettings, error) {
 	if err != nil {
 		return JWTSettings{}, err
 	}
-	expiry := 3600
+	expiry := 300
 	if v, ok := os.LookupEnv("CYODA_JWT_EXPIRY_SECONDS"); ok && v != "" {
 		n, err := strconv.Atoi(v)
-		if err != nil || n <= 0 || n > MaxJWTExpirySeconds {
-			return JWTSettings{}, fmt.Errorf("CYODA_JWT_EXPIRY_SECONDS must be an integer from 1 to %d (366 days)", MaxJWTExpirySeconds)
+		if err != nil || n <= 0 || n > auth.MaxJWTExpirySeconds {
+			return JWTSettings{}, fmt.Errorf("CYODA_JWT_EXPIRY_SECONDS must be an integer from 1 to %d", auth.MaxJWTExpirySeconds)
 		}
 		expiry = n
 	}

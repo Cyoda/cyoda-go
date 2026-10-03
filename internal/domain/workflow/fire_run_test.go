@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func TestPreRunDecision(t *testing.T) {
@@ -140,6 +141,109 @@ func TestFireScheduled_SelfLoopReArmsSameIDAsNewLife(t *testing.T) {
 	}
 	if n := countAuditEvents(t, env.factory, env.ctx, "loop-e1", spi.SMEventScheduledTransitionCancelled); n != 0 {
 		t.Errorf("SCHEDULED_TRANSITION_CANCEL events = %d, want 0", n)
+	}
+}
+
+// TestFireScheduled_SelfLoopReArmsWithSameArmedBy covers §7.4: the WAITING
+// life a self-loop re-arms (the SAME fire that consumed the claimed task)
+// must carry the SAME ArmedBy as the task that fired. The fire seeds its
+// transaction's origin from the claimed task's durable ArmedBy
+// (fire_scheduled.go's WithAmbientOrigin, before Begin), and the fire's
+// system-kind executor only inherits that origin because spi.AttributionFor
+// inherits a transaction's origin for a service/system executor — exactly
+// the branch arm.go's switch to AttributionFor (from spi.ResolveOrigin) now
+// relies on at the re-arm site too. The ctx carries the system UserContext
+// the real scheduler puts on it before firing (internal/scheduler/service.go's
+// fire, common.SystemUserContextValue) — env.ctx's own test-user UserContext
+// would otherwise mask the inheritance this test exists to prove. A
+// regression that lost the ambient-origin seeding, or the inheritance, would
+// silently re-arm with the zero Principal instead of carrying ArmedBy
+// forward.
+func TestFireScheduled_SelfLoopReArmsWithSameArmedBy(t *testing.T) {
+	env := newRunEnv(t, nil)
+	const entityID = "loop-armedby-e1"
+	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("OPEN", nil, nil)})
+	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
+	now := env.nowMs()
+	wantArmedBy := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, entityID, "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: entityID,
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		ArmedAt: now, ArmedBy: wantArmedBy,
+	})
+	claimed := env.claimOne(t, testOwner, false)
+
+	fireCtx := spi.WithUserContext(env.ctx, common.SystemUserContextValue(testTenant))
+	run := newTestRun(env.sts, claimed)
+	r := run.fire(env.engine, fireCtx, claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	got, found := env.task(t, claimed.ID)
+	if !found {
+		t.Fatal("self-loop must re-arm the same task id")
+	}
+	if got.ArmedBy != wantArmedBy {
+		t.Errorf("re-armed task ArmedBy = %+v, want %+v (the same as the fired task's ArmedBy)", got.ArmedBy, wantArmedBy)
+	}
+}
+
+// TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy: a scheduled fire's
+// commit-before-dispatch processor with startNewTxOnDispatch false is
+// dispatched with no transaction. The callout identity is computed from the
+// dispatch context with spi.AttributionFor (internal/grpc IdentityFrom); it
+// must still name the task's ArmedBy as the attributed principal, from the
+// ambient origin the fire seeds, and the system as the executor.
+func TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy(t *testing.T) {
+	type seen struct {
+		attributed, executor spi.Principal
+		inTx                 bool
+	}
+	got := make(chan seen, 1)
+	ext := &scriptedExtProc{processor: func(ctx context.Context, _ spi.ProcessorDefinition, _ string) (*spi.Entity, error) {
+		a, e := spi.AttributionFor(ctx)
+		got <- seen{attributed: a, executor: e, inTx: spi.GetTransaction(ctx) != nil}
+		return nil, nil
+	}}
+	env := newRunEnv(t, ext)
+	const entityID = "cbd-armedby-e1"
+	proc := safeProc("cbd", "COMMIT_BEFORE_DISPATCH")
+	noNewTx := false
+	proc.Config.StartNewTxOnDispatch = &noNewTx
+	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
+	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{proc}, nil)})
+	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
+	now := env.nowMs()
+	armedBy := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	armTask(t, env.factory, env.ctx, spi.ScheduledTask{
+		ID: taskID(testTenant, entityID, "OPEN", "AutoClose"), TenantID: testTenant,
+		Type: spi.ScheduledTaskFireTransition, ScheduledTime: now, EntityID: entityID,
+		ModelName: model.EntityName, ModelVersion: 1, Transition: "AutoClose", SourceState: "OPEN",
+		ArmedAt: now, ArmedBy: armedBy,
+	})
+	claimed := env.claimOne(t, testOwner, false)
+
+	fireCtx := spi.WithUserContext(env.ctx, common.SystemUserContextValue(testTenant))
+	r := newTestRun(env.sts, claimed).fire(env.engine, fireCtx, claimed)
+	if r.Outcome != OutcomeFired || r.Err != nil {
+		t.Fatalf("report = %+v, want fired", r)
+	}
+	var s seen
+	select {
+	case s = <-got:
+	default:
+		t.Fatal("the processor was never dispatched")
+	}
+	if s.inTx {
+		t.Fatal("the processor was dispatched inside a transaction; this test needs the dispatch outside one")
+	}
+	if s.attributed != armedBy {
+		t.Errorf("callout attributed = %+v, want the task's ArmedBy %+v", s.attributed, armedBy)
+	}
+	if s.executor != common.SystemPrincipal() {
+		t.Errorf("callout executor = %+v, want %+v", s.executor, common.SystemPrincipal())
 	}
 }
 

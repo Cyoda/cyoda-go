@@ -15,8 +15,8 @@ import (
 
 const defaultReconcileInterval = 60 * time.Second
 
-// maxReconcileAttempts bounds the generation-guard retry of a re-read and of a
-// single-record load. Only continuous local change can exhaust it.
+// maxReconcileAttempts bounds the generation-guard retry of a re-read
+// (Reconcile). Only continuous local change can exhaust it.
 const maxReconcileAttempts = 5
 
 // stalenessMultiplier × interval is the fail-closed bound: a copy with no
@@ -41,14 +41,14 @@ type kvWrite struct {
 }
 
 type replicaConfig[R any] struct {
-	name      string // log prefix, e.g. "trusted-key"
+	name      string // log prefix, e.g. "signing-key"
 	namespace string
 	topic     string
-	// decode turns one entry into the copy's key and record. ok=false skips
-	// the entry (counted at load); err leaves it out of the copy with an ERROR,
-	// on the initial load as on a re-read: the key it held is refused (fail
-	// closed), and one bad record never stops a node starting.
-	decode      func(kvKey string, data []byte) (copyKey string, rec R, ok bool, err error)
+	// decode turns one entry into the copy's key and record. It never fails:
+	// a record that does not decode is still represented in the copy (the
+	// signing-key store classifies it as broken, so its key is refused), and
+	// one bad record never stops a node starting.
+	decode      func(kvKey string, data []byte) (copyKey string, rec R)
 	interval    time.Duration
 	broadcaster spi.ClusterBroadcaster
 	metrics     ReconcileMetrics
@@ -73,7 +73,18 @@ type replicaConfig[R any] struct {
 type kvReplica[R any] struct {
 	cfg replicaConfig[R]
 	kv  spi.KeyValueStore
-	ctx context.Context // process lifetime: no cancellation, no deadline
+	// ctx is this replica's one source of lifetime: Start selects on
+	// r.ctx.Done() for its periodic loop, and reconcileOnce checks r.ctx.Err()
+	// before every reconcile, triggered by either Start's loop or a gossip
+	// ping. Canceling it therefore ends the periodic loop and turns any
+	// later ping-triggered reconcile into a no-op — no store call, no
+	// failure log. The broadcaster subscription set up below is never torn
+	// down, so a ping can still arrive after ctx ends; that check in
+	// reconcileOnce is what makes arriving safe. There is deliberately no
+	// second ctx anywhere in this type: Start takes none, so the contract
+	// that construction and the loop share one lifetime cannot be broken by
+	// a caller passing them two different contexts.
+	ctx context.Context
 
 	mu   sync.RWMutex // the copy lock
 	recs map[string]R
@@ -84,11 +95,18 @@ type kvReplica[R any] struct {
 	ping        coalescingRunner
 	loopStarted atomic.Bool
 
+	// loopMu guards loopDone. Start sets it once, before its goroutine runs;
+	// that goroutine closes it on exit. In the intended call pattern — start
+	// the loop, later cancel r.ctx and Wait — Start happens-before Wait, so
+	// Wait reads the channel Start set. Called concurrently with Start
+	// instead, Wait can observe loopDone still nil and return at once,
+	// without waiting for a loop that is only just starting.
+	loopMu   sync.Mutex
+	loopDone chan struct{}
+
 	epoch    time.Time    // monotonic reference for staleness
 	lastOK   atomic.Int64 // time.Since(epoch) at the last successful re-read
 	failures atomic.Int64
-
-	skippedAtLoad int
 }
 
 func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaConfig[R]) (*kvReplica[R], error) {
@@ -98,12 +116,12 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	if cfg.metrics == nil {
 		cfg.metrics = NopReconcileMetrics{}
 	}
-	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: context.WithoutCancel(ctx), epoch: time.Now()}
-	entries, err := kv.List(r.ctx, cfg.namespace)
+	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: ctx, epoch: time.Now()}
+	entries, err := kv.List(noTx(r.ctx), cfg.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
 	}
-	r.recs, r.skippedAtLoad = r.build(entries)
+	r.recs = r.build(entries)
 	r.stampOK()
 	if cfg.broadcaster != nil {
 		cfg.broadcaster.Subscribe(cfg.topic, r.handlePing)
@@ -111,23 +129,13 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	return r, nil
 }
 
-func (r *kvReplica[R]) build(entries map[string][]byte) (map[string]R, int) {
+func (r *kvReplica[R]) build(entries map[string][]byte) map[string]R {
 	recs := make(map[string]R, len(entries))
-	skipped := 0
 	for kvKey, data := range entries {
-		k, rec, ok, err := r.cfg.decode(kvKey, data)
-		if err != nil {
-			slog.Error(r.cfg.name+" record does not decode; its key is refused until the record is fixed or deleted",
-				"pkg", "auth", "kvKey", kvKey, "error", err.Error())
-			continue
-		}
-		if !ok {
-			skipped++
-			continue
-		}
+		k, rec := r.cfg.decode(kvKey, data)
 		recs[k] = rec
 	}
-	return recs, skipped
+	return recs
 }
 
 // read runs fn with the copy under the read lock. fn must not keep the map.
@@ -156,20 +164,25 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 	defer r.reconcileMu.Unlock()
 	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
 		gen := r.gen.Load()
-		entries, err := r.kv.List(ctx, r.cfg.namespace)
+		entries, err := r.kv.List(noTx(ctx), r.cfg.namespace)
 		if err != nil {
-			n := r.failures.Add(1)
-			r.cfg.metrics.SetReconcileConsecutiveFailures(int(n))
-			r.cfg.metrics.SetReconcileStalenessSeconds(r.age().Seconds())
-			msg := r.cfg.name + " reconcile failed; serving last-known state until it succeeds"
-			if n > errorEscalationThreshold {
-				slog.Error(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
-			} else {
-				slog.Warn(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
+			if r.ctx.Err() != nil {
+				// The replica's OWN lifetime ended while the List call was
+				// in flight — the owner tearing this replica down — not
+				// just this call's ctx (which reconcileOnce derives from
+				// r.ctx via a per-tick WithTimeout, and a direct caller may
+				// pass anything). Mirrors reapExpiredSnapshotsTick's same
+				// check, scoped to the right ctx: not a store failure, so
+				// no failure count and no log line for it. Checking the
+				// call's own ctx instead would also swallow a hung store
+				// that merely outlasted its own deadline while r.ctx stayed
+				// alive — exactly the failure an operator needs to see.
+				return fmt.Errorf("failed to list %s records: %w", r.cfg.name, err)
 			}
+			r.logReconcileFailure(err)
 			return fmt.Errorf("failed to list %s records: %w", r.cfg.name, err)
 		}
-		fresh, _ := r.build(entries)
+		fresh := r.build(entries)
 		swapped := func() bool {
 			r.mu.Lock()
 			defer r.mu.Unlock()
@@ -203,6 +216,22 @@ func (r *kvReplica[R]) Reconcile(ctx context.Context) error {
 	return errReconcileContention
 }
 
+// logReconcileFailure records one failed re-read that was not caused by the
+// reconcile's own ctx ending: bumps the consecutive-failure count and
+// staleness metric, and logs at WARN, escalating to ERROR once the failure
+// count passes errorEscalationThreshold.
+func (r *kvReplica[R]) logReconcileFailure(err error) {
+	n := r.failures.Add(1)
+	r.cfg.metrics.SetReconcileConsecutiveFailures(int(n))
+	r.cfg.metrics.SetReconcileStalenessSeconds(r.age().Seconds())
+	msg := r.cfg.name + " reconcile failed; serving last-known state until it succeeds"
+	if n > errorEscalationThreshold {
+		slog.Error(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
+	} else {
+		slog.Warn(msg, "pkg", "auth", "consecutiveFailures", n, "error", err.Error())
+	}
+}
+
 // handlePing runs on the broadcaster's receive goroutine: it must not block
 // and must not panic. The payload is never read or logged.
 func (r *kvReplica[R]) handlePing(_ []byte) {
@@ -215,31 +244,52 @@ func (r *kvReplica[R]) handlePing(_ []byte) {
 }
 
 // reconcileOnce is one bounded re-read on its own deadline, recover-wrapped:
-// it runs detached from any caller that could handle a panic.
+// it runs detached from any caller that could handle a panic. Triggered by
+// either Start's periodic loop or a gossip ping (handlePing) — the ping path
+// is wired at construction and outlives Start, so it can still fire after
+// r.ctx ends (the subscription is never torn down). The check below is what
+// makes that safe: once r.ctx is done there is nothing left to reconcile
+// against, so this returns before making any store call at all — a ping
+// after teardown is a silent no-op. Reconcile has its own, narrower check
+// for the case where r.ctx ends while a reconcile it started is already
+// mid-store-call.
 func (r *kvReplica[R]) reconcileOnce() {
 	defer func() {
 		if rec := recover(); rec != nil {
 			slog.Error(r.cfg.name+" reconcile panic", "pkg", "auth", "panic", rec)
 		}
 	}()
+	if r.ctx.Err() != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.ctx, r.cfg.interval)
 	defer cancel()
 	_ = r.Reconcile(ctx)
 }
 
-// Start runs the periodic re-read until ctx ends. Returns false if it already runs.
-func (r *kvReplica[R]) Start(ctx context.Context) bool {
+// Start runs the periodic re-read until r.ctx ends. Returns false if it
+// already runs. Wait blocks until the goroutine below has actually exited,
+// so a caller that cancels r.ctx then Waits can rely on no further tick
+// running afterward — including one against a store the caller is
+// concurrently closing. Start takes no ctx of its own: r.ctx, set once at
+// construction, is this replica's only lifetime source.
+func (r *kvReplica[R]) Start() bool {
 	if !r.loopStarted.CompareAndSwap(false, true) {
 		return false
 	}
 	// A gap between construction and Start must not count toward staleness:
 	// the loop's own clock starts now, not at construction time.
 	r.stampOK()
+	done := make(chan struct{})
+	r.loopMu.Lock()
+	r.loopDone = done
+	r.loopMu.Unlock()
 	go func() {
+		defer close(done)
 		for {
 			timer := time.NewTimer(jitteredInterval(r.cfg.interval))
 			select {
-			case <-ctx.Done():
+			case <-r.ctx.Done():
 				timer.Stop()
 				return
 			case <-timer.C:
@@ -248,6 +298,22 @@ func (r *kvReplica[R]) Start(ctx context.Context) bool {
 		}
 	}()
 	return true
+}
+
+// Wait blocks until the goroutine started by Start has exited (immediately
+// if Start was never called), and then until any gossip-ping-triggered
+// reconcile already in flight at that moment has also finished. Call it
+// after cancelling r.ctx — reconcileOnce's own check then makes a ping that
+// arrives after this returns a safe no-op, so Wait does not need to guard
+// against one arriving later.
+func (r *kvReplica[R]) Wait() {
+	r.loopMu.Lock()
+	done := r.loopDone
+	r.loopMu.Unlock()
+	if done != nil {
+		<-done
+	}
+	r.ping.Wait()
 }
 
 // jitteredInterval returns d × [0.9, 1.1).
@@ -306,44 +372,6 @@ func (r *kvReplica[R]) mutate(fn func() (apply func(recs map[string]R), wrote bo
 	return err
 }
 
-// loadOne reads one record through to the store and puts it in the copy,
-// unless a change committed while it read — then it reads again, so an older
-// read never overwrites a newer copy. found=false: absent or skipped.
-func (r *kvReplica[R]) loadOne(ctx context.Context, kvKey string) (R, bool, error) {
-	var zero R
-	for attempt := 0; attempt < maxReconcileAttempts; attempt++ {
-		gen := r.gen.Load()
-		data, err := r.kv.Get(ctx, r.cfg.namespace, kvKey)
-		if errors.Is(err, spi.ErrNotFound) {
-			return zero, false, nil
-		}
-		if err != nil {
-			return zero, false, fmt.Errorf("failed to read %s record: %w", r.cfg.name, err)
-		}
-		k, rec, ok, err := r.cfg.decode(kvKey, data)
-		if err != nil {
-			return zero, false, fmt.Errorf("failed to decode %s record: %w", r.cfg.name, err)
-		}
-		if !ok {
-			return zero, false, nil
-		}
-		stored := func() bool {
-			r.mu.Lock()
-			defer r.mu.Unlock()
-			if r.gen.Load() != gen {
-				return false
-			}
-			r.recs[k] = rec
-			r.gen.Add(1)
-			return true
-		}()
-		if stored {
-			return rec, true, nil
-		}
-	}
-	return zero, false, errReconcileContention
-}
-
 // writeAll applies writes in order. If one fails it restores that write
 // itself plus every write already applied before it, newest first, and
 // returns the error. The failing write can itself have partially or fully
@@ -377,7 +405,7 @@ func (r *kvReplica[R]) writeAll(ctx context.Context, writes []kvWrite) error {
 
 func (r *kvReplica[R]) put(ctx context.Context, key string, value []byte) error {
 	if value == nil {
-		return r.kv.Delete(ctx, r.cfg.namespace, key)
+		return r.kv.Delete(noTx(ctx), r.cfg.namespace, key)
 	}
-	return r.kv.Put(ctx, r.cfg.namespace, key, value)
+	return r.kv.Put(noTx(ctx), r.cfg.namespace, key, value)
 }

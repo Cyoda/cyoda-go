@@ -13,15 +13,10 @@ type gatedOp struct {
 	opID   string // operationId — used as t.Run label and in failure messages
 }
 
-// all21GatedOps lists every op gated behind the IAM subsystem.
-// Path-parameter placeholders:
-//   - string keyId / clientId → any alphanumeric segment; gate fires before
-//     format checks in the handler.
-//   - {id} for OIDC providers → valid UUID required (parsed by generated code
-//     before reaching the handler stub).
-//   - getCurrentJwtKeyPair → ?audience=human required (generated code enforces
-//     the required query param before calling the handler).
-var all21GatedOps = []gatedOp{
+// all14GatedOps lists every op gated behind the IAM subsystem.
+// Path-parameter placeholders: string keyId / clientId → any alphanumeric
+// segment; gate fires before format checks in the handler.
+var all14GatedOps = []gatedOp{
 	// 4 M2M ops (requireM2MStore → 501)
 	{http.MethodGet, "/api/clients", "listTechnicalUsers"},
 	{http.MethodPost, "/api/clients", "createTechnicalUser"},
@@ -29,7 +24,7 @@ var all21GatedOps = []gatedOp{
 	{http.MethodPut, "/api/clients/someclient/secret", "resetTechnicalUserSecret"},
 	// 5 keypair ops (requireKeyStore → 501)
 	{http.MethodPost, "/api/oauth/keys/keypair", "issueJwtKeyPair"},
-	{http.MethodGet, "/api/oauth/keys/keypair/current?audience=human", "getCurrentJwtKeyPair"},
+	{http.MethodGet, "/api/oauth/keys/keypair/current", "getCurrentJwtKeyPair"},
 	{http.MethodDelete, "/api/oauth/keys/keypair/anykeyid", "deleteJwtKeyPair"},
 	{http.MethodPost, "/api/oauth/keys/keypair/anykeyid/invalidate", "invalidateJwtKeyPair"},
 	{http.MethodPost, "/api/oauth/keys/keypair/anykeyid/reactivate", "reactivateJwtKeyPair"},
@@ -39,17 +34,9 @@ var all21GatedOps = []gatedOp{
 	{http.MethodDelete, "/api/oauth/keys/trusted/anykeyid", "deleteTrustedKey"},
 	{http.MethodPost, "/api/oauth/keys/trusted/anykeyid/invalidate", "invalidateTrustedKey"},
 	{http.MethodPost, "/api/oauth/keys/trusted/anykeyid/reactivate", "reactivateTrustedKey"},
-	// 7 OIDC ops (oidc adapter nil → stub → 501; UUID required for {id})
-	{http.MethodGet, "/api/oauth/oidc/providers", "listOidcProviders"},
-	{http.MethodPost, "/api/oauth/oidc/providers", "registerOidcProvider"},
-	{http.MethodPost, "/api/oauth/oidc/providers/reload", "reloadOidcProviders"},
-	{http.MethodDelete, "/api/oauth/oidc/providers/00000000-0000-0000-0000-000000000000", "deleteOidcProvider"},
-	{http.MethodPatch, "/api/oauth/oidc/providers/00000000-0000-0000-0000-000000000000", "updateOidcProvider"},
-	{http.MethodPost, "/api/oauth/oidc/providers/00000000-0000-0000-0000-000000000000/invalidate", "invalidateOidcProvider"},
-	{http.MethodPost, "/api/oauth/oidc/providers/00000000-0000-0000-0000-000000000000/reactivate", "reactivateOidcProvider"},
 }
 
-// trustedOps is the subset of all21GatedOps that are gated by the
+// trustedOps is the subset of all14GatedOps that are gated by the
 // CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED feature flag.
 var trustedOps = []gatedOp{
 	{http.MethodGet, "/api/oauth/keys/trusted", "listTrustedKeys"},
@@ -59,15 +46,15 @@ var trustedOps = []gatedOp{
 	{http.MethodPost, "/api/oauth/keys/trusted/anykeyid/reactivate", "reactivateTrustedKey"},
 }
 
-// TestGated_MockIAM_All21Return501 verifies that every IAM-gated operation
+// TestGated_MockIAM_All14Return501 verifies that every IAM-gated operation
 // returns 501 NOT_IMPLEMENTED when running in mock IAM mode (IAM subsystem not
 // active). The trusted-key feature gate is enabled so the trusted ops reach the
 // nil-store gate (not the feature gate) and also return 501.
-func TestGated_MockIAM_All21Return501(t *testing.T) {
+func TestGated_MockIAM_All14Return501(t *testing.T) {
 	base, closeFn := newMockIAMServer(t)
 	defer closeFn()
 
-	for _, op := range all21GatedOps {
+	for _, op := range all14GatedOps {
 		op := op
 		t.Run(op.opID, func(t *testing.T) {
 			req, err := http.NewRequest(op.method, base+op.path, nil)
@@ -83,6 +70,21 @@ func TestGated_MockIAM_All21Return501(t *testing.T) {
 				t.Errorf("%s %s: got %d, want 501 NOT_IMPLEMENTED", op.method, op.path, resp.StatusCode)
 			}
 		})
+	}
+}
+
+// TestMockIAM_AdminLogLevelWorks: in mock mode the mock admin is the
+// operator, so the runtime controls keep working for local development.
+func TestMockIAM_AdminLogLevelWorks(t *testing.T) {
+	base, cleanup := newMockIAMServer(t)
+	defer cleanup()
+	resp, err := http.Get(base + "/api/admin/log-level")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("mock mode GET /api/admin/log-level: %d, want 200", resp.StatusCode)
 	}
 }
 

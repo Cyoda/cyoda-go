@@ -75,9 +75,9 @@ Env vars required to move from defaults to a production-shaped deployment.
 - `CYODA_REQUIRE_JWT` = `true` — refuse startup unless jwt mode and signing key are set
 - `CYODA_JWT_SIGNING_KEY` — RSA private key, PEM-encoded (required in jwt mode)
 - `CYODA_JWT_SIGNING_KEY_FILE` — file path for `CYODA_JWT_SIGNING_KEY`; takes precedence
-- `CYODA_JWT_ISSUER` = `cyoda` (default; set to your issuer URI)
+- `CYODA_JWT_ISSUER` = `cyoda` (default) — the name cyoda puts in its own tokens' `iss`. It names this deployment, not your identity provider; any stable value, such as the deployment's URL, works
 - `CYODA_JWT_AUDIENCE` = `` (default empty; set to require the audience claim on inbound tokens and to set it on issued tokens)
-- `CYODA_JWT_EXPIRY_SECONDS` = `3600` (default)
+- `CYODA_JWT_EXPIRY_SECONDS` = `300` (default)
 
 **Inter-node dispatch auth (cluster mode):**
 
@@ -92,12 +92,20 @@ the M2M clients that applications and compute nodes use:
 
 ```
 TOKEN=$(cyoda token --tenant acme)
-curl -H "Authorization: Bearer $TOKEN" -X POST http://localhost:8080/api/clients
+# -H @- keeps the token off the command line, where other local users see it.
+curl -H @- -X POST http://localhost:8080/api/clients <<<"Authorization: Bearer $TOKEN"
 ```
 
 In Kubernetes, `kubectl exec <pod> -- /cyoda token --tenant acme`; in Docker
-Compose, `docker compose exec <service> /cyoda token --tenant acme`. See
+Compose, `docker compose exec -T <service> /cyoda token --tenant acme`. See
 `cli.token`.
+
+Applications and compute nodes connect as M2M clients; users never call
+cyoda directly. An application that calls cyoda for its signed-in users uses
+an on-behalf-of client and a trusted key, so that each change is recorded for
+the user; see `auth`. Data operations require `ROLE_M2M`, which every M2M
+client holds; the admin token above carries `ROLE_ADMIN` only (see
+`cli.token`).
 
 **Admin metrics auth (optional):**
 
@@ -174,7 +182,7 @@ export CYODA_POSTGRES_URL_FILE=/run/secrets/postgres-url
 export CYODA_IAM_MODE=jwt
 export CYODA_REQUIRE_JWT=true
 export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
-export CYODA_JWT_ISSUER=https://auth.example.com
+export CYODA_JWT_ISSUER=https://cyoda.example.com
 export CYODA_JWT_AUDIENCE=cyoda-api
 cyoda
 ```

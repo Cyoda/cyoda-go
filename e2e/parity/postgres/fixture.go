@@ -21,6 +21,9 @@ type postgresFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
 }
 
@@ -45,17 +48,16 @@ func (f *postgresFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
-// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
-// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
-func (f *postgresFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+// PlatformOperator implements parity.BackendFixture.
+func (f *postgresFixture) PlatformOperator(t *testing.T) parity.Tenant {
 	t.Helper()
-	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
 }
 
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
 // setup boots a Postgres testcontainer, builds binaries, launches
@@ -113,6 +115,7 @@ func setup() (*postgresFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 	}
 

@@ -16,6 +16,7 @@ see_also:
   - errors.CALLOUT_SUPERSEDED
   - errors.COMMIT_IN_JOINED_TRANSACTION
   - errors.MODEL_ADMIN_IN_JOINED_TRANSACTION
+  - auth.integration
 ---
 
 # grpc
@@ -27,8 +28,8 @@ grpc — gRPC service contract for compute members and entity management.
 ## SYNOPSIS
 
 ```
-grpcurl -plaintext localhost:9090 list
-grpcurl -plaintext localhost:9090 org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 org.cyoda.cloud.api.grpc.CloudEventsService/StartStreaming
 ```
 
 ## DESCRIPTION
@@ -43,9 +44,9 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 **Endpoint**: `host:CYODA_GRPC_PORT` (default `localhost:9090`).
 
-**Transport**: plaintext TCP by default. TLS termination is handled by the ingress or service mesh in production deployments.
+**Transport**: plaintext TCP. The listener has no TLS of its own. In production, TLS is terminated by the ingress, gateway or service mesh in front of it (the Helm chart's `ingress.grpc.tls`); compute nodes connect through it and verify the server certificate, and only then may they rely on the identity attributes of a callout. Plaintext is for localhost or a private Docker network during development.
 
-**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API. Both mock IAM and JWT modes apply identically to gRPC connections — the auth interceptor extracts the `authorization` metadata value, builds an `http.Request` with that `Authorization` header, and delegates to the configured `AuthenticationService`.
+**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API, and it is checked exactly as an HTTP request's `Authorization` header is, in mock and JWT mode alike: the same tokens are accepted, a missing or invalid one answers `codes.Unauthenticated`, and every method and stream then requires `ROLE_M2M` (`codes.PermissionDenied` otherwise). See `cyoda help auth`.
 
 **OTel tracing**: when `CYODA_OTEL_ENABLED=true`, the gRPC server installs an `otelgrpc.NewServerHandler()` stats handler that creates spans for every inbound RPC.
 
@@ -81,7 +82,7 @@ service CloudEventsService {
 }
 ```
 
-**startStreaming** — bidirectional streaming RPC for compute member lifecycle. Requires `ROLE_M2M`. First message must be `CalculationMemberJoinEvent`. Server sends processor and criteria requests; client sends responses and keep-alive acknowledgments.
+**startStreaming** — bidirectional streaming RPC for compute member lifecycle. Requires the compute node's own M2M client token (see COMPUTE MEMBER PROTOCOL). First message must be `CalculationMemberJoinEvent`. Server sends processor and criteria requests; client sends responses and keep-alive acknowledgments.
 
 **entityModelManage** — unary RPC for entity model operations. Accepts: `EntityModelImportRequest`, `EntityModelExportRequest`, `EntityModelTransitionRequest`, `EntityModelDeleteRequest`, `EntityModelGetAllRequest`, `EntityModelSetUniqueKeysRequest`. It is not a transaction-routed RPC: a `tx-token` metadata value joins nothing here. A request that changes a model — import, transition, delete, set unique keys — and carries one is refused in its own response envelope with `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION`, before anything is read or written; the read-only export and get-all pass.
 
@@ -200,7 +201,7 @@ The compute member protocol allows external processes to serve as workflow proce
 
 **Join sequence:**
 
-1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. Token must carry `ROLE_M2M`.
+1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. The token must be the compute node's own M2M client token from the `client_credentials` grant (`POST /oauth/token`, see `cyoda help auth tokens`): a service principal holding `ROLE_M2M`. An on-behalf-of token from the token exchange states a user, not a compute node, and is refused with `codes.PermissionDenied`, as is a token from `cyoda token` or any other token that is not a client's own. In mock IAM mode the mock principal opens a stream when `CYODA_IAM_MOCK_KIND` is `service` (the default) and `CYODA_IAM_MOCK_ROLES` holds `ROLE_M2M`.
 2. Client sends `CalculationMemberJoinEvent` as the first message:
 
 ```json
@@ -211,7 +212,7 @@ The compute member protocol allows external processes to serve as workflow proce
 }
 ```
 
-`joinedLegalEntityId` must match the tenant ID in the bearer token. When present and mismatched, the server returns `codes.PermissionDenied`. When absent, the server uses the token's tenant ID implicitly. Include `joinedLegalEntityId` in all join messages — clients that omit it against a strict server may fail if validation is tightened.
+`joinedLegalEntityId` is optional. The member always joins the tenant of its bearer token. When the field is present it must equal that tenant id exactly, or the server returns `codes.PermissionDenied` and registers nothing; when it is absent, nothing is checked. Sending it makes a misconfigured tenant fail loudly at join time instead of leaving the member waiting for callouts that never come.
 
 3. Server registers the member and responds with `CalculationMemberGreetEvent`:
 
@@ -230,7 +231,7 @@ The compute member protocol allows external processes to serve as workflow proce
 - Read the stream continuously — a member that stops reading is treated as frozen and evicted after `CYODA_KEEPALIVE_TIMEOUT` seconds, and every callout in flight on it fails with `COMPUTE_MEMBER_DISCONNECTED`.
 - Write to the stream from one goroutine at a time — the gRPC streaming API forbids concurrent sends on one stream.
 - Answer requests, acknowledge events, or echo the server's keep-alive at least once per `CYODA_KEEPALIVE_TIMEOUT` seconds.
-- Echo the transaction token (`cyodatxtoken`) on every callback — see `cyoda help cluster` for how the HTTP and gRPC doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
+- Authenticate every callback with the compute node's own client token (a current `client_credentials` token of its client), and echo the transaction token (`cyodatxtoken`) on every callback that must run in the callout's transaction — see `cyoda help cluster` for how the HTTP (`X-Tx-Token`) and gRPC (`tx-token`) doors carry it. A token belongs to one try of one callout. Once the server has given the callout to another member, or the callout has ended, a callback bearing the token is refused with `errors.CALLOUT_SUPERSEDED` (`410`) for as long as the transaction is open, and with `errors.TRANSACTION_NOT_FOUND` (`404`) once it has closed; a token naming no callout and try number at all is refused with `errors.UNAUTHORIZED` (`401`), the same as any malformed token; a token past its own expiry is refused with `errors.TRANSACTION_EXPIRED` (`410`). None of the four is retryable: stop working on that request.
 - Expect callbacks of one transaction to run **one after another**. Every callback — a read or a search as much as a write — holds its transaction for the time the server works on it, so two callbacks sent in parallel are served in turn, not at once. The server reads the whole request before it takes the transaction and sends the response after it has let go, so a slow upload or a slow reader holds nothing up; a callback body over 10 MiB is refused with `413` before that happens (HTTP only).
 - Do not queue callbacks without limit on one transaction. Because they are served one at a time, firing many at once buys no speed, and each one waiting holds its whole request in memory until its turn comes. At most `CYODA_CALLOUT_JOINED_MAX_WAITERS` (default 128) may wait; past that a callback is refused with `503` `errors.TOO_MANY_JOINED_REQUESTS`, having touched nothing. It is retryable: back off briefly and send the callback again. A processor that lets the refusal escape fails its callout, and the operation is rolled back.
 - Keep a callback's **answer** under `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES` (default 10 MiB). The answer is held in memory for the same reason the request is: an answer that would pass the ceiling fails the callback with `413` `errors.JOINED_RESPONSE_TOO_LARGE`, naming the ceiling, rather than being cut short — on either door, and on the gRPC one the frames of a chunked collection count together. Not retryable: page a large read — `pageSize` and `pageNumber` on a get-all or a search — instead of asking for everything in one callback.
@@ -470,16 +471,87 @@ because its client went away.
 
 **Auth context on dispatched events:**
 
-The server attaches CloudEvent Auth Context extension attributes to every dispatched request:
+The server attaches identity attributes to every dispatched request. They name
+two principals: the **attributed** principal — who the work is for — and the
+**executor** — who does it.
 
-- `authtype` — `"user"`, `"service"`, or `"system"`, driven by the originating
-  principal's explicit kind (not sniffed from roles). **Wire change:** this was
-  previously `"user"` / `"service_account"` inferred from a `ROLE_M2M` role;
-  it is now one of exactly these three values, always. Dispatch fails closed
-  — no callout is sent — if the principal's kind is unset or unrecognized, so
-  a bogus or absent `authtype` never reaches a compute node.
-- `authid` — the user ID of the originating request
-- `authclaims` — comma-separated roles of the originating user
+- `authtype` / `authid` — the attributed principal's kind and id.
+- `authexectype` / `authexecid` — the executor's kind and id.
+- `authclaims` — the executor's roles, comma separated, never the user's: for
+  an on-behalf-of request they are the on-behalf-of client's roles. Absent when
+  the executor has no roles (the `system` executor of a scheduled fire).
+
+`authtype`, `authid` and `authclaims` are attributes of the CloudEvents Auth
+Context extension, with one difference in values: cyoda's kinds are `"user"`,
+`"service"` and `"system"`, where that extension's list uses
+`service_account` for a service. `authexectype` and `authexecid` are cyoda's
+own attributes, outside the extension. Each is an entry of the CloudEvent's
+`attributes` map whose `CloudEventAttributeValue` holds a string
+(`ce_string`); an absent attribute has no entry.
+
+Two terms the list below uses. A **pass** is the transaction token
+(`cyodatxtoken`) a callout carries; a callback that echoes it joins the
+callout's transaction. A transaction's **origin** is the principal recorded
+when the transaction began: the attributed principal of the request that
+began it — the user for an on-behalf-of request, the client for a client's own
+request, the arming principal for a scheduled fire.
+
+Per path, the attributed principal / the executor are:
+
+- an on-behalf-of request for a user, and every callout of its cascade: the
+  user (`user`) / the on-behalf-of client (`service`);
+- a client's own request, and its cascade: the client (`service`) / the same;
+- a callback that presents a pass with the compute node's own client token
+  (a write-back joined to the transaction), and its cascade: the
+  transaction's origin / the compute node's client (`service`);
+- a callback without a pass — an independent request, such as the callback of
+  a commit-before-dispatch processor with `startNewTxOnDispatch: false` — and
+  its cascade: the compute node's client (`service`) / the same;
+- a request with an on-behalf-of token, from a compute node that holds an
+  on-behalf-of client of its own: the asserted user (`user`) / that client
+  (`service`); with a pass it may join only a transaction whose origin is that
+  user (the origin's id equal to the token's user id, and its kind `user`;
+  the on-behalf-of client is not compared);
+- a commit-before-dispatch processor with `startNewTxOnDispatch: true`: the
+  new transaction keeps the origin of the one committed before the dispatch,
+  so the callout carries the principals of the request that reached it, and a
+  callback that presents its pass is attributed to that origin, executed by
+  the compute node's client;
+- a request with a `cyoda token` (the platform operator's): the token's user
+  (`user`) / the same (`user`), with the token's roles in `authclaims`;
+- a scheduled fire, and every callout of its cascade: the principal that
+  armed the timer / `system` (`system`). This includes the callout of a
+  commit-before-dispatch processor with `startNewTxOnDispatch: false`, which
+  is dispatched outside a transaction;
+- a callout handed over to another node: the principals the dispatching node
+  computed.
+
+The kinds are the principals' explicit kinds, never sniffed from roles. The
+node that dispatches a callout computes both principals once; a callout handed
+over to another node carries them, and that node attaches them as received.
+Dispatch fails closed — no callout is sent — when either principal has no id
+or a kind that is unset or unrecognized, so a bogus or absent principal never
+reaches a compute node. A segregation-of-duties check built on these
+attributes is set out in `cyoda help auth integration` (*READING IDENTITY IN A
+COMPUTE NODE*).
+
+The public Go package `github.com/cyoda-platform/cyoda-go/api/grpc/authctx`
+reads these attributes for a compute node. Every function takes a
+`*cloudevents.CloudEvent` from `github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents`
+(the protobuf `io.cloudevents.v1.CloudEvent`): `Type(ce) string` and
+`ID(ce) string` (the attributed principal), `ExecutorType(ce) string` and
+`ExecutorID(ce) string` (the executor), each `""` when absent, and
+`Roles(ce) []string` (nil when absent). `Require(ce, role string) bool` is a
+fail-closed role gate: it reports `true` only when the
+executor is a `service` and `role` is in `authclaims`. The attributed principal
+plays no part in it, so a scheduled fire (executor `system`) never passes.
+
+`EntityChangesMetadataGetRequest` returns, in each change's `changeMeta`, the
+same attribution as `GET /api/entity/{entityId}/changes` (see
+`cyoda help crud`): `user` (the attributed id), `attributedKind` (its kind) and
+`executedBy` `{id, kind}` (the executor). `attributedKind` and `executedBy` are
+absent on a change recorded without attribution. The schema is
+`common/EntityChangeMeta.json` (`cyoda help cloudevents json`).
 
 ## KEEPALIVE
 
@@ -518,6 +590,8 @@ A callout may be tried on more than one member. **Every try carries the same `re
 
 When `calculationNodesTags` is empty, every member of the authenticated tenant matches, and the same round robin applies.
 
+**Client re-check.** A stream outlives the token that opened it: the token's expiry does not end the stream, and a compute node does not reconnect when it fetches a new token. Instead, the stream reads its client from the store once when it opens, before the member joins, and then every 60 seconds. It is refused, or closed, with `codes.Unauthenticated` when the client was deleted, belongs to another tenant, or had its secret reset since the token was issued: a token issued before `DELETE /clients/{clientId}` or `PUT /clients/{clientId}/secret` cannot open a stream, and an open stream ends within a minute of either. A compute node whose secret was reset reconnects with a token fetched with the new secret; if a freshly fetched token is refused again, its client is gone, and it stops rather than reconnecting in a loop. When the store cannot be read, or a read does not answer within 60 seconds, the stream is refused or closed with `codes.Unavailable`. Mock IAM mode has no client store and no re-check.
+
 In cluster mode each node tells its peers which tags its members serve, per tenant. A node tries its own matching members first and then hands the callout, with the tries that are left, to a peer that advertises the tag — see `cyoda help cluster`.
 
 ## ERRORS
@@ -525,10 +599,15 @@ In cluster mode each node tells its peers which tags its members serve, per tena
 gRPC error codes returned by the service:
 
 - `codes.Unauthenticated` — missing or invalid `authorization` metadata
-- `codes.PermissionDenied` — `ROLE_M2M` required for `startStreaming`; tenant mismatch on join
+- `codes.PermissionDenied` — `startStreaming` opened with a token that is not a compute node's own M2M client token (an on-behalf-of token, no `ROLE_M2M`, not a service principal); tenant mismatch on join
+- `codes.Unauthenticated` when a stream opens, or on an open stream — the client check found the stream's client deleted, in another tenant, or its secret reset (see *Client re-check*)
+- `codes.Unavailable` when a stream opens, or on an open stream — the client check could not read the client store, or the read did not answer within 60 seconds; the compute node reconnects
 - `codes.InvalidArgument` — first message is not `CalculationMemberJoinEvent`; malformed CloudEvent; invalid join payload
 - `codes.DeadlineExceeded` — member timed out (keep-alive timeout exceeded)
 - `codes.Internal` — server-side error constructing a response CloudEvent
+- `codes.Unavailable` — the node is shutting down: on SIGTERM it stops accepting streams and closes the open ones within 10 seconds; also when a send to the member failed
+
+What a compute node does on each: on `Unauthenticated`, read its current credentials, fetch a new token and reconnect, and stop (alert, no loop) if a fresh token is refused again; on `Unavailable` and `Internal`, reconnect with backoff, through the load balancer, to any node; on `DeadlineExceeded`, reconnect at once and fix the cause (read the stream continuously, answer keep-alives); on `PermissionDenied` and `InvalidArgument`, fix the configuration or the client and do not reconnect in a loop.
 
 Within `text_data` payloads, errors are reported as:
 
@@ -558,7 +637,13 @@ Errors a compute member sees on a callback:
 - `errors.CALLOUT_SUPERSEDED` — `410` — the member was replaced, or its callout has ended
 - `errors.TRANSACTION_NOT_FOUND` — `404` — the transaction has ended
 - `errors.TRANSACTION_EXPIRED` — `410` — the token is past its expiry
-- `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all
+- `errors.UNAUTHORIZED` — `401` — the token does not name a callout and a try number at all (detail "invalid transaction token"); a callback whose bearer token fails gets the same code with the detail "authentication failed"
+- `errors.FORBIDDEN` — `403` — the transaction belongs to another tenant, or an on-behalf-of callback names a transaction whose origin is not its user
+- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — the node that holds the transaction could not be reached; the transaction is likely lost, so stop working on that callout (the operation that began it fails, and its own client may run it again)
+- `errors.TOO_MANY_JOINED_REQUESTS` — `503` — more than `CYODA_CALLOUT_JOINED_MAX_WAITERS` callbacks wait on the transaction; retryable after a short back-off
+- `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — the callback's answer would pass `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; page the read instead
+
+These are the HTTP statuses. Over gRPC, an error about the transaction or the callback comes in the RPC's error envelope (`success: false`, `error.code` `CLIENT_ERROR`, `error.message` starting with the code above), not as a gRPC status; a failing bearer token is the gRPC status `codes.Unauthenticated`, and a missing `ROLE_M2M` `codes.PermissionDenied`.
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — the callback's write reached a `COMMIT_BEFORE_DISPATCH` processor
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — the callback asked to change a model or its workflows
 
@@ -567,14 +652,16 @@ Errors a compute member sees on a callback:
 **List services (plaintext, no auth):**
 
 ```
-grpcurl -plaintext localhost:9090 list
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list
 ```
 
 **List methods on CloudEventsService:**
 
 ```
-grpcurl -plaintext localhost:9090 list org.cyoda.cloud.api.grpc.CloudEventsService
+grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto localhost:9090 list org.cyoda.cloud.api.grpc.CloudEventsService
 ```
+
+The `-import-path ./proto` examples below need the two proto files on disk: write them with `cyoda help grpc proto` (it prints `cyoda-cloud-api.proto` and `cloudevents.proto`, separated by comments) and save them as `./proto/cyoda/cyoda-cloud-api.proto` and `./proto/cloudevents/cloudevents.proto`. The server does not serve gRPC reflection, so every `grpcurl` call, `list` included, needs the proto files.
 
 **Describe the CloudEventsService:**
 
@@ -600,8 +687,10 @@ grpcurl -plaintext \
 **Connect as a compute member (JWT auth):**
 
 ```
+# With TOKEN exported, -expand-headers fills in ${TOKEN} from the
+# environment, so the token stays off the command line.
 grpcurl -plaintext \
-  -H "authorization: Bearer $TOKEN" \
+  -H 'authorization: Bearer ${TOKEN}' -expand-headers \
   -import-path ./proto \
   -proto cyoda/cyoda-cloud-api.proto \
   -d '{"id":"join-1","source":"client","spec_version":"1.0","type":"CalculationMemberJoinEvent","text_data":"{\"id\":\"join-1\",\"tags\":[\"my-service\"],\"joinedLegalEntityId\":\"acme-corp\"}"}' \

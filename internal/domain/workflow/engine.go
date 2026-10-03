@@ -1284,6 +1284,7 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 		// source makes the two incomparable whenever a clock is injected.
 		Timestamp: e.now(),
 	}
+	event.Attributed, event.Executor = spi.AttributionFor(ctx)
 	// Best-effort recording; audit failures do not break workflow execution.
 	// Logged rather than dropped: audit events are bound to the transaction
 	// on every backend, so a Record failure caused by the transaction's own

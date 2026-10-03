@@ -24,19 +24,18 @@ func baseAudClaims(issuer string) map[string]any {
 // whose aud claim is a string equal to the configured expected audience
 // passes validation.
 func TestJWKSValidator_AcceptsMatchingAudienceString(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
 	expectedAud := "cyoda-svc"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience(expectedAud)
 
 	claims := baseAudClaims(issuer)
 	claims["aud"] = expectedAud
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token with matching aud: %v", err)
 	}
 }
@@ -45,19 +44,18 @@ func TestJWKSValidator_AcceptsMatchingAudienceString(t *testing.T) {
 // whose aud claim is a JSON array containing the expected audience passes.
 // RFC 7519 allows aud to be either a string or an array of strings.
 func TestJWKSValidator_AcceptsMatchingAudienceArray(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
 	expectedAud := "cyoda-svc"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience(expectedAud)
 
 	claims := baseAudClaims(issuer)
 	claims["aud"] = []any{"other-service", expectedAud, "yet-another"}
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token with aud array containing expected: %v", err)
 	}
 }
@@ -65,18 +63,17 @@ func TestJWKSValidator_AcceptsMatchingAudienceArray(t *testing.T) {
 // TestJWKSValidator_RejectsWrongAudience blocks a token minted for a
 // different relying party.
 func TestJWKSValidator_RejectsWrongAudience(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience("cyoda-svc")
 
 	claims := baseAudClaims(issuer)
 	claims["aud"] = "other-svc"
 
 	token := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted token with wrong aud")
 	}
@@ -89,18 +86,17 @@ func TestJWKSValidator_RejectsWrongAudience(t *testing.T) {
 // that has no aud claim at all, when the validator has been configured
 // with an expected audience.
 func TestJWKSValidator_RejectsMissingAudienceWhenConfigured(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	v.SetExpectedAudience("cyoda-svc")
 
 	claims := baseAudClaims(issuer)
 	// No "aud" claim.
 
 	token := signTestToken(t, key, kid, claims)
-	_, err := v.Validate(token)
+	_, _, err := v.Validate(token)
 	if err == nil {
 		t.Fatal("validator accepted token with missing aud")
 	}
@@ -114,18 +110,17 @@ func TestJWKSValidator_RejectsMissingAudienceWhenConfigured(t *testing.T) {
 // configured does not reject tokens based on aud (current production
 // behaviour until the rollout lands).
 func TestJWKSValidator_NoAudienceCheckWhenUnconfigured(t *testing.T) {
-	key, kid, srv := setupTestJWKS(t)
-	defer srv.Close()
+	key, kid := setupTestJWKS(t)
 
 	issuer := "test-issuer"
-	v := auth.NewJWKSValidator(srv.URL, issuer, 5*time.Minute)
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 	// No SetExpectedAudience call.
 
 	claims := baseAudClaims(issuer)
 	claims["aud"] = "anything-goes"
 
 	token := signTestToken(t, key, kid, claims)
-	if _, err := v.Validate(token); err != nil {
+	if _, _, err := v.Validate(token); err != nil {
 		t.Fatalf("validator rejected token when no aud was configured: %v", err)
 	}
 }

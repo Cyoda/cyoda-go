@@ -136,6 +136,10 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	call.AnswerLimit = limit
 	call.OwnerNodeID = c.cfg.SelfNodeID
 	call.Outer = outer
+	// Who the callout is for and who executes it, computed once here: the
+	// local tries and every hand-over carry this one value, and a peer
+	// attaches it as received.
+	call.Identity = internalgrpc.IdentityFrom(ctx)
 	number := &majorCounter{fence: c.fence, calloutID: call.RequestID}
 	call.Number = number
 

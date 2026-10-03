@@ -75,8 +75,11 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 	}
 	t.Cleanup(first.Kill)
 	tenant := fixtureutil.MintTenantJWT(t, ks)
+	// Both processes run on one database, so the tenant's compute client
+	// provisioned through the first serves the second.
+	creds := fixtureutil.NewComputeCredentials(ks)
 	start := func(node *fixtureutil.NodeProc, tag, behaviour string) parity.ComputeClient {
-		cc := fixtureutil.StartComputeClientForFixture(t, ks, computeBin, node.GRPCEndpoint, node.BaseURL,
+		cc := fixtureutil.StartComputeClientForFixture(t, creds, computeBin, node.GRPCEndpoint, node.BaseURL,
 			parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: behaviour})
 		t.Cleanup(cc.Stop)
 		return cc

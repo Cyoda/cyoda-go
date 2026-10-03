@@ -10,12 +10,20 @@ import (
 // MaxUserIDLen bounds a user identity at 255 characters (runes, not bytes).
 const MaxUserIDLen = 255
 
+// ReservedSystemUserID is the one user id ValidateUserID refuses outright, in
+// any letter case: the platform system principal's identity
+// (SystemPrincipal, SystemUserContextValue). Those two constructors build it
+// directly rather than through ValidateUserID, so the reservation only ever
+// stops an outside-supplied id from colliding with it.
+const ReservedSystemUserID = "system"
+
 // ErrInvalidUserID reports a user identity cyoda-go does not admit.
 var ErrInvalidUserID = errors.New("invalid user id")
 
 // ValidateUserID reports whether id is a user identity cyoda-go admits: valid
-// UTF-8, not empty, at most MaxUserIDLen characters, and none of these
-// characters:
+// UTF-8, not empty, at most MaxUserIDLen characters, none of these
+// characters, and not the reserved id ReservedSystemUserID in any letter
+// case:
 //
 //   - a control character, U+0000–U+001F and U+007F–U+009F;
 //   - a noncharacter, U+FDD0–U+FDEF and the last two code points of every
@@ -28,17 +36,19 @@ var ErrInvalidUserID = errors.New("invalid user id")
 // every lone surrogate escape into it: admitting it would let distinct signed
 // claims name one user.
 //
-// Every door that takes a user id from outside — the first-party JWT claim,
-// the OIDC sub and a token-exchange subject — applies this one rule; every
-// door except the OIDC sub also reserves the "oidc:" prefix
-// (ValidateFirstPartyUserID). A user id is not a key or a path segment, so
-// unlike a tenant id it has no grammar beyond this: any other character is
-// admitted, and nothing is normalised.
+// This is the one rule for every user id cyoda-go takes from outside it — the
+// first-party JWT claim (validator.go), a token-exchange subject (token.go),
+// the operator-token --user flag (operator_token.go), and an M2M client
+// record's UserID (kv_m2m_codec.go). A user id is not a key or a path
+// segment, so unlike a tenant id it has no grammar beyond this: any other
+// character is admitted, and nothing is normalised.
 //
-// The returned error NEVER contains id. A rejected user id is attacker-chosen
-// and reaches slog through the auth failure path's detail field. The error
-// carries the reason, and for a rejected character its code point and
-// position, instead.
+// The returned error NEVER contains id, except when id is a case variant of
+// ReservedSystemUserID: that rejection quotes it back, but it carries no more
+// information than the attacker already supplied — the reserved word is
+// public. A rejected user id is otherwise attacker-chosen and reaches slog
+// through the auth failure path's detail field; the error carries the reason,
+// and for a rejected character its code point and position, instead.
 func ValidateUserID(id string) error {
 	if id == "" {
 		return fmt.Errorf("%w: empty", ErrInvalidUserID)
@@ -58,24 +68,8 @@ func ValidateUserID(id string) error {
 		}
 		pos++
 	}
-	return nil
-}
-
-// OIDCUserIDPrefix begins every user id the OIDC path builds
-// ("oidc:<providerId>:<sub>"). It is a reserved word for every other user id.
-const OIDCUserIDPrefix = "oidc:"
-
-// ValidateFirstPartyUserID is ValidateUserID for a user id that does not come
-// from the OIDC path — the first-party JWT claim, a token-exchange subject
-// and `cyoda token`'s --user flag. It also rejects an id beginning with the
-// reserved OIDCUserIDPrefix, in any case, so a first-party principal can
-// never carry, or appear to carry, the user id of an OIDC principal.
-func ValidateFirstPartyUserID(id string) error {
-	if err := ValidateUserID(id); err != nil {
-		return err
-	}
-	if len(id) >= len(OIDCUserIDPrefix) && strings.EqualFold(id[:len(OIDCUserIDPrefix)], OIDCUserIDPrefix) {
-		return fmt.Errorf("%w: the prefix %q is reserved for OIDC principals", ErrInvalidUserID, OIDCUserIDPrefix)
+	if strings.EqualFold(id, ReservedSystemUserID) {
+		return fmt.Errorf("%w: %q is reserved", ErrInvalidUserID, id)
 	}
 	return nil
 }

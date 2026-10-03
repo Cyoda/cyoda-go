@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 
@@ -65,8 +66,9 @@ func (w *wrappedStream) Context() context.Context { return w.ctx }
 
 // authenticateFromMetadata extracts the authorization header from incoming gRPC
 // metadata, builds a minimal http.Request, and delegates to the
-// AuthenticationService. On success it returns a context enriched with the
-// authenticated UserContext.
+// AuthenticationService. On success it returns the context Authenticate
+// returned: the UserContext and, for a client-credentials token, the
+// client-token marker.
 func authenticateFromMetadata(ctx context.Context, authSvc contract.AuthenticationService) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
@@ -80,11 +82,16 @@ func authenticateFromMetadata(ctx context.Context, authSvc contract.Authenticati
 		r.Header.Set("Authorization", vals[0])
 	}
 
-	uc, err := authSvc.Authenticate(ctx, r)
+	authCtx, err := authSvc.Authenticate(ctx, r)
 	if err != nil {
 		return nil, err
 	}
 
+	// A success without a principal is a failure: no call runs unattributed.
+	uc := spi.GetUserContext(authCtx)
+	if uc == nil {
+		return nil, errors.New("authentication returned no principal")
+	}
 	slog.Debug("gRPC auth succeeded", "pkg", "grpc", "userId", uc.UserID, "tenantId", string(uc.Tenant.ID))
-	return spi.WithUserContext(ctx, uc), nil
+	return authCtx, nil
 }

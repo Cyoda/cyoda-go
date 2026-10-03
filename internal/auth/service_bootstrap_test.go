@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -19,22 +20,18 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 		ExpirySeconds: 3600,
 		IAMFeatures: auth.IAMFeatures{
 			KeypairDefaultValidityDays: 90,
-			BootstrapAudience:          "client",
 			TrustedKeyMaxPerTenant:     10,
 			TrustedKeyMaxValidityDays:  365,
 			TrustedKeyMaxJWKProperties: 20,
 		},
 	})
 
-	kp, err := svc.KeyStore().Current("client")
+	kp, err := svc.KeyStore().Current()
 	if err != nil {
 		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
 	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
 		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
-	}
-	if kp.Audience != "client" {
-		t.Errorf("audience = %q, want client", kp.Audience)
 	}
 	if kp.ValidTo != nil {
 		t.Errorf("ValidTo = %v, want none", kp.ValidTo)
@@ -45,34 +42,33 @@ func TestBootstrapKey_HasNoWindow(t *testing.T) {
 }
 
 // TestBootstrapKey_ConfiguredIAMFeaturesKept: only a wholly unset
-// IAMFeatures takes the defaults; one that is set is used as given, so its
-// BootstrapAudience is not overwritten.
+// IAMFeatures takes the defaults; one that is set is used as given, so a
+// field it sets is not overwritten back to the default. Proven here with
+// M2MClientMaxPerTenant, a field NewAuthService actually reads (unlike
+// KeypairDefaultValidityDays, which only the key-pair issue adapter
+// consults): a cap of 1 refuses a tenant's second client.
 func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 	features := auth.DefaultIAMFeatures()
-	features.BootstrapAudience = "human"
-	features.KeypairDefaultValidityDays = 30
-	pem := generateTestPEM(t)
+	features.M2MClientMaxPerTenant = 1
 	svc := newTestAuthService(t, auth.AuthConfig{
-		SigningKeyPEM: pem,
+		SigningKeyPEM: generateTestPEM(t),
 		Issuer:        "cyoda",
 		ExpirySeconds: 3600,
 		IAMFeatures:   features,
 	})
-	kp, err := svc.KeyStore().Current("human")
-	if err != nil {
-		t.Fatalf("bootstrap key does not sign: %v", err)
+	store := svc.M2MClientStore()
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT1", "user-1", []string{"ROLE_M2M"}, false); err != nil {
+		t.Fatalf("first client: %v", err)
 	}
-	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
-		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
-	}
-	if kp.Audience != "human" {
-		t.Errorf("audience = %q, want the configured human", kp.Audience)
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT2", "user-2", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientCapReached) {
+		t.Fatalf("second client with M2MClientMaxPerTenant=1: err = %v, want ErrM2MClientCapReached", err)
 	}
 }
 
 // TestNewAuthService_RejectsInvalidIAMFeatures: a partly set IAMFeatures is
-// validated, not silently used — an empty BootstrapAudience would leave the
-// bootstrap key under an audience no token is signed for.
+// validated, not silently used — a zero TrustedKeyMaxValidityDays (among
+// other fields that must be > 0) fails startup rather than being silently
+// accepted.
 func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
 	_, err := auth.NewAuthService(systemCtx(), auth.AuthConfig{
 		KV:            mustNewMemoryKV(t, systemCtx()),
@@ -82,12 +78,12 @@ func TestNewAuthService_RejectsInvalidIAMFeatures(t *testing.T) {
 		IAMFeatures:   auth.IAMFeatures{M2MAdminRoleEnabled: true},
 	})
 	if err == nil {
-		t.Fatal("NewAuthService accepted an IAMFeatures with no bootstrap audience")
+		t.Fatal("NewAuthService accepted an invalid partly set IAMFeatures")
 	}
 }
 
 // TestBootstrapKey_DefaultIAMFeaturesApplied: a zero-value IAMFeatures takes
-// the defaults, so the bootstrap key gets the default audience.
+// the defaults, so the bootstrap key signs.
 func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
 	pem := generateTestPEM(t)
 	svc := newTestAuthService(t, auth.AuthConfig{
@@ -97,15 +93,12 @@ func TestBootstrapKey_DefaultIAMFeaturesApplied(t *testing.T) {
 		// IAMFeatures deliberately omitted — should use DefaultIAMFeatures().
 	})
 
-	kp, err := svc.KeyStore().Current(auth.DefaultIAMFeatures().BootstrapAudience)
+	kp, err := svc.KeyStore().Current()
 	if err != nil {
 		t.Fatalf("bootstrap key does not sign: %v", err)
 	}
 	if kp.KID != pemKID(t, pem) || !kp.Bootstrap {
 		t.Fatalf("signing key = %s (bootstrap %v), want the bootstrap key %s", kp.KID, kp.Bootstrap, pemKID(t, pem))
-	}
-	if want := auth.DefaultIAMFeatures().BootstrapAudience; kp.Audience != want {
-		t.Errorf("audience = %q, want the default %q", kp.Audience, want)
 	}
 }
 

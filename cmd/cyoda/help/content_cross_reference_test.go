@@ -1,6 +1,7 @@
 package help
 
 import (
+	"bytes"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,13 +10,6 @@ import (
 	"strings"
 	"testing"
 )
-
-// dottedInvocationPattern matches a cross-reference written as
-// `cyoda help <a>.<b>`. The topic tree is addressed by path segments, so the
-// dotted form is not a shorter spelling of anything — it exits non-zero with
-// "no such topic". A topic ID may legitimately contain a dot (topic: cli.migrate);
-// it is only the invocation that must be spelled with a space.
-var dottedInvocationPattern = regexp.MustCompile(`cyoda help [0-9A-Za-z_-]+\.[0-9A-Za-z_.-]+`)
 
 // crossReferencedArtefacts are the shipped files outside the help tree that also
 // tell a reader to run `cyoda help ...`. api/openapi.yaml is served to every API
@@ -37,19 +31,95 @@ var crossReferencedArtefacts = []string{
 	"README.md",
 }
 
-// TestHelpContent_CrossReferencesUseAWorkingInvocation — a cross-reference in a
-// shipped artefact is a command an operator will type. If it exits non-zero, the
-// pointer has sent them nowhere, which is worse than not having offered one.
-func TestHelpContent_CrossReferencesUseAWorkingInvocation(t *testing.T) {
-	var offenders []string
+// inlineInvocation matches a `cyoda help ...` reference written as
+// backtick-delimited inline code — the form used throughout the help
+// content, api/openapi.yaml, api/generated.go and README.md. It also
+// matches the bare synopsis placeholder (`cyoda help [<topic>...]`), which
+// tokenizeHelpArgs below reduces to zero real arguments.
+var inlineInvocation = regexp.MustCompile("`cyoda help([^`]*)`")
 
-	scan := func(name string, body []byte) {
-		for i, line := range strings.Split(string(body), "\n") {
-			if m := dottedInvocationPattern.FindString(line); m != "" {
-				offenders = append(offenders, name+":"+strconv.Itoa(i+1)+": "+strings.TrimSpace(m))
+// fencedBlock matches a ``` ... ``` fenced code block (any language tag, or
+// none), to find invocations shown as a whole shell line rather than
+// wrapped in inline code (e.g. the EXAMPLES section of cli.help).
+var fencedBlock = regexp.MustCompile("(?s)```[^\n]*\n(.*?)\n```")
+
+// fencedLineInvocation matches a fenced-block line that IS a `cyoda help`
+// invocation — the line starts with it, optionally after a shell prompt.
+// Requiring the line to start with the invocation (rather than searching
+// for the phrase anywhere) is what keeps this from firing on a JSON
+// example elsewhere in the same file whose "title" or "body" field merely
+// contains the words "cyoda help" as prose.
+var fencedLineInvocation = regexp.MustCompile(`^\$?\s*cyoda help(?:\s+(.*))?$`)
+
+// helpArgToken is a single legitimate cyoda-help argument: a topic-path
+// segment, a dotted topic id, an action name, an error code, or a
+// --format=... flag. Anything else — a shell comment (#...), a pipe, a
+// line continuation (\), prose punctuation, or placeholder syntax like
+// <topic> or [<fmt>] — ends the invocation. What came before it is still
+// tested, so a partial-but-real prefix (e.g. just "openapi" out of
+// "cyoda help openapi <slug>") is still checked rather than skipped
+// outright.
+var helpArgToken = regexp.MustCompile(`^[A-Za-z0-9_.=:-]+$`)
+
+// tokenizeHelpArgs turns the text following a `cyoda help` invocation into
+// the argument list RunHelp would receive, truncating at the first token
+// that isn't a legitimate argument.
+func tokenizeHelpArgs(rest string) []string {
+	var args []string
+	for _, f := range strings.Fields(rest) {
+		if !helpArgToken.MatchString(f) {
+			break
+		}
+		args = append(args, f)
+	}
+	return args
+}
+
+// helpInvocation is one `cyoda help ...` reference found in a scanned
+// artefact, reduced to the argument list it would pass to RunHelp.
+type helpInvocation struct {
+	source string // "<file>: cyoda help <args>", for failure messages
+	args   []string
+}
+
+// extractHelpInvocations finds every `cyoda help ...` reference in body,
+// both inline-code and fenced-block forms.
+func extractHelpInvocations(name string, body []byte) []helpInvocation {
+	text := string(body)
+	var found []helpInvocation
+
+	add := func(rest string) {
+		args := tokenizeHelpArgs(rest)
+		found = append(found, helpInvocation{
+			source: name + ": `cyoda help " + strings.Join(args, " ") + "`",
+			args:   args,
+		})
+	}
+
+	for _, m := range inlineInvocation.FindAllStringSubmatch(text, -1) {
+		add(m[1])
+	}
+	for _, block := range fencedBlock.FindAllStringSubmatch(text, -1) {
+		for _, line := range strings.Split(block[1], "\n") {
+			if m := fencedLineInvocation.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+				add(m[1])
 			}
 		}
 	}
+	return found
+}
+
+// TestHelpContent_CrossReferencesResolve — a `cyoda help ...` reference in a
+// shipped artefact is a command an operator or a see_also link will run. If it
+// exits non-zero, the pointer has sent them nowhere, which is worse than not
+// having offered one. This resolves every reference found (dotted or spaced,
+// including topic actions like "openapi json" and "config all") against the
+// real topic tree, rather than asserting a single spelling convention — the
+// convention changed (dotted ids are now valid; see 4c6d4003) and a guard tied
+// to one spelling broke the moment that changed instead of catching the
+// defect it exists for.
+func TestHelpContent_CrossReferencesResolve(t *testing.T) {
+	var invocations []helpInvocation
 
 	err := fs.WalkDir(embeddedContent, "content", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -62,7 +132,7 @@ func TestHelpContent_CrossReferencesUseAWorkingInvocation(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		scan(path, data)
+		invocations = append(invocations, extractHelpInvocations(path, data)...)
 		return nil
 	})
 	if err != nil {
@@ -75,12 +145,19 @@ func TestHelpContent_CrossReferencesUseAWorkingInvocation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reading %s: %v", rel, err)
 		}
-		scan(rel, data)
+		invocations = append(invocations, extractHelpInvocations(rel, data)...)
+	}
+
+	var offenders []string
+	for _, inv := range invocations {
+		var buf bytes.Buffer
+		if code := RunHelp(DefaultTree, inv.args, &buf, "test", false, ""); code != 0 {
+			offenders = append(offenders, inv.source+" -> exit "+strconv.Itoa(code)+": "+strings.TrimSpace(buf.String()))
+		}
 	}
 
 	if len(offenders) > 0 {
-		t.Fatalf("help topics are addressed by path segments — `cyoda help a b`, not `cyoda help a.b`, "+
-			"which exits non-zero with \"no such topic\":\n%s", strings.Join(offenders, "\n"))
+		t.Fatalf("`cyoda help` references that don't resolve:\n%s", strings.Join(offenders, "\n"))
 	}
 }
 

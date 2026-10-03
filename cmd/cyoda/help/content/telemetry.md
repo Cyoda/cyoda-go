@@ -38,8 +38,8 @@ an OTel collector. When it is `false`, tracing is off and nothing is pushed, but
 application metrics are still exposed at `/metrics`.
 
 Which application metrics appear:
-- **OIDC subsystem metrics** (`oidc_*`) — always exposed when IAM runs in `jwt`
-  mode (the OIDC subsystem is active).
+- **Auth metrics** (`cyoda.auth.secret_checks.refused`,
+  `auth.signingkeys.reconcile_*`) — always exposed when IAM runs in `jwt` mode.
 - **Transaction and dispatch metrics** (`cyoda_tx_*`, `cyoda_dispatch_*`) —
   exposed when `CYODA_OTEL_ENABLED=true` (their instrumentation decorators are
   enabled with full observability).
@@ -100,8 +100,6 @@ registered differs, and so does what turns it on:
 No `cyoda.callout.*` metric carries a tenant, a callout id, a member id, a node
 id or a pass: every label is drawn from a closed vocabulary.
 
-OIDC subsystem metrics (`oidc_*`) are exposed at `/metrics` whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`.
-
 Postgres connection-pool metrics (`cyoda_storage_pool_*`) are Postgres-only — exposed
 whenever the Postgres storage plugin is active — and always on, regardless of
 `CYODA_OTEL_ENABLED`: pool saturation is the dominant outage mode this instrumentation
@@ -124,6 +122,12 @@ regardless of `CYODA_OTEL_ENABLED`:
 
 - `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
 - `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
+
+Auth metrics are exposed whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`:
+
+- `cyoda.auth.secret_checks.refused` — `Int64Counter` — client-secret (bcrypt) operations refused because none of the node's `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` slots freed up within 1 second: token requests answered `503 temporarily_unavailable`, and `POST /clients` or secret resets answered `503 SERVER_BUSY`. A refusal is not logged, so this counter is the only signal; a steady rate means the node is saturated with token requests. No labels.
+- `auth.signingkeys.reconcile_consecutive_failures` — `Int64Gauge` — failed re-reads of the signing-key store in a row on this node; `0` after a successful one. Each failure is also logged at WARN, and at ERROR once the failures persist.
+- `auth.signingkeys.reconcile_staleness_seconds` — `Float64Gauge` — seconds since this node's copy of the signing keys was last refreshed, set when a re-read fails and reset to `0` when one succeeds. Alarm well before it reaches 10 × `CYODA_AUTH_CACHE_RECONCILE_INTERVAL`: a copy that old refuses every token (`401`) and answers JWKS with `503` (see `cyoda help config auth`).
 
 Scheduler metrics are exposed on every node that runs the scheduler (`CYODA_SCHEDULER_ENABLED=true`), regardless of `CYODA_OTEL_ENABLED`:
 
@@ -200,8 +204,8 @@ The handler is backed by a dedicated `prometheus.Registry` that collects from th
 OTel SDK meter provider (via the OpenTelemetry → Prometheus bridge), so
 application metrics registered through the OTel API appear here automatically.
 Go runtime metrics (GC, goroutine count, memory) and process metrics (CPU, open
-FDs) are always present. OIDC subsystem metrics (`oidc_*`) appear whenever IAM
-runs in `jwt` mode. Transaction and dispatch metrics (`cyoda_tx_*`,
+FDs) are always present. Auth metrics (`cyoda.auth.*`, `auth.signingkeys.*`)
+appear whenever IAM runs in `jwt` mode. Transaction and dispatch metrics (`cyoda_tx_*`,
 `cyoda_dispatch_*`) appear when `CYODA_OTEL_ENABLED=true`.
 
 ## AUTHENTICATION
@@ -230,8 +234,8 @@ The `/livez` and `/readyz` probe endpoints stay unauthenticated regardless of bi
 
 The trace sampler is runtime-configurable via:
 
-- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires `Authorization: Bearer <token>`
-- `GET :8080/api/admin/trace-sampler` — returns the current sampler config
+- `POST :8080/api/admin/trace-sampler` — replaces the sampler atomically; requires a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)
+- `GET :8080/api/admin/trace-sampler` — returns the current sampler config; also requires a platform operator
 
 Request and response body:
 
@@ -287,8 +291,10 @@ curl -s http://localhost:9091/metrics | grep "^go_"
 **Scrape metrics with bearer auth:**
 
 ```
+# -H @- reads the header from stdin: a command line is visible to other
+# local users, stdin is not.
 curl -s \
-  -H "Authorization: Bearer $CYODA_METRICS_BEARER" \
+  -H @- <<<"Authorization: Bearer $CYODA_METRICS_BEARER" \
   http://localhost:9091/metrics
 ```
 
@@ -296,7 +302,7 @@ curl -s \
 
 ```
 curl -s \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   http://localhost:8080/api/admin/trace-sampler
 ```
 
@@ -304,7 +310,7 @@ curl -s \
 
 ```
 curl -s -X POST \
-  -H "Authorization: Bearer $TOKEN" \
+  -H @- <<<"Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"sampler":"ratio","ratio":0.1,"parent_based":true}' \
   http://localhost:8080/api/admin/trace-sampler

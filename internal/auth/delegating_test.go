@@ -14,6 +14,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 func generateTestPEM(t *testing.T) string {
@@ -32,6 +36,24 @@ func generateTestPEM(t *testing.T) string {
 	return string(pemBlock)
 }
 
+// Every method reaches the token handler, so a method other than POST is
+// the endpoint's own OAuth-shaped 405, not the mux's plain-text one.
+func TestAuthService_TokenEndpointNonPostIs405(t *testing.T) {
+	svc := newTestAuthService(t, AuthConfig{SigningKeyPEM: generateTestPEM(t), Issuer: "cyoda", ExpirySeconds: 300})
+	for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
+		rr := httptest.NewRecorder()
+		svc.Handler().ServeHTTP(rr, httptest.NewRequest(m, "/oauth/token", nil))
+		var body map[string]string
+		_ = json.Unmarshal(rr.Body.Bytes(), &body)
+		if rr.Code != http.StatusMethodNotAllowed || body["error"] != "method_not_allowed" {
+			t.Fatalf("%s: %d %s, want 405 method_not_allowed", m, rr.Code, rr.Body.String())
+		}
+		if got := rr.Header().Get("Allow"); got != http.MethodPost {
+			t.Errorf("%s: Allow = %q, want POST", m, got)
+		}
+	}
+}
+
 func TestAuthService_FullFlow(t *testing.T) {
 	pemKey := generateTestPEM(t)
 
@@ -46,7 +68,7 @@ func TestAuthService_FullFlow(t *testing.T) {
 	defer server.Close()
 
 	// Create M2M client directly via store.
-	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
@@ -82,20 +104,17 @@ func TestAuthService_FullFlow(t *testing.T) {
 		t.Fatal("missing access_token in response")
 	}
 
-	// Validate the token using a JWKSValidator pointed at the test server.
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	// Validate the token in-process via the AuthService's own KeyStore —
+	// the production validator's path (no HTTP JWKS fetch).
+	validator := NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda")
 
-	uc, err := validator.Validate(accessToken)
+	uc, _, err := validator.Validate(accessToken)
 	if err != nil {
 		t.Fatalf("token validation failed: %v", err)
 	}
 
-	if uc.UserID != "user-1" {
-		t.Errorf("expected UserID user-1, got %s", uc.UserID)
+	if uc.UserID != "TESTCLIENT" {
+		t.Errorf("expected UserID TESTCLIENT, got %s", uc.UserID)
 	}
 	if string(uc.Tenant.ID) != "tenant-1" {
 		t.Errorf("expected TenantID tenant-1, got %s", uc.Tenant.ID)
@@ -114,12 +133,8 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 		ExpirySeconds: 3600,
 	})
 
-	// Start test server for JWKS.
-	server := httptest.NewServer(svc.Handler())
-	defer server.Close()
-
 	// Get active key pair for signing.
-	kp, signer, err := svc.KeyStore().Signer("client")
+	kp, signer, err := svc.KeyStore().Signer()
 	if err != nil {
 		t.Fatalf("failed to get the signing key pair: %v", err)
 	}
@@ -142,20 +157,23 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	}
 
 	// Create the DelegatingAuthenticator.
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	validator := NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	// Build an HTTP request with a Bearer token.
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	uc, err := authn.Authenticate(context.Background(), req)
+	ctx, err := authn.Authenticate(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Authenticate failed: %v", err)
+	}
+	uc := spi.GetUserContext(ctx)
+	if uc == nil {
+		t.Fatal("authenticated context carries no UserContext")
+	}
+	if ct, ok := contract.ClientTokenFrom(ctx); ok {
+		t.Errorf("a token without cgen yielded a client-token marker: %+v", ct)
 	}
 
 	if uc.UserID != "user-42" {
@@ -169,8 +187,52 @@ func TestDelegatingAuthenticator_ValidToken(t *testing.T) {
 	}
 }
 
+// TestDelegatingAuthenticator_ClientTokenMarker: a client-credentials token
+// carrying cgen puts the client-token marker in the authenticated context,
+// beside the service principal.
+func TestDelegatingAuthenticator_ClientTokenMarker(t *testing.T) {
+	svc := newTestAuthService(t, AuthConfig{
+		SigningKeyPEM: generateTestPEM(t),
+		Issuer:        "cyoda",
+		ExpirySeconds: 3600,
+	})
+	kp, signer, err := svc.KeyStore().Signer()
+	if err != nil {
+		t.Fatalf("failed to get the signing key pair: %v", err)
+	}
+	now := time.Now()
+	token, err := Sign(context.Background(), map[string]any{
+		"sub":          "CLIENT0000000001",
+		"iss":          "cyoda",
+		"caas_user_id": "CLIENT0000000001",
+		"caas_org_id":  "tenant-42",
+		"scopes":       []string{"ROLE_M2M"},
+		"cgen":         5,
+		"exp":          now.Add(time.Hour).Unix(),
+		"iat":          now.Unix(),
+	}, signer, kp.KID)
+	if err != nil {
+		t.Fatalf("failed to sign token: %v", err)
+	}
+	authn := NewDelegatingAuthenticator(NewValidatorFromSource(NewLocalKeySource(svc.KeyStore()), "cyoda"))
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	ctx, err := authn.Authenticate(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
+	if uc := spi.GetUserContext(ctx); uc == nil || uc.Kind != spi.PrincipalService || uc.UserID != "CLIENT0000000001" {
+		t.Fatalf("UserContext = %+v, want service principal CLIENT0000000001", uc)
+	}
+	want := contract.ClientToken{ClientID: "CLIENT0000000001", Gen: 5}
+	if ct, ok := contract.ClientTokenFrom(ctx); !ok || ct != want {
+		t.Fatalf("ClientTokenFrom = %+v, %v; want %+v, true", ct, ok, want)
+	}
+}
+
 func TestDelegatingAuthenticator_NoToken(t *testing.T) {
-	validator := NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -191,22 +253,7 @@ func TestDelegatingAuthenticator_NoToken(t *testing.T) {
 }
 
 func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
-	pemKey := generateTestPEM(t)
-
-	svc := newTestAuthService(t, AuthConfig{
-		SigningKeyPEM: pemKey,
-		Issuer:        "cyoda",
-		ExpirySeconds: 3600,
-	})
-
-	server := httptest.NewServer(svc.Handler())
-	defer server.Close()
-
-	validator := NewJWKSValidator(
-		server.URL+"/.well-known/jwks.json",
-		"cyoda",
-		5*time.Minute,
-	)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)
@@ -227,7 +274,7 @@ func TestDelegatingAuthenticator_InvalidToken(t *testing.T) {
 }
 
 func TestDelegatingAuthenticator_NonBearerScheme(t *testing.T) {
-	validator := NewJWKSValidator("http://localhost:0/jwks", "cyoda", 5*time.Minute)
+	validator := newTestJWKSValidator(t, "cyoda")
 	authn := NewDelegatingAuthenticator(validator)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/test", nil)

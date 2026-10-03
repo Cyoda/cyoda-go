@@ -92,8 +92,8 @@ func (d *DynamicSampler) Inner() sdktrace.Sampler {
 }
 
 // BuildSampler constructs an sdktrace.Sampler from a SamplerConfig.
-// Used by SetSampler, SamplerConfigFromEnv, and the admin handler's
-// validation path — one place for all construction logic.
+// Used by NewDynamicSampler and SetSampler — one place for all
+// construction logic.
 func BuildSampler(cfg SamplerConfig) (sdktrace.Sampler, error) {
 	var inner sdktrace.Sampler
 	switch cfg.Sampler {
@@ -113,7 +113,7 @@ func BuildSampler(cfg SamplerConfig) (sdktrace.Sampler, error) {
 		}
 		inner = sdktrace.TraceIDRatioBased(cfg.Ratio)
 	default:
-		return nil, fmt.Errorf("unknown sampler type: %q", cfg.Sampler)
+		return nil, fmt.Errorf("unknown sampler type: accepted values are always, never, ratio")
 	}
 	if cfg.ParentBased {
 		inner = sdktrace.ParentBased(inner)
@@ -159,7 +159,7 @@ func SamplerConfigFromEnv() SamplerConfig {
 	}
 }
 
-// parseRatioOrDefault parses s as a float in [0, 1]. On parse failure or
+// parseRatioOrDefault parses s as a float in (0, 1]. On parse failure or
 // out-of-range, logs WARN and returns fallback.
 func parseRatioOrDefault(s string, fallback float64) float64 {
 	if s == "" {

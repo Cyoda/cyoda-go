@@ -90,13 +90,16 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	}
 	payloadString := compacted.String()
 
+	attributed, executor := spi.AttributionFor(opCtx)
 	header := spi.MessageHeader{
 		Subject:         subject,
 		ContentType:     params.ContentType,
 		ContentLength:   params.ContentLength,
 		ContentEncoding: "UTF-8",
 		MessageID:       derefStr(params.XMessageID),
-		UserID:          derefStr(params.XUserID),
+		UserID:          attributed.ID,
+		AttributedKind:  attributed.Kind,
+		Executor:        executor,
 		Recipient:       derefStr(params.XRecipient),
 		ReplyTo:         derefStr(params.XReplyTo),
 		CorrelationID:   derefStr(params.XCorrelationID),
@@ -196,6 +199,15 @@ func (h *Handler) GetMessage(w http.ResponseWriter, r *http.Request, messageId u
 	}
 	if header.UserID != "" {
 		respHeader["userId"] = header.UserID
+	}
+	if header.AttributedKind != "" {
+		respHeader["attributedKind"] = header.AttributedKind
+	}
+	if header.Executor.ID != "" {
+		respHeader["executedBy"] = map[string]any{
+			"id":   header.Executor.ID,
+			"kind": header.Executor.Kind,
+		}
 	}
 	if header.Recipient != "" {
 		respHeader["recipient"] = header.Recipient

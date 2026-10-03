@@ -23,11 +23,12 @@ var ErrNoMatchingMember = errors.New("no matching calculation member")
 
 // ErrAuthContextUnavailable is joined into the error AttachAuthContext
 // (internal/grpc) returns when it cannot faithfully populate a dispatch
-// CloudEvent's Auth Context extension: no UserContext on ctx, an unset or
-// unrecognized principal Kind, or a nil CloudEvent. None of these can ever
-// originate from client-supplied input — the client does not control
-// dispatch-path UserContext construction — so they are server-side
-// conditions (missed constructor / missed cross-node context forwarding /
+// CloudEvent's Auth Context extension: a callout identity whose attributed
+// principal or executor has no id (as when the dispatching context carried
+// no UserContext) or an unset or unrecognized Kind, or a nil CloudEvent.
+// None of these can ever originate from client-supplied input — the client
+// does not control how a callout's identity is computed — so they are
+// server-side conditions (missed constructor / missed cross-node forwarding /
 // misconfiguration), not a bad request.
 //
 // error-classification code in internal/domain/entity matches this sentinel

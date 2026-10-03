@@ -40,8 +40,7 @@ func generateClientID() (string, error) {
 // store is not wired (mock IAM mode). All four /clients adapters call this.
 func (h *Handler) requireM2MStore(w http.ResponseWriter, r *http.Request) bool {
 	if h.m2mClientStore == nil {
-		common.WriteError(w, r, common.Operational(http.StatusNotImplemented,
-			common.ErrCodeNotImplemented, "M2M client management requires JWT IAM mode"))
+		writeRequiresJWTMode(w, r, "M2M client management")
 		return false
 	}
 	return true
@@ -80,28 +79,42 @@ func toTechnicalUserDto(c *auth.M2MClient) genapi.TechnicalUserDto {
 		CreationDate:   c.CreatedAt,
 		LastUpdateDate: c.UpdatedAt,
 		Roles:          roles,
+		OnBehalfOf:     c.OnBehalfOf,
 	}
 }
 
+// grantTypeFor picks the grant_type a client's credentials DTO reports: the
+// token-exchange URN for an on-behalf-of client (§3.2 — it may only perform
+// token exchanges), client_credentials otherwise.
+func grantTypeFor(onBehalfOf bool) genapi.TechnicalUserCredentialsDtoGrantType {
+	if onBehalfOf {
+		return genapi.TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange
+	}
+	return genapi.TechnicalUserCredentialsDtoGrantTypeClientCredentials
+}
+
 // toTechnicalUserCredentialsDto wraps a freshly-issued plaintext secret in
-// the spec-conformant response shape. The grant_type is always
-// "client_credentials" per RFC 7591 §3.2.1. expires_at=0 means "never expires".
-func toTechnicalUserCredentialsDto(clientID, plaintextSecret string, roles []string) genapi.TechnicalUserCredentialsDto {
-	rolesCopy := make([]string, len(roles))
-	copy(rolesCopy, roles)
+// the spec-conformant response shape. grant_type is the token-exchange URN
+// for an on-behalf-of client and client_credentials otherwise (§3.2).
+// expires_at=0 means "never expires".
+func toTechnicalUserCredentialsDto(c *auth.M2MClient, plaintextSecret string) genapi.TechnicalUserCredentialsDto {
+	rolesCopy := make([]string, len(c.Roles))
+	copy(rolesCopy, c.Roles)
 	return genapi.TechnicalUserCredentialsDto{
-		ClientId:              clientID,
+		ClientId:              c.ClientID,
 		ClientSecret:          plaintextSecret,
-		GrantType:             genapi.TechnicalUserCredentialsDtoGrantType("client_credentials"),
+		GrantType:             grantTypeFor(c.OnBehalfOf),
 		ClientSecretExpiresAt: 0,
 		Roles:                 rolesCopy,
+		OnBehalfOf:            c.OnBehalfOf,
 	}
 }
 
 // writeM2MClientError answers a Delete or ResetSecret failure. The store
 // enforces tenant isolation, so an absent client and another tenant's client
 // are the same ErrM2MClientNotFound and get the same 404 — no cross-tenant
-// existence oracle. Anything else is the store failing: 503 when it reports
+// existence oracle. A reset with no free secret-check slot is 503
+// SERVER_BUSY. Anything else is the store failing: 503 when it reports
 // itself unavailable, otherwise 500 with a ticket.
 func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	if errors.Is(err, auth.ErrM2MClientNotFound) {
@@ -109,10 +122,26 @@ func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err 
 			common.ErrCodeM2MClientNotFound, "M2M client not found"))
 		return
 	}
+	if writeSecretCheckBusy(w, r, err) {
+		return
+	}
 	common.WriteError(w, r, common.Internal(op, err))
 }
 
-// CreateTechnicalUser implements POST /clients?withAdminRole=<bool>.
+// writeSecretCheckBusy answers ErrSecretCheckBusy — no free slot to hash a
+// new secret, nothing written — with a retryable 503 SERVER_BUSY and
+// Retry-After: 1, and reports whether it did.
+func writeSecretCheckBusy(w http.ResponseWriter, r *http.Request, err error) bool {
+	if !errors.Is(err, auth.ErrSecretCheckBusy) {
+		return false
+	}
+	w.Header().Set("Retry-After", "1")
+	common.WriteError(w, r, common.Operational(http.StatusServiceUnavailable,
+		common.ErrCodeServerBusy, "the node is busy and could not hash a client secret — retry").AsRetryable())
+	return true
+}
+
+// CreateTechnicalUser implements POST /clients?withAdminRole=<bool>&onBehalfOf=<bool>.
 // Generates a 16-char base32-hex clientId and returns the freshly issued
 // plaintext secret exactly once.
 func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
@@ -128,7 +157,20 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		return
 	}
 
+	onBehalfOf := parseOnBehalfOf(params.OnBehalfOf)
+	if withAdmin && onBehalfOf {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "an on-behalf-of client cannot hold ROLE_ADMIN"))
+		return
+	}
+
 	tID := tenantFromCtx(r)
+	if onBehalfOf && tID == auth.PlatformTenantID {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "the PLATFORM tenant cannot hold an on-behalf-of client"))
+		return
+	}
+
 	roles := []string{"ROLE_M2M"}
 	if withAdmin {
 		roles = append(roles, "ROLE_ADMIN")
@@ -146,7 +188,7 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 			common.WriteError(w, r, common.Internal("generateClientID", err))
 			return
 		}
-		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, cid, roles)
+		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, cid, roles, onBehalfOf)
 		if createErr == nil {
 			clientID = cid
 			secret = sec
@@ -159,6 +201,9 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		if errors.Is(createErr, auth.ErrM2MClientCapReached) {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
 				common.ErrCodeM2MClientCapReached, "M2M client cap reached for tenant"))
+			return
+		}
+		if writeSecretCheckBusy(w, r, createErr) {
 			return
 		}
 		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))
@@ -175,14 +220,24 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		"tenantId", tID,
 		"clientId", clientID,
 		"roles", roles,
+		"onBehalfOf", onBehalfOf,
 	)
 	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, roles))
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(
+		&auth.M2MClient{ClientID: clientID, Roles: roles, OnBehalfOf: onBehalfOf}, secret))
 }
 
 // parseWithAdminRole reads the *bool query param. nil/absent → false.
 func parseWithAdminRole(p *bool) bool {
+	if p == nil {
+		return false
+	}
+	return *p
+}
+
+// parseOnBehalfOf reads the *bool query param. nil/absent → false.
+func parseOnBehalfOf(p *bool) bool {
 	if p == nil {
 		return false
 	}
@@ -246,7 +301,7 @@ func (h *Handler) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Reques
 	)
 	auth.SetNoStore(w.Header())
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(clientID, secret, client.Roles))
+	_ = json.NewEncoder(w).Encode(toTechnicalUserCredentialsDto(client, secret))
 }
 
 // ListTechnicalUsers implements GET /clients.

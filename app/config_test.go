@@ -2,6 +2,7 @@ package app
 
 import (
 	"os"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -191,54 +192,11 @@ func TestValidateSearchJobStaleAfter_AcceptsAtOrAboveFourXInterval(t *testing.T)
 	}
 }
 
-func TestDefaultConfig_OIDCDefaults(t *testing.T) {
-	cfg := DefaultConfig()
-	if !cfg.IAM.OIDC.RequireHTTPS {
-		t.Error("default RequireHTTPS should be true")
-	}
-	if cfg.IAM.OIDC.ConnectTimeout != 5*time.Second {
-		t.Errorf("default ConnectTimeout = %v, want 5s", cfg.IAM.OIDC.ConnectTimeout)
-	}
-	if cfg.IAM.OIDC.SocketTimeout != 5*time.Second {
-		t.Errorf("default SocketTimeout = %v, want 5s", cfg.IAM.OIDC.SocketTimeout)
-	}
-	if cfg.IAM.OIDC.ConnectionRequestTimeout != 5*time.Second {
-		t.Errorf("default ConnectionRequestTimeout = %v, want 5s", cfg.IAM.OIDC.ConnectionRequestTimeout)
-	}
-	if cfg.IAM.OIDC.AllowPrivateNetworks {
-		t.Error("default AllowPrivateNetworks should be false")
-	}
-	if cfg.IAM.OIDC.DefaultRolesClaim != "roles" {
-		t.Errorf("default DefaultRolesClaim = %q, want roles", cfg.IAM.OIDC.DefaultRolesClaim)
-	}
-}
-
-func TestDefaultConfig_OIDCEnvOverrides(t *testing.T) {
-	t.Setenv("CYODA_OIDC_REQUIRE_HTTPS", "false")
-	t.Setenv("CYODA_OIDC_CONNECT_TIMEOUT_MS", "1000")
-	t.Setenv("CYODA_OIDC_SOCKET_TIMEOUT_MS", "2000")
-	t.Setenv("CYODA_OIDC_CONNECTION_REQUEST_TIMEOUT_MS", "3000")
-	t.Setenv("CYODA_OIDC_ALLOW_PRIVATE_NETWORKS", "true")
-	t.Setenv("CYODA_OIDC_ROLES_CLAIM", "cognito:groups")
-
-	cfg := DefaultConfig()
-	if cfg.IAM.OIDC.RequireHTTPS {
-		t.Error("RequireHTTPS override failed")
-	}
-	if cfg.IAM.OIDC.ConnectTimeout != time.Second {
-		t.Errorf("ConnectTimeout = %v, want 1s", cfg.IAM.OIDC.ConnectTimeout)
-	}
-	if cfg.IAM.OIDC.SocketTimeout != 2*time.Second {
-		t.Errorf("SocketTimeout = %v, want 2s", cfg.IAM.OIDC.SocketTimeout)
-	}
-	if cfg.IAM.OIDC.ConnectionRequestTimeout != 3*time.Second {
-		t.Errorf("ConnectionRequestTimeout = %v, want 3s", cfg.IAM.OIDC.ConnectionRequestTimeout)
-	}
-	if !cfg.IAM.OIDC.AllowPrivateNetworks {
-		t.Error("AllowPrivateNetworks override failed")
-	}
-	if cfg.IAM.OIDC.DefaultRolesClaim != "cognito:groups" {
-		t.Errorf("DefaultRolesClaim = %q, want cognito:groups", cfg.IAM.OIDC.DefaultRolesClaim)
+func TestDefaultConfig_MockKindIsService(t *testing.T) {
+	t.Setenv("CYODA_IAM_MOCK_KIND", "") // restored after the test
+	os.Unsetenv("CYODA_IAM_MOCK_KIND")
+	if got := DefaultConfig().IAM.MockKind; got != "service" {
+		t.Fatalf("default IAM.MockKind = %q, want service", got)
 	}
 }
 
@@ -265,6 +223,48 @@ func TestValidateIAM_ReconcileIntervalFloor(t *testing.T) {
 	iam.Mode = "mock"
 	if err := ValidateIAM(iam); err != nil {
 		t.Fatalf("1s interval must be accepted: %v", err)
+	}
+}
+
+func TestDefaultConfig_TokenEndpointCost(t *testing.T) {
+	for _, k := range []string{"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", "CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS"} {
+		t.Setenv(k, "") // restored after the test
+		os.Unsetenv(k)
+	}
+	iam := DefaultConfig().IAM
+	if iam.TokenRequestsPerMinute != 600 {
+		t.Errorf("default TokenRequestsPerMinute = %d, want 600", iam.TokenRequestsPerMinute)
+	}
+	if iam.TokenMaxConcurrentSecretChecks != runtime.GOMAXPROCS(0) {
+		t.Errorf("default TokenMaxConcurrentSecretChecks = %d, want %d (GOMAXPROCS)", iam.TokenMaxConcurrentSecretChecks, runtime.GOMAXPROCS(0))
+	}
+	t.Setenv("CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE", "0")
+	t.Setenv("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS", "3")
+	iam = DefaultConfig().IAM
+	if iam.TokenRequestsPerMinute != 0 || iam.TokenMaxConcurrentSecretChecks != 3 {
+		t.Errorf("env override: requests/min %d, secret checks %d, want 0 and 3", iam.TokenRequestsPerMinute, iam.TokenMaxConcurrentSecretChecks)
+	}
+	if err := ValidateIAM(iam); err != nil {
+		t.Errorf("0 requests/min (unlimited) and 3 secret checks refused: %v", err)
+	}
+}
+
+// A negative per-client limit and fewer than one concurrent secret check
+// each refuse to start, in either mode.
+func TestValidateIAM_TokenEndpointCost(t *testing.T) {
+	for _, mode := range []string{"mock", "jwt"} {
+		for k, v := range map[string]string{
+			"CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE":          "-1",
+			"CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS": "0",
+		} {
+			t.Run(mode+"/"+k, func(t *testing.T) {
+				t.Setenv("CYODA_IAM_MODE", mode)
+				t.Setenv(k, v)
+				if err := ValidateIAM(DefaultConfig().IAM); err == nil {
+					t.Fatalf("%s=%s accepted", k, v)
+				}
+			})
+		}
 	}
 }
 

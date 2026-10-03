@@ -14,16 +14,79 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 )
 
 // stubAuthService implements contract.AuthenticationService for testing the
-// Auth middleware's behaviour on failure. It returns a preconfigured error.
+// Auth middleware. It returns a preconfigured error, or on success the
+// request context with the preconfigured principal and client-token marker.
 type stubAuthService struct {
-	err error
+	err    error
+	user   *spi.UserContext
+	client *contract.ClientToken
 }
 
-func (s *stubAuthService) Authenticate(_ context.Context, _ *http.Request) (*spi.UserContext, error) {
-	return nil, s.err
+func (s *stubAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	ctx = spi.WithUserContext(ctx, s.user)
+	if s.client != nil {
+		ctx = contract.WithClientToken(ctx, *s.client)
+	}
+	return ctx, nil
+}
+
+// bareCtxAuthService reports success but returns a context with no principal.
+type bareCtxAuthService struct{}
+
+func (bareCtxAuthService) Authenticate(ctx context.Context, _ *http.Request) (context.Context, error) {
+	return ctx, nil
+}
+
+// TestAuthMiddleware_NoPrincipalIs401: an authentication service that
+// reports success without putting a principal in the context does not let
+// the request through.
+func TestAuthMiddleware_NoPrincipalIs401(t *testing.T) {
+	handler := middleware.Auth(bareCtxAuthService{})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("inner handler reached without a principal")
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/test", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "authentication failed") {
+		t.Errorf("body = %q, want the generic authentication failure", rec.Body.String())
+	}
+}
+
+// TestAuthMiddleware_HandlerSeesAuthenticatedContext:the handler runs with
+// the context Authenticate returned, so it sees both the principal and the
+// client-token marker.
+func TestAuthMiddleware_HandlerSeesAuthenticatedContext(t *testing.T) {
+	user := &spi.UserContext{UserID: "CLIENT0000000001", Kind: spi.PrincipalService, Tenant: spi.Tenant{ID: "t1"}}
+	marker := contract.ClientToken{ClientID: "CLIENT0000000001", Gen: 2}
+	var gotUser *spi.UserContext
+	var gotMarker contract.ClientToken
+	var gotOK bool
+	handler := middleware.Auth(&stubAuthService{user: user, client: &marker})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser = spi.GetUserContext(r.Context())
+		gotMarker, gotOK = contract.ClientTokenFrom(r.Context())
+	}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/test", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if gotUser != user {
+		t.Errorf("handler UserContext = %+v, want %+v", gotUser, user)
+	}
+	if !gotOK || gotMarker != marker {
+		t.Errorf("handler ClientTokenFrom = %+v, %v; want %+v, true", gotMarker, gotOK, marker)
+	}
 }
 
 // TestAuthMiddleware_ResponseBodyIsGenericForEveryFailureMode pins the

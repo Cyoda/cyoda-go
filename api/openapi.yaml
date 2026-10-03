@@ -123,7 +123,7 @@ info:
     ### Getting Started
 
     1. **Create a machine-to-machine (M2M) user** through the client management
-    API (requires SUPER_USER role)
+    API (requires ROLE_ADMIN)
 
     2. **Obtain an access token** using the client credentials via the OAuth
     token endpoint
@@ -143,8 +143,9 @@ info:
     - **Bearer Token Authentication**: All protected API endpoints require a
     valid JWT bearer token
 
-    - **Role-Based Access Control**: Different endpoints require specific roles
-    (USER, ADMIN, M2M, SUPER_USER)
+    - **Role-Based Access Control**: Admin endpoints require `ROLE_ADMIN`;
+    platform-wide operations also require the caller's tenant to be
+    `PLATFORM`
 
 
     ### User Account Management
@@ -213,16 +214,12 @@ tags:
 
       * Loopback transitions trigger the first allowable automated exit
       transition, enabling subsequent automated workflow traversal
-  - name: OAuth, OIDC Providers
-    description: API for managing trusted external OIDC providers for user
-      authentication and authorization.
   - name: Entity Model, Workflow
     description: APIs for exporting and importing entity model workflows.
   - name: OAuth, Keys
     description: API for managing JWT signing key-pairs for OAuth 2.0 tokens, for
       issuing, retrieving, invalidating, reactivating, and deleting JWT
-      key-pairs for different token audiences (human users and technical
-      users/service accounts)
+      key-pairs
   - name: Entity, Audit
     description: APIs for searching and retrieving entity audit events.
   - name: Scheduled Tasks
@@ -359,6 +356,8 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SubscriptionsResponseDto"
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "501":
           $ref: "#/components/responses/NotImplemented"
       security:
@@ -475,7 +474,8 @@ paths:
         "403":
           description: >-
             Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
-            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
+            another tenant is refused here too, and so is a caller without ROLE_M2M,
+            each with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
@@ -569,7 +569,8 @@ paths:
         "403":
           description: >-
             Forbidden - Insufficient permissions. An `X-Tx-Token` naming a transaction of
-            another tenant is refused here too, with `properties.errorCode` FORBIDDEN.
+            another tenant is refused here too, and so is a caller without ROLE_M2M,
+            each with `properties.errorCode` FORBIDDEN.
           content:
             application/problem+json:
               schema:
@@ -667,20 +668,24 @@ paths:
         can authenticate it once created.
 
 
-        The created user will have M2M role permissions, necessary for getting
-        the bearer token.
+        The created client always holds ROLE_M2M, which every data operation
+        requires. It is created in the caller's own tenant; no request names
+        another tenant.
 
 
-        When `withAdminRole` is set to `true`, the M2M client will additionally
-        receive the ADMIN role,
+        When `withAdminRole` is `true`, the client also receives ROLE_ADMIN in
+        that tenant, which opens the tenant's client and trusted-key endpoints
+        (trusted-key registration also requires
+        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`). This requires
+        `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true` on the node that takes the
+        call; otherwise the answer is `404` with error code
+        `FEATURE_DISABLED`. Any tenant admin can create an admin client in
+        its own tenant. An admin client created in the tenant `PLATFORM` is a
+        platform operator and reaches the key-pair and `/admin/*` endpoints.
 
-        granting it full access to all ADMIN-level endpoints (e.g., trusted key
-        registration).
 
-        This requires the `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED` env
-        flag to be set to `true`;
-
-        otherwise, a `404` response with error code `FEATURE_DISABLED` is returned.
+        When `onBehalfOf` is `true`, the client may only exchange user
+        assertions (token exchange) and never holds ROLE_ADMIN.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -689,12 +694,25 @@ paths:
       parameters:
         - name: withAdminRole
           in: query
-          description: "When true, the created M2M client will additionally receive the
-            ADMIN role. Requires the M2M admin role feature flag to be enabled.
+          description: "When true, the created M2M client will additionally receive
+            ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
             "
           required: false
           schema:
             type: boolean
+        - name: onBehalfOf
+          in: query
+          description: "When true, the created client is an on-behalf-of (OBO)
+            client: it may only perform token exchanges
+            (`urn:ietf:params:oauth:grant-type:token-exchange`), never
+            `client_credentials`. The flag is immutable and never combined
+            with `withAdminRole=true`, and the client is never created in
+            the `PLATFORM` tenant.
+            "
+          required: false
+          schema:
+            type: boolean
+            default: false
       responses:
         "200":
           description: M2M client created successfully
@@ -704,8 +722,10 @@ paths:
                 $ref: "#/components/schemas/TechnicalUserCredentialsDto"
         "400":
           description: "Bad request — M2M_CLIENT_CAP_REACHED: the tenant already has
-            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; or BAD_REQUEST:
-            `withAdminRole` is not a boolean."
+            `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; BAD_REQUEST:
+            `withAdminRole` or `onBehalfOf` is not a boolean, `withAdminRole=true`
+            is combined with `onBehalfOf=true`, or `onBehalfOf=true` is
+            requested in the `PLATFORM` tenant."
           content:
             application/problem+json:
               schema:
@@ -742,7 +762,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
+            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
+            up within 1 second; nothing was written, so no client was created; carries
+            Retry-After). Retryable.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; set on SERVER_BUSY.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /clients/{clientId}:
@@ -838,7 +870,8 @@ paths:
         one.
 
         Any applications using the old secret will need to be updated with the
-        new credentials.
+        new credentials. Tokens it was already issued stay valid until their
+        `exp`.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -902,7 +935,19 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "503":
-          $ref: '#/components/responses/ServiceUnavailable'
+          description: Service Unavailable - STORAGE_UNAVAILABLE (the client store
+            is unavailable), or SERVER_BUSY (no client-secret hashing slot freed
+            up within 1 second; nothing was written, so the old secret stays in force; carries
+            Retry-After). Retryable.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying; set on SERVER_BUSY.
+              schema:
+                type: integer
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
   /entity/stats:
@@ -3820,14 +3865,6 @@ paths:
             type: string
             maxLength: 1024
             minLength: 1
-        - name: X-User-ID
-          in: header
-          description: ID of the message sender
-          required: false
-          schema:
-            type: string
-            maxLength: 1024
-            minLength: 1
         - name: X-Recipient
           in: header
           description: Intended message recipient
@@ -5378,6 +5415,9 @@ paths:
         signing and validating OAuth 2.0 JWT
 
         access tokens. If `algorithm` is omitted, defaults to RS256. If `validTo` is omitted, defaults to `validFrom + 365 days`.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: issueJwtKeyPair
       x-cyoda-iam-mode: jwt
       requestBody:
@@ -5394,7 +5434,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid audience, validTo not after validFrom, validTo not in the future, invalidateGracePeriodSec out of range, invalidateCurrent with a validFrom in the future, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
+          description: "Bad request — BAD_REQUEST: malformed body, validTo not after validFrom, validTo not in the future, invalidateGracePeriodSec out of range, invalidateCurrent with a validFrom in the future, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_ALGORITHM: non-RS256 algorithm requested."
           content:
             application/problem+json:
               schema:
@@ -5406,7 +5446,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5433,19 +5473,12 @@ paths:
         - OAuth, Keys
       summary: Get current active JWT signing key-pair
       description: >
-        Retrieves information about the currently active JWT signing key-pair
-        for the specified audience.
+        Retrieves information about the currently active JWT signing key-pair.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: getCurrentJwtKeyPair
       x-cyoda-iam-mode: jwt
-      parameters:
-        - name: audience
-          in: query
-          required: true
-          schema:
-            type: string
-            enum:
-              - human
-              - client
       responses:
         "200":
           description: Current key-pair information retrieved successfully
@@ -5453,12 +5486,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/JwtKeyPairResponseDto"
-        "400":
-          description: "Bad request — BAD_REQUEST: invalid audience value."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
         "401":
           description: Error response
           content:
@@ -5466,13 +5493,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
-          description: "Not found — KEYPAIR_NOT_FOUND: no active key pair for the given audience."
+          description: "Not found — KEYPAIR_NOT_FOUND: no active key pair."
           content:
             application/problem+json:
               schema:
@@ -5504,6 +5531,9 @@ paths:
         key-pair is removed from storage; the signing key from
         `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is marked deleted, which is permanent for that
         key and ends the tokens `cyoda token` signs.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: deleteJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5530,7 +5560,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5580,6 +5610,9 @@ paths:
         To end a leaked token, invalidate the key pair named by the `kid` in
         its header with a grace period of zero. A rotation is not enough when
         that is the bootstrap key: a rotation never invalidates it.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: invalidateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5611,7 +5644,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5647,8 +5680,11 @@ paths:
         Reactivates a JWT signing key-pair and sets its window to validFrom
         (default now; a future value is refused) through validTo. Tokens it
         signed verify again while it is inside that window. It signs new tokens
-        only if it is also the active key-pair with the latest validFrom for its
-        audience. Reactivating an active key-pair replaces its window.
+        only if it is also the active key-pair with the latest validFrom.
+        Reactivating an active key-pair replaces its window.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
       operationId: reactivateJwtKeyPair
       x-cyoda-iam-mode: jwt
       parameters:
@@ -5684,7 +5720,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
-          description: Error response
+          description: "Forbidden: the caller is not a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`)."
           content:
             application/problem+json:
               schema:
@@ -5718,7 +5754,7 @@ paths:
       summary: List registered trusted keys
       description: |
         Returns all trusted public keys registered for the caller's tenant.
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: listTrustedKeys
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -5750,7 +5786,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
-          description: Error response
+          description: Internal Server Error - the trusted-key store failed (ticket, generic message).
           content:
             application/problem+json:
               schema:
@@ -5761,6 +5797,8 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
     post:
@@ -5768,40 +5806,41 @@ paths:
         - OAuth, Keys
       summary: Register a trusted public key
       description: >
-        Registers a pre-shared public key for JWT validation. This enables
-        external applications
+        Registers a public key that verifies user assertions. An application
+        signs a user assertion with the matching private key, and an
+        on-behalf-of client of the same tenant exchanges it for a token at
+        `POST /oauth/token` (token exchange). A trusted key never verifies a
+        bearer token.
 
-        to sign user JWTs that Cyoda can verify without requiring a reachable
-        OIDC discovery endpoint.
-
-        The key is bound to the caller's tenant (legalEntityId).
-
-
-        If a key with the same `keyId` already exists and belongs to the
-        caller's tenant, it is
-
-        replaced atomically (upsert semantics). This makes the endpoint
-        retry-safe during key
-
-        rotation — a retried request after a partial failure will succeed rather
-        than conflict.
-
-        If the key belongs to a different tenant, the request is rejected with
-        `409 Conflict`.
+        The key is bound to the caller's tenant (legalEntityId). Key ids are
+        unique within a tenant only: another tenant may register the same
+        `keyId`, and the two keys are independent.
 
 
-        Use `invalidatePrevious` to retire all other active trusted keys for
-        this tenant
-
-        in a single atomic operation, with an optional grace period
-        (`invalidateGracePeriodSec`)
-
-        during which the old keys continue to be accepted.
+        If a key with the same `keyId` already exists in the caller's tenant,
+        it is replaced (upsert semantics). This makes the endpoint retry-safe
+        during key rotation — a retried request after a partial failure will
+        succeed rather than conflict.
 
 
-        Requires ADMIN or ROLE_ADMIN role. Disabled by default — enable via
+        Use `invalidatePrevious` to invalidate every other key of the tenant
+        at once. Trusted keys have no grace period: an invalidated key stops
+        verifying subject tokens immediately.
 
-        `cyoda.security.web.iam.trustedKeyRegistrationEnabled`. If `validTo` is omitted, defaults to `validFrom + 365 days`. If `validFrom` is omitted, defaults to now.
+
+        The JWK must be an RSA public key with a modulus of at least 2048
+        bits. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`,
+        `qi`, `oth`) is refused. cyoda stores and returns only the public
+        members `kty`, `kid` (the `keyId`), `n` and `e`, plus `alg` and `use`
+        when given; any other member of the request is dropped.
+
+
+        Requires ROLE_ADMIN. Disabled by default — the operator enables it with
+        `CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED=true` on every node. If
+        `validTo` is omitted, it defaults to `validFrom` plus
+        `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days (365 by default); a
+        `validTo` that is given is not limited by that setting. If `validFrom`
+        is omitted, it defaults to now.
       operationId: registerTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
@@ -5819,7 +5858,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/TrustedKeyResponseDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed body, invalid keyId format, invalid audience, or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo); UNSUPPORTED_KEY_TYPE: non-RSA JWK; TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
+          description: "Bad request — BAD_REQUEST: malformed body; invalid keyId format; a JWK with more members than CYODA_IAM_TRUSTED_KEY_MAX_JWK_PROPERTIES (default 20), with a private member (the detail names it), without kty, n or e, with a kid other than the keyId, with an RSA modulus under 2048 or over 4096 bits, with a public exponent that is not a positive odd integer, or with a non-string alg or use; validTo not after validFrom; or validFrom or validTo out of range (UTC year outside 1..9999, including the default validTo). UNSUPPORTED_KEY_TYPE: non-RSA JWK. TRUSTED_KEY_CAP_REACHED: per-tenant key cap exceeded."
           content:
             application/problem+json:
               schema:
@@ -5838,12 +5877,6 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: "Not found — FEATURE_DISABLED: trusted-key registration is disabled."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          description: "Conflict — KEY_OWNED_BY_DIFFERENT_TENANT: a key with this keyId is registered to another tenant."
           content:
             application/problem+json:
               schema:
@@ -5873,14 +5906,14 @@ paths:
         Deletes a registered trusted public key. The key must belong to the
         caller's tenant.
 
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: deleteTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to delete
+          description: "The key ID of the trusted key to delete. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
@@ -5934,34 +5967,28 @@ paths:
         - OAuth, Keys
       summary: Invalidate a trusted public key
       description: >
-        Invalidates a registered trusted public key. After invalidation, JWTs
-        signed with the
+        Invalidates a registered trusted public key at once: from the moment
+        the request returns, subject tokens signed with the corresponding
+        private key are refused on every node. Trusted keys have no grace
+        period, and the request has no body.
 
-        corresponding private key will no longer be accepted for validation
-        (after the grace period). If `gracePeriodSec` is omitted or zero, invalidation is immediate.
-
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: invalidateTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to invalidate
+          description: "The key ID of the trusted key to invalidate. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/InvalidateKeyRequestDto"
       responses:
         "200":
           description: Trusted key invalidated successfully
           content: {}
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format or gracePeriodSec out of range."
+          description: "Bad request — BAD_REQUEST: invalid keyId format."
           content:
             application/problem+json:
               schema:
@@ -6011,14 +6038,14 @@ paths:
         future. Subject tokens signed with it are accepted again inside that
         window. Reactivating an active key replaces its window.
 
-        Requires ADMIN or ROLE_ADMIN role.
+        Requires ROLE_ADMIN.
       operationId: reactivateTrustedKey
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
       parameters:
         - name: keyId
           in: path
-          description: The key ID of the trusted key to reactivate
+          description: "The key ID of the trusted key to reactivate. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           required: true
           schema:
             type: string
@@ -6075,581 +6102,6 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
-  /oauth/oidc/providers:
-    get:
-      tags:
-        - OAuth, OIDC Providers
-      summary: List all registered OIDC providers
-      description: >
-        Retrieves a list of all registered OIDC providers, including both active
-        and inactive providers. Accessible by any authenticated tenant member.
-      operationId: listOidcProviders
-      x-cyoda-iam-mode: jwt
-      parameters:
-        - name: activeOnly
-          in: query
-          required: false
-          description: When true, return only active (non-invalidated) providers.
-          schema:
-            type: boolean
-      responses:
-        "200":
-          description: List of OIDC providers retrieved successfully
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/OidcProviderResponseDto"
-        "400":
-          description: >-
-            Bad request (an unparseable `activeOnly`, or a tenant identifier
-            that is not a UUID in its canonical lowercase form and so can own
-            no provider). Body is an
-            RFC-9457 problem document; the machine-readable code is in
-            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-    post:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Register a new trusted OIDC provider
-      description: >
-        Registers a new external OIDC provider for JWT validation. The
-        provider's public keys will be
-
-        discovered from the well-known configuration endpoint and used to
-        validate JWT tokens.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: registerOidcProvider
-      x-cyoda-iam-mode: jwt
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RegisterOidcProviderRequestDto"
-        required: true
-      responses:
-        "200":
-          description: OIDC provider registered successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OidcProviderResponseDto"
-        "400":
-          description: >-
-            Bad request. Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (e.g. `BAD_REQUEST`, `OIDC_SSRF_BLOCKED`, `OIDC_INVALID_TENANT`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          description: >-
-            Provider with this well-known configuration URI already exists.
-            Body is an RFC-9457 problem document; the machine-readable code
-            is in `properties.errorCode` (e.g. `OIDC_PROVIDER_DUPLICATE`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-  /oauth/oidc/providers/reload:
-    post:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Force to reload all OIDC providers and synchronize keys with remote JWKS
-      description: >
-        Reloads all active OIDC provider configurations from the database and
-        synchronizes
-
-        cached keys with the remote JWKS endpoints.
-
-
-        Key synchronization: For each provider, this operation fetches the
-        current keys from
-
-        the remote JWKS endpoint and invalidates any locally cached keys that no
-        longer exist
-
-        in the remote JWKS. This is useful for security when OIDC providers have
-        rotated or
-
-        revoked keys.
-
-
-        This operation is useful when you want to ensure all nodes have the
-        latest OIDC provider
-
-        configurations and that any revoked keys are no longer trusted.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: reloadOidcProviders
-      x-cyoda-iam-mode: jwt
-      responses:
-        "200":
-          description: OIDC providers reloaded successfully
-          content: {}
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-  /oauth/oidc/providers/{id}:
-    delete:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Delete OIDC provider
-      description: >
-        Deletes an OIDC provider and all its associated JWK keys.
-
-        The provider will first be invalidated (if not already) and then removed
-        from storage.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: deleteOidcProvider
-      x-cyoda-iam-mode: jwt
-      parameters:
-        - name: id
-          in: path
-          description: The ID of the OIDC provider to delete
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: OIDC provider deleted successfully
-          content: {}
-        "400":
-          description: >-
-            Bad request (an unparseable provider `{id}`, or a tenant identifier
-            that is not a UUID in its canonical lowercase form and so can own
-            no provider). Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "404":
-          description: >-
-            Provider not found. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`
-            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-    patch:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Update OIDC provider
-      description: >
-        Updates configuration for an OIDC provider.
-
-
-        Note: Updating the issuers list immediately deletes all cached keys for
-        this provider.
-
-        This ensures that JWTs from issuers that are no longer trusted cannot be
-        validated using
-
-        previously cached keys. The keys will be re-fetched from the remote JWKS
-        endpoint with the
-
-        new issuer configuration when they are next needed for JWT validation.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: updateOidcProvider
-      x-cyoda-iam-mode: jwt
-      parameters:
-        - name: id
-          in: path
-          description: The ID of the OIDC provider
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/UpdateOidcProviderRequestDto"
-        required: true
-      responses:
-        "200":
-          description: OIDC provider issuers updated successfully
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OidcProviderResponseDto"
-        "400":
-          description: >-
-            Bad request (invalid body / issuers / expectedAudiences / rolesClaim,
-            or a tenant identifier that is not a UUID in its canonical lowercase
-            form). Body is an RFC-9457
-            problem document; the machine-readable code is in
-            `properties.errorCode` (`BAD_REQUEST`, `OIDC_INVALID_TENANT`). This
-            op accepts no discovery URI, so it never emits `OIDC_SSRF_BLOCKED` —
-            that is `registerOidcProvider` only.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "404":
-          description: >-
-            Provider not found. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`
-            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "409":
-          description: >-
-            Provider is inactive and cannot be updated. Body is an RFC-9457
-            problem document; the machine-readable code is in
-            `properties.errorCode` (e.g. `OIDC_PROVIDER_INACTIVE`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-  /oauth/oidc/providers/{id}/invalidate:
-    post:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Invalidate OIDC provider
-      description: >
-        Invalidates an OIDC provider, marking it as inactive and invalidating
-        all loaded public keys
-
-        associated with this provider. The provider configuration is retained
-        but will no longer be
-
-        used for JWT validation.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: invalidateOidcProvider
-      x-cyoda-iam-mode: jwt
-      parameters:
-        - name: id
-          in: path
-          description: The ID of the OIDC provider to invalidate
-          required: true
-          schema:
-            type: string
-            format: uuid
-      responses:
-        "200":
-          description: OIDC provider invalidated successfully
-          content: {}
-        "400":
-          description: >-
-            Bad request (an unparseable provider `{id}`, or a tenant identifier
-            that is not a UUID in its canonical lowercase form and so can own
-            no provider). Body is an RFC-9457 problem document; the
-            machine-readable code is in `properties.errorCode`
-            (`BAD_REQUEST`, `OIDC_INVALID_TENANT`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "404":
-          description: >-
-            Provider not found. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`
-            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
-  /oauth/oidc/providers/{id}/reactivate:
-    post:
-      tags:
-        - OAuth, OIDC Providers
-      summary: Reactivate OIDC provider
-      description: >
-        Reactivates a previously invalidated OIDC provider. The provider will be
-        marked as active
-
-        and can be used for JWT validation again.
-
-        This operation is idempotent - if the provider is already active, it
-        returns the current state.
-
-        **Authorization Required:** ROLE_ADMIN role.
-      operationId: reactivateOidcProvider
-      x-cyoda-iam-mode: jwt
-      parameters:
-        - name: id
-          in: path
-          description: The ID of the OIDC provider to reactivate
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ReactivateOidcProviderRequestDto"
-      responses:
-        "200":
-          description: OIDC provider reactivated successfully or already active
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/OidcProviderResponseDto"
-        "400":
-          description: >-
-            Bad request (an unparseable provider `{id}`, an invalid request
-            body, or a tenant identifier that is not a UUID in its canonical
-            lowercase form and so can own no provider). Body is an RFC-9457
-            problem document; the
-            machine-readable code is in `properties.errorCode` (`BAD_REQUEST`,
-            `OIDC_INVALID_TENANT`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "401":
-          description: >-
-            Unauthorized. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "403":
-          description: >-
-            Forbidden. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "404":
-          description: >-
-            Provider not found. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`
-            (e.g. `OIDC_PROVIDER_NOT_FOUND`).
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "500":
-          description: >-
-            Internal server error. Body is an RFC-9457 problem document;
-            the machine-readable code is in `properties.errorCode`.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        '501':
-          description: "Not implemented — returned when the IAM subsystem is not active (`CYODA_IAM_MODE` ≠ `jwt`)."
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
-        "503":
-          $ref: '#/components/responses/ServiceUnavailable'
-      security:
-        - bearerAuth: []
   /oauth/token:
     post:
       tags:
@@ -6659,15 +6111,22 @@ paths:
         Authenticates a M2M client and returns an access token.
 
 
-        Supports two grant types:
+        Supports two grant types, each for one kind of client:
 
 
-        1. **client_credentials** — Standard OAuth 2.0 Client Credentials Grant
-        for M2M authentication.
+        1. **client_credentials** — OAuth 2.0 Client Credentials Grant, for
+        plain and admin clients. The token carries the client as `sub` and
+        `caas_user_id`, its tenant, its roles in `scopes`, and its secret
+        generation in `cgen`.
 
         2. **urn:ietf:params:oauth:grant-type:token-exchange** — RFC 8693 Token
-        Exchange.
-           The M2M client acts on behalf of a user by presenting the user's JWT as `subject_token`.
+        Exchange, for on-behalf-of clients only. The client presents a user
+        assertion as `subject_token`: an RS256 JWT signed with a trusted key
+        of the client's tenant, whose `aud` contains the cyoda issuer and
+        whose `exp − iat` is at most 300 seconds. The token carries the
+        asserted user as `sub` and `caas_user_id`, the client as `act.sub`
+        and the client's roles in `scopes`; the assertion's roles are
+        ignored.
 
         In both cases the M2M client authenticates via HTTP Basic Authentication
 
@@ -6691,19 +6150,25 @@ paths:
               properties:
                 grant_type:
                   type: string
-                  description: The OAuth 2.0 grant type
+                  description: The OAuth 2.0 grant type. Required; missing or
+                    any other value is 400 unsupported_grant_type.
                   enum:
                     - client_credentials
                     - urn:ietf:params:oauth:grant-type:token-exchange
                 subject_token:
                   type: string
-                  description: The subject token to exchange
+                  description: The user assertion to exchange. Required for the
+                    token exchange (400 invalid_request without it); not read
+                    by client_credentials.
                 subject_token_type:
                   type: string
-                  description: The type of the subject token
+                  description: The type of the subject token. Required for the
+                    token exchange (400 invalid_request without it); not read
+                    by client_credentials.
                   enum:
                     - urn:ietf:params:oauth:token-type:jwt
-                    - urn:ietf:params:oauth:token-type:access_token
+              required:
+                - grant_type
       responses:
         "200":
           description: Access token issued successfully
@@ -6713,8 +6178,18 @@ paths:
                 $ref: "#/components/schemas/TokenResponseDto"
         "400":
           description: Bad request - unsupported_grant_type (grant_type missing or
-            not supported), or invalid_grant (the token-exchange subject token
-            is unsupported, invalid, unverifiable or carries an unusable sub)
+            not supported); unauthorized_client (client_credentials by an
+            on-behalf-of client, or a token exchange by any other client); or
+            invalid_request (a Content-Type other than
+            application/x-www-form-urlencoded, a body over 1 MiB or one that
+            does not parse as a form; on the token exchange, a
+            forbidden RFC 8693 parameter - actor_token, actor_token_type,
+            resource, audience, scope, requested_token_type - even empty, a
+            subject_token_type other than the JWT type, a malformed assertion,
+            an alg other than RS256, no kid, a kid that is not an active
+            trusted key of the client's tenant, a bad signature, an issuer the
+            key does not list, aud, exp, iat or nbf missing or out of bounds,
+            an invalid or reserved sub, or an exp that is not in the future)
           content:
             application/json:
               schema:
@@ -6722,27 +6197,80 @@ paths:
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
             client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
-            wrong secret)
+            wrong secret). Carries WWW-Authenticate Basic realm="cyoda".
+          headers:
+            WWW-Authenticate:
+              description: The client authentication scheme and realm, Basic realm="cyoda".
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "403":
-          description: Forbidden - Tenant boundary violation
+          description: Forbidden - access_denied (the assertion's caas_org_id is
+            not the client's tenant)
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "405":
-          description: Method Not Allowed - method_not_allowed (only POST is accepted)
+          description: Method Not Allowed - method_not_allowed (only POST is
+            accepted). Carries Allow POST.
+          headers:
+            Allow:
+              description: The allowed method, POST.
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
+        "429":
+          description: Too Many Requests - slow_down (the client has used its
+            per-node limit of token requests per minute, counted across both
+            grants after the client authenticates). Retry after the
+            Retry-After delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "500":
           description: Internal Server Error - server_error (ticket in
-            error_description, generic message) - the client store failed,
-            including an undecodable record or index entry, or signing failed.
+            error_description, generic message) - the client or trusted-key
+            store failed, including an undecodable record or index entry, or
+            signing failed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponseDto"
+        "501":
+          description: Not implemented — returned when the IAM subsystem is not
+            active (`CYODA_IAM_MODE` ≠ `jwt`), provided `CYODA_IAM_MOCK_ROLES`
+            includes `ROLE_M2M` (the default does) — the endpoint requires
+            that role before the mock-mode handler runs, so without it the
+            request is rejected earlier as 403 instead. Mock IAM mode issues
+            no token; the body is a problem detail with errorCode
+            NOT_IMPLEMENTED, not an OAuth error.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "503":
+          description: Service Unavailable - temporarily_unavailable (the client
+            store or the trusted-key store is unavailable, or no client-secret
+            check slot freed up within 1 second). Retry after the
+            Retry-After delay.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
           content:
             application/json:
               schema:
@@ -7383,6 +6911,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "401":
           $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
         "500":
           $ref: '#/components/responses/InternalServerError'
         "503":
@@ -9742,22 +9272,28 @@ components:
       properties:
         client_id:
           type: string
-          description: The client identifier for the M2M client
-          example: abc523BCD
+          description: The client identifier for the M2M client. Generated
+            ids are 16 characters from 0-9 and A-V.
+          example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
           pattern: ^[A-Za-z0-9]+$
         client_secret:
           type: string
-          description: The client secret for authentication
-          example: mySecretKey123
-          maxLength: 255
-          minLength: 8
+          description: The client secret for authentication, 64 lower-case hex
+            characters. Returned only by this response; store it at once.
+          example: 9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab9f2c41ab
+          maxLength: 64
+          minLength: 64
+          pattern: ^[0-9a-f]{64}$
         grant_type:
           type: string
-          description: The OAuth2 grant type (must be 'client_credentials')
+          description: "The OAuth2 grant type this client uses:
+            `client_credentials`, or the token-exchange URN for an
+            on-behalf-of client (`onBehalfOf: true`)."
           enum:
             - client_credentials
+            - "urn:ietf:params:oauth:grant-type:token-exchange"
           example: client_credentials
         client_secret_expires_at:
           type: integer
@@ -9770,22 +9306,22 @@ components:
         roles:
           type: array
           description: The roles assigned to the M2M client
-          example: "[M2M]"
+          example:
+            - ROLE_M2M
           items:
             type: string
-        client_id_issued_at:
-          type: integer
-          format: int64
-          description: "Time at which the client identifier was issued, as the number of
-            seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section
-            3.2.1. "
-          example: 1709913600
+        onBehalfOf:
+          type: boolean
+          description: "Whether this is an on-behalf-of (OBO) client: it may
+            only perform token exchanges, never `client_credentials`. Set at
+            creation and immutable."
       required:
         - client_id
         - client_secret
         - client_secret_expires_at
         - grant_type
         - roles
+        - onBehalfOf
     ErrorResponseDto:
       type: object
       properties:
@@ -9796,13 +9332,13 @@ components:
           enum:
             - invalid_request
             - invalid_client
-            - invalid_grant
             - unauthorized_client
             - unsupported_grant_type
-            - invalid_scope
             - access_denied
             - server_error
+            - temporarily_unavailable
             - method_not_allowed
+            - slow_down
           example: invalid_request
         error_description:
           type: string
@@ -10396,8 +9932,8 @@ components:
       properties:
         access_token:
           type: string
-          description: The JWT access token for API authentication
-          example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+          description: The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
+          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
           pattern: ^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$
         token_type:
           type: string
@@ -10408,155 +9944,46 @@ components:
         expires_in:
           type: integer
           format: int32
-          description: The lifetime in seconds of the access token
-          example: 3600
-          maximum: 86400
+          description: The access token's remaining lifetime in seconds (its exp
+            minus now), at most CYODA_JWT_EXPIRY_SECONDS, which is at most 3600.
+            No refresh token is issued; request a new token before this runs out.
+          example: 300
+          maximum: 3600
           minimum: 1
-        refresh_token:
-          type: string
-          description: The refresh token for obtaining new access tokens
-          example: dGhpc2lzYXJlZnJlc2h0b2tlbg==
-        scope:
-          type: string
-          description: The scope of the access token, as per RFC 6749 Section 3.3. See
-            https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-          example: ROLE_M2M
         issued_token_type:
           type: string
           description: The type of the issued token (present only for token-exchange
             responses, per RFC 8693)
           enum:
-            - urn:ietf:params:oauth:token-type:access_token
             - urn:ietf:params:oauth:token-type:jwt
       required:
         - access_token
         - expires_in
         - token_type
-    OidcProviderResponseDto:
-      type: object
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: ID for this OIDC provider entity
-          example: f47ac10b-58cc-4372-a567-0e02b2c3d479
-        wellKnownConfigUri:
-          type: string
-          format: uri
-          description: URI to the OIDC provider's well-known configuration endpoint
-          example: https://oidc-domain.local/.well-known/openid-configuration
-        active:
-          type: boolean
-          description: Whether this OIDC provider is currently active and used for JWT
-            validation
-          example: true
-        createdAt:
-          type: string
-          format: date-time
-          description: When this OIDC provider was registered
-          example: 2025-11-01T10:00:00.000Z
-        issuers:
-          type: array
-          description: "List of allowed `iss` claim values for tokens from this provider.
-            When present and non-empty, the JWT `iss` claim must match one of
-            these values bytewise. When absent or empty, the `iss` claim must
-            match the provider's discovery-document `issuer` field bytewise per
-            OIDC Core 1.0 §2."
-          example: "[https://oidc-domain.local/]"
-          items:
-            type: string
-        expectedAudiences:
-          type: array
-          description: "Optional list of audiences accepted in the JWT `aud` claim for
-            this provider. When omitted, null, or empty array, the audience claim
-            is not checked (issuer-binding is the trust anchor)."
-          items:
-            type: string
-            maxLength: 1000
-          maxItems: 10
-        rolesClaim:
-          type: string
-          maxLength: 100
-          description: "Optional override for the JWT claim that carries roles for tokens
-            from this provider. When omitted or null, falls back to the global
-            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
-            override accommodates IdP variation (e.g., Cognito uses
-            `cognito:groups`, Keycloak uses `realm_access.roles`)."
-      required:
-        - active
-        - createdAt
-        - id
-        - wellKnownConfigUri
-    RegisterOidcProviderRequestDto:
-      type: object
-      properties:
-        wellKnownConfigUri:
-          type: string
-          format: uri
-          description: URI to the OIDC provider's well-known configuration endpoint
-          example: https://oidc-domain.local/.well-known/openid-configuration
-        issuers:
-          type: array
-          description: "Optional list of allowed `iss` claim values for tokens from this
-            provider. When present, the JWT `iss` claim must match one of these
-            values bytewise. When omitted, null, or empty array, the `iss` claim
-            must match the provider's discovery-document `issuer` field bytewise
-            per OIDC Core 1.0 §2."
-          example: "[https://oidc-domain.local/]"
-          items:
-            type: string
-          maxItems: 2147483647
-        expectedAudiences:
-          type: array
-          description: "Optional list of audiences accepted in the JWT `aud` claim for
-            this provider. When omitted, null, or empty array, the audience claim
-            is not checked (issuer-binding is the trust anchor)."
-          items:
-            type: string
-            maxLength: 1000
-          maxItems: 10
-        rolesClaim:
-          type: string
-          maxLength: 100
-          description: "Optional override for the JWT claim that carries roles for tokens
-            from this provider. When omitted or null, falls back to the global
-            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
-            override accommodates IdP variation (e.g., Cognito uses
-            `cognito:groups`, Keycloak uses `realm_access.roles`)."
-      required:
-        - wellKnownConfigUri
-    ReactivateOidcProviderRequestDto:
-      type: object
-      properties:
-        reactivateKeys:
-          type: boolean
-          description: If true, also reactivates all related JWK keys that were
-            invalidated with this provider
-          example: true
     TrustedKeyResponseDto:
       type: object
       properties:
         active:
           type: boolean
-          description: Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
-        audience:
-          type: string
-          enum:
-            - human
-            - client
+          description: Whether the key is active. False after invalidation;
+            true after reactivation. It does not change when validTo passes,
+            but a key outside its validFrom..validTo window verifies no
+            assertion whatever this value says.
         issuers:
           type: array
-          example: "[https://my-app.local/]"
+          example:
+            - https://my-app.local/
           items:
             type: string
         jwk:
           type: object
           additionalProperties: true
-          description: "The registered public key in JWK format (RFC 7517). Contains only
-            public key components. "
+          description: "The registered public key in JWK format (RFC 7517): `kty`,
+            `kid`, `n` and `e`, plus `alg` and `use` when they were registered.
+            No other member is stored or returned. "
         keyId:
           type: string
-          description: Unique key identifier
+          description: Key identifier, unique within the tenant
           example: my-app-key-1
         legalEntityId:
           type: string
@@ -10570,11 +9997,14 @@ components:
         validTo:
           type: string
           format: date-time
-          description: When this key expires
+          description: When this key expires. Every registration and
+            reactivation sets it (registration defaults it to validFrom plus
+            CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days), so cyoda-go always
+            returns it. Exchanges with the key fail once it passes; rotate
+            before then.
           example: 2026-02-01T10:00:00.000Z
       required:
         - active
-        - audience
         - jwk
         - keyId
         - legalEntityId
@@ -10584,30 +10014,34 @@ components:
       properties:
         keyId:
           type: string
-          description: Unique key identifier. Will be matched against the `kid` header in
-            JWTs.
+          description: "Key identifier, unique within the caller's tenant. Will be
+            matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format)."
           example: my-app-key-1
         jwk:
           type: object
           additionalProperties: true
-          description: 'A JSON Web Key (JWK) as defined in RFC 7517. Must contain the
-            public key components only. Supported key types: RSA (`kty: "RSA"`),
-            EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC
-            7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is
-            honoured in this version.'
-          example: "{kty=RSA, kid=my-app-key-1, alg=RS256,
-            n=0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM..., e=AQAB}"
-        audience:
-          type: string
-          enum:
-            - human
-            - client
+          description: 'A JSON Web Key (JWK) as defined in RFC 7517. Only RSA
+            (`kty: "RSA"`) is honoured in this version, with a modulus of 2048
+            to 4096 bits and a positive odd public exponent. A `kid`, if
+            present, must equal `keyId`. A JWK that carries a private member (`d`, `p`,
+            `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only
+            the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are
+            stored; any other member is dropped. See RFC 7517 and RFC 7518 for
+            field definitions.'
+          example:
+            kty: RSA
+            kid: my-app-key-1
+            alg: RS256
+            n: 0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM...
+            e: AQAB
         issuers:
           type: array
-          description: "List of allowed issuer URIs. When this parameter is configured,
-            the JWT must contain an iss claim, and its value must match one of
-            the entries in this list. "
-          example: "[https://my-app.local/]"
+          description: "List of accepted issuer values. When it is set, the
+            assertion must carry an iss claim exactly equal to one of the
+            entries. The entries are plain strings compared byte for byte; no
+            URI form is required. "
+          example:
+            - https://my-app.local/
           items:
             type: string
         validFrom:
@@ -10619,30 +10053,21 @@ components:
         validTo:
           type: string
           format: date-time
-          description: "When the key expires. Defaults to the system-configured maximum
-            validity. "
+          description: "When the key expires. Defaults to validFrom plus
+            CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days (365 by default); a
+            value that is given is not limited by that setting. "
           example: 2026-10-15T10:00:00.000Z
         invalidatePrevious:
           type: boolean
-          description: "If true, invalidates all other keys for the same audience
-            belonging to the caller's tenant. Enables atomic key rotation. "
+          description: "If true, invalidates every other key of the tenant at once."
           example: false
-        invalidateGracePeriodSec:
-          type: integer
-          format: int64
-          description: "Grace period in seconds for invalidating previous keys (only used
-            when invalidatePrevious is true): each keeps at most this long, and
-            never past its current validTo. Default is 0 (immediate
-            invalidation). "
-          example: 3600
-          minimum: 0
-          maximum: 31622400
       required:
-        - audience
         - jwk
         - keyId
     InvalidateKeyRequestDto:
       type: object
+      description: Body of the key-pair invalidate request. Trusted keys have no
+        grace period, and their invalidate request has no body.
       properties:
         gracePeriodSec:
           type: integer
@@ -10651,10 +10076,12 @@ components:
             invalidation; its validTo becomes now plus this, never later than
             its current validTo. Default is 0 (it stops verifying at once).
             Invalidating the key again with 0 ends a running grace period at
-            once.
-          example: 3600
+            once. At most 3600, the longest token lifetime
+            (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value
+            is 400 BAD_REQUEST.
+          example: 300
           minimum: 0
-          maximum: 31622400
+          maximum: 3600
     ReactivateKeyRequestDto:
       type: object
       properties:
@@ -10716,11 +10143,6 @@ components:
     IssueJwtKeyPairRequestDto:
       type: object
       properties:
-        audience:
-          type: string
-          enum:
-            - human
-            - client
         algorithm:
           type: string
           description: Signing algorithm. Only `RS256` is honoured in this version.
@@ -10749,10 +10171,10 @@ components:
           example: 2026-10-15T10:00:00.000Z
         invalidateCurrent:
           type: boolean
-          description: If true, invalidates the issued key-pairs of this audience whose
-            window is open, the first rotation included. The signing key from
+          description: If true, invalidates every issued key-pair whose window is
+            open, the first rotation included. The signing key from
             `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays
-            active and signs again whenever no issued key-pair of its audience is
+            active and signs again whenever no issued key-pair is
             active and inside its window, so a rotation does not end the
             tokens the bootstrap key signed; to end a leaked token, invalidate
             the key-pair named by the `kid` in its header. An invalidated
@@ -10764,13 +10186,14 @@ components:
           description: Number of seconds the invalidated key-pairs keep verifying tokens;
             each one's validTo becomes now plus this, never later than its
             current validTo. Default is 0 (they stop verifying at once). Only
-            applicable when invalidateCurrent is true.
-          example: 36000
+            applicable when invalidateCurrent is true. At most 3600, the
+            longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token
+            outlives. A larger value is 400 BAD_REQUEST.
+          example: 300
           minimum: 0
-          maximum: 31622400
+          maximum: 3600
       required:
         - algorithm
-        - audience
     ExternalizedProcessorConfigDto:
       type: object
       properties:
@@ -11225,37 +10648,6 @@ components:
             rejection behaviour exactly.
       required:
         - workflows
-    UpdateOidcProviderRequestDto:
-      type: object
-      properties:
-        issuers:
-          type: array
-          description: "Optional list of allowed `iss` claim values for tokens from this
-            provider. When present, the JWT `iss` claim must match one of these
-            values bytewise. When omitted, null, or empty array, the `iss` claim
-            must match the provider's discovery-document `issuer` field bytewise
-            per OIDC Core 1.0 §2."
-          example: "[https://oidc-domain.local/, https://oidc-domain.local/tenant1]"
-          items:
-            type: string
-          maxItems: 2147483647
-        expectedAudiences:
-          type: array
-          description: "Optional list of audiences accepted in the JWT `aud` claim for
-            this provider. When omitted, null, or empty array, the audience claim
-            is not checked (issuer-binding is the trust anchor)."
-          items:
-            type: string
-            maxLength: 1000
-          maxItems: 10
-        rolesClaim:
-          type: string
-          maxLength: 100
-          description: "Optional override for the JWT claim that carries roles for tokens
-            from this provider. When omitted or null, falls back to the global
-            default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider
-            override accommodates IdP variation (e.g., Cognito uses
-            `cognito:groups`, Keycloak uses `realm_access.roles`)."
     PageMetadataDto:
       type: object
       properties:
@@ -11463,6 +10855,12 @@ components:
           type: string
         userId:
           type: string
+          description: The attributed user — the principal the message is recorded for.
+        attributedKind:
+          type: string
+          description: Kind of userId. Open value set. Known values are user, service and system.
+        executedBy:
+          $ref: "#/components/schemas/AuditPrincipalDto"
         recipient:
           type: string
         replyTo:
@@ -11823,7 +11221,7 @@ components:
         clientId:
           type: string
           description: The client identifier for the M2M client
-          example: abc523BCD
+          example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
           pattern: ^[A-Za-z0-9]+$
@@ -11840,14 +11238,21 @@ components:
         roles:
           type: array
           description: The roles assigned to the M2M client
-          example: "[M2M]"
+          example:
+            - ROLE_M2M
           items:
             type: string
+        onBehalfOf:
+          type: boolean
+          description: "Whether this is an on-behalf-of (OBO) client: it may
+            only perform token exchanges, never `client_credentials`. Set at
+            creation and immutable."
       required:
         - clientId
         - creationDate
         - lastUpdateDate
         - roles
+        - onBehalfOf
     AuditActorInfoDto:
       type: object
       properties:
@@ -11863,9 +11268,27 @@ components:
         externalId:
           type: string
           description: External identifier of the actor, if applicable
+        kind:
+          type: string
+          description: Open value set. Known values are user, service and system.
       required:
         - id
         - legalId
+    AuditPrincipalDto:
+      type: object
+      description: >
+        The principal that executed the request — that made a change or
+        sent a message — independent of the attributed principal. Present
+        only when one was recorded.
+      properties:
+        id:
+          type: string
+        kind:
+          type: string
+          description: Open value set. Known values are user, service and system.
+      required:
+        - id
+        - kind
     AuditEventDto:
       type: object
       discriminator:
@@ -12102,6 +11525,11 @@ components:
                 The entity's version number for this change. Strictly
                 increasing over the entity's history, across delete and
                 recreate; (entityId, version) identifies the event.
+            executedBy:
+              $ref: "#/components/schemas/AuditPrincipalDto"
+              description: The principal that executed the request,
+                independent of the attributed principal. Present only when
+                one was recorded.
       required:
         - changeType
         - microsTime
@@ -12191,6 +11619,11 @@ components:
               description: >
                 The event's identity: a time-based UUID the server assigned
                 when it recorded the event. The same on every read.
+            executedBy:
+              $ref: "#/components/schemas/AuditPrincipalDto"
+              description: The principal that executed the request,
+                independent of the attributed principal. Present only when
+                one was recorded.
       required:
         - eventId
         - eventType
@@ -12649,7 +12082,7 @@ components:
         clientId:
           type: string
           description: Client Id
-          example: abc523BCD
+          example: GC2693985CC61NUU
       required:
         - clientId
         - message
@@ -12732,7 +12165,11 @@ components:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
     Forbidden:
-      description: Forbidden — caller does not have permission for this resource
+      description: >-
+        Forbidden — caller does not have permission for this resource;
+        `properties.errorCode` is FORBIDDEN. Among the causes: the caller lacks
+        ROLE_M2M, which every operation requires except `GET /account` and the
+        client, trusted-key and key-pair operations.
       content:
         application/problem+json:
           schema:

@@ -17,8 +17,6 @@ func TestIAMFeatures_Validate_Rejections(t *testing.T) {
 		name string
 		mut  func(*auth.IAMFeatures)
 	}{
-		{"BootstrapAudience invalid", func(c *auth.IAMFeatures) { c.BootstrapAudience = "robot" }},
-		{"BootstrapAudience empty", func(c *auth.IAMFeatures) { c.BootstrapAudience = "" }},
 		{"TrustedKeyMaxPerTenant negative", func(c *auth.IAMFeatures) { c.TrustedKeyMaxPerTenant = -1 }},
 		{"M2MClientMaxPerTenant negative", func(c *auth.IAMFeatures) { c.M2MClientMaxPerTenant = -1 }},
 		{"TrustedKeyMaxValidityDays zero", func(c *auth.IAMFeatures) { c.TrustedKeyMaxValidityDays = 0 }},

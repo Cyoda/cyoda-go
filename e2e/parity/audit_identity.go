@@ -477,3 +477,63 @@ func RunAuditFinishedEventIsLatestOfTransaction(t *testing.T, fixture BackendFix
 			gotEventID, wantEventID, finishEventIDs)
 	}
 }
+
+// RunAuditOBOIdentity proves actor/executedBy identity on both audit event
+// kinds for an on-behalf-of write, identically on every backend: alice's
+// on-behalf-of token creates an entity whose single auto-transition emits a
+// StateMachine event in the same request. Both the EntityChange and the
+// StateMachine events must carry alice (kind user) as actor, and the OBO
+// client (kind service) as executedBy.
+func RunAuditOBOIdentity(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "audit-obo-identity"
+	setupSimpleWorkflow(t, admin, modelName, 1)
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	oboClientID := oboClientIDOf(t, alice)
+	id, err := client.NewClient(fixture.BaseURL(), alice).CreateEntity(t, modelName, 1, `{"name":"x","amount":1,"status":"new"}`)
+	if err != nil {
+		t.Fatalf("create as alice (OBO): %v", err)
+	}
+
+	resp, err := admin.GetAuditEvents(t, id)
+	if err != nil {
+		t.Fatalf("GetAuditEvents: %v", err)
+	}
+
+	var sawEntityChange, sawStateMachine bool
+	for _, ev := range resp.Items {
+		if ev.Actor == nil {
+			t.Fatalf("event %s: missing actor: %+v", ev.AuditEventType, ev)
+		}
+		if ev.Actor.ID != "alice" || ev.Actor.Kind != "user" {
+			t.Errorf("event %s: actor = %+v, want id=alice kind=user", ev.AuditEventType, ev.Actor)
+		}
+		switch ev.AuditEventType {
+		case "EntityChange":
+			sawEntityChange = true
+			ec, err := ev.AsEntityChange()
+			if err != nil {
+				t.Fatalf("AsEntityChange: %v", err)
+			}
+			if ec.ExecutedBy == nil || ec.ExecutedBy.ID != oboClientID || ec.ExecutedBy.Kind != "service" {
+				t.Errorf("EntityChange executedBy = %+v, want {%s service}", ec.ExecutedBy, oboClientID)
+			}
+		case "StateMachine":
+			sawStateMachine = true
+			sm, err := ev.AsStateMachine()
+			if err != nil {
+				t.Fatalf("AsStateMachine: %v", err)
+			}
+			if sm.ExecutedBy == nil || sm.ExecutedBy.ID != oboClientID || sm.ExecutedBy.Kind != "service" {
+				t.Errorf("StateMachine executedBy = %+v, want {%s service}", sm.ExecutedBy, oboClientID)
+			}
+		}
+	}
+	if !sawEntityChange || !sawStateMachine {
+		t.Fatalf("expected both EntityChange and StateMachine events, got EntityChange=%v StateMachine=%v: %v",
+			sawEntityChange, sawStateMachine, auditIdentities(t, resp.Items))
+	}
+}

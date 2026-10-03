@@ -41,16 +41,26 @@ func ownerCallout(t *testing.T, kind string) internalgrpc.Callout {
 	call.AnswerLimit = 1500 * time.Millisecond
 	call.OwnerNodeID = "owner-node"
 	call.Outer = []token.Pair{{Callout: "outer-rid", Major: 3, Minor: 1}}
+	call.Identity = ownerIdentity()
 	return call
 }
 
+// ownerIdentity is the identity the owner computed for ownerCallout: work for
+// alice, executed by the compute client C9.
+func ownerIdentity() internalgrpc.CalloutIdentity {
+	return internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: "alice", Kind: spi.PrincipalUser},
+		Executor:   spi.Principal{ID: "C9", Kind: spi.PrincipalService},
+		Roles:      []string{"ROLE_M2M"},
+	}
+}
+
 func TestNewHandOverRequest(t *testing.T) {
-	uc := spi.MustGetUserContext(testContext())
 	for _, kind := range []string{"processor", "criteria", "function"} {
 		t.Run(kind, func(t *testing.T) {
 			call := ownerCallout(t, kind)
 			call.RepeatSafe = kind != "processor"
-			req, err := newHandOverRequest(uc, "owner-node", call, 3, 7)
+			req, err := newHandOverRequest("owner-node", call, 3, 7)
 			if err != nil {
 				t.Fatalf("newHandOverRequest: %v", err)
 			}
@@ -62,9 +72,15 @@ func TestNewHandOverRequest(t *testing.T) {
 				t.Errorf("Outer = %+v", req.Outer)
 			}
 			if req.TenantID != "tenant-1" || string(req.EntityMeta.TenantID) != "tenant-1" || req.TxID != "tx-1" ||
-				req.Tags != "python" || req.UserID != "user-1" || req.PrincipalKind != spi.PrincipalUser ||
-				req.WorkflowName != "wf" || req.TransitionName != "tr" || string(req.Entity) != `{"key":"value"}` {
+				req.Tags != "python" || req.WorkflowName != "wf" || req.TransitionName != "tr" || string(req.Entity) != `{"key":"value"}` {
 				t.Errorf("shared fields wrong: %+v", req)
+			}
+			// The identity the owner computed, as it computed it: the peer
+			// attaches it and never recomputes it.
+			if req.AttributedID != "alice" || req.AttributedKind != spi.PrincipalUser ||
+				req.ExecutorID != "C9" || req.ExecutorKind != spi.PrincipalService ||
+				len(req.Roles) != 1 || req.Roles[0] != "ROLE_M2M" {
+				t.Errorf("identity fields wrong: %+v", req)
 			}
 			switch kind {
 			case "processor":
@@ -88,7 +104,6 @@ func TestNewHandOverRequest(t *testing.T) {
 }
 
 func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
-	uc := spi.MustGetUserContext(testContext())
 	tests := []struct {
 		name   string
 		mutate func(*internalgrpc.Callout)
@@ -100,12 +115,13 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 		{"no tries left", func(*internalgrpc.Callout) {}, 0, 1},
 		{"no fencing number", func(*internalgrpc.Callout) {}, 1, 0},
 		{"no source", func(c *internalgrpc.Callout) { c.Source = internalgrpc.CalloutSource{} }, 1, 1},
+		{"no identity", func(c *internalgrpc.Callout) { c.Identity = internalgrpc.CalloutIdentity{} }, 1, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			call := ownerCallout(t, "processor")
 			tt.mutate(&call)
-			if _, err := newHandOverRequest(uc, "owner-node", call, tt.tries, tt.major); err == nil {
+			if _, err := newHandOverRequest("owner-node", call, tt.tries, tt.major); err == nil {
 				t.Fatal("expected an error")
 			}
 		})
@@ -114,7 +130,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 
 func validRequest(t *testing.T, kind string) DispatchCalloutRequest {
 	t.Helper()
-	req, err := newHandOverRequest(spi.MustGetUserContext(testContext()), "owner-node", ownerCallout(t, kind), 2, 5)
+	req, err := newHandOverRequest("owner-node", ownerCallout(t, kind), 2, 5)
 	if err != nil {
 		t.Fatalf("newHandOverRequest: %v", err)
 	}
@@ -138,6 +154,10 @@ func TestRequestValidate(t *testing.T) {
 		{"no answer limit", func(r *DispatchCalloutRequest) { r.AnswerLimitMs = 0 }},
 		{"no owner", func(r *DispatchCalloutRequest) { r.OwnerNodeID = "" }},
 		{"no fencing number", func(r *DispatchCalloutRequest) { r.Major = 0 }},
+		{"no attributed id", func(r *DispatchCalloutRequest) { r.AttributedID = "" }},
+		{"no attributed kind", func(r *DispatchCalloutRequest) { r.AttributedKind = "" }},
+		{"no executor id", func(r *DispatchCalloutRequest) { r.ExecutorID = "" }},
+		{"no executor kind", func(r *DispatchCalloutRequest) { r.ExecutorKind = "" }},
 		{"processor missing", func(r *DispatchCalloutRequest) { r.Processor = nil }},
 		{"no entity id", func(r *DispatchCalloutRequest) { r.EntityMeta.ID = "" }},
 		{"no entity", func(r *DispatchCalloutRequest) { r.Entity = nil }},

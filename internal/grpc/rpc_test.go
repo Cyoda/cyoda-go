@@ -1189,6 +1189,107 @@ func TestRPC_EntityChangesMetadata(t *testing.T) {
 	}
 }
 
+// TestRPC_EntityChangesMetadata_Attribution: the gRPC change history carries
+// the attributed kind and the executor exactly as GET /entity/{id}/changes
+// does — attributedKind when the change recorded one, executedBy when it
+// recorded an executor, each omitted otherwise.
+func TestRPC_EntityChangesMetadata_Attribution(t *testing.T) {
+	str := func(p *string) string {
+		if p == nil {
+			return "<absent>"
+		}
+		return *p
+	}
+	for _, tc := range []struct {
+		name         string
+		uc           func(base *spi.UserContext) *spi.UserContext
+		wantUser     string
+		wantAttrKind *string
+		wantExec     *events.EntityChangeMetaJsonExecutedBy
+	}{
+		{
+			name: "on-behalf-of: the user, executed by the client",
+			uc: func(base *spi.UserContext) *spi.UserContext {
+				uc := *base
+				uc.UserID, uc.Kind = "alice", spi.PrincipalUser
+				uc.Executor = &spi.Principal{ID: "obo-client", Kind: spi.PrincipalService}
+				return &uc
+			},
+			wantUser:     "alice",
+			wantAttrKind: ptrString("user"),
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "obo-client", Kind: "service"},
+		},
+		{
+			name: "service client: itself on both sides",
+			uc: func(base *spi.UserContext) *spi.UserContext {
+				uc := *base
+				uc.UserID, uc.Kind = "svc-client", spi.PrincipalService
+				return &uc
+			},
+			wantUser:     "svc-client",
+			wantAttrKind: ptrString("service"),
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "svc-client", Kind: "service"},
+		},
+		{
+			name:         "no kind recorded: attributedKind omitted",
+			uc:           func(base *spi.UserContext) *spi.UserContext { return base },
+			wantUser:     "test-user",
+			wantAttrKind: nil,
+			wantExec:     &events.EntityChangeMetaJsonExecutedBy{ID: "test-user", Kind: ""},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, baseCtx := newTestEnv(t)
+			importAndLockModel(t, svc, baseCtx, "person", "1", map[string]any{"name": "Alice"})
+			ctx := spi.WithUserContext(baseCtx, tc.uc(spi.GetUserContext(baseCtx)))
+
+			createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
+				"id":         "test",
+				"dataFormat": "JSON",
+				"payload": map[string]any{
+					"model": map[string]any{"name": "person", "version": 1},
+					"data":  map[string]any{"name": "Alice"},
+				},
+			}))
+			if err != nil {
+				t.Fatalf("create failed: %v", err)
+			}
+			entityID := parseResponsePayload(t, createResp)["transactionInfo"].(map[string]any)["entityIds"].([]any)[0].(string)
+
+			stream := &mockEntityStream{ctx: baseCtx}
+			if err := svc.EntitySearchCollection(makeCE(EntityChangesMetadataGetRequest, map[string]any{
+				"id":       "test",
+				"entityId": entityID,
+			}), stream); err != nil {
+				t.Fatalf("changes metadata: %v", err)
+			}
+			if len(stream.sent) != 1 {
+				t.Fatalf("expected 1 change metadata response, got %d", len(stream.sent))
+			}
+			var typed events.EntityChangesMetadataResponseJson
+			validateResponse(t, stream.sent[0], &typed)
+			if !typed.Success {
+				t.Fatalf("success=false; error: %v", typed.Error)
+			}
+			meta := typed.ChangeMeta
+			if meta.User != tc.wantUser {
+				t.Errorf("user = %q, want %q", meta.User, tc.wantUser)
+			}
+			if str(meta.AttributedKind) != str(tc.wantAttrKind) {
+				t.Errorf("attributedKind = %s, want %s", str(meta.AttributedKind), str(tc.wantAttrKind))
+			}
+			switch {
+			case meta.ExecutedBy == nil:
+				t.Errorf("executedBy absent, want %+v", *tc.wantExec)
+			case *meta.ExecutedBy != *tc.wantExec:
+				t.Errorf("executedBy = %+v, want %+v", *meta.ExecutedBy, *tc.wantExec)
+			}
+		})
+	}
+}
+
+func ptrString(s string) *string { return &s }
+
 // --- Entity manage collection tests ---
 
 func TestRPC_EntityCreateCollection(t *testing.T) {

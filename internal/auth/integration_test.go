@@ -11,7 +11,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
@@ -47,7 +46,7 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	defer srv.Close()
 
 	// Create M2M client via store (normally would be via API, but testing the flow)
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}
@@ -83,15 +82,16 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 		t.Fatalf("expected token_type Bearer, got %s", tokenResp.TokenType)
 	}
 
-	// Validate token using JWKSValidator pointed at our test server
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
-	uc, err := validator.Validate(tokenResp.AccessToken)
+	// Validate the token in-process via the AuthService's own KeyStore —
+	// the production validator's path (no HTTP JWKS fetch).
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
+	uc, _, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate token: %v", err)
 	}
 
-	if uc.UserID != "user-1" {
-		t.Errorf("UserID = %q, want %q", uc.UserID, "user-1")
+	if uc.UserID != "TESTAPP" {
+		t.Errorf("UserID = %q, want %q", uc.UserID, "TESTAPP")
 	}
 	if string(uc.Tenant.ID) != "tenant-1" {
 		t.Errorf("TenantID = %q, want %q", uc.Tenant.ID, "tenant-1")
@@ -122,8 +122,8 @@ func TestAuthService_DeterministicKID(t *testing.T) {
 		t.Fatalf("NewAuthService B: %v", err)
 	}
 
-	kpA, errA := svcA.KeyStore().Current("client")
-	kpB, errB := svcB.KeyStore().Current("client")
+	kpA, errA := svcA.KeyStore().Current()
+	kpB, errB := svcB.KeyStore().Current()
 	if errA != nil || errB != nil || !kpA.Bootstrap || !kpB.Bootstrap {
 		t.Fatalf("bootstrap signers: A=%v (%v), B=%v (%v)", kpA, errA, kpB, errB)
 	}
@@ -170,11 +170,9 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewAuthService (node B): %v", err)
 	}
-	srvB := httptest.NewServer(svcB.Handler())
-	defer srvB.Close()
 
 	// Create M2M client on node A and issue a token
-	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client on node A: %v", err)
 	}
@@ -201,16 +199,16 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 		t.Fatalf("decode token response: %v", err)
 	}
 
-	// Validate the token issued by node A using node B's JWKS endpoint.
-	// This fails if KID is random per node (the original bug).
-	validatorB := auth.NewJWKSValidator(srvB.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
-	uc, err := validatorB.Validate(tokenResp.AccessToken)
+	// Validate the token issued by node A using node B's own KeyStore (shared
+	// KV). This fails if KID is random per node (the original bug).
+	validatorB := auth.NewValidatorFromSource(auth.NewLocalKeySource(svcB.KeyStore()), "cyoda")
+	uc, _, err := validatorB.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Node B failed to validate token from node A: %v", err)
 	}
 
-	if uc.UserID != "user-1" {
-		t.Errorf("UserID = %q, want %q", uc.UserID, "user-1")
+	if uc.UserID != "TESTAPP" {
+		t.Errorf("UserID = %q, want %q", uc.UserID, "TESTAPP")
 	}
 	if string(uc.Tenant.ID) != "tenant-1" {
 		t.Errorf("TenantID = %q, want %q", uc.Tenant.ID, "tenant-1")
@@ -234,7 +232,7 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 	defer srv.Close()
 
 	// Create an M2M client so we can authenticate
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "user-1", []string{"ROLE_ADMIN"})
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}
@@ -272,10 +270,7 @@ func TestIntegration_JWTMode_UnauthenticatedRequest(t *testing.T) {
 		t.Fatalf("NewAuthService: %v", err)
 	}
 
-	srv := httptest.NewServer(svc.Handler())
-	defer srv.Close()
-
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request without auth header
@@ -299,10 +294,7 @@ func TestIntegration_JWTMode_InvalidToken(t *testing.T) {
 		t.Fatalf("NewAuthService: %v", err)
 	}
 
-	srv := httptest.NewServer(svc.Handler())
-	defer srv.Close()
-
-	validator := auth.NewJWKSValidator(srv.URL+"/.well-known/jwks.json", "cyoda", 5*time.Minute)
+	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), "cyoda")
 	authenticator := auth.NewDelegatingAuthenticator(validator)
 
 	// Request with invalid token

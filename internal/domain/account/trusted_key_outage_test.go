@@ -34,7 +34,7 @@ type outageTrustedKeyStore struct {
 	auth.TrustedKeyStore
 }
 
-func (outageTrustedKeyStore) Register(context.Context, *auth.TrustedKey, auth.RotateOptions) error {
+func (outageTrustedKeyStore) Register(context.Context, *auth.TrustedKey, bool) error {
 	return fmt.Errorf("failed to persist trusted key: %w", kvOutageErr{})
 }
 
@@ -42,7 +42,11 @@ func (outageTrustedKeyStore) Delete(context.Context, spi.TenantID, string) error
 	return fmt.Errorf("failed to delete trusted key from KV store: %w", kvOutageErr{})
 }
 
-func (outageTrustedKeyStore) Invalidate(context.Context, spi.TenantID, string, int64) error {
+func (outageTrustedKeyStore) List(context.Context, spi.TenantID) ([]*auth.TrustedKey, error) {
+	return nil, fmt.Errorf("failed to list trusted keys: %w", kvOutageErr{})
+}
+
+func (outageTrustedKeyStore) Invalidate(context.Context, spi.TenantID, string) error {
 	return fmt.Errorf("failed to persist invalidation: %w", kvOutageErr{})
 }
 
@@ -54,7 +58,7 @@ func handlerWithTrustedStore(t *testing.T, store auth.TrustedKeyStore) *account.
 	t.Helper()
 	feats := auth.DefaultIAMFeatures()
 	feats.TrustedKeyRegistrationEnabled = true
-	return account.New(nil, nil, newTestKeyStore(t), store, nil, feats)
+	return account.New(newTestKeyStore(t), store, nil, feats, auth.OperatorGuard{})
 }
 
 // trustedKeyMutations drives the three handlers whose only failure answer was
@@ -124,12 +128,12 @@ func TestTrustedKeyMutations_UnknownKey_Still404(t *testing.T) {
 	}
 }
 
-// Register goes through the same trustedKeyMutationError routing as the
+// Register goes through the same trustedKeyStoreError routing as the
 // other four handlers: a KV write failure is a 503, not a 500 that leaks
 // storage internals, and not misread as some domain 4xx.
 func TestRegisterTrustedKey_StorageOutage_Return503(t *testing.T) {
 	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
-	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1"), Audience: "human"})
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: rsaJWK(t, "k1")})
 	w := httptest.NewRecorder()
 	h.RegisterTrustedKey(w, adminReq(t, http.MethodPost, "/oauth/keys/trusted", body))
 	if w.Code != http.StatusServiceUnavailable {
@@ -154,7 +158,7 @@ func TestRegisterTrustedKey_StorageOutage_Return503(t *testing.T) {
 // while the immediate read-back misses the key — e.g. a concurrent delete
 // landing on another node between the write and the read. It exercises
 // ReactivateTrustedKey's post-Reactivate Get: that failure must route
-// through trustedKeyMutationError like every other trusted-key store
+// through trustedKeyStoreError like every other trusted-key store
 // failure, not an unconditional 500.
 type reactivateThenMissingStore struct {
 	auth.TrustedKeyStore
@@ -177,4 +181,51 @@ func TestReactivateTrustedKey_GetAfterReactivate_NotFound_Returns404(t *testing.
 		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())
 	}
 	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeTrustedKeyNotFound)
+}
+
+// failingListTrustedKeyStore fails List with an error that carries no
+// storage-unavailable marker: a store failure of any other kind.
+type failingListTrustedKeyStore struct {
+	auth.TrustedKeyStore
+}
+
+func (failingListTrustedKeyStore) List(context.Context, spi.TenantID) ([]*auth.TrustedKey, error) {
+	return nil, fmt.Errorf("failed to list trusted keys: %s", kvOutageDSN)
+}
+
+// The list reads the store, so it can fail: storage unavailable is a
+// retryable 503, never an empty list; the response carries no internals.
+func TestListTrustedKeys_StoreUnavailable_503(t *testing.T) {
+	h := handlerWithTrustedStore(t, outageTrustedKeyStore{})
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, adminReq(t, http.MethodGet, "/oauth/keys/trusted", nil))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
+	}
+	commontest.ExpectErrorCode(t, w.Result(), common.ErrCodeStorageUnavailable)
+	if strings.Contains(w.Body.String(), kvOutageDSN) {
+		t.Errorf("response leaked storage internals: %s", w.Body.String())
+	}
+}
+
+// Any other list failure is a 500 with a ticket and a generic message.
+func TestListTrustedKeys_StoreFailure_500(t *testing.T) {
+	h := handlerWithTrustedStore(t, failingListTrustedKeyStore{})
+	w := httptest.NewRecorder()
+	h.ListTrustedKeys(w, adminReq(t, http.MethodGet, "/oauth/keys/trusted", nil))
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), kvOutageDSN) {
+		t.Errorf("response leaked storage internals: %s", w.Body.String())
+	}
+	var pd struct {
+		Ticket string `json:"ticket"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &pd); err != nil {
+		t.Fatalf("decode problem detail: %v; body: %s", err, w.Body.String())
+	}
+	if pd.Ticket == "" {
+		t.Errorf("500 carries no ticket; body: %s", w.Body.String())
+	}
 }

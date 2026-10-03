@@ -405,15 +405,15 @@ func (e EntityChangeMetaChangeType) Valid() bool {
 
 // Defines values for ErrorResponseDtoError.
 const (
-	AccessDenied         ErrorResponseDtoError = "access_denied"
-	InvalidClient        ErrorResponseDtoError = "invalid_client"
-	InvalidGrant         ErrorResponseDtoError = "invalid_grant"
-	InvalidRequest       ErrorResponseDtoError = "invalid_request"
-	InvalidScope         ErrorResponseDtoError = "invalid_scope"
-	MethodNotAllowed     ErrorResponseDtoError = "method_not_allowed"
-	ServerError          ErrorResponseDtoError = "server_error"
-	UnauthorizedClient   ErrorResponseDtoError = "unauthorized_client"
-	UnsupportedGrantType ErrorResponseDtoError = "unsupported_grant_type"
+	AccessDenied           ErrorResponseDtoError = "access_denied"
+	InvalidClient          ErrorResponseDtoError = "invalid_client"
+	InvalidRequest         ErrorResponseDtoError = "invalid_request"
+	MethodNotAllowed       ErrorResponseDtoError = "method_not_allowed"
+	ServerError            ErrorResponseDtoError = "server_error"
+	SlowDown               ErrorResponseDtoError = "slow_down"
+	TemporarilyUnavailable ErrorResponseDtoError = "temporarily_unavailable"
+	UnauthorizedClient     ErrorResponseDtoError = "unauthorized_client"
+	UnsupportedGrantType   ErrorResponseDtoError = "unsupported_grant_type"
 )
 
 // Valid indicates whether the value is a known member of the ErrorResponseDtoError enum.
@@ -423,15 +423,15 @@ func (e ErrorResponseDtoError) Valid() bool {
 		return true
 	case InvalidClient:
 		return true
-	case InvalidGrant:
-		return true
 	case InvalidRequest:
-		return true
-	case InvalidScope:
 		return true
 	case MethodNotAllowed:
 		return true
 	case ServerError:
+		return true
+	case SlowDown:
+		return true
+	case TemporarilyUnavailable:
 		return true
 	case UnauthorizedClient:
 		return true
@@ -574,24 +574,6 @@ func (e IssueJwtKeyPairRequestDtoAlgorithm) Valid() bool {
 	case IssueJwtKeyPairRequestDtoAlgorithmRS384:
 		return true
 	case IssueJwtKeyPairRequestDtoAlgorithmRS512:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for IssueJwtKeyPairRequestDtoAudience.
-const (
-	IssueJwtKeyPairRequestDtoAudienceClient IssueJwtKeyPairRequestDtoAudience = "client"
-	IssueJwtKeyPairRequestDtoAudienceHuman  IssueJwtKeyPairRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the IssueJwtKeyPairRequestDtoAudience enum.
-func (e IssueJwtKeyPairRequestDtoAudience) Valid() bool {
-	switch e {
-	case IssueJwtKeyPairRequestDtoAudienceClient:
-		return true
-	case IssueJwtKeyPairRequestDtoAudienceHuman:
 		return true
 	default:
 		return false
@@ -859,24 +841,6 @@ const (
 func (e ProcessorDefinitionDtoType) Valid() bool {
 	switch e {
 	case ProcessorDefinitionDtoTypeExternalized:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for RegisterTrustedKeyRequestDtoAudience.
-const (
-	RegisterTrustedKeyRequestDtoAudienceClient RegisterTrustedKeyRequestDtoAudience = "client"
-	RegisterTrustedKeyRequestDtoAudienceHuman  RegisterTrustedKeyRequestDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the RegisterTrustedKeyRequestDtoAudience enum.
-func (e RegisterTrustedKeyRequestDtoAudience) Valid() bool {
-	switch e {
-	case RegisterTrustedKeyRequestDtoAudienceClient:
-		return true
-	case RegisterTrustedKeyRequestDtoAudienceHuman:
 		return true
 	default:
 		return false
@@ -1269,13 +1233,16 @@ func (e SystemAuditEventDtoSeverity) Valid() bool {
 
 // Defines values for TechnicalUserCredentialsDtoGrantType.
 const (
-	TechnicalUserCredentialsDtoGrantTypeClientCredentials TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeClientCredentials                        TechnicalUserCredentialsDtoGrantType = "client_credentials"
+	TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange TechnicalUserCredentialsDtoGrantType = "urn:ietf:params:oauth:grant-type:token-exchange"
 )
 
 // Valid indicates whether the value is a known member of the TechnicalUserCredentialsDtoGrantType enum.
 func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 	switch e {
 	case TechnicalUserCredentialsDtoGrantTypeClientCredentials:
+		return true
+	case TechnicalUserCredentialsDtoGrantTypeUrnIetfParamsOauthGrantTypeTokenExchange:
 		return true
 	default:
 		return false
@@ -1284,15 +1251,12 @@ func (e TechnicalUserCredentialsDtoGrantType) Valid() bool {
 
 // Defines values for TokenResponseDtoIssuedTokenType.
 const (
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt         TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt TokenResponseDtoIssuedTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the TokenResponseDtoIssuedTokenType enum.
 func (e TokenResponseDtoIssuedTokenType) Valid() bool {
 	switch e {
-	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case TokenResponseDtoIssuedTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
@@ -1309,24 +1273,6 @@ const (
 func (e TokenResponseDtoTokenType) Valid() bool {
 	switch e {
 	case Bearer:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for TrustedKeyResponseDtoAudience.
-const (
-	TrustedKeyResponseDtoAudienceClient TrustedKeyResponseDtoAudience = "client"
-	TrustedKeyResponseDtoAudienceHuman  TrustedKeyResponseDtoAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the TrustedKeyResponseDtoAudience enum.
-func (e TrustedKeyResponseDtoAudience) Valid() bool {
-	switch e {
-	case TrustedKeyResponseDtoAudienceClient:
-		return true
-	case TrustedKeyResponseDtoAudienceHuman:
 		return true
 	default:
 		return false
@@ -1606,24 +1552,6 @@ func (e SetEntityModelChangeLevelParamsChangeLevel) Valid() bool {
 	}
 }
 
-// Defines values for GetCurrentJwtKeyPairParamsAudience.
-const (
-	GetCurrentJwtKeyPairParamsAudienceClient GetCurrentJwtKeyPairParamsAudience = "client"
-	GetCurrentJwtKeyPairParamsAudienceHuman  GetCurrentJwtKeyPairParamsAudience = "human"
-)
-
-// Valid indicates whether the value is a known member of the GetCurrentJwtKeyPairParamsAudience enum.
-func (e GetCurrentJwtKeyPairParamsAudience) Valid() bool {
-	switch e {
-	case GetCurrentJwtKeyPairParamsAudienceClient:
-		return true
-	case GetCurrentJwtKeyPairParamsAudienceHuman:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for GetTechnicalUserTokenFormdataBodyGrantType.
 const (
 	GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials                        GetTechnicalUserTokenFormdataBodyGrantType = "client_credentials"
@@ -1644,15 +1572,12 @@ func (e GetTechnicalUserTokenFormdataBodyGrantType) Valid() bool {
 
 // Defines values for GetTechnicalUserTokenFormdataBodySubjectTokenType.
 const (
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:access_token"
-	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt         GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt GetTechnicalUserTokenFormdataBodySubjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 )
 
 // Valid indicates whether the value is a known member of the GetTechnicalUserTokenFormdataBodySubjectTokenType enum.
 func (e GetTechnicalUserTokenFormdataBodySubjectTokenType) Valid() bool {
 	switch e {
-	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeAccessToken:
-		return true
 	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt:
 		return true
 	default:
@@ -1743,6 +1668,9 @@ type AuditActorInfoDto struct {
 	// Id Identifier of the actor
 	Id string `json:"id"`
 
+	// Kind Open value set. Known values are user, service and system.
+	Kind *string `json:"kind,omitempty"`
+
 	// LegalId Legal entity identifier of the actor
 	LegalId string `json:"legalId"`
 
@@ -1786,6 +1714,14 @@ type AuditEventDto struct {
 
 // AuditEventDtoSeverity Severity level of the event
 type AuditEventDtoSeverity string
+
+// AuditPrincipalDto The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
+type AuditPrincipalDto struct {
+	Id string `json:"id"`
+
+	// Kind Open value set. Known values are user, service and system.
+	Kind string `json:"kind"`
+}
 
 // CancelAsyncSearchDto defines model for CancelAsyncSearchDto.
 type CancelAsyncSearchDto struct {
@@ -1835,17 +1771,24 @@ type EdgeMessageDto struct {
 
 // EdgeMessageHeader defines model for EdgeMessageHeader.
 type EdgeMessageHeader struct {
-	ContentEncoding string `json:"contentEncoding"`
-	ContentLength   int64  `json:"contentLength"`
+	// AttributedKind Kind of userId. Open value set. Known values are user, service and system.
+	AttributedKind  *string `json:"attributedKind,omitempty"`
+	ContentEncoding string  `json:"contentEncoding"`
+	ContentLength   int64   `json:"contentLength"`
 
 	// ContentType Informational only; see EdgeMessagePayload note. Proper content-type handling is a planned future feature.
 	ContentType   string  `json:"contentType"`
 	CorrelationId *string `json:"correlationId,omitempty"`
-	MessageId     *string `json:"messageId,omitempty"`
-	Recipient     *string `json:"recipient,omitempty"`
-	ReplyTo       *string `json:"replyTo,omitempty"`
-	Subject       string  `json:"subject"`
-	UserId        *string `json:"userId,omitempty"`
+
+	// ExecutedBy The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
+	MessageId  *string            `json:"messageId,omitempty"`
+	Recipient  *string            `json:"recipient,omitempty"`
+	ReplyTo    *string            `json:"replyTo,omitempty"`
+	Subject    string             `json:"subject"`
+
+	// UserId The attributed user — the principal the message is recorded for.
+	UserId *string `json:"userId,omitempty"`
 }
 
 // EdgeMessageMetaData Flat map of the message's metadata key-value pairs, symmetric with the `metaData` supplied at creation. All values are indexed for search.
@@ -1894,6 +1837,9 @@ type EntityChangeAuditEventDto struct {
 
 	// EntityModel Type of the entity related to this event (model.version)
 	EntityModel *string `json:"entityModel,omitempty"`
+
+	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
 
 	// MicrosTime time in microseconds when the event occurred
 	MicrosTime int64 `json:"microsTime"`
@@ -2416,9 +2362,9 @@ type GroupedStatsRequest_Condition struct {
 	union json.RawMessage
 }
 
-// InvalidateKeyRequestDto defines model for InvalidateKeyRequestDto.
+// InvalidateKeyRequestDto Body of the key-pair invalidate request. Trusted keys have no grace period, and their invalidate request has no body.
 type InvalidateKeyRequestDto struct {
-	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once.
+	// GracePeriodSec Number of seconds the key keeps verifying tokens after invalidation; its validTo becomes now plus this, never later than its current validTo. Default is 0 (it stops verifying at once). Invalidating the key again with 0 ends a running grace period at once. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	GracePeriodSec *int64 `json:"gracePeriodSec,omitempty"`
 }
 
@@ -2426,12 +2372,11 @@ type InvalidateKeyRequestDto struct {
 type IssueJwtKeyPairRequestDto struct {
 	// Algorithm Signing algorithm. Only `RS256` is honoured in this version.
 	Algorithm IssueJwtKeyPairRequestDtoAlgorithm `json:"algorithm"`
-	Audience  IssueJwtKeyPairRequestDtoAudience  `json:"audience"`
 
-	// InvalidateCurrent If true, invalidates the issued key-pairs of this audience whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair of its audience is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
+	// InvalidateCurrent If true, invalidates every issued key-pair whose window is open, the first rotation included. The signing key from `CYODA_JWT_SIGNING_KEY` (the bootstrap key) is never invalidated by a rotation; it stays active and signs again whenever no issued key-pair is active and inside its window, so a rotation does not end the tokens the bootstrap key signed; to end a leaked token, invalidate the key-pair named by the `kid` in its header. An invalidated key-pair never signs again unless reactivated.
 	InvalidateCurrent *bool `json:"invalidateCurrent,omitempty"`
 
-	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true.
+	// InvalidateGracePeriodSec Number of seconds the invalidated key-pairs keep verifying tokens; each one's validTo becomes now plus this, never later than its current validTo. Default is 0 (they stop verifying at once). Only applicable when invalidateCurrent is true. At most 3600, the longest token lifetime (CYODA_JWT_EXPIRY_SECONDS), which no token outlives. A larger value is 400 BAD_REQUEST.
 	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
 
 	// ValidFrom When the key-pair becomes valid. Defaults to current date-time if not specified.
@@ -2443,9 +2388,6 @@ type IssueJwtKeyPairRequestDto struct {
 
 // IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
-
-// IssueJwtKeyPairRequestDtoAudience defines model for IssueJwtKeyPairRequestDto.Audience.
-type IssueJwtKeyPairRequestDtoAudience string
 
 // JsonNode defines model for JsonNode.
 type JsonNode = map[string]interface{}
@@ -2551,30 +2493,6 @@ type NewMessageRequest struct {
 	Payload EdgeMessagePayload `json:"payload"`
 }
 
-// OidcProviderResponseDto defines model for OidcProviderResponseDto.
-type OidcProviderResponseDto struct {
-	// Active Whether this OIDC provider is currently active and used for JWT validation
-	Active bool `json:"active"`
-
-	// CreatedAt When this OIDC provider was registered
-	CreatedAt time.Time `json:"createdAt"`
-
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Id ID for this OIDC provider entity
-	Id openapi_types.UUID `json:"id"`
-
-	// Issuers List of allowed `iss` claim values for tokens from this provider. When present and non-empty, the JWT `iss` claim must match one of these values bytewise. When absent or empty, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
-}
-
 // PageMetadataDto defines model for PageMetadataDto.
 type PageMetadataDto struct {
 	// Number Current page number (zero-based)
@@ -2671,55 +2589,26 @@ type ReactivateKeyRequestDto struct {
 	ValidTo time.Time `json:"validTo"`
 }
 
-// ReactivateOidcProviderRequestDto defines model for ReactivateOidcProviderRequestDto.
-type ReactivateOidcProviderRequestDto struct {
-	// ReactivateKeys If true, also reactivates all related JWK keys that were invalidated with this provider
-	ReactivateKeys *bool `json:"reactivateKeys,omitempty"`
-}
-
-// RegisterOidcProviderRequestDto defines model for RegisterOidcProviderRequestDto.
-type RegisterOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
-
-	// WellKnownConfigUri URI to the OIDC provider's well-known configuration endpoint
-	WellKnownConfigUri string `json:"wellKnownConfigUri"`
-}
-
 // RegisterTrustedKeyRequestDto defines model for RegisterTrustedKeyRequestDto.
 type RegisterTrustedKeyRequestDto struct {
-	Audience RegisterTrustedKeyRequestDtoAudience `json:"audience"`
-
-	// InvalidateGracePeriodSec Grace period in seconds for invalidating previous keys (only used when invalidatePrevious is true): each keeps at most this long, and never past its current validTo. Default is 0 (immediate invalidation).
-	InvalidateGracePeriodSec *int64 `json:"invalidateGracePeriodSec,omitempty"`
-
-	// InvalidatePrevious If true, invalidates all other keys for the same audience belonging to the caller's tenant. Enables atomic key rotation.
+	// InvalidatePrevious If true, invalidates every other key of the tenant at once.
 	InvalidatePrevious *bool `json:"invalidatePrevious,omitempty"`
 
-	// Issuers List of allowed issuer URIs. When this parameter is configured, the JWT must contain an iss claim, and its value must match one of the entries in this list.
+	// Issuers List of accepted issuer values. When it is set, the assertion must carry an iss claim exactly equal to one of the entries. The entries are plain strings compared byte for byte; no URI form is required.
 	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Must contain the public key components only. Supported key types: RSA (`kty: "RSA"`), EC (`kty: "EC"`), and OKP/EdDSA (`kty: "OKP"`). See RFC 7517, RFC 7518, and RFC 8037 for field definitions. Only RSA (`kty: "RSA"`) is honoured in this version.
+	// Jwk A JSON Web Key (JWK) as defined in RFC 7517. Only RSA (`kty: "RSA"`) is honoured in this version, with a modulus of 2048 to 4096 bits and a positive odd public exponent. A `kid`, if present, must equal `keyId`. A JWK that carries a private member (`d`, `p`, `q`, `dp`, `dq`, `qi`, `oth`) is refused with 400 BAD_REQUEST. Only the public members `kty`, `kid`, `n`, `e`, `alg` and `use` are stored; any other member is dropped. See RFC 7517 and RFC 7518 for field definitions.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier. Will be matched against the `kid` header in JWTs.
+	// KeyId Key identifier, unique within the caller's tenant. Will be matched against the `kid` header in JWTs. 1 to 128 characters from A-Z, a-z, 0-9, '.', '_' and '-' (^[A-Za-z0-9._-]{1,128}$); any other value is 400 BAD_REQUEST (invalid keyId format).
 	KeyId string `json:"keyId"`
 
 	// ValidFrom When the key becomes valid. Defaults to current time if not specified.
 	ValidFrom *time.Time `json:"validFrom,omitempty"`
 
-	// ValidTo When the key expires. Defaults to the system-configured maximum validity.
+	// ValidTo When the key expires. Defaults to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days (365 by default); a value that is given is not limited by that setting.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// RegisterTrustedKeyRequestDtoAudience defines model for RegisterTrustedKeyRequestDto.Audience.
-type RegisterTrustedKeyRequestDtoAudience string
 
 // ScheduleFunctionDto A Function callout that computes a scheduled transition's firing
 // time (and optionally its expiry) per entity, in place of a static
@@ -2908,6 +2797,9 @@ type StateMachineAuditEventDto struct {
 	// terminal abort event in the audit log.
 	EventType *StateMachineAuditEventDtoEventType `json:"eventType,omitempty"`
 
+	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
+	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
+
 	// MicrosTime time in microseconds when the event occurred
 	MicrosTime int64 `json:"microsTime"`
 
@@ -3056,26 +2948,26 @@ type SystemAuditEventDtoSeverity string
 
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId The client identifier for the M2M client. Generated ids are 16 characters from 0-9 and A-V.
 	ClientId string `json:"client_id"`
 
-	// ClientIdIssuedAt Time at which the client identifier was issued, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch) per RFC 7591 Section 3.2.1.
-	ClientIdIssuedAt *int64 `json:"client_id_issued_at,omitempty"`
-
-	// ClientSecret The client secret for authentication
+	// ClientSecret The client secret for authentication, 64 lower-case hex characters. Returned only by this response; store it at once.
 	ClientSecret string `json:"client_secret"`
 
 	// ClientSecretExpiresAt Time at which the client secret will expire, as the number of seconds from 1970-01-01T00:00:00Z (Unix epoch), or 0 if it will not expire. Per RFC 7591 Section 3.2.1, this field is required when a client_secret is issued.
 	ClientSecretExpiresAt int64 `json:"client_secret_expires_at"`
 
-	// GrantType The OAuth2 grant type (must be 'client_credentials')
+	// GrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 	GrantType TechnicalUserCredentialsDtoGrantType `json:"grant_type"`
+
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
 
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
 }
 
-// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type (must be 'client_credentials')
+// TechnicalUserCredentialsDtoGrantType The OAuth2 grant type this client uses: `client_credentials`, or the token-exchange URN for an on-behalf-of client (`onBehalfOf: true`).
 type TechnicalUserCredentialsDtoGrantType string
 
 // TechnicalUserDto defines model for TechnicalUserDto.
@@ -3089,26 +2981,23 @@ type TechnicalUserDto struct {
 	// LastUpdateDate The date and time when the M2M client was last updated
 	LastUpdateDate time.Time `json:"lastUpdateDate"`
 
+	// OnBehalfOf Whether this is an on-behalf-of (OBO) client: it may only perform token exchanges, never `client_credentials`. Set at creation and immutable.
+	OnBehalfOf bool `json:"onBehalfOf"`
+
 	// Roles The roles assigned to the M2M client
 	Roles []string `json:"roles"`
 }
 
 // TokenResponseDto defines model for TokenResponseDto.
 type TokenResponseDto struct {
-	// AccessToken The JWT access token for API authentication
+	// AccessToken The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
 	AccessToken string `json:"access_token"`
 
-	// ExpiresIn The lifetime in seconds of the access token
+	// ExpiresIn The access token's remaining lifetime in seconds (its exp minus now), at most CYODA_JWT_EXPIRY_SECONDS, which is at most 3600. No refresh token is issued; request a new token before this runs out.
 	ExpiresIn int32 `json:"expires_in"`
 
 	// IssuedTokenType The type of the issued token (present only for token-exchange responses, per RFC 8693)
 	IssuedTokenType *TokenResponseDtoIssuedTokenType `json:"issued_token_type,omitempty"`
-
-	// RefreshToken The refresh token for obtaining new access tokens
-	RefreshToken *string `json:"refresh_token,omitempty"`
-
-	// Scope The scope of the access token, as per RFC 6749 Section 3.3. See https://datatracker.ietf.org/doc/html/rfc6749#section-3.3
-	Scope *string `json:"scope,omitempty"`
 
 	// TokenType The type of token issued (currently always 'Bearer')
 	TokenType TokenResponseDtoTokenType `json:"token_type"`
@@ -3222,15 +3111,14 @@ type TransitionScheduleDto struct {
 
 // TrustedKeyResponseDto defines model for TrustedKeyResponseDto.
 type TrustedKeyResponseDto struct {
-	// Active Whether the key is currently active. False during the grace period after invalidation; true after reactivation.
-	Active   bool                          `json:"active"`
-	Audience TrustedKeyResponseDtoAudience `json:"audience"`
-	Issuers  *[]string                     `json:"issuers,omitempty"`
+	// Active Whether the key is active. False after invalidation; true after reactivation. It does not change when validTo passes, but a key outside its validFrom..validTo window verifies no assertion whatever this value says.
+	Active  bool      `json:"active"`
+	Issuers *[]string `json:"issuers,omitempty"`
 
-	// Jwk The registered public key in JWK format (RFC 7517). Contains only public key components.
+	// Jwk The registered public key in JWK format (RFC 7517): `kty`, `kid`, `n` and `e`, plus `alg` and `use` when they were registered. No other member is stored or returned.
 	Jwk map[string]interface{} `json:"jwk"`
 
-	// KeyId Unique key identifier
+	// KeyId Key identifier, unique within the tenant
 	KeyId string `json:"keyId"`
 
 	// LegalEntityId The tenant this key is bound to
@@ -3239,12 +3127,9 @@ type TrustedKeyResponseDto struct {
 	// ValidFrom When this key became valid
 	ValidFrom time.Time `json:"validFrom"`
 
-	// ValidTo When this key expires
+	// ValidTo When this key expires. Every registration and reactivation sets it (registration defaults it to validFrom plus CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS days), so cyoda-go always returns it. Exchanges with the key fail once it passes; rotate before then.
 	ValidTo *time.Time `json:"validTo,omitempty"`
 }
-
-// TrustedKeyResponseDtoAudience defines model for TrustedKeyResponseDto.Audience.
-type TrustedKeyResponseDtoAudience string
 
 // UniqueKeyDto A composite unique key definition over one or more scalar leaf fields.
 type UniqueKeyDto struct {
@@ -3253,18 +3138,6 @@ type UniqueKeyDto struct {
 
 	// Id Unique identifier for this key definition.
 	Id string `json:"id"`
-}
-
-// UpdateOidcProviderRequestDto defines model for UpdateOidcProviderRequestDto.
-type UpdateOidcProviderRequestDto struct {
-	// ExpectedAudiences Optional list of audiences accepted in the JWT `aud` claim for this provider. When omitted, null, or empty array, the audience claim is not checked (issuer-binding is the trust anchor).
-	ExpectedAudiences *[]string `json:"expectedAudiences,omitempty"`
-
-	// Issuers Optional list of allowed `iss` claim values for tokens from this provider. When present, the JWT `iss` claim must match one of these values bytewise. When omitted, null, or empty array, the `iss` claim must match the provider's discovery-document `issuer` field bytewise per OIDC Core 1.0 §2.
-	Issuers *[]string `json:"issuers,omitempty"`
-
-	// RolesClaim Optional override for the JWT claim that carries roles for tokens from this provider. When omitted or null, falls back to the global default (CYODA_OIDC_ROLES_CLAIM, typically `roles`). Per-provider override accommodates IdP variation (e.g., Cognito uses `cognito:groups`, Keycloak uses `realm_access.roles`).
-	RolesClaim *string `json:"rolesClaim,omitempty"`
 }
 
 // UserAccountInfoDto defines model for UserAccountInfoDto.
@@ -3506,8 +3379,11 @@ type GetStateMachineFinishedEventParams struct {
 
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
-	// WithAdminRole When true, the created M2M client will additionally receive the ADMIN role. Requires the M2M admin role feature flag to be enabled.
+	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
+
+	// OnBehalfOf When true, the created client is an on-behalf-of (OBO) client: it may only perform token exchanges (`urn:ietf:params:oauth:grant-type:token-exchange`), never `client_credentials`. The flag is immutable and never combined with `withAdminRole=true`, and the client is never created in the `PLATFORM` tenant.
+	OnBehalfOf *bool `form:"onBehalfOf,omitempty" json:"onBehalfOf,omitempty"`
 }
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
@@ -4015,9 +3891,6 @@ type NewMessageParams struct {
 	// XMessageID Custom message identifier
 	XMessageID *string `json:"X-Message-ID,omitempty"`
 
-	// XUserID ID of the message sender
-	XUserID *string `json:"X-User-ID,omitempty"`
-
 	// XRecipient Intended message recipient
 	XRecipient *string `json:"X-Recipient,omitempty"`
 
@@ -4087,29 +3960,15 @@ type ValidateEntityModelJSONBody = map[string]interface{}
 // SetEntityModelChangeLevelParamsChangeLevel defines parameters for SetEntityModelChangeLevel.
 type SetEntityModelChangeLevelParamsChangeLevel string
 
-// GetCurrentJwtKeyPairParams defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParams struct {
-	Audience GetCurrentJwtKeyPairParamsAudience `form:"audience" json:"audience"`
-}
-
-// GetCurrentJwtKeyPairParamsAudience defines parameters for GetCurrentJwtKeyPair.
-type GetCurrentJwtKeyPairParamsAudience string
-
-// ListOidcProvidersParams defines parameters for ListOidcProviders.
-type ListOidcProvidersParams struct {
-	// ActiveOnly When true, return only active (non-invalidated) providers.
-	ActiveOnly *bool `form:"activeOnly,omitempty" json:"activeOnly,omitempty"`
-}
-
 // GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
 type GetTechnicalUserTokenFormdataBody struct {
-	// GrantType The OAuth 2.0 grant type
-	GrantType *GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type,omitempty" json:"grant_type,omitempty"`
+	// GrantType The OAuth 2.0 grant type. Required; missing or any other value is 400 unsupported_grant_type.
+	GrantType GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type" json:"grant_type"`
 
-	// SubjectToken The subject token to exchange
+	// SubjectToken The user assertion to exchange. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
 	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
 
-	// SubjectTokenType The type of the subject token
+	// SubjectTokenType The type of the subject token. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
 	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
 }
 
@@ -4329,20 +4188,8 @@ type ReactivateJwtKeyPairJSONRequestBody = ReactivateKeyRequestDto
 // RegisterTrustedKeyJSONRequestBody defines body for RegisterTrustedKey for application/json ContentType.
 type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 
-// InvalidateTrustedKeyJSONRequestBody defines body for InvalidateTrustedKey for application/json ContentType.
-type InvalidateTrustedKeyJSONRequestBody = InvalidateKeyRequestDto
-
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
-
-// RegisterOidcProviderJSONRequestBody defines body for RegisterOidcProvider for application/json ContentType.
-type RegisterOidcProviderJSONRequestBody = RegisterOidcProviderRequestDto
-
-// UpdateOidcProviderJSONRequestBody defines body for UpdateOidcProvider for application/json ContentType.
-type UpdateOidcProviderJSONRequestBody = UpdateOidcProviderRequestDto
-
-// ReactivateOidcProviderJSONRequestBody defines body for ReactivateOidcProvider for application/json ContentType.
-type ReactivateOidcProviderJSONRequestBody = ReactivateOidcProviderRequestDto
 
 // GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
 type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
@@ -5581,7 +5428,7 @@ type ServerInterface interface {
 	IssueJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Get current active JWT signing key-pair
 	// (GET /oauth/keys/keypair/current)
-	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request, params GetCurrentJwtKeyPairParams)
+	GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request)
 	// Delete JWT signing key-pair
 	// (DELETE /oauth/keys/keypair/{keyId})
 	DeleteJwtKeyPair(w http.ResponseWriter, r *http.Request, keyId string)
@@ -5606,27 +5453,6 @@ type ServerInterface interface {
 	// Reactivate a trusted public key
 	// (POST /oauth/keys/trusted/{keyId}/reactivate)
 	ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string)
-	// List all registered OIDC providers
-	// (GET /oauth/oidc/providers)
-	ListOidcProviders(w http.ResponseWriter, r *http.Request, params ListOidcProvidersParams)
-	// Register a new trusted OIDC provider
-	// (POST /oauth/oidc/providers)
-	RegisterOidcProvider(w http.ResponseWriter, r *http.Request)
-	// Force to reload all OIDC providers and synchronize keys with remote JWKS
-	// (POST /oauth/oidc/providers/reload)
-	ReloadOidcProviders(w http.ResponseWriter, r *http.Request)
-	// Delete OIDC provider
-	// (DELETE /oauth/oidc/providers/{id})
-	DeleteOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Update OIDC provider
-	// (PATCH /oauth/oidc/providers/{id})
-	UpdateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Invalidate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/invalidate)
-	InvalidateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
-	// Reactivate OIDC provider
-	// (POST /oauth/oidc/providers/{id}/reactivate)
-	ReactivateOidcProvider(w http.ResponseWriter, r *http.Request, id openapi_types.UUID)
 	// Obtain access token for M2M client
 	// (POST /oauth/token)
 	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params GetTechnicalUserTokenParams)
@@ -5958,6 +5784,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "withAdminRole"})
 		} else {
 			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "withAdminRole", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "onBehalfOf" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "onBehalfOf", r.URL.Query(), &params.OnBehalfOf, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "onBehalfOf"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "onBehalfOf", Err: err})
 		}
 		return
 	}
@@ -7754,25 +7593,6 @@ func (siw *ServerInterfaceWrapper) NewMessage(w http.ResponseWriter, r *http.Req
 
 	}
 
-	// ------------- Optional header parameter "X-User-ID" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("X-User-ID")]; found {
-		var XUserID string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "X-User-ID", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "X-User-ID", valueList[0], &XUserID, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "X-User-ID", Err: err})
-			return
-		}
-
-		params.XUserID = &XUserID
-
-	}
-
 	// ------------- Optional header parameter "X-Recipient" -------------
 	if valueList, found := headers[http.CanonicalHeaderKey("X-Recipient")]; found {
 		var XRecipient string
@@ -8461,33 +8281,14 @@ func (siw *ServerInterfaceWrapper) IssueJwtKeyPair(w http.ResponseWriter, r *htt
 // GetCurrentJwtKeyPair operation middleware
 func (siw *ServerInterfaceWrapper) GetCurrentJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 
-	var err error
-	_ = err
-
 	ctx := r.Context()
 
 	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
 
 	r = r.WithContext(ctx)
 
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetCurrentJwtKeyPairParams
-
-	// ------------- Required query parameter "audience" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, true, "audience", r.URL.Query(), &params.Audience, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "audience"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "audience", Err: err})
-		}
-		return
-	}
-
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetCurrentJwtKeyPair(w, r, params)
+		siw.Handler.GetCurrentJwtKeyPair(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -8720,213 +8521,6 @@ func (siw *ServerInterfaceWrapper) ReactivateTrustedKey(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ReactivateTrustedKey(w, r, keyId)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ListOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ListOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params ListOidcProvidersParams
-
-	// ------------- Optional query parameter "activeOnly" -------------
-
-	err = runtime.BindQueryParameterWithOptions("form", true, false, "activeOnly", r.URL.Query(), &params.ActiveOnly, runtime.BindQueryParameterOptions{Type: "boolean", Format: ""})
-	if err != nil {
-		var requiredError *runtime.RequiredParameterError
-		if errors.As(err, &requiredError) {
-			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "activeOnly"})
-		} else {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "activeOnly", Err: err})
-		}
-		return
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ListOidcProviders(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// RegisterOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) RegisterOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.RegisterOidcProvider(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReloadOidcProviders operation middleware
-func (siw *ServerInterfaceWrapper) ReloadOidcProviders(w http.ResponseWriter, r *http.Request) {
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReloadOidcProviders(w, r)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// DeleteOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) DeleteOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.DeleteOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// UpdateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) UpdateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.UpdateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// InvalidateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) InvalidateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.InvalidateOidcProvider(w, r, id)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
-// ReactivateOidcProvider operation middleware
-func (siw *ServerInterfaceWrapper) ReactivateOidcProvider(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	// ------------- Path parameter "id" -------------
-	var id openapi_types.UUID
-
-	err = runtime.BindStyledParameterWithOptions("simple", "id", r.PathValue("id"), &id, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: "uuid"})
-	if err != nil {
-		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "id", Err: err})
-		return
-	}
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.ReactivateOidcProvider(w, r, id)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9746,13 +9340,6 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}", wrapper.DeleteTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/invalidate", wrapper.InvalidateTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/reactivate", wrapper.ReactivateTrustedKey)
-	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.ListOidcProviders)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers", wrapper.RegisterOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/reload", wrapper.ReloadOidcProviders)
-	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.DeleteOidcProvider)
-	m.HandleFunc(http.MethodPatch+" "+options.BaseURL+"/oauth/oidc/providers/{id}", wrapper.UpdateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/invalidate", wrapper.InvalidateOidcProvider)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/oidc/providers/{id}/reactivate", wrapper.ReactivateOidcProvider)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/token", wrapper.GetTechnicalUserToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)

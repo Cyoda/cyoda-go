@@ -52,7 +52,13 @@ func entityChangeItem(v spi.EntityVersionMeta, entityID, callerTenant string) au
 		if callerTenant != "" {
 			actor["legalId"] = callerTenant
 		}
+		if v.AttributedKind != "" {
+			actor["kind"] = string(v.AttributedKind)
+		}
 		body["actor"] = actor
+	}
+	if v.Executor.ID != "" {
+		body["executedBy"] = map[string]any{"id": v.Executor.ID, "kind": string(v.Executor.Kind)}
 	}
 	return auditItem{key: eventKey{at: at, kind: "EntityChange", version: v.Version}, body: body}
 }
@@ -60,8 +66,11 @@ func entityChangeItem(v spi.EntityVersionMeta, entityID, callerTenant string) au
 // stateMachineItem builds one StateMachine audit event. The store assigns
 // every event an id (spi.StateMachineAuditStore); one that does not parse,
 // or parses to the nil UUID — a value no store ever assigns — is a store
-// fault, reported rather than emitted with a blank identity.
-func stateMachineItem(ev spi.StateMachineEvent) (auditItem, error) {
+// fault, reported rather than emitted with a blank identity. actor/executedBy
+// mirror entityChangeItem's shape: actor from ev.Attributed (present only
+// when it carries an id — a legacy or unattributed event has neither),
+// executedBy from ev.Executor (present only when it carries an id).
+func stateMachineItem(ev spi.StateMachineEvent, callerTenant string) (auditItem, error) {
 	id, err := uuid.Parse(ev.TimeUUID)
 	if err != nil {
 		return auditItem{}, fmt.Errorf("state machine event of entity %s has no valid id: %w", ev.EntityID, err)
@@ -86,6 +95,19 @@ func stateMachineItem(ev spi.StateMachineEvent) (auditItem, error) {
 	}
 	if ev.State != "" {
 		body["state"] = ev.State
+	}
+	if ev.Attributed.ID != "" {
+		actor := map[string]any{"id": ev.Attributed.ID, "name": ev.Attributed.ID}
+		if callerTenant != "" {
+			actor["legalId"] = callerTenant
+		}
+		if ev.Attributed.Kind != "" {
+			actor["kind"] = string(ev.Attributed.Kind)
+		}
+		body["actor"] = actor
+	}
+	if ev.Executor.ID != "" {
+		body["executedBy"] = map[string]any{"id": ev.Executor.ID, "kind": string(ev.Executor.Kind)}
 	}
 	return auditItem{key: eventKey{at: at, kind: "StateMachine", eventID: id}, body: body}, nil
 }

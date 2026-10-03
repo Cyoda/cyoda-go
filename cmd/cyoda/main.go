@@ -85,44 +85,12 @@ func main() {
 	cfg.Version = version
 	logging.Init(cfg.LogLevel)
 
-	if err := app.ValidateIAM(cfg.IAM); err != nil {
-		slog.Error("IAM validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateCORS(cfg.CORS); err != nil {
-		slog.Error("CORS validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateGRPCKeepAlive(cfg.GRPC); err != nil {
-		slog.Error("gRPC keep-alive config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateSearchAsync(cfg.SearchAsync); err != nil {
-		slog.Error("search async config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateSearchJobHeartbeat(cfg.SearchJobHeartbeatInterval); err != nil {
-		slog.Error("search job heartbeat config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateSearchJobStaleAfter(cfg.SearchJobStaleAfter, cfg.SearchJobHeartbeatInterval); err != nil {
-		slog.Error("search job stale-after config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateSearchJobMaxAttempts(cfg.SearchJobMaxAttempts); err != nil {
-		slog.Error("search job max-attempts config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateCallout(cfg.Callout); err != nil {
-		slog.Error("callout config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateDispatch(cfg.Cluster); err != nil {
-		slog.Error("dispatch config validation failed", "error", err)
-		os.Exit(1)
-	}
-	if err := app.ValidateScheduler(cfg.Scheduler); err != nil {
-		slog.Error("scheduler config validation failed", "error", err)
+	// Config.Validate runs the same checks app.New itself runs at its own
+	// top; see that function for the full list. Running it again here means
+	// an invalid config exits before the banner or listener starts, rather
+	// than surfacing only once app.New (called from runServe) is reached.
+	if err := cfg.Validate(); err != nil {
+		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
 		os.Exit(1)
 	}
 	logCORSMode(cfg.CORS)

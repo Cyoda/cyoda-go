@@ -146,3 +146,50 @@ func RunMessageLargePayload(t *testing.T, fixture BackendFixture) {
 		t.Errorf("content payload length %d (encoded: %d), expected >= %d bytes", len(contentBytes)-2, len(contentBytes), 200*1024)
 	}
 }
+
+// RunMessageAttribution pins on-behalf-of attribution for edge messages
+// across backends (spec §7.5; Ruling 8): a message created with alice's
+// on-behalf-of token records alice (kind user) as userId/attributedKind on
+// GET, executed by the OBO client that holds the token — never a
+// caller-supplied identity, since there is no header parameter for the
+// sender's identity any more.
+func RunMessageAttribution(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	admin := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	alice := OBOToken(t, fixture, tenant, "alice")
+	aliceClient := client.NewClient(fixture.BaseURL(), alice)
+
+	msgID, err := aliceClient.CreateMessageWithHeaders(t, "attr-message", `{"k":1}`, client.MessageHeaderInput{
+		CorrelationID: "attr-corr",
+	})
+	if err != nil {
+		t.Fatalf("create message as alice (OBO): %v", err)
+	}
+
+	got, err := admin.GetMessage(t, msgID)
+	if err != nil {
+		t.Fatalf("GetMessage: %v", err)
+	}
+	header, ok := got["header"].(map[string]any)
+	if !ok {
+		t.Fatalf("GetMessage response has no header object: %v", got)
+	}
+	if userID, _ := header["userId"].(string); userID != "alice" {
+		t.Errorf("header.userId = %q, want alice", userID)
+	}
+	if kind, _ := header["attributedKind"].(string); kind != "user" {
+		t.Errorf("header.attributedKind = %q, want user", kind)
+	}
+	executedBy, ok := header["executedBy"].(map[string]any)
+	if !ok {
+		t.Fatalf("header.executedBy missing or not an object: %v", header)
+	}
+	wantExecID := oboClientIDOf(t, alice)
+	if id, _ := executedBy["id"].(string); id != wantExecID {
+		t.Errorf("header.executedBy.id = %q, want %q (the OBO client)", id, wantExecID)
+	}
+	if kind, _ := executedBy["kind"].(string); kind != "service" {
+		t.Errorf("header.executedBy.kind = %q, want service", kind)
+	}
+}

@@ -102,8 +102,8 @@ func TestListScheduledTasks_Contract(t *testing.T) {
 		codes = append(codes, code)
 	}
 	sort.Strings(codes)
-	if got := strings.Join(codes, ","); got != "200,400,401,500,503" {
-		t.Errorf("responses = %s, want 200,400,401,500,503", got)
+	if got := strings.Join(codes, ","); got != "200,400,401,403,500,503" {
+		t.Errorf("responses = %s, want 200,400,401,403,500,503", got)
 	}
 	ok := op.Responses.Status(200)
 	if ok == nil || ok.Value.Content["application/json"] == nil ||

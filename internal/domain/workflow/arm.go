@@ -170,6 +170,14 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				}
 				timeoutMs = &v
 			}
+			// ArmedBy is the write's attributed principal (spi.AttributionFor),
+			// not its transaction origin (spi.ResolveOrigin) — they differ for a
+			// user-kind caller writing inside a transaction begun by someone
+			// else, and for an on-behalf-of principal (AttributionFor never
+			// lets an OBO write inherit a transaction's origin). The executor
+			// half of AttributionFor is deliberately discarded: arming has no
+			// executor/attributed split, only who it is attributed to.
+			attributed, _ := spi.AttributionFor(ctx)
 			arm = append(arm, spi.ScheduledTask{
 				ID:            id,
 				TenantID:      entity.Meta.TenantID,
@@ -182,7 +190,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 				Transition:    tr.Name,
 				SourceState:   state,
 				ArmedAt:       armMs,
-				ArmedBy:       spi.ResolveOrigin(ctx),
+				ArmedBy:       attributed,
 			})
 		}
 	}
@@ -289,6 +297,13 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		return nil, &expiredSchedule{transition: tr.Name}, nil
 	}
 
+	// ArmedBy is the write's attributed principal (spi.AttributionFor(ctx)),
+	// NOT from the Function's dispatch result — res carries only timing (fireAt /
+	// fireAfterMs / expireAfterMs), never a principal. The callout affects
+	// WHEN this task fires, never WHO it is attributed to. The executor half
+	// of AttributionFor is discarded — see the static-schedule arm site for
+	// why AttributionFor, not ResolveOrigin.
+	attributed, _ := spi.AttributionFor(ctx)
 	return &spi.ScheduledTask{
 		ID:            id,
 		TenantID:      entity.Meta.TenantID,
@@ -301,10 +316,6 @@ func (e *Engine) armViaFunction(ctx context.Context, entity *spi.Entity, wf *spi
 		Transition:    tr.Name,
 		SourceState:   state,
 		ArmedAt:       armMs,
-		// ArmedBy is resolved from ctx (the chain origin), NOT from the
-		// Function's dispatch result — res carries only timing (fireAt /
-		// fireAfterMs / expireAfterMs), never a principal. The callout
-		// affects WHEN this task fires, never WHO it is attributed to.
-		ArmedBy: spi.ResolveOrigin(ctx),
+		ArmedBy:       attributed,
 	}, nil, nil
 }

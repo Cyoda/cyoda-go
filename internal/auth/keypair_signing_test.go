@@ -15,13 +15,13 @@ import (
 )
 
 func TestAdapter_AlgorithmEnum_Coverage(t *testing.T) {
-	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"ROLE_ADMIN"}}
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: auth.PlatformTenantID}, Roles: []string{"ROLE_ADMIN"}}
 	rejected := []string{"RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "ES512", "EdDSA"}
 	for _, alg := range rejected {
 		alg := alg
 		t.Run(alg, func(t *testing.T) {
-			h := account.New(nil, nil, newTestKeyStore(t, newBootstrap(t)), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures())
-			body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: genapi.IssueJwtKeyPairRequestDtoAlgorithm(alg), Audience: "client"})
+			h := account.New(newTestKeyStore(t, newBootstrap(t)), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+			body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: genapi.IssueJwtKeyPairRequestDtoAlgorithm(alg)})
 			req := httptest.NewRequest("POST", "/oauth/keys/keypair", bytes.NewReader(body))
 			req = req.WithContext(spi.WithUserContext(req.Context(), uc))
 			w := httptest.NewRecorder()
@@ -35,9 +35,9 @@ func TestAdapter_AlgorithmEnum_Coverage(t *testing.T) {
 }
 
 func TestAdapter_AlgorithmEnum_RS256_HappyPath(t *testing.T) {
-	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: "t1"}, Roles: []string{"ROLE_ADMIN"}}
-	h := account.New(nil, nil, newTestKeyStore(t, newBootstrap(t)), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures())
-	body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256", Audience: "client"})
+	uc := &spi.UserContext{UserID: "u", UserName: "u", Tenant: spi.Tenant{ID: auth.PlatformTenantID}, Roles: []string{"ROLE_ADMIN"}}
+	h := account.New(newTestKeyStore(t, newBootstrap(t)), newTestTrustedStore(t), nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	body, _ := json.Marshal(genapi.IssueJwtKeyPairRequestDto{Algorithm: "RS256"})
 	req := httptest.NewRequest("POST", "/oauth/keys/keypair", bytes.NewReader(body))
 	req = req.WithContext(spi.WithUserContext(req.Context(), uc))
 	w := httptest.NewRecorder()

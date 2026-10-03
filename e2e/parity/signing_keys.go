@@ -10,18 +10,14 @@ import (
 )
 
 // RunSigningKeyPairLifecycle drives one key pair through issue, current,
-// JWKS, invalidate, reactivate and delete on every backend. It uses audience
-// "human" — nothing in the parity suite signs with it — and never
-// invalidateCurrent, so the shared server's own signing keys are untouched.
-// No other registered scenario issues a "human" key pair (grepped for
-// "keypair"/"KeyPair" across e2e/parity before adding this one), so the
-// current-key assertions below compare the returned keyId directly rather
-// than needing to tolerate another test's key also being current.
+// JWKS, invalidate, reactivate and delete on every backend. It never sets
+// invalidateCurrent, so the shared server's own signing keys are untouched
+// by this scenario — issuing without invalidating leaves every prior signer
+// alone, and this scenario deletes the key it created on cleanup.
 func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
-	tenant := fixture.NewTenant(t)
-	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+	c := client.NewClient(fixture.BaseURL(), fixture.PlatformOperator(t).Token)
 
-	code, body, err := c.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256", "audience": "human"})
+	code, body, err := c.IssueKeyPairRaw(t, map[string]any{"algorithm": "RS256"})
 	if err != nil || code != http.StatusOK {
 		t.Fatalf("issue: %d %s %v", code, body, err)
 	}
@@ -32,7 +28,7 @@ func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
 	_ = json.Unmarshal(body, &kp)
 	c.DeleteKeyPairOnCleanup(t, kp.KeyId)
 
-	if code, body, _ := c.CurrentKeyPairRaw(t, "human"); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) {
+	if code, body, _ := c.CurrentKeyPairRaw(t); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) {
 		t.Fatalf("current: %d %s", code, body)
 	}
 	if kids, err := c.JWKSKIDs(t); err != nil || !kids[kp.KeyId] {
@@ -41,8 +37,11 @@ func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
 	if code, body, _ := c.InvalidateKeyPairRaw(t, kp.KeyId); code != http.StatusOK {
 		t.Fatalf("invalidate: %d %s", code, body)
 	}
-	if code, _, _ := c.CurrentKeyPairRaw(t, "human"); code != http.StatusNotFound {
-		t.Fatalf("current after invalidate: %d, want 404", code)
+	// Invalidating this key never leaves no signer at all: the bootstrap key,
+	// or whichever key pair was signing before this scenario issued its own,
+	// takes over. Only the deleted key itself must no longer be current.
+	if code, body, _ := c.CurrentKeyPairRaw(t); code != http.StatusOK || jsonHasKID(body, kp.KeyId) {
+		t.Fatalf("current after invalidate: %d %s, want 200 and a different key", code, body)
 	}
 	if code, body, _ := c.ReactivateKeyPairRaw(t, kp.KeyId, time.Now().Add(time.Hour)); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) {
 		t.Fatalf("reactivate: %d %s", code, body)

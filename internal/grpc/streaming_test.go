@@ -3,7 +3,12 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +19,9 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 )
 
 // mockBidiStream simulates a BidiStreamingServer for testing StartStreaming.
@@ -145,22 +153,26 @@ func newServiceWithKeepAlive(interval, timeout time.Duration) *CloudEventsServic
 	return &CloudEventsServiceImpl{registry: NewMemberRegistry(), keepAliveInterval: interval, keepAliveTimeout: timeout}
 }
 
+// m2mContext is a compute node's context: a client-credentials token of kind
+// service with ROLE_M2M, carrying the client-token marker.
 func m2mContext(tenantID spi.TenantID) context.Context {
-	return spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID:   "m2m-client",
+	return guardContext(&spi.UserContext{
+		UserID:   "C1",
 		UserName: "m2m",
+		Kind:     spi.PrincipalService,
 		Tenant:   spi.Tenant{ID: tenantID, Name: "Test Tenant"},
 		Roles:    []string{"ROLE_M2M"},
-	})
+	}, true)
 }
 
-func nonM2MContext(tenantID spi.TenantID) context.Context {
-	return spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID:   "user-1",
-		UserName: "alice",
-		Tenant:   spi.Tenant{ID: tenantID, Name: "Test Tenant"},
-		Roles:    []string{"ROLE_USER"},
-	})
+// guardContext is ctx carrying uc and, when marked, the client-token marker
+// of client C1 at secret generation 1.
+func guardContext(uc *spi.UserContext, marked bool) context.Context {
+	ctx := spi.WithUserContext(context.Background(), uc)
+	if marked {
+		ctx = contract.WithClientToken(ctx, contract.ClientToken{ClientID: "C1", Gen: 1})
+	}
+	return ctx
 }
 
 // --- tests ---
@@ -429,46 +441,6 @@ func TestStreaming_EchoingClientDoesNotStorm(t *testing.T) {
 	close(stop)
 	cancel()
 	<-done
-}
-
-func TestStreaming_NoRoleM2M_PermissionDenied(t *testing.T) {
-	svc := newServiceForTest()
-	ctx := nonM2MContext("tenant-1")
-
-	stream := newMockBidiStream(ctx)
-
-	err := svc.StartStreaming(stream)
-	if err == nil {
-		t.Fatal("expected error for non-M2M user")
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got %v", err)
-	}
-	if st.Code() != codes.PermissionDenied {
-		t.Errorf("expected PermissionDenied, got %v", st.Code())
-	}
-}
-
-func TestStreaming_NoUserContext_Unauthenticated(t *testing.T) {
-	svc := newServiceForTest()
-	ctx := context.Background() // no UserContext
-
-	stream := newMockBidiStream(ctx)
-
-	err := svc.StartStreaming(stream)
-	if err == nil {
-		t.Fatal("expected error for missing user context")
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		t.Fatalf("expected gRPC status error, got %v", err)
-	}
-	if st.Code() != codes.Unauthenticated {
-		t.Errorf("expected Unauthenticated, got %v", st.Code())
-	}
 }
 
 func TestStreaming_FirstMessageNotJoin_InvalidArgument(t *testing.T) {
@@ -1101,6 +1073,205 @@ func TestHasRole(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := spi.HasRole(tt.roles, tt.target); got != tt.want {
 				t.Errorf("HasRole(%v, %q) = %v, want %v", tt.roles, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- who may open a stream ---
+
+// TestStartStreaming_Guard: only a compute node's own client-credentials
+// token opens a stream — kind service, no executor, and the client-token
+// marker. Every other principal is refused before the join event is read.
+// A UserContext's presence and ROLE_M2M are the stream interceptors' checks
+// (TestInterceptor_NoPrincipalIsUnauthenticated, TestRoleInterceptor_*).
+func TestStartStreaming_Guard(t *testing.T) {
+	client := func() *spi.UserContext {
+		return &spi.UserContext{UserID: "C1", Kind: spi.PrincipalService,
+			Tenant: spi.Tenant{ID: "tenant-1"}, Roles: []string{"ROLE_M2M"}}
+	}
+	cases := []struct {
+		name string
+		ctx  func() context.Context
+	}{
+		{"user kind", func() context.Context {
+			uc := client()
+			uc.Kind = spi.PrincipalUser
+			return guardContext(uc, true)
+		}},
+		{"on-behalf-of: executor set", func() context.Context {
+			uc := client()
+			uc.UserID, uc.Kind = "alice", spi.PrincipalUser
+			uc.Executor = &spi.Principal{ID: "C1", Kind: spi.PrincipalService}
+			return guardContext(uc, true)
+		}},
+		{"on-behalf-of: executor set on a service principal", func() context.Context {
+			uc := client()
+			uc.Executor = &spi.Principal{ID: "C2", Kind: spi.PrincipalService}
+			return guardContext(uc, true)
+		}},
+		{"no client-token marker", func() context.Context {
+			return guardContext(client(), false)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(tc.ctx())
+			defer cancel()
+			stream := newMockBidiStream(ctx)
+			// A join is queued: a refusal must come before it is read.
+			stream.enqueue(makeJoinEvent(t, "tenant-1", nil))
+			done := make(chan error, 1)
+			go func() { done <- newServiceForTest().StartStreaming(stream) }()
+			var err error
+			select {
+			case err = <-done:
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatal("StartStreaming admitted the principal, want PermissionDenied")
+			}
+			if got := status.Code(err); got != codes.PermissionDenied {
+				t.Fatalf("StartStreaming = %v (%v), want PermissionDenied", got, err)
+			}
+			if len(stream.recvCh) != 1 {
+				t.Errorf("the join event was read before the refusal")
+			}
+			if status.Convert(err).Message() != "a compute node must connect with its own client's token" {
+				t.Errorf("message = %q", status.Convert(err).Message())
+			}
+		})
+	}
+}
+
+// TestStartStreaming_ClientTokenJoins: a client token of kind service with
+// ROLE_M2M and the marker joins, with and without a client store (mock mode
+// has none, and then no re-check runs).
+func TestStartStreaming_ClientTokenJoins(t *testing.T) {
+	for _, withStore := range []bool{false, true} {
+		name := "mock mode: no store"
+		if withStore {
+			name = "with a client store"
+		}
+		t.Run(name, func(t *testing.T) {
+			svc := newServiceForTest()
+			if withStore {
+				svc.m2mStore = &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 1}}
+			}
+			ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
+			defer cancel()
+			stream := newMockBidiStream(ctx)
+			stream.enqueue(makeJoinEvent(t, "tenant-1", []string{"go"}))
+			done := make(chan error, 1)
+			go func() { done <- svc.StartStreaming(stream) }()
+			if ce := stream.waitForSent(t, 2*time.Second); ce.Type != CalculationMemberGreetEvent {
+				t.Fatalf("first event = %s, want the greet", ce.Type)
+			}
+			stream.closeRecv()
+			<-done
+		})
+	}
+}
+
+// lookupStore is an M2MClientStore whose Lookup answers client or err; it
+// implements nothing else.
+type lookupStore struct {
+	auth.M2MClientStore
+	client *auth.M2MClient
+	err    error
+}
+
+func (s *lookupStore) Lookup(_ context.Context, clientID string) (*auth.M2MClient, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.client == nil || s.client.ClientID != clientID {
+		return nil, fmt.Errorf("%w: %s", auth.ErrM2MClientNotFound, clientID)
+	}
+	return s.client, nil
+}
+
+// TestRecheckClient: the stream's client still stands only while it exists,
+// in the stream's tenant, at the secret generation the token was issued
+// under. A store that cannot be read closes the stream Unavailable.
+func TestRecheckClient(t *testing.T) {
+	ct := contract.ClientToken{ClientID: "C1", Gen: 3}
+	cases := []struct {
+		name  string
+		store *lookupStore
+		want  codes.Code
+	}{
+		{"client stands", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 3}}, codes.OK},
+		{"client deleted", &lookupStore{}, codes.Unauthenticated},
+		{"client in another tenant", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-2", SecretGen: 3}}, codes.Unauthenticated},
+		{"secret reset", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 4}}, codes.Unauthenticated},
+		{"storage unavailable", &lookupStore{err: fmt.Errorf("read client: %w", &storageOutageError{})}, codes.Unavailable},
+		{"other store error", &lookupStore{err: errors.New("record does not decode")}, codes.Unavailable},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newServiceForTest()
+			svc.m2mStore = tc.store
+			err := svc.recheckClient(context.Background(), ct, "tenant-1")
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("recheckClient = %v (%v), want %v", got, err, tc.want)
+			}
+			if err != nil && strings.Contains(status.Convert(err).Message(), "decode") {
+				t.Errorf("status message leaks the store error: %q", status.Convert(err).Message())
+			}
+		})
+	}
+}
+
+// TestStartStreaming_MockMode: the context mock IAM mode builds for every
+// request opens a stream when the mock principal is of kind service (the
+// default, pinned by app TestDefaultConfig_MockKindIsService) with ROLE_M2M,
+// even though its marker carries generation 0 and no store exists to check
+// it; with kind user (CYODA_IAM_MOCK_KIND=user) the stream is refused.
+func TestStartStreaming_MockMode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		kind spi.PrincipalKind
+		want codes.Code
+	}{
+		{"kind service joins", spi.PrincipalService, codes.OK},
+		{"kind user is refused", spi.PrincipalUser, codes.PermissionDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			authSvc := mockiam.NewAuthenticationService(&spi.UserContext{
+				UserID: "mock-user-001", UserName: "Mock User", Kind: tc.kind,
+				Tenant: spi.Tenant{ID: "mock-tenant", Name: "Mock Tenant"},
+				Roles:  []string{"ROLE_ADMIN", "ROLE_M2M"},
+			})
+			authCtx, err := authSvc.Authenticate(context.Background(), httptest.NewRequest(http.MethodGet, "/", nil))
+			if err != nil {
+				t.Fatalf("mock Authenticate: %v", err)
+			}
+			ctx, cancel := context.WithCancel(authCtx)
+			defer cancel()
+			svc := newServiceForTest() // m2mStore nil, as app.New wires mock mode
+			stream := newMockBidiStream(ctx)
+			stream.enqueue(makeJoinEvent(t, "mock-tenant", []string{"go"}))
+			done := make(chan error, 1)
+			go func() { done <- svc.StartStreaming(stream) }()
+
+			if tc.want == codes.OK {
+				if ce := stream.waitForSent(t, 2*time.Second); ce.Type != CalculationMemberGreetEvent {
+					t.Fatalf("first event = %s, want the greet", ce.Type)
+				}
+				stream.closeRecv()
+				<-done
+				return
+			}
+			select {
+			case err := <-done:
+				if got := status.Code(err); got != tc.want {
+					t.Fatalf("StartStreaming = %v (%v), want %v", got, err, tc.want)
+				}
+			case <-time.After(2 * time.Second):
+				cancel()
+				<-done
+				t.Fatalf("StartStreaming admitted the principal, want %v", tc.want)
 			}
 		})
 	}

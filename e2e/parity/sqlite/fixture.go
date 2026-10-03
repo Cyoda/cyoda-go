@@ -21,6 +21,9 @@ type sqliteFixture struct {
 	baseURL      string
 	grpcEndpoint string
 	keySet       *fixtureutil.JWTKeySet
+	// computeCreds holds the M2M client of each tenant a further compute
+	// client joins under.
+	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
 }
 
@@ -45,17 +48,16 @@ func (f *sqliteFixture) ComputeTenant(t *testing.T) parity.Tenant {
 	return fixtureutil.MintComputeTenantJWT(t, f.keySet)
 }
 
-// NewNonAdminTenant implements parity.NonAdminTenantFixture — mints a
-// fresh JWT without ROLE_ADMIN for authz-negative parity scenarios.
-func (f *sqliteFixture) NewNonAdminTenant(t *testing.T) parity.Tenant {
+// PlatformOperator implements parity.BackendFixture.
+func (f *sqliteFixture) PlatformOperator(t *testing.T) parity.Tenant {
 	t.Helper()
-	return fixtureutil.MintNonAdminTenantJWT(t, f.keySet)
+	return fixtureutil.MintPlatformOperatorJWT(t, f.keySet)
 }
 
 // StartComputeClient implements parity.ComputeClientFixture.
 func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
-	return fixtureutil.StartComputeClientForFixture(t, f.keySet, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
 // setup creates a temp directory for the SQLite database, builds
@@ -100,6 +102,7 @@ func setup() (*sqliteFixture, func(), error) {
 		baseURL:      result.BaseURL,
 		grpcEndpoint: result.GRPCEndpoint,
 		keySet:       ks,
+		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 	}
 

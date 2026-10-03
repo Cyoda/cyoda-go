@@ -93,7 +93,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.INVALID_UNIQUE_KEY_DEFINITION` — `422` — not retryable — a model's unique key definition is structurally invalid
 - `errors.JOINED_RESPONSE_TOO_LARGE` — `413` — not retryable — the answer to a request made under a transaction token is larger than `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`; nothing is sent, page the read
 - `errors.KEYPAIR_NOT_FOUND` — `404` — not retryable — Referenced signing keypair does not exist, is owned by another bootstrap key (retired after `CYODA_JWT_SIGNING_KEY` was replaced), or is the bootstrap key after it was deleted.
-- `errors.KEY_OWNED_BY_DIFFERENT_TENANT` — `409` — not retryable — Trusted-key registration collides with another tenant.
 - `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients
 - `errors.M2M_CLIENT_NOT_FOUND` — `404` — not retryable — `/clients` delete or reset: the `clientId` does not exist in the caller's tenant (another tenant's client included)
 - `errors.MALFORMED_REQUEST` — `400` — not retryable — grouped-stats request body could not be read or decoded (invalid JSON, unknown top-level field, non-RFC 3339 `pointInTime`)
@@ -106,11 +105,6 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
-- `errors.OIDC_INVALID_TENANT` — `400` — not retryable — an OIDC provider operation was called by a tenant whose id is not a UUID in canonical lowercase form
-- `errors.OIDC_PROVIDER_DUPLICATE` — `400` — not retryable — a provider with the same `wellKnownConfigUri` is already registered for this tenant
-- `errors.OIDC_PROVIDER_INACTIVE` — `409` — not retryable — the OIDC provider is invalidated and cannot be updated
-- `errors.OIDC_PROVIDER_NOT_FOUND` — `404` — not retryable — the OIDC provider id does not exist for this tenant
-- `errors.OIDC_SSRF_BLOCKED` — `400` — not retryable — the `wellKnownConfigUri` resolves to a private or link-local address blocked by the SSRF policy
 - `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header
 - `errors.SCHEDULE_FUNCTION_INVALID_RESULT` — `500` — not retryable — a scheduled transition's arm-time function answered, but its result cannot be read as a schedule
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
@@ -119,6 +113,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)
 - `errors.SEARCH_SHARD_TIMEOUT` — `503` — retryable — one or more search shards did not respond within the configured timeout
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected
+- `errors.SERVER_BUSY` — `503` — retryable — the node had no free client-secret (bcrypt) slot within 1 s for `POST /clients` or a secret reset; nothing was written; carries `Retry-After: 1`
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again
@@ -133,7 +128,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.TX_COORDINATOR_NOT_CONFIGURED` — `503` — not retryable — distributed transaction coordinator is disabled or misconfigured on this node
 - `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID
 - `errors.TX_REQUIRED` — `400` — not retryable — operation requires a transaction context but none was provided
-- `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, signature is invalid, or issuer is untrusted
+- `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, or the token is not one cyoda signed and accepts
 - `errors.UNIQUE_VIOLATION` — `409` — not retryable — a write would duplicate a declared composite unique key
 - `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.
 - `errors.UNSUPPORTED_KEY_TYPE` — `400` — not retryable — JWK `kty` not supported in this version.

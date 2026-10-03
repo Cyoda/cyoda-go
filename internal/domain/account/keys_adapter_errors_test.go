@@ -11,16 +11,15 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
 type failingKeyStore struct{ err error }
 
-func (f failingKeyStore) Signer(string) (*auth.KeyPair, auth.Signer, error) { return nil, nil, f.err }
-func (f failingKeyStore) Current(string) (*auth.KeyPair, error)             { return nil, f.err }
-func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error)    { return nil, f.err }
-func (f failingKeyStore) Published() ([]*auth.KeyPair, error)               { return nil, f.err }
+func (f failingKeyStore) Signer() (*auth.KeyPair, auth.Signer, error)    { return nil, nil, f.err }
+func (f failingKeyStore) Current() (*auth.KeyPair, error)                { return nil, f.err }
+func (f failingKeyStore) VerificationKey(string) (*rsa.PublicKey, error) { return nil, f.err }
+func (f failingKeyStore) Published() ([]*auth.KeyPair, error)            { return nil, f.err }
 func (f failingKeyStore) Issue(context.Context, auth.IssueRequest) (*auth.KeyPair, error) {
 	return nil, f.err
 }
@@ -35,11 +34,13 @@ type unavailable struct{}
 func (unavailable) Error() string            { return "down" }
 func (unavailable) StorageUnavailable() bool { return true }
 
-func adminReq(method, path, body string) *http.Request {
+// operatorReq builds a request as a platform operator (ROLE_ADMIN in
+// auth.PlatformTenantID) — required by the key-pair handlers this file tests.
+func operatorReq(method, path, body string) *http.Request {
 	r := httptest.NewRequest(method, path, strings.NewReader(body))
 	r.Header.Set("Content-Type", "application/json")
 	return r.WithContext(spi.WithUserContext(r.Context(), &spi.UserContext{
-		UserID: "a", Roles: []string{"ROLE_ADMIN"}, Tenant: spi.Tenant{ID: "t"},
+		UserID: "a", Roles: []string{"ROLE_ADMIN"}, Tenant: spi.Tenant{ID: auth.PlatformTenantID},
 	}))
 }
 
@@ -50,19 +51,19 @@ func TestKeyPairAdapters_StoreErrorsAreNot404(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	calls := map[string]func(h *Handler, w http.ResponseWriter){
 		"issue": func(h *Handler, w http.ResponseWriter) {
-			h.IssueJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair", `{"algorithm":"RS256","audience":"client"}`))
+			h.IssueJwtKeyPair(w, operatorReq("POST", "/oauth/keys/keypair", `{"algorithm":"RS256"}`))
 		},
 		"current": func(h *Handler, w http.ResponseWriter) {
-			h.GetCurrentJwtKeyPair(w, adminReq("GET", "/oauth/keys/keypair/current", ""), genapi.GetCurrentJwtKeyPairParams{Audience: "client"})
+			h.GetCurrentJwtKeyPair(w, operatorReq("GET", "/oauth/keys/keypair/current", ""))
 		},
 		"delete": func(h *Handler, w http.ResponseWriter) {
-			h.DeleteJwtKeyPair(w, adminReq("DELETE", "/oauth/keys/keypair/"+wellFormedKID, ""), wellFormedKID)
+			h.DeleteJwtKeyPair(w, operatorReq("DELETE", "/oauth/keys/keypair/"+wellFormedKID, ""), wellFormedKID)
 		},
 		"invalidate": func(h *Handler, w http.ResponseWriter) {
-			h.InvalidateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/invalidate", ""), wellFormedKID)
+			h.InvalidateJwtKeyPair(w, operatorReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/invalidate", ""), wellFormedKID)
 		},
 		"reactivate": func(h *Handler, w http.ResponseWriter) {
-			h.ReactivateJwtKeyPair(w, adminReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/reactivate", `{"validTo":"`+future+`"}`), wellFormedKID)
+			h.ReactivateJwtKeyPair(w, operatorReq("POST", "/oauth/keys/keypair/"+wellFormedKID+"/reactivate", `{"validTo":"`+future+`"}`), wellFormedKID)
 		},
 	}
 	for name, call := range calls {
@@ -92,13 +93,13 @@ func TestKeyPairAdapters_MalformedKeyId_400(t *testing.T) {
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	calls := map[string]func(h *Handler, w http.ResponseWriter, kid string){
 		"delete": func(h *Handler, w http.ResponseWriter, kid string) {
-			h.DeleteJwtKeyPair(w, adminReq("DELETE", "/", ""), kid)
+			h.DeleteJwtKeyPair(w, operatorReq("DELETE", "/", ""), kid)
 		},
 		"invalidate": func(h *Handler, w http.ResponseWriter, kid string) {
-			h.InvalidateJwtKeyPair(w, adminReq("POST", "/", ""), kid)
+			h.InvalidateJwtKeyPair(w, operatorReq("POST", "/", ""), kid)
 		},
 		"reactivate": func(h *Handler, w http.ResponseWriter, kid string) {
-			h.ReactivateJwtKeyPair(w, adminReq("POST", "/", `{"validTo":"`+future+`"}`), kid)
+			h.ReactivateJwtKeyPair(w, operatorReq("POST", "/", `{"validTo":"`+future+`"}`), kid)
 		},
 	}
 	for name, call := range calls {

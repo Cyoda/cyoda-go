@@ -18,15 +18,15 @@ import (
 // table tests that need active=false, a future validFrom, or an expiry —
 // issuedRecord (signing_records_internal_test.go) always builds an
 // active, currently-open one.
-func issuedRecordFull(t *testing.T, v KeyVault, kid, aud string, active bool, from time.Time, to *time.Time) []byte {
+func issuedRecordFull(t *testing.T, v KeyVault, kid string, active bool, from time.Time, to *time.Time) []byte {
 	t.Helper()
-	meta := KeyMeta{KID: kid, Audience: aud, Algorithm: "RS256", Owner: v.Owner()}
+	meta := KeyMeta{KID: kid, Algorithm: "RS256", Owner: v.Owner()}
 	spki, sealed, _, err := v.Generate(context.Background(), meta)
 	if err != nil {
 		t.Fatal(err)
 	}
 	b, err := encodeSigningRecord(signingRecord{
-		Kind: recordKindIssued, KID: kid, Audience: aud, Algorithm: "RS256", Active: active,
+		Kind: recordKindIssued, KID: kid, Algorithm: "RS256", Active: active,
 		ValidFrom: fmtTime(from), ValidTo: fmtTimePtr(to),
 		PublicKey: base64.StdEncoding.EncodeToString(spki),
 		Vault:     &vaultReference{Kind: v.Kind(), Owner: v.Owner(), Sealed: base64.StdEncoding.EncodeToString(sealed)},
@@ -41,9 +41,9 @@ func issuedRecordFull(t *testing.T, v KeyVault, kid, aud string, active bool, fr
 // open (corrupted sealed bytes) — classOwned's decryption-failure sibling.
 // from/to are the case's own window, not a fixed one: a hardcoded window here
 // would race the table's other records on wall-clock time as subtests run.
-func brokenRecord(t *testing.T, v KeyVault, kid, aud string, from time.Time, to *time.Time) []byte {
+func brokenRecord(t *testing.T, v KeyVault, kid string, from time.Time, to *time.Time) []byte {
 	t.Helper()
-	meta := KeyMeta{KID: kid, Audience: aud, Algorithm: "RS256", Owner: v.Owner()}
+	meta := KeyMeta{KID: kid, Algorithm: "RS256", Owner: v.Owner()}
 	spki, sealed, _, err := v.Generate(context.Background(), meta)
 	if err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func brokenRecord(t *testing.T, v KeyVault, kid, aud string, from time.Time, to 
 	corrupted := append([]byte{}, sealed...)
 	corrupted[0] ^= 0xFF
 	b, err := encodeSigningRecord(signingRecord{
-		Kind: recordKindIssued, KID: kid, Audience: aud, Algorithm: "RS256", Active: true,
+		Kind: recordKindIssued, KID: kid, Algorithm: "RS256", Active: true,
 		ValidFrom: fmtTime(from), ValidTo: fmtTimePtr(to),
 		PublicKey: base64.StdEncoding.EncodeToString(spki),
 		Vault:     &vaultReference{Kind: v.Kind(), Owner: v.Owner(), Sealed: base64.StdEncoding.EncodeToString(corrupted)},
@@ -65,9 +65,9 @@ func brokenRecord(t *testing.T, v KeyVault, kid, aud string, from time.Time, to 
 // unknownVaultKindRecord builds an issued record whose vault kind does not
 // match this node's vault at all — never sealed under this bootstrap key's
 // wrap scheme, regardless of the owner field.
-func unknownVaultKindRecord(t *testing.T, v KeyVault, kid, aud string) []byte {
+func unknownVaultKindRecord(t *testing.T, v KeyVault, kid string) []byte {
 	t.Helper()
-	meta := KeyMeta{KID: kid, Audience: aud, Algorithm: "RS256", Owner: v.Owner()}
+	meta := KeyMeta{KID: kid, Algorithm: "RS256", Owner: v.Owner()}
 	spki, sealed, _, err := v.Generate(context.Background(), meta)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func unknownVaultKindRecord(t *testing.T, v KeyVault, kid, aud string) []byte {
 	from := time.Now().Add(-time.Minute)
 	to := time.Now().Add(time.Hour)
 	b, err := encodeSigningRecord(signingRecord{
-		Kind: recordKindIssued, KID: kid, Audience: aud, Algorithm: "RS256", Active: true,
+		Kind: recordKindIssued, KID: kid, Algorithm: "RS256", Active: true,
 		ValidFrom: fmtTime(from), ValidTo: fmtTimePtr(&to),
 		PublicKey: base64.StdEncoding.EncodeToString(spki),
 		Vault:     &vaultReference{Kind: "kms", Owner: v.Owner(), Sealed: base64.StdEncoding.EncodeToString(sealed)},
@@ -85,13 +85,6 @@ func unknownVaultKindRecord(t *testing.T, v KeyVault, kid, aud string) []byte {
 	}
 	return b
 }
-
-// Every table test below issues records for the "human" audience while the
-// store's bootstrap audience is "client" (newReplicaKV/NewKVKeyStore calls
-// throughout this file), so the always-present bootstrap key never becomes a
-// candidate and each case's outcome depends only on the records under test —
-// except the signer-selection cases that set bootInAudience, which put the
-// bootstrap key in the "human" audience on purpose.
 
 // bootWant is the wantKID placeholder for "the bootstrap key signs": its KID
 // is derived from the fixture key inside each subtest.
@@ -116,31 +109,30 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 	cases := []struct {
 		name string
 		recs []rec
-		// bootInAudience puts the bootstrap key in the "human" audience, so
-		// it is a candidate. reactivateFrom, if set, reactivates it with that
-		// validFrom first; unset, it takes part with a zero validFrom.
-		bootInAudience bool
+		// noBootstrap invalidates the bootstrap key before Signer() is
+		// called, so it is never a candidate: the case's outcome depends
+		// only on the issued records under test. Without it, the
+		// bootstrap key is always a candidate (a zero validFrom unless
+		// reactivateFrom sets one).
+		noBootstrap    bool
 		reactivateFrom *time.Time
 		wantKID        string
 		wantErr        error
 	}{
 		{
-			name:           "bootstrap key never reactivated: an issued key pair in its window signs before it",
-			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
-			bootInAudience: true,
-			wantKID:        testKID("aaa"),
+			name:    "bootstrap key never reactivated: an issued key pair in its window signs before it",
+			recs:    []rec{{kid: testKID("aaa"), active: true, from: earlier}},
+			wantKID: testKID("aaa"),
 		},
 		{
 			name:           "bootstrap key reactivated with the default validFrom (now) outranks an older issued key pair",
 			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
-			bootInAudience: true,
 			reactivateFrom: &now,
 			wantKID:        bootWant,
 		},
 		{
 			name:           "bootstrap key reactivated with an early validFrom does not outrank an issued key pair",
 			recs:           []rec{{kid: testKID("aaa"), active: true, from: earlier}},
-			bootInAudience: true,
 			reactivateFrom: &early,
 			wantKID:        testKID("aaa"),
 		},
@@ -161,19 +153,22 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 			wantKID: testKID("bbb"),
 		},
 		{
-			name:    "inactive owned key does not sign",
-			recs:    []rec{{kid: testKID("aaa"), active: false, from: almostNow}},
-			wantErr: ErrKeyPairNotFound,
+			name:        "inactive owned key does not sign",
+			recs:        []rec{{kid: testKID("aaa"), active: false, from: almostNow}},
+			noBootstrap: true,
+			wantErr:     ErrKeyPairNotFound,
 		},
 		{
-			name:    "future-window owned key does not sign",
-			recs:    []rec{{kid: testKID("aaa"), active: true, from: future}},
-			wantErr: ErrKeyPairNotFound,
+			name:        "future-window owned key does not sign",
+			recs:        []rec{{kid: testKID("aaa"), active: true, from: future}},
+			noBootstrap: true,
+			wantErr:     ErrKeyPairNotFound,
 		},
 		{
-			name:    "expired owned key does not sign",
-			recs:    []rec{{kid: testKID("aaa"), active: true, from: past, to: &almostNow}},
-			wantErr: ErrKeyPairNotFound,
+			name:        "expired owned key does not sign",
+			recs:        []rec{{kid: testKID("aaa"), active: true, from: past, to: &almostNow}},
+			noBootstrap: true,
+			wantErr:     ErrKeyPairNotFound,
 		},
 		{
 			name: "a broken record that would win fails closed",
@@ -208,21 +203,22 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 			for _, r := range tc.recs {
 				var b []byte
 				if r.broken {
-					b = brokenRecord(t, v, r.kid, "human", r.from, r.to)
+					b = brokenRecord(t, v, r.kid, r.from, r.to)
 				} else {
-					b = issuedRecordFull(t, v, r.kid, "human", r.active, r.from, r.to)
+					b = issuedRecordFull(t, v, r.kid, r.active, r.from, r.to)
 				}
 				if err := kv.Put(ctx, signingKeysNamespace, r.kid, b); err != nil {
 					t.Fatal(err)
 				}
 			}
-			bootAudience := "client"
-			if tc.bootInAudience {
-				bootAudience = "human"
-			}
-			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: bootAudience})
+			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.noBootstrap {
+				if err := s.Invalidate(ctx, bootKID, 0); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if tc.reactivateFrom != nil {
 				if _, err := s.Reactivate(ctx, bootKID, *tc.reactivateFrom, time.Now().Add(time.Hour)); err != nil {
@@ -233,7 +229,7 @@ func TestKVKeyStore_SignerSelectionRule(t *testing.T) {
 			if want == bootWant {
 				want = bootKID
 			}
-			kp, _, err := s.Signer("human")
+			kp, _, err := s.Signer()
 			if tc.wantErr != nil {
 				if !errors.Is(err, tc.wantErr) {
 					t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -264,7 +260,11 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 		to        *time.Time
 		broken    bool
 		deleted   bool
-		wantOK    bool
+		// other: "retired", "unknown vault", "foreign bootstrap",
+		// "undecodable", "absent" (no record at the kid), or "ignored" (a
+		// record at a key that is not a key id).
+		other  string
+		wantOK bool
 	}{
 		{name: "owned active in window verifies", active: true, from: almostPast, wantOK: true},
 		{name: "owned inactive does not verify", active: false, from: almostPast, wantOK: false},
@@ -277,6 +277,12 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 		{name: "bootstrap state inactive with no validTo does not verify", bootstrap: true, active: false, from: time.Time{}, wantOK: false},
 		{name: "bootstrap state inactive with future validTo verifies", bootstrap: true, active: false, from: time.Time{}, to: &future, wantOK: true},
 		{name: "bootstrap state deleted with future validTo does not verify", bootstrap: true, active: false, from: time.Time{}, to: &future, deleted: true, wantOK: false},
+		{name: "retired record does not verify", active: true, from: almostPast, other: "retired", wantOK: false},
+		{name: "unknown vault kind does not verify", other: "unknown vault", wantOK: false},
+		{name: "foreign bootstrap state does not verify", active: true, other: "foreign bootstrap", wantOK: false},
+		{name: "undecodable record does not verify", other: "undecodable", wantOK: false},
+		{name: "absent kid does not verify", other: "absent", wantOK: false},
+		{name: "record at a key that is not a key id does not verify", other: "ignored", wantOK: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -292,7 +298,37 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 				t.Fatal(err)
 			}
 			kid := testKID("kid1")
+			put := func(b []byte) {
+				t.Helper()
+				if err := kv.Put(ctx, signingKeysNamespace, kid, b); err != nil {
+					t.Fatal(err)
+				}
+			}
 			switch {
+			case tc.other == "retired":
+				otherKey, err := rsa.GenerateKey(rand.Reader, 2048)
+				if err != nil {
+					t.Fatal(err)
+				}
+				other, err := NewWrappedVault(otherKey, "other-boot")
+				if err != nil {
+					t.Fatal(err)
+				}
+				put(issuedRecordFull(t, other, kid, tc.active, tc.from, tc.to))
+			case tc.other == "unknown vault":
+				put(unknownVaultKindRecord(t, v, kid))
+			case tc.other == "foreign bootstrap":
+				b, err := encodeSigningRecord(signingRecord{Kind: recordKindBootstrap, KID: kid, Active: tc.active, ValidFrom: fmtTime(tc.from)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				put(b)
+			case tc.other == "undecodable":
+				put([]byte("not a record"))
+			case tc.other == "absent":
+			case tc.other == "ignored":
+				kid = "not-a-kid"
+				put(issuedRecordFull(t, v, testKID("kid1"), true, almostPast, nil))
 			case tc.bootstrap:
 				kid = bootKID
 				b, err := encodeSigningRecord(signingRecord{
@@ -306,15 +342,15 @@ func TestKVKeyStore_VerificationRule(t *testing.T) {
 					t.Fatal(err)
 				}
 			case tc.broken:
-				if err := kv.Put(ctx, signingKeysNamespace, kid, brokenRecord(t, v, kid, "human", tc.from, tc.to)); err != nil {
+				if err := kv.Put(ctx, signingKeysNamespace, kid, brokenRecord(t, v, kid, tc.from, tc.to)); err != nil {
 					t.Fatal(err)
 				}
 			default:
-				if err := kv.Put(ctx, signingKeysNamespace, kid, issuedRecordFull(t, v, kid, "human", tc.active, tc.from, tc.to)); err != nil {
+				if err := kv.Put(ctx, signingKeysNamespace, kid, issuedRecordFull(t, v, kid, tc.active, tc.from, tc.to)); err != nil {
 					t.Fatal(err)
 				}
 			}
-			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+			s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -346,18 +382,18 @@ func TestKVKeyStore_PublishedIncludesGraceExcludesExpiredSorted(t *testing.T) {
 	past := time.Now().Add(-time.Hour)
 	// Invalidated but still inside its grace window: must still be published
 	// so a verifier holding a token it already signed can still check it.
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("zzz-grace"), issuedRecordFull(t, v, testKID("zzz-grace"), "human", false, past, &future)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("zzz-grace"), issuedRecordFull(t, v, testKID("zzz-grace"), false, past, &future)); err != nil {
 		t.Fatal(err)
 	}
 	// Window fully ended: excluded.
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("aaa-expired"), issuedRecordFull(t, v, testKID("aaa-expired"), "human", true, past, &past)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("aaa-expired"), issuedRecordFull(t, v, testKID("aaa-expired"), true, past, &past)); err != nil {
 		t.Fatal(err)
 	}
 	// Active, no window end: included.
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("mmm-active"), issuedRecordFull(t, v, testKID("mmm-active"), "human", true, past, nil)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("mmm-active"), issuedRecordFull(t, v, testKID("mmm-active"), true, past, nil)); err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -403,10 +439,10 @@ func TestKVKeyStore_PublishedExcludesInactiveNoValidTo(t *testing.T) {
 		t.Fatal(err)
 	}
 	almostPast := time.Now().Add(-time.Minute)
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("dead"), issuedRecordFull(t, v, testKID("dead"), "human", false, almostPast, nil)); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("dead"), issuedRecordFull(t, v, testKID("dead"), false, almostPast, nil)); err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,14 +473,14 @@ func TestKVKeyStore_DeletedBootstrapRefusesVerifyAndSign(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, bootKID, b); err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.VerificationKey(bootKID); !errors.Is(err, ErrKeyPairNotFound) {
 		t.Fatalf("verify: err = %v, want ErrKeyPairNotFound", err)
 	}
-	if _, _, err := s.Signer("client"); !errors.Is(err, ErrKeyPairNotFound) {
+	if _, _, err := s.Signer(); !errors.Is(err, ErrKeyPairNotFound) {
 		t.Fatalf("sign: err = %v, want ErrKeyPairNotFound", err)
 	}
 }
@@ -466,7 +502,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-1"), issuedRecord(t, otherVault, testKID("retired-1"), "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-1"), issuedRecord(t, otherVault, testKID("retired-1"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -475,7 +511,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +525,7 @@ func TestKVKeyStore_RetiredWarnLoggedOncePerChange(t *testing.T) {
 	if n := strings.Count(buf.String(), "retired on this node"); n != 0 {
 		t.Fatalf("expected no retired WARN on an unchanged re-read, got %d; log: %s", n, buf.String())
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-2"), issuedRecord(t, otherVault, testKID("retired-2"), "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("retired-2"), issuedRecord(t, otherVault, testKID("retired-2"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.rep.Reconcile(ctx); err != nil {
@@ -520,7 +556,7 @@ func TestKVKeyStore_LogRevokedBootstrapWhenOwnedPairsExist(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, bootKID, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"), "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"))); err != nil {
 		t.Fatal(err)
 	}
 
@@ -529,7 +565,7 @@ func TestKVKeyStore_LogRevokedBootstrapWhenOwnedPairsExist(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"}); err != nil {
+	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), "no longer signs") {
@@ -562,7 +598,7 @@ func TestKVKeyStore_NoUnsealsLogRevokedBootstrapWhenNoOwnedPairs(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"}); err != nil {
+	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "no longer signs") {
@@ -594,7 +630,7 @@ func TestKVKeyStore_LogRevokedBootstrapExcludesUnknownVaultKind(t *testing.T) {
 	if err := kv.Put(ctx, signingKeysNamespace, bootKID, b); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, "unknown-kind", unknownVaultKindRecord(t, v, "unknown-kind", "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, "unknown-kind", unknownVaultKindRecord(t, v, "unknown-kind")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -603,7 +639,7 @@ func TestKVKeyStore_LogRevokedBootstrapExcludesUnknownVaultKind(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
 	defer slog.SetDefault(prev)
 
-	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"}); err != nil {
+	if _, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot}); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), "no longer signs") {
@@ -611,9 +647,8 @@ func TestKVKeyStore_LogRevokedBootstrapExcludesUnknownVaultKind(t *testing.T) {
 	}
 }
 
-// With no issued key pair of the audience active and in its window, the
-// signing key from configuration signs: it is an active key pair of that
-// audience with a zero validFrom.
+// With no issued key pair active and in its window, the signing key from
+// configuration signs: it is an active key pair with a zero validFrom.
 func TestKVKeyStore_SigningKeySignsWhenNoIssuedPairActive(t *testing.T) {
 	boot := loadFixtureKey(t)
 	s := newTestKeyStore(t, boot)
@@ -621,21 +656,21 @@ func TestKVKeyStore_SigningKeySignsWhenNoIssuedPairActive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	kp, err := s.Issue(replicaSystemCtx(), IssueRequest{Audience: "client", ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
+	kp, err := s.Issue(replicaSystemCtx(), IssueRequest{ValidFrom: time.Now(), ValidTo: time.Now().Add(time.Hour), Invalidate: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cur, err := s.Current("client"); err != nil || cur.KID != kp.KID {
+	if cur, err := s.Current(); err != nil || cur.KID != kp.KID {
 		t.Fatalf("current = %v %v, want the issued pair", cur, err)
 	}
 	if err := s.Invalidate(replicaSystemCtx(), kp.KID, 0); err != nil {
 		t.Fatal(err)
 	}
-	cur, err := s.Current("client")
+	cur, err := s.Current()
 	if err != nil || cur.KID != bootKID {
 		t.Fatalf("current = %v %v, want the signing key", cur, err)
 	}
-	signerKP, sg, err := s.Signer("client")
+	signerKP, sg, err := s.Signer()
 	if err != nil || sg == nil {
 		t.Fatalf("no signer: %v", err)
 	}

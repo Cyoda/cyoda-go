@@ -7,27 +7,23 @@ import (
 )
 
 // KeySource retrieves RSA public keys by KID for JWT signature verification.
-// Implementations may fetch from a JWKS HTTP endpoint, from a local in-process
-// key store, or from any other source. The validator depends only on this
-// interface so the transport story can evolve without touching validation logic.
+// The server's implementation reads the in-process key store
+// (NewLocalKeySource).
 type KeySource interface {
 	GetKey(kid string) (*rsa.PublicKey, error)
 }
 
 // ErrKeyNotFound is returned by KeySource implementations when the requested
-// KID is not known. Callers that need to distinguish "unknown key" from
-// "transport failure" can use errors.Is.
+// KID is not a key that verifies now. Callers match it with errors.Is.
 var ErrKeyNotFound = errors.New("kid not found")
 
-// localKeySource returns public keys directly from the in-process KeyStore,
-// with no HTTP round-trip.
+// localKeySource returns public keys from the in-process KeyStore.
 type localKeySource struct {
 	ks KeyStore
 }
 
-// NewLocalKeySource returns a KeySource that reads directly from the given
-// in-process KeyStore. This is the default for the built-in IAM: no JWKS
-// HTTP fetch is needed when the signing keys are already in the same process.
+// NewLocalKeySource returns a KeySource that reads the given in-process
+// KeyStore.
 func NewLocalKeySource(ks KeyStore) KeySource {
 	return &localKeySource{ks: ks}
 }

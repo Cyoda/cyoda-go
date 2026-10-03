@@ -18,7 +18,7 @@ import (
 )
 
 // ErrKeyPairNotFound: no such key pair on this node (absent, retired, foreign
-// bootstrap state, deleted bootstrap, or no signer for an audience) → 404.
+// bootstrap state, deleted bootstrap, or no signer available) → 404.
 var ErrKeyPairNotFound = errors.New("key pair not found")
 
 // ErrKeyPairBroken: the key pair the rules select cannot be used → 500.
@@ -50,7 +50,6 @@ func DeriveKID(pub *rsa.PublicKey) (string, error) {
 
 type KVKeyStoreConfig struct {
 	Bootstrap         *rsa.PrivateKey
-	BootstrapAudience string
 	Vault             KeyVault // nil: the wrapped vault of Bootstrap
 	Broadcaster       spi.ClusterBroadcaster
 	ReconcileInterval time.Duration
@@ -58,10 +57,9 @@ type KVKeyStoreConfig struct {
 }
 
 type bootstrapKey struct {
-	kid      string
-	audience string
-	public   *rsa.PublicKey
-	signer   Signer
+	kid    string
+	public *rsa.PublicKey
+	signer Signer
 }
 
 // KVKeyStore keeps the signing key pairs of the cluster in the KV store and a
@@ -80,6 +78,11 @@ type KVKeyStore struct {
 	lastIgnored []string
 }
 
+// NewKVKeyStore loads the signing-key store and classifies every record
+// already in it. ctx bounds all of this store's background work: Start's
+// periodic re-read loop runs until ctx ends, and a gossip-ping-triggered
+// reconcile checks the same ctx before touching the store, so cancelling it
+// stops both — there is no separate ctx for Start to take.
 func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConfig) (*KVKeyStore, error) {
 	kid, err := DeriveKID(&cfg.Bootstrap.PublicKey)
 	if err != nil {
@@ -93,13 +96,13 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 	}
 	s := &KVKeyStore{
 		kv: kv, vault: vault, cls: newClassifier(vault, kid),
-		boot: bootstrapKey{kid: kid, audience: cfg.BootstrapAudience, public: &cfg.Bootstrap.PublicKey, signer: NewRSASigner(cfg.Bootstrap)},
+		boot: bootstrapKey{kid: kid, public: &cfg.Bootstrap.PublicKey, signer: NewRSASigner(cfg.Bootstrap)},
 	}
 	openCtx := context.WithoutCancel(ctx)
 	rep, err := newKVReplica(ctx, kv, replicaConfig[*signingEntry]{
 		name: "signing-key", namespace: signingKeysNamespace, topic: topicSigningKeys,
-		decode: func(k string, d []byte) (string, *signingEntry, bool, error) {
-			return k, s.cls.classify(openCtx, k, d), true, nil
+		decode: func(k string, d []byte) (string, *signingEntry) {
+			return k, s.cls.classify(openCtx, k, d)
 		},
 		interval: cfg.ReconcileInterval, broadcaster: cfg.Broadcaster, metrics: cfg.Metrics,
 		afterChange: s.afterChange,
@@ -115,7 +118,16 @@ func NewKVKeyStore(ctx context.Context, kv spi.KeyValueStore, cfg KVKeyStoreConf
 
 // ReconcileInterval is the store's re-read interval, the default applied.
 func (s *KVKeyStore) ReconcileInterval() time.Duration { return s.rep.cfg.interval }
-func (s *KVKeyStore) Start(ctx context.Context)        { s.rep.Start(ctx) }
+
+// Start runs the periodic re-read until the ctx NewKVKeyStore was
+// constructed with ends.
+func (s *KVKeyStore) Start() { s.rep.Start() }
+
+// Wait blocks until the goroutine Start started has exited, and then until
+// any gossip-ping-triggered reconcile already in flight has also finished.
+// Call it after cancelling the construction ctx; it returns immediately if
+// Start was never called.
+func (s *KVKeyStore) Wait() { s.rep.Wait() }
 
 type bootstrapView struct {
 	usable bool // false: deleted, or its stored state cannot be read
@@ -126,7 +138,7 @@ type bootstrapView struct {
 // Absent state is the default (active, no window); any record at the
 // bootstrap KID other than a readable bootstrap state refuses the key.
 func (s *KVKeyStore) bootstrapView(recs map[string]*signingEntry) bootstrapView {
-	pair := KeyPair{KID: s.boot.kid, Audience: s.boot.audience, Algorithm: "RS256", PublicKey: s.boot.public, Active: true, Bootstrap: true}
+	pair := KeyPair{KID: s.boot.kid, Algorithm: "RS256", PublicKey: s.boot.public, Active: true, Bootstrap: true}
 	e, ok := recs[s.boot.kid]
 	if !ok {
 		return bootstrapView{usable: true, pair: pair}
@@ -139,11 +151,10 @@ func (s *KVKeyStore) bootstrapView(recs map[string]*signingEntry) bootstrapView 
 }
 
 // selectSigner applies the signing rule: among owned and broken
-// issued key pairs and the bootstrap key of the audience that are active and
-// inside their window, the latest validFrom wins, then the greater KID. A
-// broken winner, or any undecodable record, fails; another key is never
-// chosen instead.
-func (s *KVKeyStore) selectSigner(audience string) (*KeyPair, Signer, error) {
+// issued key pairs and the bootstrap key that are active and inside their
+// window, the latest validFrom wins, then the greater KID. A broken winner,
+// or any undecodable record, fails; another key is never chosen instead.
+func (s *KVKeyStore) selectSigner() (*KeyPair, Signer, error) {
 	if s.rep.Stale() {
 		return nil, nil, ErrStoreStale
 	}
@@ -155,7 +166,7 @@ func (s *KVKeyStore) selectSigner(audience string) (*KeyPair, Signer, error) {
 		undecodable []string
 	)
 	consider := func(p KeyPair, sg Signer, broken string) {
-		if p.Audience != audience || !p.Active || !p.InWindow(now) {
+		if !p.Active || !p.InWindow(now) {
 			return
 		}
 		if best == nil || p.ValidFrom.After(best.ValidFrom) || (p.ValidFrom.Equal(best.ValidFrom) && p.KID > best.KID) {
@@ -183,7 +194,7 @@ func (s *KVKeyStore) selectSigner(audience string) (*KeyPair, Signer, error) {
 		return nil, nil, fmt.Errorf("%w: undecodable records %v", ErrKeyPairBroken, undecodable)
 	}
 	if best == nil {
-		return nil, nil, fmt.Errorf("%w: no signing key for audience %q", ErrKeyPairNotFound, audience)
+		return nil, nil, fmt.Errorf("%w: no signing key available", ErrKeyPairNotFound)
 	}
 	if bestBroken != "" {
 		return nil, nil, fmt.Errorf("%w: %s (%s)", ErrKeyPairBroken, best.KID, bestBroken)
@@ -191,24 +202,24 @@ func (s *KVKeyStore) selectSigner(audience string) (*KeyPair, Signer, error) {
 	return best, bestSigner, nil
 }
 
-func (s *KVKeyStore) Signer(audience string) (*KeyPair, Signer, error) {
-	return s.selectSigner(audience)
+func (s *KVKeyStore) Signer() (*KeyPair, Signer, error) {
+	return s.selectSigner()
 }
 
-func (s *KVKeyStore) Current(audience string) (*KeyPair, error) {
-	kp, _, err := s.selectSigner(audience)
+func (s *KVKeyStore) Current() (*KeyPair, error) {
+	kp, _, err := s.selectSigner()
 	return kp, err
 }
 
 // VerificationKey returns the public key a token's KID names, if that key
 // pair may verify on this node now: owned or the signing key from
 // configuration, not deleted, and Verifies(now) — an invalidated key pair
-// verifies until the end of its grace period. There is no store read on this
-// path.
+// verifies until the end of its grace period. While the copy is stale
+// nothing verifies. Every refusal wraps ErrKeyPairNotFound — a kid this
+// store knows but that cannot currently verify and a kid it has never heard
+// of fail the same way. There is no store read on this path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
-	if s.rep.Stale() {
-		return nil, fmt.Errorf("%w: %s (store stale)", ErrKeyPairNotFound, kid)
-	}
+	stale := s.rep.Stale()
 	now := time.Now()
 	var pub *rsa.PublicKey
 	s.rep.read(func(recs map[string]*signingEntry) {
@@ -218,14 +229,19 @@ func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 			}
 			return
 		}
-		if e, ok := recs[kid]; ok && e.class == classOwned && e.pair.Verifies(now) {
+		e, ok := recs[kid]
+		if ok && e.class == classOwned && e.pair.Verifies(now) {
 			pub = e.pair.PublicKey
 		}
 	})
-	if pub == nil {
-		return nil, fmt.Errorf("%w: %s", ErrKeyPairNotFound, kid)
+	if pub != nil && !stale {
+		return pub, nil
 	}
-	return pub, nil
+	var why string
+	if stale {
+		why = " (store stale)"
+	}
+	return nil, fmt.Errorf("%w: %q%s", ErrKeyPairNotFound, kid, why)
 }
 
 // publishable reports whether a key pair belongs in JWKS: its window has not

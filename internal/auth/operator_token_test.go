@@ -69,12 +69,12 @@ func TestMintOperatorToken_Refusals(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	ok := auth.OperatorTokenRequest{Tenant: "acme", UserID: "operator", Roles: []string{"ROLE_ADMIN"}, TTL: time.Minute, Issuer: "cyoda"}
 	cases := map[string]func(r *auth.OperatorTokenRequest){
-		"bad tenant": func(r *auth.OperatorTokenRequest) { r.Tenant = spi.TenantID("a:b") },
-		"empty user": func(r *auth.OperatorTokenRequest) { r.UserID = "" },
-		"oidc user":  func(r *auth.OperatorTokenRequest) { r.UserID = "oidc:x" },
-		"no roles":   func(r *auth.OperatorTokenRequest) { r.Roles = nil },
-		"empty role": func(r *auth.OperatorTokenRequest) { r.Roles = []string{"ROLE_ADMIN", ""} },
-		"zero ttl":   func(r *auth.OperatorTokenRequest) { r.TTL = 0 },
+		"bad tenant":  func(r *auth.OperatorTokenRequest) { r.Tenant = spi.TenantID("a:b") },
+		"empty user":  func(r *auth.OperatorTokenRequest) { r.UserID = "" },
+		"system user": func(r *auth.OperatorTokenRequest) { r.UserID = "system" },
+		"no roles":    func(r *auth.OperatorTokenRequest) { r.Roles = nil },
+		"empty role":  func(r *auth.OperatorTokenRequest) { r.Roles = []string{"ROLE_ADMIN", ""} },
+		"zero ttl":    func(r *auth.OperatorTokenRequest) { r.TTL = 0 },
 		// iat and exp are whole seconds: a sub-second lifetime would give a
 		// token that has expired when it is issued.
 		"1ns ttl":        func(r *auth.OperatorTokenRequest) { r.TTL = time.Nanosecond },

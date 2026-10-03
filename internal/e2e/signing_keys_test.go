@@ -68,12 +68,12 @@ func newKeyStackWith(t *testing.T, s *schedDB, key *rsa.PrivateKey, configure fu
 	return &keyStack{callbackHarness: h, clientID: s.keyClient.id, clientSecret: s.keyClient.secret}
 }
 
-// createKeyStackClient creates an admin M2M client in the harness tenant
-// through POST /clients?withAdminRole=true, with h's own admin token. The
-// client lives as long as the test's database.
+// createKeyStackClient creates an admin M2M client in the PLATFORM tenant
+// through POST /clients?withAdminRole=true, with h's platform-operator token.
+// The client lives as long as the test's database.
 func createKeyStackClient(t *testing.T, h *callbackHarness) *m2mCredential {
 	t.Helper()
-	resp := h.DoAuth(t, http.MethodPost, "/api/clients?withAdminRole=true", "", "")
+	resp := doAuthAgainst(t, h.baseURL, h.platformToken(t), http.MethodPost, "/api/clients?withAdminRole=true", "")
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
@@ -108,9 +108,9 @@ func (ks *keyStack) keyCall(t *testing.T, method, path, body string) (int, []byt
 	return resp.StatusCode, b
 }
 
-func (ks *keyStack) issueKey(t *testing.T, aud string, invalidate bool) string {
+func (ks *keyStack) issueKey(t *testing.T, invalidate bool) string {
 	t.Helper()
-	body := `{"algorithm":"RS256","audience":"` + aud + `"` + map[bool]string{true: `,"invalidateCurrent":true`, false: ""}[invalidate] + `}`
+	body := `{"algorithm":"RS256"` + map[bool]string{true: `,"invalidateCurrent":true`, false: ""}[invalidate] + `}`
 	code, b := ks.keyCall(t, "POST", "/oauth/keys/keypair", body)
 	if code != http.StatusOK {
 		t.Fatalf("issue: %d %s", code, b)
@@ -125,11 +125,11 @@ func (ks *keyStack) issueKey(t *testing.T, aud string, invalidate bool) string {
 	return out.KeyId
 }
 
-// currentKey fetches GET /oauth/keys/keypair/current?audience=aud, returning
-// the status and, on 200, the decoded keyId.
-func (ks *keyStack) currentKey(t *testing.T, aud string) (int, string) {
+// currentKey fetches GET /oauth/keys/keypair/current, returning the status
+// and, on 200, the decoded keyId.
+func (ks *keyStack) currentKey(t *testing.T) (int, string) {
 	t.Helper()
-	code, b := ks.keyCall(t, "GET", "/oauth/keys/keypair/current?audience="+aud, "")
+	code, b := ks.keyCall(t, "GET", "/oauth/keys/keypair/current", "")
 	if code != http.StatusOK {
 		return code, ""
 	}
@@ -150,9 +150,12 @@ func tokenKID(t *testing.T, tok string) string {
 	return kid
 }
 
+// authedStatus reports the status of GET /api/account with tok: 200 when tok
+// authenticates, whatever its roles (the operation needs no role), 401 when
+// it does not.
 func (h *callbackHarness) authedStatus(t *testing.T, tok string) int {
 	t.Helper()
-	req, _ := http.NewRequest("GET", h.baseURL+"/api/model/", nil)
+	req, _ := http.NewRequest("GET", h.baseURL+"/api/account", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -184,9 +187,13 @@ func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 	return out
 }
 
+// bootstrapToken signs a token for the signing key itself (the node's
+// configured bootstrap key, before any key pair is issued) in the PLATFORM
+// tenant, so it is a platform operator — the same principal `cyoda token
+// --tenant PLATFORM` models (see operatorToken in cyoda_token_test.go).
 func bootstrapToken(t *testing.T, key *rsa.PrivateKey) string {
 	t.Helper()
-	tok, err := signServiceToken(key, "cyoda-callback-test", "", "boot-user", "test-tenant", "boot-user", []string{"ROLE_ADMIN"})
+	tok, err := signServiceToken(key, "cyoda-callback-test", "", "boot-user", string(auth.PlatformTenantID), "boot-user", []string{"ROLE_ADMIN"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +215,7 @@ func TestSigningKeys_IssuedPairSurvivesRestart(t *testing.T) {
 	}
 	s, key := newSchedDB(t), genKey(t)
 	h1 := newKeyStackOn(t, s, key)
-	kid := h1.issueKey(t, "client", false)
+	kid := h1.issueKey(t, false)
 	h2 := newKeyStackOn(t, s, key)
 	tok := h2.oauthToken(t)
 	if tokenKID(t, tok) != kid {
@@ -229,7 +236,7 @@ func TestSigningKeys_BootstrapRevocationSurvivesRestart(t *testing.T) {
 	s, key := newSchedDB(t), genKey(t)
 	bootKID, _ := auth.DeriveKID(&key.PublicKey)
 	h1 := newKeyStackOn(t, s, key)
-	h1.issueKey(t, "client", false) // tokens now come from an issued key
+	h1.issueKey(t, false) // tokens now come from an issued key
 	if code := h1.authedStatus(t, bootstrapToken(t, key)); code != http.StatusOK {
 		t.Fatalf("bootstrap key not yet invalidated: %d, want 200", code)
 	}
@@ -259,7 +266,7 @@ func TestSigningKeys_AnotherBootstrapKeyRetiresIssuedPairs(t *testing.T) {
 	}
 	s := newSchedDB(t)
 	h1 := newKeyStackOn(t, s, genKey(t))
-	kid := h1.issueKey(t, "client", false)
+	kid := h1.issueKey(t, false)
 	key2 := genKey(t)
 	h2 := newKeyStackOn(t, s, key2)
 	boot2, _ := auth.DeriveKID(&key2.PublicKey)
@@ -273,8 +280,8 @@ func TestSigningKeys_AnotherBootstrapKeyRetiresIssuedPairs(t *testing.T) {
 	if !kids[boot2] {
 		t.Fatalf("new bootstrap key %s missing from JWKS", boot2)
 	}
-	if code, got := h2.currentKey(t, "client"); code != http.StatusOK || got != boot2 {
-		t.Fatalf("current audience=client on the new node: %d %q, want 200 %s", code, got, boot2)
+	if code, got := h2.currentKey(t); code != http.StatusOK || got != boot2 {
+		t.Fatalf("current on the new node: %d %q, want 200 %s", code, got, boot2)
 	}
 	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
 	for _, c := range []struct{ method, path, body string }{
@@ -294,7 +301,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	}
 	s, key := newSchedDB(t), genKey(t)
 	h1 := newKeyStackOn(t, s, key)
-	kid := h1.issueKey(t, "client", false)
+	kid := h1.issueKey(t, false)
 	var raw []byte
 	ctx := context.Background()
 	if err := s.pool.QueryRow(ctx, `SELECT value FROM kv_store WHERE tenant_id='SYSTEM' AND namespace='signing-keys' AND key=$1`, kid).Scan(&raw); err != nil {
@@ -350,7 +357,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	}
 	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
-	req, _ := http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current?audience=client", nil)
+	req, _ := http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current", nil)
 	req.Header.Set("Authorization", "Bearer "+bootstrapToken(t, key))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -370,7 +377,7 @@ func TestSigningKeys_StoredValueHasNoPrivateKey(t *testing.T) {
 	}
 	s, key := newSchedDB(t), genKey(t)
 	h := newKeyStackOn(t, s, key)
-	kid := h.issueKey(t, "client", false)
+	kid := h.issueKey(t, false)
 	var raw []byte
 	if err := s.pool.QueryRow(context.Background(), `SELECT value FROM kv_store WHERE namespace='signing-keys' AND key=$1`, kid).Scan(&raw); err != nil {
 		t.Fatal(err)
@@ -445,7 +452,7 @@ func TestSigningKeys_GRPCFollowsKeyState(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	h := newKeyStackOn(t, newSchedDB(t), genKey(t))
-	kid := h.issueKey(t, "client", false)
+	kid := h.issueKey(t, false)
 	tok := h.oauthToken(t)
 	if tokenKID(t, tok) != kid {
 		t.Fatal("token not signed with the issued key")
@@ -485,9 +492,9 @@ func (ks *keyStack) invalidateKey(t *testing.T, kid string, grace time.Duration)
 }
 
 // TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive: once no issued key
-// pair of the audience is active and in its window — here one invalidated
-// and one deleted — the signing key from configuration is the audience's
-// current key pair and /oauth/token signs with it.
+// pair is active and in its window — here one invalidated and one deleted —
+// the signing key from configuration is the current key pair and
+// /oauth/token signs with it.
 func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -498,16 +505,16 @@ func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := newKeyStackOn(t, newSchedDB(t), key)
-	k1 := h.issueKey(t, "client", false)
-	k2 := h.issueKey(t, "client", false)
+	k1 := h.issueKey(t, false)
+	k2 := h.issueKey(t, false)
 	h.invalidateKey(t, k2, 0)
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != k1 {
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != k1 {
 		t.Fatalf("control: current with k2 invalidated: %d %s, want 200 %s", code, cur, k1)
 	}
 	if code, b := h.keyCall(t, "DELETE", "/oauth/keys/keypair/"+k1, ""); code != http.StatusOK {
 		t.Fatalf("delete %s: %d %s", k1, code, b)
 	}
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != bootKID {
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != bootKID {
 		t.Fatalf("current: %d %s, want 200 and the signing key %s", code, cur, bootKID)
 	}
 	tok := h.oauthToken(t)
@@ -519,11 +526,11 @@ func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 	}
 }
 
-// issueSigning issues a key pair of audience client on ks and fetches a
-// token it signs: the newest active key pair of the audience is the signer.
+// issueSigning issues a key pair on ks and fetches a token it signs: the
+// newest active key pair is the signer.
 func (ks *keyStack) issueSigning(t *testing.T) (kid, tok string) {
 	t.Helper()
-	kid = ks.issueKey(t, "client", false)
+	kid = ks.issueKey(t, false)
 	tok = ks.oauthToken(t)
 	if got := tokenKID(t, tok); got != kid {
 		t.Fatalf("the server signs with %s, want the key pair just issued %s", got, kid)
@@ -545,7 +552,7 @@ func TestSigningKeys_InvalidatedKeyPairEndsEarly(t *testing.T) {
 	kZero, tZero := h.issueSigning(t) // invalidated with grace 0
 	kCut, tCut := h.issueSigning(t)   // grace cut short by an invalidate with 0
 	kDel, tDel := h.issueSigning(t)   // grace cut short by DELETE
-	kAdmin := h.issueKey(t, "client", false)
+	kAdmin := h.issueKey(t, false)
 	kLong, tLong := h.issueSigning(t) // the newest, in grace: verifies, never signs
 
 	h.invalidateKey(t, kZero, 0)
@@ -557,7 +564,7 @@ func TestSigningKeys_InvalidatedKeyPairEndsEarly(t *testing.T) {
 	if code := h.authedStatus(t, tLong); code != http.StatusOK {
 		t.Errorf("in its grace period: %d, want 200", code)
 	}
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kAdmin {
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != kAdmin {
 		t.Errorf("current: %d %s, want 200 %s (a key pair in grace never signs)", code, cur, kAdmin)
 	}
 
@@ -605,7 +612,7 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 	h := newKeyStackOn(t, newSchedDB(t), key)
 	opTok := operatorToken(t, key, "cyoda-callback-test", "")
 	kReact, tReact := h.issueSigning(t) // reactivated during its grace
-	h.issueKey(t, "client", false)      // signs the admin calls once the others end
+	h.issueKey(t, false)                // signs the admin calls once the others end
 	kGrace, tGrace := h.issueSigning(t) // grace runs out
 
 	earliestValidTo := time.Now().Add(grace)
@@ -629,7 +636,7 @@ func TestSigningKeys_GracePeriod(t *testing.T) {
 	if now := time.Now(); !now.Before(earliestValidTo) {
 		t.Fatalf("the in-grace steps ended %s after the earliest end of the grace period; they prove nothing", now.Sub(earliestValidTo))
 	}
-	if code, cur := h.currentKey(t, "client"); code != http.StatusOK || cur != kReact {
+	if code, cur := h.currentKey(t); code != http.StatusOK || cur != kReact {
 		t.Errorf("current after the reactivate: %d %s, want 200 %s", code, cur, kReact)
 	}
 

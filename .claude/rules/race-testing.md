@@ -31,7 +31,7 @@ Use `make race` (defined in `Makefile`) so local and CI run exactly the same sco
 `internal/e2e` (the full HTTP-stack E2E suite). Excluded because race
 instrumentation pushes that single package past Go's default 10m per-package
 timeout, and the production code paths it covers (engine cascade, cluster
-dispatch, store mutexes, OIDC/model caches) are also exercised by the
+dispatch, store mutexes, model caches) are also exercised by the
 workflow / cluster / plugin unit tests — which retain race coverage. The
 unique-coverage loss is the narrow class of races reachable only through HTTP
 ordering between concurrent inbound requests, and no current E2E test fans

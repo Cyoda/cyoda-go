@@ -87,7 +87,7 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -116,6 +116,12 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 	if tok.ExpiresIn <= 0 {
 		t.Fatalf("client_credentials: expires_in: got %d, want >0; body=%s", tok.ExpiresIn, raw)
 	}
+	// §4.2: the client is sub and caas_user_id, and cgen is its secret
+	// generation, 1 for a client whose secret was never reset.
+	claims := decodeJWTPayload(t, tok.AccessToken)
+	if claims["sub"] != id || claims["caas_user_id"] != id || claims["cgen"] != float64(1) {
+		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, 1", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
+	}
 }
 
 // TestToken_BadGrantType_400UnsupportedGrantType verifies that an unknown
@@ -124,7 +130,7 @@ func TestToken_BadGrantType_400UnsupportedGrantType(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, secret := createClient(t, false)
+	id, secret := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"password"}}, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "unsupported_grant_type")
 }
@@ -135,49 +141,20 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	id, _ := createClient(t, false)
+	id, _ := createClient(t, false, false)
 	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
+	if got := resp.Header.Get("WWW-Authenticate"); got != `Basic realm="cyoda"` {
+		t.Errorf(`WWW-Authenticate = %q, want Basic realm="cyoda"`, got)
+	}
 	assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 }
 
-// TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType verifies that a
-// token-exchange request with an unsupported subject_token_type returns 400
-// invalid_grant. This exercises a trigger in handleTokenExchange without
-// requiring private-key material (wrong type is rejected before verification).
-func TestToken_TokenExchange_InvalidGrant_BadSubjectTokenType(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {"fake.token.here"},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:access_token"}, // not jwt — rejected
-	}
-	id, secret := createClient(t, false)
-	resp := postToken(t, form, id, secret)
-	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
-}
-
-// TestToken_TokenExchange_InvalidGrant_MalformedToken verifies that a
-// token-exchange request with a structurally invalid subject_token returns 400
-// invalid_grant. The JWT parser rejects the non-JWT string before any key lookup.
-func TestToken_TokenExchange_InvalidGrant_MalformedToken(t *testing.T) {
-	if testing.Short() {
-		t.Skip("e2e: requires Docker + PostgreSQL")
-	}
-	form := url.Values{
-		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
-		"subject_token":      {"not-a-jwt"},
-		"subject_token_type": {"urn:ietf:params:oauth:token-type:jwt"},
-	}
-	id, secret := createClient(t, false)
-	resp := postToken(t, form, id, secret)
-	assertOAuthError(t, resp, http.StatusBadRequest, "invalid_grant")
-}
-
-// NOTE: access_denied (403 tenant mismatch) is covered by
-// TestToken_TokenExchange_TenantMismatch_403 in token_exchange_test.go.
+// NOTE: every token-exchange refusal is covered by
+// TestToken_TokenExchange_Refusals in token_exchange_test.go.
 //
-// NOTE: server_error (500) is an internal-fault path only. No producing test
-// is provided; the enum addition in ErrorResponseDto is sufficient per the
-// task brief.
+// NOTE: 503 temporarily_unavailable for a store that cannot be read, and 500
+// server_error for other store and signing failures, are failures a running
+// backend cannot be made to produce on demand; they are covered by the unit
+// tests in internal/auth/token_test.go. 503 temporarily_unavailable for no
+// free secret-check slot is covered on a stack of its own by
+// TestSecretCheckBound_NoFreeSlot_503.

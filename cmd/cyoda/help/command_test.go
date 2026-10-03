@@ -138,6 +138,123 @@ func TestRunHelp_UnknownTopic_Exit2(t *testing.T) {
 	}
 }
 
+// TestRunHelp_DottedSubtopic_ResolvesLikeSpaceForm — every see_also list and
+// the HTTP help endpoint name topics in dotted form (e.g. "cli.serve"), but
+// until this fix only the space form ("cli", "serve") resolved on the CLI.
+// A single dotted argument must resolve the same topic as the space form.
+func TestRunHelp_DottedSubtopic_ResolvesLikeSpaceForm(t *testing.T) {
+	tree := testTree(t)
+	var dotted, spaced bytes.Buffer
+	dottedCode := RunHelp(tree, []string{"cli.serve"}, &dotted, "0.6.1", false, "")
+	spacedCode := RunHelp(tree, []string{"cli", "serve"}, &spaced, "0.6.1", false, "")
+	if dottedCode != 0 {
+		t.Fatalf("dotted exit = %d, want 0; output: %q", dottedCode, dotted.String())
+	}
+	if dottedCode != spacedCode {
+		t.Fatalf("dotted exit %d != spaced exit %d", dottedCode, spacedCode)
+	}
+	if dotted.String() != spaced.String() {
+		t.Errorf("dotted form output differs from space form:\ndotted: %q\nspaced: %q", dotted.String(), spaced.String())
+	}
+	if !strings.Contains(dotted.String(), "Serve API.") {
+		t.Errorf("dotted lookup did not resolve cli.serve body: %q", dotted.String())
+	}
+}
+
+// TestRunHelp_DottedTopActionID_ResolvesLikeSpaceForm — a dotted id whose
+// final segment is a registered action (not a subtopic), e.g. "openapi.json",
+// must still dispatch the action rather than reporting "no such topic".
+func TestRunHelp_DottedTopActionID_ResolvesLikeSpaceForm(t *testing.T) {
+	tree := testTree(t)
+	var dotted, spaced bytes.Buffer
+	dottedCode := RunHelp(tree, []string{"openapi.json"}, &dotted, "0.6.1", false, "")
+	spacedCode := RunHelp(tree, []string{"openapi", "json"}, &spaced, "0.6.1", false, "")
+	if dottedCode != 0 {
+		t.Fatalf("dotted exit = %d, want 0; output: %q", dottedCode, dotted.String())
+	}
+	if dottedCode != spacedCode {
+		t.Fatalf("dotted exit %d != spaced exit %d", dottedCode, spacedCode)
+	}
+	if dotted.String() != spaced.String() {
+		t.Errorf("dotted action output differs from space form:\ndotted: %q\nspaced: %q", dotted.String(), spaced.String())
+	}
+}
+
+// TestRunHelp_DottedConfigAll_ResolvesLikeSpaceForm — "config all" is a
+// special-cased pseudo-topic (not a real tree node); the dotted spelling
+// "config.all" must still reach it.
+func TestRunHelp_DottedConfigAll_ResolvesLikeSpaceForm(t *testing.T) {
+	var dotted, spaced bytes.Buffer
+	dottedCode := RunHelp(DefaultTree, []string{"config.all"}, &dotted, "0.6.1", false, "")
+	spacedCode := RunHelp(DefaultTree, []string{"config", "all"}, &spaced, "0.6.1", false, "")
+	if dottedCode != 0 {
+		t.Fatalf("dotted exit = %d, want 0; output: %q", dottedCode, dotted.String())
+	}
+	if dottedCode != spacedCode {
+		t.Fatalf("dotted exit %d != spaced exit %d", dottedCode, spacedCode)
+	}
+	if dotted.String() != spaced.String() {
+		t.Errorf("dotted config.all output differs from space form")
+	}
+}
+
+// TestRunHelp_UnknownDottedTopic_NamesNearestParent — an unknown dotted id
+// gets the same unknown-topic message, naming the nearest resolvable parent,
+// as the equivalent unknown space-separated path.
+func TestRunHelp_UnknownDottedTopic_NamesNearestParent(t *testing.T) {
+	tree := testTree(t)
+	var dotted, spaced bytes.Buffer
+	dottedCode := RunHelp(tree, []string{"cli.bogus"}, &dotted, "0.6.1", false, "")
+	spacedCode := RunHelp(tree, []string{"cli", "bogus"}, &spaced, "0.6.1", false, "")
+	if dottedCode != 2 {
+		t.Fatalf("dotted exit = %d, want 2; output: %q", dottedCode, dotted.String())
+	}
+	if dottedCode != spacedCode {
+		t.Fatalf("dotted exit %d != spaced exit %d", dottedCode, spacedCode)
+	}
+	if dotted.String() != spaced.String() {
+		t.Errorf("unknown dotted topic message differs from space form:\ndotted: %q\nspaced: %q", dotted.String(), spaced.String())
+	}
+	if !strings.Contains(dotted.String(), "cli") || !strings.Contains(dotted.String(), "bogus") {
+		t.Errorf("error should name the nearest parent and the missing segment: %q", dotted.String())
+	}
+}
+
+// TestRunHelp_UnknownActionOnKnownTopic_DottedDoesNotShadowAction — a dotted
+// single argument that happens to look like "topic.action" where the action
+// does not exist must fall through to the unknown-action error (naming
+// available actions), not a generic unknown-topic error, confirming the
+// dotted fallback composes with action lookup rather than shadowing it.
+func TestRunHelp_UnknownActionOnKnownTopic_DottedDoesNotShadowAction(t *testing.T) {
+	tree := testTree(t)
+	var dotted, spaced bytes.Buffer
+	dottedCode := RunHelp(tree, []string{"openapi.xml"}, &dotted, "0.6.1", false, "")
+	spacedCode := RunHelp(tree, []string{"openapi", "xml"}, &spaced, "0.6.1", false, "")
+	if dottedCode != 2 {
+		t.Fatalf("dotted exit = %d, want 2; output: %q", dottedCode, dotted.String())
+	}
+	if dottedCode != spacedCode {
+		t.Fatalf("dotted exit %d != spaced exit %d", dottedCode, spacedCode)
+	}
+	if dotted.String() != spaced.String() {
+		t.Errorf("dotted unknown-action message differs from space form:\ndotted: %q\nspaced: %q", dotted.String(), spaced.String())
+	}
+}
+
+// TestRunHelp_MultiArgWithDot_NotSplit — the dotted fallback only applies to
+// a single positional argument. Two positional args, even when one contains
+// a dot, must not be split or recombined.
+func TestRunHelp_MultiArgWithDot_NotSplit(t *testing.T) {
+	var out bytes.Buffer
+	code := RunHelp(testTree(t), []string{"cli", "serve.extra"}, &out, "0.6.1", false, "")
+	if code != 2 {
+		t.Errorf("exit = %d, want 2", code)
+	}
+	if !strings.Contains(out.String(), "serve.extra") {
+		t.Errorf("error should name the literal missing segment %q: %q", "serve.extra", out.String())
+	}
+}
+
 func TestRunHelp_FormatJSON(t *testing.T) {
 	var out bytes.Buffer
 	code := RunHelp(testTree(t), []string{"--format=json"}, &out, "0.6.1", false, "")

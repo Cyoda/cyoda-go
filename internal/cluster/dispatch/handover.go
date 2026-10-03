@@ -77,13 +77,11 @@ type HandOverAnswer struct {
 }
 
 // newHandOverRequest puts call on the wire for a peer that may make triesLeft
-// tries under fencing number major. An error means the callout cannot be handed
-// over at all — to any peer.
-func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
+// tries under fencing number major, with the identity the owner computed for
+// it. An error means the callout cannot be handed over at all — to any peer.
+func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft int, major uint32) (DispatchCalloutRequest, error) {
 	src := call.Source
 	switch {
-	case uc == nil:
-		return DispatchCalloutRequest{}, errors.New("no user context")
 	case src.Entity == nil:
 		return DispatchCalloutRequest{}, errors.New("callout has no source")
 	case call.RequestID == "":
@@ -104,9 +102,11 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 		TxID:           call.TxID,
 		TenantID:       string(call.TenantID),
 		Tags:           call.Tags,
-		UserID:         uc.UserID,
-		PrincipalKind:  uc.Kind,
-		Roles:          uc.Roles,
+		AttributedID:   call.Identity.Attributed.ID,
+		AttributedKind: call.Identity.Attributed.Kind,
+		ExecutorID:     call.Identity.Executor.ID,
+		ExecutorKind:   call.Identity.Executor.Kind,
+		Roles:          call.Identity.Roles,
 		RequestID:      call.RequestID,
 		TriesLeft:      triesLeft,
 		AnswerLimitMs:  call.AnswerLimit.Milliseconds(),
@@ -145,7 +145,10 @@ func newHandOverRequest(uc *spi.UserContext, ownerNodeID string, call internalgr
 // cnode a deadline in the past, or mint passes carrying pairs the fence cannot
 // judge. None of them needs configuration to judge, and that is the whole of
 // what the receiver checks: how many tries the hand-over may make and how long
-// a cnode is given to answer are the owner's decisions, run as sent.
+// a cnode is given to answer are the owner's decisions, run as sent. The
+// callout's identity is one of those values: both principals must be named,
+// since the receiving pnode attaches them as received and has nothing to
+// substitute for one that is missing.
 func (req *DispatchCalloutRequest) validate() error {
 	switch {
 	case req.TenantID == "":
@@ -168,6 +171,14 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("ownerNodeID is empty")
 	case req.Major < 1:
 		return errors.New("major is below 1")
+	case req.AttributedID == "":
+		return errors.New("attributedID is empty")
+	case req.AttributedKind == "":
+		return errors.New("attributedKind is empty")
+	case req.ExecutorID == "":
+		return errors.New("executorID is empty")
+	case req.ExecutorKind == "":
+		return errors.New("executorKind is empty")
 	}
 	if len(req.Outer) > maxOuterPairs {
 		return errors.New("the hand-over names more enclosing callouts than can be sane")
@@ -210,8 +221,9 @@ func noEntity(payload []byte) bool {
 // toCallout builds, on the receiving pnode, the Callout the owner built — with
 // the same builder — and fills what the hand-over carried: the request id, the
 // answer limit, whether it is repeat-safe, the owner's id for the passes, the
-// enclosing pairs, and a numberer that counts minor = 1, 2, … under the
-// hand-over's major. The request must have passed validate.
+// enclosing pairs, the identity the owner computed, and a numberer that counts
+// minor = 1, 2, … under the hand-over's major. The request must have passed
+// validate.
 func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.CalloutFailure) {
 	// The payload as it was stored: the wire carried the bytes, not a re-encoding
 	// of them, so this is what the owner's store holds and what the compute
@@ -245,6 +257,11 @@ func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.
 	call.RepeatSafe = req.RepeatSafe
 	call.OwnerNodeID = req.OwnerNodeID
 	call.Number = internalgrpc.NewMinorNumberer(req.Major)
+	call.Identity = internalgrpc.CalloutIdentity{
+		Attributed: spi.Principal{ID: req.AttributedID, Kind: req.AttributedKind},
+		Executor:   spi.Principal{ID: req.ExecutorID, Kind: req.ExecutorKind},
+		Roles:      req.Roles,
+	}
 	for _, p := range req.Outer {
 		call.Outer = append(call.Outer, token.Pair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}

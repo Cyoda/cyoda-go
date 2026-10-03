@@ -459,7 +459,6 @@ func TestDriver_CreateMessageWithHeaders_POST(t *testing.T) {
 	d := driver.NewRemote(t, srv.URL, "tok")
 	id, err := d.CreateMessageWithHeaders("Publication", `{"k":1}`, parityclient.MessageHeaderInput{
 		CorrelationID: "abc",
-		UserID:        "u1",
 	})
 	if err != nil {
 		t.Fatalf("err: %v", err)
@@ -469,9 +468,6 @@ func TestDriver_CreateMessageWithHeaders_POST(t *testing.T) {
 	}
 	if got := gotHeaders.Get("X-Correlation-ID"); got != "abc" {
 		t.Errorf("X-Correlation-ID: got %q want abc", got)
-	}
-	if got := gotHeaders.Get("X-User-ID"); got != "u1" {
-		t.Errorf("X-User-ID: got %q want u1", got)
 	}
 	if id == "" {
 		t.Error("expected non-empty id")

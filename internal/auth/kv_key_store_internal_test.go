@@ -52,13 +52,13 @@ func TestKVKeyStore_RetainEvictsSignerOfDeletedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"), "client")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-1"), issuedRecord(t, v, testKID("issued-1"))); err != nil {
 		t.Fatal(err)
 	}
-	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-2"), issuedRecord(t, v, testKID("issued-2"), "human")); err != nil {
+	if err := kv.Put(ctx, signingKeysNamespace, testKID("issued-2"), issuedRecord(t, v, testKID("issued-2"))); err != nil {
 		t.Fatal(err)
 	}
-	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot, BootstrapAudience: "client"})
+	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{Bootstrap: boot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestKVKeyStore_GossipDuringConstructionDoesNotPanic(t *testing.T) {
 	defer slog.SetDefault(prev)
 
 	s, err := NewKVKeyStore(ctx, kv, KVKeyStoreConfig{
-		Bootstrap: boot, BootstrapAudience: "client", Broadcaster: immediateBroadcaster{},
+		Bootstrap: boot, Broadcaster: immediateBroadcaster{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -119,7 +119,7 @@ func TestKVKeyStore_GossipDuringConstructionDoesNotPanic(t *testing.T) {
 	if strings.Contains(buf.String(), "panic") {
 		t.Fatalf("gossip during construction must not panic; log: %s", buf.String())
 	}
-	if _, _, err := s.Signer("client"); err != nil {
+	if _, _, err := s.Signer(); err != nil {
 		t.Fatalf("store must still work after construction-time gossip: %v", err)
 	}
 }

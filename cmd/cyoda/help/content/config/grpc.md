@@ -17,8 +17,10 @@ config.grpc — gRPC listener settings and compute-node credentials.
 ## SYNOPSIS
 
 cyoda exposes a gRPC endpoint for compute-node integration. The listener port is configured
-via `CYODA_GRPC_PORT`. External compute nodes authenticate with `CYODA_COMPUTE_TOKEN` and
-connect to the endpoint specified by `CYODA_COMPUTE_GRPC_ENDPOINT`.
+via `CYODA_GRPC_PORT`. The listener serves plaintext: TLS comes from the ingress,
+gateway or service mesh in front of it. External compute nodes authenticate as an M2M
+client of their own (see `cyoda help auth integration`). The `CYODA_COMPUTE_*` variables
+below are read by compute-node clients, not by the server.
 
 ## OPTIONS
 
@@ -104,15 +106,26 @@ too. These three are described in `config cluster`.
 
 ### Compute-node client
 
-These variables are used by compute-node clients that connect to a running cyoda instance.
+These variables are the convention of cyoda's own test compute node
+(`cmd/compute-test-client`, used by the parity test suites). The server does
+not read them, and a compute node you write may take its endpoint and
+credentials from any configuration. A compute node opens the stream with its
+client's own `client_credentials` token, and sends that token as the bearer on
+every callback, together with the callout's transaction token (`X-Tx-Token`
+header or `tx-token` metadata) when the callback joins the callout's
+transaction.
 
 - `CYODA_COMPUTE_GRPC_ENDPOINT` — gRPC endpoint for the compute node to connect to,
   e.g. `localhost:9090` (required when running as a compute client)
-- `CYODA_COMPUTE_TOKEN` — bearer token for compute-node authentication
-  (required when running as a compute client)
-- `CYODA_COMPUTE_HTTP_BASE` — HTTP base URL of the cyoda instance a compute node
-  calls back into (e.g. to join the originating transaction); optional, enables
-  callback-capable processors when set
+- `CYODA_COMPUTE_CLIENT_ID` — id of the M2M client the compute node
+  authenticates as (required when running as a compute client)
+- `CYODA_COMPUTE_CLIENT_SECRET` — secret of that M2M client (required when
+  running as a compute client)
+- `CYODA_COMPUTE_HTTP_BASE` — HTTP base URL of the cyoda instance (required when
+  running as a compute client). The compute node gets its bearer from
+  `/api/oauth/token` there with the client-credentials grant, and gets a new one
+  before the old one expires. It also calls back into this URL (e.g. to join the
+  originating transaction).
 
 ## EXAMPLES
 
@@ -126,7 +139,9 @@ CYODA_GRPC_PORT=9090
 
 ```
 CYODA_COMPUTE_GRPC_ENDPOINT=cyoda.internal:9090
-CYODA_COMPUTE_TOKEN=my-token
+CYODA_COMPUTE_HTTP_BASE=http://cyoda.internal:8080
+CYODA_COMPUTE_CLIENT_ID=<client id>
+CYODA_COMPUTE_CLIENT_SECRET=<client secret>
 ```
 
 ## SEE ALSO

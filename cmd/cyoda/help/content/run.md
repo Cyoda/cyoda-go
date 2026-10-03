@@ -200,13 +200,13 @@ docker compose -f deploy/docker/compose.yaml up
 #        CYODA_IAM_MODE: jwt
 #        CYODA_REQUIRE_JWT: "true"
 #        CYODA_JWT_SIGNING_KEY_FILE: /run/secrets/signing.pem
-#        CYODA_JWT_ISSUER: https://auth.example.com
+#        CYODA_JWT_ISSUER: https://cyoda.example.com
 #        CYODA_JWT_AUDIENCE: cyoda-api
 # 3. Launch:
 docker compose up
 ```
 
-First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 **Use a custom image (e.g. a local dev build):**
 
@@ -333,7 +333,7 @@ export CYODA_POSTGRES_URL_FILE=/run/secrets/postgres-url
 export CYODA_IAM_MODE=jwt
 export CYODA_REQUIRE_JWT=true
 export CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem
-export CYODA_JWT_ISSUER=https://auth.example.com
+export CYODA_JWT_ISSUER=https://cyoda.example.com
 export CYODA_JWT_AUDIENCE=cyoda-api
 ./bin/cyoda
 ```
@@ -386,7 +386,7 @@ echo $?   # 0 = ready, 1 = not ready or error
 docker compose up
 ```
 
-First admin token: `docker compose exec cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
+First admin token: `docker compose exec -T cyoda /cyoda token --tenant <tenant>`; see `cyoda help cli token`.
 
 ## SEE ALSO
 

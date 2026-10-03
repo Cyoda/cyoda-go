@@ -78,6 +78,18 @@ An entity commit that lands in a scheduled state with no task is a lost fire,
 and a task that outlives the reason it was armed is a phantom timer. The
 atomicity above prevents both.
 
+**Who armed it.** Arming stamps the task's `armedBy` with the arming write's
+attributed principal (`spi.AttributionFor`, see `authcontext-attribution.md`):
+the user of an on-behalf-of write, never the client that holds the token; the
+transaction's origin for a compute node's write-back inside a user's
+transaction; the client for a client's own write. A firing begins its
+transaction with `armedBy` as the origin: every change it makes is attributed
+to `armedBy` and executed by `system`, its audit events carry `actor` =
+`armedBy` and `executedBy` = `system`, and its callouts carry `authid` /
+`authtype` = `armedBy` and `authexecid` / `authexectype` = `system`. If the
+task's life changed after the claim, the run ends before anything is written,
+so a firing never attributes to an `armedBy` it did not claim.
+
 ## 3. One owner per run
 
 - At most one node claims a task at a time, and the claiming node runs it.
@@ -245,7 +257,8 @@ write is both.
 ## 11. `GET /scheduled-tasks`
 
 HTTP only, like the audit trail: an operator's view no compute member needs.
-Any authenticated user of the tenant may call it; the tenant comes from the
+Any caller of the tenant whose token holds `ROLE_M2M` may call it, as for every
+data operation (`obo-only-user-identity.md`); the tenant comes from the
 token. Parameters: `status` (repeatable: `WAITING`, `RUNNING`, `FAILED`),
 `modelName` (1–256 characters of valid UTF-8, no NUL), `modelVersion` (integer
 ≥ 1, only with `modelName`), `entityId` (UUID), `cursor` (opaque, ≤ 256
@@ -410,6 +423,8 @@ The visible contract to match:
 8. `GET /scheduled-tasks` as §11 states it.
 9. The `409` cells of §12.
 10. One `RUNNING` task per entity.
+11. §2's attribution: `armedBy` is the arming write's attributed principal,
+    and a firing is attributed to `armedBy` and executed by `system`.
 
 Where Cloud's storage cannot make a task-row write part of the entity
 transaction, it needs another way to stop a superseded owner from committing

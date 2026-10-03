@@ -27,7 +27,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	})
 
 	secret, err := svc.M2MClientStore().Create(
-		systemCtx(), "tenant-1", "CLIENT1", "user-1", []string{"ROLE_USER"},
+		systemCtx(), "tenant-1", "CLIENT1", "CLIENT1", []string{"ROLE_USER"}, false,
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -71,11 +71,11 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	// the in-process KeyStore. No JWKS URL, no http.Client.
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
 
-	uc, err := validator.Validate(tokenResp.AccessToken)
+	uc, _, err := validator.Validate(tokenResp.AccessToken)
 	if err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
-	if uc == nil || uc.UserID != "user-1" {
+	if uc == nil || uc.UserID != "CLIENT1" {
 		t.Fatalf("unexpected user context: %+v", uc)
 	}
 }
@@ -93,11 +93,11 @@ func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
 	ctx := systemCtx()
 	now := time.Now()
 	from := now.Add(-2 * time.Hour)
-	issued, err := svc.KeyStore().Issue(ctx, auth.IssueRequest{Audience: "client", ValidFrom: from, ValidTo: now.Add(time.Hour)})
+	issued, err := svc.KeyStore().Issue(ctx, auth.IssueRequest{ValidFrom: from, ValidTo: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatalf("issue key pair: %v", err)
 	}
-	kp, signer, err := svc.KeyStore().Signer("client")
+	kp, signer, err := svc.KeyStore().Signer()
 	if err != nil || kp.KID != issued.KID {
 		t.Fatalf("signer = %v, %v; want the issued key pair %s", kp, err, issued.KID)
 	}
@@ -110,14 +110,14 @@ func TestIntegration_TokenStopsVerifyingWhenItsKeyPairWindowEnds(t *testing.T) {
 	}
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(svc.KeyStore()), svc.Issuer())
 
-	if _, err := validator.Validate(tok); err != nil {
+	if _, _, err := validator.Validate(tok); err != nil {
 		t.Fatalf("token rejected while its key pair is in its window: %v", err)
 	}
 	// End the window; the key pair stays active.
 	if _, err := svc.KeyStore().Reactivate(ctx, kp.KID, from, now.Add(-time.Minute)); err != nil {
 		t.Fatalf("end the window: %v", err)
 	}
-	if _, err := validator.Validate(tok); err == nil {
+	if _, _, err := validator.Validate(tok); err == nil {
 		t.Fatal("token accepted after its key pair's window ended")
 	}
 }

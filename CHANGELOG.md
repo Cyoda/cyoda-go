@@ -6,6 +6,114 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Only M2M clients reach cyoda-go; an application acts for its users
+  through an on-behalf-of client.** cyoda-go has no per-user permissions: an
+  on-behalf-of client exchanges a user assertion its application signed for
+  a token with the client's roles, and every change, audit event, callout
+  and message records the user and the client. Application teams start with
+  `cyoda help auth integration` — the step-by-step integration guide, with a
+  section on moving from OIDC and forwarded identity-provider tokens — and
+  `docs/access-to-the-cyoda-api.html`; the entries below give each change.
+
+- **`POST /message` no longer reads `X-User-ID`; a message records the
+  attributed user and the executor of the request, returned as `userId`,
+  `attributedKind` and `executedBy`.** For a direct client request the
+  executor equals the attributed user; for an on-behalf-of request `userId`
+  is the user and `executedBy` is the on-behalf-of client.
+
+- **Callouts: `authid`/`authtype` name the attributed principal (the user an
+  on-behalf-of request is for, a transaction's origin for a write-back, the
+  arming user for a scheduled fire); new `authexecid`/`authexectype` name the
+  executor; `authclaims` are the executor's roles. `authctx.Require` gates on
+  the executor being a service.** The node that dispatches a callout computes
+  both principals once; a callout handed over to another node carries them
+  and is sent with them as received. A callout is not sent when either
+  principal has no id or an unset or unrecognized kind. A compute node that
+  read `authid` as the request's caller reads `authexecid`; `authctx` adds
+  `ExecutorType` and `ExecutorID`, and `Require` no longer admits a user
+  executor.
+
+- **A callback authenticated with an on-behalf-of token may join only a
+  transaction begun for the same user (`403 FORBIDDEN` otherwise).** The
+  transaction token binds no caller, and an on-behalf-of write records its own
+  user; a compute node presenting one user's transaction token with another
+  user's on-behalf-of token is refused (`403 FORBIDDEN`, "an on-behalf-of
+  request may join only its own user's transaction"; over gRPC, the RPC's
+  error envelope with that message). A compute client's own token joins as
+  before, and its writes record the transaction's user, executed by the
+  compute client. An on-behalf-of write records the user (`attributedKind`
+  `user`) with the on-behalf-of client as `executedBy`.
+
+- **Every API operation requires `ROLE_M2M`, except account, client,
+  trusted-key, key-pair and `/admin` operations (guarded by their admin or
+  operator rule) and `GET /account`.** The exempt account operation is
+  `GET /account` alone; `GET /account/subscriptions` requires the role. A
+  caller without it gets `403 FORBIDDEN` ("this operation requires
+  ROLE_M2M") before the operation runs, and before a transaction token it
+  presents is read; every gRPC method and stream answers `PermissionDenied`.
+  Every M2M client holds `ROLE_M2M`. A `cyoda token` carries only the roles
+  it is signed with: the default `ROLE_ADMIN` reaches the admin operations,
+  `--roles ROLE_ADMIN,ROLE_M2M` also reaches data. The OpenAPI document lists
+  `403` on every operation the rule covers.
+
+- **A compute node must connect with its own client-credentials token (kind
+  service, `ROLE_M2M`); an on-behalf-of token cannot open a stream or
+  administer. A token whose client is deleted or reset cannot open a stream,
+  and a stream closes within a minute after its client is deleted or its
+  secret reset.** `startStreaming` with any other token — an on-behalf-of
+  token, a `cyoda token`, a token without `ROLE_M2M` — is
+  `codes.PermissionDenied`. A stream reads its client once before the member
+  joins and then every 60 s, and is refused or closed with
+  `codes.Unauthenticated` when the client is gone or its secret generation
+  changed, and with `codes.Unavailable` when the client store cannot be read
+  or the read does not answer within 60 s; the opening token's expiry does
+  not end a stream. The
+  tenant admin routes (`/clients*`, `/oauth/keys/trusted*`) and the platform
+  operator routes answer an on-behalf-of token with `403 FORBIDDEN`
+  ("on-behalf-of tokens cannot administer"), whatever its roles.
+
+- **`POST /oauth/token`: the token exchange is for on-behalf-of clients only
+  and client credentials for the others (`400 unauthorized_client`); exchange
+  failures answer `invalid_request` (was `invalid_grant`); the assertion must
+  carry `aud` = the cyoda issuer and `exp − iat` ≤ 300 s; the issued token
+  carries the client's roles, never the assertion's; `expires_in` is the
+  token's remaining life; client tokens carry `cgen`.** Also: the exchange
+  refuses the RFC 8693 parameters `actor_token`, `actor_token_type`,
+  `resource`, `audience`, `scope` and `requested_token_type`, even empty
+  (`400 invalid_request`); the token's `exp` is the earlier of the
+  assertion's `exp` and now + `CYODA_JWT_EXPIRY_SECONDS`; the only accepted
+  `subject_token_type` is `urn:ietf:params:oauth:token-type:jwt`; a client
+  store that is unavailable answers `503 temporarily_unavailable` with
+  `Retry-After` (was `500`); a `401` carries `WWW-Authenticate: Basic realm="cyoda"`; a
+  method other than `POST` is the endpoint's OAuth-shaped
+  `405 method_not_allowed` with `Allow: POST` (a `GET` used to fall through to the
+  authenticated API and answer `401`); `grant_type`, `subject_token` and
+  `subject_token_type` are read from the form body only, never the query
+  string; a request whose `Content-Type` is not
+  `application/x-www-form-urlencoded` (a `charset` parameter is accepted)
+  is `400 invalid_request` before the client authenticates, and its body is
+  never read; a form body over 1 MiB or one that does not parse is
+  `400 invalid_request`. Error descriptions are fixed and never repeat the
+  user id, tenant or key id. `ErrorResponseDto.error` drops `invalid_grant`
+  (no longer sent) and `invalid_scope` (never sent) and adds
+  `temporarily_unavailable`.
+
+- **The OIDC provider endpoints (`/oauth/oidc/providers*`), their error codes
+  and the `CYODA_OIDC_*` settings are removed.** Users reach cyoda-go only
+  through an application's M2M client; see `auth.tokens`.
+
+- **The user id `system` (any letter case) is reserved and refused everywhere
+  a user id is accepted.** It is the platform principal that executes
+  scheduled firings. The check is part of the one user-id rule (see the
+  user-identifier entry below).
+
+- **`CYODA_IAM_MODE` must be `mock` or `jwt`.** Any other value used to start
+  the server with mock authentication, so every request ran as the mock
+  admin, and without the mock-mode warning. The server now refuses to start.
+  This is enforced in `app.New` itself, so every binary built on it — not
+  only the `cyoda` binary's own startup checks — is covered. `CYODA_REQUIRE_JWT`
+  and the CORS allowlist settings are now enforced there too.
+
 - **The bootstrap M2M client is removed; `cyoda token` signs the first admin
   token.** `CYODA_BOOTSTRAP_CLIENT_ID`, `CYODA_BOOTSTRAP_CLIENT_SECRET`,
   `CYODA_BOOTSTRAP_CLIENT_SECRET_FILE`, `CYODA_BOOTSTRAP_TENANT_ID`,
@@ -24,12 +132,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   gone, the `caas_org_id` claim is the only place a tenant id enters
   cyoda-go from outside it. See `cyoda help cli token`.
 
-- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 31622400 (366
-  days).** The server used to replace a non-numeric value with 3600 and
-  accept 0 or a negative value, issuing tokens that had already expired; it
-  now refuses to start, and `cyoda token` exits 1, for any value outside that
-  range; unset or empty still means 3600. The Helm chart's
-  `jwt.expirySeconds` has the same upper bound.
+- **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 3600, and now
+  defaults to 300 (was 3600).** The server used to replace a non-numeric
+  value with 3600 and accept 0, a negative value, or anything up to 31622400
+  (366 days), issuing tokens that had already expired or lived for up to a
+  year; it now refuses to start, and `cyoda token` exits 1, for any value
+  outside 1–3600; unset or empty means 300. A revoked M2M client's issued
+  tokens therefore now end within at most an hour, down from up to a year.
+  The Helm chart's `jwt.expirySeconds` has the same default and upper bound.
 
 - **An empty `CYODA_JWT_ISSUER` is refused.** The server used to start with
   it and issue tokens with an empty `iss`; it now refuses to start, and
@@ -41,7 +151,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `invalidateCurrent` on `POST /oauth/keys/keypair` ends issued key pairs
   only, the first rotation included; it used to invalidate the bootstrap key
   too. The bootstrap key stays active and signs again whenever no issued key
-  pair of its audience is active and inside its window, so `cyoda token`
+  pair is active and inside its window, so `cyoda token`
   keeps working through routine key management. Only an invalidate or
   `DELETE` that names its key id ends it, and the node that takes the call
   logs a WARN that tokens from `cyoda token` are refused once any grace
@@ -58,15 +168,54 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-window.md`.
 
+- **A key pair's invalidation grace period is at most 3600 s, the longest
+  token lifetime (was 366 days).** `gracePeriodSec` on
+  `POST /oauth/keys/keypair/{keyId}/invalidate` and
+  `invalidateGracePeriodSec` on `POST /oauth/keys/keypair` over 3600 are
+  `400 BAD_REQUEST`; the OpenAPI maximum of both is 3600. No token outlives
+  3600 s, so a longer grace only kept a revoked key verifying.
+
+- **Signing key pairs have no audience: `audience` is removed from key-pair
+  issue and from `GET /oauth/keys/keypair/current`, and
+  `CYODA_JWT_BOOTSTRAP_AUDIENCE` is removed.** The newest active key pair
+  signs every token.
+
+- **Trusted keys: key ids are unique per tenant (the cross-tenant `409
+  KEY_OWNED_BY_DIFFERENT_TENANT` is gone); `audience` and the invalidation
+  grace period are removed — invalidating a key ends it at once and the
+  invalidate request has no body; every token exchange reads the key from the
+  store; `GET /oauth/keys/trusted` can answer `500`/`503`.** See `cyoda help
+  auth trusted-keys`.
+
+- **Trusted-key registration refuses a JWK with a private member or a small
+  modulus, and stores only the public members.** A JWK that carries `d`,
+  `p`, `q`, `dp`, `dq`, `qi` or `oth` is `400 BAD_REQUEST`, and the detail
+  names the member; an RSA modulus under 2048 bits is `400 BAD_REQUEST`; a
+  non-string `alg` or `use` is `400 BAD_REQUEST`. Before, the request's JWK
+  was stored as sent and returned by register and list, private members
+  included. Now register and list return, and the store holds, only `kty`,
+  `kid` (the `keyId`), `n` and `e`, plus `alg` and `use` when sent.
+
+- **Tokens are mapped strictly: a token with both `scopes` and `user_roles`,
+  or with `act` but no `scopes`, is refused. `CYODA_IAM_MOCK_KIND` defaults
+  to `service`, and any value but `user`, `service` or `system` refuses to
+  start.** A token with `act` is a user acting through the client
+  named in `act.sub`, which must be an object holding a client id; a token
+  with `scopes` and no `act` is a client; a token with `user_roles` is the
+  operator's `cyoda token`. A `cgen` claim must be a non-negative integer.
+  The token exchange now issues OBO tokens with the M2M client's roles in
+  `scopes`; the subject token's roles are ignored.
+
 - **Signing key pairs are shared and persisted by the cluster.** See
   `cyoda help config auth` ("JWT signing keypair rotation") and
   `docs/cloud-parity/signing-key-pairs.md`.
   - JWT signing key pairs (`/oauth/keys/keypair*`) and the bootstrap key's
     invalidate/reactivate/delete state now live in the SYSTEM-tenant KV store.
-    They converge across every node the same way trusted keys already do.
+    Every node keeps a copy, updated by a change message on every write and
+    re-read from the store periodically as a backstop.
   - They survive a restart on a persistent backend (not on the memory
     backend).
-  - First-party token verification now depends on that store. A node that
+  - Token verification now depends on that store. A node that
     cannot read it for 10 reconcile intervals fails closed and refuses every
     key: `401` on verification, `503` with `Retry-After` on JWKS. It does not
     serve a stale answer.
@@ -95,7 +244,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     `404`, if it wins signer selection.
   - `POST /oauth/token`'s existing `500 server_error` has new causes: a broken
     selected key pair, any undecodable record, or a stale store. An
-    undecodable record blocks signing for every audience, not only its own.
+    undecodable record blocks all signing, not only its own key's.
   - A restart no longer restores a revoked bootstrap key. Invalidating,
     reactivating or deleting it through the API is now durable.
   - Deleting the bootstrap key is permanent for that key. Replacing
@@ -173,15 +322,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   tightening of schema 1.5 in `docs/workflow-schema-versioning.md`; no
   workflow schema version change. See `cyoda help workflows`.
 
-- **The per-tenant trusted-key cap counts every key that can verify.** It
-  counted only active keys, so a key in its grace period after invalidation
-  — which now verifies until its `validTo` — took no slot, and repeated
-  rotations with long grace periods could keep any number of keys verifying.
-  Such a key now keeps its slot until its grace period ends, and
-  reactivating a key is held to the same cap (`400 TRUSTED_KEY_CAP_REACHED`,
-  which reactivation could not return before). Registrations and
-  reactivations that succeeded before can now be refused: to make room,
-  delete an old key or invalidate it with no grace period first.
+- **Reactivating a trusted key is held to the per-tenant cap**
+  (`400 TRUSTED_KEY_CAP_REACHED`, which reactivation could not return
+  before). The cap counts every active key whose `validTo` has not passed;
+  an invalidated key frees its slot at once, and a registration with
+  `invalidatePrevious` is never refused by it. A reactivation that succeeded
+  before can now be refused: delete or invalidate an old key first.
 
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
@@ -213,40 +359,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   nothing is normalised. The excluded characters are those the CloudEvents
   spec forbids in a string attribute — the user id is sent to compute nodes
   as `authid` — plus U+FFFD, which a JSON decoder puts in place of every
-  invalid byte, so two different claims can no longer name one user. The
-  OIDC `sub` had the length limit and the C0/DEL ban already; C1 controls,
-  noncharacters and U+FFFD are new for it too. The rule now applies at every
-  place a principal's user id enters cyoda-go from outside it, through one
-  check. **`oidc:` is a reserved word:** a user id that does not come from
-  the OIDC path — the first-party claim and the token-exchange `sub` —
-  must not begin with it, in any case, because
-  the OIDC path builds its user ids as `oidc:<providerId>:<sub>` and a
-  first-party principal could otherwise carry an OIDC principal's user id.
-  The first-party `caas_user_id` claim (or `sub` when `caas_user_id`
-  is absent) outside the rule is an **ordinary `401`** with the uniform
+  invalid byte, so two different claims can no longer name one user; and
+  the user id `system` is reserved. The rule applies at every place a
+  principal's user id enters cyoda-go from outside it, through one check,
+  `common.ValidateUserID`. A token's `caas_user_id` claim (or `sub` when
+  `caas_user_id` is absent) outside the rule is an **ordinary `401`** with the uniform
   problem detail, and `codes.Unauthenticated` over gRPC; the server log gives
   the reason, never the value. A `caas_user_id` that is present but empty,
   not a string, or outside the rule is rejected; it no longer falls back to
-  `sub`. A token-exchange subject token whose `sub` is outside the rule is
-  **`400 invalid_grant`** — before, it was exchanged for a token that every
-  later request rejected. `cyoda token --user` checks the rule too before
+  `sub`. A user assertion whose `sub` is outside the rule is refused by the
+  token exchange with **`400 invalid_request`** — before, it was exchanged for
+  a token that every later request rejected. `cyoda token --user` checks the rule too before
   it signs. No new error code. The
   contract and the Cloud comparison are in
   `docs/cloud-parity/user-id-rule.md`. (#594, from a contribution in #597.)
-
-- **Every OIDC provider operation answers `400 OIDC_INVALID_TENANT` unless
-  the caller's tenant is a UUID in its canonical lowercase form.**
-  `GET /oauth/oidc/providers` previously returned an empty `200` to a
-  non-UUID tenant, because its prefix scan matched nothing — reporting "you
-  have no providers" to a caller that could never have had one. The read and
-  lifecycle forms returned `404` for the same reason. All of them now give
-  the answer registration already gave. The same `400` now also answers a
-  tenant whose id is a UUID spelled any other way — upper case, or the
-  32-character hyphenless form — because the canonical spelling is required
-  rather than normalised to; see the entry under Fixed for why.
-  `POST /oauth/oidc/providers/reload` takes no tenant and is unaffected. See
-  `docs/cloud-parity/tenant-id-grammar.md` and
-  `cyoda help errors OIDC_INVALID_TENANT`.
 
 - **A criterion and a scheduled transition's `function` are tried on another
   compute member when an answer is lost — with no opt-in.** Both are repeat-safe
@@ -520,7 +646,38 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   it when you raise those settings. See `cyoda help run` and
   `cyoda help helm`.
 
+- **Platform-wide admin endpoints need a platform operator.** The signing
+  key-pair endpoints (`/oauth/keys/keypair*`), `/admin/log-level` and
+  `/admin/trace-sampler` accept only `ROLE_ADMIN` in the tenant `PLATFORM`;
+  an admin of any other tenant gets `403 FORBIDDEN`. Get an operator token
+  with `cyoda token --tenant PLATFORM`, or create an admin M2M client in
+  `PLATFORM`. Before this, any tenant's admin could revoke the signing key
+  for the whole cluster. See `cyoda help cli token`.
+
+- **`POST /admin/log-level` silently substituted `info` for an unrecognised
+  level.** It now answers `400 BAD_REQUEST` naming the accepted values
+  (`debug`, `info`, `warn` (alias `warning`), `error`), and the level is left
+  unchanged. Both
+  `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
+  1 MiB.
+
 ### Added
+
+- **gRPC change history carries the attributed kind and the executor.**
+  `EntityChangesMetadataGetRequest` answers each change's `changeMeta` with
+  `attributedKind` and `executedBy` `{id, kind}`, as
+  `GET /entity/{entityId}/changes` does; both are absent on a change recorded
+  without attribution. The CloudEvents schema `common/EntityChangeMeta.json`
+  gains the two optional properties.
+
+- **`cyoda help auth integration`: the application integration guide.** Step
+  by step for a backend acting for its users, background jobs, compute nodes
+  and the tenant admin: the exact requests, claims and settings, the
+  attributes a compute node receives and a segregation-of-duties recipe, every
+  `/oauth/token` error description with its retry rule, secret and key
+  rotation, an incident playbook, mock mode, a local end-to-end on-behalf-of
+  recipe, and the move from OIDC. `docs/access-to-the-cyoda-api.html` carries
+  the same guide with its scenario diagrams.
 
 - **`cyoda token` signs a short-lived admin token offline.**
   `cyoda token --tenant <tenant> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]`
@@ -719,6 +876,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
+  which `POST /oauth/token` never sends; `expires_in` has the maximum 3600
+  and `issued_token_type` the one value it takes,
+  `urn:ietf:params:oauth:token-type:jwt`. The trusted-key operations state
+  the `keyId` rule (`^[A-Za-z0-9._-]{1,128}$`), the setting that enables them
+  (`CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED`) and the default `validTo`
+  (`validFrom` plus `CYODA_IAM_TRUSTED_KEY_MAX_VALIDITY_DAYS` days).
+  `TechnicalUserCredentialsDto` no longer declares `client_id_issued_at`,
+  which is never sent; `client_secret` is declared as the 64 lower-case hex
+  characters the server generates, and the `roles` examples are arrays.
+  `POST /oauth/token` marks `grant_type` required (a request without it was
+  always `400 unsupported_grant_type`) and says `subject_token` and
+  `subject_token_type` are required for the exchange; `POST /clients`
+  describes `withAdminRole` and `onBehalfOf` as they behave; the trusted-key
+  register `400` list, `jwk`, `issuers`, `active` and `validTo` descriptions
+  match the server (modulus 2048–4096 bits, `kid` = `keyId`, member cap,
+  `active` unaffected by expiry).
+
+- A scheduled transition records as `armedBy` the attributed principal of the
+  write that armed it.
+
+- Audit events: `actor` gains `kind`, and entity-change and state-machine
+  events carry `executedBy`; state-machine events now carry `actor`.
+
+- The compute test client (`cmd/compute-test-client`) authenticates with
+  `CYODA_COMPUTE_CLIENT_ID` / `CYODA_COMPUTE_CLIENT_SECRET` (the
+  `client_credentials` grant, refreshing its token before it expires)
+  instead of `CYODA_COMPUTE_TOKEN`.
+
+- `POST /oauth/token` bounds concurrent secret checks per node
+  (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the number of CPUs
+  the process may use (GOMAXPROCS); `503` when busy) and limits each client
+  per node (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600;
+  `429 slow_down`). The same bound covers the secret hashing of
+  `POST /clients` and `PUT /clients/{clientId}/secret`, which answer
+  `503 SERVER_BUSY` with `Retry-After: 1` when busy (new error code).
+  Refusals are counted in `cyoda.auth.secret_checks.refused`.
+
 - **The `NOT_FOUND` error code is removed.** No endpoint returned it; each
   resource has its own not-found code (for example `KEYPAIR_NOT_FOUND`,
   `TRUSTED_KEY_NOT_FOUND`, `MODEL_NOT_FOUND`). The `errors.NOT_FOUND` help
@@ -841,7 +1036,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   an offset-based cursor walk over them could repeat or skip rows. See
   `cyoda help audit`.
 
+- **`POST /clients?onBehalfOf=true` creates an on-behalf-of client; client
+  DTOs carry `onBehalfOf`, and the credentials DTO's `grant_type` is the
+  token-exchange URN for such a client.**
+
 ### Fixed
+
+- **`POST /oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
+  Mock mode issues no token; the endpoint answered `500` with a ticket and
+  logged a routing error. It now answers `501` with the detail "token
+  issuance requires JWT IAM mode", like the client and trusted-key
+  endpoints, and logs nothing. JWT mode is unchanged.
 
 - **Responses that carry a credential are never cached.** Every
   `POST /oauth/token` response (both grants, success and error) and the
@@ -849,12 +1054,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   now come with `Cache-Control: no-store` and `Pragma: no-cache`, as
   RFC 6749 §5.1 requires of a token response.
 
-- **An out-of-range grace period on issue or register names the field the
-  request carries.** `POST /oauth/keys/keypair` and
-  `POST /oauth/keys/trusted` answered `400` with "gracePeriodSec must be …"
-  for an out-of-range `invalidateGracePeriodSec`; the detail now names
-  `invalidateGracePeriodSec`. The invalidate endpoints, whose field is
-  `gracePeriodSec`, are unchanged.
+- **An out-of-range grace period on key-pair issue names the field the
+  request carries.** `POST /oauth/keys/keypair` answered `400` with
+  "gracePeriodSec must be …" for an out-of-range
+  `invalidateGracePeriodSec`; the detail now names
+  `invalidateGracePeriodSec`. The key-pair invalidate endpoint, whose field
+  is `gracePeriodSec`, is unchanged.
 
 - **Tokens from `/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
   set.** Both grants, `client_credentials` and token exchange, issued tokens
@@ -874,27 +1079,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A runtime-issued signing key pair only worked on the node that issued
   it.** In a cluster, a token signed with one was rejected by every other
   node, and the key pair itself did not survive a restart. Key pairs are now
-  shared and persisted across the cluster the same way trusted keys already
-  were (see Breaking).
+  stored in the SYSTEM-tenant KV store and shared by every node of the
+  cluster (see Breaking).
 
 - **A trusted-key admin write could act on a stale copy, miss a rotation's
-  sibling, leave a failed rotation with nothing rolled back, or block
-  verification.** An invalidate or reactivate read the node's cache rather
-  than the store, so a node that had not yet received an earlier delete could
-  write the deleted record back. A rotation (`invalidatePrevious`) listed
-  siblings from the node's own cache too, so it could miss one issued on
-  another node; and it was best-effort — if a sibling write failed partway
-  through, whatever had already been written stayed as it was, with nothing
-  undone. An admin write also held the cache's lock across the KV call, so a
-  slow write blocked every token verification on that node. Admin writes (for
-  both trusted keys and signing key pairs) now take a store-specific mutex,
-  list and read the current records from KV directly rather than the node's
-  cache, and apply the result to the node copy only after the KV write
-  succeeds — hot-path verification never waits on KV. A multi-record write
-  that fails partway now tries to restore every record it already wrote; this
-  is still not a full guarantee — a restore that itself fails is logged at
-  ERROR naming the records left changed, and a crash between writes (rather
-  than a reported error) can still leave the new record active alongside old
+  sibling, or leave a failed rotation half done.** An invalidate or
+  reactivate read the node's cache rather than the store, so a node that had
+  not yet received an earlier delete could write the deleted record back; a
+  rotation (`invalidatePrevious`) listed siblings from that cache too, so it
+  could miss one registered on another node; and a sibling write that failed
+  partway left the rest as they were. Trusted keys now have no node copy:
+  every call reads and writes the store, a rotation lists the tenant's keys
+  from it, ends the previous keys first and writes the new key last, so a
+  failure partway never leaves a key the admin asked to end still verifying,
+  and a retry completes it. Signing key-pair admin writes take a store
+  mutex, read the current records from KV rather than the node copy, and
+  apply the result to the copy only after the KV write succeeds, so
+  verification never waits on KV; a multi-record write that fails partway
+  tries to restore every record it already wrote — a restore that itself
+  fails is logged at ERROR naming the records left changed, and a crash
+  between writes can still leave the new record active alongside old
   siblings, for the admin to repeat.
 
 - **A key's timestamp could make its stored record unreadable.** An offset
@@ -902,8 +1106,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   a stored record cannot hold that year in a form it can read back. Issuing
   or reactivating a key pair, and registering or reactivating a trusted key,
   stored it anyway: an unreadable trusted-key record stopped every node from
-  starting after a restart, and an unreadable key-pair record blocked signing
-  for every audience. A `validFrom` or `validTo` (the default included) whose
+  starting after a restart, and an unreadable key-pair record blocked all
+  signing. A `validFrom` or `validTo` (the default included) whose
   UTC year is outside 1–9999 is now refused with `400 BAD_REQUEST`, and
   neither store writes one. A trusted-key record that cannot be read no
   longer stops a node starting: it is skipped with an ERROR, which refuses
@@ -994,9 +1198,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token whose key pair is outside it is an ordinary `401`. JWKS still
   publishes a key pair ahead of its window. Issuing a key pair is now
   `400 BAD_REQUEST` for a future `validFrom` together with
-  `invalidateCurrent` (it can leave the audience without a signing key
-  until the new window opens, for example an audience other than the
-  bootstrap key's, or once the bootstrap key is revoked) and for a `validTo` that is not in the future
+  `invalidateCurrent` (once the bootstrap key is revoked, it can leave no key
+  to sign until the new window opens) and for a `validTo` that is not in the future
   (the key pair could never sign). Reactivating a key pair with a future
   `validFrom` is `400` too: it would put the key pair outside its own window
   at once. Invalidating the last key pair that can sign stays allowed, since
@@ -1017,29 +1220,23 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   writes. A holder of a key registered in one tenant, with the credentials of
   any M2M client of another, could get a token for that other tenant with any
   user id and roles. The key is now looked up in the client's tenant only; a
-  key from another tenant is `400 invalid_grant` ("unknown trusted key"). The
-  lookup is also keyed instead of scanning every tenant's keys, and keeps the
-  fail-closed behaviour when the trusted-key cache is stale. See
+  key from another tenant is `400 invalid_request` ("unknown or inactive
+  trusted key"), like an unknown one. The lookup reads that tenant's key from
+  the store instead of scanning every tenant's keys. See
   `docs/cloud-parity/trusted-key-tenant.md`.
 
-- **An invalidated trusted key honours its grace period in token exchange.**
-  Invalidating a trusted key with `gracePeriodSec` — directly, or on rotation
-  with `invalidatePrevious` — marks it inactive and keeps it valid until the
-  period ends, as the invalidate operation promises. The exchange rejected
-  every inactive key at once, so the grace period did nothing and a rotation
-  cut off tokens signed with the old key immediately. A key now verifies until
-  its `validTo`. A grace period also no longer lengthens a key's window:
-  invalidating a trusted key or a signing key pair, directly or by rotation,
-  sets `validTo` to now plus the grace period or the key's existing `validTo`,
-  whichever is earlier. Before, invalidating an expired or already revoked
-  key with a grace period made it valid again.
+- **A grace period no longer lengthens a signing key pair's window.**
+  Invalidating a key pair, directly or by rotation, sets its `validTo` to now
+  plus the grace period or its existing `validTo`, whichever is earlier.
+  Before, invalidating an expired or already revoked key pair with a grace
+  period made it valid again.
 
 - **`cyoda help auth trusted-keys` described a feature cyoda-go does not
   have.** It said a JWT signed with a trusted key could be sent as a bearer
   token on API calls. A trusted key verifies only the subject token of the
   token-exchange grant; the topic, `auth.tokens`, `auth` and the README now
   say so. The topic's registration and reactivation examples also match the
-  API now (`jwk` and `audience` on registration; `validTo` on reactivation).
+  API now (`jwk` on registration; `validTo` on reactivation).
 
 - **An answer that arrives and cannot be read ends its callout at once, instead
   of being waited out.** A member's answer whose fields do not have the types
@@ -1295,29 +1492,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   stays outside the lock. Unreachable over HTTP, where message ids are
   server-generated, but the SPI admits any id.
 
-- **The OIDC provider store no longer writes under one key and reads under
-  another.** It wrote a record and its URI index under the canonical
-  lowercase UUID but read them back under the caller's raw tenant string.
-  `uuid.Parse` accepts spellings `String()` folds away — upper case and the
-  32-character hyphenless form both satisfy the tenant grammar — so a tenant
-  spelled either way addressed a different key on every operation than the
-  one registration wrote, and registration itself failed: the post-write
-  index read-back missed its own entry, the service rolled back and answered
-  `500`, and the rollback, keyed the same wrong way, left the provider blob
-  behind. The single entry point to the OIDC service now **requires** the
-  canonical spelling instead of normalising to it: register and read address
-  the same key, nothing strands, and a tenant spelled otherwise gets a
-  diagnosable `400 OIDC_INVALID_TENANT` (see Breaking). Normalising would
-  have closed the stranding by aliasing two tenants that are distinct
-  everywhere else in the product — entities, KV, audit and messages all
-  compare a tenant as raw text — which would have let either list, modify
-  and delete the other's providers and register a provider owned by the
-  other, an authentication trust anchor for a tenant it is not. Token
-  validation was never affected — the provider registry is built from the
-  stored record's own owner id. This is engine code over
-  `spi.KeyValueStore`, so it behaved the same on every backend.
-  ([#587](https://github.com/cyoda/cyoda-go/issues/587))
-
 - **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's
   four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
   nothing correlatable, so an operator had no way to tie a caller's report
@@ -1462,6 +1636,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   non-positive `delayMs` as "absent", so it saw only the function and
   passed. Both are now rejected at import (`400 VALIDATION_FAILED`), naming
   the workflow, state, transition and field. See `cyoda help workflows`.
+
+- **`cyoda help` accepts a topic's dotted id as a single argument** (e.g.
+  `cyoda help auth.tokens`), matching the form every `see_also` list and the
+  HTTP help endpoint already use. Previously only the space-separated form
+  (`cyoda help auth tokens`) resolved.
 
 ## [0.8.4] — 2026-09-09
 

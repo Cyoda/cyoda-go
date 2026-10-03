@@ -111,10 +111,10 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 	// Build combined event list.
 	items := make([]auditItem, 0)
+	callerTenant := common.TenantFromContext(ctx)
 
 	// EntityChange events from version history.
 	if includeEntityChange {
-		callerTenant := common.TenantFromContext(ctx)
 		for _, v := range versions {
 			items = append(items, entityChangeItem(v, entityId.String(), callerTenant))
 		}
@@ -135,7 +135,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 			return
 		}
 		for _, smEvent := range smEvents {
-			item, err := stateMachineItem(smEvent)
+			item, err := stateMachineItem(smEvent, callerTenant)
 			if err != nil {
 				common.WriteError(w, r, common.Internal("invalid state machine event", err))
 				return
@@ -225,6 +225,7 @@ func (h *Handler) SearchEntityAuditEvents(w http.ResponseWriter, r *http.Request
 
 func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, transactionId openapi_types.UUID) {
 	ctx := r.Context()
+	callerTenant := common.TenantFromContext(ctx)
 
 	smStore, err := h.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -259,7 +260,7 @@ func (h *Handler) GetStateMachineFinishedEvent(w http.ResponseWriter, r *http.Re
 		if smEvent.EventType != spi.SMEventFinished {
 			continue
 		}
-		item, err := stateMachineItem(smEvent)
+		item, err := stateMachineItem(smEvent, callerTenant)
 		if err != nil {
 			common.WriteError(w, r, common.Internal("invalid state machine event", err))
 			return

@@ -35,87 +35,6 @@ error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion
 error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `400` [response-media-type-removed].
 error at api/openapi.yaml, in API POST /search/direct/{entityName}/{modelVersion} removed the media type `application/x-ndjson` for the response with the status `404` [response-media-type-removed].
 
-# auth/OIDC slice — listOidcProviders.activeOnly retyped string→boolean: the
-# param was always a boolean-in-intent (server compared string=="true"); typing
-# it correctly is the reconciliation. oasdiff flags the request param type change.
-error at api/openapi.yaml, in API GET /oauth/oidc/providers for the `query` request parameter `activeOnly`, the `type` was changed from `string` to `boolean` [request-parameter-type-changed].
-
-# auth/OIDC slice — 7 OIDC ops converted ErrorResponseDto→ProblemDetail: the
-# server has always emitted application/problem+json (RFC-9457); the OAuth-shaped
-# ErrorResponseDto was prototype-era drift. The spec change also swaps the media
-# type to application/problem+json, but oasdiff v1.21.0 flags only the removal of
-# the required error/error_description properties (a replaced media type is not
-# reported as removed), so only those property-removed entries appear below.
-#
-# GET /oauth/oidc/providers (listOidcProviders) — 401, 500
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API GET /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# POST /oauth/oidc/providers (registerOidcProvider) — 400, 401, 403, 409, 500
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `409` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `409` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# POST /oauth/oidc/providers/reload (reloadOidcProviders) — 401, 403, 500
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# DELETE /oauth/oidc/providers/{id} (deleteOidcProvider) — 401, 403, 404, 500
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# PATCH /oauth/oidc/providers/{id} (updateOidcProvider) — 400, 401, 403, 404, 500
-# (409 is a new addition, not a removal — no ignore entry needed)
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `400` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# POST /oauth/oidc/providers/{id}/invalidate (invalidateOidcProvider) — 401, 403, 404, 500
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
-# POST /oauth/oidc/providers/{id}/reactivate (reactivateOidcProvider) — 401, 403, 404, 500
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `401` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `403` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `404` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error` from the response with the `500` status [response-required-property-removed].
-error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate removed the required property `error_description` from the response with the `500` status [response-required-property-removed].
-#
 # searchEntityAuditEvents (GET /audit/entity/{entityId}) — D-1 deferred item:
 # 400/401/403/404/500 converted ErrorResponseDto→ProblemDetail (server has always
 # emitted application/problem+json; prototype-era drift).
@@ -247,3 +166,35 @@ error at api/openapi.yaml, in API PUT /entity/{format}/{entityId}/{transition} f
 error at api/openapi.yaml, in API POST /entity/{format}/{entityName}/{modelVersion} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
 error at api/openapi.yaml, in API DELETE /message for the `query` request parameter `transactionSize`, default value `1000.00` was removed [request-parameter-default-value-removed].
 error at api/openapi.yaml, in API POST /message/new/{subject} for the `query` request parameter `transactionTimeoutMillis`, default value `10000.00` was removed [request-parameter-default-value-removed].
+
+# M2M-only access with on-behalf-of identity — deliberate breaking removals (spec
+# docs/superpowers/specs/2026-10-01-624-m2m-only-access-design.md §9 and §12; CHANGELOG
+# [Unreleased] ### Breaking). These are contract changes, not reconciliations: there are no
+# production instances, and the release notes carry the migration. oasdiff matches an entry
+# on its operation, path and message only — the file named after "error at" is not compared —
+# so a removed path is written with the same api/openapi.yaml prefix as every other entry.
+#
+# Federated OIDC providers are removed: every /oauth/oidc/providers operation is gone.
+# Trusted keys lose `audience` and their grace period: the invalidate request has no body.
+# The token exchange accepts only subject_token_type urn:ietf:params:oauth:token-type:jwt.
+error at api/openapi.yaml, in API GET /oauth/keys/trusted removed the required property `items/audience` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/keys/trusted removed the required property `audience` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API POST /oauth/keys/trusted/{keyId}/invalidate removed the request body [request-body-removed].
+error at api/openapi.yaml, in API POST /oauth/keys/trusted/{keyId}/reactivate removed the required property `audience` from the response with the `200` status [response-required-property-removed].
+error at api/openapi.yaml, in API GET /oauth/oidc/providers api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/reload api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API DELETE /oauth/oidc/providers/{id} api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API PATCH /oauth/oidc/providers/{id} api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/invalidate api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API POST /oauth/oidc/providers/{id}/reactivate api path removed without deprecation [api-path-removed-without-deprecation].
+error at api/openapi.yaml, in API POST /oauth/token removed the enum value `urn:ietf:params:oauth:token-type:access_token` of the request property `subject_token_type` [request-property-enum-value-removed].
+#
+# A key pair's invalidation grace period is capped at 3600 s, the longest token lifetime
+# (was 366 days): no token outlives it, so a longer grace only kept a revoked key verifying.
+error at api/openapi.yaml, in API POST /oauth/keys/keypair the `invalidateGracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].
+error at api/openapi.yaml, in API POST /oauth/keys/keypair/{keyId}/invalidate the `gracePeriodSec` request property's max was decreased to `3600.00` [request-property-max-decreased].
+#
+# POST /oauth/token always required grant_type: a request without it answers
+# 400 unsupported_grant_type. The document now says so; the wire is unchanged.
+error at api/openapi.yaml, in API POST /oauth/token the request property `grant_type` became required [request-property-became-required].

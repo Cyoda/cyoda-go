@@ -134,6 +134,7 @@ func armed(call Callout, repeatSafe bool, limit time.Duration) Callout {
 	call.RepeatSafe = repeatSafe
 	call.OwnerNodeID = "node-test"
 	call.Number = &countingNumberer{}
+	call.Identity = IdentityFrom(testContext())
 	return call
 }
 
@@ -346,8 +347,10 @@ func TestRunLocal_Terminal_Stops(t *testing.T) {
 	_, second := attach(t, reg, "m-2", testTenantID, "x", answersAs("m-2"))
 	d := newTestDispatcher(t, reg)
 	noKind := spi.WithUserContext(context.Background(), &spi.UserContext{UserID: "u", Tenant: spi.Tenant{ID: testTenantID}})
+	call := processorCall("x", true, 5*time.Second)
+	call.Identity = IdentityFrom(noKind)
 
-	res := d.RunLocal(noKind, processorCall("x", true, 5*time.Second), 4)
+	res := d.RunLocal(noKind, call, 4)
 	if res.Failure == nil || res.Failure.Kind != contract.Terminal || !errors.Is(res.Err(), contract.ErrAuthContextUnavailable) {
 		t.Fatalf("failure = %+v, want Terminal (auth context)", res.Failure)
 	}

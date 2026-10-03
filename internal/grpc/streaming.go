@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -14,24 +15,29 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
+	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
+// clientRecheckInterval is how often a stream re-reads its client from the
+// store, and the deadline of each read. A stream outlives the token that
+// opened it, so this bounds how long a deleted client, or one whose secret
+// was reset, keeps a stream open.
+const clientRecheckInterval = 60 * time.Second
+
 // StartStreaming implements the bidirectional streaming RPC for calculation
-// member lifecycle management. It expects a ROLE_M2M-authorized user, a
-// CalculationMemberJoinEvent as the first message, and then handles
-// keep-alive and response routing for the connected member.
+// member lifecycle management. It expects a compute node's own client token
+// (see streamPrincipal), a CalculationMemberJoinEvent as the first message,
+// and then handles keep-alive and response routing for the connected member.
 func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingServer[cepb.CloudEvent, cepb.CloudEvent]) error {
 	ctx := stream.Context()
 
-	// 1. Check ROLE_M2M authorization.
-	uc := spi.GetUserContext(ctx)
-	if uc == nil {
-		return status.Errorf(codes.Unauthenticated, "no user context")
-	}
-	if !spi.HasRole(uc.Roles, "ROLE_M2M") {
-		return status.Errorf(codes.PermissionDenied, "ROLE_M2M required for streaming")
+	// 1. Only a compute node's own client token opens a stream.
+	uc, ct, err := streamPrincipal(ctx)
+	if err != nil {
+		return err
 	}
 
 	// 2. Read first message — must be CalculationMemberJoinEvent.
@@ -66,7 +72,17 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
-	// 5. Build the greet and register. Register publishes the member and
+	// 5. Check the client once before the member exists: a client deleted or
+	// reset since its token was issued never joins. Mock mode has no client
+	// store and no check.
+	if s.m2mStore != nil {
+		if err := s.recheckClient(ctx, ct, tenantID); err != nil {
+			slog.Info("member stream refused by client check", "pkg", "grpc", "clientId", ct.ClientID, "reason", err)
+			return err
+		}
+	}
+
+	// 6. Build the greet and register. Register publishes the member and
 	// then starts its writer with the greet as the first event on the wire,
 	// so the member is already visible when the client holds the greet, and
 	// a dispatch routed the instant the member is visible still queues
@@ -89,15 +105,18 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	defer s.registry.Unregister(member)
 	slog.Info("member joined", "pkg", "grpc", "memberId", memberID, "tenantId", string(tenantID), "tags", joinEvent.Tags)
 
-	// 6. Keep-alive loop and receive goroutine. Both evict the member to end
+	// 7. Keep-alive loop and receive goroutine. Both evict the member to end
 	// the stream; neither ever blocks on it.
 	kaCtx, kaCancel := context.WithCancel(ctx)
 	defer kaCancel()
 	go s.keepAliveLoop(kaCtx, member)
+	if s.m2mStore != nil {
+		go s.clientRecheckLoop(kaCtx, member, ct, tenantID)
+	}
 	recvCh := make(chan *cepb.CloudEvent)
 	go s.receiveLoop(stream, member, recvCh)
 
-	// 7. Main loop. Eviction — by keep-alive timeout, write stall, send
+	// 8. Main loop. Eviction — by keep-alive timeout, write stall, send
 	// failure, client close, or a contained panic — is the only exit.
 	// Returning is what makes grpc-go cancel the stream and unblock a raw
 	// send stuck in the HTTP/2 write window.
@@ -140,6 +159,80 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 			}
 		}
 	}
+}
+
+// streamPrincipal returns the caller and its client-token marker when the
+// caller may open a stream: a client-credentials token of kind service with
+// no executor. A UserContext's presence and ROLE_M2M are not checked here:
+// the server's stream interceptors (StreamAuthInterceptor, StreamRequireM2M)
+// refuse a caller without either before any stream handler runs. An
+// on-behalf-of token states a user, not a compute node, and never opens one.
+// Every refusal here is PermissionDenied.
+func streamPrincipal(ctx context.Context) (*spi.UserContext, contract.ClientToken, error) {
+	uc := spi.GetUserContext(ctx)
+	ct, marked := contract.ClientTokenFrom(ctx)
+	if uc.Kind != spi.PrincipalService || uc.Executor != nil || !marked {
+		return nil, contract.ClientToken{}, status.Error(codes.PermissionDenied, "a compute node must connect with its own client's token")
+	}
+	return uc, ct, nil
+}
+
+// clientRecheckLoop re-reads the stream's client every clientRecheckInterval
+// after the check at open, and evicts the member the first time
+// recheckClient refuses it. It checks the client only: the opening token's
+// expiry does not end a stream.
+func (s *CloudEventsServiceImpl) clientRecheckLoop(ctx context.Context, member *Member, ct contract.ClientToken, tenant spi.TenantID) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			member.Evict(panicStatus(rec, "clientRecheckLoop"))
+		}
+	}()
+	ticker := time.NewTicker(clientRecheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-member.Evicted():
+			return
+		case <-ticker.C:
+			if err := s.recheckClient(ctx, ct, tenant); err != nil {
+				if ctx.Err() != nil {
+					return // the stream ended during the read: nothing to close
+				}
+				slog.Info("member stream closed by client re-check", "pkg", "grpc", "memberId", member.ID, "clientId", ct.ClientID, "reason", err)
+				member.Evict(err)
+				return
+			}
+		}
+	}
+}
+
+// recheckClient reports whether the stream's client still stands: nil if so,
+// status Unauthenticated if the client is gone, in another tenant or its
+// secret was reset, status Unavailable if the store cannot be read. The read
+// is bounded by clientRecheckInterval: a read that does not answer in time is
+// a store that cannot be read.
+func (s *CloudEventsServiceImpl) recheckClient(ctx context.Context, ct contract.ClientToken, tenant spi.TenantID) error {
+	readCtx, cancel := context.WithTimeout(ctx, clientRecheckInterval)
+	defer cancel()
+	c, err := s.m2mStore.Lookup(readCtx, ct.ClientID)
+	if errors.Is(err, auth.ErrM2MClientNotFound) {
+		return status.Error(codes.Unauthenticated, "the client was deleted")
+	}
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("client re-check could not read the client store", "pkg", "grpc", "clientId", ct.ClientID, "error", err)
+		}
+		return status.Error(codes.Unavailable, "the client could not be re-checked")
+	}
+	if c.TenantID != tenant {
+		return status.Error(codes.Unauthenticated, "the client was deleted")
+	}
+	if c.SecretGen != ct.Gen {
+		return status.Error(codes.Unauthenticated, "the client's secret was reset")
+	}
+	return nil
 }
 
 // receiveLoop is the one goroutine that reads the member's stream. Every

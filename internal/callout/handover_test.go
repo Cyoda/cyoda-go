@@ -27,6 +27,7 @@ type handOver struct {
 	triesLeft int
 	major     uint32
 	wait      time.Duration // the deadline on ctx, from the moment of the call
+	identity  internalgrpc.CalloutIdentity
 }
 
 // scriptedRouter stands for the other pnodes: which exist, and what each
@@ -78,7 +79,7 @@ func (r *scriptedRouter) HandOver(ctx context.Context, peer contract.NodeInfo, c
 	next := func() func(context.Context) dispatch.HandOverAnswer {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.calls = append(r.calls, handOver{peer: peer.NodeID, requestID: call.RequestID, triesLeft: triesLeft, major: major, wait: time.Until(deadline)})
+		r.calls = append(r.calls, handOver{peer: peer.NodeID, requestID: call.RequestID, triesLeft: triesLeft, major: major, wait: time.Until(deadline), identity: call.Identity})
 		queue := r.answers[peer.NodeID]
 		if len(queue) == 0 {
 			return nil

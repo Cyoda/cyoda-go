@@ -99,8 +99,8 @@ Key within `jwt.existingSecret` whose value is the PEM-encoded RSA private key.
 **`jwt.issuer`** — string — default `cyoda`
 JWT issuer claim; must not be empty. Written to ConfigMap as `CYODA_JWT_ISSUER`.
 
-**`jwt.expirySeconds`** — integer — default `3600`
-JWT token expiry in seconds, from 60 to 31622400 (366 days). Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
+**`jwt.expirySeconds`** — integer — default `300`
+JWT token expiry in seconds, from 1 to 3600. Written to ConfigMap as `CYODA_JWT_EXPIRY_SECONDS`.
 
 **`cluster.hmacSecret.existingSecret`** — string — default `""`
 Name of an operator-managed Secret containing the HMAC secret. When empty, the chart auto-generates the Secret on first install using `lookup` to detect existing state. GitOps controllers (Argo CD) must set this to a pre-created Secret; the chart fails with an error if rendered without live cluster access (e.g. `helm template`, `--dry-run`) and no `existingSecret` is provided.
@@ -155,6 +155,8 @@ Annotations on the gRPC Ingress object.
 
 **`ingress.grpc.tls`** — list — default `[]`
 TLS configuration for the gRPC Ingress.
+
+**Rate-limit `/api/oauth/token` at the Gateway or Ingress.** The token endpoint authenticates callers that are not yet authenticated, with bcrypt. Each node bounds that work with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` and answers `503` past the bound (it fails closed), so a flood of bad credentials can keep legitimate clients getting `503`. The chart does not render a rate limit. Configure a per-source rate limit for the `/api/oauth/token` path on the operator-provided Gateway (or with Ingress annotations, depending on the controller). See `cyoda help auth tokens`.
 
 **`monitoring.metricsBearer.existingSecret`** — string — default `""`
 Name of an operator-managed Secret containing the static bearer token for `GET /metrics` authentication. When empty, the chart auto-generates the Secret. GitOps safety guard applies.
@@ -293,8 +295,11 @@ This key is also the root secret for issued signing key pairs; see `config.auth`
 **HMAC secret** — generate 32 bytes of entropy (64 hex chars) and load into a Kubernetes Secret:
 
 ```
-kubectl create secret generic cyoda-hmac -n cyoda \
-  --from-literal=secret="$(openssl rand -hex 32)"
+# The secret goes through a private file, not kubectl's command line,
+# which other local users can see.
+(umask 077; openssl rand -hex 32 | tr -d '\n' > hmac-secret)
+kubectl create secret generic cyoda-hmac -n cyoda --from-file=secret=hmac-secret
+rm hmac-secret
 ```
 
 See `quickstart` for accepted key formats and format-specific `openssl` commands.
@@ -321,10 +326,12 @@ The migration Job mounts only the Postgres DSN Secret (principle of least privil
 **Install (pre-create secrets, then install):**
 
 ```
-kubectl create secret generic cyoda-pg \
-  --from-literal=dsn="postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+# Secrets go through private files, not kubectl's command line. printf is
+# a shell builtin, so the DSN is on no process's command line either.
+(umask 077; printf '%s' 'postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
@@ -338,10 +345,10 @@ Note: `--create-namespace` triggers the GitOps safety guard (namespace does not 
 
 ```
 kubectl create namespace cyoda
-kubectl create secret generic cyoda-pg -n cyoda \
-  --from-literal=dsn="postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt -n cyoda \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+(umask 077; printf '%s' 'postgres://cyoda:secret@pg-host:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
@@ -392,10 +399,10 @@ helm template cyoda ./deploy/helm/cyoda \
 
 ```
 kubectl create namespace cyoda
-kubectl create secret generic cyoda-pg -n cyoda \
-  --from-literal=dsn="postgres://cyoda:pass@db.example.com:5432/cyoda?sslmode=require"
-kubectl create secret generic cyoda-jwt -n cyoda \
-  --from-literal=signing-key.pem="$(cat signing.pem)"
+(umask 077; printf '%s' 'postgres://cyoda:pass@db.example.com:5432/cyoda?sslmode=require' > pg-dsn)
+kubectl create secret generic cyoda-pg -n cyoda --from-file=dsn=pg-dsn
+rm pg-dsn
+kubectl create secret generic cyoda-jwt -n cyoda --from-file=signing-key.pem=signing.pem
 
 helm install cyoda ./deploy/helm/cyoda \
   --namespace cyoda \
@@ -425,12 +432,29 @@ helm install cyoda ./deploy/helm/cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt \
   --set extraEnv[0].name=CYODA_OTEL_ENABLED \
-  --set extraEnv[0].value=true \
+  --set-string extraEnv[0].value=true \
   --set extraEnv[1].name=OTEL_EXPORTER_OTLP_ENDPOINT \
   --set extraEnv[1].value=http://otel-collector.monitoring.svc.cluster.local:4318 \
   --set extraEnv[2].name=OTEL_SERVICE_NAME \
   --set extraEnv[2].value=cyoda
 ```
+
+An environment value must be a string. `--set` reads `true`, `false` and numbers as YAML scalars of those types, which the chart's schema refuses for `extraEnv[].value`; pass such values with `--set-string`, or quote them in a values file (`value: "true"`).
+
+**With trusted-key registration and admin clients enabled (via extraEnv):**
+
+The chart has no dedicated values for the IAM feature flags. Every replica gets the same value, and changing it rolls the pods, which the flags need because each node reads them at startup (see `cyoda help auth integration`).
+
+```
+helm upgrade cyoda ./deploy/helm/cyoda \
+  --namespace cyoda --reuse-values \
+  --set extraEnv[0].name=CYODA_IAM_TRUSTED_KEY_REGISTRATION_ENABLED \
+  --set-string extraEnv[0].value=true \
+  --set extraEnv[1].name=CYODA_IAM_M2M_ADMIN_ROLE_ENABLED \
+  --set-string extraEnv[1].value=true
+```
+
+With `--reuse-values`, `extraEnv[0]` and `extraEnv[1]` replace whatever entries already sit at those positions; list every `extraEnv` entry you keep.
 
 **With ServiceMonitor for Prometheus Operator:**
 

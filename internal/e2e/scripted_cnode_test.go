@@ -94,7 +94,7 @@ func scriptSequence(replies ...cnodeReply) cnodeScript {
 type cnodeSpec struct {
 	name   string      // label in records and failure messages; required
 	tags   []string    // join tags
-	bearer string      // M2M bearer to join with; "" = the harness's tenant
+	bearer string      // M2M bearer to join with; "" = the harness's compute client
 	script cnodeScript // nil = scriptAlways(answerOK())
 }
 

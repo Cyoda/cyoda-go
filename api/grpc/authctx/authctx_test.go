@@ -57,6 +57,33 @@ func TestRoles(t *testing.T) {
 	}
 }
 
+func TestExecutorType(t *testing.T) {
+	if got := ExecutorType(nil); got != "" {
+		t.Errorf("ExecutorType(nil) = %q, want empty", got)
+	}
+	ce := ceWith(map[string]string{"authtype": "user", "authexectype": "service"})
+	if got := ExecutorType(ce); got != "service" {
+		t.Errorf("ExecutorType() = %q, want %q", got, "service")
+	}
+	if got := ExecutorType(ceWith(nil)); got != "" {
+		t.Errorf("ExecutorType() with absent attr = %q, want empty", got)
+	}
+}
+
+func TestExecutorID(t *testing.T) {
+	if got := ExecutorID(nil); got != "" {
+		t.Errorf("ExecutorID(nil) = %q, want empty", got)
+	}
+	ce := ceWith(map[string]string{"authid": "alice", "authexecid": "obo-client"})
+	if got := ExecutorID(ce); got != "obo-client" {
+		t.Errorf("ExecutorID() = %q, want %q", got, "obo-client")
+	}
+}
+
+// TestRequire pins the gate: it admits only a service executor holding role.
+// The attributed principal (authtype/authid) plays no part — an on-behalf-of
+// callout attributed to a user passes on its client's roles, and a scheduled
+// fire, executed by the system, never does.
 func TestRequire(t *testing.T) {
 	tests := []struct {
 		name string
@@ -67,55 +94,61 @@ func TestRequire(t *testing.T) {
 		{
 			name: "nil event fails closed",
 			ce:   nil,
-			role: "admin",
+			role: "ROLE_M2M",
+			want: false,
+		},
+		{
+			name: "service executor for a user holding the role",
+			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice", "authexectype": "service", "authexecid": "obo", "authclaims": "ROLE_M2M"}),
+			role: "ROLE_M2M",
+			want: true,
+		},
+		{
+			name: "service executor for itself holding the role",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authexectype": "service", "authexecid": "c1", "authclaims": "ROLE_ADMIN,ROLE_M2M"}),
+			role: "ROLE_M2M",
+			want: true,
+		},
+		{
+			name: "system executor fails closed even when the role is listed",
+			ce:   ceWith(map[string]string{"authtype": "user", "authid": "bob", "authexectype": "system", "authexecid": "system", "authclaims": "ROLE_M2M"}),
+			role: "ROLE_M2M",
+			want: false,
+		},
+		{
+			name: "user executor fails closed even when the role is listed",
+			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice", "authexectype": "user", "authexecid": "alice", "authclaims": "ROLE_M2M"}),
+			role: "ROLE_M2M",
+			want: false,
+		},
+		{
+			name: "absent executor type fails closed even when authtype is service",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authclaims": "ROLE_M2M"}),
+			role: "ROLE_M2M",
+			want: false,
+		},
+		{
+			name: "unrecognized executor type fails closed",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authexectype": "root", "authexecid": "c1", "authclaims": "ROLE_M2M"}),
+			role: "ROLE_M2M",
 			want: false,
 		},
 		{
 			name: "absent claims fails closed",
-			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice"}),
-			role: "admin",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authexectype": "service", "authexecid": "c1"}),
+			role: "ROLE_M2M",
 			want: false,
 		},
 		{
 			name: "empty claims fails closed",
-			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice", "authclaims": ""}),
-			role: "admin",
-			want: false,
-		},
-		{
-			name: "system authtype fails closed even when role listed",
-			ce:   ceWith(map[string]string{"authtype": "system", "authid": "sys", "authclaims": "admin,editor"}),
-			role: "admin",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authexectype": "service", "authexecid": "c1", "authclaims": ""}),
+			role: "ROLE_M2M",
 			want: false,
 		},
 		{
 			name: "role absent from claims",
-			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice", "authclaims": "editor,viewer"}),
-			role: "admin",
-			want: false,
-		},
-		{
-			name: "happy path user",
-			ce:   ceWith(map[string]string{"authtype": "user", "authid": "alice", "authclaims": "admin,editor"}),
-			role: "admin",
-			want: true,
-		},
-		{
-			name: "happy path service",
-			ce:   ceWith(map[string]string{"authtype": "service", "authid": "svc-1", "authclaims": "admin,editor"}),
-			role: "admin",
-			want: true,
-		},
-		{
-			name: "unset authtype fails closed even with claims (allowlist, not denylist)",
-			ce:   ceWith(map[string]string{"authid": "x", "authclaims": "admin,editor"}),
-			role: "admin",
-			want: false,
-		},
-		{
-			name: "unrecognized authtype fails closed even with claims",
-			ce:   ceWith(map[string]string{"authtype": "superuser", "authid": "x", "authclaims": "admin,editor"}),
-			role: "admin",
+			ce:   ceWith(map[string]string{"authtype": "service", "authid": "c1", "authexectype": "service", "authexecid": "c1", "authclaims": "ROLE_ADMIN"}),
+			role: "ROLE_M2M",
 			want: false,
 		},
 	}

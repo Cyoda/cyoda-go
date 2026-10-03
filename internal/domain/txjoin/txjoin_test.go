@@ -30,13 +30,22 @@ const testMaxWaiters = 128
 type fakeTM struct {
 	spi.TransactionManager
 	joinErr error
+	// origin is the attribution root Join puts on the transaction it returns,
+	// as a real manager carries the one recorded at Begin.
+	origin spi.Principal
+	// noTx makes Join succeed but hand back the context with no transaction
+	// on it — a manager that broke its contract.
+	noTx bool
 }
 
 func (f fakeTM) Join(ctx context.Context, txID string) (context.Context, error) {
 	if f.joinErr != nil {
 		return nil, f.joinErr
 	}
-	return spi.WithTransaction(ctx, &spi.TransactionState{ID: txID}), nil
+	if f.noTx {
+		return ctx, nil
+	}
+	return spi.WithTransaction(ctx, &spi.TransactionState{ID: txID, Origin: f.origin}), nil
 }
 
 // make32 returns a deterministic 32-byte HMAC secret for tests.
@@ -402,5 +411,91 @@ func TestVerify_NoCalloutAndNumber_401(t *testing.T) {
 	_ = errors.As(err, &appErr)
 	if appErr.Message != "UNAUTHORIZED: invalid transaction token" {
 		t.Fatalf("message = %q", appErr.Message)
+	}
+}
+
+// An on-behalf-of request joins only a transaction begun for its own user: the
+// pass binds no caller, so a compute node presenting it with another user's
+// on-behalf-of token would otherwise be recorded as that user inside the first
+// user's transaction. A service client — a compute node's own token — joins
+// whatever transaction its pass names, and its writes attribute to that
+// transaction's origin.
+func TestJoin_OBOJoinsOnlyItsOwnUsersTransaction(t *testing.T) {
+	alice := spi.Principal{ID: "alice", Kind: spi.PrincipalUser}
+	oboClient := &spi.Principal{ID: "app-client", Kind: spi.PrincipalService}
+	tests := []struct {
+		name   string
+		origin spi.Principal
+		noTx   bool
+		uc     *spi.UserContext
+		refuse bool
+	}{
+		{"OBOOwnUser_Admitted", alice, false,
+			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, false},
+		{"OBOOtherUser_403", alice, false,
+			&spi.UserContext{UserID: "bob", Kind: spi.PrincipalUser, Executor: oboClient}, true},
+		{"OBOSameIDServiceOrigin_403", spi.Principal{ID: "alice", Kind: spi.PrincipalService}, false,
+			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
+		{"OBONoOrigin_403", spi.Principal{}, false,
+			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
+		// Fails closed: a join that hands back no transaction has no origin to
+		// match.
+		{"OBONoTransaction_403", alice, true,
+			&spi.UserContext{UserID: "alice", Kind: spi.PrincipalUser, Executor: oboClient}, true},
+		{"ServiceClient_UserOrigin_Admitted", alice, false,
+			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
+		{"ServiceClient_ServiceOrigin_Admitted", spi.Principal{ID: "app-svc", Kind: spi.PrincipalService}, false,
+			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
+		{"ServiceClient_NoOrigin_Admitted", spi.Principal{}, false,
+			&spi.UserContext{UserID: "compute-client", Kind: spi.PrincipalService}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, _ := token.NewSigner(make32(t))
+			f, claims := liveFence(t, "req-1", "tx-1")
+			tok, _ := s.Issue(claims)
+			base := spi.WithUserContext(context.Background(), tc.uc)
+			got, err := joinFromToken(base, s, fakeTM{origin: tc.origin, noTx: tc.noTx}, f, tok)
+			if !tc.refuse {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if tx := spi.GetTransaction(got); tx == nil || tx.ID != "tx-1" {
+					t.Fatalf("expected joined tx-1, got %+v", tx)
+				}
+				return
+			}
+			assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
+			var appErr *common.AppError
+			_ = errors.As(err, &appErr)
+			if appErr.Message != "FORBIDDEN: an on-behalf-of request may join only its own user's transaction" {
+				t.Fatalf("message = %q", appErr.Message)
+			}
+			if got != base {
+				t.Fatal("a refused join must hand back the caller's context")
+			}
+		})
+	}
+}
+
+// A refused on-behalf-of join absorbs nothing: it is refused before the fence,
+// so a higher minor on its pass does not shut the rightful compute node out.
+func TestJoin_OBOOtherUser_AbsorbsNothing(t *testing.T) {
+	s, _ := token.NewSigner(make32(t))
+	f, claims := liveFence(t, "req-1", "tx-1")
+	rightful, err := f.Admit(context.Background(), []fence.Pair{{Callout: "req-1", Major: 1, Minor: 1}})
+	if err != nil {
+		t.Fatalf("Admit: %v", err)
+	}
+	claims.Minor = 9
+	tok, _ := s.Issue(claims)
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "bob", Kind: spi.PrincipalUser,
+		Executor: &spi.Principal{ID: "app-client", Kind: spi.PrincipalService},
+	})
+	_, err = joinFromToken(ctx, s, fakeTM{origin: spi.Principal{ID: "alice", Kind: spi.PrincipalUser}}, f, tok)
+	assertAppErr(t, err, http.StatusForbidden, common.ErrCodeForbidden)
+	if err := fence.Check(rightful); err != nil {
+		t.Fatalf("a refused join changed the fence: %v", err)
 	}
 }
