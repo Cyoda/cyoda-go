@@ -191,6 +191,35 @@ func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 	}
 }
 
+// TestValidator_RefusesSystemTenant pins that the machinery's tenant, in any
+// letter case, is not a tenant a token may claim.
+func TestValidator_RefusesSystemTenant(t *testing.T) {
+	key, kid := setupTestJWKS(t)
+
+	issuer := "test-issuer"
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
+
+	for _, org := range []string{"SYSTEM", "system", "System"} {
+		t.Run(org, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": "user-1",
+				"caas_org_id":  org,
+				"scopes":       []any{"read"},
+			}
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
+			if err == nil {
+				t.Fatalf("Validate accepted tenant %q, got UserContext %+v", org, uc)
+			}
+			if !errors.Is(err, common.ErrReservedTenantID) {
+				t.Errorf("error does not wrap ErrReservedTenantID: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidator_AcceptsShippedTenantShapes is the regression half: the grammar
 // must not lock out anything that authenticates today.
 func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
@@ -200,7 +229,6 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	for _, org := range []string{
-		"SYSTEM",
 		"plain-tenant",
 		"mock-tenant",
 		"tenant-abc-123",

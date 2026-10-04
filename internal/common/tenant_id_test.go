@@ -92,3 +92,22 @@ func TestValidateTenantID_ErrorNeverEchoesValue(t *testing.T) {
 		t.Fatalf("error carries a control character: %q", err.Error())
 	}
 }
+
+func TestValidateAPITenantID(t *testing.T) {
+	for _, ok := range []string{"acme", "PLATFORM", "a.b_c-d", "systems", "SYSTEM-1", strings.Repeat("a", 100)} {
+		if err := ValidateAPITenantID(spi.TenantID(ok)); err != nil {
+			t.Errorf("%q: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"SYSTEM", "system", "System", "sYsTeM"} {
+		err := ValidateAPITenantID(spi.TenantID(bad))
+		if !errors.Is(err, ErrReservedTenantID) || strings.Contains(err.Error(), bad) {
+			t.Errorf("%q: %v (want ErrReservedTenantID, no echo)", bad, err)
+		}
+	}
+	for _, bad := range []string{"", ".x", "a/b", strings.Repeat("a", 101)} {
+		if !errors.Is(ValidateAPITenantID(spi.TenantID(bad)), ErrInvalidTenantID) {
+			t.Errorf("%q: want ErrInvalidTenantID", bad)
+		}
+	}
+}

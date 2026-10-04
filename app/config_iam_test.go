@@ -160,3 +160,22 @@ func TestDefaultConfig_MockRolesUnsetDoesNotWarn(t *testing.T) {
 		t.Errorf("unexpected log output when env var is unset:\n%s", buf.String())
 	}
 }
+
+// TestValidateIAM_MockTenantID: the mock principal's tenant is one every mock
+// request acts in, so it must be a tenant a caller may act in.
+func TestValidateIAM_MockTenantID(t *testing.T) {
+	for _, bad := range []string{"SYSTEM", "system", "", "a/b"} {
+		iam := DefaultConfig().IAM
+		iam.Mode = "mock"
+		iam.MockTenantID = bad
+		if err := ValidateIAM(iam); err == nil {
+			t.Errorf("MockTenantID %q accepted", bad)
+		}
+	}
+	iam := DefaultConfig().IAM
+	iam.Mode = "mock"
+	iam.MockTenantID = "mock-tenant"
+	if err := ValidateIAM(iam); err != nil {
+		t.Errorf("mock-tenant refused: %v", err)
+	}
+}

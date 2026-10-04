@@ -240,12 +240,28 @@ func TestAuth_TenantClaimOutsideGrammar_401(t *testing.T) {
 	}
 }
 
+// TestAuth_SystemTenantClaim_401: the machinery's tenant, in any letter case,
+// is not a tenant a token may claim.
+func TestAuth_SystemTenantClaim_401(t *testing.T) {
+	for _, tenant := range []string{"SYSTEM", "system", "System"} {
+		t.Run(tenant, func(t *testing.T) {
+			resp := unauthRequest(t, http.MethodGet, "/api/model/",
+				"Bearer "+mintFirstPartyToken(t, "e2e-tenant-probe", tenant))
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusUnauthorized {
+				raw, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status=%d, want 401; body: %s", resp.StatusCode, raw)
+			}
+			assertUnauthorizedProblem(t, resp)
+		})
+	}
+}
+
 // TestAuth_AcceptedTenantShapesStillAuthenticate is the regression half: the
 // grammar must not lock out a shape that works today. 401 here would be a
 // production lockout; anything else means the token was accepted.
 func TestAuth_AcceptedTenantShapesStillAuthenticate(t *testing.T) {
 	for _, tenant := range []string{
-		"SYSTEM",
 		"plain-tenant",
 		"tenant-abc-123",
 		"9f8c7b6a5d4e3f2a1b0c9d8e7f6a5b4c",

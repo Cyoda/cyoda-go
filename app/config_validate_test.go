@@ -18,7 +18,7 @@ func validConfig() Config {
 		Callout:                    validCalloutConfig(),
 		Cluster:                    validDispatchConfig(),
 		Scheduler:                  defaultSchedulerConfig(),
-		IAM:                        IAMConfig{Mode: "mock", MockKind: "service", AuthCacheReconcileInterval: time.Minute, TokenRequestsPerMinute: 600, TokenMaxConcurrentSecretChecks: 4},
+		IAM:                        IAMConfig{Mode: "mock", MockTenantID: "mock-tenant", MockKind: "service", AuthCacheReconcileInterval: time.Minute, TokenRequestsPerMinute: 600, TokenMaxConcurrentSecretChecks: 4},
 	}
 }
 

@@ -141,11 +141,12 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 	// enters cyoda-go from outside it, and it covers every HTTP and gRPC
 	// request — the gRPC interceptor delegates to this same authenticator.
 	// Validating here is what lets every downstream consumer treat the tenant
-	// as well-formed without rechecking.
+	// as well-formed without rechecking. The door also refuses the machinery's
+	// tenant, SYSTEM in any letter case: no token may act in it.
 	//
 	// The error deliberately carries no part of the claim: it reaches slog via
 	// logAuthFailure's detail field, and the claim is attacker-chosen.
-	if err := common.ValidateTenantID(spi.TenantID(orgID)); err != nil {
+	if err := common.ValidateAPITenantID(spi.TenantID(orgID)); err != nil {
 		return nil, nil, fmt.Errorf("caas_org_id claim rejected: %w", err)
 	}
 
