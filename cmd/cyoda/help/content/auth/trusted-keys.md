@@ -133,7 +133,7 @@ Your on-behalf-of client exchanges it:
 ```bash
 # The client secret and the subject token go on stdin (-K-), not the
 # command line.
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
   -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
   -K- <<EOF

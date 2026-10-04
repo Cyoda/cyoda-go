@@ -100,7 +100,7 @@ Who: the tenant admin, with an admin client token.
 
 ```bash
 # The tenant admin's own token.
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -K- <<<"user = \"${ADMIN_CLIENT_ID}:${ADMIN_CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"
@@ -171,7 +171,7 @@ cyoda allows 30 seconds of clock skew on `iat`, `exp` and `nbf`, and refuses an 
 **4b. Exchange it.**
 
 ```bash
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
@@ -207,7 +207,7 @@ An OBO token works on data operations only — every operation that requires `RO
 Who: background jobs, scripts, migrations — anything that acts as itself. Each uses a plain client and `client_credentials`:
 
 ```bash
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -K- <<<"user = \"${CLIENT_ID}:${CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"

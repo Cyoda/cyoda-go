@@ -25,7 +25,7 @@ func TestToken_ClientCredentials_LifetimeIsConfiguredMax(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	clientID, secret := createClient(t, false, false)
-	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, clientID, secret)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, clientID, secret)
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {

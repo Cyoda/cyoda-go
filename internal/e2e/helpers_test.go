@@ -76,10 +76,15 @@ func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.R
 	return http.NewRequestWithContext(e2eCtx(t), method, urlStr, body)
 }
 
-// getTokenRaw obtains a JWT token via client_credentials grant. The token
-// endpoint uses HTTP Basic Auth for client authentication.
-func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, error) {
-	resp, err := postTokenRaw(ctx, serverURL, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
+// suiteTenant is the tenant of the shared server's suite admin token and of
+// the clients the suite creates with it.
+const suiteTenant = "test-tenant"
+
+// getTokenRaw obtains a JWT token via client_credentials grant for a client
+// of tenant. The token endpoint uses HTTP Basic Auth for client
+// authentication.
+func getTokenRaw(ctx context.Context, tenant, clientID, clientSecret string) (string, error) {
+	resp, err := postTokenRaw(ctx, serverURL, tenant, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	if err != nil {
 		return "", err
 	}
@@ -99,10 +104,17 @@ func getTokenRaw(ctx context.Context, clientID, clientSecret string) (string, er
 	return token, nil
 }
 
-// getToken is the test-goroutine form of getTokenRaw.
+// getToken is the test-goroutine form of getTokenRaw for a suite-tenant
+// client.
 func getToken(t *testing.T, clientID, clientSecret string) string {
 	t.Helper()
-	token, err := getTokenRaw(e2eCtx(t), clientID, clientSecret)
+	return getTokenIn(t, suiteTenant, clientID, clientSecret)
+}
+
+// getTokenIn is getToken for a client of tenant.
+func getTokenIn(t *testing.T, tenant, clientID, clientSecret string) string {
+	t.Helper()
+	token, err := getTokenRaw(e2eCtx(t), tenant, clientID, clientSecret)
 	if err != nil {
 		t.Fatalf("get token: %v", err)
 	}
@@ -143,7 +155,7 @@ func signServiceToken(key *rsa.PrivateKey, issuer, audience, sub, tenant, userID
 // client_credentials token (scopes → a service principal), so attribution
 // assertions are unchanged. It never touches *testing.T.
 func suiteTokenRaw() (string, error) {
-	return signServiceToken(e2eSignKey, e2eIssuer, "", "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	return signServiceToken(e2eSignKey, e2eIssuer, "", "suite-admin", suiteTenant, "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 }
 
 // suiteToken is the test-goroutine form of suiteTokenRaw.

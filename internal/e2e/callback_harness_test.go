@@ -356,7 +356,7 @@ func (h *callbackHarness) lookupFunc(name string) (callbackFunc, bool) {
 
 // token returns a cached admin bearer for this stack — a signed admin token
 // in the shape of a client_credentials token (self-signed with h.signKey, not
-// fetched through /oauth/token; see fetchToken).
+// fetched through the token endpoint; see fetchToken).
 func (h *callbackHarness) token(t *testing.T) string {
 	t.Helper()
 	h.bearerOnce.Do(func() { h.bearerVal.Store(h.fetchToken(t)) })
@@ -370,12 +370,12 @@ func (h *callbackHarness) token(t *testing.T) string {
 // fetchToken signs an admin token for this stack directly with h.signKey, in
 // the shape of a client_credentials token (scopes ROLE_ADMIN,ROLE_M2M;
 // tenant test-tenant; caas_user_id test-admin) — the same claims suiteTokenRaw
-// uses for the shared server. It never calls /oauth/token: a caller that
+// uses for the shared server. It never calls the token endpoint: a caller that
 // specifically needs the real endpoint's own signer selection (e.g. proving
 // which key it currently signs with) uses fetchTokenFor instead.
 func (h *callbackHarness) fetchToken(t *testing.T) string {
 	t.Helper()
-	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "suite-admin", "test-tenant", "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "suite-admin", suiteTenant, "test-admin", []string{"ROLE_ADMIN", "ROLE_M2M"})
 	if err != nil {
 		t.Fatalf("sign admin token: %v", err)
 	}
@@ -383,7 +383,7 @@ func (h *callbackHarness) fetchToken(t *testing.T) string {
 }
 
 // computeBearer returns a client-credentials bearer of this stack's compute
-// client, fetched through /oauth/token: a ROLE_M2M client of test-tenant,
+// client, fetched through the token endpoint: a ROLE_M2M client of test-tenant,
 // created through POST /clients on first use and deleted when the harness's
 // test ends. Every cnode that joins with the harness's tenant authenticates
 // as this one client, as the replicas of one compute service do.
@@ -404,7 +404,7 @@ func (h *callbackHarness) computeBearer(t *testing.T) string {
 		}
 		return *h.computeCred
 	}()
-	return h.fetchTokenFor(t, cred.id, cred.secret)
+	return h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret)
 }
 
 // platformToken signs a platform-operator token (ROLE_ADMIN, ROLE_M2M in the

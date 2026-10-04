@@ -17,6 +17,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/tenantroute"
 )
 
 // The token-exchange grant (RFC 8693) and the only subject token type it
@@ -44,7 +45,7 @@ var exchangeForbiddenParams = []string{
 	"actor_token", "actor_token_type", "resource", "audience", "scope", "requested_token_type",
 }
 
-// tokenHandler implements the POST /oauth/token endpoint.
+// tokenHandler implements the POST /tenants/{tenant}/oauth/token endpoint.
 type tokenHandler struct {
 	keyStore        KeyStore
 	trustedKeyStore TrustedKeyStore
@@ -94,6 +95,12 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // body. The first three read headers only, so a body that is not a form is
 // never read, and no body is read before the client has authenticated.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := tenantroute.Addressed(r.Context())
+	if !ok {
+		writeTokenServerError(w, "tenantroute.Addressed", errors.New("token handler reached outside the tenant route group"))
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeTokenError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
@@ -130,6 +137,11 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeTokenStoreError(w, "m2mStore.Authenticate", err)
+		return
+	}
+	// A client of another tenant is no client of this one.
+	if client.TenantID != tenant {
+		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 
@@ -473,7 +485,7 @@ func writeTokenRetry(w http.ResponseWriter, status int, code string, seconds int
 }
 
 // SetNoStore marks a response as never to be stored by a cache (RFC 6749
-// §5.1): every /oauth/token response, success or error, and every response
+// §5.1): every token endpoint response, success or error, and every response
 // carrying a plaintext client secret. It must be called before the header is
 // written.
 func SetNoStore(h http.Header) {

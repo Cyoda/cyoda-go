@@ -5809,7 +5809,7 @@ paths:
         Registers a public key that verifies user assertions. An application
         signs a user assertion with the matching private key, and an
         on-behalf-of client of the same tenant exchanges it for a token at
-        `POST /oauth/token` (token exchange). A trusted key never verifies a
+        `POST /tenants/{tenant}/oauth/token` (token exchange). A trusted key never verifies a
         bearer token.
 
         The key is bound to the caller's tenant (legalEntityId). Key ids are
@@ -6102,13 +6102,14 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
-  /oauth/token:
+  /tenants/{tenant}/oauth/token:
     post:
       tags:
         - User, Machine
       summary: Obtain access token for M2M client
       description: >
-        Authenticates a M2M client and returns an access token.
+        Authenticates a M2M client and returns an access token. A client is
+        found by (tenant, client id): the tenant is the one in the path.
 
 
         Supports two grant types, each for one kind of client:
@@ -6137,6 +6138,20 @@ paths:
         serves as the authentication entry point.
       operationId: getTechnicalUserToken
       parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >
+            The tenant the client belongs to. Letters, digits, ".", "_" and
+            "-", starting with a letter or digit, at most 100 characters,
+            case significant, never percent-encoded; SYSTEM (any letter case)
+            is refused. A path that breaks these rules answers 400
+            invalid_request "invalid tenant".
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         - name: Authorization
           in: header
           required: false
@@ -6180,8 +6195,8 @@ paths:
           description: Bad request - unsupported_grant_type (grant_type missing or
             not supported); unauthorized_client (client_credentials by an
             on-behalf-of client, or a token exchange by any other client); or
-            invalid_request (a Content-Type other than
-            application/x-www-form-urlencoded, a body over 1 MiB or one that
+            invalid_request (an invalid tenant in the path; a Content-Type
+            other than application/x-www-form-urlencoded, a body over 1 MiB or one that
             does not parse as a form; on the token exchange, a
             forbidden RFC 8693 parameter - actor_token, actor_token_type,
             resource, audience, scope, requested_token_type - even empty, a

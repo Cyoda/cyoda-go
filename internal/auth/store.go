@@ -236,7 +236,7 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 
 // dummyHash is compared against the secret of a token request that names no
 // usable client, so Authenticate makes one bcrypt comparison whether or not
-// the id exists. Without it, response-time analysis on POST /oauth/token
+// the id exists. Without it, response-time analysis on the token endpoint
 // would reveal whether a given clientID exists. Generated once at init; the
 // plaintext is never referenced outside this comparison.
 var dummyHash = func() []byte {

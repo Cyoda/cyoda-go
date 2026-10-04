@@ -58,7 +58,7 @@ func TestTokenCache_GrantsAfterResetRefuseOldSecret(t *testing.T) {
 			<-start
 			for i := 0; i < perWorker; i++ {
 				k := w*perWorker + i
-				r, err := postTokenRaw(ctx, serverURL, url.Values{"grant_type": {"client_credentials"}}, id, secret)
+				r, err := postTokenRaw(ctx, serverURL, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 				if err != nil {
 					errs[k] = err
 					continue
@@ -101,7 +101,7 @@ func TestToken_PerClientBucket_429_E2E(t *testing.T) {
 		if i > tokenRequestsPerMinute+refilled+1 {
 			t.Fatalf("no refusal after %d grants in %s", i-1, time.Since(started))
 		}
-		resp, err := postTokenRaw(e2eCtx(t), serverURL, url.Values{"grant_type": {"client_credentials"}}, id, secret)
+		resp, err := postTokenRaw(e2eCtx(t), serverURL, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 		if err != nil {
 			t.Fatalf("grant %d: %v", i, err)
 		}

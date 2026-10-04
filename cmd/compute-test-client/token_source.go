@@ -35,10 +35,11 @@ type tokenSource struct {
 }
 
 // newTokenSource returns a token source for the client clientID of the cyoda
-// instance at httpBase (the token endpoint is httpBase/api/oauth/token).
-func newTokenSource(httpBase, clientID, clientSecret string) *tokenSource {
+// instance at httpBase, a client of tenant (the token endpoint is
+// httpBase/api/tenants/{tenant}/oauth/token).
+func newTokenSource(httpBase, tenant, clientID, clientSecret string) *tokenSource {
 	return &tokenSource{
-		tokenURL:     strings.TrimRight(httpBase, "/") + "/api/oauth/token",
+		tokenURL:     strings.TrimRight(httpBase, "/") + "/api/tenants/" + tenant + "/oauth/token",
 		clientID:     clientID,
 		clientSecret: clientSecret,
 		hc:           &http.Client{Timeout: 15 * time.Second},

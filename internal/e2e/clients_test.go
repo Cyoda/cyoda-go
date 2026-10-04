@@ -341,8 +341,8 @@ func TestE2E_Clients_OBOToken_403(t *testing.T) {
 // answer 400 BAD_REQUEST for a path id outside the client-id grammar.
 func TestE2E_Clients_IDOutsideGrammar_400(t *testing.T) {
 	for _, op := range []struct{ name, method, path string }{
-		{"delete", http.MethodDelete, "/clients/a-b"},
-		{"reset", http.MethodPut, "/clients/a-b/secret"},
+		{"delete", http.MethodDelete, "/clients/-ab"},
+		{"reset", http.MethodPut, "/clients/-ab/secret"},
 	} {
 		t.Run(op.name, func(t *testing.T) {
 			resp := adminRequest(t, op.method, op.path, nil)
@@ -389,7 +389,7 @@ func TestE2E_Clients_CredentialResponsesAreNotCacheable(t *testing.T) {
 		adminRequest(t, http.MethodPut, "/clients/"+cred.id+"/secret", nil)))
 
 	assertNoStore(t, "client_credentials token",
-		postToken(t, url.Values{"grant_type": {"client_credentials"}}, reset.id, reset.secret))
+		postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, reset.id, reset.secret))
 }
 
 // TestE2E_Clients_OnBehalfOf_Create: POST /clients?onBehalfOf=true creates an
@@ -523,18 +523,18 @@ func TestE2E_Clients_NoToken_401(t *testing.T) {
 
 // --- local helpers (not exported into the wider e2e harness) ---
 
-// statusForToken issues a /oauth/token request with the given creds and
-// returns the HTTP status code (does not fatal on non-200, unlike getToken).
+// statusForToken issues a token request with the given creds of a suite-tenant
+// client and returns the HTTP status code (does not fatal on non-200, unlike getToken).
 func statusForToken(t *testing.T, clientID, clientSecret string) int {
 	t.Helper()
-	return tokenStatusOn(t, serverURL, clientID, clientSecret)
+	return tokenStatusOn(t, serverURL, suiteTenant, clientID, clientSecret)
 }
 
 // tokenStatusOn is statusForToken against the server at baseURL — the shared
 // server or a harness stack.
-func tokenStatusOn(t *testing.T, baseURL, clientID, clientSecret string) int {
+func tokenStatusOn(t *testing.T, baseURL, tenant, clientID, clientSecret string) int {
 	t.Helper()
-	resp := postTokenTo(t, baseURL, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
+	resp := postTokenTo(t, baseURL, tenant, url.Values{"grant_type": {"client_credentials"}}, clientID, clientSecret)
 	defer resp.Body.Close()
 	return resp.StatusCode
 }
@@ -576,7 +576,7 @@ func TestE2E_Clients_CrossTenantIsolation_404(t *testing.T) {
 	} {
 		var bodies [2]map[string]any
 		for i, id := range []string{clientA, absent} {
-			resp := adminRequestAs(t, clientB, secretB, op.method, "/clients/"+id+op.suffix, nil)
+			resp := adminRequestAs(t, "tenant-b", clientB, secretB, op.method, "/clients/"+id+op.suffix, nil)
 			raw, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if resp.StatusCode != http.StatusNotFound {

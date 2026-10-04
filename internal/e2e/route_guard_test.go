@@ -13,7 +13,7 @@ import (
 )
 
 // noM2MSuiteToken is a tenant-admin token for the shared server without
-// ROLE_M2M. No client can obtain one from /oauth/token — every client holds
+// ROLE_M2M. No client can obtain one from the token endpoint — every client holds
 // ROLE_M2M — so it is signed here.
 func noM2MSuiteToken(t *testing.T) string {
 	t.Helper()

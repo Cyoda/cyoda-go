@@ -91,10 +91,10 @@ func IssueClientKeyPair(t *testing.T, c *client.Client, invalidateCurrent bool) 
 	return kp.KeyID
 }
 
-// clientToken runs the client_credentials grant on baseURL.
-func clientToken(t *testing.T, baseURL, id, secret string) string {
+// clientToken runs the client_credentials grant of tenant on baseURL.
+func clientToken(t *testing.T, baseURL, tenant, id, secret string) string {
 	t.Helper()
-	tok, code, err := client.FetchClientCredentialsToken(context.Background(), baseURL, id, secret)
+	tok, code, err := client.FetchClientCredentialsToken(context.Background(), baseURL, tenant, id, secret)
 	if err != nil || code != http.StatusOK || tok == "" {
 		t.Fatalf("client_credentials token: %d %v", code, err)
 	}
@@ -122,7 +122,7 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 		t.Fatalf("control: B with the tenant token: %d, want 200", code)
 	}
 	id, secret := newM2MClient(t, a)
-	bootTok := clientToken(t, urls[0], id, secret)
+	bootTok := clientToken(t, urls[0], tenant.ID, id, secret)
 	if code := modelListStatus(t, urls[1], bootTok); code != http.StatusOK {
 		t.Fatalf("control: B with an M2M token signed before the issue: %d, want 200", code)
 	}
@@ -130,7 +130,7 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 	kid := IssueClientKeyPair(t, op, false)
 	op.DeleteKeyPairOnCleanup(t, kid)
 
-	tok := clientToken(t, urls[0], id, secret)
+	tok := clientToken(t, urls[0], tenant.ID, id, secret)
 	if got := client.TokenKID(tok); got != kid {
 		t.Fatalf("A signs with %q, want the issued key %q", got, kid)
 	}
@@ -143,7 +143,7 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 	})
 	idB, secretB := newM2MClient(t, b)
 	eventually(t, "B signs with the key issued on A", func() bool {
-		tokB, code, err := client.FetchClientCredentialsToken(context.Background(), urls[1], idB, secretB)
+		tokB, code, err := client.FetchClientCredentialsToken(context.Background(), urls[1], tenant.ID, idB, secretB)
 		return err == nil && code == http.StatusOK && client.TokenKID(tokB) == kid
 	})
 

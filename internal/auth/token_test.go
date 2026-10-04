@@ -96,7 +96,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
 		m2mStore:        m2mStore,
-		handler:         auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry, 0),
+		handler:         routed(auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry, 0)),
 		clientID:        clientID,
 		clientSecret:    clientSecret,
 		oboID:           oboID,
@@ -111,7 +111,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 // withHandler replaces env's handler with one built from env's stores and
 // the given audience and expiry.
 func (e *testTokenEnv) withHandler(audience string, expiry int) *testTokenEnv {
-	e.handler = auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry, 0)
+	e.handler = routed(auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry, 0))
 	return e
 }
 
@@ -135,7 +135,7 @@ func (e *testTokenEnv) exchange(t *testing.T, id, secret string, form url.Values
 	if _, set := form["subject_token_type"]; !set {
 		form.Set("subject_token_type", jwtTokenType)
 	}
-	req := makeTokenRequest(tokenExchangeGrant, basicAuth(id, secret), form)
+	req := makeTokenRequest(e.tenantID, tokenExchangeGrant, basicAuth(id, secret), form)
 	rr := httptest.NewRecorder()
 	e.handler.ServeHTTP(rr, req)
 	return rr
@@ -145,7 +145,7 @@ func (e *testTokenEnv) exchange(t *testing.T, id, secret string, form url.Values
 func (e *testTokenEnv) clientCredentials(t *testing.T, id, secret string) *httptest.ResponseRecorder {
 	t.Helper()
 	rr := httptest.NewRecorder()
-	e.handler.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(id, secret), nil))
+	e.handler.ServeHTTP(rr, makeTokenRequest(e.tenantID, "client_credentials", basicAuth(id, secret), nil))
 	return rr
 }
 
@@ -165,11 +165,18 @@ func issued(t *testing.T, rr *httptest.ResponseRecorder) (map[string]any, map[st
 	return body, p.Claims
 }
 
+// routed mounts h where the server does: in the tenant route group.
+func routed(h http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	auth.RegisterTokenRoute(mux, h)
+	return mux
+}
+
 func basicAuth(clientID, secret string) string {
 	return "Basic " + base64.StdEncoding.EncodeToString([]byte(clientID+":"+secret))
 }
 
-func makeTokenRequest(grantType, authHeader string, extraForm url.Values) *http.Request {
+func makeTokenRequest(tenant, grantType, authHeader string, extraForm url.Values) *http.Request {
 	form := url.Values{}
 	form.Set("grant_type", grantType)
 	for k, vs := range extraForm {
@@ -177,7 +184,7 @@ func makeTokenRequest(grantType, authHeader string, extraForm url.Values) *http.
 			form.Set(k, v)
 		}
 	}
-	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req := httptest.NewRequest(http.MethodPost, "/tenants/"+tenant+"/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	if authHeader != "" {
 		req.Header.Set("Authorization", authHeader)
@@ -280,9 +287,9 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 		"other":       {failingM2MStore{err: errors.New("disk on fire")}, http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry, 0)
+			h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry, 0))
 			rr := httptest.NewRecorder()
-			h.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+			h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 			if rr.Code != c.status {
 				t.Fatalf("status = %d, want %d: %s", rr.Code, c.status, rr.Body.String())
 			}
@@ -308,9 +315,9 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 // answer 503.
 func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), testIssuer, "", testExpiry, 0)
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), testIssuer, "", testExpiry, 0))
 	for _, raw := range []string{"a%00b", "%FF", strings.Repeat("A", 101), "a%3Ab"} {
-		req := makeTokenRequest("client_credentials", "Basic "+base64.StdEncoding.EncodeToString([]byte(raw+":x")), nil)
+		req := makeTokenRequest(env.tenantID, "client_credentials", "Basic "+base64.StdEncoding.EncodeToString([]byte(raw+":x")), nil)
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, req)
 		if rr.Code != http.StatusUnauthorized || decodeResponse(t, rr)["error"] != "invalid_client" {
@@ -394,7 +401,7 @@ func TestToken_401CarriesWWWAuthenticate(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			rr := httptest.NewRecorder()
-			env.handler.ServeHTTP(rr, makeTokenRequest("client_credentials", header, nil))
+			env.handler.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", header, nil))
 			if rr.Code != http.StatusUnauthorized {
 				t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
 			}
@@ -765,7 +772,7 @@ func TestTokenUnsupportedGrantType(t *testing.T) {
 	env := setupTokenEnv(t)
 	for _, id := range []struct{ id, secret string }{{env.clientID, env.clientSecret}, {env.oboID, env.oboSecret}} {
 		rr := httptest.NewRecorder()
-		env.handler.ServeHTTP(rr, makeTokenRequest("authorization_code", basicAuth(id.id, id.secret), nil))
+		env.handler.ServeHTTP(rr, makeTokenRequest(env.tenantID, "authorization_code", basicAuth(id.id, id.secret), nil))
 		if rr.Code != http.StatusBadRequest || decodeResponse(t, rr)["error"] != "unsupported_grant_type" {
 			t.Fatalf("%s: status %d: %s", id.id, rr.Code, rr.Body.String())
 		}
@@ -781,7 +788,7 @@ func TestToken_MalformedBody_400(t *testing.T) {
 		"oversized":  "grant_type=client_credentials&x=" + strings.Repeat("a", 1<<20),
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(body))
+			req := httptest.NewRequest(http.MethodPost, "/tenants/"+env.tenantID+"/oauth/token", strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 			req.Header.Set("Authorization", basicAuth(env.clientID, env.clientSecret))
 			rr := httptest.NewRecorder()
@@ -796,7 +803,7 @@ func TestToken_MalformedBody_400(t *testing.T) {
 // RFC 9110 §15.5.6: a 405 names the allowed method.
 func TestTokenHandler_NonPost_405MethodNotAllowed(t *testing.T) {
 	env := setupTokenEnv(t)
-	req := httptest.NewRequest(http.MethodGet, "/oauth/token", nil)
+	req := httptest.NewRequest(http.MethodGet, "/tenants/"+env.tenantID+"/oauth/token", nil)
 	rr := httptest.NewRecorder()
 	env.handler.ServeHTTP(rr, req)
 	if rr.Code != http.StatusMethodNotAllowed || decodeResponse(t, rr)["error"] != "method_not_allowed" {
@@ -826,7 +833,7 @@ func TestToken_ContentTypeMustBeForm(t *testing.T) {
 		"json, no credentials": {"application/json", `{}`, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(c.body))
+			req := httptest.NewRequest(http.MethodPost, "/tenants/"+env.tenantID+"/oauth/token", strings.NewReader(c.body))
 			if c.contentType != "" {
 				req.Header.Set("Content-Type", c.contentType)
 			}
@@ -842,7 +849,7 @@ func TestToken_ContentTypeMustBeForm(t *testing.T) {
 		})
 	}
 	t.Run("charset accepted", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form))
+		req := httptest.NewRequest(http.MethodPost, "/tenants/"+env.tenantID+"/oauth/token", strings.NewReader(form))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
 		req.Header.Set("Authorization", basicAuth(env.clientID, env.clientSecret))
 		rr := httptest.NewRecorder()
@@ -860,7 +867,7 @@ func TestToken_QueryStringParameters(t *testing.T) {
 	env := setupTokenEnv(t)
 	post := func(t *testing.T, query, id, secret string, form url.Values) *httptest.ResponseRecorder {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodPost, "/oauth/token?"+query, strings.NewReader(form.Encode()))
+		req := httptest.NewRequest(http.MethodPost, "/tenants/"+env.tenantID+"/oauth/token?"+query, strings.NewReader(form.Encode()))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Authorization", basicAuth(id, secret))
 		rr := httptest.NewRecorder()
@@ -935,10 +942,10 @@ func TestTokenExchange_TrustedKeyStoreUnavailable_503(t *testing.T) {
 		"other":       {errors.New("failed to read trusted key: disk on fire"), http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry, 0)
+			h := routed(auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry, 0))
 			rr := httptest.NewRecorder()
 			form := url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}}
-			h.ServeHTTP(rr, makeTokenRequest(tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret), form))
+			h.ServeHTTP(rr, makeTokenRequest(env.tenantID, tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret), form))
 			if rr.Code != c.status {
 				t.Fatalf("status = %d, want %d: %s", rr.Code, c.status, rr.Body.String())
 			}
@@ -1005,13 +1012,13 @@ func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) { return ni
 func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	env := setupTokenEnv(t)
 	cause := errors.New("hsm unreachable at 10.0.0.5:8443")
-	selectFails := auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
-	signFails := auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
+	selectFails := routed(auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0))
+	signFails := routed(auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0))
 	cc := func() *http.Request {
-		return makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
+		return makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
 	}
 	exchange := func() *http.Request {
-		return makeTokenRequest(tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret),
+		return makeTokenRequest(env.tenantID, tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret),
 			url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}})
 	}
 
@@ -1067,7 +1074,7 @@ func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 }
 
 // An error response from the token endpoint is not cacheable either, so
-// every /oauth/token response carries the same headers.
+// every token endpoint response carries the same headers.
 func TestTokenEndpoint_ErrorResponsesAreNotCacheable(t *testing.T) {
 	env := setupTokenEnv(t)
 	rr := env.clientCredentials(t, env.clientID, "wrong")
@@ -1111,7 +1118,7 @@ func TestTokenEndpoint_TokenResponsesAreNotCacheable(t *testing.T) {
 // nothing from it.
 func TestToken_PerClientBucket_429(t *testing.T) {
 	env := setupTokenEnv(t)
-	env.handler = auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 1)
+	env.handler = routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 1))
 
 	if rr := env.clientCredentials(t, env.clientID, env.clientSecret); rr.Code != http.StatusOK {
 		t.Fatalf("first request: %d %s", rr.Code, rr.Body.String())
@@ -1145,9 +1152,9 @@ func TestToken_PerClientBucket_429(t *testing.T) {
 // Retry-After: 1, never 401 or a ticketed 500.
 func TestToken_SecretCheckBusy_503(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, failingM2MStore{err: auth.ErrSecretCheckBusy}, testIssuer, "", testExpiry, 0)
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, failingM2MStore{err: auth.ErrSecretCheckBusy}, testIssuer, "", testExpiry, 0))
 	rr := httptest.NewRecorder()
-	h.ServeHTTP(rr, makeTokenRequest("client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", rr.Code, rr.Body.String())
 	}
@@ -1156,5 +1163,44 @@ func TestToken_SecretCheckBusy_503(t *testing.T) {
 	}
 	if got := decodeResponse(t, rr)["error"]; got != "temporarily_unavailable" {
 		t.Errorf("error = %v, want temporarily_unavailable", got)
+	}
+}
+
+// The handler takes its tenant from the route group only; mounted outside
+// it, it fails closed.
+func TestToken_OutsideTheGroupIsAServerError(t *testing.T) {
+	env := setupTokenEnv(t)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("status %d", rr.Code)
+	}
+}
+
+// A client of tenant A presented at tenant B's URL is the same 401 as an
+// unknown client.
+func TestToken_ClientAtAnotherTenantsURLIsInvalidClient(t *testing.T) {
+	env := setupTokenEnv(t)
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, makeTokenRequest("other-tenant", "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
+	if rr.Code != http.StatusUnauthorized || decodeResponse(t, rr)["error"] != "invalid_client" {
+		t.Fatalf("status %d", rr.Code)
+	}
+}
+
+func TestToken_InvalidTenantSegmentIsInvalidRequest(t *testing.T) {
+	env := setupTokenEnv(t)
+	for _, segment := range []string{"SYSTEM", "-x", "%61cme"} {
+		// httptest.NewRequest parses the target, so "%61cme" sets RawPath.
+		req := httptest.NewRequest(http.MethodPost, "/tenants/"+segment+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Authorization", basicAuth(env.clientID, env.clientSecret))
+		rr := httptest.NewRecorder()
+		env.handler.ServeHTTP(rr, req)
+		body := decodeResponse(t, rr)
+		if rr.Code != http.StatusBadRequest || body["error"] != "invalid_request" || body["error_description"] != "invalid tenant" {
+			t.Errorf("%q: %d %v", segment, rr.Code, body)
+		}
 	}
 }

@@ -85,7 +85,7 @@ func oboTokenOn(t *testing.T, baseURL, adminToken, user string) string {
 		"sub": user, "iss": "e2e-app", "aud": issuer, "caas_org_id": tenant,
 		"iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": uuid.NewString(),
 	})}}
-	resp, err := exchangeRawTo(e2eCtx(t), baseURL, s.clientID, s.secret, form)
+	resp, err := exchangeRawTo(e2eCtx(t), baseURL, tenant, s.clientID, s.secret, form)
 	if err != nil {
 		t.Fatalf("oboTokenOn: exchange: %v", err)
 	}
@@ -193,12 +193,12 @@ func signAssertion(key *rsa.PrivateKey, kid string, claims map[string]any) strin
 // clientID with form. grant_type is set, and subject_token_type defaults to
 // the JWT type when form does not carry the key. It never touches
 // *testing.T, so it is safe to call from a goroutine.
-func exchangeRaw(clientID, secret string, form url.Values) (*http.Response, error) {
-	return exchangeRawTo(context.Background(), serverURL, clientID, secret, form)
+func exchangeRaw(tenant, clientID, secret string, form url.Values) (*http.Response, error) {
+	return exchangeRawTo(context.Background(), serverURL, tenant, clientID, secret, form)
 }
 
 // exchangeRawTo is exchangeRaw against the server at baseURL.
-func exchangeRawTo(ctx context.Context, baseURL, clientID, secret string, form url.Values) (*http.Response, error) {
+func exchangeRawTo(ctx context.Context, baseURL, tenant, clientID, secret string, form url.Values) (*http.Response, error) {
 	f := url.Values{}
 	for k, v := range form {
 		f[k] = append([]string(nil), v...)
@@ -207,7 +207,7 @@ func exchangeRawTo(ctx context.Context, baseURL, clientID, secret string, form u
 	if _, set := f["subject_token_type"]; !set {
 		f.Set("subject_token_type", jwtTokenType)
 	}
-	return postTokenRaw(ctx, baseURL, f, clientID, secret)
+	return postTokenRaw(ctx, baseURL, tenant, f, clientID, secret)
 }
 
 // trustedKeyBody is the POST /oauth/keys/trusted body registering priv's

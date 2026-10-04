@@ -85,5 +85,14 @@ func TestHandle_PanicsOnAPatternOutsideTheGroup(t *testing.T) {
 			t.Fatal("no panic")
 		}
 	}()
-	tenantroute.Handle(http.NewServeMux(), "/oauth/token", http.NotFoundHandler(), nil)
+	tenantroute.Handle(http.NewServeMux(), "/oauth/token", http.NotFoundHandler(), func(http.ResponseWriter, *http.Request) {})
+}
+
+func TestHandle_PanicsOnANilRefuse(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("no panic")
+		}
+	}()
+	tenantroute.Handle(http.NewServeMux(), "/tenants/{tenant}/oauth/token", http.NotFoundHandler(), nil)
 }

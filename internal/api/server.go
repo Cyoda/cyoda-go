@@ -462,12 +462,12 @@ func (s *Server) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request
 	s.Unimplemented.ResetTechnicalUserSecret(w, r, clientId)
 }
 
-func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
+func (s *Server) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params genapi.GetTechnicalUserTokenParams) {
 	if s.Account != nil {
-		s.Account.GetTechnicalUserToken(w, r, params)
+		s.Account.GetTechnicalUserToken(w, r, tenant, params)
 		return
 	}
-	s.Unimplemented.GetTechnicalUserToken(w, r, params)
+	s.Unimplemented.GetTechnicalUserToken(w, r, tenant, params)
 }
 
 func (s *Server) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {

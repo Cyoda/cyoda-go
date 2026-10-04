@@ -43,6 +43,9 @@ func Handle(mux *http.ServeMux, pattern string, h http.Handler, refuse func(http
 	if !strings.HasPrefix(pattern, Prefix) {
 		panic("tenantroute: pattern outside the group: " + pattern)
 	}
+	if refuse == nil {
+		panic("tenantroute: nil refuse writer for " + pattern)
+	}
 	mux.Handle(pattern, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.RawPath != "" {
 			refuse(w, r)

@@ -78,11 +78,11 @@ func (h *Handler) AccountSubscriptionsGet(w http.ResponseWriter, r *http.Request
 	h.stub(w, r)
 }
 
-// GetTechnicalUserToken is the generated router's POST /oauth/token. In JWT
+// GetTechnicalUserToken is the generated router's POST /tenants/{tenant}/oauth/token. In JWT
 // IAM mode the auth-service token handler on the public mux (app/app.go, the
-// /oauth/token entry, every method) takes the path before the generated
+// /tenants/{tenant}/oauth/token entry, every method) takes the path before the generated
 // router sees it, so this method runs only in mock IAM mode, which issues no
 // token.
-func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
+func (h *Handler) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params genapi.GetTechnicalUserTokenParams) {
 	writeRequiresJWTMode(w, r, "token issuance")
 }

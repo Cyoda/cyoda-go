@@ -24,7 +24,11 @@ var muxRegistrars = map[string]bool{
 
 // publicMuxPatterns are the unauthenticated routes app.go registers itself:
 // JWKS discovery and the token endpoint.
-var publicMuxPatterns = map[string]bool{"/.well-known/": true, "/oauth/token": true}
+var publicMuxPatterns = map[string]bool{"/.well-known/": true, "/tenants/{tenant}/oauth/token": true}
+
+// tokenFreeTenantRoutes are the routes of the tenant route group. The group
+// holds token-free routes only.
+var tokenFreeTenantRoutes = map[string]bool{"/tenants/{tenant}/oauth/token": true}
 
 // catchAllMuxPattern mounts the generated router, whose routes
 // TestRouteClassification_EveryRouteClassified classifies one by one.
@@ -73,6 +77,12 @@ func TestRouteRegistration_EveryMuxRouteClassified(t *testing.T) {
 	seen := map[string]bool{}
 	for _, r := range regs {
 		seen[r.pattern] = true
+		// The tenant route group holds token-free routes only. A route that
+		// carries a bearer token needs the group's tenant-equality check
+		// (internal/tenantroute) built first; list it here only then.
+		if strings.HasPrefix(r.pattern, "/tenants/") && !tokenFreeTenantRoutes[r.pattern] {
+			t.Errorf("%s: %q is in the tenant group but not a known token-free route", r.pos, r.pattern)
+		}
 		switch {
 		case publicMuxPatterns[r.pattern], operator[r.pattern], r.pattern == catchAllMuxPattern:
 		case data[r.pattern]:

@@ -24,6 +24,7 @@ var preConfigVars = map[string]bool{
 	"CYODA_SUPPRESS_BANNER":       true, // read directly in cmd/cyoda/main.go
 	"CYODA_COMPUTE_GRPC_ENDPOINT": true, // compute-test-client side, not app.Config
 	"CYODA_COMPUTE_CLIENT_ID":     true, // compute-test-client side, not app.Config
+	"CYODA_COMPUTE_TENANT_ID":     true, // compute-test-client side, not app.Config
 	"CYODA_COMPUTE_CLIENT_SECRET": true, // compute-test-client side, not app.Config
 	"CYODA_COMPUTE_HTTP_BASE":     true, // compute-test-client side, not app.Config
 }

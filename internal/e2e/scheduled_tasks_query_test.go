@@ -56,7 +56,7 @@ func (s schedTenant) do(t *testing.T, method, path, body string) (int, string) {
 	if body != "" {
 		b = []byte(body)
 	}
-	resp := adminRequestAs(t, s.clientID, s.secret, method, path, b)
+	resp := adminRequestAs(t, s.id, s.clientID, s.secret, method, path, b)
 	return resp.StatusCode, readBody(t, resp)
 }
 

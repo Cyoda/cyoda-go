@@ -30,7 +30,7 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 		Secret string `json:"client_secret"`
 	}
 	_ = json.Unmarshal(body, &cred)
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, cred.Secret); st != http.StatusOK {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, cred.Secret); st != http.StatusOK {
 		t.Fatalf("token: %d", st)
 	}
 	if code, body, _ := ca.ListClientsRaw(t); code != http.StatusOK || !strings.Contains(string(body), cred.ID) {
@@ -62,16 +62,16 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 		Secret string `json:"client_secret"`
 	}
 	_ = json.Unmarshal(body, &reset)
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, cred.Secret); st != http.StatusUnauthorized {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, cred.Secret); st != http.StatusUnauthorized {
 		t.Fatalf("old secret: %d", st)
 	}
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, reset.Secret); st != http.StatusOK {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, reset.Secret); st != http.StatusOK {
 		t.Fatalf("new secret: %d", st)
 	}
 	if code, _, _ := ca.DeleteClientRaw(t, cred.ID); code != http.StatusOK {
 		t.Fatalf("delete: %d", code)
 	}
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, reset.Secret); st != http.StatusUnauthorized {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, reset.Secret); st != http.StatusUnauthorized {
 		t.Fatalf("deleted: %d", st)
 	}
 }

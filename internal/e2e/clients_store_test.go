@@ -114,20 +114,20 @@ func TestClientsStore_CrossNodeAtOnce(t *testing.T) {
 	}
 	a, b := twoNodes(t)
 	c := createKeyStackClient(t, a.callbackHarness)
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, c.secret); code != http.StatusOK {
 		t.Fatalf("token on B right after the create on A: %d, want 200", code)
 	}
 	newSecret := a.resetSecret(t, c.id)
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, c.secret); code != http.StatusUnauthorized {
 		t.Fatalf("old secret on B right after the reset on A: %d, want 401", code)
 	}
-	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, newSecret); code != http.StatusOK {
 		t.Fatalf("new secret on B right after the reset on A: %d, want 200", code)
 	}
 	if code, raw := a.deleteClient(t, a.oauthToken(t), c.id); code != http.StatusOK {
 		t.Fatalf("delete on A: %d %s", code, raw)
 	}
-	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, newSecret); code != http.StatusUnauthorized {
 		t.Fatalf("deleted client on B right after the delete on A: %d, want 401", code)
 	}
 }
@@ -147,16 +147,16 @@ func TestClientsStore_SurvivesRestart(t *testing.T) {
 	}
 
 	r := newKeyStackOn(t, s, key) // the restart
-	if code := tokenStatusOn(t, r.baseURL, created.id, created.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), created.id, created.secret); code != http.StatusOK {
 		t.Fatalf("created client after restart: %d, want 200", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, reset.id, newSecret); code != http.StatusOK {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), reset.id, newSecret); code != http.StatusOK {
 		t.Fatalf("reset secret after restart: %d, want 200", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, reset.id, reset.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), reset.id, reset.secret); code != http.StatusUnauthorized {
 		t.Fatalf("secret replaced by the reset, after restart: %d, want 401", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, gone.id, gone.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), gone.id, gone.secret); code != http.StatusUnauthorized {
 		t.Fatalf("deleted client after restart: %d, want 401", code)
 	}
 	ids := clientIDsOn(t, r.baseURL, r.oauthToken(t))
@@ -300,7 +300,7 @@ func TestClientsStore_TokenEndpointRefusesMalformedIDs(t *testing.T) {
 		"encoded colon":  "a%3Ab",
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "some-secret")
+			resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, "some-secret")
 			assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 		})
 	}
@@ -325,7 +325,7 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	t.Run("undecodable record", func(t *testing.T) {
 		s.putRawKV(t, tenantNS, "BADREC1", "{")
 		s.putRawKV(t, indexNS, "BADREC1", `{"tenantId":"`+string(auth.PlatformTenantID)+`"}`)
-		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
+		assertOAuthError(t, postTokenTo(t, h.baseURL, string(auth.PlatformTenantID), url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
 			http.StatusInternalServerError, "server_error")
 		ids := clientIDsOn(t, h.baseURL, admin)
 		if ids["BADREC1"] || !ids[h.clientID] {
@@ -349,7 +349,7 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	t.Run("undecodable index entry", func(t *testing.T) {
 		c := createKeyStackClient(t, h.callbackHarness)
 		s.putRawKV(t, indexNS, c.id, "{")
-		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, c.id, c.secret),
+		assertOAuthError(t, postTokenTo(t, h.baseURL, string(auth.PlatformTenantID), url.Values{"grant_type": {"client_credentials"}}, c.id, c.secret),
 			http.StatusInternalServerError, "server_error")
 		// The owner holds the record, so its reset reads the damaged entry:
 		// 500, and neither the entry nor the record changes.
@@ -419,7 +419,7 @@ func TestClientsStore_RawRecords(t *testing.T) {
 		if !s.hasRawKV(t, indexNS, otherID) {
 			t.Fatal("PLATFORM's delete removed the index entry of other-tenant's client")
 		}
-		if code := tokenStatusOn(t, h.baseURL, otherID, otherSecret); code != http.StatusOK {
+		if code := tokenStatusOn(t, h.baseURL, "other-tenant", otherID, otherSecret); code != http.StatusOK {
 			t.Fatalf("other-tenant's client after PLATFORM's delete: %d, want 200", code)
 		}
 	})
@@ -528,7 +528,7 @@ func TestClientsStore_ClientChangeNotInCallersTransaction(t *testing.T) {
 		t.Fatalf("POST /clients joined to T: %d %s", resp.StatusCode, raw)
 	}
 	c := decodeCredential(t, "POST /clients joined to T", []byte(raw))
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, suiteTenant, c.id, c.secret); code != http.StatusOK {
 		t.Fatalf("token on B for a client created in the still-open T: %d, want 200", code)
 	}
 

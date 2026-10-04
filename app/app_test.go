@@ -40,7 +40,7 @@ func TestConfig_NoBootstrapClient(t *testing.T) {
 	}
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/tenants/leftover-tenant/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth("leftover", "leftover-secret")
 	resp, err := http.DefaultClient.Do(req)
@@ -268,7 +268,7 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 	}
 
 	// Token endpoint should return 401 (bad credentials), not 404 or 500
-	req, _ := http.NewRequest("POST", srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req, _ := http.NewRequest("POST", srv.URL+"/tenants/acme/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
@@ -282,7 +282,7 @@ func TestAuthPublicEndpointsNoAuth(t *testing.T) {
 }
 
 // TestMockMode_TokenEndpoint_Returns501: mock IAM mode mounts no token
-// handler, so POST /oauth/token reaches the generated router, which answers
+// handler, so POST /tenants/{tenant}/oauth/token reaches the generated router, which answers
 // 501 NOT_IMPLEMENTED: mock mode issues no token.
 func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
 	cfg := app.DefaultConfig()
@@ -291,7 +291,7 @@ func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
 	srv := httptest.NewServer(a.Handler())
 	defer srv.Close()
 
-	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/oauth/token", strings.NewReader("grant_type=client_credentials"))
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/tenants/acme/oauth/token", strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -303,7 +303,7 @@ func TestMockMode_TokenEndpoint_Returns501(t *testing.T) {
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	if resp.StatusCode != http.StatusNotImplemented || body.Properties["errorCode"] != "NOT_IMPLEMENTED" {
-		t.Fatalf("mock-mode POST /oauth/token: status %d errorCode %v, want 501 NOT_IMPLEMENTED",
+		t.Fatalf("mock-mode POST /tenants/{tenant}/oauth/token: status %d errorCode %v, want 501 NOT_IMPLEMENTED",
 			resp.StatusCode, body.Properties["errorCode"])
 	}
 }

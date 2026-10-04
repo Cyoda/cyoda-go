@@ -76,7 +76,7 @@ func servedAuthenticatedOps(t *testing.T) (served, unserved []classifiedOp) {
 			if op.Security != nil && len(*op.Security) == 0 {
 				continue // security: [] — unauthenticated by declaration
 			}
-			if method == http.MethodPost && path == "/oauth/token" {
+			if method == http.MethodPost && path == "/tenants/{tenant}/oauth/token" {
 				continue // the token endpoint: the client authenticates with basic auth
 			}
 			if !requiresBearer(doc, op) {

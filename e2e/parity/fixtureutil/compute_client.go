@@ -21,6 +21,7 @@ type ComputeClientOpts struct {
 	ComputeBin   string // absolute path of the built compute-test-client
 	GRPCEndpoint string // host:port of the cyoda node the client attaches to
 	HTTPBase     string // HTTP base its callbacks and token requests go to
+	TenantID     string // tenant of ClientID
 	ClientID     string // M2M client it authenticates as (tenant it joins under)
 	ClientSecret string // that client's secret; never logged
 	Tags         []string
@@ -53,6 +54,7 @@ func StartComputeClient(opts ComputeClientOpts) (*ComputeClientProc, error) {
 	cmd.WaitDelay = 3 * time.Second
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("CYODA_COMPUTE_GRPC_ENDPOINT=%s", opts.GRPCEndpoint),
+		fmt.Sprintf("CYODA_COMPUTE_TENANT_ID=%s", opts.TenantID),
 		fmt.Sprintf("CYODA_COMPUTE_CLIENT_ID=%s", opts.ClientID),
 		fmt.Sprintf("CYODA_COMPUTE_CLIENT_SECRET=%s", opts.ClientSecret),
 		fmt.Sprintf("CYODA_COMPUTE_HTTP_BASE=%s", opts.HTTPBase),
@@ -205,7 +207,7 @@ func StartComputeClientForFixture(t *testing.T, creds *ComputeCredentials, compu
 	id, secret := creds.For(t, httpBase, spec.TenantID)
 	p, err := StartComputeClient(ComputeClientOpts{
 		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoint, HTTPBase: httpBase,
-		ClientID: id, ClientSecret: secret, Tags: spec.Tags, Behaviour: spec.Behaviour,
+		TenantID: string(spec.TenantID), ClientID: id, ClientSecret: secret, Tags: spec.Tags, Behaviour: spec.Behaviour,
 	})
 	if err != nil {
 		t.Fatalf("failed to start compute client: %v", err)

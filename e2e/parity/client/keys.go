@@ -120,11 +120,11 @@ func (c *Client) ResetClientSecretRaw(t *testing.T, clientID string) (int, []byt
 }
 
 // FetchClientCredentialsToken runs the client_credentials grant against
-// baseURL and returns the bearer token. The token is a credential: never
+// baseURL as clientID of tenant and returns the bearer token. The token is a credential: never
 // log it, never include it in test-failure messages.
-func FetchClientCredentialsToken(ctx context.Context, baseURL, clientID, secret string) (string, int, error) {
+func FetchClientCredentialsToken(ctx context.Context, baseURL, tenant, clientID, secret string) (string, int, error) {
 	form := url.Values{"grant_type": {"client_credentials"}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/oauth/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/tenants/"+tenant+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", 0, err
 	}

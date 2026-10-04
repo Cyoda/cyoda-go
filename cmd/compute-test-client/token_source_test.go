@@ -23,7 +23,7 @@ func TestComputeClientRefreshesTokenBeforeExpiry(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("tok-%d", n), "token_type": "Bearer", "expires_in": 2})
 	}))
 	defer srv.Close()
-	src := newTokenSource(srv.URL, "C1", "s")
+	src := newTokenSource(srv.URL, "t1", "C1", "s")
 	first, err := src.Token()
 	if err != nil || first != "tok-1" {
 		t.Fatalf("first = %q, %v", first, err)
@@ -44,7 +44,7 @@ func TestTokenSourceReusesTokenBeforeRefreshPoint(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("tok-%d", n), "token_type": "Bearer", "expires_in": 300})
 	}))
 	defer srv.Close()
-	src := newTokenSource(srv.URL, "C1", "s")
+	src := newTokenSource(srv.URL, "t1", "C1", "s")
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
@@ -73,7 +73,7 @@ func TestTokenSourceFailsClosedPastRefreshPoint(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-1", "token_type": "Bearer", "expires_in": 2})
 	}))
 	defer srv.Close()
-	src := newTokenSource(srv.URL, "C1", "s")
+	src := newTokenSource(srv.URL, "t1", "C1", "s")
 	if _, err := src.Token(); err != nil {
 		t.Fatalf("first Token(): %v", err)
 	}
@@ -84,10 +84,10 @@ func TestTokenSourceFailsClosedPastRefreshPoint(t *testing.T) {
 }
 
 // TestTokenSourcePostsFormToTokenEndpoint: the grant goes to
-// <base>/api/oauth/token as a form, which the token endpoint requires.
+// <base>/api/tenants/t1/oauth/token as a form, which the token endpoint requires.
 func TestTokenSourcePostsFormToTokenEndpoint(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/oauth/token" ||
+		if r.Method != http.MethodPost || r.URL.Path != "/api/tenants/t1/oauth/token" ||
 			r.Header.Get("Content-Type") != "application/x-www-form-urlencoded" {
 			http.Error(w, "bad", http.StatusBadRequest)
 			return
@@ -95,7 +95,7 @@ func TestTokenSourcePostsFormToTokenEndpoint(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "token_type": "Bearer", "expires_in": 300})
 	}))
 	defer srv.Close()
-	if tok, err := newTokenSource(srv.URL+"/", "C1", "s").Token(); err != nil || tok != "tok" {
+	if tok, err := newTokenSource(srv.URL+"/", "t1", "C1", "s").Token(); err != nil || tok != "tok" {
 		t.Fatalf("Token() = %q, %v", tok, err)
 	}
 }

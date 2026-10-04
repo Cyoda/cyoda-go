@@ -37,7 +37,7 @@ func TestProvisionComputeClient_IsAStoredClientOfTheTenant(t *testing.T) {
 	t.Cleanup(node.Kill)
 
 	id, secret := fixtureutil.ProvisionComputeClient(t, node.BaseURL, "tenant-xyz", ks)
-	tok, status, err := client.FetchClientCredentialsToken(t.Context(), node.BaseURL, id, secret)
+	tok, status, err := client.FetchClientCredentialsToken(t.Context(), node.BaseURL, "tenant-xyz", id, secret)
 	if err != nil || status != http.StatusOK {
 		t.Fatalf("client_credentials grant with the provisioned client: status %d, %v", status, err)
 	}
@@ -127,7 +127,7 @@ func TestStartComputeClient_RejectsUnknownBehaviour(t *testing.T) {
 	start := time.Now()
 	_, err = fixtureutil.StartComputeClient(fixtureutil.ComputeClientOpts{
 		ComputeBin: bin, GRPCEndpoint: "127.0.0.1:1", HTTPBase: "http://127.0.0.1:1",
-		ClientID: "x", ClientSecret: "y", Behaviour: "explode",
+		TenantID: "t", ClientID: "x", ClientSecret: "y", Behaviour: "explode",
 	})
 	if err == nil {
 		t.Fatal("StartComputeClient accepted an unknown behaviour")

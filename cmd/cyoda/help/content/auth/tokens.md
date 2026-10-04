@@ -58,7 +58,7 @@ Mint a token of the client itself:
 ```bash
 # -K- reads curl options from stdin: a command line is visible to other
 # local users, stdin is not.
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -K- <<<"user = \"${CLIENT_ID}:${CLIENT_SECRET}\"" \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=client_credentials"
@@ -97,7 +97,7 @@ Every time claim is checked with 30 seconds of clock skew; an `iat` more than 30
 ```bash
 # The client secret and the assertion go on stdin (-K-), not the command
 # line.
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \

@@ -96,7 +96,7 @@ func TestStream_OBOToken_PermissionDenied(t *testing.T) {
 	}
 }
 
-// A client token without ROLE_M2M cannot come from /oauth/token — every
+// A client token without ROLE_M2M cannot come from the token endpoint — every
 // client holds ROLE_M2M — so it is signed here. The server's stream
 // interceptor refuses it before the stream handler runs.
 func TestStream_ClientTokenWithoutROLE_M2M(t *testing.T) {
@@ -176,7 +176,7 @@ func TestStream_StaleClientToken_RefusedAtOpen(t *testing.T) {
 			}
 			cred := decodeCredential(t, "create client", raw)
 			deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
-			tok := h.fetchTokenFor(t, cred.id, cred.secret)
+			tok := h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret)
 			tc.stale(t, cred.id)
 			if got := openStreamCode(t, h, tok); got != codes.Unauthenticated {
 				t.Fatalf("stream opened with a stale client token: %v, want Unauthenticated", got)
@@ -196,7 +196,7 @@ func joinOwnClient(t *testing.T, h *callbackHarness) (string, *computeMember) {
 	}
 	cred := decodeCredential(t, "create client", raw)
 	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
-	m := newComputeMember(t, h, memberSpec{bearer: h.fetchTokenFor(t, cred.id, cred.secret)})
+	m := newComputeMember(t, h, memberSpec{bearer: h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret)})
 	t.Cleanup(m.stop)
 	return cred.id, m
 }

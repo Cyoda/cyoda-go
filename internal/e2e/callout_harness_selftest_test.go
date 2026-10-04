@@ -111,7 +111,7 @@ func TestComputeMember_JoinsWithGivenTagsAndBearer(t *testing.T) {
 
 	clientID, secret := h.provisionTenant(t, "h2-other-tenant", "h2-user")
 	other := newComputeMember(t, h, memberSpec{
-		bearer: h.fetchTokenFor(t, clientID, secret),
+		bearer: h.fetchTokenFor(t, "h2-other-tenant", clientID, secret),
 		tags:   []string{"h2-a"},
 		handle: func(*computeMember, func(*cepb.CloudEvent) error, calcRequest) {},
 	})
