@@ -371,13 +371,13 @@ func TestKVM2M_CreateRefusesExistingAndInvalidIDs(t *testing.T) {
 	if _, err := s.Create(systemCtx(), "acme", "C9", "C9", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientExists) {
 		t.Fatalf("undecodable index entry's id: %v", err)
 	}
-	if _, err := s.Create(systemCtx(), "acme", "a-b", "a-b", []string{"ROLE_M2M"}, false); err == nil {
+	if _, err := s.Create(systemCtx(), "acme", "a:b", "a:b", []string{"ROLE_M2M"}, false); err == nil {
 		t.Fatal("id outside the grammar: created")
 	}
-	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "a-b"); !errors.Is(err, spi.ErrNotFound) {
+	if _, err := kv.Get(systemCtx(), "m2m-client-ids", "a:b"); !errors.Is(err, spi.ErrNotFound) {
 		t.Fatalf("id outside the grammar: index entry written (%v)", err)
 	}
-	if _, err := kv.Get(systemCtx(), "m2m-clients:acme", "a-b"); !errors.Is(err, spi.ErrNotFound) {
+	if _, err := kv.Get(systemCtx(), "m2m-clients:acme", "a:b"); !errors.Is(err, spi.ErrNotFound) {
 		t.Fatalf("id outside the grammar: record written (%v)", err)
 	}
 }

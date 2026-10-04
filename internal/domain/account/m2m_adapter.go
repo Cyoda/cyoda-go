@@ -59,7 +59,7 @@ func (h *Handler) gateM2MAdminRole(w http.ResponseWriter, r *http.Request) bool 
 
 // validateClientID writes 400 BAD_REQUEST and returns false when the
 // path-param clientId is outside the client-id grammar (auth.ValidClientID,
-// the OpenAPI pattern ^[A-Za-z0-9]{1,100}$).
+// the OpenAPI pattern ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$).
 func validateClientID(w http.ResponseWriter, r *http.Request, clientID string) bool {
 	if !auth.ValidClientID(clientID) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest,

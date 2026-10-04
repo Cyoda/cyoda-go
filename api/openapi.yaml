@@ -797,13 +797,13 @@ paths:
       parameters:
         - name: clientId
           in: path
-          description: The client ID of the M2M client to delete
+          description: "The client ID of the M2M client to delete. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           required: true
           schema:
             type: string
             maxLength: 100
             minLength: 1
-            pattern: ^[A-Za-z0-9]+$
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
       responses:
         "200":
           description: M2M client deleted successfully
@@ -880,13 +880,13 @@ paths:
       parameters:
         - name: clientId
           in: path
-          description: The client ID of the M2M client whose secret should be reset
+          description: "The client ID of the M2M client whose secret should be reset. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           required: true
           schema:
             type: string
             maxLength: 100
             minLength: 1
-            pattern: ^[A-Za-z0-9]+$
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
       responses:
         "200":
           description: Client secret reset successfully
@@ -6196,7 +6196,7 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
-            client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
+            client id outside ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$, an unknown client id, or a
             wrong secret). Carries WWW-Authenticate Basic realm="cyoda".
           headers:
             WWW-Authenticate:
@@ -9272,12 +9272,11 @@ components:
       properties:
         client_id:
           type: string
-          description: The client identifier for the M2M client. Generated
-            ids are 16 characters from 0-9 and A-V.
+          description: "Chosen by the caller (query parameter clientId) or generated: 16 characters from 0-9 and A-V. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
-          pattern: ^[A-Za-z0-9]+$
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         client_secret:
           type: string
           description: The client secret for authentication, 64 lower-case hex
@@ -11220,11 +11219,11 @@ components:
       properties:
         clientId:
           type: string
-          description: The client identifier for the M2M client
+          description: "The client identifier for the M2M client. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
-          pattern: ^[A-Za-z0-9]+$
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         creationDate:
           type: string
           format: date-time

@@ -124,7 +124,7 @@ func TestM2MCodec_RoundTripOnBehalfOfAndSecretGen(t *testing.T) {
 
 func TestM2MCodec_EncoderRefuses(t *testing.T) {
 	for name, mut := range map[string]func(c *M2MClient){
-		"bad id":            func(c *M2MClient) { c.ClientID = "a-b" },
+		"bad id":            func(c *M2MClient) { c.ClientID = "a:b" },
 		"bad tenant":        func(c *M2MClient) { c.TenantID = spi.TenantID("a:b") },
 		"bad user":          func(c *M2MClient) { c.UserID = "system" },
 		"no roles":          func(c *M2MClient) { c.Roles = nil },
@@ -183,7 +183,7 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		"not json":            {"acme", "ABC123", []byte("{")},
 		"key differs":         {"acme", "OTHER1", good},
 		"tenant differs":      {"other", "ABC123", good},
-		"key outside grammar": {"acme", "a-b", []byte(strings.Replace(string(good), `"ABC123"`, `"a-b"`, 1))},
+		"key outside grammar": {"acme", "a:b", []byte(strings.Replace(string(good), `"ABC123"`, `"a:b"`, 1))},
 		// These carry a valid key/tenant/clientId so they reach
 		// validateM2MClient inside decodeClientRecord itself, rather than
 		// being rejected by encodeClientRecord before ever hitting the

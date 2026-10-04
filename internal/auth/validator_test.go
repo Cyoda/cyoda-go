@@ -455,3 +455,45 @@ func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 		})
 	}
 }
+
+// The client-id grammar governs the client-bearing claims: a cgen token's
+// caas_user_id and an on-behalf-of token's act.sub.
+func TestValidator_ClientIDGrammarOnClientClaims(t *testing.T) {
+	key, kid := setupTestJWKS(t)
+	issuer := "test-issuer"
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
+	base := func(extra map[string]any) map[string]any {
+		c := map[string]any{
+			"iss":         issuer,
+			"exp":         float64(time.Now().Add(time.Hour).Unix()),
+			"iat":         float64(time.Now().Unix()),
+			"caas_org_id": "org-7",
+			"scopes":      []any{"ROLE_M2M"},
+		}
+		for k, val := range extra {
+			c[k] = val
+		}
+		return c
+	}
+	cases := []struct {
+		name   string
+		claims map[string]any
+		ok     bool
+	}{
+		{"cgen client id with hyphen", base(map[string]any{"caas_user_id": "order-service", "cgen": 1}), true},
+		{"cgen client id system", base(map[string]any{"caas_user_id": "system", "cgen": 1}), false},
+		{"act.sub with dot and underscore", base(map[string]any{"caas_user_id": "user-1", "act": map[string]any{"sub": "compute.node_2"}}), true},
+		{"act.sub SYSTEM", base(map[string]any{"caas_user_id": "user-1", "act": map[string]any{"sub": "SYSTEM"}}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := v.Validate(signTestToken(t, key, kid, tc.claims))
+			if tc.ok && err != nil {
+				t.Fatalf("Validate refused: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("Validate accepted")
+			}
+		})
+	}
+}

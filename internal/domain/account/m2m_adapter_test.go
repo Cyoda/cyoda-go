@@ -711,10 +711,10 @@ func TestDeleteTechnicalUser_AdminUnknown_Returns404(t *testing.T) {
 
 func TestDeleteTechnicalUser_AdminMalformedId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/bad-id", nil), tenantA)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodDelete, "/clients/bad:id", nil), tenantA)
 	rr := httptest.NewRecorder()
 
-	h.DeleteTechnicalUser(rr, req, "bad-id")
+	h.DeleteTechnicalUser(rr, req, "bad:id")
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400", rr.Code)
@@ -841,9 +841,9 @@ func TestResetTechnicalUserSecret_AdminUnknown_Returns404(t *testing.T) {
 
 func TestResetTechnicalUserSecret_AdminMalformedId_Returns400(t *testing.T) {
 	h := newM2MAdapterFixture(t, false)
-	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/bad-id/secret", nil), tenantA)
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPut, "/clients/bad:id/secret", nil), tenantA)
 	rr := httptest.NewRecorder()
-	h.ResetTechnicalUserSecret(rr, req, "bad-id")
+	h.ResetTechnicalUserSecret(rr, req, "bad:id")
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("status: got %d want 400", rr.Code)

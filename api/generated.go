@@ -2948,7 +2948,7 @@ type SystemAuditEventDtoSeverity string
 
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
-	// ClientId The client identifier for the M2M client. Generated ids are 16 characters from 0-9 and A-V.
+	// ClientId Chosen by the caller (query parameter clientId) or generated: 16 characters from 0-9 and A-V. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"client_id"`
 
 	// ClientSecret The client secret for authentication, 64 lower-case hex characters. Returned only by this response; store it at once.
@@ -2972,7 +2972,7 @@ type TechnicalUserCredentialsDtoGrantType string
 
 // TechnicalUserDto defines model for TechnicalUserDto.
 type TechnicalUserDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId The client identifier for the M2M client. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"clientId"`
 
 	// CreationDate The date and time when the M2M client was created
