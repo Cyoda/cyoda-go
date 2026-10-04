@@ -40,27 +40,34 @@ Facts this design rests on, with citations:
 5. A secret reset that loses a race with another change to the same client
    answers `409 CONFLICT` (retryable) instead of both resets answering `200`
    (§4.3).
-6. Every `401 invalid_client` from the token endpoint is sent no earlier than
-   500 ms after the request reached the handler (§4.7).
+6. Every `401 invalid_client` from the token endpoint that is decided after a
+   store read is sent no earlier than 500 ms after the request reached the
+   handler (§4.7).
+7. `CYODA_IAM_MOCK_TENANT_ID` must be an API tenant; startup fails otherwise
+   (§4.6).
 
 ## 4. Design
 
 ### 4.1 Token endpoint
 
-- Registered on the inner mux as `/tenants/{tenant}/oauth/token`, every method,
-  before the authenticated catch-all, through the tenant group (§4.2). The
-  route lists pinned by `app/route_registration_test.go` and
-  `app/route_classification_test.go` change with it. The auth service's own
-  public mux registers the same pattern, so `r.PathValue("tenant")` is set on
-  the request the token handler sees.
-- The handler takes the tenant from the group step, never from the request.
+- Registered on the inner mux as `/tenants/{tenant}/oauth/token` (no method in
+  the pattern, so every method reaches the handler's own `405`), before the
+  authenticated catch-all, through the tenant group (§4.2). The auth service's
+  own public mux registers the same method-less pattern. The route lists pinned
+  by `app/route_registration_test.go` and `app/route_classification_test.go`
+  change with it, and the group helper is added to that test's list of known
+  registrars.
+- The handler takes the tenant from the context value the group step set,
+  never from the request. With no such value (the handler mounted outside the
+  group) it answers `500 server_error` with a ticket: it fails closed and never
+  reads `PathValue` itself.
   Everything else is unchanged: Basic authentication only, both grants, every
   check and its order (`internal/auth/token.go:96-148`), the per-client rate
   limit, the error bodies.
 - Client lookup is `Authenticate(ctx, tenant, clientID, secret)`. An unknown
   tenant, an unknown client and a wrong secret are the same
   `401 invalid_client`, each after one store read and one bcrypt comparison,
-  and each held to the 500 ms floor (§4.7).
+  and each held to the response-time floor (§4.7).
 - Mock IAM mode: the generated route moves with the OpenAPI path and answers
   `501` for any tenant segment, as today.
 
@@ -69,13 +76,18 @@ Facts this design rests on, with citations:
 Every route under `/tenants/{tenant}/` is registered through one group helper.
 Before the route's handler runs, the helper:
 
-1. refuses the request if `r.URL.RawPath` is not empty. Any percent-encoding
-   anywhere in the path, in a literal segment as well as in the tenant, is
-   refused. Go's mux decodes every segment before matching, so
-   `/api/%74enants/acme/oauth/token` otherwise reaches the handler and gets
+1. refuses the request if `r.URL.RawPath` is not empty. Go sets `RawPath` when
+   the path's encoding differs from the default one, which covers every
+   percent-encoded unreserved character (`%74` for `t`) and every encoded `/`
+   (`%2F`), in a literal segment after `{ctx}` as well as in the tenant. Go's
+   mux decodes every segment before matching, so
+   `/api/%74enants/acme/oauth/token` would otherwise reach the handler and get
    past a gateway rule written for the plain path. A valid path never needs
    encoding: the tenant grammar and the literal segments use only unreserved
-   characters.
+   characters. Other spellings never reach the group: encoding inside `{ctx}`
+   is a `404` from `http.StripPrefix`; an encoded reserved character such as
+   `%20` leaves `RawPath` empty and then fails the tenant grammar (in the
+   tenant) or matches no group route (in a literal segment).
 2. reads `r.PathValue("tenant")` verbatim (no case folding, no trimming) and
    refuses it unless it is an API tenant (§4.6).
 3. stores the addressed tenant in the request context.
@@ -125,7 +137,8 @@ Operations (`internal/auth/kv_m2m_store.go`):
 - **Create(ctx, tenant, id, roles, onBehalfOf)**: hash the new secret in a
   secret-check slot (none free → `ErrSecretCheckBusy`, nothing written). Then,
   under the tenant's stripe lock:
-  1. `Get` the id: present, decodable or not → `ErrM2MClientExists`.
+  1. `Get` the id: present, decodable or not → `ErrM2MClientExists`; a read
+     error → that error, nothing written.
   2. Cap: `List` the namespace; at the cap → `ErrM2MClientCapReached`.
   3. `PutIfAbsent(rec)`: applied → done; not applied (another node won) →
      `ErrM2MClientExists`; error → undo with `DeleteIfEqual(rec)`, then return
@@ -144,7 +157,8 @@ Operations (`internal/auth/kv_m2m_store.go`):
   - applied → return the secret;
   - not applied → `Get` again: absent → `ErrM2MClientNotFound`; present →
     `ErrM2MClientChanged` (a concurrent reset or a delete-and-recreate won;
-    `409 CONFLICT`, retryable);
+    `409 CONFLICT`, retryable); a read error → that error (nothing of this
+    call's was written, so nothing is undone);
   - error → undo with `CompareAndPut(next → prev)`, which restores only if this
     call's write landed and nothing changed since, then return the error. An
     undo that fails is logged at `ERROR`; the stored secret may then be the new
@@ -154,6 +168,16 @@ Operations (`internal/auth/kv_m2m_store.go`):
   conditional write and answers `404`, and no undo can bring the client back,
   because every undo is conditional on this call's own bytes.
 - **List(ctx, tenant)**: unchanged.
+
+**A write that lands after its undo.** A write whose call returned an error
+can still commit later (e.g. a postgres statement cancelled on the client side
+while the server completes it). An undo that runs first finds nothing of this
+call's and is not applied, and then the write lands: a create leaves a record
+whose secret nobody holds (listed, blocks the id with `409`, removed by
+`DELETE`); a reset leaves the new, unreturned secret in force (the client needs
+another reset). Neither is logged, because the store cannot see it. Both cases
+are rare, cause no cross-tenant effect and no unauthorised access, and are
+documented in `cyoda help auth clients` beside the failed-undo cases.
 
 Every branch that handled the index is removed: damaged index entries, index
 entries naming another tenant, records without an entry, the decoy read. So is
@@ -178,7 +202,13 @@ record codec refuses a generation outside `[1, 2^53)` (the validator's
   applies the whole rule. It is used by the store, by `/clients/{clientId}`, by
   `POST /clients?clientId=`, and by the validator for a `cgen` token's
   `caas_user_id` and an on-behalf-of token's `act.sub`.
-- Ids that are valid today stay valid (the old grammar is a subset).
+- Every id that could be stored before stays valid: the old grammar is a
+  subset of the new one except for `system` in its letter cases, which the
+  record codec already refused (`kv_m2m_codec.go:73`).
+- OpenAPI cannot express the reservation (Go's `regexp`, used by the
+  generator and the validator, has no lookahead). The four client-id patterns
+  become the tenant grammar, and the reservation is stated in their
+  descriptions.
 - **Generated ids**: 16 characters of upper-case base32-hex, as today. A
   collision with an existing id in the tenant is retried once; a second
   collision is a `500`, as today.
@@ -228,12 +258,17 @@ any letter case", applied at every door:
 | `caas_org_id` claim (HTTP and gRPC, `internal/auth/validator.go:148`) | `401 UNAUTHORIZED` / gRPC `Unauthenticated` |
 | `cyoda token --tenant` (`operator_token.go:32`) | flag error, exit non-zero |
 | `{tenant}` path segment (§4.2) | `400` in the route's format |
+| `CYODA_IAM_MOCK_TENANT_ID` (`app/app.go:373`, unvalidated today) | `Config.Validate` refuses it; startup fails |
 
 `ValidateTenantID` itself is unchanged. Stored records and internal contexts
-legitimately carry `SYSTEM`. Refusing every letter case matches the user-id rule
-and guards a tier that folds case. `internal/e2e/auth_failures_test.go:248`
-(which asserts `SYSTEM` tokens are accepted) and the `SYSTEM` case in
-`internal/common/tenant_id_test.go` change on purpose.
+legitimately carry `SYSTEM`, and its tests stay as they are. Refusing every
+letter case matches the user-id rule and guards a tier that folds case. Tests
+that assert `SYSTEM` tokens are accepted change on purpose:
+`internal/e2e/auth_failures_test.go:248`
+(`TestAuth_AcceptedTenantShapesStillAuthenticate`) and
+`internal/auth/validator_test.go:202-203`
+(`TestValidator_AcceptsShippedTenantShapes`). `ValidateAPITenantID` gets its
+own tests.
 
 `PLATFORM` is unchanged: operators get operator tokens at
 `/api/tenants/PLATFORM/oauth/token`.
@@ -245,13 +280,23 @@ such as (`acme`, `backend`). The store's read time can differ between a present
 and a missing key: on cassandra a hit is two queries and a miss one
 (`../cyoda-go-cassandra/internal/store/data_store.go:125-165`). That difference
 would show whether a tenant exists and has the client. No ordering of reads
-equalises it on every backend. So every `401 invalid_client` answer of the
-token endpoint is held until 500 ms after the handler started. A bcrypt
-comparison at the default cost takes about 70 ms, so the floor is several times
-the normal path. A request that has already taken longer is answered at once;
-past that point the secret-check queue's own variation is far larger than one
-read. The wait ends early if the client disconnects. Successful answers are not
-held: they need the secret.
+equalises it on every backend. So every `401 invalid_client` that is decided
+after a store read (unknown tenant or client, wrong secret) is held until
+500 ms after the handler started. A bcrypt comparison at the default cost takes
+about 70 ms, so the floor is several times the normal path. A request that has
+already taken longer is answered at once; past that point the secret-check
+queue's own variation is far larger than one read.
+
+- The wait happens after the secret-check slot is released, so it holds no
+  slot.
+- The wait ends early if the client disconnects.
+- Refusals decided without a store read are not held: no Basic credentials,
+  and a client id outside the grammar. They reveal nothing about stored state,
+  and holding them would let an unauthenticated flood tie up a connection per
+  request for nothing.
+- Successful answers are not held: they need the secret.
+- The floor is a parameter of the token handler's constructor (500 ms in
+  production), so unit tests can set it low.
 
 ### 4.8 Node-local maps
 
@@ -297,14 +342,35 @@ Contract, stated on the interface:
 - Each method is atomic against every other write to the key, from any node.
 - A non-nil error means the outcome is unknown: the write may or may not have
   been applied. `applied` is meaningful only when the error is nil.
+- `applied=false` is returned only when the implementation knows that no write
+  of this call landed. An implementation that retries internally, or whose
+  attempt timed out, and cannot tell whether its own earlier attempt landed
+  returns an error, never `applied=false`.
+- `value` and `expected` are compared byte for byte. A nil value is stored and
+  compared as the empty value.
 - **No key-value operation joins a transaction**, including the existing four.
-  Each one is applied when it returns, whatever transaction the context
-  carries. Today postgres joins a transaction found in the context
-  (`plugins/postgres/store_factory.go:228-235` uses the transaction-resolving
-  querier) while memory and sqlite do not. That is a backend divergence. Only
-  the auth stores use the key-value store, and they strip the transaction
-  (`noTx`), so nothing observes the change. Postgres moves to the pool querier,
-  and the auth stores' `noTx` stripping is removed.
+  Each one is applied when it returns, and each read sees committed state,
+  whatever transaction the context carries. Today postgres joins a transaction
+  found in the context (`plugins/postgres/store_factory.go:228-235` uses the
+  transaction-resolving querier) while memory and sqlite do not. That is a
+  backend divergence. Only the auth stores use `spi.KeyValueStore`
+  (`app/app.go:281`; `internal/cluster/modelcache/factory.go:61` only forwards
+  the call), and they strip the transaction (`noTx`), so nothing observes the
+  change.
+  - Postgres: only `StoreFactory.KeyValueStore()` changes, to
+    `unjoinedQuerier{pool, acquireTimeout, what: "key-value"}`
+    (`plugins/postgres/unjoined_querier.go:69`). Inside a transaction that
+    querier bounds the connection acquire by `CYODA_POSTGRES_ACQUIRE_TIMEOUT`
+    and fails with a retryable storage-unavailable error rather than wait
+    without end for a second connection. Today `noTx` sends these calls to the
+    unbounded pool, so this is also a fix.
+  - The postgres `WorkflowStore` is built on the same internal `kvStore` type
+    with the transaction-joining querier (`store_factory.go:245-251`), and the
+    engine reads workflows inside entity transactions. It is not a
+    `spi.KeyValueStore` and does not change.
+  - The auth stores' `noTx` helper and its call sites are removed, together
+    with the tests that assert it (`internal/auth/tx_isolation_test.go`). The
+    spitest case below replaces them at the interface.
 
 Implementations:
 
@@ -319,18 +385,29 @@ Implementations:
 
 1. Each method on an absent, a present-equal and a present-different key:
    `applied` and the stored state afterwards.
-2. `PutIfAbsent` after `Delete` succeeds, and `Get` returns the new value.
-3. N concurrent `PutIfAbsent` calls with distinct values: exactly one is
-   applied, and `Get` and `List` return that caller's value.
+2. A key written and then deleted counts as absent: `PutIfAbsent` is applied
+   and `Get` returns the new value; `CompareAndPut` and `DeleteIfEqual` with the
+   deleted bytes are not applied.
+3. N concurrent `PutIfAbsent` calls with distinct values: at most one is
+   applied; when one is, `Get` and `List` return that caller's value.
 4. N concurrent `CompareAndPut` calls from the same `expected` with distinct
-   values: exactly one is applied, and `Get` returns its value.
+   values: at most one is applied; when one is, `Get` returns its value.
 5. `DeleteIfEqual` with stale bytes leaves the key; with current bytes removes
    it.
-6. Tenant isolation: a conditional write in tenant A never sees or changes
-   tenant B's key.
-7. No transaction join: a write made with a context carrying an open
+6. Conditional and plain writes are atomic against each other. In either
+   order of two racing calls, the end state is the same, so it is asserted
+   directly, over repeated rounds:
+   - key holds `prev`; `Delete` races `CompareAndPut(prev → x)`: the key ends
+     absent;
+   - key absent; `Put(v)` races `PutIfAbsent(w)`: the key ends holding `v`.
+7. Isolation: a conditional write never sees or changes the same key in
+   another tenant or another namespace.
+8. No transaction join: a write made with a context carrying an open
    transaction is visible outside it at once and survives that transaction's
-   rollback, for all seven methods.
+   rollback; a read with such a context sees a value committed after the
+   transaction began. All seven methods.
+9. Empty value: `PutIfAbsent` with an empty value, then `CompareAndPut` with
+   empty `expected`, are applied.
 
 The cases run in the in-tree plugins' conformance tests. cyoda-go's auth tests
 use KV fakes that embed `spi.KeyValueStore` (e.g.
@@ -345,7 +422,9 @@ row's version is `current_version + 1`, computed without coordination
 (`internal/store/data_store.go:68-80`). A lightweight transaction on the
 existing tables is therefore not a drop-in. The plugin needs its own design
 (e.g. a claim table written only by lightweight transactions, or all meta
-writes moved to them), driven by the conformance cases above. A dedicated
+writes moved to them), driven by the conformance cases above. A lightweight
+transaction that times out has an unknown outcome, so it must surface as an
+error, never as `applied=false`. A dedicated
 cassandra issue is filed with the SPI PR. The plugin cannot build against the
 new SPI until it implements the methods, so its v0.9.0 dependency bump waits
 for it.
@@ -363,10 +442,10 @@ In check order. OAuth-shaped bodies (`error`, `error_description`), as today.
 
 | Status | `error` / description | When |
 |---|---|---|
-| `400` | `invalid_request` / `"invalid tenant"` | percent-encoding anywhere in the path; tenant segment not an API tenant (§4.2) |
+| `400` | `invalid_request` / `"invalid tenant"` | `RawPath` set (percent-encoding after `{ctx}`, §4.2); tenant segment not an API tenant |
 | `405` | `method_not_allowed` | not `POST` (`Allow: POST`) |
 | `400` | `invalid_request` / form media type | `Content-Type` not form-urlencoded |
-| `401` | `invalid_client` | no Basic credentials; client id outside the grammar; unknown (tenant, id); wrong secret. Held to the 500 ms floor |
+| `401` | `invalid_client` | no Basic credentials; client id outside the grammar; unknown (tenant, id); wrong secret. The last two are held to the 500 ms floor |
 | `503` | `temporarily_unavailable` | store unavailable; no secret-check slot |
 | `500` | `server_error [ticket]` | other store failure; a record that does not decode |
 | `400` | `invalid_request` / `"malformed request body"` | body over 1 MiB or not a form |
@@ -392,6 +471,7 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 | HTTP bearer with `caas_org_id` = `SYSTEM` (any case) | `401 UNAUTHORIZED` |
 | gRPC call / stream with such a token | `Unauthenticated` |
 | `cyoda token --tenant SYSTEM` | error, non-zero exit |
+| `CYODA_IAM_MOCK_TENANT_ID=SYSTEM` (any case) or outside the grammar | startup fails |
 
 ## 7. Coverage matrix
 
@@ -399,6 +479,7 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 |---|---|---|---|---|
 | Token at `/tenants/{t}/oauth/token`, both grants | ✓ | ✓ | ✓ | — |
 | Same client id in two tenants: each token carries its own tenant; A's secret at B's URL → `401` | ✓ | ✓ | ✓ | — |
+| Same client id in two tenants: delete or reset in A leaves B's client authenticating; A exhausting its rate limit does not throttle B | ✓ | ✓ | ✓ (delete, reset) | — |
 | Unknown tenant / unknown client / wrong secret → same `401`, floor held | ✓ | ✓ | — | — |
 | Percent-encoded literal segment, encoded tenant, `%2F` in tenant, `SYSTEM`, `system`, grammar violation → `400 invalid tenant` | ✓ | ✓ | — | — |
 | Tenant ids equal to route words (`clients`, `oauth`, `model`, `tenants`) work | ✓ | ✓ | — | — |
@@ -408,7 +489,7 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 | `clientId` grammar / empty / `SYSTEM` → `400` | ✓ | ✓ | — | — |
 | Taken id → `409 M2M_CLIENT_EXISTS`; `409` before cap | ✓ | ✓ | ✓ | — |
 | Two concurrent creates of one id on two nodes → one `200` with a working secret, one `409` | — | ✓ (isolated multi-node) | — | — |
-| Two concurrent resets → one `200`, one `409 CONFLICT`; the winner's secret works | ✓ | ✓ (isolated) | — | — |
+| Concurrent resets: every answer is `200` or `409 CONFLICT`, and exactly one returned secret works (the last applied reset's). A forced `409` is proven by the unit test with a fake store; a running backend cannot force the interleave | ✓ (forced `409`) | ✓ (isolated, consistency only) | — | — |
 | Reset racing delete → client stays deleted | ✓ | — | — | — |
 | Create/reset failure undo touches only its own write (injected faults) | ✓ | — | — | — |
 | Delete + recreate same id → old token cannot open a stream; open streams of the old client close | ✓ | ✓ | — | ✓ |
@@ -416,10 +497,19 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 | `cyoda token --tenant SYSTEM` refused | ✓ | — | — | — |
 | Rate limit and secret cache keyed by (tenant, id) | ✓ | — | — | — |
 | Group registry test: no bearer route under `/tenants/` | ✓ | — | — | — |
-| SPI conditional writes (§5 cases 1–7) | spitest on memory, sqlite, postgres | — | — | — |
+| `CYODA_IAM_MOCK_TENANT_ID=SYSTEM` refuses to start | ✓ | — | — | — |
+| Token handler outside the group (no tenant in context) → `500` | ✓ | — | — | — |
+| SPI conditional writes (§5 cases 1–9) | spitest on memory, sqlite, postgres | — | — | — |
 
 The isolated concurrency tests stay out of the parity suite
 (`.claude/rules/test-coverage.md`).
+
+The e2e suite runs with the enforce-mode OpenAPI validator
+(`internal/e2e/openapivalidator`), which fails any request to a path the spec
+does not describe. Two rows send such requests on purpose: the old
+`/oauth/token`, and `%2F` in the tenant (its decoded path has one segment more
+than the route). Those cases run on a server built without the validator, as
+`internal/e2e/cors_e2e_test.go:23` already does.
 
 ## 8. What does not change
 
@@ -447,7 +537,14 @@ The isolated concurrency tests stay out of the parity suite
   in them; `SYSTEM` refused), `config.grpc` (`CYODA_COMPUTE_TENANT_ID`),
   `grpc`, `helm` (ingress rate limit on `^/api/tenants/[^/]+/oauth/token$`),
   `errors.NOT_IMPLEMENTED`, `errors.SERVER_BUSY`, `errors.CONFLICT`.
-- `README.md`, `CHANGELOG.md` (`### Breaking`: URL, `SYSTEM`, `409`s, grammar),
+- Token-URL text outside the help topics: `cmd/cyoda/help/config_registry.go:99-100`
+  (also "each M2M client" becomes "each client of a tenant"),
+  `app/config.go:298-304`, `e2e/parity/client/token.go`,
+  `e2e/parity/client/keys.go`, `internal/e2e/token_reconciliation_test.go`
+  (`postTokenRaw`) and the two direct builds in
+  `internal/e2e/token_exchange_test.go`.
+- `README.md`, `CHANGELOG.md` (`### Breaking`: URL, `SYSTEM`, `409`s, grammar,
+  the response-time floor, the mock tenant check),
   `docs/access-to-the-cyoda-api.html`, `docs/ARCHITECTURE.md`,
   `docs/FEATURES.md`, `docs/PRD.md`, `docs/CONCURRENCY.md`,
   `deploy/helm/cyoda/docs/gateway-api-policies.md`, `COMPATIBILITY.md` (SPI pin).
