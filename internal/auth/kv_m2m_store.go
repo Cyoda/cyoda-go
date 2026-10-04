@@ -163,15 +163,18 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	if err != nil {
 		return nil, err
 	}
+	key := clientKey{tenant, clientID}
 	if c == nil {
-		s.verified.drop(clientID)
+		if found {
+			s.verified.drop(key)
+		}
 		if err := s.burnBcrypt(ctx, secret); err != nil {
 			return nil, err
 		}
 		return nil, ErrInvalidClient
 	}
 	sum := sha256.Sum256([]byte(secret))
-	if s.verified.hit(clientID, c.HashedSecret, sum) {
+	if s.verified.hit(key, c.HashedSecret, sum) {
 		return c, nil
 	}
 	var mismatch error
@@ -186,7 +189,7 @@ func (s *KVM2MClientStore) Authenticate(ctx context.Context, clientID, secret st
 	if mismatch != nil {
 		return nil, ErrInvalidClient
 	}
-	s.verified.put(clientID, c.HashedSecret, sum)
+	s.verified.put(key, c.HashedSecret, sum)
 	return c, nil
 }
 

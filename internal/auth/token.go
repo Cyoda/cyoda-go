@@ -166,7 +166,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // bucket answers 429 slow_down with Retry-After: the whole seconds until a
 // token is there, at least one; the caller then stops.
 func (h *tokenHandler) takeToken(w http.ResponseWriter, client *M2MClient) bool {
-	ok, wait := h.buckets.allow(client.ClientID, time.Now())
+	ok, wait := h.buckets.allow(clientKey{client.TenantID, client.ClientID}, time.Now())
 	if !ok {
 		writeTokenRetry(w, http.StatusTooManyRequests, "slow_down", int(math.Ceil(wait.Seconds())))
 	}

@@ -13,7 +13,7 @@ import (
 func TestVerifiedSecretCache_Bounded(t *testing.T) {
 	c := newVerifiedSecretCache(16)
 	for i := 0; i < 100; i++ {
-		c.put(fmt.Sprintf("C%d", i), "h", sha256.Sum256([]byte("s")))
+		c.put(clientKey{"t", fmt.Sprintf("C%d", i)}, "h", sha256.Sum256([]byte("s")))
 	}
 	n := func() int {
 		c.mu.Lock()
@@ -23,7 +23,7 @@ func TestVerifiedSecretCache_Bounded(t *testing.T) {
 	if n > 16 {
 		t.Fatalf("%d entries, bound 16", n)
 	}
-	if !c.hit("C99", "h", sha256.Sum256([]byte("s"))) {
+	if !c.hit(clientKey{"t", "C99"}, "h", sha256.Sum256([]byte("s"))) {
 		t.Fatal("the entry just stored is not a hit")
 	}
 }
@@ -31,18 +31,18 @@ func TestVerifiedSecretCache_Bounded(t *testing.T) {
 func TestVerifiedSecretCache_HitNeedsHashAndSecret(t *testing.T) {
 	c := newVerifiedSecretCache(16)
 	sum := sha256.Sum256([]byte("s"))
-	c.put("C1", "h1", sum)
-	if !c.hit("C1", "h1", sum) {
+	c.put(clientKey{"t", "C1"}, "h1", sum)
+	if !c.hit(clientKey{"t", "C1"}, "h1", sum) {
 		t.Fatal("same hash and secret: not a hit")
 	}
-	if c.hit("C1", "h2", sum) {
+	if c.hit(clientKey{"t", "C1"}, "h2", sum) {
 		t.Fatal("another stored hash: a hit")
 	}
-	if c.hit("C1", "h1", sha256.Sum256([]byte("t"))) {
+	if c.hit(clientKey{"t", "C1"}, "h1", sha256.Sum256([]byte("t"))) {
 		t.Fatal("another secret: a hit")
 	}
-	c.drop("C1")
-	if c.hit("C1", "h1", sum) {
+	c.drop(clientKey{"t", "C1"})
+	if c.hit(clientKey{"t", "C1"}, "h1", sum) {
 		t.Fatal("a dropped entry: a hit")
 	}
 }
