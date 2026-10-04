@@ -96,7 +96,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 		keyStore:        keyStore,
 		trustedKeyStore: trustedKeyStore,
 		m2mStore:        m2mStore,
-		handler:         routed(auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry, 0)),
+		handler:         routed(auth.NewTokenHandler(keyStore, trustedKeyStore, m2mStore, testIssuer, "", testExpiry, 0, 0)),
 		clientID:        clientID,
 		clientSecret:    clientSecret,
 		oboID:           oboID,
@@ -111,7 +111,7 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 // withHandler replaces env's handler with one built from env's stores and
 // the given audience and expiry.
 func (e *testTokenEnv) withHandler(audience string, expiry int) *testTokenEnv {
-	e.handler = routed(auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry, 0))
+	e.handler = routed(auth.NewTokenHandler(e.keyStore, e.trustedKeyStore, e.m2mStore, testIssuer, audience, expiry, 0, 0))
 	return e
 }
 
@@ -287,7 +287,7 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 		"other":       {failingM2MStore{err: errors.New("disk on fire")}, http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry, 0))
+			h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, c.store, testIssuer, "", testExpiry, 0, 0))
 			rr := httptest.NewRecorder()
 			h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 			if rr.Code != c.status {
@@ -315,7 +315,7 @@ func TestToken_ClientStoreUnavailable_503(t *testing.T) {
 // answer 503.
 func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), testIssuer, "", testExpiry, 0))
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit), testIssuer, "", testExpiry, 0, 0))
 	for _, raw := range []string{"a%00b", "%FF", strings.Repeat("A", 101), "a%3Ab"} {
 		req := makeTokenRequest(env.tenantID, "client_credentials", "Basic "+base64.StdEncoding.EncodeToString([]byte(raw+":x")), nil)
 		rr := httptest.NewRecorder()
@@ -951,7 +951,7 @@ func TestTokenExchange_TrustedKeyStoreUnavailable_503(t *testing.T) {
 		"other":       {errors.New("failed to read trusted key: disk on fire"), http.StatusInternalServerError, "server_error", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			h := routed(auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry, 0))
+			h := routed(auth.NewTokenHandler(env.keyStore, failingTrustedKeyStore{err: c.err}, env.m2mStore, testIssuer, "", testExpiry, 0, 0))
 			rr := httptest.NewRecorder()
 			form := url.Values{"subject_token": {env.assertion(t, nil)}, "subject_token_type": {jwtTokenType}}
 			h.ServeHTTP(rr, makeTokenRequest(env.tenantID, tokenExchangeGrant, basicAuth(env.oboID, env.oboSecret), form))
@@ -1021,8 +1021,8 @@ func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) { return ni
 func TestTokenEndpoint_ServerErrorCarriesTicket(t *testing.T) {
 	env := setupTokenEnv(t)
 	cause := errors.New("hsm unreachable at 10.0.0.5:8443")
-	selectFails := routed(auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0))
-	signFails := routed(auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0))
+	selectFails := routed(auth.NewTokenHandler(failingKeyStore{err: cause}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, 0))
+	signFails := routed(auth.NewTokenHandler(failingSignerKeyStore{failingKeyStore{err: cause}}, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, 0))
 	cc := func() *http.Request {
 		return makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil)
 	}
@@ -1127,7 +1127,7 @@ func TestTokenEndpoint_TokenResponsesAreNotCacheable(t *testing.T) {
 // nothing from it.
 func TestToken_PerClientBucket_429(t *testing.T) {
 	env := setupTokenEnv(t)
-	env.handler = routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 1))
+	env.handler = routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 1, 0))
 
 	if rr := env.clientCredentials(t, env.clientID, env.clientSecret); rr.Code != http.StatusOK {
 		t.Fatalf("first request: %d %s", rr.Code, rr.Body.String())
@@ -1161,7 +1161,7 @@ func TestToken_PerClientBucket_429(t *testing.T) {
 // Retry-After: 1, never 401 or a ticketed 500.
 func TestToken_SecretCheckBusy_503(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, failingM2MStore{err: auth.ErrSecretCheckBusy}, testIssuer, "", testExpiry, 0))
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, failingM2MStore{err: auth.ErrSecretCheckBusy}, testIssuer, "", testExpiry, 0, 0))
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 	if rr.Code != http.StatusServiceUnavailable {
@@ -1179,7 +1179,7 @@ func TestToken_SecretCheckBusy_503(t *testing.T) {
 // it, it fails closed.
 func TestToken_OutsideTheGroupIsAServerError(t *testing.T) {
 	env := setupTokenEnv(t)
-	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
+	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, 0)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
 	body := decodeResponse(t, rr)
@@ -1237,5 +1237,48 @@ func TestToken_InvalidTenantSegmentIsInvalidRequest(t *testing.T) {
 		if rr.Code != http.StatusBadRequest || body["error"] != "invalid_request" || body["error_description"] != "invalid tenant" {
 			t.Errorf("%q: %d %v", segment, rr.Code, body)
 		}
+	}
+}
+
+func TestToken_InvalidClientFloor(t *testing.T) {
+	const floor = 300 * time.Millisecond
+	env := setupTokenEnv(t)
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, floor))
+	timed := func(authHeader string) (int, time.Duration) {
+		start := time.Now()
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", authHeader, nil))
+		return rr.Code, time.Since(start)
+	}
+	for name, hdr := range map[string]string{
+		"unknown client": basicAuth("nobody", "x"),
+		"wrong secret":   basicAuth(env.clientID, "wrong"),
+	} {
+		if code, d := timed(hdr); code != http.StatusUnauthorized || d < floor {
+			t.Errorf("%s: %d after %v, want 401 after >= %v", name, code, d, floor)
+		}
+	}
+	for name, hdr := range map[string]string{
+		"no credentials": "",
+		"malformed id":   basicAuth("-bad", "x"),
+	} {
+		if code, d := timed(hdr); code != http.StatusUnauthorized || d >= floor {
+			t.Errorf("%s: %d after %v, want an immediate 401", name, code, d)
+		}
+	}
+	if code, d := timed(basicAuth(env.clientID, env.clientSecret)); code != http.StatusOK || d >= floor {
+		t.Errorf("success: %d after %v, want an immediate 200", code, d)
+	}
+}
+
+func TestToken_InvalidClientFloorEndsWhenTheClientLeaves(t *testing.T) {
+	env := setupTokenEnv(t)
+	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, time.Hour))
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	h.ServeHTTP(httptest.NewRecorder(), makeTokenRequest(env.tenantID, "client_credentials", basicAuth("nobody", "x"), nil).WithContext(ctx))
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("held %v after the client left", d)
 	}
 }

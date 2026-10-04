@@ -93,7 +93,7 @@ func validateM2MClient(c *M2MClient) error {
 	if cost < minM2MBcryptCost || cost > maxM2MBcryptCost {
 		return fmt.Errorf("hashedSecret has bcrypt cost %d, outside [%d, %d]", cost, minM2MBcryptCost, maxM2MBcryptCost)
 	}
-	if c.SecretGen < 1 || c.SecretGen >= 1<<53 {
+	if c.SecretGen < 1 || c.SecretGen >= genLimit {
 		return errors.New("secretGen outside [1, 2^53)")
 	}
 	if !StorableTime(c.CreatedAt) || !StorableTime(c.UpdatedAt) {

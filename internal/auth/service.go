@@ -104,7 +104,7 @@ func NewAuthService(ctx context.Context, config AuthConfig) (*AuthService, error
 	publicMux.Handle("GET /.well-known/jwks.json", NewJWKSHandler(keyStore, keyStore.ReconcileInterval()))
 	// Every method reaches the token handler, which answers its own
 	// OAuth-shaped 405 for anything but POST.
-	RegisterTokenRoute(publicMux, NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds, config.TokenRequestsPerMinute))
+	RegisterTokenRoute(publicMux, NewTokenHandler(keyStore, trustedStore, m2mStore, config.Issuer, config.Audience, config.ExpirySeconds, config.TokenRequestsPerMinute, InvalidClientFloor))
 
 	return &AuthService{
 		keyStore:     keyStore,

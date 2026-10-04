@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -54,19 +55,43 @@ type tokenHandler struct {
 	audience        string // empty: no aud claim
 	expirySeconds   int
 	buckets         *clientBuckets // per-client limit on this node
+	failureFloor    time.Duration  // least time of a store-decided 401
+}
+
+// InvalidClientFloor is the least time a store-decided 401 invalid_client
+// takes, from the request reaching the handler. Without it, the store's read
+// time — a present key can cost more than a missing one — would tell an
+// anonymous caller whether a tenant has a given client.
+const InvalidClientFloor = 500 * time.Millisecond
+
+// holdUntil waits until deadline, or until the client leaves.
+func holdUntil(ctx context.Context, deadline time.Time) {
+	d := time.Until(deadline)
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 // NewTokenHandler creates the token endpoint handler. audience, when not
 // empty, is set as the aud claim of every issued token: a server that checks
 // the audience (CYODA_JWT_AUDIENCE) must accept its own tokens.
 // requestsPerMinute limits each authenticated client on this node, across
-// both grants; <= 0: no limit.
+// both grants; <= 0: no limit. failureFloor is the least time, from the
+// request reaching the handler, that a store-decided 401 invalid_client takes
+// (InvalidClientFloor in service; 0 in tests that do not time it).
 func NewTokenHandler(
 	keyStore KeyStore,
 	trustedKeyStore TrustedKeyStore,
 	m2mStore M2MClientStore,
 	issuer, audience string,
 	expirySeconds, requestsPerMinute int,
+	failureFloor time.Duration,
 ) http.Handler {
 	return &tokenHandler{
 		keyStore:        keyStore,
@@ -76,6 +101,7 @@ func NewTokenHandler(
 		audience:        audience,
 		expirySeconds:   expirySeconds,
 		buckets:         newClientBuckets(requestsPerMinute),
+		failureFloor:    failureFloor,
 	}
 }
 
@@ -97,7 +123,13 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // not found there) → body. The checks before the body read headers only, so
 // a body that is not a form is never read, and no body is read before the
 // client has authenticated.
+//
+// A 401 invalid_client decided by a store read is held until failureFloor
+// after the request reached the handler, so its timing reveals nothing about
+// what the tenant holds. Refusals made without a read (no credentials, a
+// malformed id) and successful answers are not held.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	tenant, ok := tenantroute.Addressed(r.Context())
 	if !ok {
 		writeTokenServerError(w, "tenantroute.Addressed", errors.New("token handler reached outside the tenant route group"))
@@ -131,6 +163,12 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// secret-check slot: that is a retryable 503.
 	client, err := h.m2mStore.Authenticate(r.Context(), tenant, clientID, secret)
 	if errors.Is(err, ErrInvalidClient) {
+		// A well-formed id was decided by a store read: hold the answer so
+		// its timing says nothing about what the store holds. A malformed id
+		// is refused before any read and reveals nothing.
+		if ValidClientID(clientID) {
+			holdUntil(r.Context(), start.Add(h.failureFloor))
+		}
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}

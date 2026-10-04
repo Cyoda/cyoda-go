@@ -114,7 +114,8 @@ func toTechnicalUserCredentialsDto(c *auth.M2MClient, plaintextSecret string) ge
 // enforces tenant isolation, so an absent client and another tenant's client
 // are the same ErrM2MClientNotFound and get the same 404 — no cross-tenant
 // existence oracle. A reset with no free secret-check slot is 503
-// SERVER_BUSY. Anything else is the store failing: 503 when it reports
+// SERVER_BUSY. A reset that lost to another change (ErrM2MClientChanged) is
+// 409 CONFLICT, retryable. Anything else is the store failing: 503 when it reports
 // itself unavailable, otherwise 500 with a ticket.
 func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err error) {
 	if errors.Is(err, auth.ErrM2MClientNotFound) {
