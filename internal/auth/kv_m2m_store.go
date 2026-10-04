@@ -39,8 +39,8 @@ const undoTimeout = 30 * time.Second
 // The KV store never joins a transaction (the spi.KeyValueStore contract), so
 // a client change never rides on a caller's entity transaction.
 //
-// Every write is conditional on the state this call read or wrote
-// (spi.KeyValueStore), so concurrent changes on any nodes resolve without a
+// Every create, reset and undo is conditional on the state this call read or
+// wrote (spi.KeyValueStore); a delete is not, and always wins. So concurrent changes on any nodes resolve without a
 // lost update: of two creates of one id exactly one succeeds; a reset that
 // loses to another change is ErrM2MClientChanged; a delete always wins; and
 // every undo of a failed write touches only this call's own bytes (a record
@@ -109,6 +109,8 @@ func (s *KVM2MClientStore) burnBcrypt(ctx context.Context, secret string) error 
 // ErrSecretCheckBusy: no slot freed up within the wait. Any other error is
 // the store failing.
 func (s *KVM2MClientStore) Authenticate(ctx context.Context, tenant spi.TenantID, clientID, secret string) (*M2MClient, error) {
+	// The only refusal made without a store read: the token handler holds its
+	// 401 floor exactly when ValidClientID is true, so change both together.
 	if !ValidClientID(clientID) {
 		return nil, ErrInvalidClient
 	}

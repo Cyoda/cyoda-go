@@ -165,7 +165,9 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if errors.Is(err, ErrInvalidClient) {
 		// A well-formed id was decided by a store read: hold the answer so
 		// its timing says nothing about what the store holds. A malformed id
-		// is refused before any read and reveals nothing.
+		// is refused before any read and reveals nothing. This relies on the
+		// store refusing without a read only for an id outside ValidClientID
+		// (KVM2MClientStore.Authenticate): change both together.
 		if ValidClientID(clientID) {
 			holdUntil(r.Context(), start.Add(h.failureFloor))
 		}

@@ -276,11 +276,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - A record that does not decode is left out of `GET /clients` and logged at
     ERROR, and still counts toward the cap; `DELETE` removes it, and a reset
     of it answers `500`.
-  - Every write to the store is conditional, so concurrent changes resolve
-    without a lost update. Of two creates of one client id exactly one
+  - Every create, reset and undo is conditional, so concurrent changes
+    resolve without a lost update; a delete is not, and always wins. Of two creates of one client id exactly one
     succeeds and the other answers `409 M2M_CLIENT_EXISTS`. A secret reset
     that loses a race with another change answers `409 CONFLICT`, which is
-    retryable. A delete always wins. The cap is checked on each node before
+    retryable. The cap is checked on each node before
     the write, so concurrent creates on several nodes can exceed it by one
     client per node.
 

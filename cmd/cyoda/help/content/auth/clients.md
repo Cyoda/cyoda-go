@@ -154,7 +154,7 @@ Clients are stored in the cluster's database, one record per (tenant, client id)
 - A client belongs to the tenant that created it, and its tokens carry that tenant. Client ids are unique within a tenant.
 - A new client's secret generation (`cgen`) starts at a random number, so a token of a deleted client never matches a client later created under the same id.
 
-Every write is conditional on the state it read, so admin calls that run at the same moment, on one node or on two, cannot silently overwrite each other:
+Every create and reset is conditional on the state it read (a delete is not, and always wins), so admin calls that run at the same moment, on one node or on two, cannot silently overwrite each other:
 
 - Two creates of one id: exactly one wins; the other answers `409 M2M_CLIENT_EXISTS`.
 - Two resets of one client: exactly one wins; the other answers `409 CONFLICT`. It is retryable: reset again if you still want a new secret. A reset that loses to a delete and recreate of the same id answers the same.
