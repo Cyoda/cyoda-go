@@ -65,9 +65,12 @@ var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not de
 //     inactive record. That record never verifies (Verifies requires
 //     Active), so revocation is unaffected, but it reappears in List until it
 //     is deleted again.
-//   - A Reactivate, or a Register of the same key id, on one node racing a
-//     Delete of that key on another brings the deleted key back ACTIVE, so it
-//     verifies again until it is deleted again.
+//   - A Reactivate on one node racing a Delete of that key on another brings
+//     the deleted key back ACTIVE, so it verifies again until it is deleted
+//     again.
+//
+// A Register of the same key id that lands after a Delete leaves the key
+// registered; that is a re-registration, not a lost update.
 //
 // Do not run changes to one key concurrently: one key-management operation at
 // a time per key.
