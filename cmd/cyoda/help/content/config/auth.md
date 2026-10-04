@@ -99,8 +99,8 @@ tenants.
 `SYSTEM`, in any letter case, matches the grammar but is no API tenant: it
 names the server's own storage namespace. It is refused as the `caas_org_id`
 of a token (`401`), by `cyoda token --tenant` (flag error), as the tenant
-path segment of the token endpoint (`400 invalid_request`). `PLATFORM` is
-an ordinary tenant.
+path segment of the token endpoint (`400 invalid_request`). `PLATFORM` gets
+no special treatment as a token tenant.
 
 A tenant identifier is a public identifier: it appears in URLs, access logs
 and gateway logs. Put no personal data and no secret in one.
