@@ -51,7 +51,7 @@ to the client id carried in tokens.
 
 - The taken-id check comes before the cap check: a taken id answers `409`, not
   `M2M_CLIENT_CAP_REACHED`.
-- The first write wins. Of two concurrent creates of one id, one is `201` and
+- The first write wins. Of two concurrent creates of one id, one is `200` and
   the other `409`.
 - The `409` concerns the caller's own tenant only, so it reveals nothing to
   another tenant.
