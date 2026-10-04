@@ -91,8 +91,10 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // plain or admin client may only use client_credentials, an on-behalf-of
 // client only the token exchange.
 //
-// Order: method (405) → Content-Type (400) → client authentication (401) →
-// body. The first three read headers only, so a body that is not a form is
+// Order: group refusal (400, by the tenant route group before the handler) →
+// no addressed tenant (500) → method (405) → Content-Type (400) → client
+// authentication (401, a client of another tenant included) → body. The
+// checks before the body read headers only, so a body that is not a form is
 // never read, and no body is read before the client has authenticated.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := tenantroute.Addressed(r.Context())

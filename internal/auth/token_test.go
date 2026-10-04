@@ -1173,8 +1173,10 @@ func TestToken_OutsideTheGroupIsAServerError(t *testing.T) {
 	h := auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
-	if rr.Code != http.StatusInternalServerError {
-		t.Fatalf("status %d", rr.Code)
+	body := decodeResponse(t, rr)
+	if rr.Code != http.StatusInternalServerError || body["error"] != "server_error" ||
+		!strings.Contains(fmt.Sprint(body["error_description"]), "[ticket: ") {
+		t.Fatalf("status %d %v", rr.Code, body)
 	}
 }
 
@@ -1184,8 +1186,17 @@ func TestToken_ClientAtAnotherTenantsURLIsInvalidClient(t *testing.T) {
 	env := setupTokenEnv(t)
 	rr := httptest.NewRecorder()
 	env.handler.ServeHTTP(rr, makeTokenRequest("other-tenant", "client_credentials", basicAuth(env.clientID, env.clientSecret), nil))
-	if rr.Code != http.StatusUnauthorized || decodeResponse(t, rr)["error"] != "invalid_client" {
-		t.Fatalf("status %d", rr.Code)
+	unknown := httptest.NewRecorder()
+	env.handler.ServeHTTP(unknown, makeTokenRequest("other-tenant", "client_credentials", basicAuth("NOSUCHCLIENT", "x"), nil))
+	if rr.Code != http.StatusUnauthorized || unknown.Code != rr.Code {
+		t.Fatalf("status %d, unknown client %d", rr.Code, unknown.Code)
+	}
+	got, want := decodeResponse(t, rr), decodeResponse(t, unknown)
+	if got["error"] != want["error"] || got["error_description"] != want["error_description"] || got["error"] != "invalid_client" {
+		t.Fatalf("body %v, unknown client %v", got, want)
+	}
+	if rr.Header().Get("WWW-Authenticate") != unknown.Header().Get("WWW-Authenticate") {
+		t.Fatalf("WWW-Authenticate %q, unknown client %q", rr.Header().Get("WWW-Authenticate"), unknown.Header().Get("WWW-Authenticate"))
 	}
 }
 
