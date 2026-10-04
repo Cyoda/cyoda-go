@@ -2,6 +2,9 @@
 
 cyoda-go defines the contract; Cyoda Cloud aligns to it.
 
+Clients are scoped to their tenant (the token URL names it, ids are unique per
+tenant and may be chosen): see `tenant-scoped-clients.md`.
+
 ## Rule
 
 A tenant holds at most a configured number of M2M clients (technical users).
@@ -50,9 +53,11 @@ may only perform the token exchange, for the application's users (see
   `client_credentials` otherwise.
 - `client_credentials` with an OBO client, and the token exchange with any
   other client, answer `400 unauthorized_client`.
-- Check order on create: tenant admin (`403`) → `withAdminRole=true` while the
-  admin-role flag is off (`404 FEATURE_DISABLED`) → both flags (`400`) →
-  `PLATFORM` (`400`) → cap (`400 M2M_CLIENT_CAP_REACHED`).
+- Check order on create: tenant admin (`403`) → `clientId` outside its grammar
+  (`400`) → `withAdminRole=true` while the admin-role flag is off
+  (`404 FEATURE_DISABLED`) → both flags (`400`) → `PLATFORM` (`400`) → taken
+  id (`409 M2M_CLIENT_EXISTS`) → cap (`400 M2M_CLIENT_CAP_REACHED`). See
+  `tenant-scoped-clients.md`.
 - Hashing a new secret on create or reset shares the node's bound on secret
   checks with the token endpoint: no free slot within 1 s is
   `503 SERVER_BUSY` with `Retry-After: 1`, and nothing is written. See
