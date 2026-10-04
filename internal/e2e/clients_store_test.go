@@ -58,6 +58,14 @@ func (h *callbackHarness) postClient(t *testing.T, bearer string) (int, []byte) 
 	return resp.StatusCode, []byte(h.readBody(t, resp))
 }
 
+// postClientWithID runs POST /clients?clientId=id on h as bearer and returns
+// the status and body.
+func (h *callbackHarness) postClientWithID(t *testing.T, bearer, id string) (int, []byte) {
+	t.Helper()
+	resp := h.doAuthBearer(t, bearer, http.MethodPost, "/api/clients?clientId="+url.QueryEscape(id), "", "")
+	return resp.StatusCode, []byte(h.readBody(t, resp))
+}
+
 // putRawKV writes a SYSTEM-tenant KV row straight into s's database.
 func (s *schedDB) putRawKV(t *testing.T, namespace, key, value string) {
 	t.Helper()
