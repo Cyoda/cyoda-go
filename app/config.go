@@ -14,7 +14,6 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 )
@@ -1020,11 +1019,6 @@ func ValidateIAM(iam IAMConfig) error {
 	}
 	if iam.TokenMaxConcurrentSecretChecks < 1 {
 		return fmt.Errorf("CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS must be >= 1, got %d", iam.TokenMaxConcurrentSecretChecks)
-	}
-	// Unconditional: the mock principal's tenant is a tenant every mock
-	// request acts in, so it must be one a caller may act in.
-	if err := common.ValidateAPITenantID(spi.TenantID(iam.MockTenantID)); err != nil {
-		return fmt.Errorf("the mock IAM tenant is not a valid API tenant id: %w", err)
 	}
 	// Mock mode needs no further validation.
 	if iam.Mode == "mock" {

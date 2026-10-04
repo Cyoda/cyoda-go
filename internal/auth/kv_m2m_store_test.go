@@ -538,6 +538,15 @@ func (brokenKV) Put(context.Context, string, string, []byte) error       { retur
 func (brokenKV) Get(context.Context, string, string) ([]byte, error)     { return nil, unavailable{} }
 func (brokenKV) Delete(context.Context, string, string) error            { return unavailable{} }
 func (brokenKV) List(context.Context, string) (map[string][]byte, error) { return nil, unavailable{} }
+func (brokenKV) PutIfAbsent(context.Context, string, string, []byte) (bool, error) {
+	return false, unavailable{}
+}
+func (brokenKV) CompareAndPut(context.Context, string, string, []byte, []byte) (bool, error) {
+	return false, unavailable{}
+}
+func (brokenKV) DeleteIfEqual(context.Context, string, string, []byte) (bool, error) {
+	return false, unavailable{}
+}
 
 func TestKVM2M_AuthenticateRefusesMalformedIDsWithoutReading(t *testing.T) {
 	s := auth.NewKVM2MClientStore(brokenKV{}, 0, testSecretLimit) // any read would error

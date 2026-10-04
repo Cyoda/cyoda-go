@@ -43,8 +43,6 @@ Facts this design rests on, with citations:
 6. Every `401 invalid_client` from the token endpoint that is decided after a
    store read is sent no earlier than 500 ms after the request reached the
    handler (§4.7).
-7. `CYODA_IAM_MOCK_TENANT_ID` must be an API tenant; startup fails otherwise
-   (§4.6).
 
 ## 4. Design
 
@@ -259,7 +257,6 @@ any letter case", applied at every door:
 | `caas_org_id` claim (HTTP and gRPC, `internal/auth/validator.go:148`) | `401 UNAUTHORIZED` / gRPC `Unauthenticated` |
 | `cyoda token --tenant` (`operator_token.go:32`) | flag error, exit non-zero |
 | `{tenant}` path segment (§4.2) | `400` in the route's format |
-| `CYODA_IAM_MOCK_TENANT_ID` (`app/app.go:373`, unvalidated today) | `Config.Validate` refuses it; startup fails |
 
 `ValidateTenantID` itself is unchanged. Stored records and internal contexts
 legitimately carry `SYSTEM`, and its tests stay as they are. Refusing every
@@ -472,7 +469,6 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 | HTTP bearer with `caas_org_id` = `SYSTEM` (any case) | `401 UNAUTHORIZED` |
 | gRPC call / stream with such a token | `Unauthenticated` |
 | `cyoda token --tenant SYSTEM` | error, non-zero exit |
-| `CYODA_IAM_MOCK_TENANT_ID=SYSTEM` (any case) or outside the grammar | startup fails |
 
 ## 7. Coverage matrix
 
@@ -498,7 +494,6 @@ Old path `{ctx}/oauth/token`: no route; answers as an unknown path.
 | `cyoda token --tenant SYSTEM` refused | ✓ | — | — | — |
 | Rate limit and secret cache keyed by (tenant, id) | ✓ | — | — | — |
 | Group registry test: no bearer route under `/tenants/` | ✓ | — | — | — |
-| `CYODA_IAM_MOCK_TENANT_ID=SYSTEM` refuses to start | ✓ | — | — | — |
 | Token handler outside the group (no tenant in context) → `500` | ✓ | — | — | — |
 | SPI conditional writes (§5 cases 1–9) | spitest on memory, sqlite, postgres | — | — | — |
 
@@ -545,7 +540,7 @@ than the route). Those cases run on a server built without the validator, as
   (`postTokenRaw`) and the two direct builds in
   `internal/e2e/token_exchange_test.go`.
 - `README.md`, `CHANGELOG.md` (`### Breaking`: URL, `SYSTEM`, `409`s, grammar,
-  the response-time floor, the mock tenant check),
+  the response-time floor),
   `docs/access-to-the-cyoda-api.html`, `docs/ARCHITECTURE.md`,
   `docs/FEATURES.md`, `docs/PRD.md`, `docs/CONCURRENCY.md`,
   `deploy/helm/cyoda/docs/gateway-api-policies.md`, `COMPATIBILITY.md` (SPI pin).
