@@ -64,7 +64,8 @@ to the client id carried in tokens.
 - A secret reset that loses a race with another change to the same client (a
   concurrent reset, or a delete and re-create of the id) answers
   `409 CONFLICT`, retryable. Two concurrent resets never both answer `200`.
-- A delete always wins: a reset racing it answers `404`.
+- A delete always wins: a reset racing it answers `404`, or `200` with a
+  secret the delete then removes; the client does not come back.
 
 ### Secret generation
 

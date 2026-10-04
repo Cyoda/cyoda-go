@@ -158,7 +158,7 @@ Every create and reset is conditional on the state it read (a delete is not, and
 
 - Two creates of one id: exactly one wins; the other answers `409 M2M_CLIENT_EXISTS`.
 - Two resets of one client: exactly one wins; the other answers `409 CONFLICT`. It is retryable: reset again if you still want a new secret. A reset that loses to a delete and recreate of the same id answers the same.
-- A reset and a delete of one client: the delete always wins. The reset answers `404 M2M_CLIENT_NOT_FOUND`, and the client does not come back.
+- A reset and a delete of one client: the delete always wins. The reset answers `404 M2M_CLIENT_NOT_FOUND`, or `200` with a secret the delete then removes; the client does not come back.
 - Two creates on two different nodes: each node checks the cap before the other's client is written, so a tenant can exceed the cap by at most one client per node. Creates on one node run one at a time and never exceed it.
 
 A write that reports a failure may still have landed, so a failed create or reset undoes what it may have written, and the undo touches only that call's own write: it never removes or reverts another call's. Two cases remain:

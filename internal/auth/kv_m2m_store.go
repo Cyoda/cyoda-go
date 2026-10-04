@@ -39,12 +39,13 @@ const undoTimeout = 30 * time.Second
 // The KV store never joins a transaction (the spi.KeyValueStore contract), so
 // a client change never rides on a caller's entity transaction.
 //
-// Every create, reset and undo is conditional on the state this call read or
-// wrote (spi.KeyValueStore); a delete is not, and always wins. So concurrent changes on any nodes resolve without a
-// lost update: of two creates of one id exactly one succeeds; a reset that
-// loses to another change is ErrM2MClientChanged; a delete always wins; and
-// every undo of a failed write touches only this call's own bytes (a record
-// carries a fresh bcrypt salt, so no two writes are equal). The cap is
+// Creates and resets are conditional on the state this call read or wrote
+// (spi.KeyValueStore), and so is the undo of a failed write, which touches
+// only this call's own bytes (a record carries a fresh bcrypt salt, so no two
+// writes are equal). So concurrent changes on any nodes resolve without a
+// lost update: of two creates of one id exactly one succeeds, and a reset
+// that loses to another change is ErrM2MClientChanged. A delete is not
+// conditional and always wins. The cap is
 // checked on each node before the write, so concurrent creates on several
 // nodes can exceed it by one client per node.
 //
