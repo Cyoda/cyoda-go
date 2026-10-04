@@ -227,12 +227,16 @@ func (f *StoreFactory) ModelStore(ctx context.Context) (spi.ModelStore, error) {
 	return &modelStore{q: f.querier(), pool: f.pool, tenantID: tid, applyFunc: f.applyFunc, cfg: f.cfg}, nil
 }
 
+// KeyValueStore never joins the caller's transaction (spi.KeyValueStore
+// contract): each operation is applied when it returns. Inside a transaction
+// the connection acquire is bounded, so a saturated pool fails the call with
+// a retryable storage-unavailable error instead of waiting without end.
 func (f *StoreFactory) KeyValueStore(ctx context.Context) (spi.KeyValueStore, error) {
 	tid, err := resolveTenant(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return &kvStore{q: f.querier(), tenantID: tid}, nil
+	return &kvStore{q: unjoinedQuerier{pool: f.pool, acquireTimeout: f.cfg.AcquireTimeout, what: "key-value"}, tenantID: tid}, nil
 }
 
 func (f *StoreFactory) MessageStore(ctx context.Context) (spi.MessageStore, error) {
