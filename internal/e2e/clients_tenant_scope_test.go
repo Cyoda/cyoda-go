@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -171,6 +172,9 @@ func TestClients_RateLimitIsPerTenant(t *testing.T) {
 	}
 }
 
+// raceHTTP bounds every raced request so a hung node fails the test fast.
+var raceHTTP = &http.Client{Timeout: 60 * time.Second}
+
 // raceCall runs one request from a goroutine: it never touches *testing.T.
 func raceCall(method, target, bearer string) (int, []byte, error) {
 	req, err := http.NewRequest(method, target, nil)
@@ -178,7 +182,7 @@ func raceCall(method, target, bearer string) (int, []byte, error) {
 		return 0, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+bearer)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := raceHTTP.Do(req)
 	if err != nil {
 		return 0, nil, err
 	}

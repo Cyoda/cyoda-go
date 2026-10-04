@@ -398,7 +398,7 @@ func assertProblemJSON(t *testing.T, resp *http.Response, wantStatus int, wantCo
 	defer resp.Body.Close()
 	if resp.StatusCode != wantStatus {
 		raw, _ := io.ReadAll(resp.Body)
-		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, raw)
+		t.Fatalf("status: got %d, want %d; body=%s", resp.StatusCode, wantStatus, withheld(resp.StatusCode, raw))
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "application/problem+json" {
 		t.Fatalf("content-type: got %q, want application/problem+json", ct)

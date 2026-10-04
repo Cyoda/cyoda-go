@@ -16,9 +16,11 @@ package e2e_test
 import (
 	"context"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
@@ -196,9 +198,41 @@ func joinOwnClient(t *testing.T, h *callbackHarness) (string, *computeMember) {
 	}
 	cred := decodeCredential(t, "create client", raw)
 	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
-	m := newComputeMember(t, h, memberSpec{bearer: h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret)})
+	return cred.id, h.joinWithToken(t, h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret))
+}
+
+// joinWithToken joins a compute member with bearer and stops it at cleanup.
+func (h *callbackHarness) joinWithToken(t *testing.T, bearer string) *computeMember {
+	t.Helper()
+	m := newComputeMember(t, h, memberSpec{bearer: bearer})
 	t.Cleanup(m.stop)
-	return cred.id, m
+	return m
+}
+
+// A client deleted and created again under the same id is a new client: a
+// token of the deleted one cannot open a stream, and the deleted one's open
+// stream closes.
+func TestStream_RecreatedClientID_OldTokenRefused(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	id := "recreated-" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	code, raw := h.postClientWithID(t, h.token(t), id)
+	if code != http.StatusOK {
+		t.Fatalf("create: %d %s", code, withheld(code, raw))
+	}
+	cred := decodeCredential(t, "create", raw)
+	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
+	oldToken := h.fetchTokenFor(t, suiteTenant, cred.id, cred.secret)
+	m := h.joinWithToken(t, oldToken)
+	if code, body := h.deleteClient(t, h.token(t), id); code != http.StatusOK {
+		t.Fatalf("delete: %d %s", code, body)
+	}
+	if code, raw := h.postClientWithID(t, h.token(t), id); code != http.StatusOK {
+		t.Fatalf("re-create: %d %s", code, withheld(code, raw))
+	}
+	assertStreamEnds(t, m, codes.Unauthenticated)
+	if got := openStreamCode(t, h, oldToken); got != codes.Unauthenticated {
+		t.Fatalf("old token opened a stream on the new client: %v", got)
+	}
 }
 
 // assertStreamEnds waits for m's stream to end and checks its status.
