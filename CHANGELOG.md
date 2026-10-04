@@ -661,6 +661,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `/admin` POST bodies (`log-level`, `trace-sampler`) are now also limited to
   1 MiB.
 
+- **The token endpoint is `POST /api/tenants/{tenant}/oauth/token`;
+  `/api/oauth/token` is gone.** An M2M client id is unique within its tenant,
+  so an application puts its client's tenant in the URL. A request to the old
+  path answers as any unknown path does. A tenant segment that is not an API
+  tenant is `400 invalid_request`. Operators put their per-source rate limit
+  on the new path (`cyoda help auth tokens`).
+
+- **Client ids are unique within a tenant and can be chosen:
+  `POST /clients?clientId=` creates the client with that id, and a taken id
+  answers `409 M2M_CLIENT_EXISTS`.** The client-id grammar is the tenant
+  grammar (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`, case significant), and
+  `system` in any letter case is reserved. A new client's secret generation
+  starts at a random number instead of 1, so a token of a deleted client
+  cannot open a compute stream of a client later created under the same id.
+  Clients are read and written by (tenant, id); the global client-id index is
+  gone.
+
+- **A secret reset that loses a race with another change to the same client
+  answers `409 CONFLICT` (retryable).** Before, two concurrent resets both
+  answered `200` and one secret was lost.
+
+- **`SYSTEM`, in any letter case, is refused as a token tenant: as the
+  `caas_org_id` of an inbound token, by `cyoda token --tenant`, and as the
+  `{tenant}` of a tenant route.**
+
+- **A `401 invalid_client` that the store decided takes at least 500 ms.**
+  With chosen ids and the tenant in the URL, the answer time must not show
+  whether a tenant holds a client.
+
+- **`cmd/compute-test-client` reads its tenant from the new
+  `CYODA_COMPUTE_TENANT_ID`, required with the client credentials.**
+
+- **SPI: `KeyValueStore` gains `PutIfAbsent`, `CompareAndPut` and
+  `DeleteIfEqual`, and no key-value operation joins a transaction.**
+  Out-of-tree storage plugins must implement the three methods and apply
+  every key-value call when it returns, whatever transaction the context
+  carries.
+
 ### Added
 
 - **gRPC change history carries the attributed kind and the executor.**

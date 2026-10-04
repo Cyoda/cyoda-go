@@ -37,7 +37,7 @@ node and a scheduled transition that fires later on any node.
 ## Decision
 
 1. **Only M2M clients reach cyoda-go.** A client belongs to one tenant, holds
-   a secret, and gets tokens from `POST /oauth/token`. A plain client holds
+   a secret, and gets tokens from `POST /tenants/{tenant}/oauth/token`. A plain client holds
    `ROLE_M2M`, which every data operation requires; an admin client also
    holds `ROLE_ADMIN`. The one other token source is the platform operator's
    offline `cyoda token`, signed with `CYODA_JWT_SIGNING_KEY`, whose holder

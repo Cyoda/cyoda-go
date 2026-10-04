@@ -198,3 +198,8 @@ error at api/openapi.yaml, in API POST /oauth/keys/keypair/{keyId}/invalidate th
 # POST /oauth/token always required grant_type: a request without it answers
 # 400 unsupported_grant_type. The document now says so; the wire is unchanged.
 error at api/openapi.yaml, in API POST /oauth/token the request property `grant_type` became required [request-property-became-required].
+#
+# The token endpoint moves to POST /tenants/{tenant}/oauth/token: M2M clients are unique within
+# a tenant, so the URL names the tenant. The global POST /oauth/token is removed with no
+# deprecation period; no production instance exists.
+error at api/openapi.yaml, in API POST /oauth/token api path removed without deprecation [api-path-removed-without-deprecation].

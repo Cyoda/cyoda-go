@@ -72,7 +72,7 @@ across a restart, and when its issuing bootstrap key is replaced.
   `Retry-After`) — neither can answer it for any other reason, because
   neither makes a live store call that could fail that way. Token issuance
   refuses a stale copy the same node-copy-only way, but always as a plain
-  `500 server_error` on `/oauth/token` — that endpoint's OAuth-shaped error
+  `500 server_error` on the token endpoint — that endpoint's OAuth-shaped error
   body never distinguishes a storage cause with `503`. `invalidate`,
   `reactivate` and `delete` read one record from the store directly on every
   call and never consult the node's own copy, so they never fail merely

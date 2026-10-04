@@ -561,7 +561,7 @@ application integration guide is `cyoda help auth integration`, with
 An application acting for a user signs a short user assertion (RS256,
 `exp − iat` ≤ 300 s, `aud` = `CYODA_JWT_ISSUER`, `caas_org_id` = its tenant,
 `sub` = the user id) with a **trusted key** its tenant admin registered, and
-its OBO client exchanges the assertion at `POST /oauth/token`. The issued
+its OBO client exchanges the assertion at `POST /tenants/{tenant}/oauth/token`. The issued
 token names the user as subject and the client in `act`, and carries the
 client's roles, never roles from the assertion. A trusted key verifies only
 such an assertion, in its own tenant; it is never accepted as a bearer token.
@@ -590,8 +590,8 @@ settings.
 
 | Capability | Endpoint | Description |
 |------------|----------|-------------|
-| **Token issuance** | `POST /oauth/token` | `client_credentials` for plain and admin clients |
-| **OBO exchange** | `POST /oauth/token` | RFC 8693 token exchange, for OBO clients only |
+| **Token issuance** | `POST /tenants/{tenant}/oauth/token` | `client_credentials` for plain and admin clients |
+| **OBO exchange** | `POST /tenants/{tenant}/oauth/token` | RFC 8693 token exchange, for OBO clients only |
 | **JWKS** | `GET /.well-known/jwks.json` | Public keys of cyoda-go's signing key pairs |
 | **M2M clients** | `GET/POST /clients`, `DELETE /clients/{clientId}`, `PUT /clients/{clientId}/secret` | Create (`withAdminRole`, `onBehalfOf`), list, delete, reset secret; tenant admin |
 | **Key management** | `POST/GET/DELETE /oauth/keys/keypair/...` | Issue, invalidate, reactivate, delete signing key pairs; platform operator |
@@ -738,7 +738,7 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 | **Search** | `POST /search/{direct,async}/...` | Synchronous and async search |
 | **Audit** | `GET /audit/entity/{entityId}` | Entity change history, SM audit trail |
 | **Messaging** | `POST/GET/DELETE /message/...` | Edge message store |
-| **Auth** | `POST /oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
+| **Auth** | `POST /tenants/{tenant}/oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
 | **Account** | `GET /account` | Account info, subscriptions |
 | **Cluster** | _(not exposed over REST)_ | Connected calculation-member registry is internal-only (`contract.ClusterService`) |
 | **Admin** | `GET/POST /admin/log-level` | Runtime log level control |
