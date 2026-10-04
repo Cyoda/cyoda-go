@@ -115,7 +115,7 @@ for free.
 
 ## Cloud action
 
-1. Tracked in CP-XXXX. Data model: a technical user is found by (legal entity,
+1. Tracked in CP-3983. Data model: a technical user is found by (legal entity,
    client id), not by a global user name in the table shared with human users.
    The same id may exist in two tenants.
 2. Token URL `POST /api/tenants/{tenant}/oauth/token`, with the same `401` for
