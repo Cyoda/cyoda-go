@@ -127,9 +127,10 @@ namespace is T's client, so callers no longer compare tenants.
 
 Operations (`internal/auth/kv_m2m_store.go`):
 
-- **Authenticate(ctx, tenant, id, secret)**. An id outside the grammar burns one
-  bcrypt comparison and answers `ErrInvalidClient` without a read, as today.
-  Otherwise it does one `Get`. A miss burns one bcrypt comparison; a hit checks
+- **Authenticate(ctx, tenant, id, secret)**. An id outside the grammar answers
+  `ErrInvalidClient` at once, with no read and no bcrypt comparison: the
+  grammar is public, so the refusal reveals nothing, and an anonymous flood of
+  malformed ids costs no CPU. Otherwise it does one `Get`. A miss burns one bcrypt comparison; a hit checks
   the secret (verified-secret cache, else bcrypt). A record that does not
   decode is a store failure (`500`).
 - **Lookup(ctx, tenant, id)**: one `Get`; absent or outside the grammar →
