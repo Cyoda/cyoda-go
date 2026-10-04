@@ -238,8 +238,8 @@ Check order:
    first.
 10. `500 SERVER_ERROR` / `503 STORAGE_UNAVAILABLE`: the store failed.
 
-The `409` body names the id; it is the caller's own tenant, so it reveals
-nothing to another tenant.
+The `409` concerns the caller's own tenant only, so it reveals nothing to
+another tenant.
 
 ### 4.6 `SYSTEM` is not an API tenant
 

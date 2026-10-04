@@ -53,8 +53,8 @@ to the client id carried in tokens.
   `M2M_CLIENT_CAP_REACHED`.
 - The first write wins. Of two concurrent creates of one id, one is `201` and
   the other `409`.
-- The `409` names the id. It is the caller's own tenant, so it reveals nothing
-  to another tenant.
+- The `409` concerns the caller's own tenant only, so it reveals nothing to
+  another tenant.
 - Check order on create is that of `m2m-clients.md`, with the `clientId`
   grammar (`400`) after the admin check and before the admin-role flag check,
   and the taken-id `409` after the secret-hash slot (`503`) and before the cap.
@@ -101,7 +101,8 @@ for free.
   found by id alone, in the users table it shares with human users, by a
   globally unique user name (`TechnicalUserService.kt:248-263`); the tenant
   comes from the stored user (`:234-236`).
-- Ids are 6 characters of `[a-zA-Z0-9]`, unique across all tenants by
+- Ids are, by default, 6 characters of `[a-zA-Z0-9]` (length configurable,
+  `CaasWebSecurityProperties.kt:19`), unique across all tenants by
   check-then-insert (`TechnicalUserService.kt:117-134`,
   `AccountUtils.kt:3-16`). A caller cannot choose an id, and there is no
   `409` (`openapi.yml:45-105`).
