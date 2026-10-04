@@ -45,9 +45,9 @@ const undoTimeout = 30 * time.Second
 // writes are equal). So concurrent changes on any nodes resolve without a
 // lost update: of two creates of one id exactly one succeeds, and a reset
 // that loses to another change is ErrM2MClientChanged. A delete is not
-// conditional and always wins. The cap is
-// checked on each node before the write, so concurrent creates on several
-// nodes can exceed it by one client per node.
+// conditional and always wins. The cap is checked on each node before the
+// write, so concurrent creates on several nodes can exceed it by one client
+// per node.
 //
 // Authenticate keeps a per-node cache of verified secrets. Every bcrypt
 // operation runs in one of a bounded number of slots.
@@ -297,7 +297,8 @@ func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2
 
 // Delete removes tenant's client clientID, decodable or not.
 // ErrM2MClientNotFound when tenant has no such record. A delete always wins:
-// a concurrent reset's conditional write then fails. The caller has checked
+// a concurrent reset answers ErrM2MClientNotFound, or succeeds and is then
+// removed; the client never comes back. The caller has checked
 // clientID against the client-id grammar.
 func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
 	ns := m2mTenantNamespace(tenant)

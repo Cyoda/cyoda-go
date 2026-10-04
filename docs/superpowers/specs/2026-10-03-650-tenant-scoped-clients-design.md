@@ -163,9 +163,10 @@ Operations (`internal/auth/kv_m2m_store.go`):
     undo that fails is logged at `ERROR`; the stored secret may then be the new
     one, never returned, and the client needs another reset (documented today).
 - **Delete(ctx, tenant, id)**: `Get` (absent → `ErrM2MClientNotFound`), then an
-  unconditional `Delete`. A delete always wins: a reset racing it fails its
-  conditional write and answers `404`, and no undo can bring the client back,
-  because every undo is conditional on this call's own bytes.
+  unconditional `Delete`. A delete always wins: a reset racing it answers
+  `404`, or succeeds and is then removed by the delete; the client never comes
+  back, and no undo can bring it back, because every undo is conditional on
+  this call's own bytes.
 - **List(ctx, tenant)**: unchanged.
 
 **A write that lands after its undo.** A write whose call returned an error

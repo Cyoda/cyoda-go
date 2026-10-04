@@ -282,8 +282,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     id exactly one succeeds and the other answers `409 M2M_CLIENT_EXISTS`.
     A secret reset that loses a race with another change answers
     `409 CONFLICT`, which is retryable. The cap is checked on each node
-    before the write, so concurrent creates on several nodes can exceed it by one
-    client per node.
+    before the write, so concurrent creates on several nodes can exceed it by
+    one client per node.
 
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute
