@@ -98,6 +98,22 @@ func (c *Client) CreateClientRaw(t *testing.T, withAdminRole, onBehalfOf bool) (
 	return c.DoJSONBodyRaw(t, http.MethodPost, path, nil)
 }
 
+// CreateClientWithIDRaw creates an M2M client with a caller-chosen id via
+// POST /api/clients?clientId=<id>[&withAdminRole=true][&onBehalfOf=true]. The
+// response body carries the plaintext secret exactly once — callers must not
+// log it.
+func (c *Client) CreateClientWithIDRaw(t *testing.T, clientID string, withAdminRole, onBehalfOf bool) (int, []byte, error) {
+	t.Helper()
+	q := []string{"clientId=" + url.QueryEscape(clientID)}
+	if withAdminRole {
+		q = append(q, "withAdminRole=true")
+	}
+	if onBehalfOf {
+		q = append(q, "onBehalfOf=true")
+	}
+	return c.DoJSONBodyRaw(t, http.MethodPost, "/api/clients?"+strings.Join(q, "&"), nil)
+}
+
 // ListClientsRaw issues GET /api/clients — the caller's tenant's M2M
 // clients.
 func (c *Client) ListClientsRaw(t *testing.T) (int, []byte, error) {
