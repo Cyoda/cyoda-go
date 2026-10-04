@@ -29,11 +29,6 @@ const (
 
 var errM2MUndecodable = errors.New("stored m2m client data does not decode")
 
-// clientIDGrammar is the tenant grammar: a client id may be chosen by its
-// tenant, and appears in URLs and in Basic credentials, so it uses only
-// characters that never need encoding.
-var clientIDGrammar = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
-
 // bcryptHashShape is the exact shape of a bcrypt hash: a 2a, 2b or 2y
 // version, a two-digit cost, and 53 characters of salt and hash in the
 // bcrypt alphabet — 60 characters in all. bcrypt.Cost reads only the header,
@@ -41,11 +36,12 @@ var clientIDGrammar = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 // as if the secret were wrong.
 var bcryptHashShape = regexp.MustCompile(`^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$`)
 
-// ValidClientID reports whether id is a client id: the client-id grammar,
-// and not "system" in any letter case — a client's id is its user id on its
+// ValidClientID reports whether id is a client id: the tenant grammar (a
+// client id appears in URLs and in Basic credentials, so it uses only
+// characters that never need encoding), and not "system" in any letter case — a client's id is its user id on its
 // tokens and in audit records, where "system" is reserved.
 func ValidClientID(id string) bool {
-	return clientIDGrammar.MatchString(id) && !strings.EqualFold(id, common.ReservedSystemUserID)
+	return common.ValidateTenantID(spi.TenantID(id)) == nil && !strings.EqualFold(id, common.ReservedSystemUserID)
 }
 
 // m2mTenantNamespace is the KV namespace holding tenant's client records,

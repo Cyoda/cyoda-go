@@ -6239,8 +6239,10 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
-            client id outside ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$, an unknown client id, or a
-            wrong secret). Carries WWW-Authenticate Basic realm="cyoda".
+            client id outside ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$, an unknown tenant, an
+            unknown client id, or a wrong secret). A 401 decided after reading
+            the client store is held for 500 ms; a 401 for missing credentials or a
+            malformed client id is immediate. Carries WWW-Authenticate Basic realm="cyoda".
           headers:
             WWW-Authenticate:
               description: The client authentication scheme and realm, Basic realm="cyoda".

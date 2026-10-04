@@ -612,7 +612,7 @@ A `client_credentials` token:
   "caas_user_id": "<client_id>",
   "caas_org_id": "<tenant_id>",
   "scopes": ["ROLE_M2M"],
-  "cgen": 1,
+  "cgen": 3071582740215291,
   "caas_tier": "unlimited"
 }
 ```

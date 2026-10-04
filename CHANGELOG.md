@@ -262,31 +262,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   create, reset or delete takes effect on every node when it returns, and
   clients survive a restart on a persistent backend (not on the memory
   backend). See `cyoda help auth clients`.
-  - `POST /tenants/{tenant}/oauth/token` answers `500 server_error` with a ticket when the
-    client store fails, or holds a damaged record or index entry for the
-    client id. It used
-    to answer `401 invalid_client`. A client id that does not match
-    `^[A-Za-z0-9]{1,100}$` is `401 invalid_client` without a store read.
+  - `POST /tenants/{tenant}/oauth/token` answers `500 server_error` with a
+    ticket when the client store fails, or holds a record for the client id
+    that does not decode. It used to answer `401 invalid_client`. A client id
+    that does not match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$` is
+    `401 invalid_client` without a store read.
   - `DELETE /clients/{clientId}` and `PUT /clients/{clientId}/secret` answer
     `500` with a ticket when the store fails, or `503 STORAGE_UNAVAILABLE`
     when it reports itself unavailable. They used to answer
     `404 M2M_CLIENT_NOT_FOUND`. `GET /clients` can answer `500` or `503` the
     same way.
-  - A damaged stored client record is left out of `GET /clients` and logged
-    at ERROR, and still counts toward the cap; `DELETE` removes it, and a
-    reset of it answers `500`. A damaged index entry makes a token request
-    for that client id answer `500`, and a reset too when the caller's own
-    tenant holds a record for that id (without one, a reset answers `404`);
-    `DELETE` removes it too, as long as the caller's own tenant holds a
-    record for that id, and otherwise keeps answering `500`.
-  - The store has no compare-and-set. Two changes to one client at the same
-    moment resolve by the later write. A reset racing a delete of one client
-    can leave it listed by `GET /clients` but unable to get a token; a reset
-    of it answers `404`, and `DELETE` removes it. A reset that answers `500`
-    writes the client back as it was before that reset. If another reset
-    succeeds in the meantime, the write-back can land after it: the secret
-    that reset returned stops working, and the older secret works again.
-    Reset again to fix it.
+  - A record that does not decode is left out of `GET /clients` and logged at
+    ERROR, and still counts toward the cap; `DELETE` removes it, and a reset
+    of it answers `500`.
+  - Every write to the store is conditional, so concurrent changes resolve
+    without a lost update. Of two creates of one client id exactly one
+    succeeds and the other answers `409 M2M_CLIENT_EXISTS`. A secret reset
+    that loses a race with another change answers `409 CONFLICT`, which is
+    retryable. A delete always wins. The cap is checked on each node before
+    the write, so concurrent creates on several nodes can exceed it by one
+    client per node.
 
 - **Model and workflow administration never runs inside a transaction.** A
   request carrying a transaction token — the `X-Tx-Token` header a compute

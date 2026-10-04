@@ -15,11 +15,12 @@ import (
 // bounding the connection acquire on the one path where an unbounded wait is a
 // deadlock: inside a transaction.
 //
-// Two callers, one hazard. A point-in-time read is committed-only, so it must
+// Three callers, one hazard. A point-in-time read is committed-only, so it must
 // run off the caller's transaction (committedQuerier, search_base.go). An async
 // search job record must outlive the request that submitted it, so it must not
-// be bound to that request's transaction (poolQuerier, store_factory.go). Both
-// requirements are non-negotiable, and both have the same consequence: in a
+// be bound to that request's transaction (poolQuerier, store_factory.go). The
+// key-value store never joins a transaction either (kvStore, store_factory.go).
+// All three requirements are non-negotiable, and all have the same consequence: in a
 // transaction the request holds two connections at once — the transaction's,
 // which it keeps until commit, and this one. That is hold-and-wait, and
 // pgxpool's Query/Exec/QueryRow carry no acquire deadline (deliberately — see

@@ -58,17 +58,17 @@ Everything in use is admitted: `SYSTEM`, `CYODA`,
 
 ## Where it is enforced
 
-A tenant id enters cyoda-go from outside cyoda-go in exactly one place, and
-the grammar is checked there:
+A tenant id enters cyoda-go from outside cyoda-go through three doors, and the
+grammar is checked at each:
 
 | Door | Surface | Failure |
 | --- | --- | --- |
 | The `caas_org_id` JWT claim | Every authenticated HTTP request and every authenticated gRPC method — gRPC delegates to the same authenticator | `401`, the uniform RFC 9457 problem detail |
+| The `{tenant}` segment of `/tenants/{tenant}/oauth/token` | The token endpoint, which is unauthenticated; checked by `common.ValidateAPITenantID` (the grammar, and not `SYSTEM` in any letter case); a percent-encoded path is refused; no stored state is read | `400 invalid_request`, description `invalid tenant` |
+| `cyoda token --tenant` | Offline signing of an admin token with the signing key; refuses `SYSTEM` | Exit code `2` |
 
-`cyoda token --tenant`, which signs an admin token offline with the signing
-key, checks the same grammar before it signs (exit code `2`); the claim is
-checked again at the door when the token is used. No configuration variable
-carries a tenant id.
+A token minted by `cyoda token` is checked again at the claim door when it is
+used. No configuration variable carries a tenant id.
 
 Everywhere else — peer dispatch bodies, gossip envelopes, scheduled-task rows,
 search-job rows — carries a value this cluster already
@@ -87,12 +87,10 @@ unit test pins it, along with every other shipped tenant constant, against the
 grammar, so a later change to the literal cannot quietly produce a binary whose
 own default tenant is unrepresentable.
 
-Two consequences look like gaps and are not. The token endpoint needs no check:
-it mints `caas_org_id` from a stored client row whose tenant is the tenant of
-the admin who created the client, admitted at the door, and any token it mints
-is presented back through the door before it can do anything. The token
-exchange takes the same stored tenant, and refuses an assertion whose
-`caas_org_id` differs from it.
+A token the token endpoint mints carries the tenant of the addressed client,
+and is presented back through the claim door before it can do anything. The
+token exchange refuses an assertion whose `caas_org_id` differs from the
+client's tenant.
 
 ## Response
 

@@ -63,7 +63,7 @@ id>"}`, one level, never nested; `caas_org_id` = the client's tenant;
 `scopes` = the client's roles (the assertion's roles are ignored; no user
 lookup); `exp` = min(assertion `exp`, now + token lifetime); no `cgen`. A
 `client_credentials` token carries `cgen`, the client's secret generation
-(1 at creation, one more per reset). `expires_in` is the token's remaining
+(a random number in [1, 2^52] at creation, one more per reset; compared only for equality). `expires_in` is the token's remaining
 life on both grants.
 
 ### Data access and administration

@@ -177,6 +177,15 @@ func RunM2MClientCap(t *testing.T, fixture BackendFixture) {
 	if code != http.StatusBadRequest || !containsErrorCode(body, "M2M_CLIENT_CAP_REACHED") {
 		t.Fatalf("fourth: %d %s", code, body)
 	}
+	// A chosen id that is already taken is refused as taken, not as over the
+	// cap, even though the tenant is at the cap.
+	code, body, _ = c.CreateClientWithIDRaw(t, first, false, false)
+	if code == http.StatusOK {
+		t.Fatalf("create of a taken id at the cap: %d, want %d", code, http.StatusConflict)
+	}
+	if code != http.StatusConflict || !containsErrorCode(body, "M2M_CLIENT_EXISTS") {
+		t.Fatalf("create of a taken id at the cap: %d %s", code, body)
+	}
 	if code, _, _ := c.DeleteClientRaw(t, first); code != http.StatusOK {
 		t.Fatal("delete")
 	}

@@ -108,15 +108,17 @@ and gateway logs. Put no personal data and no secret in one.
 A client id (the `clientId` of `POST /clients`) matches the same grammar,
 is unique within its tenant, and is never `system` in any letter case.
 
-The rule is checked at the one place a tenant identifier enters the binary
-from outside it: **the `caas_org_id` claim on an inbound JWT**, which covers
-every authenticated HTTP request and every authenticated gRPC method. A claim
+The rule is checked at each place a tenant identifier enters the binary from
+outside it: **the `caas_org_id` claim on an inbound JWT**, which covers every
+authenticated HTTP request and every authenticated gRPC method; the `{tenant}`
+segment of the token URL (`400 invalid_request` when it fails the rule, is
+`SYSTEM`, or is percent-encoded); and `cyoda token --tenant`. A claim
 outside the grammar is rejected like any other bad token: `401` with the
 uniform problem detail, and nothing in the response distinguishing it. The
 server log records the rejection at request time — one warning per rejected
 request, carrying the reason and a byte offset, never the offending value.
-`cyoda token --tenant` checks the same rule before it signs, and the claim is
-checked again when the token is used.
+`cyoda token --tenant` checks the same rule before it signs and refuses
+`SYSTEM`; the claim is checked again when the token is used.
 
 Peer dispatch, scheduled tasks and search jobs carry a value already
 admitted at that door and do not re-check it. Stored M2M clients are the

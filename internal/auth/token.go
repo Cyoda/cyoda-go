@@ -444,6 +444,8 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 	if len(parts) != 2 {
 		return "", "", false
 	}
+	// RFC 6749 §2.3.1: id and secret are form-urlencoded before base64, so
+	// they are decoded here, before the grammar check.
 	id, err := url.QueryUnescape(parts[0])
 	if err != nil {
 		return "", "", false
