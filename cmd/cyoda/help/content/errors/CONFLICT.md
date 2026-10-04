@@ -7,13 +7,14 @@ see_also:
   - errors.TX_CONFLICT
   - errors.IDEMPOTENCY_CONFLICT
   - errors.EPOCH_MISMATCH
+  - auth.clients
 ---
 
 # errors.CONFLICT
 
 ## NAME
 
-CONFLICT — the write lost a race: another transaction committed a change to the same entity, or to one of its scheduled tasks, after this write began.
+CONFLICT — the write lost a race: another transaction committed a change to the same entity, or to one of its scheduled tasks, after this write began; or, on `PUT /clients/{clientId}/secret`, another reset of the same client won.
 
 ## SYNOPSIS
 
@@ -40,6 +41,8 @@ How each operation handles a race with the scheduler:
 - **Batched delete (`transactionSize`).** The whole request does not answer 409 for a task race. A batch that still conflicts lists its ids in `idToError` with this code, and the other batches run.
 - **Entity write that joined an open transaction (`X-Tx-Token`).** The server does not retry it. The request can answer 409 itself, and the transaction's owner then cannot commit. A workflow import never joins one: it is refused with `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` if it carries the token.
 
+**A client secret reset (`PUT /clients/{clientId}/secret`).** Of two resets of one client at the same moment, on one node or on two, exactly one wins; the other answers 409 and changes nothing. A reset also answers 409 when the client was deleted and created again under the same id while the reset ran. Retryable: reset again if you still want a new secret. See `auth.clients` (STORAGE AND CONSISTENCY).
+
 Retry the whole read-modify-write cycle with the current entity state. Replaying the original write without re-reading produces stale data. A retried workflow import saves the same workflows again and then removes the tasks.
 
 On the gRPC entity operations this error is `code` `CLIENT_ERROR`, with a message that starts with `CONFLICT:` and `retryable` true.
@@ -50,3 +53,4 @@ On the gRPC entity operations this error is `code` `CLIENT_ERROR`, with a messag
 - errors.TX_CONFLICT
 - errors.IDEMPOTENCY_CONFLICT
 - errors.EPOCH_MISMATCH
+- auth.clients

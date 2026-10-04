@@ -48,7 +48,7 @@ In mock mode every request, with or without a token, runs as one fixed
 principal: user id `mock-user-001`, tenant `mock-tenant`, kind
 `CYODA_IAM_MOCK_KIND`, roles `CYODA_IAM_MOCK_ROLES`. It has no separate
 executor, so it is both the attributed principal and the executor of every
-change and callout. Mock mode has no client store: `POST /oauth/token` issues
+change and callout. Mock mode has no client store: `POST /api/tenants/{tenant}/oauth/token` issues
 no token and answers `501 NOT_IMPLEMENTED`, as do the client and trusted-key
 endpoints, and on-behalf-of access cannot be exercised (see
 `cyoda help auth integration`, *RUNNING IT LOCALLY*).
@@ -75,7 +75,7 @@ signal that requests are unauthenticated.
   it. Unset means the default; an empty value stops the server at startup and
   makes `cyoda token` exit 1. (default: `cyoda`)
 - `CYODA_JWT_AUDIENCE` — required audience claim (`aud`) on inbound JWTs,
-  also set as `aud` on every token cyoda-go issues (`POST /oauth/token`, both
+  also set as `aud` on every token cyoda-go issues (`POST /api/tenants/{tenant}/oauth/token`, both
   grants, and `cyoda token`); empty string disables the audience check and
   issued tokens carry no `aud`. It plays no part in a user assertion, whose
   `aud` must contain `CYODA_JWT_ISSUER`. (default: empty)
@@ -95,6 +95,18 @@ A tenant identifier must match:
 1 to 100 bytes; the first an ASCII letter or digit; the rest letters, digits,
 `.`, `_` and `-`. Case is preserved and significant — `Acme` and `acme` are two
 tenants.
+
+`SYSTEM`, in any letter case, matches the grammar but is no API tenant: it
+names the server's own storage namespace. It is refused as the `caas_org_id`
+of a token (`401`), by `cyoda token --tenant` (flag error), as the tenant
+path segment of the token endpoint (`400 invalid_request`). `PLATFORM` is
+an ordinary tenant.
+
+A tenant identifier is a public identifier: it appears in URLs, access logs
+and gateway logs. Put no personal data and no secret in one.
+
+A client id (the `clientId` of `POST /clients`) matches the same grammar,
+is unique within its tenant, and is never `system` in any letter case.
 
 The rule is checked at the one place a tenant identifier enters the binary
 from outside it: **the `caas_org_id` claim on an inbound JWT**, which covers
@@ -193,13 +205,13 @@ pods.
 - `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` — token requests each M2M client may
   make per minute on one node, counted across both grants, with a burst of
   the same size. The limit applies after the client has authenticated; over
-  it `POST /oauth/token` returns `429` with error `slow_down` and a
+  it `POST /api/tenants/{tenant}/oauth/token` returns `429` with error `slow_down` and a
   `Retry-After` header (whole seconds until the next request is allowed).
   Each node counts on its own. `0` means unlimited; a negative value refuses
   to start. (default: `600`)
 - `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS` — client-secret (bcrypt)
   operations that run at once on one node: the secret checks of
-  `POST /oauth/token`, and the hashing of a new secret by `POST /clients` and
+  `POST /api/tenants/{tenant}/oauth/token`, and the hashing of a new secret by `POST /clients` and
   `PUT /clients/{clientId}/secret`. An operation that gets no slot within 1
   second writes nothing and is refused with `Retry-After: 1`: `503` with
   error `temporarily_unavailable` on the token endpoint, `503` with error
@@ -220,8 +232,8 @@ pods.
   credentials can keep legitimate clients getting `503`.
   `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` counts only after a client has
   authenticated and does not stop such a flood. Deployments must put a
-  per-source rate limit in front of `/api/oauth/token` at the ingress,
-  gateway or load balancer.
+  per-source rate limit in front of `/api/tenants/{tenant}/oauth/token` at the ingress,
+  gateway or load balancer, matching the path `^/api/tenants/[^/]+/oauth/token$`.
 - `CYODA_IAM_TRUSTED_KEY_MAX_PER_TENANT` — per-tenant cap on trusted keys
   that can verify. It counts every active key whose `validTo` has not passed;
   an invalidated key frees its slot at once (trusted keys have no grace
@@ -270,7 +282,7 @@ cache.)
 
 The bootstrap signing key derived from `CYODA_JWT_SIGNING_KEY` (or
 `CYODA_JWT_SIGNING_KEY_FILE`) is the default signing key for the
-`POST /oauth/token` flow. Its KID is deterministic across nodes sharing
+`POST /api/tenants/{tenant}/oauth/token` flow. Its KID is deterministic across nodes sharing
 the same PEM (SHA-256 of the public key).
 
 The key-pair endpoints (`/oauth/keys/keypair*`) need a platform operator:
@@ -320,7 +332,7 @@ one of its own key pairs, the bootstrap key or an issued one, and JWKS
 (`GET /api/.well-known/jwks.json`, under `CYODA_CONTEXT_PATH`) lists each key pair until it can no longer
 verify. A rotation is not enough: it never ends the
 bootstrap key, which signs every token from `cyoda token`, and every token
-from `POST /oauth/token` while it wins signer selection
+from `POST /api/tenants/{tenant}/oauth/token` while it wins signer selection
 (before the first rotation, for example, or after a reactivation with the
 default `validFrom`; see above).
 
@@ -334,7 +346,7 @@ default `validFrom`; see above).
   of zero. If no issued key pair is active and inside its window,
   first issue one (`POST /oauth/keys/keypair`), and
   hold an admin client in `PLATFORM` whose token it signs: otherwise
-  `POST /oauth/token` has no signer once the bootstrap key is invalidated,
+  `POST /api/tenants/{tenant}/oauth/token` has no signer once the bootstrap key is invalidated,
   no operator token verifies, and the only way back is a new
   `CYODA_JWT_SIGNING_KEY`. If `cyoda token` is still wanted, reactivate the
   bootstrap key once the longest token lifetime in use has passed since
@@ -350,8 +362,8 @@ default `validFrom`; see above).
   token the bootstrap key signed has expired. Reactivating it sooner makes
   those tokens verify again. Pass an early `validFrom` on the reactivation,
   for example `1970-01-01T00:00:00Z`, so that the issued key pairs
-  keep signing `POST /oauth/token`. With the default `validFrom`
-  (now), the bootstrap key signs before them, and `POST /oauth/token` signs
+  keep signing `POST /api/tenants/{tenant}/oauth/token`. With the default `validFrom`
+  (now), the bootstrap key signs before them, and `POST /api/tenants/{tenant}/oauth/token` signs
   with it again. `DELETE` also ends the bootstrap key, but permanently.
 - If the token carries `ROLE_ADMIN` in `PLATFORM`, follow *A leaked
   platform admin-client secret* below with the token in place of the
@@ -517,7 +529,7 @@ block until step 6.
 
 **2. Get in** with a platform-operator token: `cyoda token --tenant
 PLATFORM` while the bootstrap key verifies, an unexpired operator token
-you hold, or `/oauth/token` with an admin client of `PLATFORM` whose
+you hold, or the token endpoint with an admin client of `PLATFORM` whose
 secret you hold, the leaked one included. If none works, use the new
 signing key below.
 
@@ -565,9 +577,9 @@ signing key below.
   `cyoda token` then stops working (to bring it back later, see
   *Emergency revocation of a leaked token* above). The way in is your
   admin client's new secret, or a new signing key (see *Alternative to
-  step 4*). `/oauth/token` signs with the pair the rotation created.
+  step 4*). The token endpoint signs with the pair the rotation created.
 - A `401` means your own token was signed by a key you invalidated: get
-  a new one from `/oauth/token` with your admin client.
+  a new one from the token endpoint with your admin client.
 - Every tenant's M2M and token-exchange tokens stop verifying, and
   clients fetch new ones.
 
@@ -646,7 +658,7 @@ the memory backend, see above), and lift the block.
 Whichever key pair you issued in step 4 or in the *Alternative
 to step 4* is then the only signer. Its `validTo` is
 `CYODA_IAM_KEYPAIR_DEFAULT_VALIDITY_DAYS` days (365 by default) after its
-issue. Once it passes, `/oauth/token` cannot sign for any tenant, and
+issue. Once it passes, the token endpoint cannot sign for any tenant, and
 only a new signing key brings it back (see *No signer* below). Rotate
 before then. You can instead
 reactivate the bootstrap key once the wait under *Emergency revocation of
@@ -666,20 +678,15 @@ clients and trusted keys survive the change (not on the memory backend).
 In step 5, JWKS and `/current` show the new bootstrap key, or a pair you
 issued since.
 
-#### Recovering from a `/oauth/token` 500
+#### Recovering from a token endpoint 500
 
-**The M2M client store failed, or holds a damaged client record or index
-entry for the client id.** The `ticket` in `error_description` names the
-ERROR log line that carries the cause; a damaged record or index entry is
-also logged at ERROR with its client id. A damaged record is removed with
-`DELETE /clients/{clientId}`. `DELETE` also removes a damaged index entry,
-as long as the caller's tenant holds a record for that id (own namespace
-proves ownership); without a record in that tenant, ownership cannot be
-proven and `DELETE` still answers `500` — the fix is then a direct edit of
-the storage backend: remove the key named by the client id from the
-`m2m-client-ids` namespace. See `auth.clients`.
+**The M2M client store failed, or holds a damaged client record for the
+client id.** The `ticket` in `error_description` names the ERROR log line
+that carries the cause; a damaged record is also logged at ERROR with its
+client id. A damaged record is removed with `DELETE /clients/{clientId}`.
+See `auth.clients`.
 
-The signing-key incidents below leave `/oauth/token` unable to sign, so an
+The signing-key incidents below leave the token endpoint unable to sign, so an
 admin M2M client in `PLATFORM` cannot get a fresh token. The routes use one
 of three ways in. Verification looks up only the token's own key id:
 
@@ -696,11 +703,11 @@ of three ways in. Verification looks up only the token's own key id:
   sealed: their tokens stop verifying and clients fetch new ones. Prefer a
   route that needs no new key whenever you hold a token that verifies.
 
-After a fix, `/oauth/token` signs only if a key pair is active
+After a fix, the token endpoint signs only if a key pair is active
 and inside its window; otherwise see *No signer* below.
 
 **The selected key pair is broken.** The log names the KID and the reason.
-`/oauth/token` cannot sign while the pair wins signer selection:
+the token endpoint cannot sign while the pair wins signer selection:
 until it is invalidated or deleted, or a newer key pair outranks it.
 A token signed by the broken pair itself does not verify. The fix depends on
 why:
@@ -747,7 +754,7 @@ why:
 - At this node's bootstrap key id, the record takes the place of the
   bootstrap key's state, so whatever that state was, a token from
   `cyoda token` does not verify on this node (the bootstrap key is unusable)
-  and `/oauth/token` cannot sign. Two routes remain, and both permanently
+  and the token endpoint cannot sign. Two routes remain, and both permanently
   delete the old bootstrap key (see *Deleting the bootstrap key is
   permanent*). Prefer the first when the token it needs exists: `DELETE`
   the record with an earlier token, which leaves issued key pairs
@@ -764,7 +771,7 @@ never share one KID, so the record is refused as undecodable.
   included, does not verify on this node.
 - `cyoda token` still signs offline — it needs no store access — but the
   token it produces does not verify here, for the same reason above.
-  `/oauth/token` cannot sign at all while the record is there, so an admin
+  the token endpoint cannot sign at all while the record is there, so an admin
   M2M client in `PLATFORM` cannot get a fresh token either. Two routes
   remain; prefer the first when the token it needs exists.
 - The first route: `DELETE` the record with an earlier token, for example

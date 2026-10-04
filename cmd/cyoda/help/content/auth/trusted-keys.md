@@ -26,7 +26,7 @@ auth.trusted-keys — register a public key with cyoda so that user assertions y
 
 Your application signs its users in and decides what each may do. You want it to call cyoda for those users, so that each change is recorded for the user, with the application's client as its executor.
 
-Register the public key once. For each user, your application signs a short JWT — the *user assertion*, sent as the `subject_token` — and its on-behalf-of client exchanges it at `POST /api/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user, carrying the client's roles. cyoda records the user the assertion names; it does not verify the user. See `auth.tokens` for the grant.
+Register the public key once. For each user, your application signs a short JWT — the *user assertion*, sent as the `subject_token` — and its on-behalf-of client exchanges it at `POST /api/tenants/{tenant}/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user, carrying the client's roles. cyoda records the user the assertion names; it does not verify the user. See `auth.tokens` for the grant.
 
 A trusted-key JWT is used **only** as the subject token of that grant. cyoda does not accept it as a bearer token on API calls.
 

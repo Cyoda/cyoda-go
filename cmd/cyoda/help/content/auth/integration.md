@@ -42,8 +42,8 @@ The reference topics hold the full tables: `cyoda help auth tokens` (the token e
 - **caas** — "Cyoda as a Service". The claims `caas_org_id` (the tenant), `caas_user_id` (the principal's id) and `caas_tier` (a tier label, always `unlimited` in cyoda-go) carry this prefix because cyoda-go and Cyoda Cloud share one token format.
 - **Principal** — whoever a request runs as. Its **kind** is `user` (a person), `service` (an M2M client) or `system` (cyoda itself, for scheduled firings).
 - **Service principal** — a principal of kind `service`: an M2M client acting as itself, with a token from `client_credentials`.
-- **Cyoda token** — a JWT cyoda signs with one of its own key pairs, the only kind of bearer token the API accepts. `/oauth/token` issues them to M2M clients; the platform operator's CLI command `cyoda token` signs them offline.
-- **M2M client** — machine-to-machine credentials (a client id and a secret) that belong to one tenant and get cyoda tokens from `/oauth/token`.
+- **Cyoda token** — a JWT cyoda signs with one of its own key pairs, the only kind of bearer token the API accepts. The token endpoint issues them to M2M clients; the platform operator's CLI command `cyoda token` signs them offline.
+- **M2M client** — machine-to-machine credentials (a client id and a secret) that belong to one tenant and get cyoda tokens from the token endpoint.
 - **Plain client** — an M2M client with the role `ROLE_M2M`. Every data operation requires `ROLE_M2M`.
 - **Admin client** — an M2M client with `ROLE_M2M` and `ROLE_ADMIN`. `ROLE_ADMIN` manages the tenant's clients and trusted keys.
 - **Tenant admin** — whoever holds an admin client of the tenant.
@@ -55,7 +55,7 @@ The reference topics hold the full tables: `cyoda help auth tokens` (the token e
 - **Token exchange** — the OAuth 2.0 grant of RFC 8693: a client presents a token (here, the user assertion) and receives a new token. cyoda uses it for on-behalf-of access only.
 - **OBO token** — the cyoda token a token exchange returns. Its subject is the user; its rights are the OBO client's roles.
 - **act** — the claim in an OBO token that names the client acting for the user: `{"sub": "<client id>"}`.
-- **cgen** — the claim in a `client_credentials` token that holds the client's secret generation: 1 at creation, plus one for each secret reset. A compute-node stream uses it to notice a reset.
+- **cgen** — the claim in a `client_credentials` token that holds the client's secret generation: a random number at creation, plus one for each secret reset. A compute-node stream uses it to notice a reset.
 - **Attributed principal** — who a change is for: the user of an OBO request, otherwise the caller (with the exceptions in READING IDENTITY IN A COMPUTE NODE). Shown as `user` in change history and `actor` in audit events.
 - **Executor** — who actually made a change: the M2M client whose token made the call, `system` for a scheduled firing, or the operator's user (kind `user`) for a `cyoda token`. Shown as `executedBy`.
 - **Compute node** — your process that holds a gRPC stream open to cyoda and runs processors, criteria and functions when cyoda asks.
@@ -68,10 +68,10 @@ The reference topics hold the full tables: `cyoda help auth tokens` (the token e
 - **Commit-before-dispatch** — a processor execution mode (`COMMIT_BEFORE_DISPATCH`) that commits the work so far before it calls the compute node. With `startNewTxOnDispatch: false` the callout carries no transaction token, so its callbacks are independent requests.
 - **Scheduled firing** — a scheduled transition that cyoda runs later, with no request in flight. Its executor is `system`; its attributed principal is the one that armed it.
 - **CloudEvents Auth Context** — a CloudEvents extension that names the principal behind an event. cyoda attaches its attributes (`authtype`, `authid`, `authclaims`, plus its own `authexectype`, `authexecid`) to every callout.
-- **RFC 6749** — OAuth 2.0, the framework for `/oauth/token`, the `client_credentials` grant and the error body shape. **RFC 7591** — OAuth dynamic client registration; cyoda borrows its field names (`client_id`, `client_secret`, `client_secret_expires_at`) for the client-creation response.
+- **RFC 6749** — OAuth 2.0, the framework for the token endpoint, the `client_credentials` grant and the error body shape. **RFC 7591** — OAuth dynamic client registration; cyoda borrows its field names (`client_id`, `client_secret`, `client_secret_expires_at`) for the client-creation response.
 - **Platform operator** — whoever runs the cyoda deployment. They hold `CYODA_JWT_SIGNING_KEY` and can sign a token for any tenant with `cyoda token`.
 - **PLATFORM tenant** — the tenant named `PLATFORM`. `ROLE_ADMIN` there is the platform operator's role: it manages signing keys and node settings. Applications do not use it.
-- **Bootstrap key** — the signing key pair cyoda derives from `CYODA_JWT_SIGNING_KEY`. It signs every `cyoda token` and, until the operator issues other key pairs, every token from `/oauth/token`.
+- **Bootstrap key** — the signing key pair cyoda derives from `CYODA_JWT_SIGNING_KEY`. It signs every `cyoda token` and, until the operator issues other key pairs, every token from the token endpoint.
 
 ## STEP 1 — GET A TENANT AND ITS FIRST ADMIN CLIENT
 
@@ -114,11 +114,11 @@ curl -X POST https://cyoda.example.com/api/clients \
   -H @- <<<"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"
 ```
 
-Each answer is a `TechnicalUserCredentialsDto`: `client_id` (16 characters, upper-case letters and digits), `client_secret` (64 lower-case hex characters, shown once), `roles`, `onBehalfOf`, and `grant_type` — the grant that client uses. The `-K-` and `-H @-` forms keep secrets off the command line, where other local users could read them.
+Each answer is a `TechnicalUserCredentialsDto`: `client_id` (the chosen id, or 16 generated characters, upper-case letters and digits), `client_secret` (64 lower-case hex characters, shown once), `roles`, `onBehalfOf`, and `grant_type` — the grant that client uses. The `-K-` and `-H @-` forms keep secrets off the command line, where other local users could read them.
 
 **Use one client per part.** A part is one deployable unit with one job: the backend, one compute-node service, one job. All replicas of a part share its client; separate parts never share one. Then each part can be rotated or revoked alone, and the executor recorded on every change names the part that made it. A process that does two jobs — say a compute node that also runs scheduled batch work — may use one client for both; give it two clients instead if you want the executor to tell the jobs apart, since one client cannot. Only the backend gets an on-behalf-of client by default; another part gets one only when it must act for a user (see WHEN ANOTHER PART ACTS FOR A USER).
 
-**Record the credentials when you create them.** A client has no name or label, and its secret cannot be read again. Store the `client_id` and `client_secret` at once in your deployment's secret store, under a name that says which part uses them (for example `cyoda/acme/backend-obo`). This is your inventory. To provision idempotently, read the secret store first and create a client only for a part that has none. To reconcile, list the tenant's clients (`GET /clients` returns `clientId`, `creationDate`, `lastUpdateDate`, `roles` and `onBehalfOf`, never a secret) and delete every `clientId` your secret store does not hold. A tenant holds at most `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients (100 by default); at the cap, a create answers `400 M2M_CLIENT_CAP_REACHED`.
+**Choose the id and record the credentials when you create them.** Name the client for its part with `POST /clients?clientId=backend-obo`: an id is unique within the tenant, letters, digits, `.`, `_` and `-`, up to 100 characters, case significant, never `system` (see `auth.clients`). A taken id answers `409 M2M_CLIENT_EXISTS`. The secret cannot be read again: store the `client_id` and `client_secret` at once in your deployment's secret store, under a name that says which part uses them (for example `cyoda/acme/backend-obo`). This is your inventory. To provision idempotently, read the secret store first and create a client only for a part that has none; a re-run that finds the chosen id taken and no secret in the store deletes the client and creates it again. To reconcile, list the tenant's clients (`GET /clients` returns `clientId`, `creationDate`, `lastUpdateDate`, `roles` and `onBehalfOf`, never a secret) and delete every `clientId` your secret store does not hold. A tenant holds at most `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` clients (100 by default); at the cap, a create answers `400 M2M_CLIENT_CAP_REACHED`.
 
 **There is no least-privilege split beyond the three kinds.** Every plain or admin client holds `ROLE_M2M`, which reaches every data operation of its tenant: read and write every entity, import models and workflows, and open a compute-node stream with any tags. The only extra permission is `onBehalfOf`, and the only extra role is `ROLE_ADMIN`. A compute node's client can therefore also act as a background job, and any plain client can join as a compute node and receive callouts that match the tags it declares. Treat every client secret as access to all of the tenant's data.
 
@@ -292,7 +292,7 @@ See `audit`, `crud` and `messages`.
 
 ## ERRORS AND RETRIES
 
-**`POST /oauth/token`** answers in the OAuth error shape, `{"error": "...", "error_description": "..."}`, with fixed descriptions that `cyoda help auth tokens` lists one by one. The token endpoint changes nothing, so a retry is always safe; the question is only whether it can succeed.
+**`POST /api/tenants/{tenant}/oauth/token`** answers in the OAuth error shape, `{"error": "...", "error_description": "..."}`, with fixed descriptions that `cyoda help auth tokens` lists one by one. The token endpoint changes nothing, so a retry is always safe; the question is only whether it can succeed.
 
 - `400 invalid_request` with `subject token has expired` or `subject token claims rejected` can come from clock drift between your backend and cyoda, or an assertion that waited too long before it was sent: sign a fresh assertion with the current time and retry once. If it fails again, check `aud`, `exp − iat` ≤ 300, and your clocks (keep them synchronised, for example with NTP; cyoda allows 30 seconds of skew).
 - `400 invalid_request` (any other description), `400 unsupported_grant_type`, `400 unauthorized_client`, `403 access_denied`, `405 method_not_allowed` — your request or your setup is wrong. Do not retry; fix it. The `error_description` tells the causes apart (for example `unknown or inactive trusted key`, `subject token signature or issuer rejected`, `subject token claims rejected` for `aud`/`exp`/`iat`/`nbf`, `subject token sub rejected`, `tenant mismatch`).
@@ -338,7 +338,7 @@ Afterwards, review what the credentials did: entity changes and audit events who
 - **TLS.** cyoda's HTTP (default 8080) and gRPC (default 9090) listeners have no TLS of their own: they serve plaintext. In production, TLS is terminated by the gateway, ingress or service mesh in front of cyoda. The Helm chart routes through a Gateway by default (`gateway.enabled=true`): it renders the `HTTPRoute` and `GRPCRoute`, and TLS is configured on the operator's own Gateway listener (its certificate and hostname), which the chart does not render. With `ingress.enabled=true` instead, TLS comes from `ingress.http.tls` and `ingress.grpc.tls`. Every client, and every compute node, connects through it and verifies the server certificate. On Kubernetes, the chart's Service (`ClusterIP` by default) serves ports 8080 and 9090 in plaintext, and the chart's NetworkPolicy admits any source to them. A compute node inside the cluster that calls the Service directly gets neither encryption nor server authentication, so it cannot rely on the callout attributes. The chart provides TLS only through the Gateway listener or its Ingress; for in-cluster callers the operator adds a service mesh with mutual TLS, or routes them through the TLS Ingress or Gateway, and narrows the NetworkPolicy (edit the chart's policy: a second policy cannot narrow it, because policies add up). For local development and Docker Compose, plaintext on localhost or a private Docker network is acceptable; never expose a plaintext port beyond it.
 - **Keep credentials on the server.** The trusted key's private key, client secrets, user assertions and cyoda tokens never reach a browser or a mobile app. Each server-side part holds only its own: the backend its OBO client and key, every other part its plain client, and a part that acts for users its own OBO client and key (WHEN ANOTHER PART ACTS FOR A USER).
 - **Authorize before you act.** cyoda records the user you assert and enforces only the client's roles. Like a database, it cannot protect data from an application that is itself compromised.
-- **Rate-limit at the edge.** The operator puts a per-source rate limit in front of `/api/oauth/token` (see `cyoda help auth tokens`).
+- **Rate-limit at the edge.** The operator puts a per-source rate limit in front of `/api/tenants/{tenant}/oauth/token` (see `cyoda help auth tokens`).
 
 ## CLUSTER NOTES
 
@@ -352,7 +352,7 @@ Afterwards, review what the credentials did: entity changes and audit events who
 - `user` — `authctx.Require` never passes, and a compute-node stream is refused (`PermissionDenied`).
 - `system` — the same refusals as `user`. `authclaims` still carries the mock roles.
 
-Mock mode has no client store: `POST /oauth/token` issues no token and answers `501 NOT_IMPLEMENTED`, provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_M2M` (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is `403 FORBIDDEN` ("this operation requires ROLE_M2M") instead. The client and trusted-key endpoints need no `ROLE_M2M` but check `ROLE_ADMIN` first: they answer `501` (trusted keys `404 FEATURE_DISABLED` while their flag is off) provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_ADMIN` (the default does), and `403 FORBIDDEN` otherwise. **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
+Mock mode has no client store: `POST /api/tenants/{tenant}/oauth/token` issues no token and answers `501 NOT_IMPLEMENTED`, provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_M2M` (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is `403 FORBIDDEN` ("this operation requires ROLE_M2M") instead. The client and trusted-key endpoints need no `ROLE_M2M` but check `ROLE_ADMIN` first: they answer `501` (trusted keys `404 FEATURE_DISABLED` while their flag is off) provided `CYODA_IAM_MOCK_ROLES` includes `ROLE_ADMIN` (the default does), and `403 FORBIDDEN` otherwise. **On-behalf-of access cannot be exercised in mock mode.** Use jwt mode for it.
 
 **On-behalf-of end to end, in jwt mode, on one machine** (needs `openssl`, `xxd`, `jq` and `curl`):
 
@@ -390,7 +390,7 @@ PAY=$(jq -cn --argjson iat "$NOW" --argjson exp "$((NOW+300))" \
 SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -binary | b64url)
 
 # Exchange it, then call cyoda as alice through the OBO client.
-OBO_TOKEN=$(curl -s -X POST "$B/oauth/token" \
+OBO_TOKEN=$(curl -s -X POST "$B/tenants/acme/oauth/token" \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
   -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \

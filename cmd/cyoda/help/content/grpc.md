@@ -201,7 +201,7 @@ The compute member protocol allows external processes to serve as workflow proce
 
 **Join sequence:**
 
-1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. The token must be the compute node's own M2M client token from the `client_credentials` grant (`POST /oauth/token`, see `cyoda help auth tokens`): a service principal holding `ROLE_M2M`. An on-behalf-of token from the token exchange states a user, not a compute node, and is refused with `codes.PermissionDenied`, as is a token from `cyoda token` or any other token that is not a client's own. In mock IAM mode the mock principal opens a stream when `CYODA_IAM_MOCK_KIND` is `service` (the default) and `CYODA_IAM_MOCK_ROLES` holds `ROLE_M2M`.
+1. Client opens `startStreaming` with `Authorization: Bearer <token>` metadata. The token must be the compute node's own M2M client token from the `client_credentials` grant (`POST /api/tenants/{tenant}/oauth/token`, see `cyoda help auth tokens`): a service principal holding `ROLE_M2M`. An on-behalf-of token from the token exchange states a user, not a compute node, and is refused with `codes.PermissionDenied`, as is a token from `cyoda token` or any other token that is not a client's own. In mock IAM mode the mock principal opens a stream when `CYODA_IAM_MOCK_KIND` is `service` (the default) and `CYODA_IAM_MOCK_ROLES` holds `ROLE_M2M`.
 2. Client sends `CalculationMemberJoinEvent` as the first message:
 
 ```json

@@ -1,6 +1,6 @@
 ---
 topic: auth.tokens
-title: "auth.tokens — /oauth/token grants and JWT claim contract"
+title: "auth.tokens — the token endpoint, its grants and the JWT claim contract"
 stability: evolving
 version_added: 0.8.0
 see_also:
@@ -18,7 +18,7 @@ see_also:
 
 ## NAME
 
-auth.tokens — exchange M2M client credentials for a JWT at `POST /api/oauth/token`. Covers both grants and the canonical JWT claim contract of every cyoda token.
+auth.tokens — exchange M2M client credentials for a JWT at `POST /api/tenants/{tenant}/oauth/token`, where `{tenant}` is the client's tenant. Covers both grants and the canonical JWT claim contract of every cyoda token.
 
 ## GOAL
 
@@ -47,9 +47,9 @@ For the token exchange, the tenant also needs a trusted key whose private half y
 
 ## REQUEST FLOW
 
-The endpoint is `POST /api/oauth/token` (under `CYODA_CONTEXT_PATH`, `/api` by default). For the whole integration, step by step, see `auth.integration`.
+The endpoint is `POST /api/tenants/{tenant}/oauth/token` (under `CYODA_CONTEXT_PATH`, `/api` by default). The client is found by the pair (tenant in the path, client id): the same client id in another tenant is another client. A wrong tenant, an unknown client and a wrong secret all answer the same `401 invalid_client`. For the whole integration, step by step, see `auth.integration`.
 
-**Client authentication** is HTTP Basic only (`Authorization: Basic base64(client_id:client_secret)`). A `client_id` and `client_secret` sent as form fields (`client_secret_post`) are not read: such a request has no Basic header and answers `401 invalid_client`. As RFC 6749 §2.3.1 allows, the id and the secret may be form-urlencoded before base64; cyoda decodes both. A generated client id is 16 characters from `0`–`9` and `A`–`V`, and a generated secret 64 lower-case hex characters, so encoding leaves them unchanged.
+**Client authentication** is HTTP Basic only (`Authorization: Basic base64(client_id:client_secret)`). A `client_id` and `client_secret` sent as form fields (`client_secret_post`) are not read: such a request has no Basic header and answers `401 invalid_client`. As RFC 6749 §2.3.1 allows, the id and the secret may be form-urlencoded before base64; cyoda decodes both. A client id is chosen at creation (letters, digits, `.`, `_`, `-`; see `auth.clients`) or generated, 16 characters from `0`–`9` and `A`–`V`; a generated secret is 64 lower-case hex characters. Encoding leaves all of these unchanged.
 
 ### client_credentials
 
@@ -124,7 +124,7 @@ The request carries none of the other RFC 8693 parameters: `actor_token`, `actor
 
 ## TOKEN
 
-Every cyoda token (issued at `/oauth/token`, or signed offline by `cyoda token`) carries the following claim shape:
+Every cyoda token (issued at the token endpoint, or signed offline by `cyoda token`) carries the following claim shape:
 
 - `sub` (string) — Principal. The client id on a `client_credentials` token; the user id on a token-exchange or `cyoda token` token.
 - `iss` (string) — `CYODA_JWT_ISSUER`.
@@ -132,13 +132,13 @@ Every cyoda token (issued at `/oauth/token`, or signed offline by `cyoda token`)
 - `exp` (int unix) — Expiry.
 - `iat` (int unix) — Issued-at.
 - `jti` (string UUID) — Unique token ID.
-- `caas_org_id` (string) — Tenant scope: the client's tenant on tokens from `/oauth/token`. A tenant id matching the tenant grammar in `config.auth` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`), or the token is rejected with `401`. Every API call is constrained to this tenant.
+- `caas_org_id` (string) — Tenant scope: the client's tenant on tokens from the token endpoint. A tenant id matching the tenant grammar in `config.auth` (`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`), or the token is rejected with `401`; so is `SYSTEM` in any letter case, which is no API tenant. Every API call is constrained to this tenant.
 - `caas_user_id` (string) — User identifier: the client id on a `client_credentials` token, the user id on a token-exchange token. When it is absent, `sub` is the user identifier instead; when it is present, it must be a non-empty string and `sub` is not consulted. Either way the value must pass the user-identifier rule, or the token is rejected with `401`; see `config.auth`.
 - `scopes` (string array) — **Both grants.** The M2M client's roles (e.g. `ROLE_M2M`, `ROLE_ADMIN`), never the assertion's. A token that carries `scopes` and no `act` is the client itself, a service principal; with `act` it is a user acting through that client.
-- `cgen` (integer) — **`client_credentials` only.** The client's secret generation: 1 at creation, one more after each secret reset.
+- `cgen` (integer) — **`client_credentials` only.** The client's secret generation: a random number at creation, one more after each secret reset. Compare it only for equality.
 - `act` (object) — **Token exchange only.** `{"sub": "<client_id>"}`, one level: the on-behalf-of client acting for the user. A token whose `act` is not an object, whose `act.sub` is not a client id, or that carries `act` without `scopes` is rejected with `401`.
-- `user_roles` (string array) — Roles of a `cyoda token` person token. Its presence marks a user principal. A token that carries both `scopes` and `user_roles`, or `act` and `user_roles`, is rejected with `401`. Tokens from `/oauth/token` never carry it.
-- `caas_tier` (string) — Tier label, on tokens from `/oauth/token`. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers. `cyoda token` tokens carry none.
+- `user_roles` (string array) — Roles of a `cyoda token` person token. Its presence marks a user principal. A token that carries both `scopes` and `user_roles`, or `act` and `user_roles`, is rejected with `401`. Tokens from the token endpoint never carry it.
+- `caas_tier` (string) — Tier label, on tokens from the token endpoint. cyoda-go: always `"unlimited"`; Cloud distinguishes paid tiers. `cyoda token` tokens carry none.
 
 Cyoda issues tokens signed by the selected signing key (RS256): the bootstrap key from `CYODA_JWT_SIGNING_KEY`, or an issued key pair if one is active and wins selection. The `kid` header points at that signing key pair, shared by every node of the cluster (`/oauth/keys/*`). A trusted key only verifies the assertion of a token exchange; it is never checked on an API call.
 
@@ -149,13 +149,14 @@ On API calls:
 - `errors.UNAUTHORIZED` (`401`) — `Authorization` header missing, token expired, signature invalid, `iss` other than `CYODA_JWT_ISSUER`, `aud` missing `CYODA_JWT_AUDIENCE` when that is set, or `kid` not a usable key of this node. A token cyoda did not sign — an identity provider's token, a user assertion — is refused here. Authentication runs before any handler and before any transaction is joined, on HTTP and gRPC alike: a `401` request did nothing, so it can be sent again, once, with a new token.
 - `errors.FORBIDDEN` (`403`) — token valid but caller lacks the required role for the operation (`ROLE_M2M` for every data operation), or a token-exchange token on a client, trusted-key, key-pair or `/admin/*` operation, which it never reaches. Each is decided before the operation reads or writes anything.
 
-The `/oauth/token` endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`, RFC 6749 §5.2) rather than the generic cyoda error envelope. Every `error_description` is one of the fixed strings below, so it tells the causes apart; none repeats the user id, the tenant or the key id. Every error response carries `Cache-Control: no-store`. The endpoint changes nothing, so a retry is always safe; the list says when one can succeed. In mock IAM mode the endpoint issues no token and answers `501 NOT_IMPLEMENTED` in the generic cyoda error envelope, not an OAuth error. In jwt mode, in the order cyoda checks:
+The token endpoint returns OAuth-shaped errors (`{"error": "...", "error_description": "..."}`, RFC 6749 §5.2) rather than the generic cyoda error envelope. Every `error_description` is one of the fixed strings below, so it tells the causes apart; none repeats the user id, the tenant or the key id. Every error response carries `Cache-Control: no-store`. The endpoint changes nothing, so a retry is always safe; the list says when one can succeed. In mock IAM mode the endpoint issues no token and answers `501 NOT_IMPLEMENTED` in the generic cyoda error envelope, not an OAuth error. In jwt mode, in the order cyoda checks:
 
+- `400 invalid_request`, `"invalid tenant"` — the `{tenant}` path segment is not an API tenant (it does not match `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`, or it is `SYSTEM` in any letter case), or the path after the context path carries any percent-encoding. Checked first, before the method. Identical for every tenant id, and it reads no stored state.
 - `405 method_not_allowed`, `"method_not_allowed"` — any method but `POST`. Carries `Allow: POST`.
 - `400 invalid_request`, `"the request body must be application/x-www-form-urlencoded"` — any other `Content-Type` (a `charset` parameter is accepted). Refused before the client authenticates, without reading the body.
-- `401 invalid_client`, `"client authentication failed"` — no Basic credentials, a client id that does not match `^[A-Za-z0-9]{1,100}$` (refused before the client store is read), an unknown client id, or a wrong secret. Carries `WWW-Authenticate: Basic realm="cyoda"`. Each of the last three makes the same store reads and one bcrypt comparison, so the server's own work does not depend on whether the client id exists. A storage backend can take longer to read a present key than a missing one (on Cassandra a hit is two queries and a miss one), which can let a caller who already holds a client id confirm that it exists. Client ids are not secret — a token's `sub` carries one — and generated ids are 80-bit random, so this does not allow enumeration. Re-read the credentials once; do not retry in a loop.
+- `401 invalid_client`, `"client authentication failed"` — no Basic credentials, a client id outside the client-id grammar (`auth.clients`; refused before the client store is read), an unknown tenant or client id, or a wrong secret. Carries `WWW-Authenticate: Basic realm="cyoda"`. Each of the last three makes the same store read and one bcrypt comparison, and a store-decided `401` is sent no earlier than 500 ms after the request reached the handler, so timing does not tell whether the tenant or the client exists. The no-credentials and malformed-id `401`s are immediate. Re-read the credentials once; do not retry in a loop.
 - `503 temporarily_unavailable`, `"temporarily_unavailable"` (with `Retry-After: 1`) — the client store could not be read, or no client-secret check slot freed up within 1 second (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`). Retry after `Retry-After`, with backoff.
-- `500 server_error`, `"server_error [ticket: <uuid>]"` — any other client-store failure, or a damaged client record or index entry (see `auth.clients`). The ticket names the server's log line; no internal detail is sent. A store failure is never answered `401`. Retry a few times with backoff; if it persists, give the ticket to the operator.
+- `500 server_error`, `"server_error [ticket: <uuid>]"` — any other client-store failure, or a damaged client record (see `auth.clients`). The ticket names the server's log line; no internal detail is sent. A store failure is never answered `401`. Retry a few times with backoff; if it persists, give the ticket to the operator.
 - `400 invalid_request`, `"malformed request body"` — a body over 1 MiB, or one that does not parse as a form.
 - `400 unsupported_grant_type`, `"unsupported_grant_type"` — `grant_type` missing or not one of the two grants.
 - `400 unauthorized_client`, `"this client may only exchange user assertions"` — `client_credentials` by an on-behalf-of client.
@@ -177,9 +178,9 @@ On the token exchange only, after the checks above:
 
 Signing the token can fail too: `500 server_error` with a ticket.
 
-`GET /api/.well-known/jwks.json` (the JWKS document lives under `CYODA_CONTEXT_PATH`, like `/api/oauth/token`) answers `503` with `Retry-After` while the node's key copy is stale. It is a standard JWK Set (RFC 7517) of cyoda's signing keys, served without authentication; it is not described in the OpenAPI document, which covers the API operations. Applications do not need it to call cyoda — cyoda verifies its own tokens — but can use it to verify a cyoda token's signature themselves.
+`GET /api/.well-known/jwks.json` (the JWKS document lives under `CYODA_CONTEXT_PATH`, like the token endpoint) answers `503` with `Retry-After` while the node's key copy is stale. It is a standard JWK Set (RFC 7517) of cyoda's signing keys, served without authentication; it is not described in the OpenAPI document, which covers the API operations. Applications do not need it to call cyoda — cyoda verifies its own tokens — but can use it to verify a cyoda token's signature themselves.
 
-**Rate-limit the token endpoint at ingress.** `/oauth/token` authenticates callers that are not yet authenticated, and each request with an unknown client id or a wrong secret costs one bcrypt comparison. cyoda bounds that work per node with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`; past the bound it answers `503 temporarily_unavailable` and does no more work (it fails closed). The bound protects the node's CPU, not the endpoint's availability: a flood of bad credentials can keep legitimate clients getting `503`. The per-client `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` limit applies only after a client authenticates, so it does not stop such a flood. Deployments must put a per-source rate limit in front of `/api/oauth/token` at the ingress, gateway or load balancer.
+**Rate-limit the token endpoint at ingress.** `/api/tenants/{tenant}/oauth/token` authenticates callers that are not yet authenticated, and each request with an unknown tenant or client id or a wrong secret costs one bcrypt comparison and holds its connection for the 500 ms response-time floor. cyoda bounds that work per node with `CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`; past the bound it answers `503 temporarily_unavailable` and does no more work (it fails closed). The bound protects the node's CPU, not the endpoint's availability: a flood of bad credentials can keep legitimate clients getting `503`. The per-client `CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE` limit applies only after a client authenticates, so it does not stop such a flood. Deployments must put a per-source rate limit in front of `/api/tenants/{tenant}/oauth/token` at the ingress, gateway or load balancer; match the path `^/api/tenants/[^/]+/oauth/token$`. Tenant ids are public identifiers: they appear in URLs and in gateway logs, so put no personal data or secret in one.
 
 ## SEE ALSO
 
@@ -187,4 +188,4 @@ Signing the token can fail too: `500 server_error` with a ticket.
 - `auth.trusted-keys` — register the public key your application signs user assertions with
 - `cli.token` — sign an admin token offline with the signing key
 - `config.auth` — `CYODA_JWT_*` and the user-identifier rule
-- `openapi` — `cyoda help openapi tags`: `/oauth/token` is under the `User, Machine` tag (`user-machine`)
+- `openapi` — `cyoda help openapi tags`: `/api/tenants/{tenant}/oauth/token` is under the `User, Machine` tag (`user-machine`)
