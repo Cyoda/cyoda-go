@@ -1240,33 +1240,43 @@ func TestToken_InvalidTenantSegmentIsInvalidRequest(t *testing.T) {
 	}
 }
 
+// TestToken_InvalidClientFloor pins which answers the invalid-client floor
+// holds: a rejected client (unknown, wrong secret) is answered no sooner than
+// the floor; a request that never reaches the client check (no credentials,
+// malformed id) and a success are not held. The not-held cases run against a
+// handler with a long floor and must return well inside it, so a slow runner
+// (real bcrypt under load or -race) cannot fail them while a held answer
+// still would.
 func TestToken_InvalidClientFloor(t *testing.T) {
 	const floor = 300 * time.Millisecond
+	const longFloor = 5 * time.Second
 	env := setupTokenEnv(t)
-	h := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, floor))
-	timed := func(authHeader string) (int, time.Duration) {
+	run := func(h http.Handler, authHeader string) (int, time.Duration) {
 		start := time.Now()
 		rr := httptest.NewRecorder()
 		h.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", authHeader, nil))
 		return rr.Code, time.Since(start)
 	}
+	held := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, floor))
 	for name, hdr := range map[string]string{
 		"unknown client": basicAuth("nobody", "x"),
 		"wrong secret":   basicAuth(env.clientID, "wrong"),
 	} {
-		if code, d := timed(hdr); code != http.StatusUnauthorized || d < floor {
+		if code, d := run(held, hdr); code != http.StatusUnauthorized || d < floor {
 			t.Errorf("%s: %d after %v, want 401 after >= %v", name, code, d, floor)
 		}
 	}
+	long := routed(auth.NewTokenHandler(env.keyStore, env.trustedKeyStore, env.m2mStore, testIssuer, "", testExpiry, 0, longFloor))
+	const notHeld = 2 * time.Second
 	for name, hdr := range map[string]string{
 		"no credentials": "",
 		"malformed id":   basicAuth("-bad", "x"),
 	} {
-		if code, d := timed(hdr); code != http.StatusUnauthorized || d >= floor {
+		if code, d := run(long, hdr); code != http.StatusUnauthorized || d >= notHeld {
 			t.Errorf("%s: %d after %v, want an immediate 401", name, code, d)
 		}
 	}
-	if code, d := timed(basicAuth(env.clientID, env.clientSecret)); code != http.StatusOK || d >= floor {
+	if code, d := run(long, basicAuth(env.clientID, env.clientSecret)); code != http.StatusOK || d >= notHeld {
 		t.Errorf("success: %d after %v, want an immediate 200", code, d)
 	}
 }

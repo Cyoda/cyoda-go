@@ -1206,6 +1206,7 @@ func TestRecheckClient(t *testing.T) {
 		{"client deleted", &lookupStore{}, codes.Unauthenticated},
 		{"client in another tenant", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-2", SecretGen: 3}}, codes.Unauthenticated},
 		{"secret reset", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 4}}, codes.Unauthenticated},
+		{"client recreated under the id", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 7}}, codes.Unauthenticated},
 		{"storage unavailable", &lookupStore{err: fmt.Errorf("read client: %w", &storageOutageError{})}, codes.Unavailable},
 		{"other store error", &lookupStore{err: errors.New("record does not decode")}, codes.Unavailable},
 	}

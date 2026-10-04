@@ -777,7 +777,7 @@ func TestKVM2MClientStore_OnBehalfOfAndSecretGen(t *testing.T) {
 }
 
 // A new client's secret generation does not start at a fixed value: across
-// creates, the generations differ.
+// creates, the generations differ, and each lies in [1, 2^52].
 func TestKVM2M_SecretGenerationStartsAtRandom(t *testing.T) {
 	s, _ := newM2M(t, 0)
 	seen := map[uint64]bool{}
@@ -790,6 +790,9 @@ func TestKVM2M_SecretGenerationStartsAtRandom(t *testing.T) {
 		c, err := s.Authenticate(systemCtx(), "acme", id, sec)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if c.SecretGen < 1 || c.SecretGen > 1<<52 {
+			t.Fatalf("generation %d outside [1, 2^52]", c.SecretGen)
 		}
 		seen[c.SecretGen] = true
 	}
