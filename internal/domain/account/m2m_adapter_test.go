@@ -1137,3 +1137,90 @@ func TestM2MAdapter_StoreFailure_Returns500WithTicket(t *testing.T) {
 		})
 	}
 }
+
+// createAs posts POST /clients as tenantA's admin with params and returns
+// the recorder.
+func createAs(h *Handler, params genapi.CreateTechnicalUserParams) *httptest.ResponseRecorder {
+	req := withTenantAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.CreateTechnicalUser(rr, req, params)
+	return rr
+}
+
+func strptr(s string) *string { return &s }
+
+func TestCreateTechnicalUser_ChosenID(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr("order-service")})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+	var creds genapi.TechnicalUserCredentialsDto
+	if err := json.Unmarshal(rr.Body.Bytes(), &creds); err != nil || creds.ClientId != "order-service" {
+		t.Fatalf("client_id %q (%v)", creds.ClientId, err)
+	}
+}
+
+func TestCreateTechnicalUser_ChosenIDTaken409(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr("order-service")})
+	rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr("order-service")})
+	if rr.Code != http.StatusConflict || decodeErrCode(t, rr.Body.Bytes()) != common.ErrCodeM2MClientExists {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTechnicalUser_ChosenIDGrammar400(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	for _, id := range []string{"", "-x", "a:b", "a b", "system", "SYSTEM"} {
+		rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr(id)})
+		if rr.Code != http.StatusBadRequest || decodeErrCode(t, rr.Body.Bytes()) != common.ErrCodeBadRequest {
+			t.Errorf("%q: status %d: %s", id, rr.Code, rr.Body.String())
+		}
+	}
+	if got := listStored(t, h, tenantA); len(got) != 0 {
+		t.Fatalf("refused creates stored %d clients", len(got))
+	}
+}
+
+func TestCreateTechnicalUser_ClientIDLengthBound(t *testing.T) {
+	h := newM2MAdapterFixture(t, false)
+	if rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr(strings.Repeat("a", 100))}); rr.Code != http.StatusOK {
+		t.Errorf("100 chars: %d", rr.Code)
+	}
+	if rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr(strings.Repeat("a", 101))}); rr.Code != http.StatusBadRequest {
+		t.Errorf("101 chars: %d", rr.Code)
+	}
+}
+
+func TestCreateTechnicalUser_TakenIDBeforeCap(t *testing.T) {
+	feats := auth.DefaultIAMFeatures()
+	feats.M2MClientMaxPerTenant = 1
+	h := New(nil, nil, newM2MStore(t, 1), feats, auth.OperatorGuard{})
+	createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr("only")})
+	rr := createAs(h, genapi.CreateTechnicalUserParams{ClientId: strptr("only")})
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("taken id at the cap: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestCreateTechnicalUser_CheckOrder(t *testing.T) {
+	bad := genapi.CreateTechnicalUserParams{ClientId: strptr("-x"), WithAdminRole: ptr(true)}
+	// 403 before the id is looked at.
+	h := newM2MAdapterFixture(t, false)
+	req := withTenantNonAdminCtx(httptest.NewRequest(http.MethodPost, "/clients", nil), tenantA)
+	rr := httptest.NewRecorder()
+	h.CreateTechnicalUser(rr, req, bad)
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("non-admin: %d", rr.Code)
+	}
+	// 501 (mock mode) before the id is looked at.
+	mock := New(nil, nil, nil, auth.DefaultIAMFeatures(), auth.OperatorGuard{})
+	if rr := createAs(mock, bad); rr.Code != http.StatusNotImplemented {
+		t.Errorf("mock: %d", rr.Code)
+	}
+	// The id grammar before FEATURE_DISABLED (flag off, withAdminRole=true).
+	if rr := createAs(h, bad); rr.Code != http.StatusBadRequest {
+		t.Errorf("grammar vs feature flag: %d", rr.Code)
+	}
+}

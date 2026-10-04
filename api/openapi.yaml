@@ -692,6 +692,20 @@ paths:
       operationId: createTechnicalUser
       x-cyoda-iam-mode: jwt
       parameters:
+        - name: clientId
+          in: query
+          description: "The new client's id, chosen by the caller and unique in
+            the caller's tenant. Letters, digits, '.', '_' and '-', starting
+            with a letter or digit, at most 100 characters, case significant;
+            'system' in any letter case is reserved. Absent: an id is
+            generated (16 characters from 0-9 and A-V). An id the tenant
+            already holds answers 409 M2M_CLIENT_EXISTS.
+            "
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         - name: withAdminRole
           in: query
           description: "When true, the created M2M client will additionally receive
@@ -725,7 +739,8 @@ paths:
             `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; BAD_REQUEST:
             `withAdminRole` or `onBehalfOf` is not a boolean, `withAdminRole=true`
             is combined with `onBehalfOf=true`, or `onBehalfOf=true` is
-            requested in the `PLATFORM` tenant."
+            requested in the `PLATFORM` tenant, or `clientId` is outside the
+            client-id grammar or empty."
           content:
             application/problem+json:
               schema:
@@ -738,6 +753,13 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "M2M_CLIENT_EXISTS: the caller's tenant already holds a
+            client with this clientId, or another create of it wrote first."
           content:
             application/problem+json:
               schema:
@@ -914,6 +936,12 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: M2M client not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "CONFLICT (retryable): another change to the client won the race; retry."
           content:
             application/problem+json:
               schema:

@@ -3379,6 +3379,9 @@ type GetStateMachineFinishedEventParams struct {
 
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
+	// ClientId The new client's id, chosen by the caller and unique in the caller's tenant. Letters, digits, '.', '_' and '-', starting with a letter or digit, at most 100 characters, case significant; 'system' in any letter case is reserved. Absent: an id is generated (16 characters from 0-9 and A-V). An id the tenant already holds answers 409 M2M_CLIENT_EXISTS.
+	ClientId *string `form:"clientId,omitempty" json:"clientId,omitempty"`
+
 	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
 
@@ -5774,6 +5777,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params CreateTechnicalUserParams
+
+	// ------------- Optional query parameter "clientId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "clientId", r.URL.Query(), &params.ClientId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "clientId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "clientId", Err: err})
+		}
+		return
+	}
 
 	// ------------- Optional query parameter "withAdminRole" -------------
 

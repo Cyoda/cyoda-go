@@ -147,14 +147,24 @@ func writeSecretCheckBusy(w http.ResponseWriter, r *http.Request, err error) boo
 	return true
 }
 
-// CreateTechnicalUser implements POST /clients?withAdminRole=<bool>&onBehalfOf=<bool>.
-// Generates a 16-char base32-hex clientId and returns the freshly issued
+// CreateTechnicalUser implements POST /clients?clientId=&withAdminRole=<bool>&onBehalfOf=<bool>.
+// The clientId is the caller's choice (unique in the caller's tenant) or, when
+// absent, a generated 16-char base32-hex one. Returns the freshly issued
 // plaintext secret exactly once.
 func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, params genapi.CreateTechnicalUserParams) {
 	if !auth.RequireAdmin(w, r) {
 		return
 	}
 	if !h.requireM2MStore(w, r) {
+		return
+	}
+
+	// A chosen id is checked before anything else about the request: an
+	// empty or malformed one is the caller's mistake whatever the flags say.
+	chosen := params.ClientId
+	if chosen != nil && !auth.ValidClientID(*chosen) {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+			common.ErrCodeBadRequest, "invalid clientId"))
 		return
 	}
 
@@ -182,42 +192,43 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 		roles = append(roles, "ROLE_ADMIN")
 	}
 
-	// Generate clientID and Create atomically — Store rejects collisions
-	// via ErrM2MClientExists. Retry once on the astronomical (~1 in 2^80)
-	// collision; a second collision is a defect (signals broken entropy
-	// source) and returns 500.
-	var clientID string
-	var secret string
-	for attempt := 0; attempt < 2; attempt++ {
-		cid, err := generateClientID()
-		if err != nil {
-			common.WriteError(w, r, common.Internal("generateClientID", err))
-			return
+	var clientID, secret string
+	for attempt := 0; ; attempt++ {
+		cid := ""
+		if chosen != nil {
+			cid = *chosen
+		} else {
+			generated, err := generateClientID()
+			if err != nil {
+				common.WriteError(w, r, common.Internal("generateClientID", err))
+				return
+			}
+			cid = generated
 		}
-		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, roles, onBehalfOf)
-		if createErr == nil {
-			clientID = cid
-			secret = sec
+		sec, err := h.m2mClientStore.Create(r.Context(), tID, cid, roles, onBehalfOf)
+		if err == nil {
+			clientID, secret = cid, sec
 			break
 		}
-		if errors.Is(createErr, auth.ErrM2MClientExists) {
-			// Astronomical-probability collision; loop once more.
-			continue
-		}
-		if errors.Is(createErr, auth.ErrM2MClientCapReached) {
+		switch {
+		case errors.Is(err, auth.ErrM2MClientExists) && chosen != nil:
+			common.WriteError(w, r, common.Operational(http.StatusConflict,
+				common.ErrCodeM2MClientExists, "the tenant already holds a client with this clientId"))
+			return
+		case errors.Is(err, auth.ErrM2MClientExists) && attempt == 0:
+			continue // a generated id collided (about 1 in 2^80): draw again, once
+		case errors.Is(err, auth.ErrM2MClientExists):
+			common.WriteError(w, r, common.Internal("generateClientID-collision", errors.New("clientId collision after retry")))
+			return
+		case errors.Is(err, auth.ErrM2MClientCapReached):
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
 				common.ErrCodeM2MClientCapReached, "M2M client cap reached for tenant"))
 			return
 		}
-		if writeSecretCheckBusy(w, r, createErr) {
+		if writeSecretCheckBusy(w, r, err) {
 			return
 		}
-		common.WriteError(w, r, common.Internal("m2mClientStore.Create", createErr))
-		return
-	}
-	if clientID == "" {
-		common.WriteError(w, r, common.Internal("generateClientID-collision",
-			errors.New("clientId collision after retry")))
+		common.WriteError(w, r, common.Internal("m2mClientStore.Create", err))
 		return
 	}
 

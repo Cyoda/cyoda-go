@@ -47,6 +47,7 @@ const (
 	ErrCodeTrustedKeyNotFound   = "TRUSTED_KEY_NOT_FOUND"
 	ErrCodeM2MClientNotFound    = "M2M_CLIENT_NOT_FOUND"
 	ErrCodeM2MClientCapReached  = "M2M_CLIENT_CAP_REACHED"
+	ErrCodeM2MClientExists      = "M2M_CLIENT_EXISTS"
 	ErrCodeUnsupportedAlgorithm = "UNSUPPORTED_ALGORITHM"
 	ErrCodeUnsupportedKeyType   = "UNSUPPORTED_KEY_TYPE"
 	ErrCodeServerError          = "SERVER_ERROR"
@@ -314,6 +315,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeJoinedResponseTooLarge:           {},
 	ErrCodeKeypairNotFound:                  {},
 	ErrCodeM2MClientCapReached:              {},
+	ErrCodeM2MClientExists:                  {},
 	ErrCodeM2MClientNotFound:                {},
 	ErrCodeMalformedRequest:                 {},
 	ErrCodeMissingGroupBy:                   {},

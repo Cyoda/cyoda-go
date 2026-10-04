@@ -9,6 +9,7 @@ see_also:
   - auth.tokens
   - cli.token
   - config.auth
+  - errors.M2M_CLIENT_EXISTS
   - errors.M2M_CLIENT_NOT_FOUND
   - errors.M2M_CLIENT_CAP_REACHED
   - errors.FEATURE_DISABLED
