@@ -68,7 +68,7 @@ func TestAuthService_FullFlow(t *testing.T) {
 	defer server.Close()
 
 	// Create M2M client directly via store.
-	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
+	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}

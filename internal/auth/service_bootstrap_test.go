@@ -57,10 +57,10 @@ func TestBootstrapKey_ConfiguredIAMFeaturesKept(t *testing.T) {
 		IAMFeatures:   features,
 	})
 	store := svc.M2MClientStore()
-	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT1", "user-1", []string{"ROLE_M2M"}, false); err != nil {
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT1", []string{"ROLE_M2M"}, false); err != nil {
 		t.Fatalf("first client: %v", err)
 	}
-	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT2", "user-2", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientCapReached) {
+	if _, err := store.Create(systemCtx(), "tenant-a", "CLIENT2", []string{"ROLE_M2M"}, false); !errors.Is(err, auth.ErrM2MClientCapReached) {
 		t.Fatalf("second client with M2MClientMaxPerTenant=1: err = %v, want ErrM2MClientCapReached", err)
 	}
 }

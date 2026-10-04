@@ -14,13 +14,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-const (
-	m2mClientsNamespacePrefix = "m2m-clients:"
-	m2mClientIndexNamespace   = "m2m-client-ids"
-	// m2mDecoyKey is read on an index miss so every decided token request
-	// makes two reads. It is outside the client-id grammar, so never written.
-	m2mDecoyKey = "-"
-)
+// m2mClientsNamespacePrefix prefixes the KV namespace of each tenant's
+// client records. There is one namespace per tenant and no other: a client
+// is found by (tenant, client id).
+const m2mClientsNamespacePrefix = "m2m-clients:"
 
 // The bcrypt cost a stored secret hash may carry. The encoder writes
 // bcrypt.DefaultCost; a lower cost weakens the hash, and a stored cost bounds
@@ -51,8 +48,9 @@ func ValidClientID(id string) bool {
 	return clientIDGrammar.MatchString(id) && !strings.EqualFold(id, common.ReservedSystemUserID)
 }
 
-// m2mTenantNamespace is the KV namespace holding tenant's client records.
-// Tenant ids cannot contain ':', so namespaces cannot alias.
+// m2mTenantNamespace is the KV namespace holding tenant's client records,
+// keyed by client id. Tenant ids cannot contain ':', so namespaces cannot
+// alias.
 func m2mTenantNamespace(t spi.TenantID) string { return m2mClientsNamespacePrefix + string(t) }
 
 type m2mClientRecord struct {
@@ -65,10 +63,6 @@ type m2mClientRecord struct {
 	SecretGen    uint64   `json:"secretGen"`
 	CreatedAt    string   `json:"createdAt"`
 	UpdatedAt    string   `json:"updatedAt"`
-}
-
-type m2mIndexEntry struct {
-	TenantID string `json:"tenantId"`
 }
 
 func validateM2MClient(c *M2MClient) error {
@@ -99,8 +93,8 @@ func validateM2MClient(c *M2MClient) error {
 	if cost < minM2MBcryptCost || cost > maxM2MBcryptCost {
 		return fmt.Errorf("hashedSecret has bcrypt cost %d, outside [%d, %d]", cost, minM2MBcryptCost, maxM2MBcryptCost)
 	}
-	if c.SecretGen < 1 {
-		return errors.New("secretGen must be at least 1")
+	if c.SecretGen < 1 || c.SecretGen >= 1<<53 {
+		return errors.New("secretGen outside [1, 2^53)")
 	}
 	if !StorableTime(c.CreatedAt) || !StorableTime(c.UpdatedAt) {
 		return errors.New("timestamp out of range")
@@ -144,22 +138,4 @@ func decodeClientRecord(tenant spi.TenantID, key string, data []byte) (*M2MClien
 		return nil, fmt.Errorf("%w: %w", errM2MUndecodable, err)
 	}
 	return c, nil
-}
-
-func encodeIndexEntry(t spi.TenantID) ([]byte, error) {
-	if err := common.ValidateTenantID(t); err != nil {
-		return nil, fmt.Errorf("failed to encode m2m client index entry: %w", err)
-	}
-	return json.Marshal(m2mIndexEntry{TenantID: string(t)})
-}
-
-func decodeIndexEntry(data []byte) (spi.TenantID, error) {
-	var e m2mIndexEntry
-	if err := json.Unmarshal(data, &e); err != nil {
-		return "", fmt.Errorf("%w: %w", errM2MUndecodable, err)
-	}
-	if err := common.ValidateTenantID(spi.TenantID(e.TenantID)); err != nil {
-		return "", fmt.Errorf("%w: %w", errM2MUndecodable, err)
-	}
-	return spi.TenantID(e.TenantID), nil
 }

@@ -99,8 +99,8 @@ type verifiedSecret struct {
 	sum    [32]byte
 }
 
-// verifiedSecretCache maps a client of a tenant to the secret that last matched its
-// stored hash on this node.
+// verifiedSecretCache maps a client of a tenant to the secret that last
+// matched its stored hash on this node.
 type verifiedSecretCache struct {
 	mu      sync.Mutex
 	max     int
@@ -127,8 +127,8 @@ func (c *verifiedSecretCache) put(k clientKey, hashed string, sum [32]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if _, ok := c.entries[k]; !ok && len(c.entries) >= c.max {
-		for k := range c.entries {
-			delete(c.entries, k)
+		for victim := range c.entries {
+			delete(c.entries, victim)
 			break
 		}
 	}

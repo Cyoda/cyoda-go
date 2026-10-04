@@ -93,9 +93,10 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 //
 // Order: group refusal (400, by the tenant route group before the handler) →
 // no addressed tenant (500) → method (405) → Content-Type (400) → client
-// authentication (401, a client of another tenant included) → body. The
-// checks before the body read headers only, so a body that is not a form is
-// never read, and no body is read before the client has authenticated.
+// authentication in the addressed tenant (401; a client of another tenant is
+// not found there) → body. The checks before the body read headers only, so
+// a body that is not a form is never read, and no body is read before the
+// client has authenticated.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := tenantroute.Addressed(r.Context())
 	if !ok {
@@ -128,7 +129,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A store failure is the server failing, not the credentials being
 	// wrong: it never answers 401. Neither does a node with no free
 	// secret-check slot: that is a retryable 503.
-	client, err := h.m2mStore.Authenticate(r.Context(), clientID, secret)
+	client, err := h.m2mStore.Authenticate(r.Context(), tenant, clientID, secret)
 	if errors.Is(err, ErrInvalidClient) {
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
@@ -139,11 +140,6 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		writeTokenStoreError(w, "m2mStore.Authenticate", err)
-		return
-	}
-	// A client of another tenant is no client of this one.
-	if client.TenantID != tenant {
-		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
 

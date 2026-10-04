@@ -82,12 +82,12 @@ func setupTokenEnv(t *testing.T) *testTokenEnv {
 	}
 	// A client's user id is its client id.
 	clientID := "TESTM2MCLIENT"
-	clientSecret, err := m2mStore.Create(systemCtx(), spi.TenantID(tenantID), clientID, clientID, []string{"ROLE_M2M"}, false)
+	clientSecret, err := m2mStore.Create(systemCtx(), spi.TenantID(tenantID), clientID, []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
 	oboID := "TESTOBOCLIENT"
-	oboSecret, err := m2mStore.Create(systemCtx(), spi.TenantID(tenantID), oboID, oboID, []string{"ROLE_M2M"}, true)
+	oboSecret, err := m2mStore.Create(systemCtx(), spi.TenantID(tenantID), oboID, []string{"ROLE_M2M"}, true)
 	if err != nil {
 		t.Fatalf("failed to create OBO client: %v", err)
 	}
@@ -266,7 +266,7 @@ type failingM2MStore struct {
 	err error
 }
 
-func (f failingM2MStore) Authenticate(context.Context, string, string) (*auth.M2MClient, error) {
+func (f failingM2MStore) Authenticate(context.Context, spi.TenantID, string, string) (*auth.M2MClient, error) {
 	return nil, f.err
 }
 
@@ -344,9 +344,13 @@ func TestTokenClientCredentialsValid(t *testing.T) {
 	if err := auth.Verify(parsed.SigningInput, parsed.Signature, &env.signingKey.PublicKey); err != nil {
 		t.Fatalf("token signature verification failed: %v", err)
 	}
+	stored, err := env.m2mStore.Lookup(systemCtx(), spi.TenantID(env.tenantID), env.clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for k, want := range map[string]any{
 		"sub": env.clientID, "caas_user_id": env.clientID, "caas_org_id": env.tenantID,
-		"iss": testIssuer, "caas_tier": "unlimited", "cgen": float64(1),
+		"iss": testIssuer, "caas_tier": "unlimited", "cgen": float64(stored.SecretGen),
 	} {
 		if claims[k] != want {
 			t.Errorf("%s = %v, want %v", k, claims[k], want)
@@ -429,18 +433,23 @@ func TestTokenClientCredentials_OBOClientRefused(t *testing.T) {
 	}
 }
 
-// cgen is the client's secret generation: 1 at creation, 2 after one reset.
+// cgen is the client's secret generation as stored: its random start at
+// creation, one more after a reset.
 func TestTokenClientCredentials_CarriesCgen(t *testing.T) {
 	env := setupTokenEnv(t)
-	if _, claims := issued(t, env.clientCredentials(t, env.clientID, env.clientSecret)); claims["cgen"] != float64(1) {
-		t.Fatalf("cgen = %v, want 1", claims["cgen"])
+	c, err := env.m2mStore.Lookup(systemCtx(), spi.TenantID(env.tenantID), env.clientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, claims := issued(t, env.clientCredentials(t, env.clientID, env.clientSecret)); claims["cgen"] != float64(c.SecretGen) {
+		t.Fatalf("cgen = %v, want %d", claims["cgen"], c.SecretGen)
 	}
 	secret, _, err := env.m2mStore.ResetSecret(systemCtx(), spi.TenantID(env.tenantID), env.clientID)
 	if err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if _, claims := issued(t, env.clientCredentials(t, env.clientID, secret)); claims["cgen"] != float64(2) {
-		t.Fatalf("cgen after reset = %v, want 2", claims["cgen"])
+	if _, claims := issued(t, env.clientCredentials(t, env.clientID, secret)); claims["cgen"] != float64(c.SecretGen+1) {
+		t.Fatalf("cgen after reset = %v, want %d", claims["cgen"], c.SecretGen+1)
 	}
 }
 
@@ -1197,6 +1206,21 @@ func TestToken_ClientAtAnotherTenantsURLIsInvalidClient(t *testing.T) {
 	}
 	if rr.Header().Get("WWW-Authenticate") != unknown.Header().Get("WWW-Authenticate") {
 		t.Fatalf("WWW-Authenticate %q, unknown client %q", rr.Header().Get("WWW-Authenticate"), unknown.Header().Get("WWW-Authenticate"))
+	}
+}
+
+// A client id may be form-urlencoded in Basic credentials (RFC 6749 §2.3.1).
+func TestToken_FormEncodedChosenIDAuthenticates(t *testing.T) {
+	env := setupTokenEnv(t)
+	sec, err := env.m2mStore.Create(systemCtx(), spi.TenantID(env.tenantID), "my-client", []string{"ROLE_M2M"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr := httptest.NewRecorder()
+	env.handler.ServeHTTP(rr, makeTokenRequest(env.tenantID, "client_credentials", basicAuth("my%2Dclient", sec), nil))
+	_, claims := issued(t, rr)
+	if claims["sub"] != "my-client" {
+		t.Fatalf("sub %v", claims["sub"])
 	}
 }
 

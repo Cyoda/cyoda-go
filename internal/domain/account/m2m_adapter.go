@@ -125,6 +125,11 @@ func writeM2MClientError(w http.ResponseWriter, r *http.Request, op string, err 
 	if writeSecretCheckBusy(w, r, err) {
 		return
 	}
+	if errors.Is(err, auth.ErrM2MClientChanged) {
+		common.WriteError(w, r, common.Operational(http.StatusConflict,
+			common.ErrCodeConflict, "the client changed during the request — retry").AsRetryable())
+		return
+	}
 	common.WriteError(w, r, common.Internal(op, err))
 }
 
@@ -188,7 +193,7 @@ func (h *Handler) CreateTechnicalUser(w http.ResponseWriter, r *http.Request, pa
 			common.WriteError(w, r, common.Internal("generateClientID", err))
 			return
 		}
-		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, cid, roles, onBehalfOf)
+		sec, createErr := h.m2mClientStore.Create(r.Context(), tID, cid, roles, onBehalfOf)
 		if createErr == nil {
 			clientID = cid
 			secret = sec

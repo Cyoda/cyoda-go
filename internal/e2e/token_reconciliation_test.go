@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -117,10 +118,12 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 		t.Fatalf("client_credentials: expires_in: got %d, want >0; body=%s", tok.ExpiresIn, raw)
 	}
 	// §4.2: the client is sub and caas_user_id, and cgen is its secret
-	// generation, 1 for a client whose secret was never reset.
+	// generation: for a client whose secret was never reset, the random start
+	// drawn at creation, an integer in [1, 2^52].
 	claims := decodeJWTPayload(t, tok.AccessToken)
-	if claims["sub"] != id || claims["caas_user_id"] != id || claims["cgen"] != float64(1) {
-		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, 1", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
+	gen, _ := claims["cgen"].(float64)
+	if claims["sub"] != id || claims["caas_user_id"] != id || gen < 1 || gen > 1<<52 || gen != math.Trunc(gen) {
+		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, an integer in [1, 2^52]", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
 	}
 }
 
