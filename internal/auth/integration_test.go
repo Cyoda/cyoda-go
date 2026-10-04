@@ -46,20 +46,20 @@ func TestIntegration_JWTMode_CreateM2M_GetToken_ValidateToken(t *testing.T) {
 	defer srv.Close()
 
 	// Create M2M client via store (normally would be via API, but testing the flow)
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}
 
-	// Issue token via POST /oauth/token
+	// Issue token via POST /tenants/{tenant}/oauth/token
 	body := "grant_type=client_credentials"
-	req, _ := http.NewRequest("POST", srv.URL+"/oauth/token", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srv.URL+"/tenants/tenant-1/oauth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("TESTAPP:"+secret)))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /oauth/token: %v", err)
+		t.Fatalf("POST /tenants/{tenant}/oauth/token: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -172,19 +172,19 @@ func TestIntegration_MultiNode_CrossNodeTokenValidation(t *testing.T) {
 	}
 
 	// Create M2M client on node A and issue a token
-	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
+	secret, err := svcA.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client on node A: %v", err)
 	}
 
 	body := "grant_type=client_credentials"
-	req, _ := http.NewRequest("POST", srvA.URL+"/oauth/token", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srvA.URL+"/tenants/tenant-1/oauth/token", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("TESTAPP:"+secret)))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Fatalf("POST /oauth/token on node A: %v", err)
+		t.Fatalf("POST /tenants/{tenant}/oauth/token on node A: %v", err)
 	}
 	defer resp.Body.Close()
 
@@ -232,7 +232,7 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 	defer srv.Close()
 
 	// Create an M2M client so we can authenticate
-	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", "TESTAPP", []string{"ROLE_ADMIN"}, false)
+	secret, err := svc.M2MClientStore().Create(systemCtx(), "tenant-1", "TESTAPP", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("Create M2M client: %v", err)
 	}
@@ -240,13 +240,13 @@ func TestIntegration_RequestBodySizeLimit(t *testing.T) {
 	t.Run("token endpoint rejects oversized body", func(t *testing.T) {
 		// Send a body larger than 1MB to the token endpoint
 		oversized := strings.Repeat("x", 1<<20+1)
-		req, _ := http.NewRequest("POST", srv.URL+"/oauth/token", strings.NewReader(oversized))
+		req, _ := http.NewRequest("POST", srv.URL+"/tenants/tenant-1/oauth/token", strings.NewReader(oversized))
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte("TESTAPP:"+secret)))
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			t.Fatalf("POST /oauth/token: %v", err)
+			t.Fatalf("POST /tenants/{tenant}/oauth/token: %v", err)
 		}
 		defer resp.Body.Close()
 

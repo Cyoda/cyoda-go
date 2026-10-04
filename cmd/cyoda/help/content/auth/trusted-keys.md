@@ -26,7 +26,7 @@ auth.trusted-keys — register a public key with cyoda so that user assertions y
 
 Your application signs its users in and decides what each may do. You want it to call cyoda for those users, so that each change is recorded for the user, with the application's client as its executor.
 
-Register the public key once. For each user, your application signs a short JWT — the *user assertion*, sent as the `subject_token` — and its on-behalf-of client exchanges it at `POST /api/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user, carrying the client's roles. cyoda records the user the assertion names; it does not verify the user. See `auth.tokens` for the grant.
+Register the public key once. For each user, your application signs a short JWT — the *user assertion*, sent as the `subject_token` — and its on-behalf-of client exchanges it at `POST /api/tenants/{tenant}/oauth/token` with the token-exchange grant. cyoda returns a cyoda token for that user, carrying the client's roles. cyoda records the user the assertion names; it does not verify the user. See `auth.tokens` for the grant.
 
 A trusted-key JWT is used **only** as the subject token of that grant. cyoda does not accept it as a bearer token on API calls.
 
@@ -110,6 +110,15 @@ delete is in force on every node when the call returns. A reactivation's
 the node that takes the call, and each node checks the window against its own
 clock.
 
+Changes to one key are not coordinated across nodes: two changes to the same
+key at the same moment on two nodes resolve by last write. Run one
+key-management operation at a time per key, for example from one operator
+script. A delete racing a reactivation of the same key on another node can leave the
+deleted key active again, and one racing an invalidation or a rotation can
+leave it back as an inactive record; if a deleted key reappears, delete it
+again. A registration of the same key id that lands after a delete leaves the
+key registered.
+
 ### Delete
 
 ```bash
@@ -133,7 +142,7 @@ Your on-behalf-of client exchanges it:
 ```bash
 # The client secret and the subject token go on stdin (-K-), not the
 # command line.
-curl -X POST https://cyoda.example.com/api/oauth/token \
+curl -X POST https://cyoda.example.com/api/tenants/acme/oauth/token \
   -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \
   -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \
   -K- <<EOF

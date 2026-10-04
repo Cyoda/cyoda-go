@@ -36,7 +36,7 @@ func RunM2MClientVisibleAcrossNodes(t *testing.T, fixture MultiNodeFixture) {
 		t.Fatalf("create on A: response has no client_id/client_secret (decode error: %v)", err)
 	}
 
-	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], cred.ID, cred.Secret); err != nil || st != http.StatusOK {
+	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], tenant.ID, cred.ID, cred.Secret); err != nil || st != http.StatusOK {
 		t.Fatalf("token on B for a client created on A: %d %v, want 200", st, err)
 	}
 
@@ -50,17 +50,17 @@ func RunM2MClientVisibleAcrossNodes(t *testing.T, fixture MultiNodeFixture) {
 	if err := json.Unmarshal(resetBody, &reset); err != nil || reset.Secret == "" {
 		t.Fatalf("reset on A: response has no client_secret (decode error: %v)", err)
 	}
-	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], cred.ID, cred.Secret); err != nil || st != http.StatusUnauthorized {
+	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], tenant.ID, cred.ID, cred.Secret); err != nil || st != http.StatusUnauthorized {
 		t.Fatalf("old secret on B after reset on A: %d %v, want 401", st, err)
 	}
-	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], cred.ID, reset.Secret); err != nil || st != http.StatusOK {
+	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], tenant.ID, cred.ID, reset.Secret); err != nil || st != http.StatusOK {
 		t.Fatalf("new secret on B after reset on A: %d %v, want 200", st, err)
 	}
 
 	if delCode, _, err := a.DeleteClientRaw(t, cred.ID); err != nil || delCode != http.StatusOK {
 		t.Fatalf("delete on A: %d %v", delCode, err)
 	}
-	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], cred.ID, reset.Secret); err != nil || st != http.StatusUnauthorized {
+	if _, st, err := client.FetchClientCredentialsToken(ctx, urls[1], tenant.ID, cred.ID, reset.Secret); err != nil || st != http.StatusUnauthorized {
 		t.Fatalf("deleted client's token on B: %d %v, want 401", st, err)
 	}
 }

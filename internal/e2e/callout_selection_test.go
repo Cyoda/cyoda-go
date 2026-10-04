@@ -47,7 +47,7 @@ func TestCalloutSelection_TwoTenantsOneTag(t *testing.T) {
 	_ = h.token(t)
 	sfx := randSuffix(t) // repeated runs (go test -count=N) share this package's Postgres testcontainer
 	clientB, secretB := h.provisionTenant(t, "s11-tenant-b-"+sfx, "s11-user-b-"+sfx)
-	bearerB := h.fetchTokenFor(t, clientB, secretB)
+	bearerB := h.fetchTokenFor(t, "s11-tenant-b-"+sfx, clientB, secretB)
 
 	asB := func(method, path, body string) (int, string) {
 		resp := h.doAuthBearer(t, bearerB, method, path, body, "")

@@ -612,10 +612,8 @@ paths:
         cluster: any node answers with the same list.
 
 
-        A client whose record was written back without its index entry (a
-        secret reset that raced a delete) is listed but cannot authenticate;
-        deleting it removes it. A stored client that cannot be read back is
-        left out and logged.
+        A stored client record that cannot be decoded is left out of the list
+        and logged; it still counts toward the cap, and deleting it removes it.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -692,6 +690,20 @@ paths:
       operationId: createTechnicalUser
       x-cyoda-iam-mode: jwt
       parameters:
+        - name: clientId
+          in: query
+          description: "The new client's id, chosen by the caller and unique in
+            the caller's tenant. Letters, digits, '.', '_' and '-', starting
+            with a letter or digit, at most 100 characters, case significant;
+            'system' in any letter case is reserved. Absent: an id is
+            generated (16 characters from 0-9 and A-V). An id the tenant
+            already holds answers 409 M2M_CLIENT_EXISTS.
+            "
+          required: false
+          schema:
+            type: string
+            maxLength: 100
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         - name: withAdminRole
           in: query
           description: "When true, the created M2M client will additionally receive
@@ -725,7 +737,8 @@ paths:
             `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients; BAD_REQUEST:
             `withAdminRole` or `onBehalfOf` is not a boolean, `withAdminRole=true`
             is combined with `onBehalfOf=true`, or `onBehalfOf=true` is
-            requested in the `PLATFORM` tenant."
+            requested in the `PLATFORM` tenant, or `clientId` is outside the
+            client-id grammar or empty."
           content:
             application/problem+json:
               schema:
@@ -738,6 +751,13 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "403":
           description: Forbidden - Insufficient permissions
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "M2M_CLIENT_EXISTS: the caller's tenant already holds a
+            client with this clientId, or another create of it wrote first."
           content:
             application/problem+json:
               schema:
@@ -797,13 +817,13 @@ paths:
       parameters:
         - name: clientId
           in: path
-          description: The client ID of the M2M client to delete
+          description: "The client ID of the M2M client to delete. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           required: true
           schema:
             type: string
             maxLength: 100
             minLength: 1
-            pattern: ^[A-Za-z0-9]+$
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
       responses:
         "200":
           description: M2M client deleted successfully
@@ -837,10 +857,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable index entry naming a
-            client absent from the caller's tenant (ownership cannot be
-            proven). An undecodable index entry of a client present in the
-            caller's tenant is removed instead, answering `200`.
+            generic message). A client record that cannot be decoded is
+            removed instead, answering `200`.
           content:
             application/problem+json:
               schema:
@@ -880,13 +898,13 @@ paths:
       parameters:
         - name: clientId
           in: path
-          description: The client ID of the M2M client whose secret should be reset
+          description: "The client ID of the M2M client whose secret should be reset. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           required: true
           schema:
             type: string
             maxLength: 100
             minLength: 1
-            pattern: ^[A-Za-z0-9]+$
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
       responses:
         "200":
           description: Client secret reset successfully
@@ -918,12 +936,17 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: "CONFLICT (retryable): another change to the client won the race; retry."
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable record, or an
-            undecodable index entry of a client whose record the caller's
-            tenant holds. An id with no record in the caller's tenant answers
-            `404`, whatever its index entry.
+            generic message), including a client record that cannot be
+            decoded. An id with no record in the caller's tenant answers
+            `404`.
           content:
             application/problem+json:
               schema:
@@ -5809,7 +5832,7 @@ paths:
         Registers a public key that verifies user assertions. An application
         signs a user assertion with the matching private key, and an
         on-behalf-of client of the same tenant exchanges it for a token at
-        `POST /oauth/token` (token exchange). A trusted key never verifies a
+        `POST /tenants/{tenant}/oauth/token` (token exchange). A trusted key never verifies a
         bearer token.
 
         The key is bound to the caller's tenant (legalEntityId). Key ids are
@@ -6102,13 +6125,14 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
       security:
         - bearerAuth: []
-  /oauth/token:
+  /tenants/{tenant}/oauth/token:
     post:
       tags:
         - User, Machine
       summary: Obtain access token for M2M client
       description: >
-        Authenticates a M2M client and returns an access token.
+        Authenticates a M2M client and returns an access token. A client is
+        found by (tenant, client id): the tenant is the one in the path.
 
 
         Supports two grant types, each for one kind of client:
@@ -6137,6 +6161,20 @@ paths:
         serves as the authentication entry point.
       operationId: getTechnicalUserToken
       parameters:
+        - name: tenant
+          in: path
+          required: true
+          description: >
+            The tenant the client belongs to. Letters, digits, ".", "_" and
+            "-", starting with a letter or digit, at most 100 characters,
+            case significant, never percent-encoded; SYSTEM (any letter case)
+            is refused. A path that breaks these rules answers 400
+            invalid_request "invalid tenant".
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 100
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         - name: Authorization
           in: header
           required: false
@@ -6180,8 +6218,8 @@ paths:
           description: Bad request - unsupported_grant_type (grant_type missing or
             not supported); unauthorized_client (client_credentials by an
             on-behalf-of client, or a token exchange by any other client); or
-            invalid_request (a Content-Type other than
-            application/x-www-form-urlencoded, a body over 1 MiB or one that
+            invalid_request (an invalid tenant in the path; a Content-Type
+            other than application/x-www-form-urlencoded, a body over 1 MiB or one that
             does not parse as a form; on the token exchange, a
             forbidden RFC 8693 parameter - actor_token, actor_token_type,
             resource, audience, scope, requested_token_type - even empty, a
@@ -6196,8 +6234,10 @@ paths:
                 $ref: "#/components/schemas/ErrorResponseDto"
         "401":
           description: Unauthorized - invalid_client (no Basic credentials, a
-            client id outside ^[A-Za-z0-9]{1,100}$, an unknown client id, or a
-            wrong secret). Carries WWW-Authenticate Basic realm="cyoda".
+            client id outside ^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$, an unknown tenant, an
+            unknown client id, or a wrong secret). A 401 decided after reading
+            the client store is held for 500 ms; a 401 for missing credentials or a
+            malformed client id is immediate. Carries WWW-Authenticate Basic realm="cyoda".
           headers:
             WWW-Authenticate:
               description: The client authentication scheme and realm, Basic realm="cyoda".
@@ -6243,7 +6283,7 @@ paths:
         "500":
           description: Internal Server Error - server_error (ticket in
             error_description, generic message) - the client or trusted-key
-            store failed, including an undecodable record or index entry, or
+            store failed, including an undecodable record, or
             signing failed.
           content:
             application/json:
@@ -9272,12 +9312,11 @@ components:
       properties:
         client_id:
           type: string
-          description: The client identifier for the M2M client. Generated
-            ids are 16 characters from 0-9 and A-V.
+          description: "Chosen by the caller (query parameter clientId) or generated: 16 characters from 0-9 and A-V. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
-          pattern: ^[A-Za-z0-9]+$
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         client_secret:
           type: string
           description: The client secret for authentication, 64 lower-case hex
@@ -11220,11 +11259,11 @@ components:
       properties:
         clientId:
           type: string
-          description: The client identifier for the M2M client
+          description: "The client identifier for the M2M client. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved."
           example: GC2693985CC61NUU
           maxLength: 100
           minLength: 1
-          pattern: ^[A-Za-z0-9]+$
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$"
         creationDate:
           type: string
           format: date-time

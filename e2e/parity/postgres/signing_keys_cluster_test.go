@@ -50,7 +50,7 @@ func TestSigningKeys_OwnCluster(t *testing.T) {
 	// key. Admin tokens come only from adminToken.
 	k1 := multinode.IssueClientKeyPair(t, opA, false)
 	adminID, adminSecret := createAdminClient(t, opA)
-	adminToken := func(t *testing.T) string { return fetchClientToken(t, urls[0], adminID, adminSecret) }
+	adminToken := func(t *testing.T) string { return fetchClientToken(t, urls[0], op.ID, adminID, adminSecret) }
 	t1 := adminToken(t)
 	if got := client.TokenKID(t1); got != k1 {
 		t.Fatalf("A signs with %q, want K1 %q", got, k1)
@@ -225,9 +225,9 @@ func createAdminClient(t *testing.T, c *client.Client) (id, secret string) {
 	return cred.ClientID, cred.ClientSecret
 }
 
-func fetchClientToken(t *testing.T, baseURL, id, secret string) string {
+func fetchClientToken(t *testing.T, baseURL, tenant, id, secret string) string {
 	t.Helper()
-	tok, code, err := client.FetchClientCredentialsToken(context.Background(), baseURL, id, secret)
+	tok, code, err := client.FetchClientCredentialsToken(context.Background(), baseURL, tenant, id, secret)
 	if err != nil || code != http.StatusOK || tok == "" {
 		t.Fatalf("client_credentials token: %d %v", code, err)
 	}

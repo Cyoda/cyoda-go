@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 )
 
@@ -77,7 +78,7 @@ type hungStore struct {
 	reads   atomic.Int32
 }
 
-func (s *hungStore) Lookup(ctx context.Context, _ string) (*auth.M2MClient, error) {
+func (s *hungStore) Lookup(ctx context.Context, _ spi.TenantID, _ string) (*auth.M2MClient, error) {
 	if s.reads.Add(1) <= s.okReads {
 		return s.client, nil
 	}

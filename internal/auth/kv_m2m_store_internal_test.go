@@ -22,25 +22,28 @@ func (c *countingKV) Get(ctx context.Context, ns, key string) ([]byte, error) {
 	return c.KeyValueStore.Get(ctx, ns, key)
 }
 
-// Every Authenticate that reaches a decision makes two KV reads, so the
-// number of reads does not reveal whether an id exists.
+// Every Authenticate that reaches a decision makes exactly one KV read — of
+// (tenant, id) — whether the id exists or not and whether the secret is
+// right or wrong; an id outside the grammar makes none.
 func TestKVM2M_AuthenticateReadShape(t *testing.T) {
 	mem := newReplicaKV(t)
 	ckv := &countingKV{KeyValueStore: mem}
 	s := NewKVM2MClientStore(ckv, 0, testSecretLimit)
-	sec, _ := s.Create(replicaSystemCtx(), "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
-	_, _ = s.Create(replicaSystemCtx(), "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
-	_ = mem.Delete(replicaSystemCtx(), m2mClientIndexNamespace, "C2") // C2: record without index
-	for name, call := range map[string]func(){
-		"unknown id":           func() { _, _ = s.Authenticate(replicaSystemCtx(), "NOPE", "x") },
-		"record without index": func() { _, _ = s.Authenticate(replicaSystemCtx(), "C2", "x") },
-		"wrong secret":         func() { _, _ = s.Authenticate(replicaSystemCtx(), "C1", "x") },
-		"right secret":         func() { _, _ = s.Authenticate(replicaSystemCtx(), "C1", sec) },
+	sec, _ := s.Create(replicaSystemCtx(), "acme", "C1", []string{"ROLE_M2M"}, false)
+	for name, tc := range map[string]struct {
+		call  func()
+		reads int32
+	}{
+		"unknown id":             {func() { _, _ = s.Authenticate(replicaSystemCtx(), "acme", "NOPE", "x") }, 1},
+		"another tenant's id":    {func() { _, _ = s.Authenticate(replicaSystemCtx(), "other", "C1", sec) }, 1},
+		"wrong secret":           {func() { _, _ = s.Authenticate(replicaSystemCtx(), "acme", "C1", "x") }, 1},
+		"right secret":           {func() { _, _ = s.Authenticate(replicaSystemCtx(), "acme", "C1", sec) }, 1},
+		"id outside the grammar": {func() { _, _ = s.Authenticate(replicaSystemCtx(), "acme", "a:b", "x") }, 0},
 	} {
 		ckv.gets.Store(0)
-		call()
-		if n := ckv.gets.Load(); n != 2 {
-			t.Errorf("%s: %d reads, want 2", name, n)
+		tc.call()
+		if n := ckv.gets.Load(); n != tc.reads {
+			t.Errorf("%s: %d reads, want %d", name, n, tc.reads)
 		}
 	}
 }

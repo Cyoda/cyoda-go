@@ -3,6 +3,7 @@ package common
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -54,4 +55,23 @@ func ValidateTenantID(id spi.TenantID) error {
 
 func isTenantAlphanumeric(c byte) bool {
 	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+}
+
+// ErrReservedTenantID reports a tenant id that is valid but reserved for the
+// machinery: no caller may act in it or address it.
+var ErrReservedTenantID = errors.New("reserved tenant id")
+
+// ValidateAPITenantID reports whether id is a tenant a caller may act in or
+// address: the tenant grammar, and not SYSTEM in any letter case. SYSTEM is
+// the machinery's tenant; its store holds the cluster's auth state. Stored
+// records and internal contexts carry SYSTEM legitimately, so
+// ValidateTenantID itself accepts it. The error never contains id.
+func ValidateAPITenantID(id spi.TenantID) error {
+	if err := ValidateTenantID(id); err != nil {
+		return err
+	}
+	if strings.EqualFold(string(id), string(spi.SystemTenantID)) {
+		return fmt.Errorf("%w: the machinery's tenant", ErrReservedTenantID)
+	}
+	return nil
 }

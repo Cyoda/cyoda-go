@@ -668,10 +668,11 @@ func createM2MClient(t *testing.T, tenantID, seedUser string, withAdmin bool) (s
 	return cred.id, cred.secret
 }
 
-// adminRequestAs issues an authenticated request using a specific M2M client's token.
-func adminRequestAs(t *testing.T, clientID, clientSecret, method, path string, body []byte) *http.Response {
+// adminRequestAs issues an authenticated request using the token of a specific
+// M2M client of tenant.
+func adminRequestAs(t *testing.T, tenant, clientID, clientSecret, method, path string, body []byte) *http.Response {
 	t.Helper()
-	token := getToken(t, clientID, clientSecret)
+	token := getTokenIn(t, tenant, clientID, clientSecret)
 	var br io.Reader
 	if body != nil {
 		br = bytes.NewReader(body)
@@ -980,7 +981,7 @@ func TestTrustedKey_CapReached_400(t *testing.T) {
 
 	register := func(i int) *http.Response {
 		kid := fmt.Sprintf("%s-%d", tenant, i)
-		return adminRequestAs(t, clientID, secret, "POST", "/oauth/keys/trusted",
+		return adminRequestAs(t, tenant, clientID, secret, "POST", "/oauth/keys/trusted",
 			mustJSON(t, map[string]any{"keyId": kid, "jwk": rsaJWK(t, kid)}))
 	}
 	for i := range limit {
@@ -994,7 +995,7 @@ func TestTrustedKey_CapReached_400(t *testing.T) {
 	}
 	assertProblemJSON(t, register(limit), http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
 
-	inv := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/invalidate", tenant), nil)
+	inv := adminRequestAs(t, tenant, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/invalidate", tenant), nil)
 	if inv.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(inv.Body)
 		inv.Body.Close()
@@ -1009,7 +1010,7 @@ func TestTrustedKey_CapReached_400(t *testing.T) {
 		resp.Body.Close()
 	}
 
-	resp := adminRequestAs(t, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/reactivate", tenant),
+	resp := adminRequestAs(t, tenant, clientID, secret, "POST", fmt.Sprintf("/oauth/keys/trusted/%s-0/reactivate", tenant),
 		mustJSON(t, map[string]any{"validTo": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)}))
 	assertProblemJSON(t, resp, http.StatusBadRequest, "TRUSTED_KEY_CAP_REACHED")
 }

@@ -42,7 +42,7 @@ func TestAuthService_TokenEndpointNonPostIs405(t *testing.T) {
 	svc := newTestAuthService(t, AuthConfig{SigningKeyPEM: generateTestPEM(t), Issuer: "cyoda", ExpirySeconds: 300})
 	for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		rr := httptest.NewRecorder()
-		svc.Handler().ServeHTTP(rr, httptest.NewRequest(m, "/oauth/token", nil))
+		svc.Handler().ServeHTTP(rr, httptest.NewRequest(m, "/tenants/tenant-1/oauth/token", nil))
 		var body map[string]string
 		_ = json.Unmarshal(rr.Body.Bytes(), &body)
 		if rr.Code != http.StatusMethodNotAllowed || body["error"] != "method_not_allowed" {
@@ -68,16 +68,16 @@ func TestAuthService_FullFlow(t *testing.T) {
 	defer server.Close()
 
 	// Create M2M client directly via store.
-	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
+	secret, err := svc.M2MClientStore().Create(replicaSystemCtx(), "tenant-1", "TESTCLIENT", []string{"ROLE_ADMIN"}, false)
 	if err != nil {
 		t.Fatalf("failed to create M2M client: %v", err)
 	}
 
-	// Request a token via POST /oauth/token with Basic auth.
+	// Request a token via POST /tenants/{tenant}/oauth/token with Basic auth.
 	form := url.Values{}
 	form.Set("grant_type", "client_credentials")
 
-	req, err := http.NewRequest(http.MethodPost, server.URL+"/oauth/token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/tenants/tenant-1/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}

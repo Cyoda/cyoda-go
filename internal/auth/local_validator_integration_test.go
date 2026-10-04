@@ -27,7 +27,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 	})
 
 	secret, err := svc.M2MClientStore().Create(
-		systemCtx(), "tenant-1", "CLIENT1", "CLIENT1", []string{"ROLE_USER"}, false,
+		systemCtx(), "tenant-1", "CLIENT1", []string{"ROLE_USER"}, false,
 	)
 	if err != nil {
 		t.Fatalf("Create: %v", err)
@@ -42,7 +42,7 @@ func TestIntegration_JWTMode_LocalKeySource_NoHTTPFetch(t *testing.T) {
 
 	// Mint a token via the normal token endpoint. Client credentials are
 	// conveyed via HTTP Basic, matching the existing integration pattern.
-	req, _ := http.NewRequest("POST", tokenSrv.URL+"/oauth/token",
+	req, _ := http.NewRequest("POST", tokenSrv.URL+"/tenants/tenant-1/oauth/token",
 		strings.NewReader("grant_type=client_credentials"))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Authorization", "Basic "+

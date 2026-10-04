@@ -207,7 +207,7 @@ func TestScheduledTaskWrites_DeleteAll_RemovesModelTasks_OtherTenantKept(t *test
 		if body != "" {
 			raw = []byte(body)
 		}
-		resp := adminRequestAs(t, bID, bSecret, method, path, raw)
+		resp := adminRequestAs(t, "tenant-b-stw", bID, bSecret, method, path, raw)
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(resp.Body)

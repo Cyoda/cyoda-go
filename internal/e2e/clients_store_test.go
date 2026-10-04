@@ -3,7 +3,6 @@ package e2e_test
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,8 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -61,6 +58,14 @@ func (h *callbackHarness) postClient(t *testing.T, bearer string) (int, []byte) 
 	return resp.StatusCode, []byte(h.readBody(t, resp))
 }
 
+// postClientWithID runs POST /clients?clientId=id on h as bearer and returns
+// the status and body.
+func (h *callbackHarness) postClientWithID(t *testing.T, bearer, id string) (int, []byte) {
+	t.Helper()
+	resp := h.doAuthBearer(t, bearer, http.MethodPost, "/api/clients?clientId="+url.QueryEscape(id), "", "")
+	return resp.StatusCode, []byte(h.readBody(t, resp))
+}
+
 // putRawKV writes a SYSTEM-tenant KV row straight into s's database.
 func (s *schedDB) putRawKV(t *testing.T, namespace, key, value string) {
 	t.Helper()
@@ -70,31 +75,6 @@ func (s *schedDB) putRawKV(t *testing.T, namespace, key, value string) {
 		namespace, key, []byte(value)); err != nil {
 		t.Fatalf("raw KV write %s/%s: %v", namespace, key, err)
 	}
-}
-
-// deleteRawKV removes a SYSTEM-tenant KV row straight from s's database.
-func (s *schedDB) deleteRawKV(t *testing.T, namespace, key string) {
-	t.Helper()
-	if _, err := s.pool.Exec(context.Background(),
-		`DELETE FROM kv_store WHERE tenant_id = 'SYSTEM' AND namespace = $1 AND key = $2`, namespace, key); err != nil {
-		t.Fatalf("raw KV delete %s/%s: %v", namespace, key, err)
-	}
-}
-
-// rawKV returns the value of a SYSTEM-tenant KV row in s's database, and
-// whether the row exists.
-func (s *schedDB) rawKV(t *testing.T, namespace, key string) (string, bool) {
-	t.Helper()
-	var v []byte
-	err := s.pool.QueryRow(context.Background(),
-		`SELECT value FROM kv_store WHERE tenant_id = 'SYSTEM' AND namespace = $1 AND key = $2`, namespace, key).Scan(&v)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false
-	}
-	if err != nil {
-		t.Fatalf("raw KV read %s/%s: %v", namespace, key, err)
-	}
-	return string(v), true
 }
 
 // hasRawKV reports whether s's database holds the SYSTEM-tenant KV row.
@@ -114,20 +94,20 @@ func TestClientsStore_CrossNodeAtOnce(t *testing.T) {
 	}
 	a, b := twoNodes(t)
 	c := createKeyStackClient(t, a.callbackHarness)
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, c.secret); code != http.StatusOK {
 		t.Fatalf("token on B right after the create on A: %d, want 200", code)
 	}
 	newSecret := a.resetSecret(t, c.id)
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, c.secret); code != http.StatusUnauthorized {
 		t.Fatalf("old secret on B right after the reset on A: %d, want 401", code)
 	}
-	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, newSecret); code != http.StatusOK {
 		t.Fatalf("new secret on B right after the reset on A: %d, want 200", code)
 	}
 	if code, raw := a.deleteClient(t, a.oauthToken(t), c.id); code != http.StatusOK {
 		t.Fatalf("delete on A: %d %s", code, raw)
 	}
-	if code := tokenStatusOn(t, b.baseURL, c.id, newSecret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, b.baseURL, string(auth.PlatformTenantID), c.id, newSecret); code != http.StatusUnauthorized {
 		t.Fatalf("deleted client on B right after the delete on A: %d, want 401", code)
 	}
 }
@@ -147,16 +127,16 @@ func TestClientsStore_SurvivesRestart(t *testing.T) {
 	}
 
 	r := newKeyStackOn(t, s, key) // the restart
-	if code := tokenStatusOn(t, r.baseURL, created.id, created.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), created.id, created.secret); code != http.StatusOK {
 		t.Fatalf("created client after restart: %d, want 200", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, reset.id, newSecret); code != http.StatusOK {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), reset.id, newSecret); code != http.StatusOK {
 		t.Fatalf("reset secret after restart: %d, want 200", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, reset.id, reset.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), reset.id, reset.secret); code != http.StatusUnauthorized {
 		t.Fatalf("secret replaced by the reset, after restart: %d, want 401", code)
 	}
-	if code := tokenStatusOn(t, r.baseURL, gone.id, gone.secret); code != http.StatusUnauthorized {
+	if code := tokenStatusOn(t, r.baseURL, string(auth.PlatformTenantID), gone.id, gone.secret); code != http.StatusUnauthorized {
 		t.Fatalf("deleted client after restart: %d, want 401", code)
 	}
 	ids := clientIDsOn(t, r.baseURL, r.oauthToken(t))
@@ -300,15 +280,16 @@ func TestClientsStore_TokenEndpointRefusesMalformedIDs(t *testing.T) {
 		"encoded colon":  "a%3Ab",
 	} {
 		t.Run(name, func(t *testing.T) {
-			resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "some-secret")
+			resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, "some-secret")
 			assertOAuthError(t, resp, http.StatusUnauthorized, "invalid_client")
 		})
 	}
 }
 
 // TestClientsStore_RawRecords drives the store through rows written straight
-// into the database: undecodable data fails closed, and a delete removes what
-// its tenant owns and nothing else.
+// into the database: a client is one row in its tenant's namespace and no
+// other, undecodable data fails closed, and a delete removes what its tenant
+// owns and nothing else.
 func TestClientsStore_RawRecords(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -319,13 +300,27 @@ func TestClientsStore_RawRecords(t *testing.T) {
 	// keyStack's own M2M client in the PLATFORM tenant, so the records this
 	// test drives directly live in PLATFORM's namespace and admin is a
 	// platform-operator token.
-	const tenantNS, indexNS = "m2m-clients:" + string(auth.PlatformTenantID), "m2m-client-ids"
+	const tenantNS = "m2m-clients:" + string(auth.PlatformTenantID)
 	admin := h.platformToken(t)
+
+	t.Run("one row per client, in its tenant's namespace", func(t *testing.T) {
+		c := createKeyStackClient(t, h.callbackHarness)
+		if !s.hasRawKV(t, tenantNS, c.id) {
+			t.Fatal("the client's record is not in its tenant's namespace")
+		}
+		var outside int
+		if err := s.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM kv_store WHERE tenant_id = 'SYSTEM' AND namespace LIKE 'm2m-%' AND namespace <> $1 AND key = $2`, tenantNS, c.id).Scan(&outside); err != nil {
+			t.Fatal(err)
+		}
+		if outside != 0 {
+			t.Fatalf("%d m2m rows for the client outside its tenant's namespace, want 0", outside)
+		}
+	})
 
 	t.Run("undecodable record", func(t *testing.T) {
 		s.putRawKV(t, tenantNS, "BADREC1", "{")
-		s.putRawKV(t, indexNS, "BADREC1", `{"tenantId":"`+string(auth.PlatformTenantID)+`"}`)
-		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
+		assertOAuthError(t, postTokenTo(t, h.baseURL, string(auth.PlatformTenantID), url.Values{"grant_type": {"client_credentials"}}, "BADREC1", "some-secret"),
 			http.StatusInternalServerError, "server_error")
 		ids := clientIDsOn(t, h.baseURL, admin)
 		if ids["BADREC1"] || !ids[h.clientID] {
@@ -338,75 +333,15 @@ func TestClientsStore_RawRecords(t *testing.T) {
 		if code, body := h.deleteClient(t, admin, "BADREC1"); code != http.StatusOK {
 			t.Fatalf("delete of an undecodable record: %d %s, want 200", code, body)
 		}
-		if s.hasRawKV(t, tenantNS, "BADREC1") || s.hasRawKV(t, indexNS, "BADREC1") {
-			t.Fatal("delete left the undecodable record or its index entry behind")
+		if s.hasRawKV(t, tenantNS, "BADREC1") {
+			t.Fatal("delete left the undecodable record behind")
 		}
 		if code, body := h.deleteClient(t, admin, "BADREC1"); code != http.StatusNotFound {
 			t.Fatalf("second delete: %d %s, want 404", code, body)
 		}
 	})
 
-	t.Run("undecodable index entry", func(t *testing.T) {
-		c := createKeyStackClient(t, h.callbackHarness)
-		s.putRawKV(t, indexNS, c.id, "{")
-		assertOAuthError(t, postTokenTo(t, h.baseURL, url.Values{"grant_type": {"client_credentials"}}, c.id, c.secret),
-			http.StatusInternalServerError, "server_error")
-		// The owner holds the record, so its reset reads the damaged entry:
-		// 500, and neither the entry nor the record changes.
-		resp := h.doAuthBearer(t, admin, http.MethodPut, "/api/clients/"+c.id+"/secret", "", "")
-		if code, body := resp.StatusCode, h.readBody(t, resp); code != http.StatusInternalServerError {
-			t.Fatalf("owner's reset with a damaged index entry: %d %s, want 500", code, withheld(code, []byte(body)))
-		}
-		if v, ok := s.rawKV(t, indexNS, c.id); !ok || v != "{" {
-			t.Fatalf("owner's reset changed the damaged index entry: %q (present %v)", v, ok)
-		}
-		if !s.hasRawKV(t, tenantNS, c.id) {
-			t.Fatal("owner's reset removed the record")
-		}
-		// Another tenant holds no record for the id, so its reset is 404
-		// before the index entry is read.
-		other := h.adminTokenFor(t, "other-reset-tenant", "other-admin")
-		resp = h.doAuthBearer(t, other, http.MethodPut, "/api/clients/"+c.id+"/secret", "", "")
-		if code, body := resp.StatusCode, h.readBody(t, resp); code != http.StatusNotFound {
-			t.Fatalf("another tenant's reset of an id with a damaged index entry: %d %s, want 404", code, withheld(code, []byte(body)))
-		}
-	})
-
-	t.Run("undecodable index entry, own record present", func(t *testing.T) {
-		c := createKeyStackClient(t, h.callbackHarness)
-		s.putRawKV(t, indexNS, c.id, "{")
-		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusOK {
-			t.Fatalf("delete of an own client with a damaged index entry: %d %s, want 200", code, body)
-		}
-		if s.hasRawKV(t, tenantNS, c.id) || s.hasRawKV(t, indexNS, c.id) {
-			t.Fatal("delete left the record or its damaged index entry behind")
-		}
-	})
-
-	t.Run("undecodable index entry, no own record", func(t *testing.T) {
-		c := createKeyStackClient(t, h.callbackHarness)
-		s.deleteRawKV(t, tenantNS, c.id)
-		s.putRawKV(t, indexNS, c.id, "{")
-		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusInternalServerError {
-			t.Fatalf("delete of a damaged index entry with no own record: %d %s, want 500", code, body)
-		}
-		if !s.hasRawKV(t, indexNS, c.id) {
-			t.Fatal("delete removed the index entry though ownership could not be proven")
-		}
-	})
-
-	t.Run("record without its index entry", func(t *testing.T) {
-		c := createKeyStackClient(t, h.callbackHarness)
-		s.deleteRawKV(t, indexNS, c.id)
-		if code, body := h.deleteClient(t, admin, c.id); code != http.StatusOK {
-			t.Fatalf("delete of a record without its index entry: %d %s, want 200", code, body)
-		}
-		if s.hasRawKV(t, tenantNS, c.id) {
-			t.Fatal("delete left the record behind")
-		}
-	})
-
-	t.Run("index entry naming another tenant", func(t *testing.T) {
+	t.Run("a record of the same id in another tenant", func(t *testing.T) {
 		otherID, otherSecret := h.provisionTenant(t, "other-tenant", "other-admin")
 		// A stray record under PLATFORM with other-tenant's client id.
 		s.putRawKV(t, tenantNS, otherID, "{")
@@ -416,10 +351,10 @@ func TestClientsStore_RawRecords(t *testing.T) {
 		if s.hasRawKV(t, tenantNS, otherID) {
 			t.Fatal("delete left PLATFORM's stray record behind")
 		}
-		if !s.hasRawKV(t, indexNS, otherID) {
-			t.Fatal("PLATFORM's delete removed the index entry of other-tenant's client")
+		if !s.hasRawKV(t, "m2m-clients:other-tenant", otherID) {
+			t.Fatal("PLATFORM's delete removed other-tenant's client")
 		}
-		if code := tokenStatusOn(t, h.baseURL, otherID, otherSecret); code != http.StatusOK {
+		if code := tokenStatusOn(t, h.baseURL, "other-tenant", otherID, otherSecret); code != http.StatusOK {
 			t.Fatalf("other-tenant's client after PLATFORM's delete: %d, want 200", code)
 		}
 	})
@@ -460,8 +395,8 @@ func TestClientsStore_NoPlaintextSecretStored(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if n < 6 { // three clients: a record and an index entry each
-		t.Fatalf("read %d stored m2m values, want at least 6", n)
+	if n < 3 { // three clients: a record each
+		t.Fatalf("read %d stored m2m values, want at least 3", n)
 	}
 }
 
@@ -528,7 +463,7 @@ func TestClientsStore_ClientChangeNotInCallersTransaction(t *testing.T) {
 		t.Fatalf("POST /clients joined to T: %d %s", resp.StatusCode, raw)
 	}
 	c := decodeCredential(t, "POST /clients joined to T", []byte(raw))
-	if code := tokenStatusOn(t, b.baseURL, c.id, c.secret); code != http.StatusOK {
+	if code := tokenStatusOn(t, b.baseURL, suiteTenant, c.id, c.secret); code != http.StatusOK {
 		t.Fatalf("token on B for a client created in the still-open T: %d, want 200", code)
 	}
 

@@ -46,7 +46,7 @@ unlike a tenant id, it has no charset grammar.
 | Door | Surface | Failure |
 | --- | --- | --- |
 | User claim of an inbound token: `caas_user_id`, or `sub` when `caas_user_id` is absent | Every authenticated HTTP request and gRPC method | `401`, the uniform problem detail; `codes.Unauthenticated` over gRPC |
-| User assertion `sub`, which becomes the OBO token's user id | `POST /oauth/token`, token-exchange grant | `400 invalid_request` |
+| User assertion `sub`, which becomes the OBO token's user id | `POST /tenants/{tenant}/oauth/token`, token-exchange grant | `400 invalid_request` |
 
 `cyoda token --user`, which signs an admin token offline with the signing key,
 checks the same rule, `system` included, before it signs (exit code `2`); the

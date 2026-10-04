@@ -1552,6 +1552,27 @@ func (e SetEntityModelChangeLevelParamsChangeLevel) Valid() bool {
 	}
 }
 
+// Defines values for ListScheduledTasksParamsStatus.
+const (
+	FAILED  ListScheduledTasksParamsStatus = "FAILED"
+	RUNNING ListScheduledTasksParamsStatus = "RUNNING"
+	WAITING ListScheduledTasksParamsStatus = "WAITING"
+)
+
+// Valid indicates whether the value is a known member of the ListScheduledTasksParamsStatus enum.
+func (e ListScheduledTasksParamsStatus) Valid() bool {
+	switch e {
+	case FAILED:
+		return true
+	case RUNNING:
+		return true
+	case WAITING:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for GetTechnicalUserTokenFormdataBodyGrantType.
 const (
 	GetTechnicalUserTokenFormdataBodyGrantTypeClientCredentials                        GetTechnicalUserTokenFormdataBodyGrantType = "client_credentials"
@@ -1579,27 +1600,6 @@ const (
 func (e GetTechnicalUserTokenFormdataBodySubjectTokenType) Valid() bool {
 	switch e {
 	case GetTechnicalUserTokenFormdataBodySubjectTokenTypeUrnIetfParamsOauthTokenTypeJwt:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ListScheduledTasksParamsStatus.
-const (
-	FAILED  ListScheduledTasksParamsStatus = "FAILED"
-	RUNNING ListScheduledTasksParamsStatus = "RUNNING"
-	WAITING ListScheduledTasksParamsStatus = "WAITING"
-)
-
-// Valid indicates whether the value is a known member of the ListScheduledTasksParamsStatus enum.
-func (e ListScheduledTasksParamsStatus) Valid() bool {
-	switch e {
-	case FAILED:
-		return true
-	case RUNNING:
-		return true
-	case WAITING:
 		return true
 	default:
 		return false
@@ -2948,7 +2948,7 @@ type SystemAuditEventDtoSeverity string
 
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
-	// ClientId The client identifier for the M2M client. Generated ids are 16 characters from 0-9 and A-V.
+	// ClientId Chosen by the caller (query parameter clientId) or generated: 16 characters from 0-9 and A-V. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"client_id"`
 
 	// ClientSecret The client secret for authentication, 64 lower-case hex characters. Returned only by this response; store it at once.
@@ -2972,7 +2972,7 @@ type TechnicalUserCredentialsDtoGrantType string
 
 // TechnicalUserDto defines model for TechnicalUserDto.
 type TechnicalUserDto struct {
-	// ClientId The client identifier for the M2M client
+	// ClientId The client identifier for the M2M client. Letters, digits, '.', '_' and '-', starting with a letter or digit; case significant; 'system' in any letter case is reserved.
 	ClientId string `json:"clientId"`
 
 	// CreationDate The date and time when the M2M client was created
@@ -3379,6 +3379,9 @@ type GetStateMachineFinishedEventParams struct {
 
 // CreateTechnicalUserParams defines parameters for CreateTechnicalUser.
 type CreateTechnicalUserParams struct {
+	// ClientId The new client's id, chosen by the caller and unique in the caller's tenant. Letters, digits, '.', '_' and '-', starting with a letter or digit, at most 100 characters, case significant; 'system' in any letter case is reserved. Absent: an id is generated (16 characters from 0-9 and A-V). An id the tenant already holds answers 409 M2M_CLIENT_EXISTS.
+	ClientId *string `form:"clientId,omitempty" json:"clientId,omitempty"`
+
 	// WithAdminRole When true, the created M2M client will additionally receive ROLE_ADMIN. Requires the M2M admin role feature flag to be enabled.
 	WithAdminRole *bool `form:"withAdminRole,omitempty" json:"withAdminRole,omitempty"`
 
@@ -3960,29 +3963,6 @@ type ValidateEntityModelJSONBody = map[string]interface{}
 // SetEntityModelChangeLevelParamsChangeLevel defines parameters for SetEntityModelChangeLevel.
 type SetEntityModelChangeLevelParamsChangeLevel string
 
-// GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBody struct {
-	// GrantType The OAuth 2.0 grant type. Required; missing or any other value is 400 unsupported_grant_type.
-	GrantType GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type" json:"grant_type"`
-
-	// SubjectToken The user assertion to exchange. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
-	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
-
-	// SubjectTokenType The type of the subject token. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
-	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
-}
-
-// GetTechnicalUserTokenParams defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenParams struct {
-	Authorization *string `json:"Authorization,omitempty"`
-}
-
-// GetTechnicalUserTokenFormdataBodyGrantType defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBodyGrantType string
-
-// GetTechnicalUserTokenFormdataBodySubjectTokenType defines parameters for GetTechnicalUserToken.
-type GetTechnicalUserTokenFormdataBodySubjectTokenType string
-
 // FetchEntityTransitionsParams defines parameters for FetchEntityTransitions.
 type FetchEntityTransitionsParams struct {
 	// EntityClass Entity class in `Name.Version` format (e.g. `Offer.1`)
@@ -4125,6 +4105,29 @@ type SearchEntitiesParams struct {
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
+// GetTechnicalUserTokenFormdataBody defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBody struct {
+	// GrantType The OAuth 2.0 grant type. Required; missing or any other value is 400 unsupported_grant_type.
+	GrantType GetTechnicalUserTokenFormdataBodyGrantType `form:"grant_type" json:"grant_type"`
+
+	// SubjectToken The user assertion to exchange. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
+	SubjectToken *string `form:"subject_token,omitempty" json:"subject_token,omitempty"`
+
+	// SubjectTokenType The type of the subject token. Required for the token exchange (400 invalid_request without it); not read by client_credentials.
+	SubjectTokenType *GetTechnicalUserTokenFormdataBodySubjectTokenType `form:"subject_token_type,omitempty" json:"subject_token_type,omitempty"`
+}
+
+// GetTechnicalUserTokenParams defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenParams struct {
+	Authorization *string `json:"Authorization,omitempty"`
+}
+
+// GetTechnicalUserTokenFormdataBodyGrantType defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBodyGrantType string
+
+// GetTechnicalUserTokenFormdataBodySubjectTokenType defines parameters for GetTechnicalUserToken.
+type GetTechnicalUserTokenFormdataBodySubjectTokenType string
+
 // QueryGroupedEntityStatisticsForModelJSONRequestBody defines body for QueryGroupedEntityStatisticsForModel for application/json ContentType.
 type QueryGroupedEntityStatisticsForModelJSONRequestBody = GroupedStatsRequest
 
@@ -4191,14 +4194,14 @@ type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
 
-// GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
-type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
-
 // SubmitAsyncSearchJobJSONRequestBody defines body for SubmitAsyncSearchJob for application/json ContentType.
 type SubmitAsyncSearchJobJSONRequestBody SubmitAsyncSearchJobJSONBody
 
 // SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
 type SearchEntitiesJSONRequestBody SearchEntitiesJSONBody
+
+// GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
+type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
 
 // Getter for additional properties for WorkflowElementAnnotations. Returns the specified
 // element and whether it was found
@@ -5453,9 +5456,6 @@ type ServerInterface interface {
 	// Reactivate a trusted public key
 	// (POST /oauth/keys/trusted/{keyId}/reactivate)
 	ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, keyId string)
-	// Obtain access token for M2M client
-	// (POST /oauth/token)
-	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params GetTechnicalUserTokenParams)
 	// Fetch available transitions (platform-library format)
 	// (GET /platform-api/entity/fetch/transitions)
 	FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params FetchEntityTransitionsParams)
@@ -5477,6 +5477,9 @@ type ServerInterface interface {
 	// Perform synchronous entity search
 	// (POST /search/direct/{entityName}/{modelVersion})
 	SearchEntities(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params SearchEntitiesParams)
+	// Obtain access token for M2M client
+	// (POST /tenants/{tenant}/oauth/token)
+	GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params GetTechnicalUserTokenParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -5774,6 +5777,19 @@ func (siw *ServerInterfaceWrapper) CreateTechnicalUser(w http.ResponseWriter, r 
 
 	// Parameter object where we will unmarshal all parameters from the context
 	var params CreateTechnicalUserParams
+
+	// ------------- Optional query parameter "clientId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "clientId", r.URL.Query(), &params.ClientId, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "clientId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "clientId", Err: err})
+		}
+		return
+	}
 
 	// ------------- Optional query parameter "withAdminRole" -------------
 
@@ -8530,53 +8546,6 @@ func (siw *ServerInterfaceWrapper) ReactivateTrustedKey(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
-// GetTechnicalUserToken operation middleware
-func (siw *ServerInterfaceWrapper) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request) {
-
-	var err error
-	_ = err
-
-	ctx := r.Context()
-
-	ctx = context.WithValue(ctx, BasicAuthScopes, []string{})
-
-	r = r.WithContext(ctx)
-
-	// Parameter object where we will unmarshal all parameters from the context
-	var params GetTechnicalUserTokenParams
-
-	headers := r.Header
-
-	// ------------- Optional header parameter "Authorization" -------------
-	if valueList, found := headers[http.CanonicalHeaderKey("Authorization")]; found {
-		var Authorization string
-		n := len(valueList)
-		if n != 1 {
-			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Authorization", Count: n})
-			return
-		}
-
-		err = runtime.BindStyledParameterWithOptions("simple", "Authorization", valueList[0], &Authorization, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
-		if err != nil {
-			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Authorization", Err: err})
-			return
-		}
-
-		params.Authorization = &Authorization
-
-	}
-
-	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		siw.Handler.GetTechnicalUserToken(w, r, params)
-	}))
-
-	for _, middleware := range siw.HandlerMiddlewares {
-		handler = middleware(handler)
-	}
-
-	handler.ServeHTTP(w, r)
-}
-
 // FetchEntityTransitions operation middleware
 func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter, r *http.Request) {
 
@@ -9169,6 +9138,62 @@ func (siw *ServerInterfaceWrapper) SearchEntities(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetTechnicalUserToken operation middleware
+func (siw *ServerInterfaceWrapper) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// ------------- Path parameter "tenant" -------------
+	var tenant string
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenant", r.PathValue("tenant"), &tenant, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationPath, Explode: false, Required: true, Type: "string", Format: ""})
+	if err != nil {
+		siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "tenant", Err: err})
+		return
+	}
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BasicAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTechnicalUserTokenParams
+
+	headers := r.Header
+
+	// ------------- Optional header parameter "Authorization" -------------
+	if valueList, found := headers[http.CanonicalHeaderKey("Authorization")]; found {
+		var Authorization string
+		n := len(valueList)
+		if n != 1 {
+			siw.ErrorHandlerFunc(w, r, &TooManyValuesForParamError{ParamName: "Authorization", Count: n})
+			return
+		}
+
+		err = runtime.BindStyledParameterWithOptions("simple", "Authorization", valueList[0], &Authorization, runtime.BindStyledParameterOptions{ParamLocation: runtime.ParamLocationHeader, Explode: false, Required: false, Type: "string", Format: ""})
+		if err != nil {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "Authorization", Err: err})
+			return
+		}
+
+		params.Authorization = &Authorization
+
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTechnicalUserToken(w, r, tenant, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -9340,7 +9365,6 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}", wrapper.DeleteTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/invalidate", wrapper.InvalidateTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/reactivate", wrapper.ReactivateTrustedKey)
-	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/token", wrapper.GetTechnicalUserToken)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/async/{entityName}/{modelVersion}", wrapper.SubmitAsyncSearchJob)
@@ -9348,6 +9372,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/search/async/{jobId}/cancel", wrapper.CancelAsyncSearch)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search/async/{jobId}/status", wrapper.GetAsyncSearchStatus)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/direct/{entityName}/{modelVersion}", wrapper.SearchEntities)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/tenants/{tenant}/oauth/token", wrapper.GetTechnicalUserToken)
 
 	return m
 }

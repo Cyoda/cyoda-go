@@ -99,45 +99,45 @@ type verifiedSecret struct {
 	sum    [32]byte
 }
 
-// verifiedSecretCache maps a client id to the secret that last matched its
-// stored hash on this node.
+// verifiedSecretCache maps a client of a tenant to the secret that last
+// matched its stored hash on this node.
 type verifiedSecretCache struct {
 	mu      sync.Mutex
 	max     int
-	entries map[string]verifiedSecret
+	entries map[clientKey]verifiedSecret
 }
 
 func newVerifiedSecretCache(max int) *verifiedSecretCache {
-	return &verifiedSecretCache{max: max, entries: make(map[string]verifiedSecret)}
+	return &verifiedSecretCache{max: max, entries: make(map[clientKey]verifiedSecret)}
 }
 
 // hit reports whether sum is the SHA-256 of a secret that matched hashed,
 // the hash the client's record holds now. The sums are compared in constant
 // time.
-func (c *verifiedSecretCache) hit(clientID, hashed string, sum [32]byte) bool {
+func (c *verifiedSecretCache) hit(k clientKey, hashed string, sum [32]byte) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	e, ok := c.entries[clientID]
+	e, ok := c.entries[k]
 	return ok && e.hashed == hashed && subtle.ConstantTimeCompare(e.sum[:], sum[:]) == 1
 }
 
 // put records that the secret with SHA-256 sum matched hashed. At the bound,
 // an arbitrary other entry is dropped first.
-func (c *verifiedSecretCache) put(clientID, hashed string, sum [32]byte) {
+func (c *verifiedSecretCache) put(k clientKey, hashed string, sum [32]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if _, ok := c.entries[clientID]; !ok && len(c.entries) >= c.max {
-		for k := range c.entries {
-			delete(c.entries, k)
+	if _, ok := c.entries[k]; !ok && len(c.entries) >= c.max {
+		for victim := range c.entries {
+			delete(c.entries, victim)
 			break
 		}
 	}
-	c.entries[clientID] = verifiedSecret{hashed: hashed, sum: sum}
+	c.entries[k] = verifiedSecret{hashed: hashed, sum: sum}
 }
 
-// drop removes clientID's entry.
-func (c *verifiedSecretCache) drop(clientID string) {
+// drop removes k's entry.
+func (c *verifiedSecretCache) drop(k clientKey) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, clientID)
+	delete(c.entries, k)
 }

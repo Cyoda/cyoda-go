@@ -38,7 +38,7 @@ func newCORSTestServer(t *testing.T, cors app.CORSConfig) (*httptest.Server, fun
 // Context: DefaultConfig has ContextPath="/api", so all API routes
 // have the /api prefix. Health is registered on the inner mux and is
 // accessible at /api/health after context-path stripping.
-// The /oauth/token endpoint is only registered in jwt mode (authSvc !=
+// The token endpoint is only registered in jwt mode (authSvc !=
 // nil); in default mock mode it is absent, so we cover that group via
 // /api/account instead.
 var representativeRoutes = []struct {

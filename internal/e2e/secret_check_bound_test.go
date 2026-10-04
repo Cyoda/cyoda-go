@@ -4,7 +4,7 @@ package e2e_test
 // with CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS=1, a flood of token
 // requests with a wrong secret fills the one slot, and a request that gets no
 // slot within 1 second is refused with 503 and Retry-After: 1 —
-// temporarily_unavailable on /oauth/token, SERVER_BUSY on POST /clients.
+// temporarily_unavailable on the token endpoint, SERVER_BUSY on POST /clients.
 //
 // The flood is a concurrency test, so it runs on a stack of its own
 // (newCalloutHarness), never on the shared server or in parity. It asserts
@@ -101,7 +101,7 @@ func TestSecretCheckBound_NoFreeSlot_503(t *testing.T) {
 			defer wg.Done()
 			for ctx.Err() == nil {
 				time.Sleep(floodJitter(100 * time.Millisecond))
-				resp, err := postTokenRaw(ctx, h.baseURL, form, cred.id, fmt.Sprintf("wrong-secret-%d", i))
+				resp, err := postTokenRaw(ctx, h.baseURL, suiteTenant, form, cred.id, fmt.Sprintf("wrong-secret-%d", i))
 				if err != nil {
 					if ctx.Err() == nil {
 						flood.unexpected("token request: %v", err)

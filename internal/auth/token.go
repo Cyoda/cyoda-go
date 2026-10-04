@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/tenantroute"
 )
 
 // The token-exchange grant (RFC 8693) and the only subject token type it
@@ -44,7 +46,7 @@ var exchangeForbiddenParams = []string{
 	"actor_token", "actor_token_type", "resource", "audience", "scope", "requested_token_type",
 }
 
-// tokenHandler implements the POST /oauth/token endpoint.
+// tokenHandler implements the POST /tenants/{tenant}/oauth/token endpoint.
 type tokenHandler struct {
 	keyStore        KeyStore
 	trustedKeyStore TrustedKeyStore
@@ -53,19 +55,43 @@ type tokenHandler struct {
 	audience        string // empty: no aud claim
 	expirySeconds   int
 	buckets         *clientBuckets // per-client limit on this node
+	failureFloor    time.Duration  // least time of a store-decided 401
+}
+
+// InvalidClientFloor is the least time a store-decided 401 invalid_client
+// takes, from the request reaching the handler. Without it, the store's read
+// time — a present key can cost more than a missing one — would tell an
+// anonymous caller whether a tenant has a given client.
+const InvalidClientFloor = 500 * time.Millisecond
+
+// holdUntil waits until deadline, or until the client leaves.
+func holdUntil(ctx context.Context, deadline time.Time) {
+	d := time.Until(deadline)
+	if d <= 0 {
+		return
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+	case <-ctx.Done():
+	}
 }
 
 // NewTokenHandler creates the token endpoint handler. audience, when not
 // empty, is set as the aud claim of every issued token: a server that checks
 // the audience (CYODA_JWT_AUDIENCE) must accept its own tokens.
 // requestsPerMinute limits each authenticated client on this node, across
-// both grants; <= 0: no limit.
+// both grants; <= 0: no limit. failureFloor is the least time, from the
+// request reaching the handler, that a store-decided 401 invalid_client takes
+// (InvalidClientFloor in service; 0 in tests that do not time it).
 func NewTokenHandler(
 	keyStore KeyStore,
 	trustedKeyStore TrustedKeyStore,
 	m2mStore M2MClientStore,
 	issuer, audience string,
 	expirySeconds, requestsPerMinute int,
+	failureFloor time.Duration,
 ) http.Handler {
 	return &tokenHandler{
 		keyStore:        keyStore,
@@ -75,6 +101,7 @@ func NewTokenHandler(
 		audience:        audience,
 		expirySeconds:   expirySeconds,
 		buckets:         newClientBuckets(requestsPerMinute),
+		failureFloor:    failureFloor,
 	}
 }
 
@@ -90,10 +117,25 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // plain or admin client may only use client_credentials, an on-behalf-of
 // client only the token exchange.
 //
-// Order: method (405) → Content-Type (400) → client authentication (401) →
-// body. The first three read headers only, so a body that is not a form is
-// never read, and no body is read before the client has authenticated.
+// Order: group refusal (400, by the tenant route group before the handler) →
+// no addressed tenant (500) → method (405) → Content-Type (400) → client
+// authentication in the addressed tenant (401; a client of another tenant is
+// not found there) → body. The checks before the body read headers only, so
+// a body that is not a form is never read, and no body is read before the
+// client has authenticated.
+//
+// A 401 invalid_client decided by a store read is held until failureFloor
+// after the request reached the handler, so its timing reveals nothing about
+// what the tenant holds. Refusals made without a read (no credentials, a
+// malformed id) and successful answers are not held.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	tenant, ok := tenantroute.Addressed(r.Context())
+	if !ok {
+		writeTokenServerError(w, "tenantroute.Addressed", errors.New("token handler reached outside the tenant route group"))
+		return
+	}
+
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeTokenError(w, http.StatusMethodNotAllowed, "method_not_allowed", "")
@@ -119,8 +161,16 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// A store failure is the server failing, not the credentials being
 	// wrong: it never answers 401. Neither does a node with no free
 	// secret-check slot: that is a retryable 503.
-	client, err := h.m2mStore.Authenticate(r.Context(), clientID, secret)
+	client, err := h.m2mStore.Authenticate(r.Context(), tenant, clientID, secret)
 	if errors.Is(err, ErrInvalidClient) {
+		// A well-formed id was decided by a store read: hold the answer so
+		// its timing says nothing about what the store holds. A malformed id
+		// is refused before any read and reveals nothing. This relies on the
+		// store refusing without a read only for an id outside ValidClientID
+		// (KVM2MClientStore.Authenticate): change both together.
+		if ValidClientID(clientID) {
+			holdUntil(r.Context(), start.Add(h.failureFloor))
+		}
 		writeTokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
 		return
 	}
@@ -152,7 +202,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // bucket answers 429 slow_down with Retry-After: the whole seconds until a
 // token is there, at least one; the caller then stops.
 func (h *tokenHandler) takeToken(w http.ResponseWriter, client *M2MClient) bool {
-	ok, wait := h.buckets.allow(client.ClientID, time.Now())
+	ok, wait := h.buckets.allow(clientKey{client.TenantID, client.ClientID}, time.Now())
 	if !ok {
 		writeTokenRetry(w, http.StatusTooManyRequests, "slow_down", int(math.Ceil(wait.Seconds())))
 	}
@@ -396,6 +446,8 @@ func parseBasicAuth(r *http.Request) (clientID, secret string, ok bool) {
 	if len(parts) != 2 {
 		return "", "", false
 	}
+	// RFC 6749 §2.3.1: id and secret are form-urlencoded before base64, so
+	// they are decoded here, before the grammar check.
 	id, err := url.QueryUnescape(parts[0])
 	if err != nil {
 		return "", "", false
@@ -473,7 +525,7 @@ func writeTokenRetry(w http.ResponseWriter, status int, code string, seconds int
 }
 
 // SetNoStore marks a response as never to be stored by a cache (RFC 6749
-// §5.1): every /oauth/token response, success or error, and every response
+// §5.1): every token endpoint response, success or error, and every response
 // carrying a plaintext client secret. It must be called before the header is
 // written.
 func SetNoStore(h http.Header) {

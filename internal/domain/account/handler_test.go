@@ -95,7 +95,7 @@ func TestHandlerReturns501(t *testing.T) {
 }
 
 // TestGetTechnicalUserToken_MockMode_Returns501 verifies the generated
-// router's POST /oauth/token handler. It is reached only in mock IAM mode: in
+// router's POST /tenants/{tenant}/oauth/token handler. It is reached only in mock IAM mode: in
 // JWT IAM mode the token handler on the public mux takes every method on the
 // path first. Mock mode issues no token, so the answer is 501 NOT_IMPLEMENTED,
 // and the expected path logs nothing at WARN or above.
@@ -107,8 +107,8 @@ func TestGetTechnicalUserToken_MockMode_Returns501(t *testing.T) {
 
 	h := account.New(nil, nil, nil, auth.IAMFeatures{}, auth.OperatorGuard{})
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/oauth/token", nil)
-	h.GetTechnicalUserToken(w, r, genapi.GetTechnicalUserTokenParams{})
+	r := httptest.NewRequest("POST", "/tenants/acme/oauth/token", nil)
+	h.GetTechnicalUserToken(w, r, "acme", genapi.GetTechnicalUserTokenParams{})
 
 	if w.Code != http.StatusNotImplemented {
 		t.Fatalf("status = %d, want 501; body: %s", w.Code, w.Body.String())

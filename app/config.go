@@ -295,13 +295,13 @@ type IAMConfig struct {
 	// env CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT, default 100; 0=unbounded.
 	M2MClientMaxPerTenant int
 
-	// TokenRequestsPerMinute limits each client's POST /oauth/token requests
+	// TokenRequestsPerMinute limits each client's POST /tenants/{tenant}/oauth/token requests
 	// on one node, across both grants; over it the answer is 429 slow_down.
 	// env CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE, default 600; 0=unlimited.
 	TokenRequestsPerMinute int
 
 	// TokenMaxConcurrentSecretChecks bounds the bcrypt comparisons
-	// POST /oauth/token runs at once on one node; a request that gets no slot
+	// POST /tenants/{tenant}/oauth/token runs at once on one node; a request that gets no slot
 	// within 1 s answers 503. env CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS,
 	// default runtime.GOMAXPROCS(0), the CPUs the process may use (it follows a
 	// container CPU limit); at least 1.

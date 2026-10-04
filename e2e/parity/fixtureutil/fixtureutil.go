@@ -665,7 +665,7 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 	// Callbacks target the same single node that dispatched them.
 	compute, err := StartComputeClient(ComputeClientOpts{
 		ComputeBin: computeBin, GRPCEndpoint: node.GRPCEndpoint, HTTPBase: node.BaseURL,
-		ClientID: clientID, ClientSecret: clientSecret,
+		TenantID: ComputeTenantID, ClientID: clientID, ClientSecret: clientSecret,
 	})
 	if err != nil {
 		cleanup()
@@ -1110,7 +1110,7 @@ func LaunchCyodaClusterAndComputeWithBinaries(cyodaBin, computeBin string, ks *J
 	}
 	compute, err := StartComputeClient(ComputeClientOpts{
 		ComputeBin: computeBin, GRPCEndpoint: grpcEndpoints[0], HTTPBase: node0,
-		ClientID: clientID, ClientSecret: clientSecret,
+		TenantID: ComputeTenantID, ClientID: clientID, ClientSecret: clientSecret,
 		ReadyTimeout: defaultCyodaReadinessTimeout,
 	})
 	if err != nil {

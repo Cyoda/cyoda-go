@@ -30,7 +30,7 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 		Secret string `json:"client_secret"`
 	}
 	_ = json.Unmarshal(body, &cred)
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, cred.Secret); st != http.StatusOK {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, cred.Secret); st != http.StatusOK {
 		t.Fatalf("token: %d", st)
 	}
 	if code, body, _ := ca.ListClientsRaw(t); code != http.StatusOK || !strings.Contains(string(body), cred.ID) {
@@ -62,16 +62,16 @@ func RunM2MClientLifecycle(t *testing.T, fixture BackendFixture) {
 		Secret string `json:"client_secret"`
 	}
 	_ = json.Unmarshal(body, &reset)
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, cred.Secret); st != http.StatusUnauthorized {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, cred.Secret); st != http.StatusUnauthorized {
 		t.Fatalf("old secret: %d", st)
 	}
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, reset.Secret); st != http.StatusOK {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, reset.Secret); st != http.StatusOK {
 		t.Fatalf("new secret: %d", st)
 	}
 	if code, _, _ := ca.DeleteClientRaw(t, cred.ID); code != http.StatusOK {
 		t.Fatalf("delete: %d", code)
 	}
-	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), cred.ID, reset.Secret); st != http.StatusUnauthorized {
+	if _, st, _ := client.FetchClientCredentialsToken(ctx, fixture.BaseURL(), a.ID, cred.ID, reset.Secret); st != http.StatusUnauthorized {
 		t.Fatalf("deleted: %d", st)
 	}
 }
@@ -176,6 +176,15 @@ func RunM2MClientCap(t *testing.T, fixture BackendFixture) {
 	}
 	if code != http.StatusBadRequest || !containsErrorCode(body, "M2M_CLIENT_CAP_REACHED") {
 		t.Fatalf("fourth: %d %s", code, body)
+	}
+	// A chosen id that is already taken is refused as taken, not as over the
+	// cap, even though the tenant is at the cap.
+	code, body, _ = c.CreateClientWithIDRaw(t, first, false, false)
+	if code == http.StatusOK {
+		t.Fatalf("create of a taken id at the cap: %d, want %d", code, http.StatusConflict)
+	}
+	if code != http.StatusConflict || !containsErrorCode(body, "M2M_CLIENT_EXISTS") {
+		t.Fatalf("create of a taken id at the cap: %d %s", code, body)
 	}
 	if code, _, _ := c.DeleteClientRaw(t, first); code != http.StatusOK {
 		t.Fatal("delete")

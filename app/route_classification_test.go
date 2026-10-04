@@ -66,6 +66,13 @@ func servedAuthenticatedOps(t *testing.T) (served, unserved []classifiedOp) {
 		t.Fatal(err)
 	}
 	excluded := codegenExcludedTags(t)
+	var specPaths []string
+	for path := range doc.Paths.Map() {
+		specPaths = append(specPaths, path)
+	}
+	for _, v := range tenantGroupViolations(specPaths) {
+		t.Errorf("OpenAPI path %q is in the tenant group but not a known token-free route", v)
+	}
 	for path, item := range doc.Paths.Map() {
 		for method, op := range item.Operations() {
 			co := classifiedOp{method, path, op}
@@ -76,7 +83,7 @@ func servedAuthenticatedOps(t *testing.T) (served, unserved []classifiedOp) {
 			if op.Security != nil && len(*op.Security) == 0 {
 				continue // security: [] — unauthenticated by declaration
 			}
-			if method == http.MethodPost && path == "/oauth/token" {
+			if method == http.MethodPost && path == "/tenants/{tenant}/oauth/token" {
 				continue // the token endpoint: the client authenticates with basic auth
 			}
 			if !requiresBearer(doc, op) {

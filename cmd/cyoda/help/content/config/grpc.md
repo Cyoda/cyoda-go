@@ -119,11 +119,13 @@ transaction.
   e.g. `localhost:9090` (required when running as a compute client)
 - `CYODA_COMPUTE_CLIENT_ID` — id of the M2M client the compute node
   authenticates as (required when running as a compute client)
+- `CYODA_COMPUTE_TENANT_ID` — tenant of that M2M client (required when
+  running as a compute client)
 - `CYODA_COMPUTE_CLIENT_SECRET` — secret of that M2M client (required when
   running as a compute client)
 - `CYODA_COMPUTE_HTTP_BASE` — HTTP base URL of the cyoda instance (required when
   running as a compute client). The compute node gets its bearer from
-  `/api/oauth/token` there with the client-credentials grant, and gets a new one
+  `/api/tenants/{tenant}/oauth/token` there with the client-credentials grant, and gets a new one
   before the old one expires. It also calls back into this URL (e.g. to join the
   originating transaction).
 
@@ -140,6 +142,7 @@ CYODA_GRPC_PORT=9090
 ```
 CYODA_COMPUTE_GRPC_ENDPOINT=cyoda.internal:9090
 CYODA_COMPUTE_HTTP_BASE=http://cyoda.internal:8080
+CYODA_COMPUTE_TENANT_ID=<tenant>
 CYODA_COMPUTE_CLIENT_ID=<client id>
 CYODA_COMPUTE_CLIENT_SECRET=<client secret>
 ```

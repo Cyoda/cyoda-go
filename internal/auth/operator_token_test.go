@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 func TestMintOperatorToken_Claims(t *testing.T) {
@@ -107,5 +109,14 @@ func TestMintOperatorToken_Refusals(t *testing.T) {
 	}
 	if err := auth.ValidateOperatorTokenRequest(ok); err != nil {
 		t.Errorf("valid request refused: %v", err)
+	}
+}
+
+func TestValidateOperatorTokenRequest_RefusesSystemTenant(t *testing.T) {
+	for _, tenant := range []spi.TenantID{"SYSTEM", "system", "System"} {
+		r := auth.OperatorTokenRequest{Tenant: tenant, UserID: "operator", Roles: []string{"ROLE_ADMIN"}, TTL: time.Minute, Issuer: "cyoda"}
+		if err := auth.ValidateOperatorTokenRequest(r); !errors.Is(err, common.ErrReservedTenantID) {
+			t.Errorf("tenant %q: err = %v, want ErrReservedTenantID", tenant, err)
+		}
 	}
 }

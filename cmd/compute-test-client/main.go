@@ -8,7 +8,7 @@
 // endpoint via the CYODA_COMPUTE_GRPC_ENDPOINT environment variable, the cyoda
 // HTTP base via CYODA_COMPUTE_HTTP_BASE, and the credentials of the M2M client
 // the binary authenticates as via CYODA_COMPUTE_CLIENT_ID and
-// CYODA_COMPUTE_CLIENT_SECRET.
+// CYODA_COMPUTE_CLIENT_SECRET, the client's tenant via CYODA_COMPUTE_TENANT_ID.
 //
 // A separate local HTTP endpoint (/healthz for readiness; /record and
 // /release for a scenario to read what the client received, to trigger a
@@ -48,12 +48,13 @@ func main() {
 	// refreshes it before it expires. The secret is never logged.
 	clientID := os.Getenv("CYODA_COMPUTE_CLIENT_ID")
 	clientSecret := os.Getenv("CYODA_COMPUTE_CLIENT_SECRET")
+	tenantID := os.Getenv("CYODA_COMPUTE_TENANT_ID")
 	httpBase := os.Getenv("CYODA_COMPUTE_HTTP_BASE")
-	if clientID == "" || clientSecret == "" || httpBase == "" {
-		slog.Error("CYODA_COMPUTE_CLIENT_ID, CYODA_COMPUTE_CLIENT_SECRET and CYODA_COMPUTE_HTTP_BASE must be set", "pkg", "compute-test-client")
+	if tenantID == "" || clientID == "" || clientSecret == "" || httpBase == "" {
+		slog.Error("CYODA_COMPUTE_TENANT_ID, CYODA_COMPUTE_CLIENT_ID, CYODA_COMPUTE_CLIENT_SECRET and CYODA_COMPUTE_HTTP_BASE must be set", "pkg", "compute-test-client")
 		os.Exit(1)
 	}
-	tokens := newTokenSource(httpBase, clientID, clientSecret)
+	tokens := newTokenSource(httpBase, tenantID, clientID, clientSecret)
 
 	// HTTP callbacks for callback-join processors go to the same instance, as
 	// the same client (same tenant as dispatch).

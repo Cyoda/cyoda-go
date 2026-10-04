@@ -77,7 +77,7 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 	// store and no check.
 	if s.m2mStore != nil {
 		if err := s.recheckClient(ctx, ct, tenantID); err != nil {
-			slog.Info("member stream refused by client check", "pkg", "grpc", "clientId", ct.ClientID, "reason", err)
+			slog.Info("member stream refused by client check", "pkg", "grpc", "tenantId", string(tenantID), "clientId", ct.ClientID, "reason", err)
 			return err
 		}
 	}
@@ -200,7 +200,7 @@ func (s *CloudEventsServiceImpl) clientRecheckLoop(ctx context.Context, member *
 				if ctx.Err() != nil {
 					return // the stream ended during the read: nothing to close
 				}
-				slog.Info("member stream closed by client re-check", "pkg", "grpc", "memberId", member.ID, "clientId", ct.ClientID, "reason", err)
+				slog.Info("member stream closed by client re-check", "pkg", "grpc", "memberId", member.ID, "tenantId", string(tenant), "clientId", ct.ClientID, "reason", err)
 				member.Evict(err)
 				return
 			}
@@ -209,25 +209,23 @@ func (s *CloudEventsServiceImpl) clientRecheckLoop(ctx context.Context, member *
 }
 
 // recheckClient reports whether the stream's client still stands: nil if so,
-// status Unauthenticated if the client is gone, in another tenant or its
-// secret was reset, status Unavailable if the store cannot be read. The read
-// is bounded by clientRecheckInterval: a read that does not answer in time is
-// a store that cannot be read.
+// status Unauthenticated if the client is gone from the stream's tenant or
+// its secret was reset, status Unavailable if the store cannot be read. The
+// client is looked up in the stream's tenant, so a client of another tenant
+// is gone. The read is bounded by clientRecheckInterval: a read that does not
+// answer in time is a store that cannot be read.
 func (s *CloudEventsServiceImpl) recheckClient(ctx context.Context, ct contract.ClientToken, tenant spi.TenantID) error {
 	readCtx, cancel := context.WithTimeout(ctx, clientRecheckInterval)
 	defer cancel()
-	c, err := s.m2mStore.Lookup(readCtx, ct.ClientID)
+	c, err := s.m2mStore.Lookup(readCtx, tenant, ct.ClientID)
 	if errors.Is(err, auth.ErrM2MClientNotFound) {
 		return status.Error(codes.Unauthenticated, "the client was deleted")
 	}
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("client re-check could not read the client store", "pkg", "grpc", "clientId", ct.ClientID, "error", err)
+			slog.Warn("client re-check could not read the client store", "pkg", "grpc", "tenantId", string(tenant), "clientId", ct.ClientID, "error", err)
 		}
 		return status.Error(codes.Unavailable, "the client could not be re-checked")
-	}
-	if c.TenantID != tenant {
-		return status.Error(codes.Unauthenticated, "the client was deleted")
 	}
 	if c.SecretGen != ct.Gen {
 		return status.Error(codes.Unauthenticated, "the client's secret was reset")

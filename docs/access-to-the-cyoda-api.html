@@ -164,7 +164,7 @@ pre code{font-size:inherit}
         <thead><tr><th>Term</th><th>Meaning</th></tr></thead>
         <tbody>
           <tr><td>Tenant</td><td>A cyoda legal entity. Its id is the <code>caas_org_id</code> in a cyoda token. Each tenant's data is separate from every other tenant's.</td></tr>
-          <tr><td>M2M client</td><td>A client id and secret that belongs to one tenant. It gets cyoda tokens with <code>client_credentials</code>. Its roles: <code>ROLE_M2M</code>, which every data operation requires; <code>ROLE_ADMIN</code> as well for an admin client. A client created with the on-behalf-of permission only exchanges user assertions; it never uses <code>client_credentials</code>, never holds <code>ROLE_ADMIN</code> and never belongs to <code>PLATFORM</code>.</td></tr>
+          <tr><td>M2M client</td><td>A client id and secret that belongs to one tenant; the id is unique within it. It gets cyoda tokens with <code>client_credentials</code>. Its roles: <code>ROLE_M2M</code>, which every data operation requires; <code>ROLE_ADMIN</code> as well for an admin client. A client created with the on-behalf-of permission only exchanges user assertions; it never uses <code>client_credentials</code>, never holds <code>ROLE_ADMIN</code> and never belongs to <code>PLATFORM</code>.</td></tr>
           <tr><td>cyoda token</td><td>A token cyoda-go signs, carrying the tenant in <code>caas_org_id</code>: the client's tenant, or the tenant a platform operator named with <code>cyoda token</code>. The only kind of token the API accepts.</td></tr>
           <tr><td>Trusted key</td><td>A public key a tenant admin registers for the application. The application signs user assertions with the matching private key. Key ids are unique within a tenant. Invalidating a key ends it at once; to rotate, register the new key, switch the application to it, then invalidate the old one.</td></tr>
           <tr><td>User assertion</td><td>A JWT of at most 5 minutes' life that the application signs (RS256) with its trusted key: <code>sub</code> = the user, <code>caas_org_id</code> = the tenant, <code>aud</code> = cyoda-go's issuer (<code>CYODA_JWT_ISSUER</code>), <code>iat</code>, <code>exp</code>, and <code>kid</code> naming the key. It says "this is my user"; cyoda-go records it and does not verify the user.</td></tr>
@@ -206,7 +206,7 @@ curl -X POST "https://cyoda.example.com/api/clients?withAdminRole=true" \
   -H @- &lt;&lt;&lt;"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"     # the backend
 curl -X POST https://cyoda.example.com/api/clients \
   -H @- &lt;&lt;&lt;"Authorization: Bearer ${TENANT_ADMIN_TOKEN}"     # each compute-node service, job, script</code></pre>
-    <p>Each answer carries <code>client_id</code> (16 characters), <code>client_secret</code> (64 hex characters, shown once), <code>roles</code>, <code>onBehalfOf</code> and the <code>grant_type</code> the client uses. A client has no name: store id and secret at once in your secret store, under a name that says which part uses them. Provision idempotently by creating a client only for a part the store has none for; reconcile by listing <code>GET /clients</code> and deleting every id the store does not hold. A tenant holds at most <code>CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT</code> clients (100). A part is one deployable unit with one job; all replicas of a part share its client. Your application takes its tenant id from configuration; the tenant admin reads it from <code>GET /account</code> (<code>userAccountInfo.legalEntity.id</code>).</p>
+    <p>Each answer carries <code>client_id</code> (16 generated characters, or the id you chose with <code>?clientId=</code>; a taken id answers <code>409 M2M_CLIENT_EXISTS</code>), <code>client_secret</code> (64 hex characters, shown once), <code>roles</code>, <code>onBehalfOf</code> and the <code>grant_type</code> the client uses. A client has no name: store id and secret at once in your secret store, under a name that says which part uses them. Provision idempotently by creating a client only for a part the store has none for; reconcile by listing <code>GET /clients</code> and deleting every id the store does not hold. A tenant holds at most <code>CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT</code> clients (100). A part is one deployable unit with one job; all replicas of a part share its client. Your application takes its tenant id from configuration; the tenant admin reads it from <code>GET /account</code> (<code>userAccountInfo.legalEntity.id</code>).</p>
     <p>A standing admin client lets the tenant admin change clients and keys at any time, but it is the tenant's most powerful secret: with it a holder can create an OBO client and a trusted key and act as any user. The alternative is to ask the operator for a short-lived <code>cyoda token --tenant &lt;id&gt;</code> per change: nothing standing can leak, at the cost of a round trip. Client and key changes are logged only in the operator's server log; a tenant admin sees the current state (<code>GET /clients</code>, <code>GET /oauth/keys/trusted</code>).</p>
 
     <h3>3. Trusted key — tenant admin</h3>
@@ -221,7 +221,7 @@ curl -X POST https://cyoda.example.com/api/oauth/keys/trusted \
 
     <h3>4. Act for a signed-in user — backend</h3>
     <p>After your application has authorized the action, sign an assertion — header <code>alg: RS256</code>, <code>kid</code>; claims <code>sub</code> (your stable user id, recorded byte for byte, never <code>system</code>), <code>caas_org_id</code> (your tenant), <code>aud</code> (<code>CYODA_JWT_ISSUER</code>, default <code>cyoda</code>; <code>CYODA_JWT_AUDIENCE</code> plays no part), <code>iat</code>, <code>exp</code> ≤ <code>iat</code> + 300 — and exchange it:</p>
-<pre><code>curl -X POST https://cyoda.example.com/api/oauth/token \
+<pre><code>curl -X POST https://cyoda.example.com/api/tenants/${TENANT_ID}/oauth/token \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
   -d "subject_token_type=urn:ietf:params:oauth:token-type:jwt" \
@@ -306,12 +306,12 @@ EOF</code></pre>
       <table>
         <thead><tr><th>Answer</th><th>Meaning and action</th></tr></thead>
         <tbody>
-          <tr><td><code>/oauth/token</code> 400 <code>subject token has expired</code> or <code>subject token claims rejected</code></td><td>Often clock drift or an assertion that waited too long: sign a fresh assertion and retry once; if it fails again, check <code>aud</code>, <code>exp − iat</code> and your clocks (30 seconds of skew are allowed).</td></tr>
-          <tr><td><code>/oauth/token</code> other 400, 403, 405</td><td>The request or the setup is wrong. Do not retry; fix it. The fixed <code>error_description</code> names the cause.</td></tr>
-          <tr><td><code>/oauth/token</code> 401 <code>invalid_client</code></td><td>Wrong or revoked credentials. Re-read them once; then stop and alert.</td></tr>
-          <tr><td><code>/oauth/token</code> 429 <code>slow_down</code></td><td>Per-client, per-node budget used. Wait <code>Retry-After</code>; cache tokens per user.</td></tr>
-          <tr><td><code>/oauth/token</code> 503 <code>temporarily_unavailable</code></td><td>Store unreadable or no secret-check slot. Wait <code>Retry-After</code> and retry with backoff.</td></tr>
-          <tr><td><code>/oauth/token</code> 500 <code>server_error</code></td><td>Store or signing failure, ticket in <code>error_description</code>. Retry a few times with backoff; if it persists, give the ticket to the operator. The token endpoint changes nothing, so retries are safe.</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> 400 <code>subject token has expired</code> or <code>subject token claims rejected</code></td><td>Often clock drift or an assertion that waited too long: sign a fresh assertion and retry once; if it fails again, check <code>aud</code>, <code>exp − iat</code> and your clocks (30 seconds of skew are allowed).</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> other 400, 403, 405</td><td>The request or the setup is wrong. Do not retry; fix it. The fixed <code>error_description</code> names the cause.</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> 401 <code>invalid_client</code></td><td>Wrong or revoked credentials, or a wrong tenant in the URL; the answer takes at least 500 ms. Re-read them once; then stop and alert.</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> 429 <code>slow_down</code></td><td>Per-client, per-node budget used. Wait <code>Retry-After</code>; cache tokens per user.</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> 503 <code>temporarily_unavailable</code></td><td>Store unreadable or no secret-check slot. Wait <code>Retry-After</code> and retry with backoff.</td></tr>
+          <tr><td><code>/tenants/{tenant}/oauth/token</code> 500 <code>server_error</code></td><td>Store or signing failure, ticket in <code>error_description</code>. Retry a few times with backoff; if it persists, give the ticket to the operator. The token endpoint changes nothing, so retries are safe.</td></tr>
           <tr><td>Data call 401 / <code>Unauthenticated</code></td><td>Decided before any handler and before any transaction is joined: the request did nothing. Detail "authentication failed": get a new token and send it again, once, even a write; a second such 401 is a configuration error. Detail "invalid transaction token": the callback's transaction token is malformed; a new bearer does not help — stop working on that callout.</td></tr>
           <tr><td>Data call 403 / <code>PermissionDenied</code></td><td>Missing <code>ROLE_M2M</code> (gRPC <code>PermissionDenied</code>), an OBO token on an admin route (HTTP only), or an OBO request joining another user's transaction (over gRPC: the RPC's error envelope, <code>error.code</code> <code>CLIENT_ERROR</code>, message <code>FORBIDDEN: …</code>); decided before the operation reads or writes anything. Not retryable.</td></tr>
         </tbody>
@@ -322,7 +322,7 @@ EOF</code></pre>
   <section class="ref" aria-labelledby="life-h">
     <h2 id="life-h">Token lifetime and revocation</h2>
     <ol>
-      <li>A token from <code>/oauth/token</code> lives at most <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. An OBO token also ends no later than its assertion's <code>exp</code>; because an assertion lives at most 300 seconds, an OBO token never lives more than 300 seconds past its assertion's <code>iat</code>, whatever <code>CYODA_JWT_EXPIRY_SECONDS</code> says. The operator's CLI command <code>cyoda token</code> signs tokens that live 15 minutes by default, or <code>CYODA_JWT_EXPIRY_SECONDS</code> when that is shorter — so 300 seconds with the default setting. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until less than about a minute of its life remains.</li>
+      <li>A token from <code>/tenants/{tenant}/oauth/token</code> lives at most <code>CYODA_JWT_EXPIRY_SECONDS</code>: 300 seconds by default, 3600 at most. An OBO token also ends no later than its assertion's <code>exp</code>; because an assertion lives at most 300 seconds, an OBO token never lives more than 300 seconds past its assertion's <code>iat</code>, whatever <code>CYODA_JWT_EXPIRY_SECONDS</code> says. The operator's CLI command <code>cyoda token</code> signs tokens that live 15 minutes by default, or <code>CYODA_JWT_EXPIRY_SECONDS</code> when that is shorter — so 300 seconds with the default setting. There are no refresh tokens: the client repeats the grant or the exchange, and reuses a token until less than about a minute of its life remains.</li>
       <li>Every grant reads the client, and every exchange reads the client and the trusted key, from the shared store. Resetting a secret, deleting a client, or invalidating or deleting a trusted key stops new tokens at once on every node.</li>
       <li>Tokens issued before the change stay valid until they expire, at most the token lifetime.</li>
       <li>A gRPC stream checks its client against the shared store every minute. It closes if the client was deleted, or if the client's secret was reset after the token that opened it was issued. If the store cannot be read, the stream closes as unavailable and the node reconnects.</li>
@@ -370,7 +370,7 @@ EOF</code></pre>
 
   <section class="ref" aria-labelledby="local-h">
     <h2 id="local-h">Running it locally</h2>
-    <p><b>Mock mode</b> (<code>CYODA_IAM_MODE=mock</code>, the default) runs every request, with or without a token, as user <code>mock-user-001</code> in tenant <code>mock-tenant</code>, kind <code>CYODA_IAM_MOCK_KIND</code> (default <code>service</code>), roles <code>CYODA_IAM_MOCK_ROLES</code>. Callouts carry <code>mock-user-001</code> as both principals, with that kind. With kind <code>user</code> or <code>system</code>, <code>authctx.Require</code> never passes and compute streams are refused. A compute node opens a stream with no token when the kind is <code>service</code> and <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_M2M</code> (the default does). With kind <code>system</code>, <code>authclaims</code> still carries the mock roles. Mock mode has no client store: <code>/oauth/token</code> issues no token and answers <code>501</code>, provided <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_M2M</code> (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is <code>403</code> instead. The client and trusted-key endpoints need no <code>ROLE_M2M</code> but check <code>ROLE_ADMIN</code> first: they answer <code>501</code> (trusted keys <code>404 FEATURE_DISABLED</code> while their flag is off) provided <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_ADMIN</code> (the default does), and <code>403</code> otherwise. <b>On-behalf-of access cannot be exercised in mock mode.</b></p>
+    <p><b>Mock mode</b> (<code>CYODA_IAM_MODE=mock</code>, the default) runs every request, with or without a token, as user <code>mock-user-001</code> in tenant <code>mock-tenant</code>, kind <code>CYODA_IAM_MOCK_KIND</code> (default <code>service</code>), roles <code>CYODA_IAM_MOCK_ROLES</code>. Callouts carry <code>mock-user-001</code> as both principals, with that kind. With kind <code>user</code> or <code>system</code>, <code>authctx.Require</code> never passes and compute streams are refused. A compute node opens a stream with no token when the kind is <code>service</code> and <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_M2M</code> (the default does). With kind <code>system</code>, <code>authclaims</code> still carries the mock roles. Mock mode has no client store: <code>/tenants/{tenant}/oauth/token</code> issues no token and answers <code>501</code>, provided <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_M2M</code> (the default does) — the endpoint requires that role before the mock-mode handler runs, so without it the answer is <code>403</code> instead. The client and trusted-key endpoints need no <code>ROLE_M2M</code> but check <code>ROLE_ADMIN</code> first: they answer <code>501</code> (trusted keys <code>404 FEATURE_DISABLED</code> while their flag is off) provided <code>CYODA_IAM_MOCK_ROLES</code> includes <code>ROLE_ADMIN</code> (the default does), and <code>403</code> otherwise. <b>On-behalf-of access cannot be exercised in mock mode.</b></p>
     <p><b>On-behalf-of end to end in jwt mode</b> (also in Docker Compose, with the same variables on the service): the help topic <code>cyoda help auth integration</code> has the full script. In short:</p>
 <pre><code>openssl genrsa -out signing.pem 2048
 export CYODA_IAM_MODE=jwt CYODA_JWT_SIGNING_KEY_FILE=$PWD/signing.pem \
@@ -385,7 +385,7 @@ PAY=$(jq -cn --argjson iat "$NOW" --argjson exp "$((NOW+300))" \
   '{sub:"alice",caas_org_id:"acme",aud:"cyoda",iat:$iat,exp:$exp}' | b64url)
 SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -binary | b64url)
 # exchange "$HDR.$PAY.$SIG" as in step 4, then call GET /api/account with the token</code></pre>
-    <p>The recipe uses the memory backend, which loses clients and keys on restart. In Docker Compose, client ids and secrets are generated by cyoda and cannot be preset: provision them with a one-shot service that runs after cyoda is healthy, creates only the clients its volume lacks, writes each id and secret to a 0600 file on a shared volume, and completes before the services that read them start.</p>
+    <p>The recipe uses the memory backend, which loses clients and keys on restart. In Docker Compose, client secrets are generated by cyoda and cannot be preset (ids can be chosen with <code>?clientId=</code>): provision them with a one-shot service that runs after cyoda is healthy, creates only the clients its volume lacks, writes each id and secret to a 0600 file on a shared volume, and completes before the services that read them start.</p>
   </section>
 
   <section class="ref" aria-labelledby="move-h">
@@ -419,7 +419,7 @@ SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -bin
     any:{t:"Any caller",s:""},
     user:{t:"User",s:"signed in to the app"},
     app:{t:"App backend",s:"OBO client of acme"},
-    tok:{t:"cyoda /oauth/token",s:"any node"},
+    tok:{t:"cyoda /tenants/{tenant}/oauth/token",s:"any node"},
     store:{t:"Shared store",s:"clients, trusted keys"},
     api:{t:"cyoda API",s:"any node"},
     proc:{t:"Compute node",s:"the app's processors"},
@@ -464,7 +464,7 @@ SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -bin
      steps:[
       {s:"app",k:"ok",l:"signed-in alice asks to\napprove R; may she? yes"},
       {s:"app",k:"ok",l:"sign assertion: sub alice,\nacme, exp in 2 min"},
-      {m:["app","tok"],k:"req",l:"POST /oauth/token\nBasic: OBO client\ntoken-exchange, assertion"},
+      {m:["app","tok"],k:"req",l:"POST /tenants/{tenant}/oauth/token\nBasic: OBO client\ntoken-exchange, assertion"},
       {m:["tok","store"],k:"req",l:"client; trusted key\nof acme by kid"},
       {m:["store","tok"],k:"ret",l:"client may act for\nusers; app's key"},
       {s:"tok",k:"ok",l:"signature, exp, iat, tenant,\nuser id not reserved"},
@@ -486,7 +486,7 @@ SIG=$(printf '%s.%s' "$HDR" "$PAY" | openssl dgst -sha256 -sign app-key.pem -bin
      lanes:["vault","service","tok","store","api"],
      steps:[
       {m:["service","vault"],k:"req",l:"read client id + secret"},
-      {m:["service","tok"],k:"req",l:"POST /oauth/token\nBasic: id + secret\nclient_credentials"},
+      {m:["service","tok"],k:"req",l:"POST /tenants/{tenant}/oauth/token\nBasic: id + secret\nclient_credentials"},
       {m:["tok","store"],k:"req",l:"read the client"},
       {s:"tok",k:"ok",l:"check the secret;\ntenant = client's"},
       {m:["tok","service"],k:"ok",l:"cyoda token, 300 s\ncaas_org_id = acme"},

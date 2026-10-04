@@ -32,7 +32,8 @@ const tokenRequestsPerMinute = 600
 // secret's token carries the new generation.
 func TestTokenCache_GrantsAfterResetRefuseOldSecret(t *testing.T) {
 	id, secret := createClient(t, false, false)
-	_ = getToken(t, id, secret) // warms the cache with the old secret
+	// Warms the cache with the old secret; its token carries the old generation.
+	oldGen, _ := decodeJWTPayload(t, getToken(t, id, secret))["cgen"].(float64)
 
 	resp := adminRequest(t, http.MethodPut, "/clients/"+id+"/secret", nil)
 	defer resp.Body.Close()
@@ -58,7 +59,7 @@ func TestTokenCache_GrantsAfterResetRefuseOldSecret(t *testing.T) {
 			<-start
 			for i := 0; i < perWorker; i++ {
 				k := w*perWorker + i
-				r, err := postTokenRaw(ctx, serverURL, url.Values{"grant_type": {"client_credentials"}}, id, secret)
+				r, err := postTokenRaw(ctx, serverURL, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 				if err != nil {
 					errs[k] = err
 					continue
@@ -82,8 +83,8 @@ func TestTokenCache_GrantsAfterResetRefuseOldSecret(t *testing.T) {
 	}
 
 	claims := decodeJWTPayload(t, getToken(t, id, creds.ClientSecret))
-	if claims["cgen"] != float64(2) {
-		t.Errorf("cgen after one reset = %v, want 2", claims["cgen"])
+	if claims["cgen"] != oldGen+1 {
+		t.Errorf("cgen after one reset = %v, want %v", claims["cgen"], oldGen+1)
 	}
 }
 
@@ -101,7 +102,7 @@ func TestToken_PerClientBucket_429_E2E(t *testing.T) {
 		if i > tokenRequestsPerMinute+refilled+1 {
 			t.Fatalf("no refusal after %d grants in %s", i-1, time.Since(started))
 		}
-		resp, err := postTokenRaw(e2eCtx(t), serverURL, url.Values{"grant_type": {"client_credentials"}}, id, secret)
+		resp, err := postTokenRaw(e2eCtx(t), serverURL, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 		if err != nil {
 			t.Fatalf("grant %d: %v", i, err)
 		}

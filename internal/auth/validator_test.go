@@ -148,9 +148,9 @@ func TestJWKSValidator_InvalidSignature(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsTenantOutsideGrammar pins the tenant door: the caas_org_id claim
-// is the one place a tenant id enters cyoda-go on a request, covering HTTP and
-// gRPC alike, so a claim outside the grammar must not produce a UserContext.
+// TestValidator_RejectsTenantOutsideGrammar pins the claim door: the caas_org_id claim
+// is the door on every authenticated HTTP and gRPC request (the token URL's
+// {tenant} segment and `cyoda token --tenant` are the other doors), so a claim outside the grammar must not produce a UserContext.
 func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 	key, kid := setupTestJWKS(t)
 
@@ -191,6 +191,35 @@ func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 	}
 }
 
+// TestValidator_RefusesSystemTenant pins that the machinery's tenant, in any
+// letter case, is not a tenant a token may claim.
+func TestValidator_RefusesSystemTenant(t *testing.T) {
+	key, kid := setupTestJWKS(t)
+
+	issuer := "test-issuer"
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
+
+	for _, org := range []string{"SYSTEM", "system", "System"} {
+		t.Run(org, func(t *testing.T) {
+			claims := map[string]any{
+				"iss":          issuer,
+				"exp":          float64(time.Now().Add(time.Hour).Unix()),
+				"iat":          float64(time.Now().Unix()),
+				"caas_user_id": "user-1",
+				"caas_org_id":  org,
+				"scopes":       []any{"read"},
+			}
+			uc, _, err := v.Validate(signTestToken(t, key, kid, claims))
+			if err == nil {
+				t.Fatalf("Validate accepted tenant %q, got UserContext %+v", org, uc)
+			}
+			if !errors.Is(err, common.ErrReservedTenantID) {
+				t.Errorf("error does not wrap ErrReservedTenantID: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidator_AcceptsShippedTenantShapes is the regression half: the grammar
 // must not lock out anything that authenticates today.
 func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
@@ -200,7 +229,6 @@ func TestValidator_AcceptsShippedTenantShapes(t *testing.T) {
 	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
 
 	for _, org := range []string{
-		"SYSTEM",
 		"plain-tenant",
 		"mock-tenant",
 		"tenant-abc-123",
@@ -423,6 +451,48 @@ func TestValidator_RejectsMalformedPresentUserClaim(t *testing.T) {
 			}
 			if !errors.Is(err, common.ErrInvalidUserID) {
 				t.Errorf("err = %v, want it to wrap common.ErrInvalidUserID", err)
+			}
+		})
+	}
+}
+
+// The client-id grammar governs the client-bearing claims: a cgen token's
+// caas_user_id and an on-behalf-of token's act.sub.
+func TestValidator_ClientIDGrammarOnClientClaims(t *testing.T) {
+	key, kid := setupTestJWKS(t)
+	issuer := "test-issuer"
+	v := auth.NewValidatorFromSource(staticKeySource{kid: &key.PublicKey}, issuer)
+	base := func(extra map[string]any) map[string]any {
+		c := map[string]any{
+			"iss":         issuer,
+			"exp":         float64(time.Now().Add(time.Hour).Unix()),
+			"iat":         float64(time.Now().Unix()),
+			"caas_org_id": "org-7",
+			"scopes":      []any{"ROLE_M2M"},
+		}
+		for k, val := range extra {
+			c[k] = val
+		}
+		return c
+	}
+	cases := []struct {
+		name   string
+		claims map[string]any
+		ok     bool
+	}{
+		{"cgen client id with hyphen", base(map[string]any{"caas_user_id": "order-service", "cgen": 1}), true},
+		{"cgen client id system", base(map[string]any{"caas_user_id": "system", "cgen": 1}), false},
+		{"act.sub with dot and underscore", base(map[string]any{"caas_user_id": "user-1", "act": map[string]any{"sub": "compute.node_2"}}), true},
+		{"act.sub SYSTEM", base(map[string]any{"caas_user_id": "user-1", "act": map[string]any{"sub": "SYSTEM"}}), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := v.Validate(signTestToken(t, key, kid, tc.claims))
+			if tc.ok && err != nil {
+				t.Fatalf("Validate refused: %v", err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatal("Validate accepted")
 			}
 		})
 	}

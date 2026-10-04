@@ -94,7 +94,7 @@ func (o *OBOClient) KID() string { return o.kid }
 // the status and body. A 200 body carries a token: never log it.
 func (o *OBOClient) Exchange(t *testing.T, baseURL, user string) (int, []byte) {
 	t.Helper()
-	code, body, err := client.NewClient(baseURL, "").ExchangeTokenRaw(t, o.id, o.secret,
+	code, body, err := client.NewClient(baseURL, "").ExchangeTokenRaw(t, o.tenant, o.id, o.secret,
 		url.Values{"subject_token": {o.assertion(t, user)}})
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
@@ -123,7 +123,7 @@ func OBOToken(t *testing.T, fixture BackendFixture, tenant Tenant, user string) 
 func exchangeAsserting(t *testing.T, fixture BackendFixture, tenant Tenant, override map[string]any) (int, []byte, error) {
 	t.Helper()
 	o := NewOBOClient(t, fixture.BaseURL(), tenant)
-	return client.NewClient(fixture.BaseURL(), "").ExchangeTokenRaw(t, o.id, o.secret,
+	return client.NewClient(fixture.BaseURL(), "").ExchangeTokenRaw(t, o.tenant, o.id, o.secret,
 		url.Values{"subject_token": {o.assertionWith(t, "mallory", override)}})
 }
 
@@ -173,7 +173,7 @@ func RunOBOExchange(t *testing.T, fixture BackendFixture) {
 	if err := json.Unmarshal(pbody, &plain); err != nil || plain.ID == "" {
 		t.Fatalf("create plain client: no credentials in the response (%v)", err)
 	}
-	code, body, err = client.NewClient(base, "").ExchangeTokenRaw(t, plain.ID, plain.Secret,
+	code, body, err = client.NewClient(base, "").ExchangeTokenRaw(t, tenant.ID, plain.ID, plain.Secret,
 		url.Values{"subject_token": {o.assertion(t, "alice")}})
 	if err != nil {
 		t.Fatalf("plain client exchange: %v", err)

@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -24,7 +25,41 @@ var muxRegistrars = map[string]bool{
 
 // publicMuxPatterns are the unauthenticated routes app.go registers itself:
 // JWKS discovery and the token endpoint.
-var publicMuxPatterns = map[string]bool{"/.well-known/": true, "/oauth/token": true}
+var publicMuxPatterns = map[string]bool{"/.well-known/": true, "/tenants/{tenant}/oauth/token": true}
+
+// tenantGroupViolations returns every pattern whose path (after an optional
+// "METHOD " prefix) is in the tenant route group but not a known token-free
+// route. A route that carries a bearer token needs the group's
+// tenant-equality check (internal/tenantroute) built first; list it in
+// tokenFreeTenantRoutes only then.
+func tenantGroupViolations(patterns []string) []string {
+	var out []string
+	for _, p := range patterns {
+		path := p
+		if _, after, ok := strings.Cut(p, " "); ok {
+			path = after
+		}
+		if strings.HasPrefix(path, "/tenants/") && !tokenFreeTenantRoutes[path] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func TestTenantGroupViolations(t *testing.T) {
+	got := tenantGroupViolations([]string{
+		"GET /tenants/{tenant}/x", "/tenants/{tenant}/y", "POST /tenants/{tenant}/oauth/token/extra",
+		"/tenants/{tenant}/oauth/token", "/entity/{id}", "POST /tenants/{tenant}/oauth/token",
+	})
+	want := []string{"GET /tenants/{tenant}/x", "/tenants/{tenant}/y", "POST /tenants/{tenant}/oauth/token/extra"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("violations = %v, want %v", got, want)
+	}
+}
+
+// tokenFreeTenantRoutes are the routes of the tenant route group. The group
+// holds token-free routes only.
+var tokenFreeTenantRoutes = map[string]bool{"/tenants/{tenant}/oauth/token": true}
 
 // catchAllMuxPattern mounts the generated router, whose routes
 // TestRouteClassification_EveryRouteClassified classifies one by one.
@@ -73,6 +108,9 @@ func TestRouteRegistration_EveryMuxRouteClassified(t *testing.T) {
 	seen := map[string]bool{}
 	for _, r := range regs {
 		seen[r.pattern] = true
+		for _, v := range tenantGroupViolations([]string{r.pattern}) {
+			t.Errorf("%s: %q is in the tenant group but not a known token-free route", r.pos, v)
+		}
 		switch {
 		case publicMuxPatterns[r.pattern], operator[r.pattern], r.pattern == catchAllMuxPattern:
 		case data[r.pattern]:

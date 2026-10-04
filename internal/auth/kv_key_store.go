@@ -65,6 +65,22 @@ type bootstrapKey struct {
 // KVKeyStore keeps the signing key pairs of the cluster in the KV store and a
 // classified copy on every node. Hot paths read the copy; admin changes read
 // and write the store (kv_key_store_admin.go).
+//
+// Admin changes are serialized on this node only (the replica's admin mutex);
+// nothing coordinates two nodes. Invalidate, Reactivate, Delete and the
+// invalidation of the previous key pairs by a rotation (siblingWrites) read a
+// record and write it back with a plain Put or Delete, not a conditional
+// write, so two changes to one key pair at the same moment on two nodes
+// resolve by last write. In particular a Reactivate on one node racing a
+// Delete of the same key pair on another reads the record before the delete
+// and writes it after, bringing the deleted key pair back ACTIVE: it signs and
+// verifies again until it is deleted again. An Invalidate, or a rotation that
+// ends a sibling key pair, racing a Delete of that key pair brings it back
+// inactive, which never signs, but verifies for any grace period the
+// Invalidate or rotation carried.
+//
+// Do not run changes to one key pair concurrently: one key-management
+// operation at a time per key pair.
 type KVKeyStore struct {
 	rep   *kvReplica[*signingEntry]
 	kv    spi.KeyValueStore

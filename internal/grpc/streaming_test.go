@@ -1173,27 +1173,28 @@ func TestStartStreaming_ClientTokenJoins(t *testing.T) {
 	}
 }
 
-// lookupStore is an M2MClientStore whose Lookup answers client or err; it
-// implements nothing else.
+// lookupStore is an M2MClientStore whose Lookup answers client — found only
+// by its own tenant and id — or err; it implements nothing else.
 type lookupStore struct {
 	auth.M2MClientStore
 	client *auth.M2MClient
 	err    error
 }
 
-func (s *lookupStore) Lookup(_ context.Context, clientID string) (*auth.M2MClient, error) {
+func (s *lookupStore) Lookup(_ context.Context, tenantID spi.TenantID, clientID string) (*auth.M2MClient, error) {
 	if s.err != nil {
 		return nil, s.err
 	}
-	if s.client == nil || s.client.ClientID != clientID {
+	if s.client == nil || s.client.TenantID != tenantID || s.client.ClientID != clientID {
 		return nil, fmt.Errorf("%w: %s", auth.ErrM2MClientNotFound, clientID)
 	}
 	return s.client, nil
 }
 
-// TestRecheckClient: the stream's client still stands only while it exists,
-// in the stream's tenant, at the secret generation the token was issued
-// under. A store that cannot be read closes the stream Unavailable.
+// TestRecheckClient: the stream's client still stands only while it exists
+// in the stream's tenant — it is looked up there, so a client of another
+// tenant is not found — at the secret generation the token was issued under.
+// A store that cannot be read closes the stream Unavailable.
 func TestRecheckClient(t *testing.T) {
 	ct := contract.ClientToken{ClientID: "C1", Gen: 3}
 	cases := []struct {
@@ -1205,6 +1206,7 @@ func TestRecheckClient(t *testing.T) {
 		{"client deleted", &lookupStore{}, codes.Unauthenticated},
 		{"client in another tenant", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-2", SecretGen: 3}}, codes.Unauthenticated},
 		{"secret reset", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 4}}, codes.Unauthenticated},
+		{"client recreated under the id", &lookupStore{client: &auth.M2MClient{ClientID: "C1", TenantID: "tenant-1", SecretGen: 7}}, codes.Unauthenticated},
 		{"storage unavailable", &lookupStore{err: fmt.Errorf("read client: %w", &storageOutageError{})}, codes.Unavailable},
 		{"other store error", &lookupStore{err: errors.New("record does not decode")}, codes.Unavailable},
 	}

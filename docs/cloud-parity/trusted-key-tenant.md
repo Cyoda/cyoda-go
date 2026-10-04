@@ -9,7 +9,7 @@ that tenant only. The tenant is taken from the key's registration, never from a
 claim in the token it signs: the key holder writes those claims.
 
 In cyoda-go a trusted key verifies one thing: the user assertion presented as
-the subject token of the token-exchange grant (`POST /oauth/token`,
+the subject token of the token-exchange grant (`POST /tenants/{tenant}/oauth/token`,
 `urn:ietf:params:oauth:grant-type:token-exchange`), which only an on-behalf-of
 client may use (see `obo-only-user-identity.md`). The key is read from the
 store, on every exchange, in the exchanging client's tenant

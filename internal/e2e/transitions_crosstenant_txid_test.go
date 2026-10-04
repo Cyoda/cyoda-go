@@ -50,7 +50,7 @@ func TestTransitions_CrossTenantTransactionID_Rejected(t *testing.T) {
 
 	getTransitionsAsB := func(txID string) (int, string) {
 		t.Helper()
-		resp := adminRequestAs(t, clientBID, clientBSecret,
+		resp := adminRequestAs(t, "tenant-b-transitions", clientBID, clientBSecret,
 			http.MethodGet, fmt.Sprintf("/entity/%s/transitions?transactionId=%s", entityID, txID), nil)
 		defer resp.Body.Close()
 		raw, err := io.ReadAll(resp.Body)

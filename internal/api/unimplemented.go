@@ -235,7 +235,7 @@ func (u *Unimplemented) ReactivateTrustedKey(w http.ResponseWriter, r *http.Requ
 	u.stub(w, r)
 }
 
-func (u *Unimplemented) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, params genapi.GetTechnicalUserTokenParams) {
+func (u *Unimplemented) GetTechnicalUserToken(w http.ResponseWriter, r *http.Request, tenant string, params genapi.GetTechnicalUserTokenParams) {
 	u.stub(w, r)
 }
 

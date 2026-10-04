@@ -32,15 +32,22 @@ const (
 	descExpired      = "subject token has expired"
 )
 
-// exchangeAs runs the token exchange on the shared server as clientID for a
+// exchangeAs runs the token exchange on the shared server as the suite-tenant
+// client clientID for a
 // subject_token, with extra form fields as key/value pairs.
 func exchangeAs(t *testing.T, clientID, secret, subject string, extra ...string) *http.Response {
+	t.Helper()
+	return exchangeAsIn(t, suiteTenant, clientID, secret, subject, extra...)
+}
+
+// exchangeAsIn is exchangeAs for a client of tenant.
+func exchangeAsIn(t *testing.T, tenant, clientID, secret, subject string, extra ...string) *http.Response {
 	t.Helper()
 	form := url.Values{"subject_token": {subject}}
 	for i := 0; i+1 < len(extra); i += 2 {
 		form.Set(extra[i], extra[i+1])
 	}
-	resp, err := exchangeRaw(clientID, secret, form)
+	resp, err := exchangeRaw(tenant, clientID, secret, form)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}
@@ -218,7 +225,7 @@ func TestToken_ClientCredentials_OBOClient_400(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	id, secret := createClient(t, false, true)
-	assertOAuthErrorDesc(t, postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, secret),
+	assertOAuthErrorDesc(t, postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret),
 		http.StatusBadRequest, "unauthorized_client", descOnlyExchange)
 }
 
@@ -232,7 +239,7 @@ func TestToken_Method_405(t *testing.T) {
 	h := newCalloutHarnessWithKey(t, genKey(t), nil)
 	for _, m := range []string{http.MethodGet, http.MethodPut, http.MethodDelete} {
 		t.Run(m, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(e2eCtx(t), m, h.baseURL+"/api/oauth/token", nil)
+			req, err := http.NewRequestWithContext(e2eCtx(t), m, h.baseURL+"/api/tenants/"+suiteTenant+"/oauth/token", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -259,7 +266,7 @@ func TestToken_ContentTypeMustBeForm(t *testing.T) {
 	id, secret := createClient(t, false, false)
 	post := func(t *testing.T, contentType, body string) *http.Response {
 		t.Helper()
-		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodPost, serverURL+"/api/oauth/token", strings.NewReader(body))
+		req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodPost, serverURL+"/api/tenants/"+suiteTenant+"/oauth/token", strings.NewReader(body))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -370,7 +377,7 @@ func TestToken_TokenExchange_KeyFromAnotherTenant_400(t *testing.T) {
 	otherTenant := fmt.Sprintf("e2e-tx-other-%d", time.Now().UnixNano())
 	clientID, secret := createOBOClientIn(t, otherTenant)
 	subject := assertionFor(priv, kid, "alice", otherTenant, func(c map[string]any) { c["user_roles"] = []string{"ROLE_ADMIN"} })
-	assertOAuthErrorDesc(t, exchangeAs(t, clientID, secret, subject), http.StatusBadRequest, "invalid_request", descKey)
+	assertOAuthErrorDesc(t, exchangeAsIn(t, otherTenant, clientID, secret, subject), http.StatusBadRequest, "invalid_request", descKey)
 }
 
 // TestToken_TokenExchange_SameKidTwoTenants_400: key ids are unique per
@@ -396,7 +403,7 @@ func TestToken_TokenExchange_SameKidTwoTenants_400(t *testing.T) {
 		id, secret, tenant string
 		key                *rsa.PrivateKey
 	}{"a": {idA, secretA, "test-tenant", privA}, "b": {idB, secretB, tenantB, privB}} {
-		resp := exchangeAs(t, c.id, c.secret, assertionFor(c.key, kid, "alice", c.tenant, nil))
+		resp := exchangeAsIn(t, c.tenant, c.id, c.secret, assertionFor(c.key, kid, "alice", c.tenant, nil))
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("tenant %s with its own key: %d, want 200", name, resp.StatusCode)

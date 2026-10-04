@@ -96,10 +96,6 @@ func TestM2MCodec_RoundTrip(t *testing.T) {
 		!got.CreatedAt.Equal(c.CreatedAt) || !got.UpdatedAt.Equal(c.UpdatedAt) || strings.Join(got.Roles, ",") != "ROLE_M2M" {
 		t.Fatalf("round trip: %+v", got)
 	}
-	ib, _ := encodeIndexEntry("acme")
-	if tn, err := decodeIndexEntry(ib); err != nil || tn != "acme" {
-		t.Fatalf("index: %v %v", tn, err)
-	}
 }
 
 // OnBehalfOf and a SecretGen above 1 round-trip too: the zero value of
@@ -124,7 +120,7 @@ func TestM2MCodec_RoundTripOnBehalfOfAndSecretGen(t *testing.T) {
 
 func TestM2MCodec_EncoderRefuses(t *testing.T) {
 	for name, mut := range map[string]func(c *M2MClient){
-		"bad id":            func(c *M2MClient) { c.ClientID = "a-b" },
+		"bad id":            func(c *M2MClient) { c.ClientID = "a:b" },
 		"bad tenant":        func(c *M2MClient) { c.TenantID = spi.TenantID("a:b") },
 		"bad user":          func(c *M2MClient) { c.UserID = "system" },
 		"no roles":          func(c *M2MClient) { c.Roles = nil },
@@ -133,6 +129,7 @@ func TestM2MCodec_EncoderRefuses(t *testing.T) {
 		"corrupt hash body": func(c *M2MClient) { c.HashedSecret = corruptBodyHash },
 		"year 10000":        func(c *M2MClient) { c.CreatedAt = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
 		"secretGen zero":    func(c *M2MClient) { c.SecretGen = 0 },
+		"secretGen 2^53":    func(c *M2MClient) { c.SecretGen = 1 << 53 },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validClient(t)
@@ -141,6 +138,21 @@ func TestM2MCodec_EncoderRefuses(t *testing.T) {
 				t.Fatal("want error")
 			}
 		})
+	}
+}
+
+// The largest storable secret generation, 2^53 - 1, round-trips: the
+// validator refuses a cgen at 2^53 and above, so the codec stops there too.
+func TestM2MCodec_SecretGenUpperBound(t *testing.T) {
+	c := validClient(t)
+	c.SecretGen = 1<<53 - 1
+	b, err := encodeClientRecord(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := decodeClientRecord("acme", "ABC123", b)
+	if err != nil || got.SecretGen != 1<<53-1 {
+		t.Fatalf("decode: %v %v", got, err)
 	}
 }
 
@@ -183,7 +195,7 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 		"not json":            {"acme", "ABC123", []byte("{")},
 		"key differs":         {"acme", "OTHER1", good},
 		"tenant differs":      {"other", "ABC123", good},
-		"key outside grammar": {"acme", "a-b", []byte(strings.Replace(string(good), `"ABC123"`, `"a-b"`, 1))},
+		"key outside grammar": {"acme", "a:b", []byte(strings.Replace(string(good), `"ABC123"`, `"a:b"`, 1))},
 		// These carry a valid key/tenant/clientId so they reach
 		// validateM2MClient inside decodeClientRecord itself, rather than
 		// being rejected by encodeClientRecord before ever hitting the
@@ -202,6 +214,7 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 			r.CreatedAt = "not-a-date"
 		})},
 		"secretGen zero": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.SecretGen = 0 })},
+		"secretGen 2^53": {"acme", "ABC123", validRecordJSON(t, func(r *m2mClientRecord) { r.SecretGen = 1 << 53 })},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -209,11 +222,5 @@ func TestM2MCodec_DecoderRefuses(t *testing.T) {
 				t.Fatalf("err = %v, want errM2MUndecodable", err)
 			}
 		})
-	}
-	if _, err := decodeIndexEntry([]byte(`{"tenantId":"a:b"}`)); !errors.Is(err, errM2MUndecodable) {
-		t.Fatalf("index with bad tenant: %v", err)
-	}
-	if _, err := decodeIndexEntry([]byte("{")); !errors.Is(err, errM2MUndecodable) {
-		t.Fatalf("index not json: %v", err)
 	}
 }

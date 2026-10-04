@@ -29,7 +29,7 @@ type OperatorTokenRequest struct {
 // except the key, so `cyoda token` can report a flag error before it reads
 // the key.
 func ValidateOperatorTokenRequest(req OperatorTokenRequest) error {
-	if err := common.ValidateTenantID(req.Tenant); err != nil {
+	if err := common.ValidateAPITenantID(req.Tenant); err != nil {
 		return fmt.Errorf("tenant: %w", err)
 	}
 	if err := common.ValidateUserID(req.UserID); err != nil {

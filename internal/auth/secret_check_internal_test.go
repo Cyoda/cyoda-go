@@ -13,7 +13,7 @@ import (
 func TestVerifiedSecretCache_Bounded(t *testing.T) {
 	c := newVerifiedSecretCache(16)
 	for i := 0; i < 100; i++ {
-		c.put(fmt.Sprintf("C%d", i), "h", sha256.Sum256([]byte("s")))
+		c.put(clientKey{"t", fmt.Sprintf("C%d", i)}, "h", sha256.Sum256([]byte("s")))
 	}
 	n := func() int {
 		c.mu.Lock()
@@ -23,7 +23,7 @@ func TestVerifiedSecretCache_Bounded(t *testing.T) {
 	if n > 16 {
 		t.Fatalf("%d entries, bound 16", n)
 	}
-	if !c.hit("C99", "h", sha256.Sum256([]byte("s"))) {
+	if !c.hit(clientKey{"t", "C99"}, "h", sha256.Sum256([]byte("s"))) {
 		t.Fatal("the entry just stored is not a hit")
 	}
 }
@@ -31,18 +31,18 @@ func TestVerifiedSecretCache_Bounded(t *testing.T) {
 func TestVerifiedSecretCache_HitNeedsHashAndSecret(t *testing.T) {
 	c := newVerifiedSecretCache(16)
 	sum := sha256.Sum256([]byte("s"))
-	c.put("C1", "h1", sum)
-	if !c.hit("C1", "h1", sum) {
+	c.put(clientKey{"t", "C1"}, "h1", sum)
+	if !c.hit(clientKey{"t", "C1"}, "h1", sum) {
 		t.Fatal("same hash and secret: not a hit")
 	}
-	if c.hit("C1", "h2", sum) {
+	if c.hit(clientKey{"t", "C1"}, "h2", sum) {
 		t.Fatal("another stored hash: a hit")
 	}
-	if c.hit("C1", "h1", sha256.Sum256([]byte("t"))) {
+	if c.hit(clientKey{"t", "C1"}, "h1", sha256.Sum256([]byte("t"))) {
 		t.Fatal("another secret: a hit")
 	}
-	c.drop("C1")
-	if c.hit("C1", "h1", sum) {
+	c.drop(clientKey{"t", "C1"})
+	if c.hit(clientKey{"t", "C1"}, "h1", sum) {
 		t.Fatal("a dropped entry: a hit")
 	}
 }
@@ -63,21 +63,21 @@ func holdSlots(t *testing.T, s *KVM2MClientStore, n int) (release func()) {
 func TestSecretCache_HitSkipsTheSlot(t *testing.T) {
 	s := NewKVM2MClientStore(newReplicaKV(t), 0, SecretCheckLimit{Slots: 1, Wait: time.Millisecond})
 	ctx := replicaSystemCtx()
-	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	sec, err := s.Create(ctx, "acme", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil { // warms the cache
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil { // warms the cache
 		t.Fatal(err)
 	}
 	defer holdSlots(t, s, 1)()
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil {
 		t.Fatalf("right secret with no free slot: %v, want a cache hit", err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec+"x"); !errors.Is(err, ErrSecretCheckBusy) {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec+"x"); !errors.Is(err, ErrSecretCheckBusy) {
 		t.Fatalf("wrong secret with no free slot: %v, want ErrSecretCheckBusy", err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil {
 		t.Fatalf("right secret after a wrong one: %v, want a cache hit", err)
 	}
 }
@@ -88,18 +88,18 @@ func TestSecretCache_HitSkipsTheSlot(t *testing.T) {
 func TestSecretCache_WrongSecretKeepsTheEntry(t *testing.T) {
 	s := NewKVM2MClientStore(newReplicaKV(t), 0, SecretCheckLimit{Slots: 1, Wait: time.Millisecond})
 	ctx := replicaSystemCtx()
-	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	sec, err := s.Create(ctx, "acme", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec+"x"); !errors.Is(err, ErrInvalidClient) {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec+"x"); !errors.Is(err, ErrInvalidClient) {
 		t.Fatalf("wrong secret: %v", err)
 	}
 	defer holdSlots(t, s, 1)()
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil {
 		t.Fatalf("right secret after a refused one, no free slot: %v, want a cache hit", err)
 	}
 }
@@ -109,12 +109,12 @@ func TestSecretCache_WrongSecretKeepsTheEntry(t *testing.T) {
 func TestSecretCheck_CreateAndResetTakeASlot(t *testing.T) {
 	s := NewKVM2MClientStore(newReplicaKV(t), 0, SecretCheckLimit{Slots: 1, Wait: time.Millisecond})
 	ctx := replicaSystemCtx()
-	sec, err := s.Create(ctx, "acme", "C1", "C1", []string{"ROLE_M2M"}, false)
+	sec, err := s.Create(ctx, "acme", "C1", []string{"ROLE_M2M"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	release := holdSlots(t, s, 1)
-	_, createErr := s.Create(ctx, "acme", "C2", "C2", []string{"ROLE_M2M"}, false)
+	_, createErr := s.Create(ctx, "acme", "C2", []string{"ROLE_M2M"}, false)
 	_, _, resetErr := s.ResetSecret(ctx, "acme", "C1")
 	release()
 	if !errors.Is(createErr, ErrSecretCheckBusy) {
@@ -123,10 +123,23 @@ func TestSecretCheck_CreateAndResetTakeASlot(t *testing.T) {
 	if !errors.Is(resetErr, ErrSecretCheckBusy) {
 		t.Errorf("ResetSecret with no free slot: %v, want ErrSecretCheckBusy", resetErr)
 	}
-	if _, err := s.Lookup(ctx, "C2"); !errors.Is(err, ErrM2MClientNotFound) {
+	if _, err := s.Lookup(ctx, "acme", "C2"); !errors.Is(err, ErrM2MClientNotFound) {
 		t.Errorf("a refused Create wrote a client: %v", err)
 	}
-	if _, err := s.Authenticate(ctx, "C1", sec); err != nil {
+	if _, err := s.Authenticate(ctx, "acme", "C1", sec); err != nil {
 		t.Errorf("a refused ResetSecret changed the secret: %v", err)
+	}
+}
+
+// An id outside the client-id grammar is refused before any bcrypt: with the
+// only slot held it is still ErrInvalidClient, never ErrSecretCheckBusy, so
+// a flood of malformed ids costs no secret-check capacity.
+func TestSecretCheck_MalformedIDTakesNoSlot(t *testing.T) {
+	s := NewKVM2MClientStore(newReplicaKV(t), 0, SecretCheckLimit{Slots: 1, Wait: time.Millisecond})
+	defer holdSlots(t, s, 1)()
+	for _, id := range []string{"a:b", "", "system"} {
+		if _, err := s.Authenticate(replicaSystemCtx(), "acme", id, "x"); !errors.Is(err, ErrInvalidClient) {
+			t.Fatalf("%q with no free slot: %v, want ErrInvalidClient", id, err)
+		}
 	}
 }

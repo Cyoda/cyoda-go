@@ -81,7 +81,7 @@ func TestPlatformOperator_PlatformWithoutAdmin_403(t *testing.T) {
 // bootstrap key is revoked.
 func TestPlatformOperator_AdminM2MClientInPlatform(t *testing.T) {
 	id, secret := createM2MClient(t, "PLATFORM", "platform-seed", true)
-	tok := getToken(t, id, secret)
+	tok := getTokenIn(t, "PLATFORM", id, secret)
 	resp := requestAs(t, tok, http.MethodPost, "/oauth/keys/keypair", []byte(`{"algorithm":"RS256"}`))
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {

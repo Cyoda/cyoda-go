@@ -33,7 +33,7 @@ import (
 // invalidated key pair verifies through its grace period and no longer.
 
 // keyStack pairs a callbackHarness with the one M2M client keyCall drives the
-// real /oauth/token endpoint with. The client is created through POST
+// real token endpoint with. The client is created through POST
 // /clients by the first keyStack on a database, with that stack's own
 // self-signed admin token (h.token — see callback_harness_test.go). M2M
 // clients are stored in the database, so a later keyStack on the same
@@ -83,13 +83,13 @@ func createKeyStackClient(t *testing.T, h *callbackHarness) *m2mCredential {
 	return &cred
 }
 
-// oauthToken fetches a fresh bearer through the real /oauth/token endpoint —
+// oauthToken fetches a fresh bearer through the real token endpoint —
 // unlike h.token/h.fetchToken (self-signed), this exercises the server's own
 // signer selection, so a caller testing key-rotation/invalidation behaviour
 // observes whichever key the server currently signs with.
 func (ks *keyStack) oauthToken(t *testing.T) string {
 	t.Helper()
-	return ks.fetchTokenFor(t, ks.clientID, ks.clientSecret)
+	return ks.fetchTokenFor(t, string(auth.PlatformTenantID), ks.clientID, ks.clientSecret)
 }
 
 func (ks *keyStack) keyCall(t *testing.T, method, path, body string) (int, []byte) {
@@ -342,18 +342,18 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	// The keyStack's M2M client authenticates via Basic Auth (bcrypt secret
 	// check), no JWT needed for that, so it is unaffected by the tampered key.
 
-	// /oauth/token must fail closed: the broken key is the selected signer.
-	resp := postTokenTo(t, h2.baseURL, url.Values{"grant_type": {"client_credentials"}}, h2.clientID, h2.clientSecret)
+	// the token endpoint must fail closed: the broken key is the selected signer.
+	resp := postTokenTo(t, h2.baseURL, string(auth.PlatformTenantID), url.Values{"grant_type": {"client_credentials"}}, h2.clientID, h2.clientSecret)
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusInternalServerError {
-		t.Fatalf("/oauth/token with a broken signer: %d %s, want 500", resp.StatusCode, body)
+		t.Fatalf("the token endpoint with a broken signer: %d %s, want 500", resp.StatusCode, body)
 	}
 	var oauthErr struct {
 		Error string `json:"error"`
 	}
 	if err := json.Unmarshal(body, &oauthErr); err != nil || oauthErr.Error != "server_error" {
-		t.Fatalf(`/oauth/token error body: %s, want {"error":"server_error",...}`, body)
+		t.Fatalf(`token endpoint error body: %s, want {"error":"server_error",...}`, body)
 	}
 	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
@@ -494,7 +494,7 @@ func (ks *keyStack) invalidateKey(t *testing.T, kid string, grace time.Duration)
 // TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive: once no issued key
 // pair is active and in its window — here one invalidated and one deleted —
 // the signing key from configuration is the current key pair and
-// /oauth/token signs with it.
+// the token endpoint signs with it.
 func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
@@ -519,7 +519,7 @@ func TestSigningKeys_SigningKeySignsWhenNoIssuedPairIsActive(t *testing.T) {
 	}
 	tok := h.oauthToken(t)
 	if got := tokenKID(t, tok); got != bootKID {
-		t.Fatalf("/oauth/token signs with %s, want the signing key %s", got, bootKID)
+		t.Fatalf("the token endpoint signs with %s, want the signing key %s", got, bootKID)
 	}
 	if code := h.authedStatus(t, tok); code != http.StatusOK {
 		t.Fatalf("token signed by the signing key: %d, want 200", code)

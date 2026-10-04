@@ -30,7 +30,7 @@ The detail field carries a generic `M2M client not found` message; internal stor
 
 Not retryable. Verify the `clientId` via `GET /clients` before retrying the operation.
 
-A reset can answer `404` for a client that `GET /clients` still lists: a reset that raced a delete of the same client wrote the client back without its index entry. That client cannot get a token; `DELETE /clients/{clientId}` removes it. See `auth.clients` (STORAGE AND CONSISTENCY).
+A reset racing a delete of the same client answers `404`, or `200` with a secret the delete then removes: the delete always wins and the client stays deleted. See `auth.clients` (STORAGE AND CONSISTENCY).
 
 Returned uniformly for `clientId`s that do not exist AND `clientId`s owned by another tenant; the response does not distinguish — by design, to prevent cross-tenant existence enumeration.
 

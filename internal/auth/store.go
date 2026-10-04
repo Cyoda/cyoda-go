@@ -72,7 +72,7 @@ type M2MClient struct {
 	UserID       string
 	Roles        []string
 	OnBehalfOf   bool      // set at Create, immutable: may only perform token exchanges
-	SecretGen    uint64    // 1 at Create, incremented by every successful ResetSecret
+	SecretGen    uint64    // random in [1, 2^52] at Create, incremented by every successful ResetSecret
 	CreatedAt    time.Time // set at Create, never advanced
 	UpdatedAt    time.Time // advanced on ResetSecret; equal to CreatedAt on fresh create
 }
@@ -147,34 +147,40 @@ var ErrInvalidClient = errors.New("invalid client")
 // already has the configured maximum number of clients.
 var ErrM2MClientCapReached = errors.New("m2m client cap reached")
 
-// ErrM2MClientNotFound is returned by M2MClientStore.Delete and ResetSecret
-// when the client does not exist in the caller's tenant: absent, or another
-// tenant's. Adapters classify with errors.Is.
+// ErrM2MClientNotFound is returned by M2MClientStore.Lookup, Delete and
+// ResetSecret when the client does not exist in the caller's tenant: absent,
+// or another tenant's. Adapters classify with errors.Is.
 var ErrM2MClientNotFound = errors.New("m2m client not found")
 
 // ErrM2MClientExists is returned by M2MClientStore.Create when the clientID
-// is already taken, in any tenant — that is, when an index entry exists for
-// it, decodable or not. The adapter's collision-retry loop in
-// CreateTechnicalUser detects this via errors.Is and regenerates.
+// is already taken in the tenant — a record exists for it there, decodable or
+// not, or another create of it wrote first. The adapter's collision-retry
+// loop in CreateTechnicalUser detects this via errors.Is and regenerates.
 var ErrM2MClientExists = errors.New("m2m client already exists")
 
-// M2MClientStore manages machine-to-machine clients. The store enforces
-// tenant isolation: List, Delete and ResetSecret act only on tenantID's
-// clients, and another tenant's client is ErrM2MClientNotFound, exactly as an
-// absent one. Any error other than the sentinels above is a server-side
-// failure: a KV error, wrapped so a storage-unavailable one keeps its
-// marker; stored data that does not decode (errM2MUndecodable); or a failure
-// to generate or hash a secret, which wraps no KV error.
+// ErrM2MClientChanged is returned by M2MClientStore.ResetSecret when another
+// change to the client won the race; the adapter answers 409 CONFLICT,
+// retryable.
+var ErrM2MClientChanged = errors.New("m2m client changed during the operation")
+
+// M2MClientStore manages machine-to-machine clients. A client is found by
+// (tenant, client id): every method acts only on tenantID's clients, and
+// another tenant's client of the same id is a different client — for the
+// caller, exactly as an absent one. Any error other than the sentinels above
+// is a server-side failure: a KV error, wrapped so a storage-unavailable one
+// keeps its marker; stored data that does not decode (errM2MUndecodable); or
+// a failure to generate or hash a secret, which wraps no KV error.
 type M2MClientStore interface {
-	Create(ctx context.Context, tenantID spi.TenantID, clientID, userID string, roles []string, onBehalfOf bool) (secret string, err error)
-	// Authenticate is ErrInvalidClient for no such client or a wrong
-	// secret, and ErrSecretCheckBusy when the node has no secret-check
-	// capacity left to decide.
-	Authenticate(ctx context.Context, clientID, secret string) (*M2MClient, error)
-	// Lookup returns clientID's record without checking a secret: the current
-	// record as the store holds it. ErrM2MClientNotFound when clientID is
-	// outside the grammar or no record exists for it in any tenant.
-	Lookup(ctx context.Context, clientID string) (*M2MClient, error)
+	Create(ctx context.Context, tenantID spi.TenantID, clientID string, roles []string, onBehalfOf bool) (secret string, err error)
+	// Authenticate returns tenantID's client clientID when secret matches.
+	// ErrInvalidClient for no such client in tenantID or a wrong secret, and
+	// ErrSecretCheckBusy when the node has no secret-check capacity left to
+	// decide.
+	Authenticate(ctx context.Context, tenantID spi.TenantID, clientID, secret string) (*M2MClient, error)
+	// Lookup returns tenantID's client clientID without checking a secret:
+	// the current record as the store holds it. ErrM2MClientNotFound when
+	// clientID is outside the grammar or tenantID has no record for it.
+	Lookup(ctx context.Context, tenantID spi.TenantID, clientID string) (*M2MClient, error)
 	List(ctx context.Context, tenantID spi.TenantID) ([]*M2MClient, error)
 	Delete(ctx context.Context, tenantID spi.TenantID, clientID string) error
 	ResetSecret(ctx context.Context, tenantID spi.TenantID, clientID string) (secret string, c *M2MClient, err error)
@@ -236,7 +242,7 @@ func windowOpen(validTo *time.Time, now time.Time) bool {
 
 // dummyHash is compared against the secret of a token request that names no
 // usable client, so Authenticate makes one bcrypt comparison whether or not
-// the id exists. Without it, response-time analysis on POST /oauth/token
+// the id exists. Without it, response-time analysis on the token endpoint
 // would reveal whether a given clientID exists. Generated once at init; the
 // plaintext is never referenced outside this comparison.
 var dummyHash = func() []byte {

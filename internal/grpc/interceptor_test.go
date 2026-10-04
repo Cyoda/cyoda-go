@@ -275,9 +275,11 @@ func TestInterceptor_StreamAuthFailure(t *testing.T) {
 // same generic message.
 func TestInterceptor_UnaryRejectsClaimOutsideCheck(t *testing.T) {
 	for name, tc := range map[string]struct{ user, tenant string }{
-		"tenant":   {user: "user-1", tenant: "../victim"},
-		"user":     {user: "user\nvictim", tenant: "tenant-1"},
-		"reserved": {user: "SYSTEM", tenant: "tenant-1"},
+		"tenant":              {user: "user-1", tenant: "../victim"},
+		"user":                {user: "user\nvictim", tenant: "tenant-1"},
+		"reserved":            {user: "SYSTEM", tenant: "tenant-1"},
+		"system tenant":       {user: "user-1", tenant: "SYSTEM"},
+		"system tenant lower": {user: "user-1", tenant: "system"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertUnaryRejectsClaims(t, tc.user, tc.tenant)
@@ -309,6 +311,14 @@ func TestInterceptor_UnaryAcceptsClaimsInsideCheck(t *testing.T) {
 // caas_user_id and sub) and tenant.
 func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googlegrpc.UnaryServerInterceptor) {
 	t.Helper()
+	ctx, authSvc := claimTokenAuth(t, user, tenant)
+	return ctx, UnaryAuthInterceptor(authSvc)
+}
+
+// claimTokenAuth is claimTokenCall's authenticator and context, for the stream
+// interceptor as well as the unary one.
+func claimTokenAuth(t *testing.T, user, tenant string) (context.Context, contract.AuthenticationService) {
+	t.Helper()
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
@@ -334,7 +344,6 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 
 	validator := auth.NewValidatorFromSource(auth.NewLocalKeySource(ks), issuer)
 	authSvc := auth.NewDelegatingAuthenticator(validator)
-	interceptor := UnaryAuthInterceptor(authSvc)
 
 	now := time.Now()
 	tok, err := auth.Sign(context.Background(), map[string]any{
@@ -351,7 +360,24 @@ func claimTokenCall(t *testing.T, user, tenant string) (context.Context, googleg
 
 	ctx := metadata.NewIncomingContext(context.Background(),
 		metadata.MD{"authorization": []string{"Bearer " + tok}})
-	return ctx, interceptor
+	return ctx, authSvc
+}
+
+// TestInterceptor_StreamRejectsSystemTenant: the stream door refuses the
+// machinery's tenant claim like the unary one.
+func TestInterceptor_StreamRejectsSystemTenant(t *testing.T) {
+	for _, tenant := range []string{"SYSTEM", "system"} {
+		ctx, authSvc := claimTokenAuth(t, "user-1", tenant)
+		err := StreamAuthInterceptor(authSvc)(nil, &mockServerStream{ctx: ctx},
+			&googlegrpc.StreamServerInfo{FullMethod: "/test.Service/Stream"},
+			func(any, googlegrpc.ServerStream) error {
+				t.Fatal("handler must not be called")
+				return nil
+			})
+		if st, _ := status.FromError(err); st.Code() != codes.Unauthenticated {
+			t.Errorf("tenant %q: err = %v, want Unauthenticated", tenant, err)
+		}
+	}
 }
 
 // assertUnaryRejectsClaims signs a first-party token carrying user and tenant,

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -15,15 +16,7 @@ type KeyValueStore struct {
 func (s *KeyValueStore) Put(ctx context.Context, namespace string, key string, value []byte) error {
 	s.factory.kvMu.Lock()
 	defer s.factory.kvMu.Unlock()
-	if s.factory.kvData[s.tenant] == nil {
-		s.factory.kvData[s.tenant] = make(map[string]map[string][]byte)
-	}
-	if s.factory.kvData[s.tenant][namespace] == nil {
-		s.factory.kvData[s.tenant][namespace] = make(map[string][]byte)
-	}
-	cp := make([]byte, len(value))
-	copy(cp, value)
-	s.factory.kvData[s.tenant][namespace][key] = cp
+	s.ns(namespace)[key] = append([]byte{}, value...)
 	return nil
 }
 
@@ -63,4 +56,50 @@ func (s *KeyValueStore) List(ctx context.Context, namespace string) (map[string]
 		result[k] = cp
 	}
 	return result, nil
+}
+
+// ns returns the tenant's namespace map, creating it. The caller holds kvMu.
+func (s *KeyValueStore) ns(namespace string) map[string][]byte {
+	if s.factory.kvData[s.tenant] == nil {
+		s.factory.kvData[s.tenant] = make(map[string]map[string][]byte)
+	}
+	if s.factory.kvData[s.tenant][namespace] == nil {
+		s.factory.kvData[s.tenant][namespace] = make(map[string][]byte)
+	}
+	return s.factory.kvData[s.tenant][namespace]
+}
+
+func (s *KeyValueStore) PutIfAbsent(ctx context.Context, namespace, key string, value []byte) (bool, error) {
+	s.factory.kvMu.Lock()
+	defer s.factory.kvMu.Unlock()
+	ns := s.ns(namespace)
+	if _, ok := ns[key]; ok {
+		return false, nil
+	}
+	ns[key] = append([]byte{}, value...)
+	return true, nil
+}
+
+func (s *KeyValueStore) CompareAndPut(ctx context.Context, namespace, key string, expected, value []byte) (bool, error) {
+	s.factory.kvMu.Lock()
+	defer s.factory.kvMu.Unlock()
+	ns := s.ns(namespace)
+	cur, ok := ns[key]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	ns[key] = append([]byte{}, value...)
+	return true, nil
+}
+
+func (s *KeyValueStore) DeleteIfEqual(ctx context.Context, namespace, key string, expected []byte) (bool, error) {
+	s.factory.kvMu.Lock()
+	defer s.factory.kvMu.Unlock()
+	ns := s.ns(namespace)
+	cur, ok := ns[key]
+	if !ok || !bytes.Equal(cur, expected) {
+		return false, nil
+	}
+	delete(ns, key)
+	return true, nil
 }

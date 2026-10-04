@@ -788,7 +788,7 @@ func TestDefaultTree_AuthTopics(t *testing.T) {
 			[]string{"## NAME", "## GOAL", "## WHICH PATH DO I NEED?", "## TOKEN PRESENTATION", "## SEE ALSO"}},
 		{[]string{"auth", "clients"}, "auth.clients — M2M client lifecycle",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
-		{[]string{"auth", "tokens"}, "auth.tokens — /oauth/token grants and JWT claim contract",
+		{[]string{"auth", "tokens"}, "auth.tokens — the token endpoint, its grants and the JWT claim contract",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},
 		{[]string{"auth", "trusted-keys"}, "auth.trusted-keys — register public keys for token-exchange subject tokens",
 			[]string{"## NAME", "## GOAL", "## PREREQUISITES", "## REQUEST FLOW", "## TOKEN", "## ERRORS", "## SEE ALSO"}},

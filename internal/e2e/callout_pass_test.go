@@ -121,7 +121,7 @@ func TestCalloutPass(t *testing.T) {
 	var bearerB string
 	t.Run("another-tenant-403", func(t *testing.T) {
 		clientB, secretB := h.provisionTenant(t, "s10-tenant-b-"+sfx, "s10-user-b-"+sfx)
-		bearerB = h.fetchTokenFor(t, clientB, secretB)
+		bearerB = h.fetchTokenFor(t, "s10-tenant-b-"+sfx, clientB, secretB)
 		// Tenant B gets its own copy of the target model, so an entity count
 		// in B's space means something (an endpoint erroring on an unknown
 		// model would otherwise report "0" for the wrong reason).

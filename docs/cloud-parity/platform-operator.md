@@ -27,7 +27,7 @@ cyoda-go **defines** the contract; Cyoda Cloud aligns to it.
 ## Prerequisites Cloud does not meet today
 
 The rule depends on tenant binding. In cyoda-go the only token source other
-than its own signing key is `POST /oauth/token`, and both grants take the
+than its own signing key is `POST /tenants/{tenant}/oauth/token`, and both grants take the
 tenant from the stored client, so a tenant admin can never mint a principal
 in `PLATFORM`. Cloud does not bind tenants this way today — it takes the
 legal entity of any JWT, including one from an external OIDC provider or a

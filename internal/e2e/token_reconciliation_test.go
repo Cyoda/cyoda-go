@@ -5,39 +5,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 )
 
-// postToken issues a POST to the shared server's /api/oauth/token with the
-// given form values and optional HTTP Basic credentials. It does NOT use
+// postToken issues a POST to the shared server's
+// /api/tenants/{tenant}/oauth/token with the given form values and optional HTTP Basic credentials. It does NOT use
 // authRequest because the token endpoint does not require a pre-existing
 // bearer token.
-func postToken(t *testing.T, form url.Values, basicUser, basicPass string) *http.Response {
+func postToken(t *testing.T, tenant string, form url.Values, basicUser, basicPass string) *http.Response {
 	t.Helper()
-	return postTokenTo(t, serverURL, form, basicUser, basicPass)
+	return postTokenTo(t, serverURL, tenant, form, basicUser, basicPass)
 }
 
 // postTokenTo is postToken against the server at baseURL — the shared server
 // or a harness stack. basicUser and basicPass are sent as given, so a caller
 // can pass a form-urlencoded client id (the endpoint decodes both parts).
-func postTokenTo(t *testing.T, baseURL string, form url.Values, basicUser, basicPass string) *http.Response {
+func postTokenTo(t *testing.T, baseURL, tenant string, form url.Values, basicUser, basicPass string) *http.Response {
 	t.Helper()
-	resp, err := postTokenRaw(e2eCtx(t), baseURL, form, basicUser, basicPass)
+	resp, err := postTokenRaw(e2eCtx(t), baseURL, tenant, form, basicUser, basicPass)
 	if err != nil {
 		t.Fatalf("postToken: %v", err)
 	}
 	return resp
 }
 
-// postTokenRaw is the one /api/oauth/token request every token helper
+// postTokenRaw is the one /api/tenants/{tenant}/oauth/token request every token helper
 // sends: form as the body, basicUser and basicPass as HTTP Basic credentials
 // when basicUser is set. It never touches *testing.T, so it is safe to call
 // from a goroutine.
-func postTokenRaw(ctx context.Context, baseURL string, form url.Values, basicUser, basicPass string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/oauth/token", strings.NewReader(form.Encode()))
+func postTokenRaw(ctx context.Context, baseURL, tenant string, form url.Values, basicUser, basicPass string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/tenants/"+tenant+"/oauth/token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, fmt.Errorf("create token request: %w", err)
 	}
@@ -88,7 +89,7 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	id, secret := createClient(t, false, false)
-	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, secret)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, secret)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
@@ -117,10 +118,12 @@ func TestToken_ClientCredentials_Accepted(t *testing.T) {
 		t.Fatalf("client_credentials: expires_in: got %d, want >0; body=%s", tok.ExpiresIn, raw)
 	}
 	// §4.2: the client is sub and caas_user_id, and cgen is its secret
-	// generation, 1 for a client whose secret was never reset.
+	// generation: for a client whose secret was never reset, the random start
+	// drawn at creation, an integer in [1, 2^52].
 	claims := decodeJWTPayload(t, tok.AccessToken)
-	if claims["sub"] != id || claims["caas_user_id"] != id || claims["cgen"] != float64(1) {
-		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, 1", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
+	gen, _ := claims["cgen"].(float64)
+	if claims["sub"] != id || claims["caas_user_id"] != id || gen < 1 || gen > 1<<52 || gen != math.Trunc(gen) {
+		t.Errorf("claims sub=%v caas_user_id=%v cgen=%v, want %s, %s, an integer in [1, 2^52]", claims["sub"], claims["caas_user_id"], claims["cgen"], id, id)
 	}
 }
 
@@ -131,7 +134,7 @@ func TestToken_BadGrantType_400UnsupportedGrantType(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	id, secret := createClient(t, false, false)
-	resp := postToken(t, url.Values{"grant_type": {"password"}}, id, secret)
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"password"}}, id, secret)
 	assertOAuthError(t, resp, http.StatusBadRequest, "unsupported_grant_type")
 }
 
@@ -142,7 +145,7 @@ func TestToken_BadClient_401InvalidClient(t *testing.T) {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	id, _ := createClient(t, false, false)
-	resp := postToken(t, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
+	resp := postToken(t, suiteTenant, url.Values{"grant_type": {"client_credentials"}}, id, "wrongsecret")
 	if got := resp.Header.Get("WWW-Authenticate"); got != `Basic realm="cyoda"` {
 		t.Errorf(`WWW-Authenticate = %q, want Basic realm="cyoda"`, got)
 	}
