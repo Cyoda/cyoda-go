@@ -328,6 +328,13 @@ no longer verify. A node that has not yet applied an invalidation can still
 sign with the key pair until it does; with a grace period, those tokens
 verify on every node until the key pair's `validTo`.
 
+Changes to one key pair are not coordinated across nodes: two changes to the
+same key pair at the same moment on two nodes resolve by last write. Run one
+key-management operation at a time per key pair, for example from one operator
+script. A delete racing a reactivation of the same key pair on another node
+can leave the deleted key pair active again, signing and verifying; if that
+happens, delete it again.
+
 **Emergency revocation of a leaked token:** revoke the key pair named by
 the `kid` in the token's header. Every token cyoda-go accepts was signed by
 one of its own key pairs, the bootstrap key or an issued one, and JWKS

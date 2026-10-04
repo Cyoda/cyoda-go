@@ -53,14 +53,24 @@ var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not de
 //
 // Changes to one tenant's keys are serialized on this node, so the cap check
 // and the sibling invalidation of a rotation see every change made on this
-// node before them. This store writes with Put, not the SPI's conditional writes: two changes to one
-// tenant's keys at the same moment on two nodes resolve by last write, and
-// the cap can be exceeded by one key per node. In particular, an Invalidate
-// (or a rotation's write that ends a previous key) on one node racing a
-// Delete of the same key on another reads the key before the delete and
-// writes it after, bringing the deleted key back as an inactive record. That
-// record never verifies (Verifies requires Active), so revocation is
-// unaffected, but it reappears in List until it is deleted again.
+// node before them. Nothing coordinates two nodes. Register, Invalidate,
+// Reactivate and Delete read a key and write it back with Put, not the SPI's
+// conditional writes, so two changes to one tenant's keys at the same moment
+// on two nodes resolve by last write, and the cap can be exceeded by one key
+// per node. Two races on one key matter:
+//
+//   - An Invalidate (or a rotation's write that ends a previous key) on one
+//     node racing a Delete of the same key on another reads the key before
+//     the delete and writes it after, bringing the deleted key back as an
+//     inactive record. That record never verifies (Verifies requires
+//     Active), so revocation is unaffected, but it reappears in List until it
+//     is deleted again.
+//   - A Reactivate, or a Register of the same key id, on one node racing a
+//     Delete of that key on another brings the deleted key back ACTIVE, so it
+//     verifies again until it is deleted again.
+//
+// Do not run changes to one key concurrently: one key-management operation at
+// a time per key.
 type KVTrustedKeyStore struct {
 	kv           spi.KeyValueStore
 	maxPerTenant int

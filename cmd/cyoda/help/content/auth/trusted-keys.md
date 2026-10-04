@@ -110,6 +110,13 @@ delete is in force on every node when the call returns. A reactivation's
 the node that takes the call, and each node checks the window against its own
 clock.
 
+Changes to one key are not coordinated across nodes: two changes to the same
+key at the same moment on two nodes resolve by last write. Run one
+key-management operation at a time per key, for example from one operator
+script. A delete racing a reactivation (or a re-registration) of the same key
+on another node can leave the deleted key active again; if that happens,
+delete it again.
+
 ### Delete
 
 ```bash
