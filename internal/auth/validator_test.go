@@ -148,9 +148,9 @@ func TestJWKSValidator_InvalidSignature(t *testing.T) {
 	}
 }
 
-// TestValidator_RejectsTenantOutsideGrammar pins the tenant door: the caas_org_id claim
-// is the one place a tenant id enters cyoda-go on a request, covering HTTP and
-// gRPC alike, so a claim outside the grammar must not produce a UserContext.
+// TestValidator_RejectsTenantOutsideGrammar pins the claim door: the caas_org_id claim
+// is the door on every authenticated HTTP and gRPC request (the token URL's
+// {tenant} segment and `cyoda token --tenant` are the other doors), so a claim outside the grammar must not produce a UserContext.
 func TestValidator_RejectsTenantOutsideGrammar(t *testing.T) {
 	key, kid := setupTestJWKS(t)
 

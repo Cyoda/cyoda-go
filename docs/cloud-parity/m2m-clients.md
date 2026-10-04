@@ -28,9 +28,9 @@ In cyoda-go the cap is `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT`: default `100`,
 deployment configuration; the contract is the refusal and its code, not the
 number.
 
-cyoda-go checks the cap on each node before it writes, with no
-compare-and-set in its store, so creates on several nodes at the same moment
-can exceed the cap by at most one client per node. Creates on one node never
+cyoda-go checks the cap on each node before it writes, so creates
+on several nodes at the same moment can exceed it by at most one client per
+node. Creates on one node never
 exceed it. Cloud may enforce the cap exactly; if it overshoots, by no more
 than one client per node.
 
