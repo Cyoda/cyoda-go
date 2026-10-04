@@ -612,10 +612,8 @@ paths:
         cluster: any node answers with the same list.
 
 
-        A client whose record was written back without its index entry (a
-        secret reset that raced a delete) is listed but cannot authenticate;
-        deleting it removes it. A stored client that cannot be read back is
-        left out and logged.
+        A stored client record that cannot be decoded is left out of the list
+        and logged; it still counts toward the cap, and deleting it removes it.
 
 
         **Authorization Required:** ROLE_ADMIN role
@@ -859,10 +857,8 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable index entry naming a
-            client absent from the caller's tenant (ownership cannot be
-            proven). An undecodable index entry of a client present in the
-            caller's tenant is removed instead, answering `200`.
+            generic message). A client record that cannot be decoded is
+            removed instead, answering `200`.
           content:
             application/problem+json:
               schema:
@@ -948,10 +944,9 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "500":
           description: Internal Server Error - the client store failed (ticket,
-            generic message), including an undecodable record, or an
-            undecodable index entry of a client whose record the caller's
-            tenant holds. An id with no record in the caller's tenant answers
-            `404`, whatever its index entry.
+            generic message), including a client record that cannot be
+            decoded. An id with no record in the caller's tenant answers
+            `404`.
           content:
             application/problem+json:
               schema:
@@ -6288,7 +6283,7 @@ paths:
         "500":
           description: Internal Server Error - server_error (ticket in
             error_description, generic message) - the client or trusted-key
-            store failed, including an undecodable record or index entry, or
+            store failed, including an undecodable record, or
             signing failed.
           content:
             application/json:

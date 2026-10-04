@@ -137,8 +137,9 @@ func (v *JWKSValidator) buildUserContext(claims map[string]any) (*spi.UserContex
 		return nil, nil, fmt.Errorf("missing caas_org_id claim")
 	}
 
-	// The tenant door. The caas_org_id claim is the only place a tenant id
-	// enters cyoda-go from outside it, and it covers every HTTP and gRPC
+	// The claim door. A tenant id enters cyoda-go from outside it through the
+	// caas_org_id claim (here), the token URL's {tenant} segment and
+	// `cyoda token --tenant`. The claim covers every HTTP and gRPC
 	// request — the gRPC interceptor delegates to this same authenticator.
 	// Validating here is what lets every downstream consumer treat the tenant
 	// as well-formed without rechecking. The door also refuses the machinery's

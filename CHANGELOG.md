@@ -129,8 +129,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docker compose exec <service> /cyoda token --tenant <tenant>`; the
   container already holds the key. Create the M2M clients that applications
   and compute nodes use with that token (`POST /clients`). With the variables
-  gone, the `caas_org_id` claim is the only place a tenant id enters
-  cyoda-go from outside it. See `cyoda help cli token`.
+  gone, a tenant id enters cyoda-go from outside it only through the
+  `caas_org_id` claim, the token URL's `{tenant}` segment and
+  `cyoda token --tenant`. See `cyoda help cli token`.
 
 - **`CYODA_JWT_EXPIRY_SECONDS` must be an integer from 1 to 3600, and now
   defaults to 300 (was 3600).** The server used to replace a non-numeric
@@ -327,11 +328,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **A tenant identifier has a grammar:
   `^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`.** 1 to 100 bytes, the first an ASCII
   letter or digit, the rest letters, digits, `.`, `_` and `-`; case is
-  preserved and significant. It is enforced at the one place a tenant id
+  preserved and significant. It is enforced at each place a tenant id
   enters cyoda-go from outside it: the `caas_org_id` JWT claim, which covers
   every authenticated HTTP request and every authenticated gRPC method,
-  since gRPC delegates to the same authenticator. `cyoda token --tenant`
-  checks it too before it signs. A token whose claim falls
+  since gRPC delegates to the same authenticator; the `{tenant}` segment of
+  the token URL; and `cyoda token --tenant`, before it signs. A token whose claim falls
   outside the grammar is an **ordinary `401`** with the uniform RFC 9457
   problem detail, indistinguishable from any other bad token; over gRPC it
   is `codes.Unauthenticated`. Every tenant either tier ships or uses today is

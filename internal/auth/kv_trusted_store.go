@@ -53,7 +53,7 @@ var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not de
 //
 // Changes to one tenant's keys are serialized on this node, so the cap check
 // and the sibling invalidation of a rotation see every change made on this
-// node before them. The KV SPI has no compare-and-set: two changes to one
+// node before them. This store writes with Put, not the SPI's conditional writes: two changes to one
 // tenant's keys at the same moment on two nodes resolve by last write, and
 // the cap can be exceeded by one key per node. In particular, an Invalidate
 // (or a rotation's write that ends a previous key) on one node racing a
