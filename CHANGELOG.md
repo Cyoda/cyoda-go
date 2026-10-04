@@ -72,7 +72,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operator routes answer an on-behalf-of token with `403 FORBIDDEN`
   ("on-behalf-of tokens cannot administer"), whatever its roles.
 
-- **`POST /oauth/token`: the token exchange is for on-behalf-of clients only
+- **`POST /tenants/{tenant}/oauth/token`: the token exchange is for on-behalf-of clients only
   and client credentials for the others (`400 unauthorized_client`); exchange
   failures answer `invalid_request` (was `invalid_grant`); the assertion must
   carry `aud` = the cyoda issuer and `exp − iat` ≤ 300 s; the issued token
@@ -242,7 +242,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - A broken (unopenable) key pair still answers `200` on `invalidate`,
     `reactivate` and `delete`. It fails only on `current`, with `500` not
     `404`, if it wins signer selection.
-  - `POST /oauth/token`'s existing `500 server_error` has new causes: a broken
+  - `POST /tenants/{tenant}/oauth/token`'s existing `500 server_error` has new causes: a broken
     selected key pair, any undecodable record, or a stale store. An
     undecodable record blocks all signing, not only its own key's.
   - A restart no longer restores a revoked bootstrap key. Invalidating,
@@ -262,7 +262,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   create, reset or delete takes effect on every node when it returns, and
   clients survive a restart on a persistent backend (not on the memory
   backend). See `cyoda help auth clients`.
-  - `POST /oauth/token` answers `500 server_error` with a ticket when the
+  - `POST /tenants/{tenant}/oauth/token` answers `500 server_error` with a ticket when the
     client store fails, or holds a damaged record or index entry for the
     client id. It used
     to answer `401 invalid_client`. A client id that does not match
@@ -712,7 +712,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   by step for a backend acting for its users, background jobs, compute nodes
   and the tenant admin: the exact requests, claims and settings, the
   attributes a compute node receives and a segregation-of-duties recipe, every
-  `/oauth/token` error description with its retry rule, secret and key
+  `/tenants/{tenant}/oauth/token` error description with its retry rule, secret and key
   rotation, an incident playbook, mock mode, a local end-to-end on-behalf-of
   recipe, and the move from OIDC. `docs/access-to-the-cyoda-api.html` carries
   the same guide with its scenario diagrams.
@@ -915,7 +915,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Changed
 
 - OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
-  which `POST /oauth/token` never sends; `expires_in` has the maximum 3600
+  which `POST /tenants/{tenant}/oauth/token` never sends; `expires_in` has the maximum 3600
   and `issued_token_type` the one value it takes,
   `urn:ietf:params:oauth:token-type:jwt`. The trusted-key operations state
   the `keyId` rule (`^[A-Za-z0-9._-]{1,128}$`), the setting that enables them
@@ -924,7 +924,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `TechnicalUserCredentialsDto` no longer declares `client_id_issued_at`,
   which is never sent; `client_secret` is declared as the 64 lower-case hex
   characters the server generates, and the `roles` examples are arrays.
-  `POST /oauth/token` marks `grant_type` required (a request without it was
+  `POST /tenants/{tenant}/oauth/token` marks `grant_type` required (a request without it was
   always `400 unsupported_grant_type`) and says `subject_token` and
   `subject_token_type` are required for the exchange; `POST /clients`
   describes `withAdminRole` and `onBehalfOf` as they behave; the trusted-key
@@ -943,7 +943,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `client_credentials` grant, refreshing its token before it expires)
   instead of `CYODA_COMPUTE_TOKEN`.
 
-- `POST /oauth/token` bounds concurrent secret checks per node
+- `POST /tenants/{tenant}/oauth/token` bounds concurrent secret checks per node
   (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`, default the number of CPUs
   the process may use (GOMAXPROCS); `503` when busy) and limits each client
   per node (`CYODA_IAM_TOKEN_REQUESTS_PER_MINUTE`, default 600;
@@ -1080,14 +1080,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
-- **`POST /oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
+- **`POST /tenants/{tenant}/oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
   Mock mode issues no token; the endpoint answered `500` with a ticket and
   logged a routing error. It now answers `501` with the detail "token
   issuance requires JWT IAM mode", like the client and trusted-key
   endpoints, and logs nothing. JWT mode is unchanged.
 
 - **Responses that carry a credential are never cached.** Every
-  `POST /oauth/token` response (both grants, success and error) and the
+  `POST /tenants/{tenant}/oauth/token` response (both grants, success and error) and the
   plaintext secret from `POST /clients` and `PUT /clients/{clientId}/secret`
   now come with `Cache-Control: no-store` and `Pragma: no-cache`, as
   RFC 6749 §5.1 requires of a token response.
@@ -1099,7 +1099,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `invalidateGracePeriodSec`. The key-pair invalidate endpoint, whose field
   is `gracePeriodSec`, is unchanged.
 
-- **Tokens from `/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
+- **Tokens from `/tenants/{tenant}/oauth/token` carry `aud` when `CYODA_JWT_AUDIENCE` is
   set.** Both grants, `client_credentials` and token exchange, issued tokens
   without an `aud` claim, while the validator requires it whenever
   `CYODA_JWT_AUDIENCE` is set, so a server configured with an audience
@@ -1530,7 +1530,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   stays outside the lock. Unreachable over HTTP, where message ids are
   server-generated, but the SPI admits any id.
 
-- **A `500` from `POST /oauth/token` carries a ticket.** The endpoint's
+- **A `500` from `POST /tenants/{tenant}/oauth/token` carries a ticket.** The endpoint's
   four `server_error` paths emitted the bare RFC 6749 §5.2 pair and logged
   nothing correlatable, so an operator had no way to tie a caller's report
   to a log record. The ticket now rides in `error_description` as
