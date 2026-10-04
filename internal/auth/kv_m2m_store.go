@@ -36,9 +36,8 @@ const undoTimeout = 30 * time.Second
 // namespace per tenant, keyed by client id: a client is found by (tenant,
 // client id). There is no node copy: every call reads or writes the store, so
 // a change is in force on every node when the call returns.
-// Every call strips any transaction from its context: the postgres KV store
-// joins a transaction it finds there, and a client change must never ride on
-// a caller's entity transaction.
+// The KV store never joins a transaction (the spi.KeyValueStore contract), so
+// a client change never rides on a caller's entity transaction.
 //
 // Every write is conditional on the state this call read or wrote
 // (spi.KeyValueStore), so concurrent changes on any nodes resolve without a
@@ -69,9 +68,6 @@ func NewKVM2MClientStore(kv spi.KeyValueStore, maxPerTenant int, limit SecretChe
 		slots:        newSecretSlots(limit),
 	}
 }
-
-// noTx removes any transaction from ctx.
-func noTx(ctx context.Context) context.Context { return spi.WithTransaction(ctx, nil) }
 
 func (s *KVM2MClientStore) createLock(t spi.TenantID) *sync.Mutex {
 	return &s.createLocks[tenantStripe(t)]
@@ -113,7 +109,6 @@ func (s *KVM2MClientStore) burnBcrypt(ctx context.Context, secret string) error 
 // ErrSecretCheckBusy: no slot freed up within the wait. Any other error is
 // the store failing.
 func (s *KVM2MClientStore) Authenticate(ctx context.Context, tenant spi.TenantID, clientID, secret string) (*M2MClient, error) {
-	ctx = noTx(ctx)
 	if !ValidClientID(clientID) {
 		return nil, ErrInvalidClient
 	}
@@ -174,7 +169,6 @@ func (s *KVM2MClientStore) newSecret(ctx context.Context) (string, []byte, error
 // Any other error is the store failing, wrapped so a storage-unavailable one
 // keeps its marker.
 func (s *KVM2MClientStore) Lookup(ctx context.Context, tenant spi.TenantID, clientID string) (*M2MClient, error) {
-	ctx = noTx(ctx)
 	if !ValidClientID(clientID) {
 		return nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
@@ -209,7 +203,6 @@ func newGeneration() (uint64, error) {
 // unknown is undone by deleting exactly the bytes this call wrote, so
 // another call's client is never removed.
 func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clientID string, roles []string, onBehalfOf bool) (string, error) {
-	ctx = noTx(ctx)
 	secret, hash, err := s.newSecret(ctx)
 	if err != nil {
 		return "", err
@@ -277,7 +270,7 @@ func (s *KVM2MClientStore) undo(ctx context.Context, t spi.TenantID, id, op stri
 // List returns tenant's clients, sorted by id. Undecodable records are
 // skipped and logged at ERROR with their keys.
 func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2MClient, error) {
-	entries, err := s.kv.List(noTx(ctx), m2mTenantNamespace(tenant))
+	entries, err := s.kv.List(ctx, m2mTenantNamespace(tenant))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list m2m clients: %w", err)
 	}
@@ -304,7 +297,6 @@ func (s *KVM2MClientStore) List(ctx context.Context, tenant spi.TenantID) ([]*M2
 // a concurrent reset's conditional write then fails. The caller has checked
 // clientID against the client-id grammar.
 func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clientID string) error {
-	ctx = noTx(ctx)
 	ns := m2mTenantNamespace(tenant)
 	if _, err := s.kv.Get(ctx, ns, clientID); errors.Is(err, spi.ErrNotFound) {
 		return fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
@@ -327,7 +319,6 @@ func (s *KVM2MClientStore) Delete(ctx context.Context, tenant spi.TenantID, clie
 // call's own bytes, so it never revives a deleted client or overwrites a
 // later change. The caller has checked clientID against the grammar.
 func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID, clientID string) (string, *M2MClient, error) {
-	ctx = noTx(ctx)
 	secret, hash, err := s.newSecret(ctx)
 	if err != nil {
 		return "", nil, err

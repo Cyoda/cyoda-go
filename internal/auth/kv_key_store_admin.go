@@ -50,12 +50,11 @@ func (s *KVKeyStore) postWriteContext(ctx context.Context) (context.Context, con
 // a failed undo is logged at ERROR with the keys left changed, and a crash
 // between writes can still leave a rotation half applied.
 func (s *KVKeyStore) Issue(ctx context.Context, req IssueRequest) (*KeyPair, error) {
-	// Strip any caller transaction up front: every decision read this method
-	// makes (siblingWrites' List) and every write (writeAll) must see the
-	// same non-transactional, committed view — never a caller's REPEATABLE
-	// READ snapshot, which could hide a sibling committed after that
-	// snapshot and let this call issue a second active key.
-	ctx = noTx(ctx)
+	// Every decision read this method makes (siblingWrites' List) and every
+	// write (writeAll) sees the same non-transactional, committed view: the KV
+	// store never joins a transaction (the spi.KeyValueStore contract), so a
+	// caller's REPEATABLE READ snapshot cannot hide a sibling committed after
+	// that snapshot and let this call issue a second active key.
 	var issued *KeyPair
 	err := s.rep.mutate(func() (func(map[string]*signingEntry), bool, error) {
 		kid, err := newKID()
@@ -215,7 +214,6 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 // current validTo; 0 ends verification at once. A running grace period is
 // cut short by invalidating again with 0, or by Delete.
 func (s *KVKeyStore) Invalidate(ctx context.Context, kid string, graceSec int64) error {
-	ctx = noTx(ctx) // see Issue's comment: the decision read (changeable) must not run inside the caller's transaction
 	_, err := s.updateState(ctx, kid, func(r *signingRecord, pair KeyPair) {
 		r.Active = false
 		r.ValidTo = fmtTimePtr(graceExpiry(pair.ValidTo, time.Now(), graceSec))
@@ -227,7 +225,6 @@ func (s *KVKeyStore) Invalidate(ctx context.Context, kid string, graceSec int64)
 }
 
 func (s *KVKeyStore) Reactivate(ctx context.Context, kid string, from, to time.Time) (*KeyPair, error) {
-	ctx = noTx(ctx) // see Issue's comment: the decision read (changeable) must not run inside the caller's transaction
 	return s.updateState(ctx, kid, func(r *signingRecord, _ KeyPair) {
 		r.Active = true
 		r.ValidFrom = fmtTime(from)
@@ -273,7 +270,6 @@ func (s *KVKeyStore) writeRecord(ctx context.Context, kid string, prev []byte, r
 // its bootstrap state deleted — terminal: no API call removes that record. A
 // record at a key that cannot be a key id is ignored, and not found here.
 func (s *KVKeyStore) Delete(ctx context.Context, kid string) error {
-	ctx = noTx(ctx) // see Issue's comment: the direct kv.Get decision read must not run inside the caller's transaction
 	err := s.rep.mutate(func() (func(map[string]*signingEntry), bool, error) {
 		data, err := s.kv.Get(ctx, signingKeysNamespace, kid)
 		if errors.Is(err, spi.ErrNotFound) {

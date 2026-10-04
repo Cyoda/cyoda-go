@@ -47,10 +47,9 @@ var errTrustedKeyUndecodable = errors.New("stored trusted-key record does not de
 // namespace per tenant, keyed by kid. Key ids are unique within a tenant
 // only. There is no node copy: every call reads or writes the store, so a
 // change is visible to every node when the call returns, and the token
-// exchange reads the key from the store on every exchange. Every call strips
-// any transaction from its context: the postgres KV store joins a
-// transaction it finds there, and a key change must never ride on a
-// caller's entity transaction.
+// exchange reads the key from the store on every exchange. The KV store never
+// joins a transaction (the spi.KeyValueStore contract), so a key change never
+// rides on a caller's entity transaction.
 //
 // Changes to one tenant's keys are serialized on this node, so the cap check
 // and the sibling invalidation of a rotation see every change made on this
@@ -148,7 +147,6 @@ func (s *KVTrustedKeyStore) write(ctx context.Context, tk *TrustedKey) error {
 // keys either unchanged or already ended — no exchange is accepted that the
 // admin asked to end, and a retry completes the rotation.
 func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, invalidatePrevious bool) error {
-	ctx = noTx(ctx)
 	if _, err := serializeTrustedKey(tk); err != nil {
 		return err
 	}
@@ -182,7 +180,7 @@ func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, invali
 // key of another tenant is absent from this tenant's namespace. Any other
 // error is the store failing, or a stored record that does not decode.
 func (s *KVTrustedKeyStore) Get(ctx context.Context, tenantID spi.TenantID, kid string) (*TrustedKey, error) {
-	tk, err := s.read(noTx(ctx), tenantID, kid)
+	tk, err := s.read(ctx, tenantID, kid)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +190,7 @@ func (s *KVTrustedKeyStore) Get(ctx context.Context, tenantID spi.TenantID, kid 
 // List returns tenant's keys, sorted by kid. A store failure is returned,
 // wrapped so a storage-unavailable error keeps its marker.
 func (s *KVTrustedKeyStore) List(ctx context.Context, tenantID spi.TenantID) ([]*TrustedKey, error) {
-	return s.readAll(noTx(ctx), tenantID)
+	return s.readAll(ctx, tenantID)
 }
 
 // GetForVerification reads tenant's key kid from the store, on every call.
@@ -205,7 +203,7 @@ func (s *KVTrustedKeyStore) GetForVerification(ctx context.Context, tenantID spi
 	if !MatchesTrustedKIDPattern(kid) {
 		return nil, fmt.Errorf("%w: kid outside the grammar", ErrTrustedKeyNotFound)
 	}
-	tk, err := s.read(noTx(ctx), tenantID, kid)
+	tk, err := s.read(ctx, tenantID, kid)
 	if err != nil {
 		return nil, err
 	}
@@ -219,7 +217,6 @@ func (s *KVTrustedKeyStore) GetForVerification(ctx context.Context, tenantID spi
 // caller's tenant's namespace, so the delete stays within that tenant. An
 // absent key wraps ErrTrustedKeyNotFound.
 func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, kid string) error {
-	ctx = noTx(ctx)
 	mu := s.lock(tenantID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -239,7 +236,6 @@ func (s *KVTrustedKeyStore) Delete(ctx context.Context, tenantID spi.TenantID, k
 // ErrTrustedKeyNotFound; a record that does not decode cannot be changed (a
 // store error, not not-found — Delete removes it).
 func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantID, kid string) error {
-	ctx = noTx(ctx)
 	mu := s.lock(tenantID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -258,7 +254,6 @@ func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantI
 // so it is held to the per-tenant cap. An absent key wraps
 // ErrTrustedKeyNotFound.
 func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantID, kid string, validFrom, validTo time.Time) error {
-	ctx = noTx(ctx)
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")
 	}
