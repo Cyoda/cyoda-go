@@ -28,7 +28,7 @@ Raised in three cases, all transient:
 
 Retryable. The same request may well succeed on a second attempt. Repeated occurrences mean the pool is undersized for the offered load, a workflow holds transactions open across a callout longer than the ceiling allows, or the link to the database is unstable.
 
-A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT` is **not** reported here. Re-running it would exceed the same ceiling again, so it is a `500` with a ticket rather than a retryable `503`; the server log names the setting that fired.
+A statement cancelled by `CYODA_POSTGRES_STATEMENT_TIMEOUT` is **not** reported here. Re-running it would exceed the same ceiling again, so it is a `500` with a ticket rather than a retryable `503`; the server log names the setting that fired. A statement timeout while the store is producing a consistency time is reported as `CONSISTENCY_TIME_UNAVAILABLE`, not as a `500`.
 
 See `cyoda help config database` for the pool and ceiling settings.
 
