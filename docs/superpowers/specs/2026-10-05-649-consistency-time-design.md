@@ -22,7 +22,8 @@ returned by the store on a request made for a tenant:
    `C` was returned sees every save of that tenant stamped `≤ T`, and always
    will. A save not yet stamped when `C` is returned is stamped `> C`.
 3. **Monotonic.** Every `C` returned, for any tenant on any node, is `≥` every
-   `C` returned before its request started.
+   `C` returned before its request started. This holds across a restart of
+   the store or of cyoda-go.
 4. **Read resolution.** `C` covers the store's read unit. A store that widens
    `T` to a coarser unit when it reads (cassandra: the whole millisecond)
    returns a `C` that closes that whole unit. `C` is never rounded up when it
@@ -51,12 +52,14 @@ has finished committing or has aborted.
 3. **Inside a transaction.** With no `pointInTime`, a read sees the current
    committed state plus the transaction's own writes, as today. With a
    `pointInTime`, it sees committed data at `T` only, and is fenced as in
-   rule 2. The change history (`GetVersionMetadata`) reads committed data only
-   on every backend (postgres today reads the transaction's own uncommitted
-   versions, `plugins/postgres/entity_store.go:1136,1161`; fixed, §6.3).
+   rule 2. The change history (`GetVersionMetadata`), which also backs the
+   audit trail (`internal/domain/audit/handler.go:98`), reads committed data
+   only on every backend (postgres today reads the transaction's own
+   uncommitted versions, `plugins/postgres/entity_store.go:1136,1161`; fixed in
+   §6.3).
 4. **`GET /entity/consistency-time`** returns a fresh `C` for the caller's
-   tenant. A read at that instant is never refused (monotonicity), and it
-   includes every save confirmed before the call.
+   tenant. A read at that instant, on any node, is never refused
+   (monotonicity), and it includes every save confirmed before the call.
 
 ### 3.2 Per operation
 
@@ -85,14 +88,15 @@ passes it as `pointInTime` on every page. `cyoda help crud` says so.
 
 ### 3.3 Where the fence runs
 
-The fence runs immediately before the store read that uses the instant, after
-every check that does not itself read the instant. Existing request errors
-(malformed instant, `pointInTime` with `transactionId`, unknown or
-unregistered model, invalid grouped-stats path, async submit cap) therefore
-keep precedence over the refusal. A `404 ENTITY_NOT_FOUND` that the read
-itself produces (get by id, change history, transitions) comes after the
-fence: a future `T` on a missing entity answers `400`. Exact placement per
-call site: §7.2.
+The fence runs before the store read that uses the instant, after every check
+that does not itself read the instant, and whether or not a store read follows
+(a page size of 0, a tenant with no models, an empty state list are fenced
+too). So existing request errors (malformed instant, `pointInTime` with
+`transactionId`, unknown or unregistered model, invalid grouped-stats path,
+the async per-tenant cap pre-check) keep precedence over the refusal. A
+`404 ENTITY_NOT_FOUND` that the read itself produces (get by id, change
+history, transitions) comes after the fence: a future `T` on a missing entity
+answers `400`. Exact placement per call site: §7.2.
 
 ## 4. API additions
 
@@ -128,6 +132,9 @@ other responses do), on the unary `EntitySearch` RPC. Schemas in
 `scripts/generate-events.sh`, dispatch in the unary switch
 (`internal/grpc/search.go:29-56`). A request carrying a transaction token is
 routed to the owning node by the existing interceptor; the answer is the same.
+Authentication and role failures stay transport errors (`Unauthenticated`,
+`PermissionDenied`, `internal/grpc/role_interceptor.go:17-25`), as for every
+RPC.
 
 ### 4.3 Error codes
 
@@ -187,7 +194,10 @@ change plus the new path).
      transaction.
    - `GetVersionMetadata/CommittedOnlyInTx`: a transaction's own uncommitted
      version is not listed.
-6. SPI PR into `cyoda-go-spi` main with a `### Breaking` changelog entry;
+6. SPI call sites that change with the signatures: `default_save_all_test.go:39-40`,
+   `spitest/transaction.go:580,583`, the `Count`/`CountByState` calls in
+   `spitest/entity.go`.
+7. SPI PR into `cyoda-go-spi` main with a `### Breaking` changelog entry;
    consumers notified per `KNOWN_CONSUMERS.md`; cyoda-go pseudo-pins main; no
    tag before the release cut (MAINTAINING.md).
 
@@ -198,7 +208,8 @@ change plus the new path).
 - `ConsistencyTime`: under `m.mu`, `C = max(clock.Now(), lastSubmitTime)`,
   `lastSubmitTime = C`, return `C`. No wait: every writer holds `entityMu`
   from stamp to publish (`txmanager.go:852-1204`) and every reader takes
-  `entityMu.RLock`.
+  `entityMu.RLock`. A restart loses every stamp and job with it, so
+  monotonicity across a restart is vacuous.
 - Wall-clock step back: `nextSubmitTime`, `Begin` and `ConsistencyTime` strip
   the monotonic reading (`Round(0)`) before comparing with the floor, so the
   floor compares wall time. Other users of the clock (scheduled-task claims,
@@ -212,10 +223,17 @@ change plus the new path).
 
 - `ConsistencyTime`: take the commit gate with the caller's context (waits for
   a commit in flight to pass `sqlTx.Commit()`), then under `m.mu` reserve
-  exactly as `Begin` does (`txmanager.go:738-789`), release the gate.
+  exactly as `Begin` does (`txmanager.go:738-789`), then the high-water step
+  below, then release the gate.
+- **High-water mark** (monotonicity across a restart whose wall clock stepped
+  back): a one-row table `consistency_floor(micros)` (new migration). When the
+  reserved `C` exceeds the stored value, `ConsistencyTime` stores `C + 1 s`
+  (one write per second of use at most). Stamps and later `C` values are
+  floored by it after a restart.
 - Floor on open (`txmanager.go:595-602`): the highest of `MAX(submit_time)` on
-  `entity_versions` and `MAX(point_in_time)` on `search_jobs` (an instant
-  already handed out). A query error fails factory construction.
+  `entity_versions`, `MAX(submit_time)` on `submit_times` (written by every
+  commit, `txmanager.go:1200-1202`), `MAX(point_in_time)` on `search_jobs`
+  and `consistency_floor.micros`. A query error fails factory construction.
 - `Count`/`CountByState` with `asAt`: SQL over the existing PIT base
   (`submit_time <= ?`, latest version per entity, not deleted).
 - `GroupedAggregate` with `PointInTime`: pushed down over the same PIT base
@@ -226,95 +244,137 @@ change plus the new path).
 
 ### 6.3 postgres (`plugins/postgres`)
 
-**Migration `000016_consistency_time`:**
+**Migration `000016_consistency_time`** (up and down; down drops both
+functions and the sequence). SQL as verified by the second spec review on
+postgres 17 with a non-superuser owner role (24 clients, 30 s, 63,410
+commits, 15,815 calls: 0 finality, completeness or monotonicity violations;
+a checker without the wait found 6,607):
 
-- Sequence `cyoda_stamp_floor` (bigint microseconds since the epoch,
-  `MINVALUE 0 START 0`), set with `setval(..., coalesce(greatest(a, b, c), 0),
-  true)` where `a`, `b`, `c` are the microsecond values of
-  `max(transaction_time)` on `entity_versions`, `max(submit_time)` on
-  `submit_times` and `max(point_in_time)` on `search_jobs`.
-- Both functions are `LANGUAGE plpgsql`, `SET search_path FROM CURRENT` (the
-  plugin has no schema setting; objects resolve in the migration's schema).
-  The floor is read as `SELECT last_value FROM cyoda_stamp_floor` (always
-  defined after the seed's `setval(..., true)`).
-- Microsecond conversions are exact: `(extract(epoch FROM ts) * 1000000)::bigint`
-  (numeric) and `'epoch'::timestamptz + n * interval '1 microsecond'`.
-- **`cyoda_stamp(tenant text) RETURNS timestamptz`:**
-  1. `set_config('lock_timeout', '2000ms', true)`: no step after the stamp
-     waits long on a lock (the mutex is held for microseconds).
-  2. `set_config('idle_in_transaction_session_timeout', <least(current
-     setting, 5 s), 0 treated as unset>, true)`: a session left by a dead
-     node ends within seconds and releases its marker. Documented: a pause of
-     more than 5 s between the stamp and `COMMIT` aborts the commit.
-  3. `pg_advisory_xact_lock(tenant_key, xact_key)`: the in-flight marker,
-     released when the transaction ends, after its rows are visible.
-     `tenant_key = hashtext(tenant)`;
-     `xact_key = ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4`
-     (never 0; unique among live transactions, which stay within
-     `xidStopLimit` < 2^31 − 1).
-  4. In a block whose handler catches `OTHERS` and `query_canceled`, releases
-     the mutex if held, and re-raises: `pg_advisory_lock(0, 0)` (the mutex),
-     `s = greatest(clock_us(), last_value + 1)`, `setval(floor, s, true)`,
-     `pg_advisory_unlock(0, 0)`.
-  5. Return `s`.
-- **`cyoda_consistency_time(tenant text, wait_budget_ms bigint) RETURNS timestamptz`:**
-  1. `deadline = clock_timestamp() + wait_budget_ms ms`.
-  2. In the same guarded block as above: take the mutex, `c =
-     greatest(clock_us(), last_value)`, `setval(floor, c, true)`, release.
-  3. After the mutex: list `objid` from `pg_locks` where `locktype =
-     'advisory'`, `database` = this database's oid, `classid = tenant_key`,
-     `objsubid = 2`, `objid <> 0`, `mode = 'ExclusiveLock'`, `granted`.
-  4. For each: if `deadline` has passed, raise SQLSTATE `55P03`; else set
-     `lock_timeout` to the remaining milliseconds (transaction-local) and take
-     `pg_advisory_xact_lock_shared(tenant_key, objid)` (waits for that
-     transaction to end; held until this statement ends; no later transaction
-     reuses the key).
-  5. Return `c`.
-- Key layout: `(0, 0)` is the mutex; markers are `(hashtext(tenant), 1…2^31−1)`.
-  The two-int form (`objsubid = 2`) is used by nothing else in the plugin (the
-  scheduler and golang-migrate use the one-bigint form, `objsubid = 1`). A
-  tenant-hash collision only adds waiting. Named constants in the plugin; the
-  layout stated in the migration comment.
-- The plugin assumes it connects as the owner of its objects
-  (`docs/plugins/POSTGRES.md:331-344`); a non-owner role needs `USAGE, UPDATE`
-  on the sequence and `EXECUTE` on both functions. Stated in POSTGRES.md.
+```sql
+CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
+SELECT setval('cyoda_stamp_floor', coalesce(greatest(
+  (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
+  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times),
+  (SELECT (extract(epoch FROM max(point_in_time))*1000000)::bigint FROM search_jobs)),0), true);
+
+CREATE FUNCTION cyoda_stamp(tenant text) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE cur_idle bigint; tkey int4 := hashtext(tenant);
+  xkey int4 := ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4; s bigint; held boolean := false;
+BEGIN
+  PERFORM set_config('lock_timeout','2000ms',true);
+  SELECT setting::bigint INTO cur_idle FROM pg_settings WHERE name='idle_in_transaction_session_timeout';
+  PERFORM set_config('idle_in_transaction_session_timeout',
+    (CASE WHEN cur_idle=0 THEN 5000 ELSE least(cur_idle,5000) END)::text||'ms', true);
+  PERFORM pg_advisory_xact_lock(tkey, xkey);
+  BEGIN
+    PERFORM pg_advisory_lock(0,0); held := true;
+    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM cyoda_stamp_floor;
+    PERFORM setval('cyoda_stamp_floor', s, true);
+    PERFORM pg_advisory_unlock(0,0); held := false;
+  EXCEPTION WHEN query_canceled OR OTHERS THEN
+    IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
+  END;
+  RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
+END $$;
+
+CREATE FUNCTION cyoda_consistency_time(tenant text, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
+  tkey int4 := hashtext(tenant); c bigint; held boolean := false; k oid; rem bigint;
+BEGIN
+  BEGIN
+    PERFORM pg_advisory_lock(0,0); held := true;
+    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value) INTO c FROM cyoda_stamp_floor;
+    PERFORM setval('cyoda_stamp_floor', c, true);
+    PERFORM pg_advisory_unlock(0,0); held := false;
+  EXCEPTION WHEN query_canceled OR OTHERS THEN
+    IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
+  END;
+  FOR k IN SELECT objid FROM pg_locks WHERE locktype='advisory'
+      AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+      AND classid=tkey AND objsubid=2 AND objid<>0 AND mode='ExclusiveLock' AND granted LOOP
+    IF clock_timestamp() >= deadline THEN
+      RAISE EXCEPTION 'consistency time wait budget exhausted' USING ERRCODE='55P03'; END IF;
+    rem := ceil(extract(epoch FROM deadline - clock_timestamp())*1000)::bigint;
+    PERFORM set_config('lock_timeout', greatest(rem,1)::text||'ms', true);
+    PERFORM pg_advisory_xact_lock_shared(tkey, k::bigint::int4);
+  END LOOP;
+  RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
+END $$;
+```
+
+Notes on the SQL:
+
+- The in-flight marker `(hashtext(tenant), xact_key)` is taken outside the
+  guarded block (a block is a subtransaction; rolling it back would drop a
+  lock taken inside it). It is held until the transaction ends, after its rows
+  are visible. `xact_key` is never 0 and unique among live transactions
+  (`xidStopLimit` < 2^31 − 1). `cyoda_stamp` is called at the top level of the
+  commit, never inside a savepoint that may roll back.
+- `(0, 0)` is the mutex; the `held` flag survives the block's rollback, so
+  the handler releases the mutex only when it was taken. The two-int key form
+  (`objsubid = 2`) is used by nothing else in the plugin (the scheduler and
+  golang-migrate use the one-bigint form). `classid = tkey` matches negative
+  hashes (int4 → oid wraps). A tenant-hash collision only adds waiting.
+- `lock_timeout` of 2 s in `cyoda_stamp` bounds the mutex wait (held for
+  microseconds) and makes a violation of the design rule below fail fast. The
+  idle-in-transaction limit is the lower of the operator's setting and 5 s
+  (0 means unset); a pause of more than 5 s between the stamp and `COMMIT`
+  aborts the commit.
+- The checker's shared locks are held to the end of its statement; their
+  number is the tenant's commits in their commit phase at that moment, bounded
+  by the pool sizes of the nodes.
+- `set_config(..., true)` effects end with the caller's transaction or
+  autocommit statement; `SET search_path FROM CURRENT` does not scope them.
+- Role: the plugin connects as the owner of its objects
+  (`docs/plugins/POSTGRES.md:331-344`). A non-owner role needs `SELECT, UPDATE`
+  on the sequence, `USAGE` on the schema and `EXECUTE` on both functions
+  (granted to `PUBLIC` by default). Stated in POSTGRES.md.
 
 **Go side:**
 
 - `stampCommitInstant` (`transaction_manager.go:363-453`) and
   `stampOwnCommitInstant` (`entity_store.go:395-415`) call
   `SELECT cyoda_stamp($tenant)` instead of `SELECT clock_timestamp()`. These
-  are the only two stamp sites.
+  are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
+  in the commit phase; the transaction rolls back) is classified as retryable
+  `503 STORAGE_UNAVAILABLE`, like the existing idle-in-transaction abort
+  (`isIdleInTxAbort`).
 - `ConsistencyTime` runs `SELECT cyoda_consistency_time($tenant, $budget_ms)`
   on its own pool connection, in autocommit, never on a transaction's
-  connection. `budget_ms = min(10 000, statement timeout)` with the
-  statement timeout from the plugin config (`config.go:56`). SQLSTATE `55P03`
-  and `57014` map to `spi.ErrConsistencyTimeUnavailable`.
+  connection. `budget_ms` is 10 000, or the configured statement timeout when
+  that is above 0 and lower (`config.go:56`). Error mapping, in order, before
+  the generic classifier (`ceilings.go:194-197`): `ctx.Err() != nil` → that
+  error (a client cancel also arrives as `57014`); SQLSTATE `55P03` or `57014`
+  → `spi.ErrConsistencyTimeUnavailable`; the storage-unavailable
+  classification as today; anything else wrapped.
 - When either function returns an error, the connection is closed instead of
   being returned to the pool, so no session-level lock can outlive the error.
 - **Design rule: nothing after the stamp waits on a lock.** Read-set
   validation (`FOR SHARE`) runs before the stamp
-  (`transaction_manager.go:236-267`); the statements after the stamp touch only
-  rows the transaction wrote, on both paths. A fenced read made while the
+  (`transaction_manager.go:236-267`). The statements after the stamp touch
+  only rows the transaction wrote, on both paths, with one exception: the
+  `sm_audit_events` UPDATE matches by transaction label
+  (`transaction_manager.go:436-441`), which only this transaction's audit rows
+  carry, so it cannot wait on another transaction. A fenced read made while the
   caller holds a transaction therefore cannot deadlock with the commits it
-  waits for. A code comment at both stamp sites states the rule; step 1 of
-  `cyoda_stamp` makes a violation fail fast.
+  waits for. A code comment at both stamp sites states the rule.
 - PIT SQL: remove `ev.transaction_time <= CURRENT_TIMESTAMP` at its two
   occurrences (`search_base.go:65`, `entity_store.go:604-611`). With the fence
   it protects nothing; when the floor runs ahead of the DB clock it hides rows
   `≤ C`.
 - `GetVersionMetadata` (`entity_store.go:1136,1161`) runs on
-  `committedQuerier`, as every other committed read does
-  (`search_base.go:147-149`).
+  `committedQuerier` (`search_base.go:147-149`), as every other committed read
+  does.
 - `Count`/`CountByState` with `asAt`: `count(*)` over the PIT lateral base
   (`search_base.go:54-71`), deleted flag from the version document; one index
   probe per entity of the model, no document leaves the database.
 - `GroupedAggregate` with `PointInTime`: pushed down over the same base
   instead of declining (`grouped_stats.go:384-388`), for the reason in §6.2.
-- `dropSchema` (`migrate.go:375`, called only by tests) moves to a test file.
+- `dropSchema` (`migrate.go:365`, called only by tests) moves to a test file.
 - Exposure stated in `docs/plugins/POSTGRES.md`: with asynchronous replicas, a
   failover to a host whose clock is behind can stamp below a `C` already
   returned, the same exposure as losing commits on asynchronous failover.
+  (Each `cyoda_consistency_time` call commits its `setval` durably.)
 
 ### 6.4 cassandra (commercial plugin)
 
@@ -322,10 +382,12 @@ Cannot meet §2 on today's code (research §8). A cassandra issue asks for:
 `ConsistencyTime` meeting all four properties of §2 (backend-wide
 completeness and monotonicity included) as a cluster-wide reserve-then-wait
 over shard owners that closes `C`'s whole millisecond; `Count`/`CountByState`
-with `asAt`; `GetVersionMetadata` committed-only in a transaction;
-prerequisites cassandra#110, #97 items 1-2, #64 and a takeover floor; "snapshot
-at `Begin` = `C`" (would close #97 item 3) as an option to assess. Its v0.9.0
-bump needs this. No "not supported" answer exists in the SPI.
+with `asAt` (`internal/store/entity_store.go:1805`,
+`entity_store_count_by_state.go:39`); `GetVersionMetadata` committed-only in a
+transaction; prerequisites cassandra#110, #97 items 1-2, #64 and a takeover
+floor; "snapshot at `Begin` = `C`" (would close #97 item 3) as an option to
+assess. Its v0.9.0 bump needs this. No "not supported" answer exists in the
+SPI.
 
 ## 7. Engine (`cyoda-go` root module)
 
@@ -337,44 +399,58 @@ type Service struct { /* txMgr; per-tenant state */ }
 func New(txMgr spi.TransactionManager) *Service
 // Fresh returns a C from a store call that started after Fresh was called.
 func (s *Service) Fresh(ctx context.Context) (time.Time, error)
-// Fence returns nil when t ≤ C. It compares with the highest C seen for the
-// tenant and asks the store only when t is above it.
+// Fence returns nil when t ≤ C, else the refusal or the store's error.
 func (s *Service) Fence(ctx context.Context, t time.Time) error
 ```
 
-- **Per-tenant state**, keyed by the exact `spi.TenantID` with no
-  normalisation: the highest `C` seen (only grows; a returned `C` stays final
-  forever, so `t ≤` it needs no store call) and at most one store call in
-  flight.
-- **Sharing a store call.** A `Fence` caller joins the call in flight, if any,
-  and makes a new one only if the joined result is still below `t`. A `Fresh`
-  caller joins only a call that started after it did; otherwise it waits for
-  the next one. This bounds concurrent store calls per tenant to one, so a
-  held commit cannot drain the connection pool.
-- **Errors:** refusal →
-  `common.Operational(400, POINT_IN_TIME_AFTER_CONSISTENCY_TIME, …)` with
-  `Props["consistencyTime"]` and `C` in the message;
-  `spi.ErrConsistencyTimeUnavailable` →
-  `Operational(503, CONSISTENCY_TIME_UNAVAILABLE).AsRetryable()`; anything else
-  → `common.Internal` (which already maps the storage-unavailable marker).
-- **One instance**, built in `app/app.go` from the transaction manager after
-  the tracing wrapper (which forwards `ConsistencyTime`), injected into
-  `entity.New` (`app/app.go:537`), `NewGroupedStatsService`
-  (`grouped_stats_service.go:40`) and `SearchService` (a `With…` option, like
-  `WithHealthFlag`, `search/service.go:324`, so its test call sites keep
-  compiling), and into the gRPC service for the new request.
+**Per-tenant state**, keyed by the exact `spi.TenantID` (no normalisation):
+`hi`, the highest `C` seen (only grows; a returned `C` stays final forever),
+and the store calls in flight with their start times. An entry idle for a
+while may be dropped; that costs one extra store call.
+
+**Rules:**
+
+- **`Fence(t)`:** pass if `t ≤ hi`. Else join the call in flight, if any;
+  pass if its result is `≥ t`. Else `Fresh` and compare; refuse if still
+  `t > C`. (A refusal is always based on a call that started after the
+  `Fence` did, which monotonicity makes the right answer.)
+- **`Fresh`:** join a call in flight only if it started after `Fresh` was
+  called; otherwise start a new one at once, which every later caller then
+  shares. At most two calls are in flight per tenant, and a caller waits for
+  at most one call.
+- **The store call** runs on `context.WithoutCancel(ctx)` (keeps the tenant)
+  with a deadline of the store's budget plus a margin of 1 s (11 s), so one
+  caller's cancel does not fail the others; sqlite's gate wait obeys the same
+  deadline. Each caller waits on its own `ctx.Done()` as well. Every caller
+  that shares a call gets its result or its error.
+- **Errors:** refusal → `common.Operational(400,
+  POINT_IN_TIME_AFTER_CONSISTENCY_TIME, …)` with `Props["consistencyTime"]`
+  and `C` in the message; `spi.ErrConsistencyTimeUnavailable` →
+  `Operational(503, CONSISTENCY_TIME_UNAVAILABLE).AsRetryable()`; the caller's
+  own context error → as today for a cancelled request; anything else →
+  `common.Internal` (which maps the storage-unavailable marker).
+
+**Wiring:** one instance, built in `app/app.go` from the transaction manager
+after the tracing wrapper (which forwards `ConsistencyTime`). It is a
+**required constructor argument** of `entity.New` (`app/app.go:537`),
+`NewSearchService` (`search/service.go:301`) and `NewGroupedStatsHandler`
+(`grouped_stats_handler.go:64`, which builds the grouped-stats service), and
+is passed to the gRPC service for the new request. A nil argument panics at
+construction. Test call sites pass a service built on their store's
+transaction manager (a helper per test package); there is no fallback to the
+process clock.
 
 ### 7.2 Call sites
 
 | Service function | Fence | Exact placement |
 |---|---|---|
 | `entity.GetEntity` (`service.go:408`) | `PointInTime` branch | before `GetAsAt` (`:418-419`) |
-| `entity.ListEntities` (`:1888`) | non-nil `pointInTime` | before `GetPage` (`:1923`), after the model checks |
-| `search.Search` (`search/service.go:662`) | non-nil `PointInTime` | before `store.Search` (`:730-737`), after query validation |
-| `search.SubmitAsync` (`:911`) | non-nil → `Fence`; nil → `Fresh` replaces `time.Now()` (`:980-983`) | after the tenant cap check (`:985-997`, which stays storeless and wins with `503 SEARCH_QUEUE_FULL`), before `CreateJob` |
-| `entity.DeleteEntitiesConditional` (`:1278`) | non-nil `pointInTime` | after the selection plan, in both `deleteConditionalSingleTx` and `deleteBatched`, before the first `Iterate`; `404 MODEL_NOT_FOUND` from the plan keeps precedence |
-| `entity.GetStatistics*` (`:466`, `:520`, `:564`, `:610`) | non-nil `pointInTime` (new parameter) | after `EnsureModelRegistered` (single-model variants) / model enumeration, before the first `Count`/`CountByState` |
-| `entity.QueryGroupedStats` (`grouped_stats_service.go:50`) | non-nil `PointInTime` | after request and path validation, before pushdown/`Iterate` |
+| `entity.ListEntities` (`:1888`) | non-nil `pointInTime` | after the model checks, before the `pageSize > 0` branch (`:1922`) |
+| `search.Search` (`search/service.go:662`) | non-nil `PointInTime` | after query validation, before `store.Search` (`:730-737`) |
+| `search.SubmitAsync` (`:911`) | non-nil → `Fence`; nil → `Fresh` | delete the `time.Now()` default (`:980-983`); run the fence/fresh between the cap pre-check (`:993-997`) and the job construction (`:999`). The pre-check wins with `503 SEARCH_QUEUE_FULL`; the authoritative cap (`registerJob`, `:1066-1083`) and the pool rejection (`:1085-1098`) run after the fence. |
+| `entity.DeleteEntitiesConditional` (`:1278`) | non-nil `pointInTime` | at function entry, after the condition parse and before branching to `deleteBatched` / `deleteConditionalSingleTx`: a model existence check on `ctx` (outside any transaction; `404 MODEL_NOT_FOUND` keeps precedence), then the fence. Both paths keep their own model check inside their scope. No pooled connection is held during the fence. |
+| `entity.GetStatistics*` (`:466`, `:520`, `:564`, `:610`) | non-nil `pointInTime` (new parameter) | after `EnsureModelRegistered` (single-model variants) and model enumeration (all-models variants), unconditionally, before the first `Count`/`CountByState` |
+| `QueryGroupedStats` (`grouped_stats_service.go:50`) | non-nil `PointInTime` | after request and path validation, before pushdown/`Iterate` |
 | `entity.GetChangesMetadata` (`:783`) | non-nil `pointInTime` | before `GetVersionMetadata` |
 | transitions (`transitions_handler.go:16`) | when `usePointInTime` (either source) | after the instant is resolved (`:42-83`), before `GetAsAt` |
 | consistency-time handlers (HTTP, gRPC) | — | `Fresh` |
@@ -389,18 +465,25 @@ fence (final since submit).
   service; the service passes it to `Count`/`CountByState`.
 - gRPC get-all passes `req.PointInTime` (`internal/grpc/search.go:284-287`).
 - Async result paging: the "`GetAsAt` → not found → skip" branch
-  (`search/service.go:1495-1516`) is deleted as unreachable (no hard-delete
+  (`search/service.go:1494-1516`) is deleted as unreachable (no hard-delete
   path exists); the error takes the generic internal path. Its comment at
-  `search/handler.go:346-347` goes too. Covered by a unit test with a fake
-  store (the e2e cell is unreachable by construction).
+  `search/handler.go:346-347` and its test
+  (`internal/domain/search/job_lookup_outage_test.go:364`) go too; a unit
+  test with a fake store covers the error path.
 - Model-service guards (`model/service.go:377`, `:443`) call `Count` with
   `asAt = nil`.
-- `cmd/cyoda/help/content/grpc.md:93` (it lists streaming types under the
-  unary RPC) is corrected while the catalogue is edited.
+- `cmd/cyoda/help/content/grpc.md`: `:93` lists streaming types under the
+  unary RPC; `:89` lists `EntityDeleteAllRequest` under `entityManage`
+  (served on `entityManageCollection`, `internal/grpc/entity.go:463`) and
+  leaves out `EntityPatchRequest` (`:141`). Both corrected while the
+  catalogue is edited.
 - `cmd/compute-test-client/callback.go:650` reads at `time.Now().Add(time.Hour)`;
   it reads at a `C` from the new endpoint instead (it backs parity
-  `CallbackTxJoin_PITCommittedOnly`, `e2e/parity/pit_committed_only.go:66-71`,
+  `CallbackTxJoin_PITCommittedOnly`, `e2e/parity/pit_committed_only.go:67-72`,
   whose uncommitted secondary still answers 404).
+- Stale comments: `plugins/postgres/pit_committed_only_test.go:12-19` (cites
+  the removed guard); `plugins/sqlite/grouped_stats_test.go:308-322` (calls
+  committed-only PIT inside a transaction a "limitation"; it is the contract).
 
 ## 8. Documentation
 
@@ -411,9 +494,12 @@ fence (final since submit).
   async results description's phantom "point-in-time" sentence (`:7212`).
 - `cmd/cyoda/help/content/crud.md`: point-in-time semantics rewritten
   (`:579-614`: the fence, the consistency time, the stability rule replaced);
-  transitions (`:395`); list-paging caveat; the new endpoint.
+  transitions (`:395`); list-paging caveat; the new endpoint; change history
+  and audit trail committed-only in a transaction.
 - `cmd/cyoda/help/content/search.md:236` (async default) and grouped stats
-  text; `grpc.md` (new message types, RPC lists); two error topics; `errors.md`.
+  text; `grpc.md` (new message types, RPC lists, §7.3); two error topics;
+  `errors.md`; `errors/STORAGE_UNAVAILABLE.md:31` (a statement timeout while
+  getting `C` is `CONSISTENCY_TIME_UNAVAILABLE`, not a `500`).
 - `docs/CONSISTENCY.md` §1a: stability rule, the sqlite claim, "not
   scheduled" replaced by the consistency time.
 - `docs/ARCHITECTURE.md:1475-1479` and DD-11; message catalogue (`:1827`).
@@ -433,33 +519,47 @@ fence (final since submit).
 
 `docs/cloud-parity/consistency-time.md` records: the definition (§2); the
 fence and its `400`; the async default; the new endpoint and gRPC pair; the
-two error codes; stats and get-all honouring `pointInTime`; change history
-committed-only in a transaction. Cloud differences it must close: Cloud's `C`
-is final but not complete; Cloud serves reads later than `C` unfenced; Cloud
-has no consistency-time endpoint. CaaS ticket filed with it.
+two error codes; stats and get-all honouring `pointInTime`; change history and
+audit trail committed-only in a transaction. Cloud differences it must close:
+Cloud's `C` is final but not complete; Cloud serves reads later than `C`
+unfenced; Cloud has no consistency-time endpoint. CaaS ticket filed with it.
 
 ## 10. Error and status table
 
 Rows marked *new* are added by this change; existing rows are unchanged and not
-repeated. HTTP and gRPC alike; gRPC envelopes per §4.3.
+repeated. gRPC envelopes per §4.3; gRPC auth failures are transport errors
+(§4.2).
 
 | Endpoint | Status | Code | Trigger |
 |---|---|---|---|
 | every fenced operation (§3.2) | 400 | `POINT_IN_TIME_AFTER_CONSISTENCY_TIME` *new* | `T > C` |
 | every fenced operation, and async submit with no `pointInTime` | 503, retryable | `CONSISTENCY_TIME_UNAVAILABLE` *new* | the tenant has a save held in its commit phase beyond the wait budget |
-| every fenced operation, and async submit with no `pointInTime` | 503, retryable | `STORAGE_UNAVAILABLE` | store unreachable while getting `C` (existing classification) |
-| `GET /entity/consistency-time` / `EntityConsistencyTimeGetRequest` *new* | 200 | — | — |
-| same | 401, 403 | `UNAUTHORIZED`, `FORBIDDEN` | auth |
+| every fenced operation, and async submit with no `pointInTime` | 503, retryable | `STORAGE_UNAVAILABLE` | store unreachable while getting `C` |
+| every write (commit) | 503, retryable | `STORAGE_UNAVAILABLE` | `cyoda_stamp` lock wait over 2 s (postgres) |
+| `GET /entity/consistency-time` *new* | 200 | — | — |
+| same | 401, 403 | `UNAUTHORIZED`, `FORBIDDEN` | auth (HTTP) |
 | same | 503 | `CONSISTENCY_TIME_UNAVAILABLE`, `STORAGE_UNAVAILABLE` | as above |
 | same | 500 | `SERVER_ERROR` + ticket | other store failure |
+| `EntityConsistencyTimeGetRequest` *new* | `Success=true` | — | — |
+| same | `Success=false`, `CLIENT_ERROR`, retryable | `CONSISTENCY_TIME_UNAVAILABLE` / `STORAGE_UNAVAILABLE` prefix | as above |
+| same | `Success=false`, `SERVER_ERROR` | ticket | other store failure |
 
 ## 11. Test coverage
 
-The 503 cells run on a dedicated e2e stack: its own database
-(`newSchedDB`-style), `CYODA_POSTGRES_STATEMENT_TIMEOUT=1s` (so the wait budget
-is 1 s), and a test-held marker whose holder keeps a statement running
-(`cyoda_stamp(...)` then `pg_sleep`), so the idle timeout does not end it. Each
-cell costs about 1 s.
+**The 503 e2e stack:** its own database (`newSchedDB`-style),
+`CYODA_POSTGRES_STATEMENT_TIMEOUT=1s` (budget 1 s; the call ends with `57014`,
+mapped to `CONSISTENCY_TIME_UNAVAILABLE`), wrapped with
+`openapivalidator.NewMiddleware` as `entity_delete_nonconvergence_test.go:94`
+does, so its responses feed the conformance report and the error-code matrix.
+A test-held marker for the tenant: the holder calls `cyoda_stamp(tenant)` and
+then `pg_sleep` in the same transaction, so the idle limit does not end it.
+Every 503 cell uses a far-future `T`, so the fence cannot pass on the node's
+cached `hi`. Each cell costs about 1 s.
+
+**gRPC 503 cells** run in `internal/grpc` with a transaction-manager wrapper
+whose `ConsistencyTime` returns `spi.ErrConsistencyTimeUnavailable` (the
+`onCommitTxMgr` pattern, `entity_timeout_test.go:280-298`), or a
+storage-unavailable error.
 
 | Scenario | Unit | Plugin white-box | spitest | e2e (postgres) | gRPC | Parity (HTTP) | Isolated multi-node / concurrency |
 |---|---|---|---|---|---|---|---|
@@ -467,78 +567,95 @@ cell costs about 1 s.
 | commit held between stamp and visibility makes `C` wait | | ✓ sqlite (gate held by the test), memory (`gatedClock`), postgres (test-driven pgx transaction calls `cyoda_stamp`, holds before COMMIT) | | | | | |
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
 | another tenant's held commit does not delay `C` | | ✓ postgres | | | | | |
-| wait budget → `ErrConsistencyTimeUnavailable` (`55P03`, `57014`) | | ✓ postgres | | | | | |
-| cancelled call or stamp leaves no lock; erroring connection is closed | | ✓ postgres | | | | | |
+| wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
+| cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
+| acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |
 | floor survives a clock step back | | ✓ memory, sqlite (`Clock`); postgres (sequence set ahead, own DB) | | | | | |
-| sqlite reopen with stamps / job instants ahead | | ✓ | | | | | |
+| sqlite reopen: stamps, `submit_times`, job instants, high-water mark ahead of the clock | | ✓ | | | | | |
 | `Count`/`CountByState` with `asAt`; change history committed-only in a tx | | | ✓ | | | | |
 | grouped stats PIT pushdown (sqlite, postgres) | | ✓ | | | | ✓ (existing grouped-stats PIT scenario) | |
-| `Fence`/`Fresh`: cached pass, store call, sharing rules, refusal, error mapping | ✓ (fake TM) | | | | | | |
-| each §7.2 call site propagates the fence's errors | ✓ (fake TM per service) | | | | | | |
+| `Fence`/`Fresh`: cached pass, join rules, at most two calls, caller cancel vs shared call, refusal, error mapping (unavailable, storage-unavailable marker, other) | ✓ (fake TM) | | | | | | |
+| each §7.2 call site propagates the fence's errors; nil service panics at construction | ✓ (fake TM per service) | | | | | | |
 | async default from the store; DB floor ahead finds confirmed saves | ✓ | | | ✓ (own DB, floor set ahead) | | | |
 | every fenced HTTP operation × 400 refusal (detail carries `C`) | | | | ✓ one per operation | | ✓ one per operation | |
 | every fenced gRPC request × refusal envelope | | | | | ✓ one per request | | |
 | every fenced operation × 200 at a `C` from the endpoint | | | | ✓ | ✓ | ✓ | |
-| every fenced operation × 503 `CONSISTENCY_TIME_UNAVAILABLE` | | | | ✓ one per operation (dedicated stack) | ✓ one per request (dedicated stack) | | |
-| async submit with no `pointInTime` × 503 | | | | ✓ (dedicated stack) | ✓ | | |
-| `GET /entity/consistency-time` × 200 / 401 / 403 / 503 `CONSISTENCY_TIME_UNAVAILABLE` | | | | ✓ | ✓ | ✓ 200 | |
+| future `T` on a missing entity → 400 (check order) | | | | ✓ get by id | | | |
+| fenced read inside a transaction (rule 3) | | | | ✓ get by id in a transaction | | | |
+| every fenced operation × 503 `CONSISTENCY_TIME_UNAVAILABLE` | | | | ✓ one per operation (503 stack) | ✓ one per request | | |
+| async submit with no `pointInTime` × 503 | | | | ✓ (503 stack) | ✓ | | |
+| fenced operation × 503 `STORAGE_UNAVAILABLE` | ✓ (fake TM, marker error) | | | | ✓ one representative | | |
+| `GET /entity/consistency-time` × 200 (main validated stack) / 401 / 403 / 503 (503 stack) | | | | ✓ | ✓ 200, 503 envelope | ✓ 200 | |
 | stats ×4 and gRPC stats ×2 honour `pointInTime` | | | | ✓ | ✓ | ✓ | |
 | gRPC get-all honours `pointInTime` | | | | | ✓ | | |
 | list paging at one `C` is consistent while writes run | | | | | | | ✓ concurrency e2e (`internal/e2e`) |
-| save confirmed on node A, node B's fresh `C` includes it | | | | | | | ✓ `e2e/parity/multinode` with the postgres fixture (`e2e/parity/postgres/multinode_fixture.go`) |
+| save confirmed on node A, node B's fresh `C` includes it; a `C` from node A passes the fence on node B | | | | | | | ✓ `e2e/parity/multinode` with the postgres fixture (`e2e/parity/postgres/multinode_fixture.go`) |
 | writers + async submits: no confirmed save missing; repeated reads at `C` identical | | | | | | | ✓ concurrency e2e (`internal/e2e`) |
 
-Waivers (one line each, as the coverage rule requires):
+**Error-code matrix** (`internal/e2e/zzz_errorcode_matrix_test.go`, checked
+both ways): `POINT_IN_TIME_AFTER_CONSISTENCY_TIME` is declared on every keyed
+fenced operation (`getOneEntity`, `getAllEntities`,
+`getEntityStatisticsForModel`, `getEntityStatisticsByStateForModel`,
+`deleteEntities`) and produced on the main stack; `CONSISTENCY_TIME_UNAVAILABLE`
+is declared on the same keys and produced on the validated 503 stack. If
+`getConsistencyTime` becomes a key, `FORBIDDEN` is declared and produced
+too.
 
-- `503 STORAGE_UNAVAILABLE` on the fence and on the new endpoint: produced by
-  the existing `common.Internal` classification, unchanged by this design and
-  covered by its existing tests; no new e2e cell.
-- `500` on the new endpoint: the generic internal-error path, covered by the
-  unit test of the error mapping.
-- The async "not found → skip" removal: unreachable by construction; unit test
-  with a fake store.
-
-The e2e error-code matrix (`internal/e2e/zzz_errorcode_matrix_test.go`)
-declares the new codes only on the keyed operations whose cells the e2e run
-above produces.
+**Waivers** (one line each): the `500` on the new endpoint is the generic
+internal path, covered by the unit test of the mapping; the deleted async
+"not found → skip" branch is unreachable by construction, covered by a unit
+test with a fake store; e2e `503 STORAGE_UNAVAILABLE` on the fence needs an
+unreachable database mid-request and is covered by the unit, plugin and gRPC
+cells above.
 
 ## 12. Existing tests
 
-**Change (they pass a future instant and expect `200`):**
+**Change (they pass a future instant and expect success):**
 `internal/domain/entity/handler_test.go:1512`;
-`internal/e2e/grouped_stats_invalid_path_test.go:111-118`;
-`internal/e2e/entity_delete_unconditional_test.go:97-108`. They take their
-instant from the new endpoint, and the "future instant" case becomes a
-refusal assertion.
+`internal/e2e/entity_delete_unconditional_test.go:97-108`;
+`e2e/parity/pit_committed_only.go:67-72` (through `callback.go:650`, §7.3).
+
+**Change (they assert behaviour this design replaces):**
+`plugins/postgres/grouped_stats_test.go:552` and
+`plugins/sqlite/grouped_stats_test.go:724` (pushdown declines at a point in
+time); sqlite `grouped_stats_test.go:583` (`PointInTimeBeatsMalformedPath`);
+`internal/domain/search/job_lookup_outage_test.go:364` (the deleted skip).
+
+**Rewrite their premise:** `internal/e2e/grouped_stats_invalid_path_test.go:48-52,111-118,174-182`
+use a point in time to force the streaming path, which the pushdown removes;
+they force it with a joined transaction instead
+(`grouped_stats_service.go:124-125`), and their instants come from the new
+endpoint.
 
 **Keep, now pinning check order (§3.3):**
-`internal/e2e/grouped_stats_invalid_path_test.go:63,174-182` (path `400`
-before the fence); `internal/e2e/entity_delete_unconditional_test.go:145-150`
+`internal/e2e/entity_delete_unconditional_test.go:145-150`
 (`404 MODEL_NOT_FOUND` before the fence);
 `internal/e2e/zzz_errorcode_matrix_test.go:250-257` (`pointInTime` +
-`transactionId` `400` before the fence);
-`internal/grpc/entity_deleteall_fields_test.go:212-235`.
+`transactionId` `400` before the fence). `internal/grpc/entity_deleteall_fields_test.go:212-235`
+uses `time.Now()`; it switches to a far-future instant so it pins the order.
 
 **Fixtures that build a state that can no longer occur** (Gate 6): job rows
 seeded with `point_in_time = now+1m` (`internal/e2e/async_stream_test.go:907`,
-`internal/e2e/scheduled_run_fencing_test.go:382`) and stamps pushed `+1h`
-(`internal/e2e/transitions_clockskew_test.go`) use an instant at or below a
-`C`, or raise the floor (own database) instead.
+`internal/e2e/scheduled_run_fencing_test.go:382`) use an instant at or below
+a `C` instead.
 
-**Stale skips** to verify and remove if stale: `e2e/parity/externalapi/entity_delete.go:88`,
-`e2e/parity/externalapi/negative_validation.go:195`.
+**Stale skip:** `e2e/parity/externalapi/entity_delete.go:88` is removed.
 
-**Fakes** with explicit methods that need the new signatures:
-`Count`/`CountByState` in `internal/domain/entity/mock_store_test.go:81,84`
-and `service_unique_keys_test.go:504-508`; `ConsistencyTime` in
-`internal/observability/tx_tracing_test.go:14`,
+**Compile changes:** `GetStatistics*` callers (`entity/service_test.go:232,249,262,309,326,347`,
+`entity/handler.go:397,427,458,478`, `internal/grpc/search.go:449,478,526,537`);
+`Count`/`CountByState` fakes (`internal/domain/entity/mock_store_test.go:81,84`,
+`service_unique_keys_test.go:504-508`) and the plugin tests' callers;
+`ConsistencyTime` fakes (`internal/observability/tx_tracing_test.go:14`,
 `internal/domain/workflow/engine_test.go:2261`,
-`internal/domain/workflow/fire_scheduled_test.go:770`.
+`internal/domain/workflow/fire_scheduled_test.go:770`); every
+`NewSearchService`, `entity.New` and `NewGroupedStatsHandler` call site (the
+new required argument).
 
 **Stay valid:** spitest cases at `h.Now()+1h` (the SPI does not refuse a
 future instant; the engine does); the parity cross-tenant cases
 (`e2e/parity/tenant_isolation.go:307-317,384-394`), by backend-wide
-completeness (§2).
+completeness (§2); `internal/e2e/transitions_clockskew_test.go` (shifts
+`valid_time` only, independent of the removed guard).
 
 ## 13. Not in scope
 
@@ -547,6 +664,9 @@ completeness (§2).
   consumer).
 - Reads without `pointInTime` stay current-state reads.
 - The async job status does not report its instant.
+- `e2e/parity/externalapi/negative_validation.go:195` (12_07) stays skipped:
+  it expects an `entitySearchLimit` parameter cyoda-go does not have, which is
+  unrelated to this design.
 - #611 later moves the clock source into the stamp function and the
   memory/sqlite `Clock`.
 
