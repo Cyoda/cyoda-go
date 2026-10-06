@@ -2,7 +2,6 @@ package memory
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"iter"
 	"sort"
@@ -874,7 +873,13 @@ func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, mod
 
 func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
 	if asAt != nil {
-		return 0, errors.New("memory: Count at an instant not implemented")
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		ents, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return 0, fmt.Errorf("Count: %w", err)
+		}
+		return int64(len(ents)), nil
 	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
@@ -916,9 +921,6 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 // CountByState returns counts of non-deleted entities grouped by state for the
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
 func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
-	if asAt != nil {
-		return nil, errors.New("memory: Count at an instant not implemented")
-	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
@@ -929,6 +931,25 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 		for _, st := range states {
 			filter[st] = struct{}{}
 		}
+	}
+
+	if asAt != nil {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		ents, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return nil, fmt.Errorf("CountByState: %w", err)
+		}
+		result := make(map[string]int64)
+		for _, e := range ents {
+			if filter != nil {
+				if _, ok := filter[e.Meta.State]; !ok {
+					continue
+				}
+			}
+			result[e.Meta.State]++
+		}
+		return result, nil
 	}
 
 	tx := spi.GetTransaction(ctx)

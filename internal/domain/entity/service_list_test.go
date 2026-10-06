@@ -54,6 +54,19 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 		}
 	}
 
+	// A burst of saves stamps ahead of a coarse wall clock (the store floors
+	// each stamp one microsecond above the last). Wait until the clock has
+	// passed the consistency time so a test's time.Now() sees every save.
+	tm, err := base.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	c, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
+	time.Sleep(time.Until(c) + time.Millisecond)
+
 	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
 	return ctx, h
 }
