@@ -26,14 +26,12 @@ import (
 //     native SQL GROUP BY. Unlike sqlite (D9 opts out of stdev because the
 //     one-pass formula is numerically unsafe), postgres's STDDEV_SAMP is
 //     numerically stable, so the request shape is always pushable as long
-//     as no residual and no PIT are involved.
+//     as no residual is involved. At a point in time the same GROUP BY runs
+//     over the lateral base searchBaseQuery builds, committed-only.
 //
-// Decline cases (return spi.ErrAggregationNotPushdownable):
+// Decline case (return spi.ErrAggregationNotPushdownable):
 //   - Filter has a residual (post-aggregation residual application can't
 //     reconstruct per-bucket counts safely).
-//   - opts.PointInTime is set (PIT GROUP BY would need the same lateral-join
-//     wrapper searchBaseQuery uses; out of scope for v1 — service layer falls
-//     through to streaming tally over Iterate, which DOES support PIT).
 //
 // Cardinality detection (D17): LIMIT MaxBuckets+1 and surface
 // ErrGroupCardinalityExceeded the moment we observe MaxBuckets+1 rows.
@@ -372,7 +370,7 @@ func (it *postgresIter) Close() error {
 
 // GroupedAggregate implements spi.GroupedAggregator. Returns
 // ErrAggregationNotPushdownable for request shapes the SQL path cannot
-// safely cover (residual filter / point-in-time); the caller is expected
+// safely cover (residual filter); the caller is expected
 // to fall back to Iterate-driven streaming tally.
 func (s *entityStore) GroupedAggregate(
 	ctx context.Context,
@@ -381,12 +379,6 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
-	// (which does support PIT) handles it without per-query SQL plumbing.
-	if opts.PointInTime != nil {
-		return nil, spi.ErrAggregationNotPushdownable
-	}
-
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
 	}
@@ -442,8 +434,23 @@ func (s *entityStore) GroupedAggregate(
 	}
 
 	q := "SELECT " + strings.Join(selectParts, ", ")
-	q += " FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted"
-	args := []any{string(s.tenantID), model.EntityName, model.ModelVersion}
+	var args []any
+	var qr Querier = s.q
+	if opts.PointInTime != nil {
+		// At an instant: group over the version each entity had as of the
+		// instant (the lateral base every point-in-time read shares), run
+		// committed-only off any ambient transaction. The base projects doc,
+		// creation_date and last_modified under the names the current-state
+		// table uses, so the group, aggregate and filter expressions apply
+		// unchanged; WHERE TRUE lets the filter attach as AND.
+		var base string
+		base, args = s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
+		q += " FROM (" + base + ") pit WHERE TRUE"
+		qr = s.committedQuerier()
+	} else {
+		q += " FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted"
+		args = []any{string(s.tenantID), model.EntityName, model.ModelVersion}
+	}
 	if plan.where != "" {
 		shifted := shiftPlaceholders(plan.where, len(args))
 		q += " AND (" + shifted + ")"
@@ -465,7 +472,7 @@ func (s *entityStore) GroupedAggregate(
 		args = append(args, limit)
 	}
 
-	rows, err := s.q.Query(ctx, q, args...)
+	rows, err := qr.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("grouped aggregate query: %w", err)
 	}

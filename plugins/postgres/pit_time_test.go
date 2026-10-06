@@ -12,7 +12,8 @@ import (
 // never from time.Now() in the test process.
 //
 // This plugin stamps valid_time / transaction_time / LastModifiedDate from
-// postgres itself (`SELECT CURRENT_TIMESTAMP`, entity_store.go), so a boundary
+// postgres itself (cyoda_stamp, which draws on the database clock and the
+// stamp floor), so a boundary
 // taken from the test process's clock is a two-clock comparison. Against a
 // testcontainer the database runs in the Docker VM, whose clock was measured
 // lagging the macOS host by 10–13 ms under CPU load — the condition every

@@ -549,19 +549,78 @@ func TestPostgresGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundar
 	}
 }
 
-func TestPostgresGroupedAggregate_DeclinesOnPointInTime(t *testing.T) {
-	_, store, ctx := gsNewStore(t)
-	gsSave(t, ctx, store, "a", "available", map[string]any{"x": 1})
+func TestGroupedAggregate_PointInTimeIsPushedDown(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+	pool := postgres.PoolForTest(factory)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 10.0, "tag": "x"})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"price": 20.0, "tag": "y"})
+	gsSave(t, ctx, store, "c", "allocated", map[string]any{"price": 5.0})
+	pit := dbNow(t, ctx, pool)
+	// After the instant: a moves state and price, d appears, b is deleted.
+	gsSave(t, ctx, store, "a", "allocated", map[string]any{"price": 1000.0, "tag": "x"})
+	gsSave(t, ctx, store, "d", "available", map[string]any{"price": 7.0, "tag": "y"})
+	if err := store.Delete(ctx, "b"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
 
-	pit := time.Now()
 	ga := store.(spi.GroupedAggregator)
-	_, err := ga.GroupedAggregate(ctx, gsModel,
-		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
-		spi.Filter{},
-		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit},
-	)
-	if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
-		t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+	run := func(filter spi.Filter) map[string][2]float64 {
+		res, err := ga.GroupedAggregate(ctx, gsModel,
+			[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+			filter,
+			spi.GroupedAggregationsOptions{
+				MaxBuckets:   10,
+				PointInTime:  &pit,
+				Aggregations: []spi.AggregateExpr{{Op: spi.AggSum, Field: "price", Alias: "s"}},
+			})
+		if err != nil {
+			t.Fatalf("GroupedAggregate at an instant: %v", err)
+		}
+		out := map[string][2]float64{}
+		for _, b := range res {
+			k, _ := b.GroupKey[0].Value.(string)
+			s, _ := b.Aggregations["s"].(float64)
+			out[k] = [2]float64{float64(b.Count), s}
+		}
+		return out
+	}
+
+	got := run(spi.Filter{})
+	if len(got) != 2 || got["available"] != [2]float64{2, 30} || got["allocated"] != [2]float64{1, 5} {
+		t.Fatalf("buckets at the instant = %v, want available {2 30}, allocated {1 5}", got)
+	}
+
+	// The same instant, tallied by streaming Iterate.
+	iter, err := store.Iterate(ctx, gsModel, spi.Filter{}, spi.IterateOptions{PointInTime: &pit})
+	if err != nil {
+		t.Fatalf("Iterate: %v", err)
+	}
+	defer iter.Close()
+	streamed := map[string]float64{}
+	for iter.Next() {
+		streamed[iter.Entity().Meta.State]++
+	}
+	if err := iter.Err(); err != nil {
+		t.Fatalf("iter: %v", err)
+	}
+	if len(streamed) != len(got) {
+		t.Fatalf("streamed buckets %v differ from pushed-down %v", streamed, got)
+	}
+	for st, n := range streamed {
+		if got[st][0] != n {
+			t.Errorf("state %q: pushed-down count %v, streamed %v", st, got[st][0], n)
+		}
+	}
+
+	// An exact filter (the only kind pushed down) attaches to the instant's
+	// base as an AND; it sees the version as of the instant, not today's.
+	notNull := run(spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceData, Path: "tag"})
+	if len(notNull) != 1 || notNull["available"] != [2]float64{2, 30} {
+		t.Fatalf("not-null buckets at the instant = %v, want only available {2 30}", notNull)
+	}
+	isNull := run(spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceData, Path: "tag"})
+	if len(isNull) != 1 || isNull["allocated"] != [2]float64{1, 5} {
+		t.Fatalf("is-null buckets at the instant = %v, want only allocated {1 5}", isNull)
 	}
 }
 

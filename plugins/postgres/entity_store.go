@@ -598,8 +598,7 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 
 // GetAsAt is committed-only: it runs through committedQuerier (pool-pinned)
 // rather than s.q, so an ambient transaction's own uncommitted writes are
-// invisible to it — see committedQuerier's doc comment for why the query's
-// transaction_time guard cannot achieve that on its own.
+// invisible to it — see committedQuerier's doc comment.
 //
 // The reported LastModifiedDate is transaction_time, not valid_time: per this
 // project's definitions lastUpdateTime is the submit instant (transaction_time)
@@ -614,7 +613,6 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		`SELECT doc, creation_date, transaction_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
-		   AND transaction_time <= CURRENT_TIMESTAMP
 		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
 		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &transactionTime)
@@ -900,7 +898,14 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
 func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
 	if asAt != nil {
-		return 0, errors.New("postgres: Count at an instant not implemented")
+		// Committed-only, like every instant read: off the ambient transaction.
+		var count int64
+		base, args := s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		err := s.committedQuerier().QueryRow(ctx, `SELECT count(*) FROM (`+base+`) pit`, args...).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to count entities as at: %w", err)
+		}
+		return count, nil
 	}
 	var count int64
 	err := s.q.QueryRow(ctx,
@@ -922,29 +927,43 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See
 // Count's note on phantom reads.
 func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
-	if asAt != nil {
-		return nil, errors.New("postgres: Count at an instant not implemented")
-	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
 
-	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
 	// Entities with no $._meta.state are bucketed under "" rather than dropped,
 	// preserving them for diagnostic visibility. This matches the in-tx Go path
 	// which reads e.Meta.State (also "" if unset).
-	q := `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*)
-	      FROM entities
+	const selectState = `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*) `
+	var (
+		q         string
+		args      []any
+		qr        Querier
+		stateJoin string // how the state filter attaches to the query
+	)
+	if asAt != nil {
+		// At an instant: the version as of asAt per entity, committed-only
+		// (off the ambient transaction), like every instant read.
+		var base string
+		base, args = s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		q = selectState + `FROM (` + base + `) pit`
+		qr = s.committedQuerier()
+		stateJoin = ` WHERE `
+	} else {
+		args = []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+		q = selectState + `FROM entities
 	      WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
-
+		qr = s.q
+		stateJoin = ` AND `
+	}
 	if states != nil {
 		// pgx encodes []string as text[] for the ANY() comparison; no manual casting needed.
 		args = append(args, states)
-		q += ` AND doc -> '_meta' ->> 'state' = ANY($4)`
+		q += stateJoin + fmt.Sprintf(`doc -> '_meta' ->> 'state' = ANY($%d)`, len(args))
 	}
 	q += ` GROUP BY state`
 
-	rows, err := s.q.Query(ctx, q, args...)
+	rows, err := qr.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count entities by state: %w", err)
 	}
@@ -1141,6 +1160,10 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // spi.EntityStore.GetVersionMetadata's doc comment: this method surfaces
 // audit metadata only.
 //
+// The listing is committed-only, like every history read: both statements run
+// through committedQuerier, so an ambient transaction's own uncommitted
+// versions are not listed.
+//
 // Existence is checked BEFORE the window filter is applied: an entity with
 // a non-empty version history whose versions all fall outside
 // [opts.From, opts.Until] returns an empty slice, not ErrNotFound.
@@ -1150,7 +1173,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	tid := string(s.tenantID)
 
 	var exists bool
-	if err := s.q.QueryRow(ctx,
+	if err := s.committedQuerier().QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2)`,
 		tid, entityID).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: existence check: %w", err)
@@ -1175,7 +1198,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		query += fmt.Sprintf(" LIMIT $%d", len(args))
 	}
 
-	rows, err := s.q.Query(ctx, query, args...)
+	rows, err := s.committedQuerier().Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: query: %w", err)
 	}

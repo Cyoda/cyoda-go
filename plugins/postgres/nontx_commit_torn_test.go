@@ -132,6 +132,16 @@ func TestNonTxCommit_TornSocketIsNotRetryable(t *testing.T) {
 				  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION ct_slow_commit();`); err != nil {
 				t.Fatalf("install the slow-commit trigger: %v", err)
 			}
+			// The torn COMMIT's backend goes on sleeping in the trigger after
+			// the client is gone; end it so the schema drop in cleanup does
+			// not wait for it. Registered after the pool's and the schema's
+			// cleanups, so it runs before them.
+			t.Cleanup(func() {
+				_, _ = direct.Exec(context.Background(),
+					`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+					  WHERE datname = current_database() AND pid <> pg_backend_pid()
+					    AND wait_event = 'PgSleep'`)
+			})
 
 			u, err := url.Parse(testDBURL(t))
 			if err != nil {

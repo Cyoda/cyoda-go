@@ -824,13 +824,13 @@ func holdFloorMutex(t *testing.T) {
 func TestStamp_ErrorClosesConnection(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		write func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error
+		write func(t *testing.T, f *postgres.StoreFactory, ctx context.Context, id, txID string) error
 	}{
-		{"transaction", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error {
+		{"transaction", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context, _, _ string) error {
 			_, err := commitOneEntityErr(t, f, ctx)
 			return err
 		}},
-		{"non-transactional save", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error {
+		{"non-transactional save", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context, _, _ string) error {
 			es, err := f.EntityStore(ctx)
 			if err != nil {
 				t.Fatalf("EntityStore: %v", err)
@@ -838,6 +838,23 @@ func TestStamp_ErrorClosesConnection(t *testing.T) {
 			_, err = es.Save(ctx, &spi.Entity{
 				Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
 			})
+			return err
+		}},
+		{"non-transactional delete", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context, id, _ string) error {
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			return es.Delete(ctx, id)
+		}},
+		{"non-transactional compare-and-save", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context, id, txID string) error {
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			_, err = es.CompareAndSave(ctx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":2}`),
+			}, txID)
 			return err
 		}},
 	} {
@@ -854,10 +871,32 @@ func TestStamp_ErrorClosesConnection(t *testing.T) {
 				}
 				return pid
 			}
+
+			// An entity committed by a transaction, for the delete and
+			// compare-and-save cases to target; seeded before the mutex is held.
+			tm := ctTM(t, f, ctx)
+			txID, txCtx, err := tm.Begin(ctx)
+			if err != nil {
+				t.Fatalf("Begin: %v", err)
+			}
+			seedStore, err := f.EntityStore(txCtx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			id := uuid.NewString()
+			if _, err := seedStore.Save(txCtx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+			}); err != nil {
+				t.Fatalf("seed Save: %v", err)
+			}
+			if err := tm.Commit(txCtx, txID); err != nil {
+				t.Fatalf("seed Commit: %v", err)
+			}
+
 			before := backend()
 			holdFloorMutex(t)
 
-			if err := tc.write(t, f, ctx); !storageUnavailable(err) {
+			if err := tc.write(t, f, ctx, id, txID); !storageUnavailable(err) {
 				t.Fatalf("precondition: want the stamp to fail on the held mutex, got %v", err)
 			}
 			if after := backend(); after == before {
