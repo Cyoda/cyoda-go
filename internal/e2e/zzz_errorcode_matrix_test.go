@@ -29,11 +29,13 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	// Seeded row: getOneEntity's error surface, pinned by
 	// TestErrCodeMatrix_GetOneEntity below and existing lifecycle tests.
 	"getOneEntity": {
+		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},
 		{Status: 400, Code: "BAD_REQUEST"}, // conflicting pointInTime+transactionId
 	},
 	"deleteEntities": {
+		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 400, Code: "INVALID_CONDITION"},
 		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
@@ -63,14 +65,17 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED)
 	//     out of scope for this slice.
 	"getAllEntities": {
+		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetAllEntities_UnknownModel_404
 	},
 	"getEntityStatisticsForModel": {
+		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetStatisticsForModel_UnknownModel_404
 	},
 	"getEntityStatisticsByStateForModel": {
+		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetStatisticsByStateForModel_UnknownModel_404
 	},

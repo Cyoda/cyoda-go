@@ -45,13 +45,19 @@ func groupedStatsInTx(t *testing.T, bodies []string) []callbackResult {
 		}
 	}
 	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
-	done := make(chan []callbackResult, 1)
+	type outcome struct {
+		results []callbackResult
+		err     error
+	}
+	done := make(chan outcome, 1)
 	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
 		var out []callbackResult
-		defer func() { done <- out }()
+		var cbErr error
+		defer func() { done <- outcome{out, cbErr} }()
 		for _, b := range bodies {
 			res, err := h.callback(http.MethodPost, path, b, rc.token)
 			if err != nil {
+				cbErr = err
 				return nil, err
 			}
 			out = append(out, res)
@@ -63,11 +69,14 @@ func groupedStatsInTx(t *testing.T, bodies []string) []callbackResult {
 		t.Fatalf("primary create: %d %s", status, body)
 	}
 	select {
-	case out := <-done:
-		if len(out) != len(bodies) {
-			t.Fatalf("processor made %d of %d requests", len(out), len(bodies))
+	case o := <-done:
+		if o.err != nil {
+			t.Fatalf("grouped-stats callback failed after %d of %d requests: %v", len(o.results), len(bodies), o.err)
 		}
-		return out
+		if len(o.results) != len(bodies) {
+			t.Fatalf("processor made %d of %d requests", len(o.results), len(bodies))
+		}
+		return o.results
 	case <-time.After(20 * time.Second):
 		t.Fatal("processor did not run")
 		return nil
@@ -134,8 +143,9 @@ func TestGroupedStats_MalformedAggregationField_Returns400(t *testing.T) {
 // TestGroupedStats_ValidPathForms_Still200 is the positive control over real
 // HTTP: the JSON Path form must still be accepted and must still produce the
 // `$.variantId` group key — on the pushdown branch, and on the streaming branch
-// (inside a joined transaction, see the subtest below) — and so must the reserved `state` token, which names
-// the lifecycle state rather than a data path and is exempt from the leader
+// (inside a joined transaction, see the subtest below) — and so must the
+// reserved `state` token, which names the lifecycle state rather than a data
+// path and is exempt from the leader
 // rule. A tightening that breaks valid callers is worse than the bug it fixes.
 func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
 	if testing.Short() {
