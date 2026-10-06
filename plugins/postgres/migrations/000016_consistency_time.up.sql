@@ -7,11 +7,13 @@
 -- Advisory key layout (two-int form, objsubid = 2, used by nothing else here):
 --   (0, 0)                         the floor mutex, held for microseconds
 --   (hashtext(tenant), 1..2^31-1)  in-flight markers, one per committing tx
+-- The floor is seeded from the stamps already stored. search_jobs.point_in_time
+-- is not one: it held the caller's pointInTime as sent, with no check against
+-- the future, so seeding from it could move every later stamp far ahead.
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
 SELECT setval('cyoda_stamp_floor', coalesce(greatest(
   (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
-  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times),
-  (SELECT (extract(epoch FROM max(point_in_time))*1000000)::bigint FROM search_jobs)),0), true);
+  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times)),0), true);
 
 CREATE FUNCTION cyoda_stamp(tenant text) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE cur_idle bigint; tkey int4 := hashtext(tenant);

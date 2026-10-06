@@ -596,12 +596,17 @@ func insertDeletedBufferedTombstone(ctx context.Context, sqlTx *sql.Tx, tid, txI
 // stay monotonic across restarts, including one whose wall clock stepped
 // back. Any query error is returned: starting from a zero floor would fail
 // open.
+//
+// search_jobs.point_in_time is deliberately not a source: before consistency
+// time it held the caller's pointInTime as sent, with no check against the
+// future, so one old submit dated far ahead would push every later stamp
+// there for good. Every consistency time handed out is already at or below
+// consistency_floor.
 func (m *transactionManager) seedLastSubmitTime() error {
 	var floor sql.NullInt64
 	err := m.factory.db.QueryRow(`SELECT MAX(v) FROM (
 		SELECT MAX(submit_time) AS v FROM entity_versions
 		UNION ALL SELECT MAX(submit_time) FROM submit_times
-		UNION ALL SELECT MAX(point_in_time) FROM search_jobs
 		UNION ALL SELECT micros FROM consistency_floor WHERE id = 1)`).Scan(&floor)
 	if err != nil {
 		return fmt.Errorf("failed to seed the submit-time floor: %w", err)

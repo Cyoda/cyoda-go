@@ -86,7 +86,7 @@ func TestConsistencyTime_RequiresTenant(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestSeed_FloorsAtJobInstantsAndSubmitTimes(t *testing.T) {
+func TestSeed_FloorsAtSubmitTimes(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ct.db")
 	f1, err := NewStoreFactoryForTest(context.Background(), path)
 	require.NoError(t, err)
@@ -94,12 +94,8 @@ func TestSeed_FloorsAtJobInstantsAndSubmitTimes(t *testing.T) {
 
 	db, err := sql.Open("sqlite3", "file:"+path)
 	require.NoError(t, err)
-	jobAt := time.Now().Add(time.Hour).UnixMicro()
 	stampAt := time.Now().Add(2 * time.Hour).UnixMicro()
 	_, err = db.Exec(`INSERT INTO submit_times (tx_id, tenant_id, submit_time) VALUES ('tx-seed', 'tenant-A', ?)`, stampAt)
-	require.NoError(t, err)
-	_, err = db.Exec(`INSERT INTO search_jobs (tenant_id, job_id, model_name, model_version, point_in_time, create_time)
-		VALUES ('tenant-A', 'job-seed', 'm', '1', ?, 0)`, jobAt)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
@@ -111,7 +107,12 @@ func TestSeed_FloorsAtJobInstantsAndSubmitTimes(t *testing.T) {
 	require.GreaterOrEqual(t, c.UnixMicro(), stampAt)
 }
 
-func TestSeed_FloorsAtJobInstantAlone(t *testing.T) {
+// A search job's point_in_time is not a stamp: before consistency time it
+// held the caller's pointInTime as sent, with no check against the future, so
+// flooring at it would let one old async submit dated far ahead push every
+// tenant's stamps there for good. The seed ignores it; every C handed out is
+// already covered by consistency_floor.
+func TestSeed_IgnoresSearchJobInstants(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ct.db")
 	f1, err := NewStoreFactoryForTest(context.Background(), path)
 	require.NoError(t, err)
@@ -119,18 +120,20 @@ func TestSeed_FloorsAtJobInstantAlone(t *testing.T) {
 
 	db, err := sql.Open("sqlite3", "file:"+path)
 	require.NoError(t, err)
-	jobAt := time.Now().Add(time.Hour).UnixMicro()
+	jobAt := time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
 	_, err = db.Exec(`INSERT INTO search_jobs (tenant_id, job_id, model_name, model_version, point_in_time, create_time)
 		VALUES ('tenant-A', 'job-seed', 'm', '1', ?, 0)`, jobAt)
 	require.NoError(t, err)
 	require.NoError(t, db.Close())
 
-	f2, err := NewStoreFactoryForTest(context.Background(), path, WithClock(NewTestClockAt(time.Now())))
+	now := time.Now()
+	f2, err := NewStoreFactoryForTest(context.Background(), path, WithClock(NewTestClockAt(now)))
 	require.NoError(t, err)
 	defer f2.Close()
 	c, err := f2.tm.ConsistencyTime(attrInternalCtx("tenant-A", "alice", "USER"))
 	require.NoError(t, err)
-	require.GreaterOrEqual(t, c.UnixMicro(), jobAt)
+	require.Less(t, c.UnixMicro(), now.Add(time.Hour).UnixMicro(),
+		"C %v was raised by a search job's instant, which is not a stamp", c)
 }
 
 func TestSeed_QueryErrorFailsConstruction(t *testing.T) {

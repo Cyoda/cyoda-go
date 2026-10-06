@@ -232,8 +232,12 @@ change plus the new path).
   floored by it after a restart.
 - Floor on open (`txmanager.go:595-602`): the highest of `MAX(submit_time)` on
   `entity_versions`, `MAX(submit_time)` on `submit_times` (written by every
-  commit, `txmanager.go:1200-1202`), `MAX(point_in_time)` on `search_jobs`
-  and `consistency_floor.micros`. A query error fails factory construction.
+  commit, `txmanager.go:1200-1202`) and `consistency_floor.micros`. A query
+  error fails factory construction. `search_jobs.point_in_time` is not a
+  source: it held the caller's `pointInTime` as sent, with no check against
+  the future, so one old submit dated far ahead would move every later stamp
+  there for good. Every `C` handed out is already covered by
+  `consistency_floor`.
 - `Count`/`CountByState` with `asAt`: SQL over the existing PIT base
   (`submit_time <= ?`, latest version per entity, not deleted).
 - `GroupedAggregate` with `PointInTime`: pushed down over the same PIT base
@@ -254,8 +258,7 @@ a checker without the wait found 6,607):
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
 SELECT setval('cyoda_stamp_floor', coalesce(greatest(
   (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
-  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times),
-  (SELECT (extract(epoch FROM max(point_in_time))*1000000)::bigint FROM search_jobs)),0), true);
+  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times)),0), true);
 
 CREATE FUNCTION cyoda_stamp(tenant text) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE cur_idle bigint; tkey int4 := hashtext(tenant);
@@ -305,6 +308,9 @@ END $$;
 
 Notes on the SQL:
 
+- The floor is seeded from the stamps already stored:
+  `entity_versions.transaction_time` and `submit_times.submit_time`.
+  `search_jobs.point_in_time` is not a source, for the reason in §6.2.
 - The in-flight marker `(hashtext(tenant), xact_key)` is taken outside the
   guarded block (a block is a subtransaction; rolling it back would drop a
   lock taken inside it). It is held until the transaction ends, after its rows
@@ -581,7 +587,7 @@ storage-unavailable error.
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |
 | floor survives a clock step back | | ✓ memory, sqlite (`Clock`); postgres (sequence set ahead, own DB) | | | | | |
-| sqlite reopen: stamps, `submit_times`, job instants, high-water mark ahead of the clock | | ✓ | | | | | |
+| reopen / migration seed: stamps, `submit_times`, high-water mark ahead of the clock raise the floor; a far-future job instant does not | | ✓ sqlite, postgres | | | | | |
 | `Count`/`CountByState` with `asAt`; change history committed-only in a tx | | | ✓ | | | | |
 | grouped stats PIT pushdown (sqlite, postgres) | | ✓ | | | | ✓ (existing grouped-stats PIT scenario) | |
 | `Fence`/`Fresh`: cached pass, join rules, at most two calls, caller cancel vs shared call, refusal, error mapping (unavailable, storage-unavailable marker, other) | ✓ (fake TM) | | | | | | |

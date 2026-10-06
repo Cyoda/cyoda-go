@@ -714,21 +714,26 @@ func TestConsistencyTime_FloorAheadOfClock(t *testing.T) {
 
 // The migration seeds the floor from every stamp already stored, so a
 // database migrated with data never issues a stamp or C below one of them.
+// search_jobs.point_in_time is not a stamp: before this migration it held the
+// caller's pointInTime as sent, with no check against the future, so seeding
+// from it would let one old async submit dated far ahead push every tenant's
+// stamps there for good. A job instant this migration finds is ignored.
 func TestConsistencyTimeMigration_SeedsFloorFromStoredStamps(t *testing.T) {
 	cases := []struct {
-		name string
-		seed string
+		name   string
+		seed   string
+		raises bool
 	}{
 		{"entity_versions", `
 			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, doc)
 			VALUES ('seed', 'e1', 'm', '1', 1, '{}');
 			INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, doc)
-			VALUES ('seed', 'e1', 'm', '1', 1, now(), now() + interval '2 hours', '{}')`},
+			VALUES ('seed', 'e1', 'm', '1', 1, now(), now() + interval '2 hours', '{}')`, true},
 		{"submit_times", `
-			INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ('seed', 'tx1', now() + interval '2 hours')`},
-		{"search_jobs", `
+			INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ('seed', 'tx1', now() + interval '2 hours')`, true},
+		{"search_jobs is ignored", `
 			INSERT INTO search_jobs (id, tenant_id, model_name, model_ver, point_in_time)
-			VALUES ('j1', 'seed', 'm', '1', now() + interval '2 hours')`},
+			VALUES ('j1', 'seed', 'm', '1', '9999-01-01T00:00:00Z')`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -749,8 +754,11 @@ func TestConsistencyTimeMigration_SeedsFloorFromStoredStamps(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ConsistencyTime: %v", err)
 			}
-			if c.Before(time.Now().Add(90 * time.Minute)) {
+			if tc.raises && c.Before(time.Now().Add(90*time.Minute)) {
 				t.Fatalf("C %v is below the stored stamp two hours ahead", c)
+			}
+			if !tc.raises && c.After(time.Now().Add(time.Hour)) {
+				t.Fatalf("C %v was raised by a search job's instant, which is not a stamp", c)
 			}
 		})
 	}

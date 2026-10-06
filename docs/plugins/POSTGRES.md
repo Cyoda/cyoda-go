@@ -119,8 +119,9 @@ contract they implement is `docs/CONSISTENCY.md` §1a.
 
 - `cyoda_stamp_floor` — a `bigint` sequence holding the highest stamp or
   consistency time issued, in microseconds since the epoch. The migration
-  sets it to the highest instant already stored in `entity_versions`,
-  `submit_times` and `search_jobs`.
+  sets it to the highest stamp already stored in `entity_versions` and
+  `submit_times`. `search_jobs.point_in_time` is not a source: it holds a
+  caller-chosen instant, which must not move the floor.
 - `cyoda_stamp(tenant)` — called once per commit, at the top level of the
   commit transaction, by `stampCommitInstant` and `stampOwnCommitInstant` in
   place of `clock_timestamp()`. It returns `max(clock, floor + 1)` and moves
