@@ -398,6 +398,18 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 	common.WriteJSON(w, http.StatusOK, resp)
 }
 
+// GetConsistencyTime implements GET /entity/consistency-time. The instant is
+// rendered by encoding/json as RFC 3339 with the store's full precision, never
+// rounded, so a client can pass it back verbatim as pointInTime.
+func (h *Handler) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	c, err := h.cons.Fresh(r.Context())
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, genapi.ConsistencyTimeDto{ConsistencyTime: c})
+}
+
 func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
 	stats, err := h.GetStatistics(r.Context(), params.PointInTime)
 	if err != nil {

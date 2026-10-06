@@ -52,6 +52,8 @@
     "EntityStatsByStateGetRequest",
     "EntityStatsByStateResponse",
     "EntityChangesMetadataGetRequest",
-    "EntityChangesMetadataResponse"
+    "EntityChangesMetadataResponse",
+    "EntityConsistencyTimeGetRequest",
+    "EntityConsistencyTimeResponse"
   ]
 }

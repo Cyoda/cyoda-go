@@ -973,6 +973,32 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
       security:
         - bearerAuth: []
+  /entity/consistency-time:
+    get:
+      tags:
+        - Entity Management
+      summary: Get the consistency time
+      description: >-
+        Returns the consistency time for the caller's tenant: the instant up to
+        which every save is final. It includes every save confirmed before this
+        call, on any node. A read with pointInTime at or before this value is
+        never refused and its answer never changes. See `cyoda help crud`.
+      operationId: getConsistencyTime
+      responses:
+        "200":
+          description: The current consistency time.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConsistencyTimeDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/InternalServerError'
   /entity/stats:
     get:
       tags:
@@ -11059,6 +11085,17 @@ components:
         transactionId:
           type: string
           format: uuid
+    ConsistencyTimeDto:
+      type: object
+      required:
+        - consistencyTime
+      properties:
+        consistencyTime:
+          type: string
+          format: date-time
+          description: >-
+            The consistency time, at the store's full precision. Pass it
+            unchanged as pointInTime.
     ModelStatsDto:
       type: object
       properties:
@@ -12243,7 +12280,9 @@ components:
         dead, or is unreachable (TRANSACTION_NODE_UNAVAILABLE), or the
         transaction already has as many callbacks waiting as it may have
         (TOO_MANY_JOINED_REQUESTS), or this node's copy of the signing key pairs
-        has had no successful re-read from storage within its bound. Retryable.
+        has had no successful re-read from storage within its bound, or the store could
+        not certify the consistency time within its wait budget
+        (CONSISTENCY_TIME_UNAVAILABLE). Retryable.
       content:
         application/problem+json:
           schema:

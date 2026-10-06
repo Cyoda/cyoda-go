@@ -84,9 +84,9 @@ Response: `200 OK`, `application/json` — same shape as a single element of the
 
 ## SPEC SHAPE
 
-The spec declares 67 paths across these tag groups:
+The spec declares 68 paths across these tag groups:
 
-- **Entity Management** — create, update, delete, transition, and stats endpoints under `/entity/`
+- **Entity Management** — create, update, delete, transition, stats and consistency-time endpoints under `/entity/`
 - **Entity Model** — model import, export, lock, unlock, delete, changeLevel, and workflow under `/model/`
 - **Search** — snapshot and direct search under `/search/`
 - **User, Account** — account info and subscriptions under `/account/`

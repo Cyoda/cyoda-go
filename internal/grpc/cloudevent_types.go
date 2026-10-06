@@ -75,4 +75,7 @@ const (
 	EntityStatsByStateResponse      = "EntityStatsByStateResponse"
 	EntityChangesMetadataGetRequest = "EntityChangesMetadataGetRequest"
 	EntityChangesMetadataResponse   = "EntityChangesMetadataResponse"
+
+	EntityConsistencyTimeGetRequest = "EntityConsistencyTimeGetRequest"
+	EntityConsistencyTimeResponse   = "EntityConsistencyTimeResponse"
 )

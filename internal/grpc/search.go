@@ -41,6 +41,9 @@ func (s *CloudEventsServiceImpl) EntitySearch(ctx context.Context, ce *cepb.Clou
 	case EntityGetRequest:
 		return s.handleEntityGetRequest(ctx, ce, payload)
 
+	case EntityConsistencyTimeGetRequest:
+		return s.handleConsistencyTimeGetRequest(ctx, ce, payload)
+
 	case EntitySnapshotSearchRequest:
 		return s.handleSnapshotSearchRequest(ctx, ce, payload)
 
@@ -126,6 +129,33 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntityResponse, resp)
+}
+
+// handleConsistencyTimeGetRequest answers the tenant's consistency time. The
+// request carries only the base event fields; the answer never depends on a
+// transaction.
+func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntityConsistencyTimeGetRequestJson
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	c, err := s.cons.Fresh(ctx)
+	if err != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeGetRequest, "ceId", ce.Id, "error", err.Error())
+		return consistencyTimeError(ctx, ce.Id, err)
+	}
+
+	diag := common.GetDiagnostics(ctx)
+	resp := events.EntityConsistencyTimeResponseJson{
+		ID:              ce.Id,
+		Success:         true,
+		Warnings:        diag.GetWarnings(),
+		RequestID:       ce.Id,
+		ConsistencyTime: &c,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeResponse, "ceId", ce.Id, "success", true)
+	return NewCloudEvent(EntityConsistencyTimeResponse, resp)
 }
 
 func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {

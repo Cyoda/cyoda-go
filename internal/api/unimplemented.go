@@ -57,6 +57,10 @@ func (u *Unimplemented) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
 	u.stub(w, r)
 }

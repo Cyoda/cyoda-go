@@ -663,6 +663,162 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntityConsistencyTimeGetRequestJson struct {
+	// Error details (if present).
+	Error *EntityConsistencyTimeGetRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeGetRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityConsistencyTimeGetRequestJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityConsistencyTimeGetRequestJsonError: required")
+	}
+	type Plain EntityConsistencyTimeGetRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeGetRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityConsistencyTimeGetRequestJson: required")
+	}
+	type Plain EntityConsistencyTimeGetRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeGetRequestJson(plain)
+	return nil
+}
+
+type EntityConsistencyTimeResponseJson struct {
+	// The consistency time of the caller's tenant: the instant up to which every save
+	// is final. Set when success is true.
+	ConsistencyTime *time.Time `json:"consistencyTime,omitempty" yaml:"consistencyTime,omitempty" mapstructure:"consistencyTime,omitempty"`
+
+	// Error details (if present).
+	Error *EntityConsistencyTimeResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the original request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityConsistencyTimeResponseJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityConsistencyTimeResponseJsonError: required")
+	}
+	type Plain EntityConsistencyTimeResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityConsistencyTimeResponseJson: required")
+	}
+	if _, ok := raw["requestId"]; raw != nil && !ok {
+		return fmt.Errorf("field requestId in EntityConsistencyTimeResponseJson: required")
+	}
+	type Plain EntityConsistencyTimeResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeResponseJson(plain)
+	return nil
+}
+
 type EntityCreateCollectionRequestJson struct {
 	// DataFormat corresponds to the JSON schema field "dataFormat".
 	DataFormat DataFormatJson `json:"dataFormat" yaml:"dataFormat" mapstructure:"dataFormat"`

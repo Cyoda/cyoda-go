@@ -1736,6 +1736,12 @@ type CancelAsyncSearchDto struct {
 // CancelAsyncSearchDtoCurrentSearchJobStatus defines model for CancelAsyncSearchDto.CurrentSearchJobStatus.
 type CancelAsyncSearchDtoCurrentSearchJobStatus string
 
+// ConsistencyTimeDto defines model for ConsistencyTimeDto.
+type ConsistencyTimeDto struct {
+	// ConsistencyTime The consistency time, at the store's full precision. Pass it unchanged as pointInTime.
+	ConsistencyTime time.Time `json:"consistencyTime"`
+}
+
 // CursorPaginationInfoDto defines model for CursorPaginationInfoDto.
 type CursorPaginationInfoDto struct {
 	// HasNext Indicates whether there are more results available
@@ -5327,6 +5333,9 @@ type ServerInterface interface {
 	// Reset M2M client secret
 	// (PUT /clients/{clientId}/secret)
 	ResetTechnicalUserSecret(w http.ResponseWriter, r *http.Request, clientId string)
+	// Get the consistency time
+	// (GET /entity/consistency-time)
+	GetConsistencyTime(w http.ResponseWriter, r *http.Request)
 	// Retrieve entity statistics
 	// (GET /entity/stats)
 	GetEntityStatistics(w http.ResponseWriter, r *http.Request, params GetEntityStatisticsParams)
@@ -5883,6 +5892,26 @@ func (siw *ServerInterfaceWrapper) ResetTechnicalUserSecret(w http.ResponseWrite
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.ResetTechnicalUserSecret(w, r, clientId)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetConsistencyTime operation middleware
+func (siw *ServerInterfaceWrapper) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConsistencyTime(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -9322,6 +9351,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/clients", wrapper.CreateTechnicalUser)
 	m.HandleFunc(http.MethodDelete+" "+options.BaseURL+"/clients/{clientId}", wrapper.DeleteTechnicalUser)
 	m.HandleFunc(http.MethodPut+" "+options.BaseURL+"/clients/{clientId}/secret", wrapper.ResetTechnicalUserSecret)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/consistency-time", wrapper.GetConsistencyTime)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats", wrapper.GetEntityStatistics)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states", wrapper.GetEntityStatisticsByState)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/entity/stats/states/{entityName}/{modelVersion}", wrapper.GetEntityStatisticsByStateForModel)
