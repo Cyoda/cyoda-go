@@ -327,10 +327,11 @@ Notes on the SQL:
   `search_jobs.point_in_time` is not a source, for the reason in §6.2.
 - The tenant key is the tenant's row in `consistency_tenant_keys`, allocated
   from `consistency_tenant_key_seq` (starts at 1; `CHECK (tenant_key > 0)`
-  states it in the schema), so never 0 and never the mutex's first half. Allocated keys are unique by construction, so two
-  tenants never share markers: one tenant's commit in its commit phase never
-  delays another tenant's `C` or shows it that tenant's commit timing. Rows are
-  never deleted. The table has the same row-level security policy as every
+  states it in the schema), so never 0 and never the mutex's first half.
+  Allocated keys are unique by construction, so two tenants never share
+  markers: one tenant's commit in its commit phase never delays another
+  tenant's `C` or shows it that tenant's commit timing. Rows are never
+  deleted. The table has the same row-level security policy as every
   tenant-scoped table; the lookup transaction sets `app.current_tenant`.
 - The in-flight marker `(tenant_key, xact_key)` is taken outside the
   guarded block (a block is a subtransaction; rolling it back would drop a
@@ -392,9 +393,9 @@ Notes on the SQL:
 
 **Go side:**
 
-- `stampCommitInstant` (`transaction_manager.go:405-502`) and
-  `stampOwnCommitInstant` (`entity_store.go:425-450`) call
-  `SELECT cyoda_stamp($tenant_key)` instead of `SELECT clock_timestamp()`. These
+- `stampCommitInstant` (`transaction_manager.go:403-503`) and
+  `stampOwnCommitInstant` (`entity_store.go:424-450`) call
+  `SELECT cyoda_stamp($1::int4)` instead of `SELECT clock_timestamp()`. These
   are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
   in the commit phase; the transaction rolls back) is classified as retryable
   `503 STORAGE_UNAVAILABLE`, like the existing idle-in-transaction abort
@@ -407,8 +408,8 @@ Notes on the SQL:
   builds (`tenantKeys`, `consistency_time.go`; `withTenantKeys`). It is
   resolved at `Begin`, before the transaction's connection is taken
   (`transaction_manager.go:146`); before a non-transactional save, delete or
-  compare-and-save opens its own transaction (`entity_store.go:118`, `:498`,
-  `:683`), each through the one helper that builds the in-transaction store
+  compare-and-save opens its own transaction (`entity_store.go:118`, `:490`,
+  `:687`), each through the one helper that builds the in-transaction store
   with the key (`inOwnTx`); and at the start of `ConsistencyTime`, on its own
   connection (`consistency_time.go:210`). On a miss it reads the row, inserts
   it with `ON CONFLICT (tenant_id) DO NOTHING` when absent, and reads it
@@ -418,22 +419,32 @@ Notes on the SQL:
   stamping transaction therefore never touches the table, and no lookup waits
   for a second connection while holding one. A failed lookup fails the
   operation.
-- `ConsistencyTime` runs `SELECT cyoda_consistency_time($tenant_key, $budget_ms)`
-  on its own pool connection, in autocommit, never on a transaction's
-  connection. `budget_ms` is 10 000, or the configured statement timeout when
-  that is above 0 and lower (`config.go:56`). Error mapping, in order, before
-  the generic classifier (`ceilings.go:194-197`): `ctx.Err() != nil` → that
-  error (a client cancel also arrives as `57014`); SQLSTATE `55P03` or `57014`
-  → `spi.ErrConsistencyTimeUnavailable`; the storage-unavailable
-  classification as today; anything else wrapped.
+- Every call of the two functions types its arguments (`$1::int4`,
+  `$2::bigint`). The plugin names the functions without a schema, and a role
+  that may create in their schema can add an overload with other argument
+  types; for an untyped parameter PostgreSQL would prefer, say, a `float8`
+  overload and run it with the plugin connection's rights, or find the call
+  ambiguous and fail every commit. With exact types the real function wins:
+  no other function in its schema can have its signature. More generally, no
+  untrusted role may have `CREATE` on a schema in the runtime role's
+  `search_path` (POSTGRES.md "Roles").
+- `ConsistencyTime` runs `SELECT cyoda_consistency_time($1::int4, $2::bigint)`
+  (the tenant key and the budget in milliseconds) on its own pool connection,
+  in autocommit, never on a transaction's connection. The budget is 10 000 ms,
+  or the configured statement timeout when that is above 0 and lower
+  (`config.go:56`). Error mapping, in order, before the generic classifier
+  (`ceilings.go:194-197`): `ctx.Err() != nil` → that error (a client cancel
+  also arrives as `57014`); SQLSTATE `55P03` or `57014` →
+  `spi.ErrConsistencyTimeUnavailable`; the storage-unavailable classification
+  as today; anything else wrapped.
 - When either function returns an error, the connection is closed instead of
   being returned to the pool, so no session-level lock can outlive the error.
 - **Design rule: nothing after the stamp waits on a lock.** Read-set
   validation (`FOR SHARE`) runs before the stamp
-  (`transaction_manager.go:271-294`). The statements after the stamp touch
+  (`transaction_manager.go:269-292`). The statements after the stamp touch
   only rows the transaction wrote, on both paths, with one exception: the
   `sm_audit_events` UPDATE matches by transaction label
-  (`transaction_manager.go:486-491`), which only this transaction's audit rows
+  (`transaction_manager.go:487-491`), which only this transaction's audit rows
   carry, so it cannot wait on another transaction. A fenced read made while the
   caller holds a transaction therefore cannot deadlock with the commits it
   waits for. A code comment at both stamp sites states the rule.
@@ -652,7 +663,7 @@ storage-unavailable error.
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
 | another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
 | tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a torn lookup `COMMIT` is retryable storage-unavailable on `Begin`, a non-transactional save and `ConsistencyTime`; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
-| a new non-owner role with exactly the documented grants allocates a tenant key, stamps and gets `C`, and cannot `setval`/`nextval`/read `cyoda_stamp_floor`; temporary objects named like the floor or `pg_locks` do not shadow them inside the functions; with `CREATE` on the schema, a planted `setval` or `*(bigint, interval)` never runs as the owner; the migration works in a non-public schema | | ✓ postgres | | | | | |
+| a new non-owner role with exactly the documented grants allocates a tenant key, stamps and gets `C`, and cannot `setval`/`nextval`/read `cyoda_stamp_floor`; temporary objects named like the floor or `pg_locks` do not shadow them inside the functions; with `CREATE` on the schema, a planted `setval` or `*(bigint, interval)` never runs as the owner; the migration works in a non-public schema; `float8`, `numeric` and `text` overloads of either function planted in its schema are never chosen by the plugin's typed calls on a commit, a non-transactional save or `ConsistencyTime` | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |

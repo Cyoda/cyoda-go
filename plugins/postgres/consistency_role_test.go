@@ -305,3 +305,105 @@ func TestConsistencyTimeMigration_RunsInANonPublicSchema(t *testing.T) {
 		t.Fatalf("the floor in %s (%d) is below the C returned (%d)", schema, floor, after.UnixMicro())
 	}
 }
+
+// The plugin calls cyoda_stamp and cyoda_consistency_time by unqualified name
+// on its own connection, which runs with the owner's rights. A role that may
+// create objects in the functions' schema (PostgreSQL 14's default for
+// public) can add an overload of either function, which is legal because the
+// signature differs. Unless the plugin's call names the argument types, an
+// overload whose type PostgreSQL prefers for an untyped parameter would be
+// chosen — and run with the plugin's rights — or make the call ambiguous or
+// unencodable, failing every commit. With typed calls the real functions are
+// exact matches, which no overload beats. Each case plants overloads of both
+// functions that make the planter SUPERUSER, record that they ran and return a
+// forged instant, then drives a transactional commit, a non-transactional
+// save and ConsistencyTime through the plugin on the owner's pool.
+func TestConsistencyTime_PlantedOverloadsAreNeverCalled(t *testing.T) {
+	for _, typ := range []string{"float8", "numeric", "text"} {
+		t.Run(typ, func(t *testing.T) {
+			owner, role, name := newDocumentedGrantsRole(t, `GRANT CREATE ON SCHEMA public`)
+			plant := fmt.Sprintf(`
+				CREATE TABLE public.ct_planted_calls (fn text);
+				GRANT INSERT ON public.ct_planted_calls TO PUBLIC;
+				CREATE FUNCTION public.cyoda_stamp(%[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
+				BEGIN
+				  INSERT INTO public.ct_planted_calls VALUES ('cyoda_stamp');
+				  EXECUTE 'ALTER ROLE %[2]s SUPERUSER';
+				  RETURN '1999-01-01T00:00:00Z';
+				END $f$;
+				CREATE FUNCTION public.cyoda_consistency_time(%[1]s, %[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
+				BEGIN
+				  INSERT INTO public.ct_planted_calls VALUES ('cyoda_consistency_time');
+				  EXECUTE 'ALTER ROLE %[2]s SUPERUSER';
+				  RETURN '2999-01-01T00:00:00Z';
+				END $f$;`, typ, pgx.Identifier{name}.Sanitize())
+			if _, err := role.Exec(context.Background(), plant); err != nil {
+				t.Fatalf("plant the overloads as the role: %v", err)
+			}
+
+			f := postgres.NewStoreFactory(owner)
+			f.InitTransactionManager(newTestUUIDGenerator())
+			ctx := ctxWithTenant(ctTenant)
+			tm := ctTM(t, f, ctx)
+			notPlanted := func(after string) {
+				t.Helper()
+				var calls int
+				var super bool
+				if err := owner.QueryRow(context.Background(),
+					`SELECT (SELECT count(*) FROM public.ct_planted_calls),
+					        (SELECT rolsuper FROM pg_roles WHERE rolname = $1)`, name).Scan(&calls, &super); err != nil {
+					t.Fatalf("read the planted calls: %v", err)
+				}
+				if calls != 0 || super {
+					t.Fatalf("after %s, a planted overload ran %d times with the plugin's rights (planter SUPERUSER: %v)",
+						after, calls, super)
+				}
+			}
+
+			before, err := tm.ConsistencyTime(ctx)
+			notPlanted("ConsistencyTime")
+			if err != nil {
+				t.Fatalf("ConsistencyTime: %v", err)
+			}
+			txID, err := commitOneEntityErr(t, f, ctx)
+			notPlanted("a transactional commit")
+			if err != nil {
+				t.Fatalf("transactional Commit: %v", err)
+			}
+			submit, err := tm.GetSubmitTime(ctx, txID)
+			if err != nil {
+				t.Fatalf("GetSubmitTime: %v", err)
+			}
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			id := uuid.NewString()
+			if _, err := es.Save(ctx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+			}); err != nil {
+				notPlanted("a non-transactional save")
+				t.Fatalf("non-transactional Save: %v", err)
+			}
+			notPlanted("a non-transactional save")
+			var saved time.Time
+			if err := owner.QueryRow(context.Background(),
+				`SELECT transaction_time FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2`,
+				string(ctTenant), id).Scan(&saved); err != nil {
+				t.Fatalf("read the save's stamp: %v", err)
+			}
+			after, err := tm.ConsistencyTime(ctx)
+			notPlanted("the second ConsistencyTime")
+			if err != nil {
+				t.Fatalf("second ConsistencyTime: %v", err)
+			}
+			if !submit.After(before) || !saved.After(submit) || after.Before(saved) {
+				t.Fatalf("stamps and consistency times out of order: C %v, commit %v, save %v, C %v",
+					before, submit, saved, after)
+			}
+			if after.After(time.Now().Add(time.Hour)) {
+				t.Fatalf("C %v is not a real consistency time", after)
+			}
+		})
+	}
+}

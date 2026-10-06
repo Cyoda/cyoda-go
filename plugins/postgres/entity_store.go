@@ -427,8 +427,9 @@ func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID s
 	// floor (see stampCommitInstant). Nothing after this statement waits on a
 	// lock: the two UPDATEs below address by primary key rows this transaction
 	// already wrote and locks. s.markerKey was resolved before this
-	// transaction began (see the keys field).
-	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1)`, s.markerKey).Scan(&instant); err != nil {
+	// transaction began (see the keys field). The argument is typed for the
+	// reason given at stampCommitInstant's call.
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::int4)`, s.markerKey).Scan(&instant); err != nil {
 		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,

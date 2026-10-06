@@ -408,8 +408,11 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	// sm_audit_events UPDATE matches this transaction's own label; see its
 	// comment), so a consistency-time call waiting on the marker cannot
 	// deadlock with it. markerKey was resolved at Begin, outside this
-	// transaction (see tenantKeys).
-	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1)", markerKey).Scan(&instant); err != nil {
+	// transaction (see tenantKeys). The argument is typed, as at every call
+	// of the two functions: an untyped one would let an overload another role
+	// created in the functions' schema be chosen and run with this
+	// connection's rights (see cyoda_consistency_time's call).
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::int4)", markerKey).Scan(&instant); err != nil {
 		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)

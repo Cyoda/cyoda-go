@@ -215,7 +215,14 @@ func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, e
 
 	budget := tm.waitBudgetMillis()
 	var c time.Time
-	qerr := conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1, $2)`, key, budget).Scan(&c)
+	// Both arguments are typed, as at both cyoda_stamp calls. The plugin
+	// names its functions without a schema, and a role that may create in
+	// their schema can add an overload with other argument types. For an
+	// untyped parameter PostgreSQL would prefer such an overload (float8,
+	// say) and run it with this connection's rights, or find the call
+	// ambiguous; with exact types the real function wins, since no other
+	// function in the schema can have its signature.
+	qerr := conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1::int4, $2::bigint)`, key, budget).Scan(&c)
 	if qerr == nil {
 		conn.Release()
 		return c, nil

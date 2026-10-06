@@ -180,7 +180,14 @@ along the clock (`cyoda_stamp` to `max(clock, floor + 1)`,
 `search_path` of exactly `pg_catalog, pg_temp`, and name the floor sequence
 with the schema the migration ran in, so no object another role creates — in
 a writable schema such as `public` on PostgreSQL 14, or in its temporary
-schema — can be called in their place with their owner's privileges.
+schema — can be called in their place with their owner's privileges. The
+plugin's own calls of the two functions give exact argument types, so an
+overload with other types cannot be chosen in their place either. Beyond
+these two functions the plugin names its tables, sequences and functions
+without a schema, so no untrusted role may have `CREATE` on any schema in the
+runtime role's `search_path`: PostgreSQL 15 and later already revoke
+`CREATE` on `public` from `PUBLIC`; on PostgreSQL 14, revoke it
+(`REVOKE CREATE ON SCHEMA public FROM PUBLIC`).
 
 **Replicas.** With asynchronous replicas, a failover to a host whose clock is
 behind can stamp below a consistency time already returned — the same
