@@ -423,8 +423,9 @@ while may be dropped; that costs one extra store call.
   called; otherwise start a new one at once, which every later caller then
   shares. At most two calls are in flight per tenant. When both are older
   than a `Fresh`, it waits for the oldest one's remaining time and then for
-  one call that started after it entered; a `Fence` adds the in-flight call
-  it joined first.
+  one call that started after it entered. A `Fence` first waits for the
+  in-flight call it joined, so its bound is the joined call's remaining time
+  plus one call.
 - **The store call** runs on `context.WithoutCancel(ctx)` (keeps the tenant)
   with a deadline of the store's budget plus a margin of 1 s (11 s), so one
   caller's cancel does not fail the others; sqlite's gate wait obeys the same
@@ -434,8 +435,10 @@ while may be dropped; that costs one extra store call.
   POINT_IN_TIME_AFTER_CONSISTENCY_TIME, …)` with `Props["consistencyTime"]`
   and `C` in the message; `spi.ErrConsistencyTimeUnavailable` →
   `Operational(503, CONSISTENCY_TIME_UNAVAILABLE).AsRetryable()`; the caller's
-  own context error → as today for a cancelled request; anything else →
-  `common.Internal` (which maps the storage-unavailable marker).
+  own context error → as today for a cancelled request; a store call past its
+  own deadline (`context.DeadlineExceeded`) → the same retryable
+  `503 CONSISTENCY_TIME_UNAVAILABLE`; anything else → `common.Internal` (which
+  maps the storage-unavailable marker).
 
 **Wiring:** one instance, built in `app/app.go` from the transaction manager
 after the tracing wrapper (which forwards `ConsistencyTime`). It is a

@@ -442,7 +442,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	versions := s.factory.entityData[tid][eid]
 	nextVersion := lastVersion(versions) + 1
 
-	// Stamped under the monotonic floor a commit uses (nextSubmitTime), not
+	// Stamped under the non-decreasing floor a commit uses (nextSubmitTime), not
 	// the raw clock: the floor can stand ahead of the clock, and Begin floors
 	// a new transaction's SnapshotTime to it, so a raw-clock stamp could land
 	// at or below a snapshot already open.
@@ -672,7 +672,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	attributed, executor := spi.AttributionFor(ctx)
 	// latest.deleted was already checked false above, so latest.entity is
 	// guaranteed non-nil here.
-	// Stamped under the monotonic floor — see saveUnlocked.
+	// Stamped under the non-decreasing floor — see saveUnlocked.
 	deletedAt := s.factory.txManager.nextSubmitTime()
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:         nil,
@@ -760,7 +760,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	// Stamped under the monotonic floor — see saveUnlocked. One stamp for the
+	// Stamped under the non-decreasing floor — see saveUnlocked. One stamp for the
 	// whole sweep: a non-transactional DeleteAll is a single write.
 	now := s.factory.txManager.nextSubmitTime()
 	attributed, executor := spi.AttributionFor(ctx)

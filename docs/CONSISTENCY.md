@@ -63,38 +63,53 @@ A caller-supplied timestamp is never honoured: these values belong to the
 store, and a value set on an entity before `Save` is ignored.
 
 The consequence for readers is what makes this a consistency property
-rather than bookkeeping:
+rather than bookkeeping. A point-in-time read at instant T is only stable
+if no transaction can still commit with an instant at or before T. Dating
+at transaction *start* — which is what PostgreSQL's `CURRENT_TIMESTAMP`
+gives — would make that unavailable at any distance: a read at an instant
+between a transaction's start and its commit misses its writes, and the same
+read after the commit finds them. Dating at commit narrows the window to the
+commit itself; the consistency time closes it.
 
-> **A point-in-time read at instant T is stable once every transaction
-> that started before T has finished.** Until then a transaction still in
-> flight may yet commit with an instant at or before T and change the
-> answer.
+**The consistency time.** The store returns a **consistency time** `C` for a
+tenant (`TransactionManager.ConsistencyTime`, `GET /entity/consistency-time`):
 
-Dating at transaction *start* — which is what PostgreSQL's
-`CURRENT_TIMESTAMP` gives, and what the postgres plugin used to do — makes
-that property unavailable at any distance: a read at an instant between a
-transaction's start and its commit misses its writes, and the same read
-after the commit finds them. Two reads at the same instant disagree, and
-the past changes after it has been served. The window was the
-transaction's whole lifetime, which spans processor callouts and
-client-held transactions.
+1. **Complete.** Every save of any tenant whose success was returned, on any
+   node, before the request for `C` started has a stamp `<= C`.
+2. **Final.** A read for the requesting tenant at `T <= C` that starts after
+   `C` was returned sees every save of that tenant stamped `<= T`, and always
+   will. A save not yet stamped when `C` is returned is stamped `> C`.
+3. **Monotonic.** Every `C` returned is `>=` every `C` returned before its
+   request started, on any node, also across a restart.
+4. **Read resolution.** `C` covers the store's read unit; it is never rounded
+   up when rendered.
 
-**What this does not close.** Reading the clock immediately before
-`COMMIT` is not the commit's linearization point. A transaction that takes
-its instant at `T_a` and then blocks inside `COMMIT` can be overtaken by
-one taking `T_b > T_a`, so a read at an instant between them is served
-without the first write and gains it afterwards. The window shrinks from
-the transaction's lifetime to the commit itself. memory and sqlite avoid
-even that, structurally, by holding a global gate from stamp to publish;
-postgres cannot without serialising every commit. The commercial Cassandra
-backend documents the same residue for its own mechanism: per
-`docs/CASSANDRA_CONSISTENCY_AND_PIT.md` §2, its only remaining
-point-in-time ambiguity requires an instant at or near *now* together with
-a transaction flipping to COMMITTED mid-read, and any genuinely historical
-instant is excluded everywhere. Closing it needs a consistency
-horizon — a read at an instant later than the earliest in-flight
-transaction's start either waits or fails — which is tracked separately
-and deliberately not scheduled.
+Every backend does the same two steps: **reserve, then wait.** Raise the
+shared stamp floor to `C = max(store clock, highest stamp issued)`, so every
+later save stamps above `C`; then wait until every save of the tenant that
+already holds a stamp `<= C` has finished committing or has aborted.
+
+- **memory** needs no wait: a writer holds the entity lock from stamp to
+  publish and every reader takes it.
+- **sqlite** readers do not take the commit gate; `ConsistencyTime` does. It
+  waits for a commit in flight to pass `COMMIT`, reserves `C`, and keeps a
+  durable high-water mark above it so a restart whose wall clock stepped back
+  cannot return an earlier `C`.
+- **postgres** stamps every commit through `cyoda_stamp` (a shared floor
+  sequence under a short mutex) and marks the commit in flight with an
+  advisory lock until its rows are visible; `cyoda_consistency_time` reserves
+  `C` and waits on the tenant's markers. See
+  [plugins/POSTGRES.md](plugins/POSTGRES.md).
+
+A wait that exceeds the store's budget fails with
+`ErrConsistencyTimeUnavailable`; the store never returns a guessed instant.
+
+**What the engine does with it.** A read with a `pointInTime` later than `C`
+is refused (`400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`), so a point-in-time
+answer is final. A read without `pointInTime` reads the current state; an
+async search submitted without one records a fresh `C` on the job. The
+change history reads committed data only, inside a transaction too. See
+`cyoda help crud` ("Point-in-time semantics").
 
 ## 2. What this contract catches
 

@@ -1011,6 +1011,7 @@ paths:
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
             '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1037,6 +1038,7 @@ paths:
             Bad Request - Invalid parameters; `properties.errorCode` carries the domain
             code. A request sending `X-Tx-Token` more than once is refused here, as is one
             whose body cannot be read.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1068,6 +1070,7 @@ paths:
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
             '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1131,7 +1134,8 @@ paths:
                   state: CANCELLED
                   count: 23452345
         "400":
-          description: Bad request — states filter exceeds maximum cardinality
+          description: Bad request — states filter exceeds maximum cardinality.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1179,6 +1183,7 @@ paths:
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
             '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1243,7 +1248,8 @@ paths:
                       entityName: submarine
                       entityVersion: 1
         "400":
-          description: Bad request — states filter exceeds maximum cardinality
+          description: Bad request — states filter exceeds maximum cardinality.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1288,6 +1294,7 @@ paths:
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
             '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1309,6 +1316,7 @@ paths:
             Bad Request - Invalid parameters; `properties.errorCode` carries the domain
             code. A request sending `X-Tx-Token` more than once is refused here, as is one
             whose body cannot be read.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1457,6 +1465,7 @@ paths:
             (`INVALID_FIELD_PATH`), a `condition` value type incompatible with
             the field's locked DataType (`CONDITION_TYPE_MISMATCH`), or an
             otherwise invalid Condition DSL predicate (`INVALID_CONDITION`).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1522,6 +1531,7 @@ paths:
           in: query
           description: The point-in-time for loading the entity, in ISO 8601 format (e.g.,
             '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1576,7 +1586,8 @@ paths:
                       transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
           description: Conflicting request paramters (both pointInTime and transactionId
-            provided)
+            provided).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1777,6 +1788,7 @@ paths:
           description: The point-in-time for loading the entity changes, in ISO 8601
             format (e.g., '2035-01-01T12:00:00Z'). Absent means the current
             committed state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1812,7 +1824,8 @@ paths:
                       changeType: CREATE
                       fieldsChangedCount: 5
         "400":
-          description: Invalid UUID format
+          description: Invalid UUID format.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1889,6 +1902,7 @@ paths:
           in: query
           description: Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339).
             Mutually exclusive with transactionId.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -1919,7 +1933,8 @@ paths:
         "400":
           description: Bad request — invalid entityId, mutually exclusive parameters
             supplied, invalid format, or the workflow selection criterion could not
-            be evaluated (WORKFLOW_FAILED)
+            be evaluated (WORKFLOW_FAILED).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -1958,7 +1973,8 @@ paths:
             needs a compute member for its tags and none is connected, or the storage
             layer could not serve the request — no connection available within the
             acquire timeout, the transaction was reclaimed by the idle-in-transaction
-            ceiling, or the connection was lost.
+            ceiling, or the connection was lost, or the store could not certify the
+            consistency time within its wait budget (CONSISTENCY_TIME_UNAVAILABLE).
           content:
             application/problem+json:
               schema:
@@ -2046,6 +2062,7 @@ paths:
           description: The point-in-time for loading the entities, in ISO 8601 format
             (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed
             state.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -2119,7 +2136,8 @@ paths:
                         creationDate: "2025-03-30T15:30:24.243Z"
                         lastUpdateTime: "2025-03-30T15:30:24.243Z"
         "400":
-          description: Invalid request parameters
+          description: Invalid request parameters.
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -2226,6 +2244,7 @@ paths:
             rows. Absent means the current committed state. An entity
             selected at the instant but already gone is reported in
             idToError.
+            Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
@@ -2309,6 +2328,7 @@ paths:
           description: >-
             Invalid request. Returned for a malformed condition body
             (`INVALID_CONDITION`) or an invalid model name (e.g., name too long).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -7113,7 +7133,9 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for the report, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state. "
+            '2035-01-01T12:00:00Z'). Absent: the consistency time at submission.
+            Must be at or before the consistency time (GET /entity/consistency-time);
+            a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME."
           required: false
           schema:
             type: string
@@ -7154,7 +7176,8 @@ paths:
                 type: string
                 format: uuid
         "400":
-          description: Invalid search criteria (malformed condition, type mismatch, unknown field path)
+          description: Invalid search criteria (malformed condition, type mismatch, unknown field path).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -7178,12 +7201,14 @@ paths:
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "503":
           description: >
-            Service temporarily unavailable. Retryable. Two distinct causes
+            Service temporarily unavailable. Retryable. Three distinct causes
             share this status: the storage layer could not serve the
             request (no connection within the acquire timeout, an
-            idle-in-transaction reclaim, or a lost connection), or the
+            idle-in-transaction reclaim, or a lost connection), the
             async-search worker pool's submit queue is full (bounded by
-            CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE).
+            CYODA_SEARCH_ASYNC_WORKERS / CYODA_SEARCH_ASYNC_QUEUE), or the
+            store could not certify the consistency time within its wait budget
+            (CONSISTENCY_TIME_UNAVAILABLE).
           content:
             application/problem+json:
               schema:
@@ -7235,7 +7260,6 @@ paths:
 
         - Zero-based page numbering
 
-        - Optional point-in-time specification for the data being retrieved
       operationId: getAsyncSearchResults
       parameters:
         - name: jobId
@@ -7497,7 +7521,9 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for searching the entities, in ISO 8601 format.
-            Absent means the current committed state. "
+            Absent means the current committed state. Must be at or before the
+            consistency time (GET /entity/consistency-time); a later instant is
+            refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME."
           required: false
           schema:
             type: string
@@ -7576,7 +7602,8 @@ paths:
                 items:
                   $ref: "#/components/schemas/EntityResultDto"
         "400":
-          description: Invalid search parameters (e.g. limit exceeds 10000)
+          description: Invalid search parameters (e.g. limit exceeds 10000).
+            A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
               schema:
@@ -11227,7 +11254,9 @@ components:
           format: date-time
           description: >-
             Optional point-in-time for the query in ISO 8601 / RFC 3339
-            format. Absent means the current committed state.
+            format. Absent means the current committed state. Must be at or
+            before the consistency time (GET /entity/consistency-time); a later
+            instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           example: 2035-01-01T12:00:00Z
         limit:
           type: integer

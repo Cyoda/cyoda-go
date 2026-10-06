@@ -505,8 +505,8 @@ type EntityChangesMetadataGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity changes. If not provided, retrieves all
-	// changes up to the current consistency time.
+	// Point in time to retrieve the entity changes. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1291,7 +1291,8 @@ type EntityDeleteAllRequestJson struct {
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
-	// point in time, i.e. delete all that existed prior to this point in time
+	// Point in time, i.e. delete all that existed at this point in time. Must be at
+	// or before the consistency time. If not provided, the current state is used.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1874,7 +1875,8 @@ type EntityGetAllRequestJson struct {
 	// Page size.
 	PageSize int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1962,8 +1964,8 @@ type EntityGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity. If not provided, retrieves the entity at
-	// the current consistency time.
+	// Point in time to retrieve the entity. Must be at or before the consistency
+	// time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3325,7 +3327,8 @@ type EntitySearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3500,7 +3503,8 @@ type EntitySnapshotSearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySnapshotSearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// consistency time at submission.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3736,8 +3740,8 @@ type EntityStatsByStateGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Optional list of states for which to calculate statistics. If not provided,
@@ -3923,8 +3927,8 @@ type EntityStatsGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.

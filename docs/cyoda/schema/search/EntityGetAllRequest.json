@@ -26,7 +26,7 @@
     "pointInTime": {
       "type": "string",
       "format": "date-time",
-      "description": "point in time"
+      "description": "Point in time. Must be at or before the consistency time. If not provided, the current state is read."
     }
   },
   "required": [

@@ -64,8 +64,9 @@ Full transaction-lifecycle implementation
   `txID → pgx.Tx` map — the single source of truth for active
   transactions on a node.
 - **Commit-instant stamping:** immediately before `COMMIT` — after
-  read-set validation — the TM reads `clock_timestamp()` once and applies
-  that single instant to every row the transaction wrote, by narrow-column
+  read-set validation — the TM takes one instant from `cyoda_stamp` (see
+  "Consistency time and commit stamping") and applies it to every row the
+  transaction wrote, by narrow-column
   `UPDATE`s over `entity_versions`, `entities` and the audit events
   labelled with the transaction. `CURRENT_TIMESTAMP` is fixed at
   transaction *start*, so it dated a write when the transaction opened
@@ -111,6 +112,54 @@ Consequences:
   request rather than trying to rehydrate the handle locally.
 - The `txRegistry` (`sync.RWMutex`-protected `map[string]pgx.Tx`) is
   the single source of truth for active transactions on a node.
+
+### Consistency time and commit stamping
+
+Migration `000016_consistency_time` adds a sequence and two functions. The
+contract they implement is `docs/CONSISTENCY.md` §1a.
+
+- `cyoda_stamp_floor` — a `bigint` sequence holding the highest stamp or
+  consistency time issued, in microseconds since the epoch. The migration
+  sets it to the highest instant already stored in `entity_versions`,
+  `submit_times` and `search_jobs`.
+- `cyoda_stamp(tenant)` — called once per commit, at the top level of the
+  commit transaction, by `stampCommitInstant` and `stampOwnCommitInstant` in
+  place of `clock_timestamp()`. It returns `max(clock, floor + 1)` and moves
+  the floor there, so no two commits share a stamp and stamps never go back.
+  It also takes a transaction-level advisory lock `(hashtext(tenant),
+  xact_key)` — the commit's in-flight marker — held until the transaction
+  ends, after its rows are visible.
+- `cyoda_consistency_time(tenant, wait_budget_ms)` — raises the floor to
+  `C = max(clock, floor)` so every later stamp is above `C`, then takes and
+  releases a shared lock on each of the tenant's in-flight markers, waiting
+  for those commits to end. The call runs on its own pool connection in
+  autocommit, never on a transaction's connection. The wait budget is 10 s,
+  or `CYODA_POSTGRES_STATEMENT_TIMEOUT` when that is above 0 and lower; a
+  budget that runs out (`55P03` or `57014`) is `ErrConsistencyTimeUnavailable`.
+
+Advisory keys use the two-int form (`objsubid = 2`), which nothing else in the
+plugin uses (the scheduler and the migrator use the one-bigint form):
+`(0, 0)` is the floor mutex, held for microseconds; `(hashtext(tenant), n)`
+with `n` in `1..2^31-1` is a commit marker. A hash collision between two
+tenants only adds waiting.
+
+**Commit-phase limits.** Inside `cyoda_stamp`, `lock_timeout` is 2 s, so a
+commit that cannot get the floor mutex fails with `55P03`, rolls back, and is
+a retryable `503 STORAGE_UNAVAILABLE`. The function also lowers
+`idle_in_transaction_session_timeout` to at most 5 s for the rest of the
+transaction: a pause of more than 5 s between the stamp and `COMMIT` aborts
+the commit. Nothing after the stamp waits on a lock except rows the
+transaction itself wrote, so a fenced read made while the caller holds a
+transaction cannot deadlock with the commits it waits for.
+
+**Roles.** The plugin connects as the owner of these objects. A non-owner role
+needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `USAGE` on the schema, and
+`EXECUTE` on both functions (granted to `PUBLIC` by default).
+
+**Replicas.** With asynchronous replicas, a failover to a host whose clock is
+behind can stamp below a consistency time already returned — the same
+exposure as losing commits on an asynchronous failover. Each
+`cyoda_consistency_time` call commits its floor update durably.
 
 ## Scheduled tasks and the scheduler pool
 
@@ -291,7 +340,6 @@ A single-entity as-at read probes the version chain:
 SELECT doc, creation_date, transaction_time FROM entity_versions
 WHERE tenant_id = $1 AND entity_id = $2
   AND valid_time <= $3
-  AND transaction_time <= CURRENT_TIMESTAMP
 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 LIMIT 1;
 ```
@@ -457,8 +505,13 @@ Options:
   for pooler compatibility.
 
 cyoda uses transaction-scoped `set_config(..., true)` for RLS
-(tenant isolation) only — no session-level state fights PgBouncer
-transaction mode beyond the prepared-statement cache.
+(tenant isolation) and for the commit-phase limits in `cyoda_stamp` — no
+session-level state fights PgBouncer transaction mode beyond the
+prepared-statement cache. The one session-level lock is the floor mutex
+`(0, 0)` taken inside `cyoda_stamp` and `cyoda_consistency_time`, for
+microseconds. It cannot leak: it is taken in a guarded block that releases it
+on every exit, including a cancel, and a connection on which either function
+returned an error is closed instead of going back to the pool.
 
 ## Operational notes and limits
 

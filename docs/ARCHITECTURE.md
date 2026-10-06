@@ -1475,8 +1475,8 @@ carry RLS policies enforcing tenant isolation.
 **Design principles (DD-10, DD-11, DD-12):** results tables store entity
 IDs only, never entity data (re-fetched from the entity store on read, so
 it can never go stale between search and read); `pointInTime` is always
-populated on `SearchJob`, defaulting to `time.Now()`, so repeated reads at
-the same point in time are deterministic; TTL-based cleanup is implemented
+populated on `SearchJob`, defaulting to the consistency time at submission
+(§4.7), so repeated reads at the same point in time are deterministic; TTL-based cleanup is implemented
 uniformly by every plugin.
 
 ### 4.7 Paged Entity Listing and History Reads
@@ -1512,7 +1512,8 @@ full-history-with-payloads `GetVersionHistory` (removed, pre-1.0, no shim):
 - `GetVersionMetadata(ctx, entityID, opts)` returns metadata only (no
   entity payload) for one entity's version history, newest first, tied
   broken by version number descending — backing
-  `GET /entity/{entityId}/changes` and the audit-event search's window.
+  `GET /entity/{entityId}/changes` and the audit-event search's window. It
+  reads committed data only, inside a transaction too, on every backend.
   `opts.Limit == 0` means "all", a deliberate divergence from `GetPage`'s
   `limit >= 1` requirement: this read is bounded by one entity's own
   history, never a model-wide scan. `Deleted` is canonical (derived from
@@ -1524,6 +1525,21 @@ full-history-with-payloads `GetVersionHistory` (removed, pre-1.0, no shim):
 Both reads push their filtering into the store where possible: postgres and
 sqlite match `GetVersionByTransaction` in SQL over the entity's own
 versions; memory maintains a per-entity transaction index.
+
+**Consistency time.** `spi.TransactionManager.ConsistencyTime` returns, for
+the caller's tenant, an instant `C` such that every save confirmed before the
+call is stamped at or before `C`, a read at or before `C` is final, and no
+`C` is below an earlier one on any node (contract: `docs/CONSISTENCY.md`
+§1a). `internal/domain/consistency` wraps it as `Fence(t)` and `Fresh()`:
+every point-in-time read calls `Fence`, which passes `t <= C` and otherwise
+refuses with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; async submit without
+a `pointInTime` calls `Fresh` and records the result on the job. A tenant's
+highest `C` seen is cached per node, and concurrent callers share at most two
+store calls in flight, so a commit held in its commit phase cannot drain the
+connection pool; a store call that cannot certify `C` in its budget answers
+`503 CONSISTENCY_TIME_UNAVAILABLE`. Reads without a `pointInTime` read the
+current state and do not involve `C`. `GET /entity/consistency-time` and
+`EntityConsistencyTimeGetRequest` expose `C` over HTTP and gRPC.
 
 ### 4.8 Scheduled Transitions
 
@@ -1824,7 +1840,7 @@ When the member responds, the streaming handler matches the response's `requestI
 
 **Model management:** `EntityModelImportRequest/Response`, `EntityModelExportRequest/Response`, `EntityModelTransitionRequest/Response`, `EntityModelDeleteRequest/Response`, `EntityModelGetAllRequest/Response`, `EntityModelSetUniqueKeysRequest/Response`
 
-**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`
+**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntityConsistencyTimeGetRequest/EntityConsistencyTimeResponse`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`
 
 **Snapshot lifecycle (no dedicated response CloudEvent type):**
 `SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`
@@ -2471,9 +2487,9 @@ Capabilities this document's design implies but the system does not provide. Eac
 
 **Context:** Whether `pointInTime` should be optional on search jobs.
 
-**Decision:** Always populated. If the client does not supply one, the service uses `time.Now()`.
+**Decision:** Always populated. If the client does not supply one, the service takes a fresh consistency time (§4.7) from the store; a supplied one must be at or before it.
 
-**Rationale:** Ensures search results are deterministic. Repeated reads at the same `pointInTime` return the same set. Eliminates an entire class of bugs around "what time was this search as of?"
+**Rationale:** Ensures search results are deterministic and final: a consistency time includes every save already confirmed, and no later save can be dated at or before it. Repeated reads at the same `pointInTime` return the same set. Eliminates an entire class of bugs around "what time was this search as of?"
 
 ### DD-12: TTL-Based Cleanup in Every Plugin
 
@@ -2554,7 +2570,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | **Read-your-own-writes** | Strong (within a transaction) | Guaranteed by `pgx.Tx` — all reads within a transaction see its own buffered writes. Across transactions, reads are snapshot-isolated. |
 | **Snapshot isolation** | Strong (SI+FCW across all plugins; see §3.7 and [docs/CONSISTENCY.md](CONSISTENCY.md)) | Commit-time conflict detection may abort with `ErrConflict` (40001 / 40P01 on PostgreSQL). The application retries. Under high contention, retry storms are possible. |
 | **Cross-node consistency** | Strong (PG is the authority) | All nodes share the same PG instance. There is no eventual consistency between nodes — they all see the same data at the same isolation level. Cluster membership and the per-node compute-tag lists are eventually consistent with sub-second convergence. |
-| **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. A revision is dated at its transaction's commit instant, so a read at an instant is stable once every transaction that started before it has finished; a read taken *while* a transaction commits can still change (`docs/CONSISTENCY.md` §1a). Resolution is bounded by PG clock precision (microsecond). |
+| **Temporal consistency** | Strong (point-in-time queries) | `GetAsAt` returns the entity as it was at a specific timestamp. A revision is dated at its transaction's commit instant, and a point-in-time read is refused unless its instant is at or before the consistency time, so every answer is final (§4.7, `docs/CONSISTENCY.md` §1a). Resolution is bounded by PG clock precision (microsecond). |
 | **Commit ambiguity** | **Gap** (§12) | If the network partitions between Node A and PG at COMMIT time, Node A cannot determine whether PG committed or not. The client may see a false failure for a transaction that actually committed. |
 | **Idempotency** | **Gap** (§12) | Client retries after timeout may create duplicate entities. There is no built-in idempotency key mechanism; clients must handle deduplication at the application level. |
 

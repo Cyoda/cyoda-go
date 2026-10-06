@@ -9,7 +9,7 @@ import (
 )
 
 // A direct (non-transactional) write must stamp its submit time under the
-// same monotonic floor a commit uses, exactly as the sqlite plugin does.
+// same non-decreasing floor a commit uses, exactly as the sqlite plugin does.
 // Under a frozen clock — which the conformance and parity suites use — a
 // direct write that stamped the raw clock value would land AT the snapshot
 // of a transaction already open, and that transaction's snapshot read would
@@ -32,7 +32,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	}
 
 	// Stand in for a write that already stamped this instant, so the
-	// monotonic floor stands at the frozen clock value — the state any
+	// non-decreasing floor stands at the frozen clock value — the state any
 	// system that has done work is in. (From a floor of zero the first
 	// stamp is simply the clock value, and there is nothing to order it
 	// against.)
@@ -87,7 +87,7 @@ func TestDirectSave_StampsAboveAnOpenSnapshot(t *testing.T) {
 	}
 }
 
-// Begin does not merely read the monotonic floor, it RESERVES its snapshot
+// Begin does not merely read the non-decreasing floor, it RESERVES its snapshot
 // time as the new floor. Flooring alone leaves the first transaction on a
 // quiet factory unprotected: with the floor still at zero the snapshot is the
 // raw clock value, and the next write stamps max(now, floor+1µs) — the same

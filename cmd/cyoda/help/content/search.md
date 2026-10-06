@@ -12,6 +12,8 @@ see_also:
   - errors.SEARCH_RESULT_LIMIT
   - errors.SEARCH_SHARD_TIMEOUT
   - errors.SEARCH_QUEUE_FULL
+  - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+  - errors.CONSISTENCY_TIME_UNAVAILABLE
   - errors.INVALID_FIELD_PATH
   - errors.CONDITION_TYPE_MISMATCH
   - errors.INVALID_CONDITION
@@ -210,8 +212,9 @@ When used as a criterion, the function is dispatched as `EntityCriteriaCalculati
 - `entityName` (path): string
 - `modelVersion` (path): int32
 - `pointInTime` (query, optional): RFC 3339 date-time — search against entity state at this instant.
-  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound —
-  see `cyoda help crud` ("Point-in-time semantics").
+  Point-in-time search uses the canonical inclusive (`<=`, no rounding) bound,
+  and the instant must be at or before the consistency time — see
+  `cyoda help crud` ("Point-in-time semantics").
 - `limit` (query, optional): string-encoded integer, minimum 1, maximum 10000; default 1000
 - `trackingRead` (query, optional): boolean, default `false`. Only meaningful inside an active transaction (see `crud` topic and `docs/CONSISTENCY.md` §3c for the transactional read-set): when `true`, the entities this search returns are recorded into the transaction's read-set, so a concurrent commit touching any of them aborts with `409 Conflict` at commit time. When `false` (default), the search is a plain snapshot read that records nothing — cheap, but it does not protect the returned rows from concurrent writes, and neither setting protects against phantoms (a new entity matching the predicate after the snapshot was taken). Ignored outside a transaction.
 - `timeoutMillis` (query, optional): int64, no default — when absent, the search has no server-side deadline. When present, the search is aborted once it elapses and the request fails `408 errors.SEARCH_TIMEOUT` with no partial results returned. Rejected with `400 BAD_REQUEST` on a non-positive value or on a request that joins an open transaction (a routed compute-node callback cannot impose its own deadline on a transaction it does not own).
@@ -233,7 +236,7 @@ The stream is truncated on encode failure after the header has been sent; the cl
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
-- `pointInTime` (query, optional): RFC 3339 — if not provided, the current time is captured at submission
+- `pointInTime` (query, optional): RFC 3339 — if not provided, the consistency time at submission is used; a given instant must be at or before the consistency time. Either way the instant is recorded on the job, so every result page reads at it
 
 Request body: `Condition` JSON document.
 
@@ -381,6 +384,8 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
 - `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
+- `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time (direct search, and async submit with a `pointInTime`); `properties.consistencyTime` carries the current one
+- `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time (a direct search with a `pointInTime`, or an async submit)
 - `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — condition value type is incompatible with the target field's locked DataType, e.g. an operand that parses into no temporal form on a temporal meta field (`creationDate`/`lastUpdateTime`); a string or pattern operator on one of those fields is `INVALID_CONDITION` instead, see **LifecycleCondition** above
 - `errors.INVALID_CONDITION` — `400` — a condition fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a malformed `LIKE`/`MATCHES_PATTERN` operand, a string or pattern operator on a temporal meta field, an `array` clause on a bare path or with a badly-shaped `values` entry, or a `function` clause at any depth (criteria only — see `predicates`)
@@ -481,6 +486,8 @@ curl -s -X PUT \
 - errors.SEARCH_RESULT_LIMIT
 - errors.SEARCH_SHARD_TIMEOUT
 - errors.SEARCH_QUEUE_FULL
+- errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+- errors.CONSISTENCY_TIME_UNAVAILABLE
 - errors.INVALID_FIELD_PATH
 - errors.CONDITION_TYPE_MISMATCH
 - errors.INVALID_CONDITION

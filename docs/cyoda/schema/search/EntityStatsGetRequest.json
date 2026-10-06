@@ -12,7 +12,7 @@
     "pointInTime": {
       "type": "string",
       "format": "date-time",
-      "description": "The point-in-time for statistics in ISO 8601 format. Defaults to current consistency time if not provided."
+      "description": "The point-in-time for statistics in ISO 8601 format. Must be at or before the consistency time. If not provided, the current state is read."
     },
     "model": {
       "$ref": "../common/ModelSpec.json",

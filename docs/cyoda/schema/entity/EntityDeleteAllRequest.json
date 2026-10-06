@@ -20,7 +20,7 @@
     "pointInTime": {
       "type": "string",
       "format": "date-time",
-      "description": "point in time, i.e. delete all that existed prior to this point in time"
+      "description": "Point in time, i.e. delete all that existed at this point in time. Must be at or before the consistency time. If not provided, the current state is used."
     },
     "verbose": {
       "type": "boolean",
