@@ -28,6 +28,11 @@ import (
 // migrated by the owner, and grants it exactly the documented grants for the
 // consistency-time objects, plus any extra grants given. It returns the
 // owner's pool, a pool connected as the role, and the role's name.
+//
+// The extra grants come after the migration, as a grant made after a node
+// started would: the startup check refuses CREATE for a non-owner on a schema
+// in the search path, so a test that plants objects with such a grant shows
+// what holds once that check is past.
 func newDocumentedGrantsRole(t *testing.T, extra ...string) (owner, role *pgxpool.Pool, name string) {
 	t.Helper()
 	dsn := freshCTDatabase(t)

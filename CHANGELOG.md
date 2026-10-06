@@ -736,6 +736,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `COMPATIBILITY.md`). Out-of-tree storage plugins must implement all three
   and pass the new `spitest` cases.
 
+- **PostgreSQL: a node, and `cyoda migrate`, refuse to start when a schema on
+  the connection's `search_path` grants `CREATE` to a role other than its
+  owner.** The plugin's SQL names its functions and operators without a
+  schema, so such a role could plant one that the plugin then runs with its
+  own or the migration role's privileges. The check runs before migrating and
+  on every start, with or without `CYODA_POSTGRES_AUTO_MIGRATE`. On
+  PostgreSQL 14, whose default grants `CREATE` on `public` to `PUBLIC`, run
+  `REVOKE CREATE ON SCHEMA public FROM PUBLIC` before upgrading; the refusal
+  names every schema and grantee with the `REVOKE` for it. Migration `000017`
+  also gives the helper functions `cyoda_epoch_millis` and `cyoda_try_float8`
+  a fixed `search_path`. See `cyoda help config database` and
+  `docs/plugins/POSTGRES.md`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`

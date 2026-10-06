@@ -182,12 +182,36 @@ with the schema the migration ran in, so no object another role creates — in
 a writable schema such as `public` on PostgreSQL 14, or in its temporary
 schema — can be called in their place with their owner's privileges. The
 plugin's own calls of the two functions give exact argument types, so an
-overload with other types cannot be chosen in their place either. Beyond
-these two functions the plugin names its tables, sequences and functions
-without a schema, so no untrusted role may have `CREATE` on any schema in the
-runtime role's `search_path`: PostgreSQL 15 and later already revoke
-`CREATE` on `public` from `PUBLIC`; on PostgreSQL 14, revoke it
-(`REVOKE CREATE ON SCHEMA public FROM PUBLIC`).
+overload with other types cannot be chosen in their place either.
+
+**Schemas on the search path.** Beyond these two functions the plugin names
+its tables, functions and operators without a schema, and PostgreSQL chooses
+a function or operator by the best argument match across every schema on the
+`search_path`. A role that may create objects in any of those schemas could
+plant one that the plugin's statements, or its migrations, then run with the
+plugin's or the migration role's privileges. So before it migrates, and on
+every start whether or not `CYODA_POSTGRES_AUTO_MIGRATE` is set, the plugin
+reads the ACL of each schema on its connection's effective `search_path`
+(`pg_catalog` included) and refuses to continue when one grants `CREATE` to a
+role other than the schema's owner. The check covers the server, the
+`cyoda migrate` subcommand and so the Helm chart's migrate Job. It excuses a
+grant that gives its grantee nothing new: to a superuser, or to a role that
+inherits the owner's privileges. It does not excuse the connecting role
+itself. A grant to `PUBLIC` — PostgreSQL 14's default on `public` — is
+refused with:
+
+```
+postgres: refusing to migrate or start: on this connection's search_path, schema public grants CREATE to PUBLIC. A role that may create objects in a schema on the search_path can make this node's SQL run its code with this node's privileges. Revoke each grant, then restart: REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+```
+
+The message lists every offending schema and grantee, each with its
+`REVOKE`. Run them as the schema's owner and restart. PostgreSQL 15 and later
+do not grant `CREATE` on `public` to `PUBLIC`. The check runs once, at start:
+a grant made while a node runs is not detected until that node restarts. Nor
+does it see a schema that does not exist yet: a role with `CREATE` on the
+database can create a schema named after the plugin's role, which `$user`
+then puts first on the default path. Do not give untrusted roles `CREATE` on
+the database.
 
 **Replicas.** With asynchronous replicas, a failover to a host whose clock is
 behind can stamp below a consistency time already returned — the same
