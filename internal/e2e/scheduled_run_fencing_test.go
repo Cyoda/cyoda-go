@@ -379,7 +379,7 @@ func TestSchedPool_AsyncSearchReclaimNotStarved(t *testing.T) {
 func seedOrphanSearchJob(t *testing.T, s *schedDB, model string, released bool) string {
 	t.Helper()
 	jobID := uuid.NewString()
-	pit := time.Now().Add(time.Minute).UTC()
+	pit := time.Now().Add(-time.Minute).UTC()
 	opts, err := json.Marshal(struct {
 		Limit       int       `json:"limit"`
 		PointInTime time.Time `json:"pointInTime"`

@@ -94,17 +94,16 @@ func TestDeleteEntities_Unconditional_PointInTime(t *testing.T) {
 		t.Error("c was created after the instant and must survive")
 	}
 
-	t.Run("future instant selects the current state", func(t *testing.T) {
+	t.Run("future instant is refused", func(t *testing.T) {
+		// An instant later than the consistency time could still change, so the
+		// delete does not select by it: nothing is removed.
 		d := createEntityE2E(t, model, 1, `{"n":4}`)
-		status, out, body := deleteModelEntities(t, model, "pointInTime=2099-01-01T00:00:00Z&verbose=true")
-		if status != http.StatusOK {
-			t.Fatalf("delete as-at future: %d: %s", status, body)
+		status, _, body := deleteModelEntities(t, model, "pointInTime=2099-01-01T00:00:00Z&verbose=true")
+		if status != http.StatusBadRequest || !strings.Contains(body, "POINT_IN_TIME_AFTER_CONSISTENCY_TIME") {
+			t.Fatalf("delete as-at future: %d: %s, want 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME", status, body)
 		}
-		if out.DeleteResult.NumberOfEntititesRemoved != 2 { // c and d
-			t.Errorf("removed = %d, want 2: %s", out.DeleteResult.NumberOfEntititesRemoved, body)
-		}
-		if entityExists(t, c) || entityExists(t, d) {
-			t.Error("a future instant selects everything that exists now")
+		if !entityExists(t, c) || !entityExists(t, d) {
+			t.Error("a refused delete must remove nothing")
 		}
 	})
 }

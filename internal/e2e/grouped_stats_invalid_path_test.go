@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
@@ -58,9 +57,9 @@ func TestGroupedStats_MalformedGroupByPath_PointInTime_Returns400(t *testing.T) 
 	const model = "e2e-grouped-stats-badpath-pit"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
+	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
 
-	pit := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
 	reqBody := fmt.Sprintf(`{"groupBy": ["$.variantId';x"], "pointInTime": %q}`, pit)
 	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
 	resp := doAuth(t, http.MethodPost, path, reqBody)
@@ -106,9 +105,9 @@ func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
 	const model = "e2e-grouped-stats-validpath"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
+	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
 
-	pit := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
 	cases := []struct {
 		name string
 		body string
@@ -169,9 +168,9 @@ func TestGroupedStats_NonJSONPathForms_Returns400(t *testing.T) {
 	const model = "e2e-grouped-stats-nonjsonpath"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
+	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
 
-	pit := time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano)
+	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
 	cases := []struct {
 		name string
 		body string

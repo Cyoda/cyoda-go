@@ -34,8 +34,9 @@ const (
 // jobLookupError maps a service-level error to a handler response. Job-not-
 // found is reported as 404 + SEARCH_JOB_NOT_FOUND; an error that already is a
 // *common.AppError (a classified failure from the service, such as a refused
-// point in time) passes through unchanged; any other lookup error is treated as an internal failure, which routes a storage outage
-// to a retryable 503 and everything else to a 500 with a ticket.
+// point in time) passes through unchanged; any other lookup error is treated
+// as an internal failure, which routes a storage outage to a retryable 503 and
+// everything else to a 500 with a ticket.
 func jobLookupError(err error) *common.AppError {
 	if errors.Is(err, ErrSearchJobNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
