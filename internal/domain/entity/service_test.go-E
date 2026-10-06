@@ -229,7 +229,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	}
 
 	// nil-pointer filter → all states returned.
-	stats, err := h.GetStatisticsByState(ctx, nil, nil)
+	stats, err := h.GetStatisticsByState(ctx, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(nil): %v", err)
 	}
@@ -246,7 +246,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-non-empty: filter to APPROVED only.
 	filter := []string{"APPROVED"}
-	stats, err = h.GetStatisticsByState(ctx, &filter, nil)
+	stats, err = h.GetStatisticsByState(ctx, &filter)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&['APPROVED']): %v", err)
 	}
@@ -259,7 +259,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-empty-slice: per SPI, empty map → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByState(ctx, &emptyFilter, nil)
+	stats, err = h.GetStatisticsByState(ctx, &emptyFilter)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&[]): %v", err)
 	}
@@ -306,7 +306,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	}
 
 	// nil filter → all three states.
-	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil, nil)
+	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(nil): %v", err)
 	}
@@ -323,7 +323,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Filter to two states.
 	filter := []string{"NEW", "REJECTED"}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter, nil)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&['NEW','REJECTED']): %v", err)
 	}
@@ -344,7 +344,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Empty (non-nil) filter → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter, nil)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&[]): %v", err)
 	}

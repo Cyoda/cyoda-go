@@ -399,7 +399,7 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 }
 
 func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
-	stats, err := h.GetStatistics(r.Context())
+	stats, err := h.GetStatistics(r.Context(), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -429,7 +429,7 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByState(r.Context(), params.States)
+	stats, err := h.GetStatisticsByState(r.Context(), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -460,7 +460,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States)
+	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -480,7 +480,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 }
 
 func (h *Handler) GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.GetEntityStatisticsForModelParams) {
-	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion))
+	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return

@@ -1494,8 +1494,9 @@ func TestGetEntityChangesMetadata_PointInTime(t *testing.T) {
 }
 
 // TestGetEntityChangesMetadata_PointInTimeFuture asserts that a pointInTime
-// strictly after the latest change returns the full history — equivalent to
-// omitting the parameter. Boundary case.
+// later than the consistency time is refused with a 400, and that a
+// pointInTime at the consistency time returns the full history — equivalent
+// to omitting the parameter. Boundary case.
 func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	srv := newTestServer(t)
 	importAndLockModel(t, srv.URL, "ChangesMetaPITFuture", 1, `{"k":1}`)
@@ -1508,7 +1509,7 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	expectStatus(t, resp, http.StatusOK)
 	resp.Body.Close()
 
-	// pointInTime strictly after the latest change.
+	// pointInTime later than the consistency time is refused.
 	future := time.Now().UTC().Add(1 * time.Hour)
 	pitURL := fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
 		srv.URL, entityID, future.Format(time.RFC3339Nano))
@@ -1516,14 +1517,28 @@ func TestGetEntityChangesMetadata_PointInTimeFuture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get changes (future pit): %v", err)
 	}
+	expectStatus(t, resp, http.StatusBadRequest)
+	if body := readBody(t, resp); !strings.Contains(string(body), common.ErrCodePointInTimeAfterConsistencyTime) {
+		t.Fatalf("future pointInTime: want %s in body, got %s", common.ErrCodePointInTimeAfterConsistencyTime, body)
+	}
+
+	// pointInTime at the present (not after the consistency time) returns the
+	// full history.
+	present := time.Now().UTC()
+	pitURL = fmt.Sprintf("%s/entity/%s/changes?pointInTime=%s",
+		srv.URL, entityID, present.Format(time.RFC3339Nano))
+	resp, err = http.Get(pitURL)
+	if err != nil {
+		t.Fatalf("get changes (present pit): %v", err)
+	}
 	expectStatus(t, resp, http.StatusOK)
 	body := readBody(t, resp)
 	var futureResult []map[string]any
 	if err := json.Unmarshal(body, &futureResult); err != nil {
-		t.Fatalf("parse future result: %v", err)
+		t.Fatalf("parse present result: %v", err)
 	}
 	if len(futureResult) != 3 {
-		t.Fatalf("future pointInTime: expected full history (3 entries), got %d", len(futureResult))
+		t.Fatalf("present pointInTime: expected full history (3 entries), got %d", len(futureResult))
 	}
 
 	// Cross-check: omitting the parameter yields the same result set.
