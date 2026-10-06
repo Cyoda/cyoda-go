@@ -169,14 +169,18 @@ it never waits on another transaction's lock, and a fenced read made while the
 caller holds a transaction cannot deadlock with the commits it waits for.
 
 **Roles.** The plugin connects as the owner of these objects. A non-owner role
-needs `USAGE` on the schema, `SELECT, INSERT` on `consistency_tenant_keys`, `USAGE` on `consistency_tenant_key_seq`, and `EXECUTE` on both functions (granted to `PUBLIC` by default). Both functions are `SECURITY DEFINER`: they run with
-the privileges of the role that ran the migration, so the runtime role needs
+needs `USAGE` on the schema, `SELECT, INSERT` on `consistency_tenant_keys`,
+`USAGE` on `consistency_tenant_key_seq`, and `EXECUTE` on both functions
+(granted to `PUBLIC` by default). Both functions are `SECURITY DEFINER`: they
+run as their owner, the role that ran the migration, so the runtime role needs
 nothing on `cyoda_stamp_floor` and cannot set or advance it itself. `EXECUTE`
 stays with `PUBLIC`, because neither function can move the floor anywhere but
 along the clock (`cyoda_stamp` to `max(clock, floor + 1)`,
-`cyoda_consistency_time` to `max(clock, floor)`). Their `search_path` is fixed
-when the migration creates them, with `pg_temp` last, so a session cannot
-shadow the floor sequence or the catalogs they read with temporary objects.
+`cyoda_consistency_time` to `max(clock, floor)`). They run with a fixed
+`search_path` of exactly `pg_catalog, pg_temp`, and name the floor sequence
+with the schema the migration ran in, so no object another role creates — in
+a writable schema such as `public` on PostgreSQL 14, or in its temporary
+schema — can be called in their place with their owner's privileges.
 
 **Replicas.** With asynchronous replicas, a failover to a host whose clock is
 behind can stamp below a consistency time already returned — the same

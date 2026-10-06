@@ -26,9 +26,16 @@
 -- function can move the floor anywhere but along the clock (cyoda_stamp to
 -- greatest(clock, floor + 1), cyoda_consistency_time to greatest(clock,
 -- floor)), so a caller gains nothing it could not get by committing or by
--- asking for a consistency time. Their search_path is fixed at creation, with
--- pg_temp appended last, so a session cannot shadow the floor sequence or the
--- pg_locks, pg_settings and pg_database catalogs with temporary objects.
+-- asking for a consistency time.
+-- Because they run as the owner, nothing they call may be resolvable in a
+-- schema another role can write to. Their search_path is exactly
+-- pg_catalog, pg_temp: every function, operator, type and catalog they use
+-- resolves in pg_catalog (functions and operators are never looked up in
+-- pg_temp, and pg_catalog comes first for relations and types). The one
+-- plugin object they touch, the floor sequence, is named with the schema this
+-- migration runs in, which is current_schema() and not necessarily public, so
+-- both functions are created by EXECUTE format(...) with that schema filled
+-- in (%% in the template is format's escape for the modulo operator).
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
 SELECT setval('cyoda_stamp_floor', coalesce(greatest(
   (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
@@ -43,10 +50,10 @@ ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
   USING (tenant_id = current_setting('app.current_tenant', true));
 
-SELECT set_config('search_path', current_setting('search_path') || ', pg_temp', true);
-CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+DO $do$ BEGIN
+EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE cur_idle bigint;
-  xkey int4 := ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4; s bigint; held boolean := false;
+  xkey int4 := ((pg_current_xact_id()::text::bigint %% 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
   PERFORM set_config('lock_timeout','2000ms',true);
   SELECT setting::bigint INTO cur_idle FROM pg_settings WHERE name='idle_in_transaction_session_timeout';
@@ -55,24 +62,24 @@ BEGIN
   PERFORM pg_advisory_xact_lock(tenant_key, xkey);
   BEGIN
     held := true; PERFORM pg_advisory_lock(0,0);
-    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM cyoda_stamp_floor;
-    PERFORM setval('cyoda_stamp_floor', s, true);
+    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM %1$I.cyoda_stamp_floor;
+    PERFORM setval(%2$L, s, true);
     PERFORM pg_advisory_unlock(0,0); held := false;
   EXCEPTION WHEN query_canceled OR OTHERS THEN
     IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
   END;
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
-END $$;
+END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
 
-CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
+EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
   PERFORM set_config('lock_timeout', greatest(wait_budget_ms,1)::text||'ms', true);
   BEGIN
     held := true; PERFORM pg_advisory_lock(0,0);
-    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value) INTO c FROM cyoda_stamp_floor;
-    PERFORM setval('cyoda_stamp_floor', c, true);
+    SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value) INTO c FROM %1$I.cyoda_stamp_floor;
+    PERFORM setval(%2$L, c, true);
     PERFORM pg_advisory_unlock(0,0); held := false;
   EXCEPTION WHEN query_canceled OR OTHERS THEN
     IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
@@ -87,4 +94,5 @@ BEGIN
     PERFORM pg_advisory_xact_lock_shared(tenant_key, k::bigint::int4);
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
-END $$;
+END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
+END $do$;

@@ -9,6 +9,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -25,16 +26,16 @@ import (
 
 // newDocumentedGrantsRole creates a login role on a database of its own,
 // migrated by the owner, and grants it exactly the documented grants for the
-// consistency-time objects. It returns the owner's pool and a pool connected
-// as the role.
-func newDocumentedGrantsRole(t *testing.T) (owner, role *pgxpool.Pool) {
+// consistency-time objects, plus any extra grants given. It returns the
+// owner's pool, a pool connected as the role, and the role's name.
+func newDocumentedGrantsRole(t *testing.T, extra ...string) (owner, role *pgxpool.Pool, name string) {
 	t.Helper()
 	dsn := freshCTDatabase(t)
 	owner = newCTPool(t, dsn, 10, nil)
 	if err := postgres.Migrate(owner); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	name := "cyoda_ct_role_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
+	name = "cyoda_ct_role_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:12]
 	ident := pgx.Identifier{name}.Sanitize()
 	for _, stmt := range []string{
 		`CREATE ROLE ` + ident + ` LOGIN PASSWORD 'probe' NOSUPERUSER NOCREATEDB NOCREATEROLE`,
@@ -44,6 +45,11 @@ func newDocumentedGrantsRole(t *testing.T) (owner, role *pgxpool.Pool) {
 		`GRANT USAGE ON SEQUENCE consistency_tenant_key_seq TO ` + ident,
 	} {
 		if _, err := owner.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("provision role: %v", err)
+		}
+	}
+	for _, grant := range extra {
+		if _, err := owner.Exec(context.Background(), grant+` TO `+ident); err != nil {
 			t.Fatalf("provision role: %v", err)
 		}
 	}
@@ -58,14 +64,14 @@ func newDocumentedGrantsRole(t *testing.T) (owner, role *pgxpool.Pool) {
 	}
 	u.User = url.UserPassword(name, "probe")
 	role = newCTPool(t, u.String(), 4, nil)
-	return owner, role
+	return owner, role, name
 }
 
 // A role with only the documented grants allocates a new tenant's key, stamps
 // a commit through cyoda_stamp, and gets consistency times on both sides of
 // it. It cannot read, advance or set the stamp floor itself.
 func TestConsistencyTime_DocumentedGrantsSuffice(t *testing.T) {
-	owner, role := newDocumentedGrantsRole(t)
+	owner, role, _ := newDocumentedGrantsRole(t)
 	const tenant spi.TenantID = "ct-role-tenant"
 	ctx := ctxWithTenant(tenant)
 	f := postgres.NewStoreFactory(role)
@@ -131,7 +137,7 @@ func TestConsistencyTime_DocumentedGrantsSuffice(t *testing.T) {
 // the same names: a temporary cyoda_stamp_floor does not move C, and a
 // temporary pg_locks does not hide the tenant's markers from the wait.
 func TestConsistencyTimeSQL_TemporaryObjectsDoNotShadow(t *testing.T) {
-	owner, role := newDocumentedGrantsRole(t)
+	owner, role, _ := newDocumentedGrantsRole(t)
 	const tenant spi.TenantID = "ct-shadow-tenant"
 	key := tenantKey(t, owner, tenant)
 
@@ -160,5 +166,142 @@ func TestConsistencyTimeSQL_TemporaryObjectsDoNotShadow(t *testing.T) {
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("with a held marker and a temporary pg_locks, want the wait to exhaust its budget (55P03), got C=%v err=%v", c, err)
+	}
+}
+
+// Both functions are SECURITY DEFINER, so whatever they resolve runs as the
+// migration role. A runtime role that may create objects in the functions'
+// schema — PostgreSQL 14's default for public — plants a better-matching
+// setval or an exact-match *(bigint, interval) operator there, each of which
+// would make the caller SUPERUSER if it ran with the definer's privileges.
+// The functions resolve everything but the plugin's own objects in
+// pg_catalog, and those by schema-qualified name, so neither planted object
+// runs: both calls give correct results and the role stays an ordinary role.
+func TestConsistencyTimeSQL_PlantedObjectsDoNotRunAsTheOwner(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		plant string // run as the role; %[1]s is the role's quoted name
+	}{
+		{"setval", `
+			CREATE FUNCTION public.setval(text, bigint, boolean) RETURNS bigint LANGUAGE plpgsql AS $f$
+			BEGIN
+			  EXECUTE 'ALTER ROLE %[1]s SUPERUSER';
+			  RETURN pg_catalog.setval($1::regclass, $2, $3);
+			END $f$;`},
+		{"operator *(bigint, interval)", `
+			CREATE FUNCTION public.ct_planted_mul(bigint, interval) RETURNS interval LANGUAGE plpgsql AS $f$
+			BEGIN
+			  EXECUTE 'ALTER ROLE %[1]s SUPERUSER';
+			  RETURN $1::float8 * $2;
+			END $f$;
+			CREATE OPERATOR public.* (LEFTARG = bigint, RIGHTARG = interval, FUNCTION = public.ct_planted_mul);`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, role, name := newDocumentedGrantsRole(t, `GRANT CREATE ON SCHEMA public`)
+			const tenant spi.TenantID = "ct-planted-tenant"
+			key := tenantKey(t, owner, tenant)
+			if _, err := role.Exec(context.Background(),
+				fmt.Sprintf(tc.plant, pgx.Identifier{name}.Sanitize())); err != nil {
+				t.Fatalf("plant the object as the role: %v", err)
+			}
+
+			tx, err := role.Begin(context.Background())
+			if err != nil {
+				t.Fatalf("begin as the role: %v", err)
+			}
+			var stamp time.Time
+			if err := tx.QueryRow(context.Background(), `SELECT cyoda_stamp($1)`, key).Scan(&stamp); err != nil {
+				_ = tx.Rollback(context.Background())
+				t.Fatalf("cyoda_stamp as the role: %v", err)
+			}
+			if err := tx.Commit(context.Background()); err != nil {
+				t.Fatalf("commit as the role: %v", err)
+			}
+			var c time.Time
+			if err := role.QueryRow(context.Background(), `SELECT cyoda_consistency_time($1, 1000)`, key).Scan(&c); err != nil {
+				t.Fatalf("cyoda_consistency_time as the role: %v", err)
+			}
+
+			var super bool
+			if err := owner.QueryRow(context.Background(),
+				`SELECT rolsuper FROM pg_roles WHERE rolname = $1`, name).Scan(&super); err != nil {
+				t.Fatalf("read the role's attributes: %v", err)
+			}
+			if super {
+				t.Fatal("the planted object ran with the functions' owner's privileges: the role made itself SUPERUSER")
+			}
+			if c.Before(stamp) {
+				t.Fatalf("C %v is below the stamp %v committed before it", c, stamp)
+			}
+			var floor int64
+			if err := owner.QueryRow(context.Background(), `SELECT last_value FROM cyoda_stamp_floor`).Scan(&floor); err != nil {
+				t.Fatalf("read the floor: %v", err)
+			}
+			if floor < c.UnixMicro() {
+				t.Fatalf("the floor %d is below the C %d the call returned: the call did not move the real floor", floor, c.UnixMicro())
+			}
+		})
+	}
+}
+
+// The migration creates its objects in whatever schema it runs in, which is
+// not necessarily public: run with a search_path that names another schema
+// first, the functions land there, refer to that schema's floor, and stamp and
+// return consistency times through the plugin.
+func TestConsistencyTimeMigration_RunsInANonPublicSchema(t *testing.T) {
+	const schema = "ct_other_schema"
+	dsn := freshCTDatabase(t)
+	setup := newCTPool(t, dsn, 2, nil)
+	if _, err := setup.Exec(context.Background(), `CREATE SCHEMA `+schema); err != nil {
+		t.Fatalf("create schema: %v", err)
+	}
+	pool := newCTPool(t, dsn, 10, func(c *pgxpool.Config) {
+		c.ConnConfig.RuntimeParams["search_path"] = schema
+	})
+	if err := postgres.Migrate(pool); err != nil {
+		t.Fatalf("migrate into %s: %v", schema, err)
+	}
+
+	var inSchema, inPublic int
+	if err := setup.QueryRow(context.Background(),
+		`SELECT count(*) FILTER (WHERE n.nspname = $1), count(*) FILTER (WHERE n.nspname = 'public')
+		   FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+		  WHERE p.proname IN ('cyoda_stamp', 'cyoda_consistency_time')`, schema).Scan(&inSchema, &inPublic); err != nil {
+		t.Fatalf("find the functions: %v", err)
+	}
+	if inSchema != 2 || inPublic != 0 {
+		t.Fatalf("%d functions in %s and %d in public, want 2 and 0", inSchema, schema, inPublic)
+	}
+
+	f := postgres.NewStoreFactory(pool)
+	f.InitTransactionManager(newTestUUIDGenerator())
+	ctx := ctxWithTenant(ctTenant)
+	tm := ctTM(t, f, ctx)
+	before, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
+	txID := commitOneEntity(t, f, ctx)
+	submit, err := tm.GetSubmitTime(ctx, txID)
+	if err != nil {
+		t.Fatalf("GetSubmitTime: %v", err)
+	}
+	if !submit.After(before) {
+		t.Fatalf("a commit after C was stamped %v, not above C %v", submit, before)
+	}
+	after, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("second ConsistencyTime: %v", err)
+	}
+	if after.Before(submit) {
+		t.Fatalf("C %v is below the commit %v before it", after, submit)
+	}
+	var floor int64
+	if err := setup.QueryRow(context.Background(),
+		`SELECT last_value FROM `+schema+`.cyoda_stamp_floor`).Scan(&floor); err != nil {
+		t.Fatalf("read the floor in %s: %v", schema, err)
+	}
+	if floor < after.UnixMicro() {
+		t.Fatalf("the floor in %s (%d) is below the C returned (%d)", schema, floor, after.UnixMicro())
 	}
 }
