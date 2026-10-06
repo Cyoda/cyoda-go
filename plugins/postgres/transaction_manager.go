@@ -194,9 +194,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	func() {
 		tm.txStatesMu.Lock()
 		defer tm.txStatesMu.Unlock()
-		st := newTxState(tenantID)
-		st.markerKey = markerKey
-		tm.txStates[txID] = st
+		tm.txStates[txID] = newTxState(tenantID, markerKey)
 	}()
 
 	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:

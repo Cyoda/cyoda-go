@@ -116,7 +116,7 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 		// default PUBLIC grants — USAGE must be granted explicitly.
 		`GRANT USAGE ON SCHEMA public TO ` + probeRole,
 		`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO ` + probeRole,
-		`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ` + probeRole, // UPDATE: cyoda_stamp raises cyoda_stamp_floor with setval
+		`GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO ` + probeRole, // nextval only: the stamp functions are SECURITY DEFINER, so the floor needs no grant
 	} {
 		if _, err := owner.Exec(ctx, stmt); err != nil {
 			t.Fatalf("provision probe role: %v", err)

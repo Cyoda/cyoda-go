@@ -136,11 +136,10 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 		// A copy (inOwnTx) with q repointed at the transaction, ownTx and the
 		// marker key set: saveOn (and replaceClaims, which it calls) read s.q
 		// and s.ownTx on THIS receiver, not a parameter — see saveOn's doc
-		// comment. Setting
-		// ownTx here is what makes it safe for any future code path to call
-		// back into save/Save on this copy: the guard above will see
-		// s.ownTx == true and fall through to saveOn instead of trying to
-		// open a second transaction.
+		// comment. Setting ownTx here is what makes it safe for any future
+		// code path to call back into save/Save on this copy: the guard above
+		// will see s.ownTx == true and fall through to saveOn instead of
+		// trying to open a second transaction.
 		txStore := s.inOwnTx(tx, markerKey)
 		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
@@ -484,6 +483,13 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// always there to lock: expectedTxID is non-empty, so an absent row's
 	// current ID ("") cannot match and the check has already conflicted.
 	//
+	// The tenant's marker key, which this write's commit stamp takes, is
+	// resolved first, before the transaction's connection is taken (see the
+	// keys field and tenantKeys).
+	markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("compare-and-save: %w", err)
+	}
 	// Same scoping rule as every other acquire in this plugin: the deadline
 	// bounds getting the connection and is cancelled the instant BeginTx
 	// returns, so the transaction handle — which outlives it — cannot inherit
@@ -495,10 +501,6 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// the winner's transaction ID. Under REPEATABLE READ it would instead read
 	// its pre-lock snapshot and abort with a serialization failure — a coarser
 	// answer for a condition this path reports precisely.
-	markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
-	if err != nil {
-		return 0, fmt.Errorf("compare-and-save: %w", err)
-	}
 	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -670,6 +672,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	return unmarshalEntityDoc(doc, creationDate, transactionTime)
 }
+
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// Same reasoning as save's non-tx branch, including the ownTx guard —
 	// see save's and ownTx's doc comments. Delete issues its own version

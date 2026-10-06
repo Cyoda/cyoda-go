@@ -253,8 +253,9 @@ functions, the tenant-key table and both sequences). The locking logic —
 marker, floor mutex, floor and wait loop — was verified by the second spec
 review on postgres 17 with a non-superuser owner role (24 clients, 30 s,
 63,410 commits, 15,815 calls: 0 finality, completeness or monotonicity
-violations; a checker without the wait found 6,607). The tenant key both
-functions take as an argument does not change that logic:
+violations; a checker without the wait found 6,607). Neither the tenant key
+both functions take as an argument nor their `SECURITY DEFINER` declaration
+changes that logic:
 
 ```sql
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
@@ -271,7 +272,8 @@ ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
   USING (tenant_id = current_setting('app.current_tenant', true));
 
-CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+SELECT set_config('search_path', current_setting('search_path') || ', pg_temp', true);
+CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE cur_idle bigint;
   xkey int4 := ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
@@ -291,7 +293,7 @@ BEGIN
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
 END $$;
 
-CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
@@ -354,11 +356,24 @@ Notes on the SQL:
   by the pool sizes of the nodes.
 - `set_config(..., true)` effects end with the caller's transaction or
   autocommit statement; `SET search_path FROM CURRENT` does not scope them.
+- Both functions are `SECURITY DEFINER`, so they run with the privileges of
+  the role that ran the migration, and the runtime role needs no privilege on
+  `cyoda_stamp_floor` and cannot `setval` or `nextval` it. `EXECUTE` is not
+  revoked from `PUBLIC`: the migration cannot know the runtime role's name,
+  and neither function moves the floor anywhere but along the clock
+  (`cyoda_stamp`: `greatest(clock, last + 1)`; `cyoda_consistency_time`:
+  `greatest(clock, last)`), so a caller gains nothing it could not get by
+  committing or by asking for a consistency time. Nothing else in the plugin
+  reads or writes `cyoda_stamp_floor`.
+- `search_path`: the migration appends `pg_temp` to its own `search_path`
+  (transaction-locally) before creating the functions, so `SET search_path
+  FROM CURRENT` fixes it with `pg_temp` last. A relation name is otherwise
+  looked up in the session's temporary schema first, even before
+  `pg_catalog`, so a session could shadow `cyoda_stamp_floor`, `pg_locks`,
+  `pg_settings` or `pg_database` with a temporary object of the same name.
 - Role: the plugin connects as the owner of its objects
-  (`docs/plugins/POSTGRES.md:331-344`). A non-owner role needs `SELECT, UPDATE`
-  on `cyoda_stamp_floor`, `SELECT, INSERT` on `consistency_tenant_keys`,
-  `USAGE` on `consistency_tenant_key_seq`, `USAGE` on the schema and `EXECUTE`
-  on both functions (granted to `PUBLIC` by default). Stated in POSTGRES.md.
+  (`docs/plugins/POSTGRES.md:394-408`). A non-owner role needs `USAGE` on the schema, `SELECT, INSERT` on `consistency_tenant_keys`, `USAGE` on `consistency_tenant_key_seq`, and `EXECUTE` on both functions (granted to `PUBLIC` by default).
+  Stated in POSTGRES.md and in the COMPATIBILITY.md upgrade row.
 
 **Go side:**
 
@@ -622,6 +637,7 @@ storage-unavailable error.
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
 | another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
 | tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a torn lookup `COMMIT` is retryable storage-unavailable on `Begin`, a non-transactional save and `ConsistencyTime`; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
+| a new non-owner role with exactly the documented grants allocates a tenant key, stamps and gets `C`, and cannot `setval`/`nextval`/read `cyoda_stamp_floor`; temporary objects named like the floor or `pg_locks` do not shadow them inside the functions | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |

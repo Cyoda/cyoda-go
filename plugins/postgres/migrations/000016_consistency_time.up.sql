@@ -7,18 +7,28 @@
 -- Advisory key layout (two-int form, objsubid = 2, used by nothing else here):
 --   (0, 0)                     the floor mutex, held for microseconds
 --   (tenant_key, 1..2^31-1)    in-flight markers, one per committing tx
--- tenant_key is the tenant's row in consistency_tenant_keys: allocated from
--- its own sequence starting at 1 and checked positive, so it is never 0 and
--- unique by construction
--- (a hash of the tenant id would let two tenants share markers, and so delay
--- each other and see each other's commit timing). Rows are never deleted. Each
--- store factory (with its transaction manager) caches a tenant's key after its
--- first lookup, made in a short READ COMMITTED transaction of its own that sets
--- app.current_tenant, before any commit phase, so a stamping transaction never
--- touches the table. Row-level security as on every tenant-scoped table.
+-- tenant_key is the tenant's row in consistency_tenant_keys: allocated from its
+-- own sequence starting at 1 and checked positive, so it is never 0 and unique
+-- by construction (a hash of the tenant id would let two tenants share
+-- markers, and so delay each other and see each other's commit timing). Rows
+-- are never deleted. Each store factory (with its transaction manager) caches
+-- a tenant's key after its first lookup, made in a short READ COMMITTED
+-- transaction of its own that sets app.current_tenant, before any commit
+-- phase, so a stamping transaction never touches the table. Row-level security
+-- as on every tenant-scoped table.
 -- The floor is seeded from the stamps already stored. search_jobs.point_in_time
 -- is not one: it held the caller's pointInTime as sent, with no check against
 -- the future, so seeding from it could move every later stamp far ahead.
+-- Both functions are SECURITY DEFINER: they run with the privileges of the
+-- role that ran this migration, so the runtime role needs no privilege on
+-- cyoda_stamp_floor and cannot set or advance it itself. EXECUTE stays granted
+-- to PUBLIC: this migration cannot know the runtime role's name, and neither
+-- function can move the floor anywhere but along the clock (cyoda_stamp to
+-- greatest(clock, floor + 1), cyoda_consistency_time to greatest(clock,
+-- floor)), so a caller gains nothing it could not get by committing or by
+-- asking for a consistency time. Their search_path is fixed at creation, with
+-- pg_temp appended last, so a session cannot shadow the floor sequence or the
+-- pg_locks, pg_settings and pg_database catalogs with temporary objects.
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
 SELECT setval('cyoda_stamp_floor', coalesce(greatest(
   (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
@@ -33,7 +43,8 @@ ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
   USING (tenant_id = current_setting('app.current_tenant', true));
 
-CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+SELECT set_config('search_path', current_setting('search_path') || ', pg_temp', true);
+CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE cur_idle bigint;
   xkey int4 := ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
@@ -53,7 +64,7 @@ BEGIN
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
 END $$;
 
-CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path FROM CURRENT AS $$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   c bigint; held boolean := false; k oid; rem bigint;
 BEGIN

@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -25,10 +24,9 @@ import (
 // Every non-transactional write stamps its own commit, and its in-flight
 // marker must sit under the tenant's stored key: a marker under any other key
 // is one no consistency-time call for the tenant waits for. Each write is
-// frozen inside cyoda_stamp — the marker is taken before the floor mutex,
-// which is held elsewhere — and its backend's markers are read from pg_locks.
-// cyoda_stamp's 2 s lock_timeout bounds the freeze, so the mutex is released
-// as soon as the locks are read.
+// frozen inside its COMMIT, after its stamp, by freezeCommits — a wait on no
+// lock, so the test's timing does not race cyoda_stamp's 2 s lock_timeout —
+// and its backend's markers are read from pg_locks.
 func TestStamp_NonTransactionalWritesMarkUnderTheTenantKey(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -70,22 +68,22 @@ func TestStamp_NonTransactionalWritesMarkUnderTheTenantKey(t *testing.T) {
 				t.Fatalf("EntityStore: %v", err)
 			}
 
-			release := takeFloorMutex(t)
+			open := freezeCommits(t, pool)
 			done := make(chan error, 1)
 			go func() { done <- tc.write(ctx, es, id, txID) }()
+			pid := frozenCommit(t, pool, done)
 
-			pid := floorMutexWaiter(t, pool)
 			var underKey, otherKey int
-			if err := pool.QueryRow(context.Background(),
+			err = pool.QueryRow(context.Background(),
 				`SELECT count(*) FILTER (WHERE classid = $2::oid),
 				        count(*) FILTER (WHERE classid <> $2::oid)
 				   FROM pg_locks
 				  WHERE pid = $1 AND locktype = 'advisory' AND objsubid = 2 AND objid <> 0
-				    AND mode = 'ExclusiveLock' AND granted`, pid, key).Scan(&underKey, &otherKey); err != nil {
-				release()
+				    AND mode = 'ExclusiveLock' AND granted`, pid, key).Scan(&underKey, &otherKey)
+			open()
+			if err != nil {
 				t.Fatalf("read the write's markers: %v", err)
 			}
-			release()
 			if err := <-done; err != nil {
 				t.Fatalf("write: %v", err)
 			}
@@ -94,31 +92,6 @@ func TestStamp_NonTransactionalWritesMarkUnderTheTenantKey(t *testing.T) {
 					underKey, key, otherKey)
 			}
 		})
-	}
-}
-
-// floorMutexWaiter returns the pid of the backend queued for the floor mutex
-// (0, 0).
-func floorMutexWaiter(t *testing.T, pool *pgxpool.Pool) int {
-	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var pid int
-		err := pool.QueryRow(context.Background(),
-			`SELECT pid FROM pg_locks
-			  WHERE locktype = 'advisory' AND classid = 0 AND objid = 0 AND objsubid = 2 AND NOT granted
-			    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-			  LIMIT 1`).Scan(&pid)
-		if err == nil {
-			return pid
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("poll pg_locks: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("no backend ever queued for the floor mutex")
-		}
-		time.Sleep(5 * time.Millisecond)
 	}
 }
 

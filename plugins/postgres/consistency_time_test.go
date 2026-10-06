@@ -356,26 +356,21 @@ func TestConsistencyTime_WaitsForAStampedTransaction(t *testing.T) {
 
 // The marker is taken by TransactionManager.Commit itself and held through
 // its COMMIT: ConsistencyTime waits for a real commit stopped after its stamp,
-// and C covers that commit's submit time.
-//
-// The commit is stopped by holding, uncommitted, a submit_times row with the
-// committing transaction's key, so the commit's own submit_times INSERT waits
-// on it — a deliberate breach of the design rule (nothing after the stamp may
-// wait on a lock). cyoda_stamp's 2 s lock_timeout covers the rest of the
-// commit, so the holder must let go within 2 s of the commit blocking; it does
-// so as soon as ConsistencyTime is seen queued.
+// and C covers that commit's submit time. The commit is stopped inside its
+// COMMIT by freezeCommits, which waits on no lock, so nothing bounds how long
+// the test may take to observe it.
 func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	f, ctx := newCTFactory(t)
 	pool := postgres.PoolForTest(f)
 	tm := ctTM(t, f, ctx)
-	// The transaction, the blocker, the pollers and ConsistencyTime each take a
-	// connection; opened now, none is dialled inside the 2 s window.
 	prewarm(t, pool, 5)
+	open := freezeCommits(t, pool)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
 		t.Fatalf("Begin: %v", err)
 	}
+	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
 	es, err := f.EntityStore(txCtx)
 	if err != nil {
 		t.Fatalf("EntityStore: %v", err)
@@ -386,37 +381,9 @@ func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	blocker, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin blocker: %v", err)
-	}
-	t.Cleanup(func() { _ = blocker.Rollback(context.Background()) })
-	if _, err := blocker.Exec(context.Background(),
-		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, now())`,
-		string(ctTenant), txID); err != nil {
-		t.Fatalf("blocker insert: %v", err)
-	}
-
 	committed := make(chan error, 1)
 	go func() { committed <- tm.Commit(txCtx, txID) }()
-
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		var n int
-		if err := pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM pg_stat_activity
-			  WHERE datname = current_database() AND wait_event_type = 'Lock'
-			    AND query LIKE '%INSERT INTO submit_times%'`).Scan(&n); err != nil {
-			t.Fatalf("poll pg_stat_activity: %v", err)
-		}
-		if n > 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the commit never blocked on its submit_times insert")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	frozenCommit(t, pool, committed)
 
 	got := consistencyTimeAsync(ctx, tm)
 	waitForMarkerWaiter(t, pool)
@@ -426,9 +393,7 @@ func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	default:
 	}
 
-	if err := blocker.Rollback(context.Background()); err != nil {
-		t.Fatalf("release blocker: %v", err)
-	}
+	open()
 	if err := <-committed; err != nil {
 		t.Fatalf("Commit: %v", err)
 	}
@@ -442,6 +407,77 @@ func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	}
 	if submit.After(r.c) {
 		t.Fatalf("C %v is below the submit time %v of the commit it waited for", r.c, submit)
+	}
+}
+
+// freezeCommits makes every commit that wrote an entity version stop inside
+// its COMMIT until open is called: a deferred constraint trigger on
+// entity_versions loops on a sleep until a gate sequence is set. The loop
+// waits on no lock, so cyoda_stamp's 2 s lock_timeout never ends it, and a
+// sequence's value is read outside the transaction's snapshot, so it works at
+// every isolation level. A commit is frozen after its stamp, holding its
+// marker. Cleanup opens the gate and ends any backend still looping, before
+// the schema is dropped. Install it after any setup commit that must not
+// freeze.
+func freezeCommits(t *testing.T, pool *pgxpool.Pool) (open func()) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `
+		CREATE SEQUENCE ct_commit_gate MINVALUE 0 START 0;
+		CREATE FUNCTION ct_commit_gate_wait() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+		  WHILE (SELECT last_value FROM ct_commit_gate) = 0 LOOP PERFORM pg_sleep(0.01); END LOOP;
+		  RETURN NULL;
+		END $$;
+		CREATE CONSTRAINT TRIGGER ct_commit_gate_wait AFTER INSERT ON entity_versions
+		  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION ct_commit_gate_wait();`); err != nil {
+		t.Fatalf("install the commit gate: %v", err)
+	}
+	open = func() {
+		if _, err := pool.Exec(context.Background(), `SELECT setval('ct_commit_gate', 1)`); err != nil {
+			t.Errorf("open the commit gate: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `SELECT setval('ct_commit_gate', 1)`)
+		_, _ = pool.Exec(context.Background(),
+			`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+			  WHERE datname = current_database() AND pid <> pg_backend_pid()
+			    AND wait_event = 'PgSleep' AND query ILIKE 'commit%'`)
+		_, _ = pool.Exec(context.Background(), `
+			DROP TRIGGER IF EXISTS ct_commit_gate_wait ON entity_versions;
+			DROP FUNCTION IF EXISTS ct_commit_gate_wait();
+			DROP SEQUENCE IF EXISTS ct_commit_gate;`)
+	})
+	return open
+}
+
+// frozenCommit waits until a backend is frozen in its COMMIT by freezeCommits
+// and returns its pid. done is the frozen operation's result channel: a
+// result before the freeze is seen fails the test.
+func frozenCommit(t *testing.T, pool *pgxpool.Pool, done <-chan error) int {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var pid int
+		err := pool.QueryRow(context.Background(),
+			`SELECT pid FROM pg_stat_activity
+			  WHERE datname = current_database() AND wait_event = 'PgSleep'
+			    AND query ILIKE 'commit%' LIMIT 1`).Scan(&pid)
+		if err == nil {
+			return pid
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("poll pg_stat_activity: %v", err)
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the operation returned before its COMMIT was seen frozen: %v", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no COMMIT was ever seen frozen")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -849,13 +885,6 @@ func TestConsistencyTime_AcquireTimeoutIsStorageUnavailable(t *testing.T) {
 // own and keeps it until cleanup.
 func holdFloorMutex(t *testing.T) {
 	t.Helper()
-	takeFloorMutex(t)
-}
-
-// takeFloorMutex is holdFloorMutex with an early release: release lets the
-// mutex go (at most once), and cleanup releases it if the test did not.
-func takeFloorMutex(t *testing.T) (release func()) {
-	t.Helper()
 	side, err := newCTPool(t, testDBURL(t), 1, nil).Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire side connection: %v", err)
@@ -863,17 +892,10 @@ func takeFloorMutex(t *testing.T) (release func()) {
 	if _, err := side.Exec(context.Background(), `SELECT pg_advisory_lock(0, 0)`); err != nil {
 		t.Fatalf("take the floor mutex: %v", err)
 	}
-	released := false
-	release = func() {
-		if released {
-			return
-		}
-		released = true
+	t.Cleanup(func() {
 		_, _ = side.Exec(context.Background(), `SELECT pg_advisory_unlock(0, 0)`)
 		side.Release()
-	}
-	t.Cleanup(release)
-	return release
+	})
 }
 
 // A cyoda_stamp error closes the connection it ran on instead of returning it
@@ -1062,15 +1084,16 @@ func TestTenantKeys_DistinctPerTenantAndStable(t *testing.T) {
 }
 
 // The tenant's key is resolved before the commit phase, outside the
-// transaction: a commit stopped after its stamp (held as in
-// TestConsistencyTime_WaitsForACommitInItsCommitPhase) holds its marker under
-// the tenant's stored key and no lock on consistency_tenant_keys. The factory
-// is new, so the key is resolved for the first time by this transaction.
+// transaction: a commit frozen inside its COMMIT (freezeCommits) holds its
+// marker under the tenant's stored key and no lock on consistency_tenant_keys.
+// The factory is new, so the key is resolved for the first time by this
+// transaction.
 func TestStamp_CommitPhaseDoesNotTouchTenantKeys(t *testing.T) {
 	f, ctx := newCTFactory(t)
 	pool := postgres.PoolForTest(f)
 	tm := ctTM(t, f, ctx)
 	prewarm(t, pool, 5)
+	open := freezeCommits(t, pool)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -1090,49 +1113,19 @@ func TestStamp_CommitPhaseDoesNotTouchTenantKeys(t *testing.T) {
 	}
 	key := storedTenantKey(t, pool, ctTenant)
 
-	blocker, err := pool.Begin(context.Background())
-	if err != nil {
-		t.Fatalf("begin blocker: %v", err)
-	}
-	t.Cleanup(func() { _ = blocker.Rollback(context.Background()) })
-	if _, err := blocker.Exec(context.Background(),
-		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, now())`,
-		string(ctTenant), txID); err != nil {
-		t.Fatalf("blocker insert: %v", err)
-	}
-
 	committed := make(chan error, 1)
 	go func() { committed <- tm.Commit(txCtx, txID) }()
-
-	var pid int
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		err := pool.QueryRow(context.Background(),
-			`SELECT pid FROM pg_stat_activity
-			  WHERE datname = current_database() AND wait_event_type = 'Lock'
-			    AND query LIKE '%INSERT INTO submit_times%' LIMIT 1`).Scan(&pid)
-		if err == nil {
-			break
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			t.Fatalf("poll pg_stat_activity: %v", err)
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the commit never blocked on its submit_times insert")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	pid := frozenCommit(t, pool, committed)
 
 	var markers, keyTableLocks int
-	if err := pool.QueryRow(context.Background(),
+	err = pool.QueryRow(context.Background(),
 		`SELECT count(*) FILTER (WHERE locktype = 'advisory' AND classid = $2::oid AND objsubid = 2
 		                         AND objid <> 0 AND mode = 'ExclusiveLock' AND granted),
 		        count(*) FILTER (WHERE relation = 'consistency_tenant_keys'::regclass)
-		   FROM pg_locks WHERE pid = $1`, pid, key).Scan(&markers, &keyTableLocks); err != nil {
+		   FROM pg_locks WHERE pid = $1`, pid, key).Scan(&markers, &keyTableLocks)
+	open()
+	if err != nil {
 		t.Fatalf("read the commit's locks: %v", err)
-	}
-	if err := blocker.Rollback(context.Background()); err != nil {
-		t.Fatalf("release blocker: %v", err)
 	}
 	if err := <-committed; err != nil {
 		t.Fatalf("Commit: %v", err)

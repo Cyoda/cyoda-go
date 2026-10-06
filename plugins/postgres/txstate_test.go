@@ -14,7 +14,7 @@ import (
 // the expected tenantID and empty/nil collections.
 func TestNewTxState_ZeroValue(t *testing.T) {
 	tid := spi.TenantID("tenant-1")
-	s := newTxState(tid)
+	s := newTxState(tid, 1)
 
 	if s.tenantID != tid {
 		t.Errorf("tenantID = %q, want %q", s.tenantID, tid)
@@ -39,7 +39,7 @@ func TestNewTxState_ZeroValue(t *testing.T) {
 // TestRecordRead_FirstReadWins verifies that the first read version is
 // captured and a subsequent read of the same entity is ignored.
 func TestRecordRead_FirstReadWins(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordRead("e1", 7) // should be ignored
 	if got := s.readSet["e1"]; got != 5 {
@@ -53,7 +53,7 @@ func TestRecordRead_FirstReadWins(t *testing.T) {
 // TestRecordRead_SkipIfWritten verifies that RecordRead is a no-op when the
 // entity is already in writeSet.
 func TestRecordRead_SkipIfWritten(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.writeSet["e1"] = 3 // pre-populate directly
 	s.RecordRead("e1", 7)
 	if _, ok := s.readSet["e1"]; ok {
@@ -67,7 +67,7 @@ func TestRecordRead_SkipIfWritten(t *testing.T) {
 // TestRecordRead_MultipleEntities verifies that distinct entities are
 // recorded independently.
 func TestRecordRead_MultipleEntities(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 1)
 	s.RecordRead("e2", 2)
 	s.RecordRead("e3", 3)
@@ -88,7 +88,7 @@ func TestRecordRead_MultipleEntities(t *testing.T) {
 // TestRecordWrite_FirstWriteWins verifies that the first write version is
 // kept and subsequent writes of the same entity are ignored.
 func TestRecordWrite_FirstWriteWins(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordWrite("e1", 5)
 	s.RecordWrite("e1", 7) // should be ignored
 	if got := s.writeSet["e1"]; got != 5 {
@@ -103,7 +103,7 @@ func TestRecordWrite_FirstWriteWins(t *testing.T) {
 // readSet is promoted to writeSet using the readSet's captured version
 // and removed from readSet.
 func TestRecordWrite_PromotesFromReadSet(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e1", 5)
 	if _, ok := s.readSet["e1"]; ok {
@@ -117,7 +117,7 @@ func TestRecordWrite_PromotesFromReadSet(t *testing.T) {
 // TestRecordWrite_FreshInsertZero verifies that a fresh insert (version 0)
 // is recorded in writeSet with value 0.
 func TestRecordWrite_FreshInsertZero(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordWrite("e1", 0)
 	if got, ok := s.writeSet["e1"]; !ok || got != 0 {
 		t.Errorf("writeSet[e1] = %d (ok=%v), want 0 and present", got, ok)
@@ -127,7 +127,7 @@ func TestRecordWrite_FreshInsertZero(t *testing.T) {
 // TestValidateReadSet_AllMatch verifies that no error is returned when all
 // readSet entities match the current snapshot.
 func TestValidateReadSet_AllMatch(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordRead("e2", 10)
 	current := map[string]int64{"e1": 5, "e2": 10, "e3": 99}
@@ -139,7 +139,7 @@ func TestValidateReadSet_AllMatch(t *testing.T) {
 // TestValidateReadSet_VersionMismatch verifies that a version mismatch
 // returns an error containing the entity ID.
 func TestValidateReadSet_VersionMismatch(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	current := map[string]int64{"e1": 6}
 	err := s.ValidateReadSet(current)
@@ -154,7 +154,7 @@ func TestValidateReadSet_VersionMismatch(t *testing.T) {
 // TestValidateReadSet_MissingEntity verifies that a deleted entity (absent
 // from current snapshot) returns an error.
 func TestValidateReadSet_MissingEntity(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	current := map[string]int64{}
 	err := s.ValidateReadSet(current)
@@ -170,7 +170,7 @@ func TestValidateReadSet_MissingEntity(t *testing.T) {
 // independent copies of readSet and writeSet (mutations after push don't
 // affect the snapshot).
 func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
 	s.PushSavepoint("sp1")
@@ -202,7 +202,7 @@ func TestPushSavepoint_DeepCopiesSets(t *testing.T) {
 // readSet and writeSet to the snapshot and that the savepoint itself is
 // preserved (postgres ROLLBACK TO SAVEPOINT semantics).
 func TestRestoreSavepoint_RestoresSets(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.RecordRead("e1", 5)
 	s.PushSavepoint("sp1")
 
@@ -231,7 +231,7 @@ func TestRestoreSavepoint_RestoresSets(t *testing.T) {
 // TestRestoreSavepoint_TrimsLaterSavepoints verifies that restoring sp1
 // trims sp2 (which was pushed after sp1) but keeps sp1.
 func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.PushSavepoint("sp1")
 	s.RecordRead("e1", 1)
 	s.PushSavepoint("sp2")
@@ -252,7 +252,7 @@ func TestRestoreSavepoint_TrimsLaterSavepoints(t *testing.T) {
 // TestReleaseSavepoint_DropsEntryKeepsWork verifies that ReleaseSavepoint
 // removes the savepoint entry but leaves the current readSet/writeSet intact.
 func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	s.PushSavepoint("sp1")
 	s.RecordRead("e1", 5)
 	s.RecordWrite("e2", 10)
@@ -276,7 +276,7 @@ func TestReleaseSavepoint_DropsEntryKeepsWork(t *testing.T) {
 // TestRestoreSavepoint_Unknown verifies that restoring an unknown savepoint
 // returns spi.ErrSavepointNotFound.
 func TestRestoreSavepoint_Unknown(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	err := s.RestoreSavepoint("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
@@ -289,7 +289,7 @@ func TestRestoreSavepoint_Unknown(t *testing.T) {
 // TestReleaseSavepoint_Unknown verifies that releasing an unknown savepoint
 // returns spi.ErrSavepointNotFound.
 func TestReleaseSavepoint_Unknown(t *testing.T) {
-	s := newTxState("t1")
+	s := newTxState("t1", 1)
 	err := s.ReleaseSavepoint("bogus")
 	if err == nil {
 		t.Fatal("expected error for unknown savepoint, got nil")
@@ -309,7 +309,7 @@ func TestReleaseSavepoint_Unknown(t *testing.T) {
 // AbortCause unconditionally, so the retryable 409 a concurrent committer earns
 // would silently become a 500.
 func TestRestoreSavepoint_ClearsACeilingCause(t *testing.T) {
-	s := newTxState("tenant-1")
+	s := newTxState("tenant-1", 1)
 	s.PushSavepoint("sp-1")
 
 	s.RecordAbort(errors.New("canceling statement due to statement timeout (SQLSTATE 57014)"))
@@ -329,7 +329,7 @@ func TestRestoreSavepoint_ClearsACeilingCause(t *testing.T) {
 // TestRestoreSavepoint_LeavesALaterAbortRecordable — clearing must not latch the
 // state closed: an abort after the rollback is a new one, and Commit needs it.
 func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
-	s := newTxState("tenant-1")
+	s := newTxState("tenant-1", 1)
 	s.PushSavepoint("sp-1")
 	s.RecordAbort(errors.New("first"))
 	if err := s.RestoreSavepoint("sp-1"); err != nil {
@@ -347,7 +347,7 @@ func TestRestoreSavepoint_LeavesALaterAbortRecordable(t *testing.T) {
 // a conflict anywhere in the transaction is a conflict of the transaction, and
 // Commit reads the kept cause to refuse it.
 func TestRestoreSavepoint_KeepsAConflictCause(t *testing.T) {
-	s := newTxState("tenant-1")
+	s := newTxState("tenant-1", 1)
 	s.PushSavepoint("sp-1")
 	conflict := &pgconn.PgError{Code: pgerrcode.SerializationFailure}
 	s.RecordAbort(conflict)
