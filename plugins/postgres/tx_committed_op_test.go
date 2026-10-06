@@ -70,10 +70,10 @@ func TestTx_OpAfterCommit_WrapsSentinel(t *testing.T) {
 	_, err = store.GetPage(txCtx, ref, 10, 0, nil)
 	assertSentinel("GetPage", err)
 
-	_, err = store.Count(txCtx, ref)
+	_, err = store.Count(txCtx, ref, nil)
 	assertSentinel("Count", err)
 
-	_, err = store.CountByState(txCtx, ref, nil)
+	_, err = store.CountByState(txCtx, ref, nil, nil)
 	assertSentinel("CountByState", err)
 
 	_, err = store.Iterate(txCtx, ref, spi.Filter{}, spi.IterateOptions{})

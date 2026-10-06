@@ -993,7 +993,10 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 	return exists, nil
 }
 
-func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		return 0, errors.New("sqlite: Count at an instant not implemented")
+	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		tx.OpMu.RLock()
@@ -1076,7 +1079,10 @@ func inPlaceholders(n int) string {
 //
 // In-tx callers tally the overlay cursor with an id/state projection
 // (tx_overlay.go).
-func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
+	if asAt != nil {
+		return nil, errors.New("sqlite: Count at an instant not implemented")
+	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}

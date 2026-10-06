@@ -26,7 +26,7 @@ func TestTxDeleteAll_StagesCommittedAndBuffered(t *testing.T) {
 	if err := store.DeleteAll(txCtx, ref); err != nil {
 		t.Fatalf("DeleteAll: %v", err)
 	}
-	if n, _ := store.Count(txCtx, ref); n != 0 {
+	if n, _ := store.Count(txCtx, ref, nil); n != 0 {
 		t.Fatalf("in-tx Count after DeleteAll = %d, want 0", n)
 	}
 	if err := tm.Commit(txCtx, txID); err != nil {

@@ -587,6 +587,12 @@ func (tm *TransactionManager) Join(ctx context.Context, txID string) (context.Co
 // tenant must match the transaction's tenant. The check runs before any
 // state-dependent response so a cross-tenant caller learns neither the
 // submit time nor whether the transaction is in flight or committed.
+// ConsistencyTime implements spi.TransactionManager. Not yet implemented
+// for this backend; it fails rather than guessing an instant.
+func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("postgres: ConsistencyTime not implemented")
+}
+
 func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	// Single critical section for both maps; verifyTenant runs outside it
 	// (it takes no locks, but keeping the section minimal matches the rest

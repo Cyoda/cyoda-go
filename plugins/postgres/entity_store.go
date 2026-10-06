@@ -887,7 +887,10 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 }
 
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
-func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		return 0, errors.New("postgres: Count at an instant not implemented")
+	}
 	var count int64
 	err := s.q.QueryRow(ctx,
 		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
@@ -907,7 +910,10 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 //
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See
 // Count's note on phantom reads.
-func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
+	if asAt != nil {
+		return nil, errors.New("postgres: Count at an instant not implemented")
+	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}

@@ -2,6 +2,7 @@ package memory
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"sort"
@@ -871,7 +872,10 @@ func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, mod
 	return nil
 }
 
-func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		return 0, errors.New("memory: Count at an instant not implemented")
+	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		tx.OpMu.RLock()
@@ -911,7 +915,10 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 
 // CountByState returns counts of non-deleted entities grouped by state for the
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
-func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
+	if asAt != nil {
+		return nil, errors.New("memory: Count at an instant not implemented")
+	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}

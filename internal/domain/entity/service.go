@@ -481,7 +481,7 @@ func (h *Handler) GetStatistics(ctx context.Context) ([]EntityStat, error) {
 
 	result := make([]EntityStat, 0, len(refs))
 	for _, ref := range refs {
-		count, err := entityStore.Count(ctx, ref)
+		count, err := entityStore.Count(ctx, ref, nil)
 		if err != nil {
 			return nil, common.Internal("failed to count entities", err)
 		}
@@ -543,7 +543,7 @@ func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([
 
 	result := make([]EntityStatByState, 0)
 	for _, ref := range refs {
-		counts, err := entityStore.CountByState(ctx, ref, filterStates)
+		counts, err := entityStore.CountByState(ctx, ref, filterStates, nil)
 		if err != nil {
 			return nil, common.Internal("failed to count entities by state", err)
 		}
@@ -588,7 +588,7 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		filterStates = *states
 	}
 
-	counts, err := entityStore.CountByState(ctx, ref, filterStates)
+	counts, err := entityStore.CountByState(ctx, ref, filterStates, nil)
 	if err != nil {
 		return nil, common.Internal("failed to count entities by state", err)
 	}
@@ -626,7 +626,7 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 		return nil, appErr
 	}
 
-	count, err := entityStore.Count(ctx, ref)
+	count, err := entityStore.Count(ctx, ref, nil)
 	if err != nil {
 		return nil, common.Internal("failed to count entities", err)
 	}

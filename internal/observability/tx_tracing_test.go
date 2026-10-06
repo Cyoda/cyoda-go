@@ -19,6 +19,12 @@ type fakeTxManager struct {
 	lostRaceTxID   string
 	lostRace       bool
 	lostRaceErr    error
+	ctTime         time.Time
+	ctErr          error
+}
+
+func (f *fakeTxManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return f.ctTime, f.ctErr
 }
 
 func (f *fakeTxManager) Begin(ctx context.Context) (string, context.Context, error) {
@@ -70,6 +76,27 @@ func TestTracingTxManager_LostRaceDelegates(t *testing.T) {
 	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
 	if _, err := traced.LostRace(context.Background(), "tx-9"); !errors.Is(err, wantErr) {
 		t.Fatalf("LostRace error = %v, want %v", err, wantErr)
+	}
+}
+
+// ConsistencyTime is answered by the wrapped manager, value and error unchanged.
+func TestTracing_ForwardsConsistencyTime(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	want := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	inner := &fakeTxManager{ctTime: want}
+	traced := observability.NewTracingTransactionManager(inner, observability.Meter())
+	got, err := traced.ConsistencyTime(context.Background())
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("ConsistencyTime = (%v, %v), want (%v, nil)", got, err, want)
+	}
+
+	wantErr := errors.New("unavailable")
+	inner = &fakeTxManager{ctErr: wantErr}
+	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
+	if _, err := traced.ConsistencyTime(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("ConsistencyTime error = %v, want %v", err, wantErr)
 	}
 }
 

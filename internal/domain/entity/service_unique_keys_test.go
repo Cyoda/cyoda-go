@@ -501,11 +501,11 @@ func (s *spyEntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) e
 func (s *spyEntityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	return s.delegate.Exists(ctx, entityID)
 }
-func (s *spyEntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
-	return s.delegate.Count(ctx, modelRef)
+func (s *spyEntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	return s.delegate.Count(ctx, modelRef, asAt)
 }
-func (s *spyEntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
-	return s.delegate.CountByState(ctx, modelRef, states)
+func (s *spyEntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
+	return s.delegate.CountByState(ctx, modelRef, states, asAt)
 }
 func (s *spyEntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt *time.Time) ([]*spi.Entity, error) {
 	return s.delegate.GetPage(ctx, modelRef, limit, offset, asAt)
