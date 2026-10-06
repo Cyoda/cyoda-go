@@ -1,7 +1,9 @@
 package e2e_test
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -52,7 +54,7 @@ func (r *ccRun) fail(format string, args ...any) {
 	}
 }
 
-func (r *ccRun) go_(fn func()) {
+func (r *ccRun) spawn(fn func()) {
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
@@ -72,7 +74,7 @@ func (r *ccRun) snapshot() map[string]struct{} {
 }
 
 func (r *ccRun) writer(model string, n int, count *atomic.Int64) {
-	r.go_(func() {
+	r.spawn(func() {
 		for i := 0; !r.stopped(); i++ {
 			res := r.h.CreateEntityRaw(model, 1, fmt.Sprintf(`{"name":"w%d-%d","amount":%d,"status":"new"}`, n, i, i))
 			if res.err != nil || res.status != http.StatusOK {
@@ -154,6 +156,9 @@ func missing(acked map[string]struct{}, got []string) []string {
 	return out
 }
 
+// errStopped reports that the run was halted while a poll was in progress.
+var errStopped = errors.New("run stopped")
+
 // asyncResultIDs submits a match-all async search with no pointInTime, waits
 // for it, and returns every result id.
 func (r *ccRun) asyncResultIDs(model string) ([]string, error) {
@@ -179,6 +184,9 @@ func (r *ccRun) asyncResultIDs(model string) ([]string, error) {
 		}
 		if st.Status == "SUCCESSFUL" {
 			break
+		}
+		if r.stopped() {
+			return nil, errStopped
 		}
 		if st.Status != "RUNNING" || time.Now().After(deadline) {
 			return nil, fmt.Errorf("async job %s status %q", jobID, st.Status)
@@ -238,8 +246,16 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 	const model = "e2e-cc-writers"
 	s := newSchedDB(t)
 	h := newStackOn(t, s, nil)
-	h.SetupModelWithWorkflow(t, model, secondaryWorkflow)
 	_ = h.token(t) // seeds the bearer the goroutine-safe helpers read
+
+	// Commit stamps run an hour ahead of this process's clock, so a default
+	// instant taken from the process clock (instead of the consistency time)
+	// selects as-at a moment before every stamp and misses every create.
+	floor := time.Now().Add(time.Hour).UnixMicro()
+	if _, err := s.pool.Exec(context.Background(), fmt.Sprintf("SELECT setval('cyoda_stamp_floor', %d, true)", floor)); err != nil {
+		t.Fatalf("raise the stamp floor: %v", err)
+	}
+	h.SetupModelWithWorkflow(t, model, secondaryWorkflow)
 
 	r := newCCRun(h)
 	defer r.halt()
@@ -249,7 +265,7 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 		r.writer(model, n, &created)
 	}
 	for n := 0; n < 2; n++ {
-		r.go_(func() {
+		r.spawn(func() {
 			for !r.stopped() {
 				acked := r.snapshot()
 				c, err := r.consistencyTime()
@@ -276,14 +292,19 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 					r.fail("list at %s misses %d create(s) acknowledged before it was requested, e.g. %s", c, len(m), m[0])
 					return
 				}
-				listChecks.Add(1)
+				if len(acked) > 0 {
+					listChecks.Add(1)
+				}
 			}
 		})
 	}
-	r.go_(func() {
+	r.spawn(func() {
 		for !r.stopped() {
 			acked := r.snapshot()
 			ids, err := r.asyncResultIDs(model)
+			if errors.Is(err, errStopped) {
+				return
+			}
 			if err != nil {
 				r.fail("async search: %v", err)
 				return
@@ -292,7 +313,9 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 				r.fail("async search without pointInTime misses %d create(s) acknowledged before the submit, e.g. %s", len(m), m[0])
 				return
 			}
-			asyncChecks.Add(1)
+			if len(acked) > 0 {
+				asyncChecks.Add(1)
+			}
 		}
 	})
 
@@ -305,7 +328,6 @@ wait:
 		case err := <-r.errs:
 			t.Errorf("%v", err)
 			break wait
-		case <-time.After(100 * time.Millisecond):
 		}
 	}
 	r.halt()

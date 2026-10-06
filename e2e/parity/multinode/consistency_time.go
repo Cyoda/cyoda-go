@@ -57,24 +57,25 @@ func RunConsistencyTime_AcrossNodes(t *testing.T, fixture MultiNodeFixture) {
 			if b == a {
 				continue
 			}
+			// A's C passes B's fence. Probed before B has handed out a C of its own,
+			// so B's cached horizon is below it and the fence has to ask the store.
+			path := "/api/entity/" + id.String() + "?pointInTime=" + url.QueryEscape(cFromA)
+			if status, body, err := cb.DoRaw(t, http.MethodGet, path, ""); err != nil || status != http.StatusOK {
+				t.Errorf("get at node %d's C %s on node %d (save made on node %d) refused or missing: status=%d err=%v body=%s", a, cFromA, b, a, status, err, body)
+			}
+			path = fmt.Sprintf("/api/entity/%s/1?pointInTime=%s", model, url.QueryEscape(cFromA))
+			if status, body, err := cb.DoRaw(t, http.MethodGet, path, ""); err != nil || status != http.StatusOK {
+				t.Errorf("list at node %d's C on node %d: status=%d err=%v body=%s", a, b, status, err, body)
+			}
+
 			// The C node B hands out includes A's confirmed save.
 			cFromB, err := cb.GetConsistencyTime(t)
 			if err != nil {
 				t.Fatalf("consistency time on node %d: %v", b, err)
 			}
-			path := "/api/entity/" + id.String() + "?pointInTime=" + url.QueryEscape(cFromB)
+			path = "/api/entity/" + id.String() + "?pointInTime=" + url.QueryEscape(cFromB)
 			if status, body, err := cb.DoRaw(t, http.MethodGet, path, ""); err != nil || status != http.StatusOK {
 				t.Errorf("save on node %d not found at node %d's C %s: status=%d err=%v body=%s", a, b, cFromB, status, err, body)
-			}
-
-			// A's C passes B's fence: the save is visible there too.
-			path = "/api/entity/" + id.String() + "?pointInTime=" + url.QueryEscape(cFromA)
-			if status, body, err := cb.DoRaw(t, http.MethodGet, path, ""); err != nil || status != http.StatusOK {
-				t.Errorf("node %d's C %s refused or missing the save on node %d: status=%d err=%v body=%s", a, cFromA, b, status, err, body)
-			}
-			path = fmt.Sprintf("/api/entity/%s/1?pointInTime=%s", model, url.QueryEscape(cFromA))
-			if status, body, err := cb.DoRaw(t, http.MethodGet, path, ""); err != nil || status != http.StatusOK {
-				t.Errorf("list at node %d's C on node %d: status=%d err=%v body=%s", a, b, status, err, body)
 			}
 
 			// An async search submitted on B without a pointInTime includes it.
