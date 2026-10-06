@@ -306,19 +306,18 @@ func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
 }
 
 // TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation pins the
-// documented limitation from plugins/sqlite/grouped_stats.go: when a tx
-// is active AND PointInTime is requested, the iterator reads the
-// historical entity_versions snapshot WITHOUT applying the tx-buffer
-// overlay. The in-tx, non-PIT branch in Iterate is gated on
+// contract from plugins/sqlite/grouped_stats.go: when a tx is active AND
+// PointInTime is requested, the iterator reads committed history at that
+// instant and ignores the ambient transaction — the tx buffer is not
+// overlaid. The in-tx, non-PIT branch in Iterate is gated on
 // `opts.PointInTime == nil`, so the PIT path falls through to the plain
 // historical-read query.
 //
-// This is documented in the source godoc and cmd/cyoda/help/content/crud.md.
-// PIT semantics are historical-read by definition, so the in-flight
-// buffer is a tier-2 concern — but it's a real behaviour cliff and must
-// be pinned. If this test starts failing because the behaviour changed
-// (i.e. buffered writes become visible at PIT inside a tx), update both
-// the godoc and the help-topic together.
+// A read at an instant is committed-only by definition (the instant is a
+// consistency time, which a transaction's uncommitted writes are not part
+// of), and counts and grouped stats at an instant behave the same way. If
+// this test starts failing because buffered writes become visible at an
+// instant inside a tx, update the godoc and the help topic together.
 func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
 	factory, store, ctx := gsNewStore(t)
 
@@ -578,9 +577,9 @@ func TestSqliteGroupedAggregate_StdevClassification(t *testing.T) {
 		}
 	})
 
-	// PIT keeps precedence over path validation, matching postgres, which
-	// returns early on PointInTime before it validates.
-	t.Run("PointInTimeBeatsMalformedPath", func(t *testing.T) {
+	// A malformed path is a client error at an instant too: validation runs
+	// before any pushdown decision, point in time or not.
+	t.Run("MalformedPathAtAnInstantIsAPathError", func(t *testing.T) {
 		_, store, ctx := gsNewStore(t)
 		gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
 
@@ -591,8 +590,8 @@ func TestSqliteGroupedAggregate_StdevClassification(t *testing.T) {
 			spi.Filter{Op: spi.FilterEq, Source: spi.SourceData, Path: "foo';x", Value: "y"},
 			spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &at},
 		)
-		if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
-			t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+		if err == nil || errors.Is(err, spi.ErrAggregationNotPushdownable) {
+			t.Fatalf("got %v, want the malformed-path error, not a pushdown decline", err)
 		}
 	})
 }
@@ -721,19 +720,96 @@ func TestSqliteGroupedAggregate_StreamingFallbackCorrectAtSoundSupersetBoundary(
 	}
 }
 
-func TestSqliteGroupedAggregate_DeclinesOnPointInTime(t *testing.T) {
+// At an instant the aggregate is pushed down over the version snapshot: the
+// buckets carry the counts and sums of what was live then, and a data-field
+// filter and group key resolve over the snapshot's data.
+func TestSqliteGroupedAggregate_PointInTimePushesDown(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
-	gsSave(t, ctx, store, "a", "available", map[string]any{"x": 1})
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 10.0, "tag": "x"})
+	gsSave(t, ctx, store, "b", "available", map[string]any{"price": 20.0, "tag": "y"})
+	gsSave(t, ctx, store, "c", "allocated", map[string]any{"price": 5.0})
 
-	pit := time.Now()
+	pit := time.Now().Add(time.Minute)
 	ga := store.(spi.GroupedAggregator)
-	_, err := ga.GroupedAggregate(ctx, gsModel,
+	aggs := []spi.AggregateExpr{{Op: spi.AggSum, Field: "price", Alias: "sum_price"}}
+
+	res, err := ga.GroupedAggregate(ctx, gsModel,
 		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
 		spi.Filter{},
-		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit, Aggregations: aggs},
 	)
-	if !errors.Is(err, spi.ErrAggregationNotPushdownable) {
-		t.Fatalf("got %v, want ErrAggregationNotPushdownable", err)
+	if err != nil {
+		t.Fatalf("GroupedAggregate at an instant: %v", err)
+	}
+	counts, sums := map[string]int64{}, map[string]float64{}
+	for _, b := range res {
+		k, _ := b.GroupKey[0].Value.(string)
+		counts[k] = b.Count
+		sums[k], _ = b.Aggregations["sum_price"].(float64)
+	}
+	if counts["available"] != 2 || sums["available"] != 30.0 || counts["allocated"] != 1 || sums["allocated"] != 5.0 {
+		t.Errorf("counts=%v sums=%v, want available 2/30 and allocated 1/5", counts, sums)
+	}
+
+	// A pushed (exact) data filter resolves over the snapshot's data.
+	res, err = ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{Op: spi.FilterIsNull, Source: spi.SourceData, Path: "tag"},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit, Aggregations: aggs},
+	)
+	if err != nil {
+		t.Fatalf("filtered GroupedAggregate at an instant: %v", err)
+	}
+	if len(res) != 1 || res[0].Count != 1 || res[0].Aggregations["sum_price"] != 5.0 {
+		t.Errorf("filtered buckets = %+v, want one bucket of 1 entity summing 5", res)
+	}
+
+	// A data-path group key resolves over the snapshot's data.
+	res, err = ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprDataPath, Path: "tag"}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit, Aggregations: aggs},
+	)
+	if err != nil {
+		t.Fatalf("data-path GroupedAggregate at an instant: %v", err)
+	}
+	if len(res) != 3 {
+		t.Errorf("data-path buckets = %+v, want 3 (x, y, and the tag-less entity)", res)
+	}
+}
+
+// An instant before an entity existed does not see it, and a deleted entity is
+// not counted at an instant after the delete.
+func TestSqliteGroupedAggregate_PointInTimeExcludesLaterAndDeleted(t *testing.T) {
+	_, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 1.0})
+	before := time.Now().Add(-time.Hour)
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &before},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("buckets before the entity existed = %+v, want none", res)
+	}
+	if err := store.Delete(ctx, "a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	after := time.Now().Add(time.Minute)
+	res, err = ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &after},
+	)
+	if err != nil {
+		t.Fatalf("GroupedAggregate: %v", err)
+	}
+	if len(res) != 0 {
+		t.Errorf("buckets after the delete = %+v, want none", res)
 	}
 }
 

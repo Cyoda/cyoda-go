@@ -995,7 +995,22 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 
 func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
 	if asAt != nil {
-		return 0, errors.New("sqlite: Count at an instant not implemented")
+		// An instant reads committed history only and ignores any ambient
+		// transaction, on the committed read pool.
+		var count int64
+		err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*)
+			FROM entity_versions ev
+			INNER JOIN (
+				SELECT tenant_id, entity_id, MAX(version) AS max_ver FROM entity_versions
+				WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
+				GROUP BY entity_id
+			) latest ON ev.tenant_id = latest.tenant_id AND ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
+			WHERE ev.change_type != 'DELETED'`,
+			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, timeToMicro(*asAt)).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("count entities as at: %w", err)
+		}
+		return count, nil
 	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
@@ -1080,14 +1095,14 @@ func inPlaceholders(n int) string {
 // In-tx callers tally the overlay cursor with an id/state projection
 // (tx_overlay.go).
 func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
-	if asAt != nil {
-		return nil, errors.New("sqlite: Count at an instant not implemented")
-	}
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
 	if len(states) > MaxStateFilterSize {
 		return nil, fmt.Errorf("%w: got %d, max %d", ErrStateFilterTooLarge, len(states), MaxStateFilterSize)
+	}
+	if asAt != nil {
+		return s.countByStateAsAt(ctx, modelRef, states, *asAt)
 	}
 
 	tx := spi.GetTransaction(ctx)
@@ -1172,6 +1187,53 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate count by state: %w", err)
+	}
+	return result, nil
+}
+
+// countByStateAsAt counts the entities live at asAt by state, on the
+// committed read pool, ignoring any ambient transaction. The state filter is
+// applied to the grouped result rather than bound into the query, so the
+// larger base parameter list cannot push a full-size filter past the
+// bound-variable cap.
+func (s *entityStore) countByStateAsAt(ctx context.Context, modelRef spi.ModelRef, states []string, asAt time.Time) (map[string]int64, error) {
+	rows, err := s.readDB.QueryContext(ctx, `SELECT COALESCE(json_extract(json(ev.meta), '$.state'), '') AS state, COUNT(*)
+		FROM entity_versions ev
+		INNER JOIN (
+			SELECT tenant_id, entity_id, MAX(version) AS max_ver FROM entity_versions
+			WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
+			GROUP BY entity_id
+		) latest ON ev.tenant_id = latest.tenant_id AND ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
+		WHERE ev.change_type != 'DELETED'
+		GROUP BY state`,
+		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, timeToMicro(asAt))
+	if err != nil {
+		return nil, fmt.Errorf("count entities by state as at: %w", err)
+	}
+	defer rows.Close()
+	var filter map[string]struct{}
+	if states != nil {
+		filter = make(map[string]struct{}, len(states))
+		for _, st := range states {
+			filter[st] = struct{}{}
+		}
+	}
+	result := make(map[string]int64)
+	for rows.Next() {
+		var st string
+		var n int64
+		if err := rows.Scan(&st, &n); err != nil {
+			return nil, fmt.Errorf("scan count by state as at: %w", err)
+		}
+		if filter != nil {
+			if _, ok := filter[st]; !ok {
+				continue
+			}
+		}
+		result[st] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate count by state as at: %w", err)
 	}
 	return result, nil
 }

@@ -448,10 +448,10 @@ func (f *StoreFactory) SupportsCompositeUniqueKeys() bool { return true }
 // initTransactionManager installs the SI+FCW transaction manager on the factory.
 // Called by Plugin.NewFactory after the factory is created.
 // Seeds lastSubmitTime from the database to maintain monotonicity across restarts.
-func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) {
+func (f *StoreFactory) initTransactionManager(uuids spi.UUIDGenerator) error {
 	f.uuids = uuids
 	f.tm = newTransactionManager(f, uuids)
-	f.tm.seedLastSubmitTime()
+	return f.tm.seedLastSubmitTime()
 }
 
 // NewStoreFactoryForTest creates a factory with auto-migrate enabled and the
@@ -469,6 +469,9 @@ func NewStoreFactoryForTest(ctx context.Context, dbPath string, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
-	f.initTransactionManager(&defaultUUIDGenerator{})
+	if err := f.initTransactionManager(&defaultUUIDGenerator{}); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
+	}
 	return f, nil
 }

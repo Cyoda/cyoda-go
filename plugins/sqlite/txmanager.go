@@ -124,12 +124,13 @@ type transactionManager struct {
 	// that connection while holding mu.
 	mu sync.Mutex // protects active, committedLog, commitSeq, txSnapshotSeq, committing, submitTimes, savepoints, txUniqueKeys
 
-	active         map[string]*spi.TransactionState
-	committedLog   []committedTx
-	committing     map[string]bool
-	submitTimes    map[string]submitTimeEntry
-	savepoints     map[string]map[string]savepointSnapshot
-	lastSubmitTime int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
+	active          map[string]*spi.TransactionState
+	committedLog    []committedTx
+	committing      map[string]bool
+	submitTimes     map[string]submitTimeEntry
+	savepoints      map[string]map[string]savepointSnapshot
+	consistencyHigh int64 // persisted consistency_floor.micros; guarded by mu
+	lastSubmitTime  int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
 
 	// commitSeq counts committed writes, a transaction's and a task-row
 	// write that commits on its own alike; txSnapshotSeq holds its value at
@@ -590,15 +591,26 @@ func insertDeletedBufferedTombstone(ctx context.Context, sqlTx *sql.Tx, tid, txI
 	return nil
 }
 
-// seedLastSubmitTime reads the maximum submit_time from entity_versions
-// so that lastSubmitTime is monotonic across process restarts.
-func (m *transactionManager) seedLastSubmitTime() {
-	var maxTime sql.NullInt64
-	err := m.factory.db.QueryRow(
-		"SELECT MAX(submit_time) FROM entity_versions").Scan(&maxTime)
-	if err == nil && maxTime.Valid {
-		m.lastSubmitTime = maxTime.Int64
+// seedLastSubmitTime floors lastSubmitTime at the highest instant this
+// database has ever stamped or handed out, so stamps and consistency times
+// stay monotonic across restarts, including one whose wall clock stepped
+// back. Any query error is returned: starting from a zero floor would fail
+// open.
+func (m *transactionManager) seedLastSubmitTime() error {
+	var floor sql.NullInt64
+	err := m.factory.db.QueryRow(`SELECT MAX(v) FROM (
+		SELECT MAX(submit_time) AS v FROM entity_versions
+		UNION ALL SELECT MAX(submit_time) FROM submit_times
+		UNION ALL SELECT MAX(point_in_time) FROM search_jobs
+		UNION ALL SELECT micros FROM consistency_floor WHERE id = 1)`).Scan(&floor)
+	if err != nil {
+		return fmt.Errorf("failed to seed the submit-time floor: %w", err)
 	}
+	if floor.Valid {
+		m.lastSubmitTime = floor.Int64
+	}
+	m.consistencyHigh = m.lastSubmitTime
+	return nil
 }
 
 // acquireCommitGate takes the one-slot commit gate, which serializes the whole
@@ -1341,10 +1353,49 @@ func (m *transactionManager) GetSubmitTime(ctx context.Context, txID string) (ti
 	return time.UnixMicro(micro), nil
 }
 
-// ConsistencyTime implements spi.TransactionManager. Not yet implemented
-// for this backend; it fails rather than guessing an instant.
+// consistencyHighStep is how far ahead of the C being handed out the durable
+// high-water mark is written: one write per second of use at most.
+const consistencyHighStep = time.Second
+
+// ConsistencyTime implements spi.TransactionManager. It takes the commit gate
+// (waiting for a commit in flight to make its rows visible), reserves
+// C = max(clock, lastSubmitTime) as the new floor exactly as Begin does, and
+// keeps the durable high-water mark above C. Every stamping path holds the
+// gate from stamp to commit, so a read at T <= C that starts after C was
+// returned sees every save stamped <= T. The floor is shared by all tenants.
 func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
-	return time.Time{}, errors.New("sqlite: ConsistencyTime not implemented")
+	if uc := spi.GetUserContext(ctx); uc == nil || uc.Tenant.ID == "" {
+		return time.Time{}, fmt.Errorf("ConsistencyTime: no tenant in context")
+	}
+	if err := m.acquireCommitGate(ctx); err != nil {
+		return time.Time{}, fmt.Errorf("ConsistencyTime: %w", err)
+	}
+	defer m.releaseCommitGate()
+	nowMicro := m.factory.clock.Now().UnixMicro()
+	needHigh := func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if nowMicro < m.lastSubmitTime {
+			nowMicro = m.lastSubmitTime
+		}
+		m.lastSubmitTime = nowMicro
+		return nowMicro > m.consistencyHigh
+	}()
+	if needHigh {
+		high := nowMicro + consistencyHighStep.Microseconds()
+		if _, err := m.factory.db.ExecContext(ctx,
+			`UPDATE consistency_floor SET micros = ? WHERE id = 1 AND micros < ?`, high, high); err != nil {
+			return time.Time{}, fmt.Errorf("ConsistencyTime: failed to persist the high-water mark: %w", err)
+		}
+		func() {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			if high > m.consistencyHigh {
+				m.consistencyHigh = high
+			}
+		}()
+	}
+	return time.UnixMicro(nowMicro), nil
 }
 
 // CommittedLogLen returns the current length of the committed log.

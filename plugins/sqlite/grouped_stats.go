@@ -28,8 +28,9 @@ import (
 //         layer falls through to Iterate-streaming-tally with Welford).
 //       * the filter has a residual (post-aggregation residual application
 //         can't reconstruct per-bucket counts safely).
-//       * opts.PointInTime is set (PIT joins are out of scope for v1; service
-//         layer streaming-tally over Iterate handles it).
+//     With opts.PointInTime set it aggregates the latest version of each
+//     entity at or before that instant (committed only, on the read pool),
+//     over the same group / aggregate / filter SQL as the live read.
 //
 // Cardinality detection follows D17: we LIMIT MaxBuckets+1 and surface
 // ErrGroupCardinalityExceeded the moment we observe MaxBuckets+1 rows.
@@ -212,7 +213,7 @@ func (it *sqliteIter) Close() error {
 
 // GroupedAggregate implements spi.GroupedAggregator. Returns
 // ErrAggregationNotPushdownable for request shapes the SQL path cannot
-// safely cover (stdev / residual filter / point-in-time); the caller is
+// safely cover (stdev / residual filter); the caller is
 // expected to fall back to Iterate-driven streaming tally.
 func (s *entityStore) GroupedAggregate(
 	ctx context.Context,
@@ -221,15 +222,8 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
-	// (which does support PIT) handles it without per-query SQL plumbing.
-	if opts.PointInTime != nil {
-		return nil, spi.ErrAggregationNotPushdownable
-	}
-
-	// Path validation runs BEFORE the stdev decline below, matching postgres,
-	// which validates immediately after its own PIT early-return. A malformed
-	// path is a client error and must be classified the same way on every
+	// Path validation runs BEFORE the stdev decline below, on every request
+	// shape including a point in time. A malformed path is a client error and must be classified the same way on every
 	// backend; declining first would report an invalid path as
 	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
 	// and the service layer would then stream a filter it should have refused.
@@ -296,8 +290,28 @@ func (s *entityStore) GroupedAggregate(
 	}
 
 	q := "SELECT " + strings.Join(selectParts, ", ")
-	q += " FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted"
+	// The live read aggregates the current-state table on the writer; an
+	// instant aggregates the latest version of each entity at or before it,
+	// committed only, on the read pool. Both expose the `data` and `meta`
+	// columns the group, aggregate and filter SQL reference unqualified
+	// (entity_versions' joined subquery carries only tenant/entity/max_ver,
+	// so they stay unambiguous).
+	queryDB := s.db
 	args := []any{string(s.tenantID), model.EntityName, model.ModelVersion}
+	if opts.PointInTime != nil {
+		q += ` FROM entity_versions
+		INNER JOIN (
+			SELECT tenant_id AS l_tenant, entity_id AS l_entity, MAX(version) AS max_ver
+			FROM entity_versions
+			WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
+			GROUP BY entity_id
+		) latest ON tenant_id = l_tenant AND entity_id = l_entity AND version = max_ver
+		WHERE change_type != 'DELETED'`
+		args = append(args, timeToMicro(*opts.PointInTime))
+		queryDB = s.readDB
+	} else {
+		q += " FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted"
+	}
 	if plan.where != "" {
 		q += " AND (" + plan.where + ")"
 		args = append(args, plan.args...)
@@ -317,7 +331,7 @@ func (s *entityStore) GroupedAggregate(
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := queryDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("grouped aggregate query: %w", err)
 	}
