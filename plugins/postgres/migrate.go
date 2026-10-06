@@ -80,6 +80,14 @@ func ensureSchema(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, loc
 // observation of the schema. That gap is the entire concurrent-boot race window
 // and it cannot be reached from outside these functions. Production passes nil.
 func ensureSchemaWith(ctx context.Context, pool *pgxpool.Pool, autoMigrate bool, lockTimeout time.Duration, afterMigratorBuilt func()) error {
+	// The search_path check before anything else, on every start: a migration
+	// resolves names through the same path as the node's own SQL, and a node
+	// that does not migrate still runs that SQL. The migration connection is
+	// opened from this pool's config, so it shares the path checked here.
+	if err := checkSearchPath(ctx, pool); err != nil {
+		return err
+	}
+
 	// Migrations FIRST when this binary is the one migrating.
 	//
 	// m.Up() takes golang-migrate's advisory lock before reading the dirty flag,
@@ -263,8 +271,12 @@ func runMigrationsWith(ctx context.Context, pool *pgxpool.Pool, lockTimeout time
 // Migrate preserves the existing exported API for test fixtures. It applies the
 // shipped lock-timeout default: a fixture migrates a database nothing else is
 // touching, so its lock waits are uncontended and there is no second source of
-// truth to keep in step.
+// truth to keep in step. It runs the search_path check first, as every other
+// route into a migration does.
 func Migrate(pool *pgxpool.Pool) error {
+	if err := checkSearchPath(context.Background(), pool); err != nil {
+		return err
+	}
 	return runMigrations(context.Background(), pool, defaultMigrateLockTimeout)
 }
 
