@@ -232,9 +232,23 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 	c := ctSetup(t, fixture)
 	a := ctCreate(t, c, "a")
 	tA := LatestChangeTime(t, c, a)
-	time.Sleep(20 * time.Millisecond)
-	b := ctCreate(t, c, "b")
-	tB := LatestChangeTime(t, c, b)
+	// Save until a save's server stamp is strictly after tA. A backend with a
+	// coarse stamp clock may stamp a quick follow-up save with tA itself; such
+	// a save is at or before the midpoint and counts with the first.
+	atOrBefore := 1
+	var tB time.Time
+	deadline := time.Now().Add(2 * time.Second)
+	for i := 0; ; i++ {
+		b := ctCreate(t, c, fmt.Sprintf("b%d", i))
+		tB = LatestChangeTime(t, c, b)
+		if tB.After(tA) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no save was stamped after %s within 2s (last %s)", tA.Format(time.RFC3339Nano), tB.Format(time.RFC3339Nano))
+		}
+		atOrBefore++
+	}
 	midT := MidpointBetween(t, tA, tB).UTC()
 	mid := midT.Format(time.RFC3339Nano)
 	ctWaitConsistentAt(t, c, tB)
@@ -255,8 +269,8 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 		Count int `json:"count"`
 	}
 	get("/api/entity/stats/"+model, &perModel)
-	if perModel.Count != 1 {
-		t.Errorf("StatsForModel at the midpoint: count = %d, want 1", perModel.Count)
+	if perModel.Count != atOrBefore {
+		t.Errorf("StatsForModel at the midpoint: count = %d, want %d", perModel.Count, atOrBefore)
 	}
 
 	var perModelStates []struct {
@@ -267,8 +281,8 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 	for _, e := range perModelStates {
 		total += e.Count
 	}
-	if total != 1 {
-		t.Errorf("StatsByStateForModel at the midpoint: total = %d, want 1 (%v)", total, perModelStates)
+	if total != atOrBefore {
+		t.Errorf("StatsByStateForModel at the midpoint: total = %d, want %d (%v)", total, atOrBefore, perModelStates)
 	}
 
 	var all []struct {
@@ -280,8 +294,8 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 	for _, e := range all {
 		if e.ModelName == ctModel {
 			found = true
-			if e.Count != 1 {
-				t.Errorf("Stats at the midpoint: count = %d, want 1", e.Count)
+			if e.Count != atOrBefore {
+				t.Errorf("Stats at the midpoint: count = %d, want %d", e.Count, atOrBefore)
 			}
 		}
 	}
@@ -301,15 +315,15 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 			total += e.Count
 		}
 	}
-	if !found || total != 1 {
-		t.Errorf("StatsByState at the midpoint: found=%v total=%d, want an entry totalling 1", found, total)
+	if !found || total != atOrBefore {
+		t.Errorf("StatsByState at the midpoint: found=%v total=%d, want an entry totalling %d", found, total, atOrBefore)
 	}
 
 	buckets, err := c.QueryGroupedStats(t, ctModel, ctVersion, client.GroupedStatsRequest{GroupBy: []string{"state"}, PointInTime: &midT})
 	if err != nil {
 		t.Fatalf("QueryGroupedStats: %v", err)
 	}
-	if len(buckets) != 1 || buckets[0].Count != 1 {
-		t.Errorf("GroupedStats at the midpoint: %+v, want one bucket with count 1", buckets)
+	if len(buckets) != 1 || buckets[0].Count != int64(atOrBefore) {
+		t.Errorf("GroupedStats at the midpoint: %+v, want one bucket with count %d", buckets, atOrBefore)
 	}
 }
