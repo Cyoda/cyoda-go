@@ -1010,7 +1010,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
@@ -1069,7 +1069,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
@@ -1182,7 +1182,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
@@ -1293,7 +1293,7 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for statistics in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
@@ -1419,7 +1419,7 @@ paths:
                   as: totalAmount
                 - op: avg
                   field: $.amount
-              pointInTime: 2035-01-01T12:00:00Z
+              pointInTime: 2026-01-01T12:00:00Z
               limit: 5000
       responses:
         "200":
@@ -1530,13 +1530,13 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent means the current committed state.
+            '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
             format: date-time
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         - name: transactionId
           in: query
           description: Load the entity as it was at the end of the specified transaction
@@ -1786,14 +1786,14 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entity changes, in ISO 8601
-            format (e.g., '2035-01-01T12:00:00Z'). Absent means the current
+            format (e.g., '2026-01-01T12:00:00Z'). Absent means the current
             committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
             format: date-time
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
@@ -1907,7 +1907,7 @@ paths:
           schema:
             type: string
             format: date-time
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         - name: transactionId
           in: query
           description: Evaluate available transitions as of the submit time of this
@@ -2060,14 +2060,14 @@ paths:
         - name: pointInTime
           in: query
           description: The point-in-time for loading the entities, in ISO 8601 format
-            (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed
+            (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed
             state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
           schema:
             type: string
             format: date-time
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         - $ref: '#/components/parameters/TxToken'
       responses:
         "200":
@@ -2240,7 +2240,7 @@ paths:
           in: query
           description: |
             Select the entities that existed at this instant, in ISO 8601
-            format (e.g. '2035-01-01T12:00:00Z'), and delete their current
+            format (e.g. '2026-01-01T12:00:00Z'), and delete their current
             rows. Absent means the current committed state. An entity
             selected at the instant but already gone is reported in
             idToError.
@@ -2249,7 +2249,7 @@ paths:
           schema:
             type: string
             format: date-time
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         - name: verbose
           in: query
           description: |
@@ -7133,7 +7133,7 @@ paths:
         - name: pointInTime
           in: query
           description: "The point-in-time for the report, in ISO 8601 format (e.g.,
-            '2035-01-01T12:00:00Z'). Absent: the consistency time at submission.
+            '2026-01-01T12:00:00Z'). Absent: the consistency time at submission.
             Must be at or before the consistency time (GET /entity/consistency-time);
             a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME."
           required: false
@@ -11257,7 +11257,7 @@ components:
             format. Absent means the current committed state. Must be at or
             before the consistency time (GET /entity/consistency-time); a later
             instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
-          example: 2035-01-01T12:00:00Z
+          example: 2026-01-01T12:00:00Z
         limit:
           type: integer
           format: int32

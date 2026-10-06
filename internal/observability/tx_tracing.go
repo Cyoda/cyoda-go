@@ -110,7 +110,13 @@ func (t *TracingTransactionManager) GetSubmitTime(ctx context.Context, txID stri
 }
 
 func (t *TracingTransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
-	return t.inner.ConsistencyTime(ctx)
+	ctx, span := t.tracer.Start(ctx, "tx.consistency_time")
+	defer span.End()
+	ct, err := t.inner.ConsistencyTime(ctx)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return ct, err
 }
 
 func (t *TracingTransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {

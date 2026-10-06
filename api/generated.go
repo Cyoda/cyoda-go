@@ -3397,7 +3397,7 @@ type CreateTechnicalUserParams struct {
 
 // GetEntityStatisticsParams defines parameters for GetEntityStatistics.
 type GetEntityStatisticsParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
@@ -3412,7 +3412,7 @@ type GetEntityStatisticsParams struct {
 
 // GetEntityStatisticsByStateParams defines parameters for GetEntityStatisticsByState.
 type GetEntityStatisticsByStateParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3430,7 +3430,7 @@ type GetEntityStatisticsByStateParams struct {
 
 // GetEntityStatisticsByStateForModelParams defines parameters for GetEntityStatisticsByStateForModel.
 type GetEntityStatisticsByStateForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// States Optional list of states for which to calculate statistics. If not provided, statistics will be calculated for all current workflow states
@@ -3448,7 +3448,7 @@ type GetEntityStatisticsByStateForModelParams struct {
 
 // GetEntityStatisticsForModelParams defines parameters for GetEntityStatisticsForModel.
 type GetEntityStatisticsForModelParams struct {
-	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for statistics in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
@@ -3487,7 +3487,7 @@ type DeleteSingleEntityParams struct {
 
 // GetOneEntityParams defines parameters for GetOneEntity.
 type GetOneEntityParams struct {
-	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for loading the entity, in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// TransactionId Load the entity as it was at the end of the specified transaction with the given transactionId
@@ -3505,7 +3505,7 @@ type GetOneEntityParams struct {
 
 // GetEntityChangesMetadataParams defines parameters for GetEntityChangesMetadata.
 type GetEntityChangesMetadataParams struct {
-	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for loading the entity changes, in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
@@ -3546,7 +3546,7 @@ type DeleteEntitiesParams struct {
 	TransactionSize *int32 `form:"transactionSize,omitempty" json:"transactionSize,omitempty"`
 
 	// PointInTime Select the entities that existed at this instant, in ISO 8601
-	// format (e.g. '2035-01-01T12:00:00Z'), and delete their current
+	// format (e.g. '2026-01-01T12:00:00Z'), and delete their current
 	// rows. Absent means the current committed state. An entity
 	// selected at the instant but already gone is reported in
 	// idToError.
@@ -3576,7 +3576,7 @@ type GetAllEntitiesParams struct {
 	// PageNumber Page number to retrieve, starting from 0. Must be greater than or equal to 0.
 	PageNumber *int32 `form:"pageNumber,omitempty" json:"pageNumber,omitempty"`
 
-	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for loading the entities, in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
@@ -4019,7 +4019,7 @@ type SubmitAsyncSearchJobJSONBody struct {
 
 // SubmitAsyncSearchJobParams defines parameters for SubmitAsyncSearchJob.
 type SubmitAsyncSearchJobParams struct {
-	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2035-01-01T12:00:00Z'). Absent: the consistency time at submission. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
+	// PointInTime The point-in-time for the report, in ISO 8601 format (e.g., '2026-01-01T12:00:00Z'). Absent: the consistency time at submission. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `form:"pointInTime,omitempty" json:"pointInTime,omitempty"`
 
 	// Sort Repeatable sort key. Grammar: [@]path[:asc|desc], direction defaults to asc. A bare path sorts by a scalar entity-data field; a leading '@' selects a meta field (state, creationDate, lastUpdateTime, transitionForLatestSave, transactionId, id). Repetition order is sort precedence; entity id is the final tiebreaker. Absent/null values sort last.

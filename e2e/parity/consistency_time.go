@@ -172,7 +172,15 @@ func RunConsistencyTimeFenceRefuses(t *testing.T, fixture BackendFixture) {
 func RunConsistencyTimeReadAtC(t *testing.T, fixture BackendFixture) {
 	c := ctSetup(t, fixture)
 	id := ctCreate(t, c, "served")
-	ctWaitConsistentAt(t, c, LatestChangeTime(t, c, id))
+	// One read, no retry: the consistency time of a confirmed save covers it.
+	saved := LatestChangeTime(t, c, id)
+	first, err := c.GetConsistencyTime(t)
+	if err != nil {
+		t.Fatalf("GetConsistencyTime: %v", err)
+	}
+	if got, perr := time.Parse(time.RFC3339Nano, first); perr != nil || got.Before(saved) {
+		t.Fatalf("consistency time %s is behind the confirmed save at %s", first, saved.Format(time.RFC3339Nano))
+	}
 
 	for _, fc := range ctFenceCases(id) {
 		t.Run(fc.name, func(t *testing.T) {

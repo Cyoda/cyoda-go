@@ -959,7 +959,7 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 	if states != nil {
 		// pgx encodes []string as text[] for the ANY() comparison; no manual casting needed.
 		args = append(args, states)
-		q += stateJoin + fmt.Sprintf(`doc -> '_meta' ->> 'state' = ANY($%d)`, len(args))
+		q += stateJoin + fmt.Sprintf(`COALESCE(doc -> '_meta' ->> 'state', '') = ANY($%d)`, len(args))
 	}
 	q += ` GROUP BY state`
 

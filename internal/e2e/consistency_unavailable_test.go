@@ -57,7 +57,7 @@ func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = tx.Exec(ctx, `SELECT pg_sleep(30)`)
+		_, _ = tx.Exec(ctx, `SELECT pg_sleep(300)`)
 	}()
 	var once sync.Once
 	release = func() {

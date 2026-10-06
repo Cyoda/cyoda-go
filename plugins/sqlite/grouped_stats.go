@@ -223,8 +223,8 @@ func (s *entityStore) GroupedAggregate(
 ) ([]spi.GroupedAggregateBucket, error) {
 	// Path validation runs BEFORE the stdev decline below, on every request
 	// shape including a point in time. A malformed path is a client error
-	// and must be classified the same way on every backend; declining first would report an invalid path as
-	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
+	// and must be classified the same way on every backend; declining first
+	// would report an invalid path as ErrAggregationNotPushdownable whenever the request also asked for stdev,
 	// and the service layer would then stream a filter it should have refused.
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err

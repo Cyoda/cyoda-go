@@ -1157,7 +1157,7 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 		// State values are bound as SQL parameters below. Size is bounded
 		// by MaxStateFilterSize above (derived from sqliteMaxVariableNumber
 		// minus countByStateBaseParams).
-		q += ` AND json_extract(json(meta), '$.state') IN (` + inPlaceholders(len(states)) + `)`
+		q += ` AND COALESCE(json_extract(json(meta), '$.state'), '') IN (` + inPlaceholders(len(states)) + `)`
 		for _, st := range states {
 			args = append(args, st)
 		}

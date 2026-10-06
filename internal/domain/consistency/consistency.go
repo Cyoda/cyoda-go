@@ -219,7 +219,7 @@ func classify(err error) error {
 	// can produce it. The store gave no answer in time; retrying is correct.
 	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeConsistencyTimeUnavailable,
-			"the consistency time is not available yet: a save is still committing — retry").AsRetryable().WithCause(err)
+			"the consistency time could not be certified in time — retry").AsRetryable().WithCause(err)
 	}
 	// common.Internal maps the storage-unavailable marker to its retryable 503.
 	return common.Internal("failed to obtain the consistency time", err)
