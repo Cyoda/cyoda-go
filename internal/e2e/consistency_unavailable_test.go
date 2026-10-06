@@ -33,8 +33,8 @@ const farFuture = "2099-01-01T00:00:00Z"
 // holdMarker takes the tenant's in-flight commit marker on its own connection
 // and keeps it until release: cyoda_stamp, then a statement that keeps running
 // so the 5 s idle-in-transaction limit cyoda_stamp sets does not end the
-// transaction. It returns once the marker is held (cyoda_stamp has returned and
-// its advisory lock is visible in pg_locks).
+// transaction. It returns once the tenant's marker (the granted advisory lock
+// cyoda_stamp takes, keyed by hashtext(tenant)) is visible in pg_locks.
 func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -71,7 +71,9 @@ func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 
 	awaitDBCondition(t, 10*time.Second, "the holder's marker in pg_locks", func() bool {
 		return s.count(t, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
-			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`) > 0
+			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+			AND classid = hashtext($1)::oid AND objsubid = 2 AND objid <> 0
+			AND mode = 'ExclusiveLock' AND granted`, tenant) > 0
 	})
 	return release
 }
