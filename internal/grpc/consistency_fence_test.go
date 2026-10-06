@@ -286,8 +286,8 @@ func TestFence_StorageUnavailable_Retryable(t *testing.T) {
 	far := fenceBase.Add(1000 * time.Hour)
 
 	code, msg, retryable := failure(t, fencedRequests()[reqGetAll].run(t, e, &far))
-	if code != "CLIENT_ERROR" && code != common.ErrCodeStorageUnavailable {
-		t.Errorf("Error.Code = %q, want the operational envelope code", code)
+	if code != "CLIENT_ERROR" {
+		t.Errorf("Error.Code = %q, want CLIENT_ERROR", code)
 	}
 	if !strings.HasPrefix(msg, common.ErrCodeStorageUnavailable+":") {
 		t.Errorf("Error.Message = %q, want the %s prefix", msg, common.ErrCodeStorageUnavailable)
