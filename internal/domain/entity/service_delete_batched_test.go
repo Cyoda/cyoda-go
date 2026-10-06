@@ -77,7 +77,7 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 }
 
 // seedPersons creates n Person entities (ages 0..n-1) via h and returns their

@@ -31,7 +31,7 @@ import (
 // same kernel a production backend uses — no aggregator capability is given,
 // so queryGroupedStatsInner has no choice but the streaming path.
 func TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400(t *testing.T) {
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	iter := &fakeIterable{entities: []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"score":5}`)},
 	}}

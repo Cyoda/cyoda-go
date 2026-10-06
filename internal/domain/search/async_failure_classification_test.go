@@ -48,7 +48,7 @@ func TestAsyncSearchJob_StoreSentinelIsClassified(t *testing.T) {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
@@ -129,7 +129,7 @@ func TestAsyncSearchJob_StickyScanErrorIsClassified(t *testing.T) {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",

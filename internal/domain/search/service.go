@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -187,6 +188,7 @@ type SearchService struct {
 	factory     spi.StoreFactory
 	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
+	cons        *consistency.Service
 
 	// pathCache is an optional negative cache for unknown field-path
 	// validation. nil-safe: when unset, validation falls back to the
@@ -298,8 +300,12 @@ const (
 )
 
 // NewSearchService creates a SearchService backed by the given store factory.
-func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
+func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore, cons *consistency.Service) *SearchService {
+	if cons == nil {
+		panic("search.NewSearchService: nil consistency service")
+	}
 	return &SearchService{
+		cons:        cons,
 		factory:     factory,
 		uuids:       uuids,
 		searchStore: searchStore,

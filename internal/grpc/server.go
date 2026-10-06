@@ -1,6 +1,7 @@
 package grpc
 
 import (
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"net"
 	"sync/atomic"
 	"time"
@@ -30,6 +31,7 @@ type CloudEventsServiceImpl struct {
 	entityHandler     *entity.Handler
 	modelHandler      *model.Handler
 	searchService     *search.SearchService
+	cons              *consistency.Service
 	keepAliveInterval time.Duration
 	keepAliveTimeout  time.Duration
 }
@@ -85,7 +87,11 @@ func NewServer(
 	allowLoopback bool,
 	healthFlag *atomic.Bool,
 	keepAlive KeepAliveConfig,
+	cons *consistency.Service,
 ) *Server {
+	if cons == nil {
+		panic("grpc.NewServer: nil consistency service")
+	}
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
@@ -127,6 +133,7 @@ func NewServer(
 	)
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{
+		cons:              cons,
 		registry:          registry,
 		authSvc:           authSvc,
 		m2mStore:          m2mStore,

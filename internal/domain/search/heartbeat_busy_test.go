@@ -100,7 +100,7 @@ func newSlowSearchService(t *testing.T, ctx context.Context, base *memory.StoreF
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool).
 		WithHeartbeat(heartbeatEvery)
 	return svc, ies

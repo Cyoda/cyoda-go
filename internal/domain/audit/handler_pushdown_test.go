@@ -94,7 +94,7 @@ func TestSearchEntityAuditEvents_PushesTimeWindowToStore(t *testing.T) {
 	}
 	spyFactory := &versionMetadataSpyFactory{StoreFactory: base}
 	engine := wfengine.NewEngine(spyFactory, common.NewDefaultUUIDGenerator(), txMgr)
-	eh := entity.New(spyFactory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	eh := entity.New(spyFactory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, spyFactory))
 
 	res, err := eh.CreateEntity(ctx, entity.CreateEntityInput{
 		EntityName:   ref.EntityName,

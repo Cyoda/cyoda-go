@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"math"
 	"net/http"
 	"sort"
@@ -32,13 +33,17 @@ var ErrInvalidCondition = errors.New("invalid condition")
 // streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
+	cons       *consistency.Service
 }
 
 // NewGroupedStatsService constructs a service with the configured
 // cardinality ceiling. The ceiling is the value of CYODA_STATS_GROUP_MAX
 // and is enforced inside both the pushdown and the streaming branches.
-func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
-	return &GroupedStatsService{maxBuckets: maxBuckets}
+func NewGroupedStatsService(maxBuckets int, cons *consistency.Service) *GroupedStatsService {
+	if cons == nil {
+		panic("entity.NewGroupedStatsService: nil consistency service")
+	}
+	return &GroupedStatsService{maxBuckets: maxBuckets, cons: cons}
 }
 
 // QueryGroupedStats runs the grouped-stats query and translates the known

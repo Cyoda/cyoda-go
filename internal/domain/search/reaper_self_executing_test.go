@@ -56,7 +56,7 @@ func TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool)
 
 	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, search.StaleClaimBatch)

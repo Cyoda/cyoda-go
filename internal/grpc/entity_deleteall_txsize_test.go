@@ -107,8 +107,8 @@ func newDeleteAllTxSizeEnv(t *testing.T) (svc *CloudEventsServiceImpl, ctx conte
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
+	entityHandler := entity.New(factory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
 	modelHandler := model.New(factory)
 
 	svc = &CloudEventsServiceImpl{
@@ -406,8 +406,8 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	// commits never touch the fail-injecting manager's counter.
 	engineSeed := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), realTxMgr)
 	searchStoreSeed, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed)
-	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New())
+	searchServiceSeed := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreSeed, newTestConsistency(t, realFactory))
+	entityHandlerSeed := entity.New(realFactory, realTxMgr, common.NewDefaultUUIDGenerator(), engineSeed, txgate.New(), newTestConsistency(t, realFactory))
 	svcSeed := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         realTxMgr,
@@ -434,8 +434,8 @@ func TestRPC_EntityDeleteAll_TransactionSize_Batched_ErrorsByID(t *testing.T) {
 	failMgr := &failNthCommitTxSizeMgr{TransactionManager: realTxMgr, failOn: map[int]error{3: errors.New("commit boom")}}
 	engineDelete := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), failMgr)
 	searchStoreDelete, _ := realFactory.AsyncSearchStore(context.Background())
-	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete)
-	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New())
+	searchServiceDelete := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStoreDelete, newTestConsistency(t, realFactory))
+	entityHandlerDelete := entity.New(realFactory, failMgr, common.NewDefaultUUIDGenerator(), engineDelete, txgate.New(), newTestConsistency(t, realFactory))
 	svcDelete := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         failMgr,

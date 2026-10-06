@@ -87,7 +87,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -144,7 +144,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: nil},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -248,7 +248,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).WithAsyncPool(pool)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).WithAsyncPool(pool)
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -303,7 +303,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",

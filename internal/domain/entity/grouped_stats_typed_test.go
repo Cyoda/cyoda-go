@@ -69,7 +69,7 @@ func TestQueryGroupedStats_PushdownTypeDirectedWithFields(t *testing.T) {
 		"$.age": {Path: "$.age", Types: []spi.DataType{spi.Integer}},
 	}
 
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 
 	// Typed: age 30 > 5 matches (e1), age 3 > 5 does not and no tag contains
 	// "zzz" (e2) → one bucket, count 1.
@@ -116,7 +116,7 @@ func TestQueryGroupedStats_FieldsFeedConditionToFilter(t *testing.T) {
 	}
 
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	if _, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

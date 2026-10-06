@@ -34,7 +34,7 @@ func TestRegisterJob_DuplicateIDIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base))
 
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-dup"}}
 	firstCancelled := false
@@ -113,7 +113,7 @@ func TestSubmitAsync_PerTenantCap_RejectsBeforeCreateJob(t *testing.T) {
 
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base)).
 		WithAsyncPool(pool).
 		WithAsyncMaxPerTenant(1).
 		WithHeartbeat(50 * time.Millisecond)
@@ -167,7 +167,7 @@ func TestSubmitAsync_PerTenantCap_RegisterStaysTheAuthority(t *testing.T) {
 
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base)).
 		WithAsyncPool(pool).
 		WithAsyncMaxPerTenant(1).
 		WithHeartbeat(50 * time.Millisecond)

@@ -42,9 +42,9 @@ func newTaskDeleteEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New()),
+		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory)),
 		modelHandler:  model.New(factory),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore),
+		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory)),
 	}
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Alice"})
 

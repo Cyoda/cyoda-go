@@ -489,8 +489,8 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore)
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
+	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
 	modelHandler := model.New(factory)
 
 	uc := &spi.UserContext{
@@ -512,7 +512,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	registry := NewMemberRegistry()
 	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag, ka)
+		false, 0, true, healthFlag, ka, newFixedConsistency())
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

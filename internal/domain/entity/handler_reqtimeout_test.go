@@ -170,7 +170,7 @@ func newReqTimeoutHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.Tran
 	})
 
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -747,7 +747,7 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	cancelingStore := &cancelingEntityStore{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	deleteFactory := &cancelingEntityFactory{StoreFactory: realFactory, store: cancelingStore}
 
-	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistencyFor(realTxMgr))
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
 	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", 1, cond, nil, true, 0)
@@ -903,7 +903,7 @@ func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr))
 
 	items := []CollectionItem{
 		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
@@ -976,7 +976,7 @@ func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
 	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr))
 
 	items := []UpdateCollectionItem{
 		{EntityID: ids[0], Payload: json.RawMessage(`{"name":"X"}`)},

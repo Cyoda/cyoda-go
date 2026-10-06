@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"io"
 	"net/http"
 
@@ -58,10 +59,10 @@ type GroupedStatsHandler struct {
 // early-rejection tests that never exercise the dispatch path
 // (body-size, JSON parse, validation) — in production the app always
 // supplies a non-nil resolver.
-func NewGroupedStatsHandler(resolve StoreResolver, maxBuckets int) *GroupedStatsHandler {
+func NewGroupedStatsHandler(resolve StoreResolver, maxBuckets int, cons *consistency.Service) *GroupedStatsHandler {
 	return &GroupedStatsHandler{
 		resolve:    resolve,
-		svc:        NewGroupedStatsService(maxBuckets),
+		svc:        NewGroupedStatsService(maxBuckets, cons),
 		maxBuckets: maxBuckets,
 	}
 }

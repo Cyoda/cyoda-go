@@ -30,7 +30,7 @@ func doSearch(t *testing.T, query string) *httptest.ResponseRecorder {
 	saveMinimalModel(t, ctx, base, ref)
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore))
+	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1"+query, strings.NewReader(body)).WithContext(ctx)
@@ -73,7 +73,7 @@ func TestSearchEntities_OmittedLimitDefaultsTo1000(t *testing.T) {
 		searchFn: func(_ context.Context, _ spi.Filter, _ spi.SearchOptions) ([]*spi.Entity, error) { return nil, nil }}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore))
+	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1", strings.NewReader(body)).WithContext(ctx)
@@ -97,7 +97,7 @@ func TestSearchEntities_ResultLimitSentinel_Returns400(t *testing.T) {
 			return nil, spi.ErrSearchResultLimitExceeded
 		}}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(&searcherFactory{StoreFactory: base, entityStore: ses}, common.NewTestUUIDGenerator(), searchStore))
+	h := search.NewHandler(search.NewSearchService(&searcherFactory{StoreFactory: base, entityStore: ses}, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, &searcherFactory{StoreFactory: base, entityStore: ses})))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1", strings.NewReader(body)).WithContext(ctx)
@@ -152,7 +152,7 @@ func TestSearchEntities_LimitOneAccepted(t *testing.T) {
 	saveEntity(t, ctx, base, ref, "alice-1", []byte(`{"name":"Alice"}`))
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore))
+	h := search.NewHandler(search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1?limit=1", strings.NewReader(body)).WithContext(ctx)

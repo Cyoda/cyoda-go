@@ -72,7 +72,7 @@ func TestAsyncSearchJob_IteratorCloseErrorFailsJob(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",

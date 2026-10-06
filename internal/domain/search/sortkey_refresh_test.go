@@ -39,7 +39,7 @@ func TestResolveSortKeys_NegativeCache_CollapsesRepeatedRequests(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -86,7 +86,7 @@ func TestResolveSortKeys_RefreshesOnceBeforeRefusing(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	keys := []search.OrderKey{{Path: "$.newField", Source: spi.SourceData}}
 	specs, err := svc.ResolveSortKeysForTest(ctx, ref, keys)
@@ -123,7 +123,7 @@ func TestResolveSortKeys_TrulyMissingField_FourxxAfterOneRefresh(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	keys := []search.OrderKey{{Path: "$.reallyMissing", Source: spi.SourceData}}
 	_, err := svc.ResolveSortKeysForTest(ctx, ref, keys)
@@ -164,7 +164,7 @@ func TestResolveSortKeys_MetaFieldUnknown_NoRefresh(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	keys := []search.OrderKey{{Path: "notAMetaField", Source: spi.SourceMeta}}
 	_, err := svc.ResolveSortKeysForTest(ctx, ref, keys)
@@ -207,7 +207,7 @@ func TestResolveSortKeys_NegativeCache_EngagesForContainerPath(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -255,7 +255,7 @@ func TestResolveSortKeys_NegativeCache_EngagesForArrayPath(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
