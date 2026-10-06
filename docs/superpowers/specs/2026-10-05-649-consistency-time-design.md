@@ -421,8 +421,10 @@ while may be dropped; that costs one extra store call.
   `Fence` did, which monotonicity makes the right answer.)
 - **`Fresh`:** join a call in flight only if it started after `Fresh` was
   called; otherwise start a new one at once, which every later caller then
-  shares. At most two calls are in flight per tenant, and a caller waits for
-  at most one call.
+  shares. At most two calls are in flight per tenant. When both are older
+  than a `Fresh`, it waits for the oldest one's remaining time and then for
+  one call that started after it entered; a `Fence` adds the in-flight call
+  it joined first.
 - **The store call** runs on `context.WithoutCancel(ctx)` (keeps the tenant)
   with a deadline of the store's budget plus a margin of 1 s (11 s), so one
   caller's cancel does not fail the others; sqlite's gate wait obeys the same

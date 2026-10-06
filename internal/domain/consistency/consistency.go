@@ -75,6 +75,12 @@ func (s *Service) Fresh(ctx context.Context) (time.Time, error) {
 		defer s.mu.Unlock()
 		return s.seq
 	}()
+	return s.fresh(ctx, tenant, entrySeq)
+}
+
+// fresh returns a consistency time from a call whose sequence number is above
+// entrySeq, the sequence the caller observed on entry.
+func (s *Service) fresh(ctx context.Context, tenant spi.TenantID, entrySeq uint64) (time.Time, error) {
 	for {
 		cl, wait := s.freshCall(ctx, tenant, entrySeq)
 		if wait != nil { // two calls in flight, both older than us
@@ -100,17 +106,17 @@ func (s *Service) Fence(ctx context.Context, t time.Time) error {
 	if err != nil {
 		return common.Internal("failed to obtain the consistency time", err)
 	}
-	covered, joined := func() (bool, *call) {
+	covered, joined, entrySeq := func() (bool, *call, uint64) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		st := s.state(tenant)
 		if !t.After(st.hi) {
-			return true, nil
+			return true, nil, 0
 		}
 		if n := len(st.inflight); n > 0 {
-			return false, st.inflight[n-1]
+			return false, st.inflight[n-1], s.seq
 		}
-		return false, nil
+		return false, nil, s.seq
 	}()
 	if covered {
 		return nil
@@ -119,16 +125,14 @@ func (s *Service) Fence(ctx context.Context, t time.Time) error {
 		if err := waitOn(ctx, joined); err != nil {
 			return err
 		}
-		if joined.err != nil {
-			return classify(joined.err)
-		}
-		if !t.After(joined.c) {
+		if joined.err == nil && !t.After(joined.c) {
 			return nil
 		}
-		// t is later than the joined call's C, which may be old; only a call
-		// that started after this one can justify a refusal.
+		// The joined call failed, or t is later than its C, which may be old:
+		// only a call that started after this Fence can justify a refusal or
+		// a verdict.
 	}
-	c, err := s.Fresh(ctx)
+	c, err := s.fresh(ctx, tenant, entrySeq)
 	if err != nil {
 		return err
 	}
@@ -149,7 +153,7 @@ func (s *Service) state(tenant spi.TenantID) *tenantState {
 }
 
 // freshCall returns a call that started after entrySeq to join, starting one
-// if allowed; or, when two older calls are in flight, the newest to wait for.
+// if allowed; or, when two older calls are in flight, the oldest to wait for.
 func (s *Service) freshCall(ctx context.Context, tenant spi.TenantID, entrySeq uint64) (cl, wait *call) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -160,7 +164,7 @@ func (s *Service) freshCall(ctx context.Context, tenant spi.TenantID, entrySeq u
 		}
 	}
 	if len(st.inflight) >= maxInFlight {
-		return nil, st.inflight[len(st.inflight)-1]
+		return nil, st.inflight[0] // the oldest frees a slot first
 	}
 	s.seq++
 	// One caller's cancel must not fail the others who share this call.
@@ -210,12 +214,13 @@ func refusal(t, c time.Time) *common.AppError {
 }
 
 func classify(err error) error {
-	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) {
+	// A DeadlineExceeded here is the shared call's own 11 s deadline: it runs
+	// detached from every caller's context, so no caller's cancel or timeout
+	// can produce it. The store gave no answer in time; retrying is correct.
+	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) || errors.Is(err, context.DeadlineExceeded) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeConsistencyTimeUnavailable,
 			"the consistency time is not available yet: a save is still committing — retry").AsRetryable().WithCause(err)
 	}
-	if appErr := common.StorageUnavailable(err); appErr != nil {
-		return appErr
-	}
+	// common.Internal maps the storage-unavailable marker to its retryable 503.
 	return common.Internal("failed to obtain the consistency time", err)
 }
