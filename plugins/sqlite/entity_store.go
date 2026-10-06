@@ -998,15 +998,9 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *ti
 		// An instant reads committed history only and ignores any ambient
 		// transaction, on the committed read pool.
 		var count int64
-		err := s.readDB.QueryRowContext(ctx, `SELECT COUNT(*)
-			FROM entity_versions ev
-			INNER JOIN (
-				SELECT tenant_id, entity_id, MAX(version) AS max_ver FROM entity_versions
-				WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
-				GROUP BY entity_id
-			) latest ON ev.tenant_id = latest.tenant_id AND ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
-			WHERE ev.change_type != 'DELETED'`,
-			string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, timeToMicro(*asAt)).Scan(&count)
+		base, args := s.snapshotIDStateBase(
+			spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}, timeToMicro(*asAt))
+		err := s.readDB.QueryRowContext(ctx, "SELECT COUNT(*) FROM ("+base+")", args...).Scan(&count)
 		if err != nil {
 			return 0, fmt.Errorf("count entities as at: %w", err)
 		}
@@ -1197,16 +1191,10 @@ func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 // larger base parameter list cannot push a full-size filter past the
 // bound-variable cap.
 func (s *entityStore) countByStateAsAt(ctx context.Context, modelRef spi.ModelRef, states []string, asAt time.Time) (map[string]int64, error) {
-	rows, err := s.readDB.QueryContext(ctx, `SELECT COALESCE(json_extract(json(ev.meta), '$.state'), '') AS state, COUNT(*)
-		FROM entity_versions ev
-		INNER JOIN (
-			SELECT tenant_id, entity_id, MAX(version) AS max_ver FROM entity_versions
-			WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
-			GROUP BY entity_id
-		) latest ON ev.tenant_id = latest.tenant_id AND ev.entity_id = latest.entity_id AND ev.version = latest.max_ver
-		WHERE ev.change_type != 'DELETED'
-		GROUP BY state`,
-		string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion, timeToMicro(asAt))
+	base, args := s.snapshotIDStateBase(
+		spi.SearchOptions{ModelName: modelRef.EntityName, ModelVersion: modelRef.ModelVersion}, timeToMicro(asAt))
+	rows, err := s.readDB.QueryContext(ctx,
+		"SELECT COALESCE(state, '') AS st, COUNT(*) FROM ("+base+") GROUP BY st", args...)
 	if err != nil {
 		return nil, fmt.Errorf("count entities by state as at: %w", err)
 	}

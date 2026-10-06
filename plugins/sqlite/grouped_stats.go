@@ -59,11 +59,10 @@ var _ spi.GroupedAggregator = (*entityStore)(nil)
 // the `entities` table directly and miss buffered writes / fail to mask
 // buffered deletes, violating read-your-writes promised by spec D11.
 //
-// Known limitation: in-tx + PointInTime (exotic combination) falls through
-// to the plain PIT path, which reads from entity_versions WITHOUT applying
-// the tx-buffer overlay. PIT semantics are historical-read by definition,
-// so the in-flight buffer is a tier-2 concern; documented in the
-// grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
+// A point-in-time read is committed-only: with PointInTime set, an ambient
+// transaction is ignored and its buffer is not overlaid. The read goes
+// through the plain PIT path over entity_versions, as do counts and
+// grouped stats at an instant.
 //
 // OrderBy: empty means order is unspecified (a deterministic entity_id
 // order is still emitted — a conformant choice within "unspecified"); a
@@ -223,8 +222,8 @@ func (s *entityStore) GroupedAggregate(
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
 	// Path validation runs BEFORE the stdev decline below, on every request
-	// shape including a point in time. A malformed path is a client error and must be classified the same way on every
-	// backend; declining first would report an invalid path as
+	// shape including a point in time. A malformed path is a client error
+	// and must be classified the same way on every backend; declining first would report an invalid path as
 	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
 	// and the service layer would then stream a filter it should have refused.
 	if err := validateFilterPaths(filter); err != nil {
@@ -292,22 +291,16 @@ func (s *entityStore) GroupedAggregate(
 	q := "SELECT " + strings.Join(selectParts, ", ")
 	// The live read aggregates the current-state table on the writer; an
 	// instant aggregates the latest version of each entity at or before it,
-	// committed only, on the read pool. Both expose the `data` and `meta`
-	// columns the group, aggregate and filter SQL reference unqualified
-	// (entity_versions' joined subquery carries only tenant/entity/max_ver,
-	// so they stay unambiguous).
+	// committed only, on the read pool, over searchSnapshotBase. Both expose
+	// the entity_id, data and meta columns the group, aggregate and filter
+	// SQL reference unqualified.
 	queryDB := s.db
 	args := []any{string(s.tenantID), model.EntityName, model.ModelVersion}
 	if opts.PointInTime != nil {
-		q += ` FROM entity_versions
-		INNER JOIN (
-			SELECT tenant_id AS l_tenant, entity_id AS l_entity, MAX(version) AS max_ver
-			FROM entity_versions
-			WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND submit_time <= ?
-			GROUP BY entity_id
-		) latest ON tenant_id = l_tenant AND entity_id = l_entity AND version = max_ver
-		WHERE change_type != 'DELETED'`
-		args = append(args, timeToMicro(*opts.PointInTime))
+		base, baseArgs := s.searchSnapshotBase(
+			spi.SearchOptions{ModelName: model.EntityName, ModelVersion: model.ModelVersion}, timeToMicro(*opts.PointInTime))
+		q += " FROM (" + base + ") pit WHERE 1 = 1"
+		args = baseArgs
 		queryDB = s.readDB
 	} else {
 		q += " FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted"

@@ -1384,7 +1384,8 @@ func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, er
 	if needHigh {
 		high := nowMicro + consistencyHighStep.Microseconds()
 		if _, err := m.factory.db.ExecContext(ctx,
-			`UPDATE consistency_floor SET micros = ? WHERE id = 1 AND micros < ?`, high, high); err != nil {
+			`INSERT INTO consistency_floor (id, micros) VALUES (1, ?)
+			 ON CONFLICT(id) DO UPDATE SET micros = MAX(micros, excluded.micros)`, high); err != nil {
 			return time.Time{}, fmt.Errorf("ConsistencyTime: failed to persist the high-water mark: %w", err)
 		}
 		func() {
