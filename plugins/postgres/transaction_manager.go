@@ -69,8 +69,9 @@ type TransactionManager struct {
 	// statementTimeout is the configured statement ceiling; ConsistencyTime
 	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
 	statementTimeout time.Duration
-	// keys caches each tenant's marker key; see tenantKeys. A factory the
-	// manager is wired into shares it (StoreFactory.setTransactionManager).
+	// keys caches each tenant's marker key; see tenantKeys. A manager built
+	// by a factory uses the factory's cache (withTenantKeys); one built on
+	// its own has a cache of its own.
 	keys *tenantKeys
 	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
 	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
@@ -98,6 +99,13 @@ func withStatementTimeout(d time.Duration) TransactionManagerOption {
 	return func(tm *TransactionManager) { tm.statementTimeout = d }
 }
 
+// withTenantKeys gives the manager the tenant-key cache of the factory that
+// builds it (StoreFactory.InitTransactionManager), so the two share one.
+// Without it the manager has a cache of its own.
+func withTenantKeys(k *tenantKeys) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.keys = k }
+}
+
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
 func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...TransactionManagerOption) *TransactionManager {
 	tm := &TransactionManager{
@@ -109,10 +117,12 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 		origins:        make(map[string]spi.Principal),
 		txStates:       make(map[string]*txState),
 		acquireTimeout: defaultAcquireTimeout,
-		keys:           newTenantKeys(),
 	}
 	for _, apply := range opts {
 		apply(tm)
+	}
+	if tm.keys == nil {
+		tm.keys = newTenantKeys()
 	}
 	return tm
 }

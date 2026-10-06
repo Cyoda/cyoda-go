@@ -153,7 +153,7 @@ func WriteSetVersionForTest(s TxStateForTest, entityID string) (int64, bool) {
 // NewStoreFactoryWithTMForTest creates a StoreFactory with the given pool and
 // TransactionManager pre-wired. Use only in tests.
 func NewStoreFactoryWithTMForTest(pool *pgxpool.Pool, tm *TransactionManager) *StoreFactory {
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return f
 }
@@ -276,7 +276,9 @@ const MeterNameForTest = meterName
 // short enough to observe in milliseconds rather than the shipped 10s default.
 // Test-only.
 func NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool *pgxpool.Pool, tm *TransactionManager, d time.Duration) *StoreFactory {
-	f := NewStoreFactoryWithAcquireTimeoutForTest(pool, d)
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	f := newStoreFactoryWithKeys(pool, cfg, tm.keys)
 	f.setTransactionManager(tm)
 	return f
 }

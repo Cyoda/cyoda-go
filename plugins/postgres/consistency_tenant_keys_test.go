@@ -8,6 +8,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"net/url"
 	"slices"
 	"testing"
 	"time"
@@ -215,30 +216,161 @@ func TestTenantKeys_ConcurrentAllocationAgrees(t *testing.T) {
 
 // A factory and its transaction manager share one key cache: a key the
 // manager resolved serves the factory's non-transactional writes, so once it
-// is cached the table is not read again by either.
+// is cached the table is not read again by either. Checked for the production
+// wiring (InitTransactionManager) and for the test helper that pairs a
+// factory with a manager built on its own.
 func TestTenantKeys_OneCachePerFactory(t *testing.T) {
-	f, ctx := newCTFactoryOwnDB(t)
-	pool := postgres.PoolForTest(f)
-	id, _ := seedEntity(t, f, ctx) // Begin resolves and caches the key
-	if _, err := pool.Exec(context.Background(),
-		`ALTER TABLE consistency_tenant_keys RENAME TO consistency_tenant_keys_gone`); err != nil {
-		t.Fatalf("hide the key table: %v", err)
-	}
+	for _, tc := range []struct {
+		name string
+		wire func(pool *pgxpool.Pool) *postgres.StoreFactory
+	}{
+		{"InitTransactionManager", func(pool *pgxpool.Pool) *postgres.StoreFactory {
+			f := postgres.NewStoreFactory(pool)
+			f.InitTransactionManager(newTestUUIDGenerator())
+			return f
+		}},
+		{"NewStoreFactoryWithTMForTest", func(pool *pgxpool.Pool) *postgres.StoreFactory {
+			return postgres.NewStoreFactoryWithTMForTest(pool,
+				postgres.NewTransactionManager(pool, newTestUUIDGenerator()))
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newCTPool(t, freshCTDatabase(t), 10, nil)
+			if err := postgres.Migrate(pool); err != nil {
+				t.Fatalf("migrate: %v", err)
+			}
+			f := tc.wire(pool)
+			ctx := ctxWithTenant(ctTenant)
+			id, _ := seedEntity(t, f, ctx) // Begin resolves and caches the key
+			if _, err := pool.Exec(context.Background(),
+				`ALTER TABLE consistency_tenant_keys RENAME TO consistency_tenant_keys_gone`); err != nil {
+				t.Fatalf("hide the key table: %v", err)
+			}
 
-	es, err := f.EntityStore(ctx)
-	if err != nil {
-		t.Fatalf("EntityStore: %v", err)
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			if _, err := es.Save(ctx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+			}); err != nil {
+				t.Fatalf("a non-transactional Save looked the key up again: %v", err)
+			}
+			if err := es.Delete(ctx, id); err != nil {
+				t.Fatalf("a non-transactional Delete looked the key up again: %v", err)
+			}
+			if _, err := ctTM(t, f, ctx).ConsistencyTime(ctx); err != nil {
+				t.Fatalf("ConsistencyTime looked the key up again: %v", err)
+			}
+		})
 	}
-	if _, err := es.Save(ctx, &spi.Entity{
-		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
-	}); err != nil {
-		t.Fatalf("a non-transactional Save looked the key up again: %v", err)
-	}
-	if err := es.Delete(ctx, id); err != nil {
-		t.Fatalf("a non-transactional Delete looked the key up again: %v", err)
-	}
-	if _, err := ctTM(t, f, ctx).ConsistencyTime(ctx); err != nil {
-		t.Fatalf("ConsistencyTime looked the key up again: %v", err)
+}
+
+// The key lookup's COMMIT losing its socket is the retryable
+// storage-unavailable failure, on every path that looks a key up: the lookup
+// is idempotent, so unlike a write's own COMMIT its outcome being in doubt
+// does not make a retry unsafe. The COMMIT is slowed by a deferred constraint
+// trigger on the key table and the socket is torn under it by a proxy between
+// the pool and the server, as in TestNonTxCommit_TornSocketIsNotRetryable.
+func TestTenantKeys_TornLookupCommitIsRetryable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		lookup func(ctx context.Context, f *postgres.StoreFactory) error
+	}{
+		{"Begin", func(ctx context.Context, f *postgres.StoreFactory) error {
+			tm, err := f.TransactionManager(ctx)
+			if err != nil {
+				return err
+			}
+			txID, _, err := tm.Begin(ctx)
+			if err == nil {
+				_ = tm.Rollback(ctx, txID)
+			}
+			return err
+		}},
+		{"non-transactional save", func(ctx context.Context, f *postgres.StoreFactory) error {
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				return err
+			}
+			_, err = es.Save(ctx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+			})
+			return err
+		}},
+		{"ConsistencyTime", func(ctx context.Context, f *postgres.StoreFactory) error {
+			tm, err := f.TransactionManager(ctx)
+			if err != nil {
+				return err
+			}
+			_, err = tm.ConsistencyTime(ctx)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			direct := newCTPool(t, testDBURL(t), 4, nil)
+			resetSchema(t, direct)
+			if _, err := direct.Exec(context.Background(), `
+				CREATE FUNCTION ct_slow_key_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+				BEGIN PERFORM pg_sleep(10); RETURN NULL; END $$;
+				CREATE CONSTRAINT TRIGGER ct_slow_key_commit AFTER INSERT ON consistency_tenant_keys
+				  DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION ct_slow_key_commit();`); err != nil {
+				t.Fatalf("install the slow-commit trigger: %v", err)
+			}
+			// The torn COMMIT's backend goes on sleeping after the client is
+			// gone; end it before the schema drop in cleanup waits for it.
+			t.Cleanup(func() {
+				_, _ = direct.Exec(context.Background(),
+					`SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+					  WHERE datname = current_database() AND pid <> pg_backend_pid()
+					    AND wait_event = 'PgSleep'`)
+			})
+
+			u, err := url.Parse(testDBURL(t))
+			if err != nil {
+				t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
+			}
+			proxy := newTearProxy(t, u.Host)
+			u.Host = proxy.ln.Addr().String()
+			f := postgres.NewStoreFactory(newCTPool(t, u.String(), 2, nil))
+			f.InitTransactionManager(newTestUUIDGenerator())
+			ctx := ctxWithTenant(ctTenant) // a tenant with no key yet
+
+			done := make(chan error, 1)
+			go func() { done <- tc.lookup(ctx, f) }()
+
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				var n int
+				if err := direct.QueryRow(context.Background(),
+					`SELECT count(*) FROM pg_stat_activity
+					  WHERE datname = current_database() AND wait_event = 'PgSleep'
+					    AND query ILIKE 'commit%'`).Scan(&n); err != nil {
+					t.Fatalf("poll pg_stat_activity: %v", err)
+				}
+				if n > 0 {
+					break
+				}
+				select {
+				case err := <-done:
+					t.Fatalf("the lookup returned before its COMMIT was seen running: %v", err)
+				default:
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the lookup's COMMIT was never seen running")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+
+			proxy.tear()
+			err = <-done
+			if err == nil {
+				t.Fatal("precondition: the lookup whose COMMIT socket was torn reported success")
+			}
+			if !storageUnavailable(err) {
+				t.Fatalf("a torn lookup COMMIT is not the retryable storage-unavailable failure: %v", err)
+			}
+		})
 	}
 }
 

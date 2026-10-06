@@ -287,7 +287,7 @@ func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 	}))
 	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
 }
@@ -303,7 +303,7 @@ func newStatementCeilingFixture(t *testing.T, limit time.Duration) *abortFixture
 	}))
 	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
 }

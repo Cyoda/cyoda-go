@@ -26,8 +26,9 @@ const consistencyWaitBudget = 10 * time.Second
 // markers. The key is allocated from a sequence, so two tenants never share
 // one and cannot delay each other or see each other's commit timing. A key
 // never changes once allocated, so a cached key never goes stale. The map is
-// keyed by the exact tenant id, never a normalised form. A store factory and
-// its transaction manager share one cache (StoreFactory.setTransactionManager).
+// keyed by the exact tenant id, never a normalised form. A store factory owns
+// one cache from construction and hands it to the transaction manager it
+// builds (withTenantKeys), so the two share it.
 //
 // The key is resolved before a commit phase starts — at Begin, before a
 // non-transactional write opens its own transaction, and at the start of

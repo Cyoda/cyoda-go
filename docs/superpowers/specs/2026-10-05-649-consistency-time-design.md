@@ -362,7 +362,7 @@ Notes on the SQL:
 
 **Go side:**
 
-- `stampCommitInstant` (`transaction_manager.go:395-492`) and
+- `stampCommitInstant` (`transaction_manager.go:405-502`) and
   `stampOwnCommitInstant` (`entity_store.go:425-450`) call
   `SELECT cyoda_stamp($tenant_key)` instead of `SELECT clock_timestamp()`. These
   are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
@@ -373,19 +373,21 @@ Notes on the SQL:
   `READ COMMITTED` lookup transaction of its own that sets
   `app.current_tenant` — never on a caller's or a committing transaction's
   connection — and cached by exact tenant id in one cache per store factory,
-  which its transaction manager shares (`tenantKeys`, `consistency_time.go`;
-  `StoreFactory.setTransactionManager`): at `Begin`, before the transaction's
-  connection is taken (`transaction_manager.go:136`); before a
-  non-transactional save, delete or compare-and-save opens its own
-  transaction (`entity_store.go:118`, `:498`, `:683`), each through the one
-  helper that builds the in-transaction store with the key (`inOwnTx`); and
-  at the start of `ConsistencyTime`, on its own connection
-  (`consistency_time.go:209`). On a
-  miss it reads the row, inserts it with `ON CONFLICT (tenant_id) DO NOTHING`
-  when absent, and reads it again — separate statements under
-  `READ COMMITTED`, so a concurrent allocation by another node is seen. A stamping transaction therefore never
-  touches the table, and no lookup waits for a second connection while holding
-  one. A failed lookup fails the operation.
+  owned from construction and handed to the transaction manager the factory
+  builds (`tenantKeys`, `consistency_time.go`; `withTenantKeys`). It is
+  resolved at `Begin`, before the transaction's connection is taken
+  (`transaction_manager.go:146`); before a non-transactional save, delete or
+  compare-and-save opens its own transaction (`entity_store.go:118`, `:498`,
+  `:683`), each through the one helper that builds the in-transaction store
+  with the key (`inOwnTx`); and at the start of `ConsistencyTime`, on its own
+  connection (`consistency_time.go:210`). On a miss it reads the row, inserts
+  it with `ON CONFLICT (tenant_id) DO NOTHING` when absent, and reads it
+  again — separate statements under `READ COMMITTED`, so a concurrent
+  allocation by another node is seen. A failure of the lookup's `COMMIT` is
+  the retryable storage-unavailable failure: the lookup is idempotent. A
+  stamping transaction therefore never touches the table, and no lookup waits
+  for a second connection while holding one. A failed lookup fails the
+  operation.
 - `ConsistencyTime` runs `SELECT cyoda_consistency_time($tenant_key, $budget_ms)`
   on its own pool connection, in autocommit, never on a transaction's
   connection. `budget_ms` is 10 000, or the configured statement timeout when
@@ -398,10 +400,10 @@ Notes on the SQL:
   being returned to the pool, so no session-level lock can outlive the error.
 - **Design rule: nothing after the stamp waits on a lock.** Read-set
   validation (`FOR SHARE`) runs before the stamp
-  (`transaction_manager.go:261-284`). The statements after the stamp touch
+  (`transaction_manager.go:271-294`). The statements after the stamp touch
   only rows the transaction wrote, on both paths, with one exception: the
   `sm_audit_events` UPDATE matches by transaction label
-  (`transaction_manager.go:476-481`), which only this transaction's audit rows
+  (`transaction_manager.go:486-491`), which only this transaction's audit rows
   carry, so it cannot wait on another transaction. A fenced read made while the
   caller holds a transaction therefore cannot deadlock with the commits it
   waits for. A code comment at both stamp sites states the rule.
@@ -619,7 +621,7 @@ storage-unavailable error.
 | commit held between stamp and visibility makes `C` wait | | ✓ sqlite (gate held by the test), memory (`gatedClock`), postgres (test-driven pgx transaction calls `cyoda_stamp`, holds before COMMIT) | | | | | |
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
 | another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
-| tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
+| tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a torn lookup `COMMIT` is retryable storage-unavailable on `Begin`, a non-transactional save and `ConsistencyTime`; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |
