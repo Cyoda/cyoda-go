@@ -259,21 +259,23 @@ nor the schema-qualified floor name changes that logic:
 
 ```sql
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
-SELECT setval('cyoda_stamp_floor', coalesce(greatest(
-  (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
-  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times)),0), true);
+SELECT pg_catalog.setval('cyoda_stamp_floor'::pg_catalog.regclass, coalesce(greatest(
+  (SELECT (extract(epoch FROM pg_catalog.max(transaction_time)) OPERATOR(pg_catalog.*) 1000000::pg_catalog.numeric)::bigint FROM entity_versions),
+  (SELECT (extract(epoch FROM pg_catalog.max(submit_time)) OPERATOR(pg_catalog.*) 1000000::pg_catalog.numeric)::bigint FROM submit_times)),0), true);
 
-CREATE SEQUENCE consistency_tenant_key_seq AS int4 MINVALUE 1 START 1;
+CREATE SEQUENCE consistency_tenant_key_seq AS pg_catalog.int4 MINVALUE 1 START 1;
 CREATE TABLE consistency_tenant_keys (
-  tenant_id  text PRIMARY KEY,
-  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq') CHECK (tenant_key > 0));
+  tenant_id  pg_catalog.text PRIMARY KEY,
+  tenant_key pg_catalog.int4 NOT NULL UNIQUE
+    DEFAULT pg_catalog.nextval('consistency_tenant_key_seq'::pg_catalog.regclass)
+    CHECK (tenant_key OPERATOR(pg_catalog.>) 0));
 ALTER SEQUENCE consistency_tenant_key_seq OWNED BY consistency_tenant_keys.tenant_key;
 ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
-  USING (tenant_id = current_setting('app.current_tenant', true));
+  USING (tenant_id OPERATOR(pg_catalog.=) pg_catalog.current_setting('app.current_tenant', true));
 
 DO $do$ BEGIN
-EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+EXECUTE pg_catalog.format($f$CREATE FUNCTION %1$I.cyoda_stamp(tenant_key pg_catalog.int4) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE cur_idle bigint;
   xkey int4 := ((pg_current_xact_id()::text::bigint %% 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
@@ -291,9 +293,9 @@ BEGIN
     IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
   END;
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
-END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
+END $body$$f$, pg_catalog.current_schema(), pg_catalog.format('%I.cyoda_stamp_floor', pg_catalog.current_schema()));
 
-EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+EXECUTE pg_catalog.format($f$CREATE FUNCTION %1$I.cyoda_consistency_time(tenant_key pg_catalog.int4, wait_budget_ms bigint) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
@@ -316,7 +318,7 @@ BEGIN
     PERFORM pg_advisory_xact_lock_shared(tenant_key, k::bigint::int4);
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
-END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
+END $body$$f$, pg_catalog.current_schema(), pg_catalog.format('%I.cyoda_stamp_floor', pg_catalog.current_schema()));
 END $do$;
 ```
 
@@ -384,6 +386,28 @@ Notes on the SQL:
   schema filled in. `%%` in the template is `format`'s escape for the modulo
   operator. The down migration drops the functions by signature, resolved in
   the same schema as its other `DROP`s.
+- Outside the two bodies, the migration resolves names through the migration
+  session's own `search_path`, so it names every function, operator and type
+  it uses with `pg_catalog`: `pg_catalog.setval`, `pg_catalog.max`,
+  `OPERATOR(pg_catalog.*)` with a `numeric` constant, `pg_catalog.nextval`
+  with a `regclass` constant (the column default is bound to the sequence's
+  OID), `OPERATOR(pg_catalog.>)` in the check, `OPERATOR(pg_catalog.=)` and
+  `pg_catalog.current_setting` in the policy, `pg_catalog.format` and
+  `pg_catalog.current_schema` in the `DO` block (the floor's qualified name is
+  built by a second `format` with `%I`, not by `quote_ident` and `||`), and
+  `pg_catalog.int4`, `pg_catalog.text` and `pg_catalog.timestamptz` for the
+  column, sequence and signature types. `pg_catalog` comes first only when the
+  path does not name it, and even then it decides only ties: an overload with
+  a better match in a writable schema, or any same-named object when the path
+  names that schema first, would otherwise be called with the migration
+  role's privileges or bound into a default, check, policy or signature for
+  good. `extract(... FROM ...)`, `coalesce`, `greatest` and keyword type names
+  such as `bigint` are grammar that PostgreSQL resolves in `pg_catalog` itself.
+- This qualification is defence in depth. The plugin's other SQL — every
+  earlier migration and every runtime statement — names its functions and
+  operators without a schema, so the plugin refuses to migrate or start when a
+  schema on the session's `search_path` grants `CREATE` to a role other than
+  its owner (POSTGRES.md "Roles"; `search_path_check.go`).
 - Role: the plugin connects as the owner of its objects
   (`docs/plugins/POSTGRES.md:394-408`). A non-owner role needs `USAGE` on the
   schema, `SELECT, INSERT` on `consistency_tenant_keys`, `USAGE` on
@@ -426,8 +450,9 @@ Notes on the SQL:
   overload and run it with the plugin connection's rights, or find the call
   ambiguous and fail every commit. With exact types the real function wins:
   no other function in its schema can have its signature. More generally, no
-  untrusted role may have `CREATE` on a schema in the runtime role's
-  `search_path` (POSTGRES.md "Roles").
+  role other than its owner may have `CREATE` on a schema in the plugin's
+  `search_path`, which the plugin checks before it migrates or starts
+  (POSTGRES.md "Roles").
 - `ConsistencyTime` runs `SELECT cyoda_consistency_time($1::int4, $2::bigint)`
   (the tenant key and the budget in milliseconds) on its own pool connection,
   in autocommit, never on a transaction's connection. The budget is 10 000 ms,
@@ -664,6 +689,7 @@ storage-unavailable error.
 | another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
 | tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a torn lookup `COMMIT` is retryable storage-unavailable on `Begin`, a non-transactional save and `ConsistencyTime`; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
 | a new non-owner role with exactly the documented grants allocates a tenant key, stamps and gets `C`, and cannot `setval`/`nextval`/read `cyoda_stamp_floor`; temporary objects named like the floor or `pg_locks` do not shadow them inside the functions; with `CREATE` on the schema, a planted `setval` or `*(bigint, interval)` never runs as the owner; the migration works in a non-public schema; `float8`, `numeric` and `text` overloads of either function planted in its schema are never chosen by the plugin's typed calls on a commit, a non-transactional save or `ConsistencyTime` | | ✓ postgres | | | | | |
+| with the migration's `search_path` naming a writable schema ahead of `pg_catalog`, overloads and same-signature functions, operators, an aggregate and domains planted there for every name the migration uses are neither called by it nor bound into the default, check, policy or signatures it creates; the default names the sequence by `regclass` | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |

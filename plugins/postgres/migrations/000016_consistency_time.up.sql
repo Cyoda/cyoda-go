@@ -36,22 +36,32 @@
 -- migration runs in, which is current_schema() and not necessarily public, so
 -- both functions are created by EXECUTE format(...) with that schema filled
 -- in (%% in the template is format's escape for the modulo operator).
+-- Outside the function bodies, this migration resolves through the
+-- migration's own search_path, so it names every function, operator and type
+-- it uses there with pg_catalog: an object of the same name in another schema
+-- on that path is then neither called by the migration nor bound into a
+-- default, check, policy or function signature it creates. The column default
+-- names its sequence as a regclass constant, bound to the sequence's OID.
+-- extract(... FROM ...), coalesce, greatest and the keyword type names (bigint)
+-- are grammar that PostgreSQL itself resolves in pg_catalog.
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
-SELECT setval('cyoda_stamp_floor', coalesce(greatest(
-  (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
-  (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times)),0), true);
+SELECT pg_catalog.setval('cyoda_stamp_floor'::pg_catalog.regclass, coalesce(greatest(
+  (SELECT (extract(epoch FROM pg_catalog.max(transaction_time)) OPERATOR(pg_catalog.*) 1000000::pg_catalog.numeric)::bigint FROM entity_versions),
+  (SELECT (extract(epoch FROM pg_catalog.max(submit_time)) OPERATOR(pg_catalog.*) 1000000::pg_catalog.numeric)::bigint FROM submit_times)),0), true);
 
-CREATE SEQUENCE consistency_tenant_key_seq AS int4 MINVALUE 1 START 1;
+CREATE SEQUENCE consistency_tenant_key_seq AS pg_catalog.int4 MINVALUE 1 START 1;
 CREATE TABLE consistency_tenant_keys (
-  tenant_id  text PRIMARY KEY,
-  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq') CHECK (tenant_key > 0));
+  tenant_id  pg_catalog.text PRIMARY KEY,
+  tenant_key pg_catalog.int4 NOT NULL UNIQUE
+    DEFAULT pg_catalog.nextval('consistency_tenant_key_seq'::pg_catalog.regclass)
+    CHECK (tenant_key OPERATOR(pg_catalog.>) 0));
 ALTER SEQUENCE consistency_tenant_key_seq OWNED BY consistency_tenant_keys.tenant_key;
 ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
-  USING (tenant_id = current_setting('app.current_tenant', true));
+  USING (tenant_id OPERATOR(pg_catalog.=) pg_catalog.current_setting('app.current_tenant', true));
 
 DO $do$ BEGIN
-EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+EXECUTE pg_catalog.format($f$CREATE FUNCTION %1$I.cyoda_stamp(tenant_key pg_catalog.int4) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE cur_idle bigint;
   xkey int4 := ((pg_current_xact_id()::text::bigint %% 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
@@ -69,9 +79,9 @@ BEGIN
     IF held THEN PERFORM pg_advisory_unlock(0,0); END IF; RAISE;
   END;
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
-END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
+END $body$$f$, pg_catalog.current_schema(), pg_catalog.format('%I.cyoda_stamp_floor', pg_catalog.current_schema()));
 
-EXECUTE format($f$CREATE FUNCTION %1$I.cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
+EXECUTE pg_catalog.format($f$CREATE FUNCTION %1$I.cyoda_consistency_time(tenant_key pg_catalog.int4, wait_budget_ms bigint) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $body$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
@@ -94,5 +104,5 @@ BEGIN
     PERFORM pg_advisory_xact_lock_shared(tenant_key, k::bigint::int4);
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
-END $body$$f$, current_schema(), quote_ident(current_schema()) || '.cyoda_stamp_floor');
+END $body$$f$, pg_catalog.current_schema(), pg_catalog.format('%I.cyoda_stamp_floor', pg_catalog.current_schema()));
 END $do$;
