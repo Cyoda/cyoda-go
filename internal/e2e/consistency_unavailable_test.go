@@ -34,7 +34,8 @@ const farFuture = "2099-01-01T00:00:00Z"
 // and keeps it until release: cyoda_stamp, then a statement that keeps running
 // so the 5 s idle-in-transaction limit cyoda_stamp sets does not end the
 // transaction. It returns once the tenant's marker (the granted advisory lock
-// cyoda_stamp takes, keyed by hashtext(tenant)) is visible in pg_locks.
+// cyoda_stamp takes, keyed by the tenant's row in consistency_tenant_keys) is
+// visible in pg_locks.
 func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -48,8 +49,9 @@ func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 		cancel()
 		t.Fatalf("holder begin: %v", err)
 	}
+	key := tenantMarkerKey(t, s, tenant)
 	var stamp any
-	if err := tx.QueryRow(ctx, `SELECT cyoda_stamp($1)`, tenant).Scan(&stamp); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT cyoda_stamp($1)`, key).Scan(&stamp); err != nil {
 		cancel()
 		t.Fatalf("holder cyoda_stamp: %v", err)
 	}
@@ -72,10 +74,28 @@ func holdMarker(t *testing.T, s *schedDB, tenant string) (release func()) {
 	awaitDBCondition(t, 10*time.Second, "the holder's marker in pg_locks", func() bool {
 		return s.count(t, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory'
 			AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
-			AND classid = hashtext($1)::oid AND objsubid = 2 AND objid <> 0
-			AND mode = 'ExclusiveLock' AND granted`, tenant) > 0
+			AND classid = $1::oid AND objsubid = 2 AND objid <> 0
+			AND mode = 'ExclusiveLock' AND granted`, key) > 0
 	})
 	return release
+}
+
+// tenantMarkerKey returns the tenant's marker key, allocating it as the
+// postgres plugin does when the tenant has none.
+func tenantMarkerKey(t *testing.T, s *schedDB, tenant string) int32 {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO consistency_tenant_keys (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`,
+		tenant); err != nil {
+		t.Fatalf("allocate tenant marker key: %v", err)
+	}
+	var key int32
+	if err := s.pool.QueryRow(ctx,
+		`SELECT tenant_key FROM consistency_tenant_keys WHERE tenant_id = $1`, tenant).Scan(&key); err != nil {
+		t.Fatalf("read tenant marker key: %v", err)
+	}
+	return key
 }
 
 // expectUnavailable asserts a 503 CONSISTENCY_TIME_UNAVAILABLE that advertises

@@ -24,6 +24,9 @@ type StoreFactory struct {
 	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
 	// first use and closed by Close.
 	sched schedulerPools
+	// keys caches each tenant's marker key for the entity stores'
+	// non-transactional writes; see tenantKeys.
+	keys tenantKeys
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -216,6 +219,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		tm:             f.tm,
 		pool:           f.pool,
 		acquireTimeout: f.cfg.AcquireTimeout,
+		keys:           &f.keys,
 	}, nil
 }
 

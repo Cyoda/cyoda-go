@@ -214,8 +214,9 @@ func holdStamp(t *testing.T, pool *pgxpool.Pool, tenant spi.TenantID) heldStamp 
 			_ = tx.Rollback(context.Background())
 		}
 	})
+	key := tenantKey(t, pool, tenant)
 	var h heldStamp
-	if err := tx.QueryRow(ctx, `SELECT cyoda_stamp($1), pg_backend_pid()`, string(tenant)).Scan(&h.stamp, &h.pid); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT cyoda_stamp($1), pg_backend_pid()`, key).Scan(&h.stamp, &h.pid); err != nil {
 		t.Fatalf("stamp holder: %v", err)
 	}
 	h.commit = func() {
@@ -225,6 +226,31 @@ func holdStamp(t *testing.T, pool *pgxpool.Pool, tenant spi.TenantID) heldStamp 
 		}
 	}
 	return h
+}
+
+// tenantKey returns tenant's marker key, allocating it as the plugin does
+// (consistency_tenant_keys, migration 000016) when the tenant has none.
+func tenantKey(t *testing.T, pool *pgxpool.Pool, tenant spi.TenantID) int32 {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO consistency_tenant_keys (tenant_id) VALUES ($1) ON CONFLICT (tenant_id) DO NOTHING`,
+		string(tenant)); err != nil {
+		t.Fatalf("allocate tenant key: %v", err)
+	}
+	return storedTenantKey(t, pool, tenant)
+}
+
+// storedTenantKey reads tenant's marker key, failing the test when the tenant
+// has none.
+func storedTenantKey(t *testing.T, pool *pgxpool.Pool, tenant spi.TenantID) int32 {
+	t.Helper()
+	var key int32
+	if err := pool.QueryRow(context.Background(),
+		`SELECT tenant_key FROM consistency_tenant_keys WHERE tenant_id = $1`, string(tenant)).Scan(&key); err != nil {
+		t.Fatalf("read tenant key of %q: %v", tenant, err)
+	}
+	return key
 }
 
 // markerWaiters counts backends of this database queued for a marker:
@@ -419,24 +445,19 @@ func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	}
 }
 
-// Another tenant's held stamp does not delay this tenant's C. Waiting for it
-// would block until the holder ended — at the latest when cyoda_stamp's 5 s
-// idle-in-transaction limit aborts it — so returning within 2 s is the
-// distinction.
+// Another tenant's held stamp does not delay this tenant's C, even for two
+// tenants whose ids collide under a 32-bit hash: a hashed marker key would
+// make them share markers, so one tenant's held commit would delay the other's
+// C and expose its commit timing. Waiting for it would block until the holder
+// ended — at the latest when cyoda_stamp's 5 s idle-in-transaction limit
+// aborts it — so returning within 2 s is the distinction.
 func TestConsistencyTime_OtherTenantDoesNotDelay(t *testing.T) {
-	f, ctx := newCTFactory(t)
+	f, _ := newCTFactory(t)
 	pool := postgres.PoolForTest(f)
-	const other spi.TenantID = "some-other-tenant"
-	var collide bool
-	if err := pool.QueryRow(context.Background(), `SELECT hashtext($1) = hashtext($2)`,
-		string(other), string(ctTenant)).Scan(&collide); err != nil {
-		t.Fatalf("hashtext: %v", err)
-	}
-	if collide {
-		t.Fatal("precondition: the two tenants' marker keys collide; pick another tenant name")
-	}
-	holdStamp(t, pool, other)
+	tenantA, tenantB := hashCollidingTenants(t, pool)
+	holdStamp(t, pool, tenantB)
 
+	ctx := ctxWithTenant(tenantA)
 	start := time.Now()
 	if _, err := ctTM(t, f, ctx).ConsistencyTime(ctx); err != nil {
 		t.Fatalf("ConsistencyTime: %v", err)
@@ -444,6 +465,21 @@ func TestConsistencyTime_OtherTenantDoesNotDelay(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("ConsistencyTime took %v with only another tenant's stamp held", elapsed)
 	}
+}
+
+// hashCollidingTenants returns two distinct tenant ids with the same
+// hashtext, found by a birthday search (about 18 pairs are expected among
+// 400,000 ids).
+func hashCollidingTenants(t *testing.T, pool *pgxpool.Pool) (spi.TenantID, spi.TenantID) {
+	t.Helper()
+	var a, b string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT min(n), max(n) FROM (
+		     SELECT 'ct-collide-' || g AS n FROM generate_series(1, 400000) g) x
+		  GROUP BY hashtext(n) HAVING count(*) > 1 LIMIT 1`).Scan(&a, &b); err != nil {
+		t.Fatalf("find two tenant ids with the same hashtext: %v", err)
+	}
+	return spi.TenantID(a), spi.TenantID(b)
 }
 
 // The SQL budget is enforced for the whole call, not per marker. Three markers
@@ -461,6 +497,7 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 		h := holdStamp(t, pool, ctTenant)
 		byPID[h.pid] = h
 	}
+	key := tenantKey(t, pool, ctTenant)
 	checker := acquireCT(t, pool)
 	poller := acquireCT(t, pool)
 
@@ -498,7 +535,7 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 
 	start := time.Now()
 	var c time.Time
-	err := checker.QueryRow(context.Background(), `SELECT cyoda_consistency_time($1, 1000)`, string(ctTenant)).Scan(&c)
+	err := checker.QueryRow(context.Background(), `SELECT cyoda_consistency_time($1, 1000)`, key).Scan(&c)
 	elapsed := time.Since(start)
 	close(stop)
 	n := <-released
@@ -919,6 +956,7 @@ func TestStamp_ErrorClosesConnection(t *testing.T) {
 // rather than waiting for statement_timeout or the caller.
 func TestConsistencyTimeSQL_MutexWaitIsUnderTheBudget(t *testing.T) {
 	f, _ := newCTFactory(t)
+	key := tenantKey(t, postgres.PoolForTest(f), ctTenant)
 	conn, err := postgres.PoolForTest(f).Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
@@ -930,7 +968,7 @@ func TestConsistencyTimeSQL_MutexWaitIsUnderTheBudget(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	var c time.Time
-	err = conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1, 300)`, string(ctTenant)).Scan(&c)
+	err = conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1, 300)`, key).Scan(&c)
 	elapsed := time.Since(start)
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
@@ -938,5 +976,194 @@ func TestConsistencyTimeSQL_MutexWaitIsUnderTheBudget(t *testing.T) {
 	}
 	if elapsed > 3*time.Second {
 		t.Fatalf("the 300 ms budget ended the mutex wait after %v", elapsed)
+	}
+}
+
+// Every tenant gets its own marker key, allocated on first use by whichever
+// path meets the tenant first — a commit, a non-transactional save, or a
+// consistency-time call — and the key is kept across a restart. Two of the
+// tenants have ids that collide under hashtext.
+func TestTenantKeys_DistinctPerTenantAndStable(t *testing.T) {
+	dsn := freshCTDatabase(t)
+	open := func() (*pgxpool.Pool, *postgres.StoreFactory) {
+		pool := newCTPool(t, dsn, 10, nil)
+		if err := postgres.Migrate(pool); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		f := postgres.NewStoreFactory(pool)
+		f.InitTransactionManager(newTestUUIDGenerator())
+		return pool, f
+	}
+	pool1, f1 := open()
+	tenantA, tenantB := hashCollidingTenants(t, pool1)
+	commitOneEntity(t, f1, ctxWithTenant(tenantA))
+	commitOneEntity(t, f1, ctxWithTenant(tenantB))
+	keyA, keyB := storedTenantKey(t, pool1, tenantA), storedTenantKey(t, pool1, tenantB)
+	if keyA == keyB {
+		t.Fatalf("tenants %q and %q share marker key %d", tenantA, tenantB, keyA)
+	}
+	if keyA < 1 || keyB < 1 {
+		t.Fatalf("marker keys %d, %d: a key below 1 could meet the floor mutex (0, 0)", keyA, keyB)
+	}
+	pool1.Close()
+
+	// A restart: a new pool and factory on the same database.
+	pool2, f2 := open()
+	commitOneEntity(t, f2, ctxWithTenant(tenantA))
+	if got := storedTenantKey(t, pool2, tenantA); got != keyA {
+		t.Fatalf("tenant %q's key moved from %d to %d across a restart", tenantA, keyA, got)
+	}
+
+	const viaConsistencyTime, viaNonTxSave spi.TenantID = "ct-keys-via-ct", "ct-keys-via-save"
+	ctx := ctxWithTenant(viaConsistencyTime)
+	if _, err := ctTM(t, f2, ctx).ConsistencyTime(ctx); err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
+	saveCtx := ctxWithTenant(viaNonTxSave)
+	es, err := f2.EntityStore(saveCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Save(saveCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		t.Fatalf("non-transactional Save: %v", err)
+	}
+
+	seen := map[int32]spi.TenantID{}
+	for _, tenant := range []spi.TenantID{tenantA, tenantB, viaConsistencyTime, viaNonTxSave} {
+		key := storedTenantKey(t, pool2, tenant)
+		if other, dup := seen[key]; dup {
+			t.Fatalf("tenants %q and %q share marker key %d", other, tenant, key)
+		}
+		seen[key] = tenant
+	}
+	var rows int
+	if err := pool2.QueryRow(context.Background(), `SELECT count(*) FROM consistency_tenant_keys`).Scan(&rows); err != nil {
+		t.Fatalf("count tenant keys: %v", err)
+	}
+	if rows != 4 {
+		t.Fatalf("%d tenant keys stored for 4 tenants", rows)
+	}
+}
+
+// The tenant's key is resolved before the commit phase, outside the
+// transaction: a commit stopped after its stamp (held as in
+// TestConsistencyTime_WaitsForACommitInItsCommitPhase) holds its marker under
+// the tenant's stored key and no lock on consistency_tenant_keys. The factory
+// is new, so the key is resolved for the first time by this transaction.
+func TestStamp_CommitPhaseDoesNotTouchTenantKeys(t *testing.T) {
+	f, ctx := newCTFactory(t)
+	pool := postgres.PoolForTest(f)
+	tm := ctTM(t, f, ctx)
+	prewarm(t, pool, 5)
+
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	// Ends the transaction if the test stops before Commit, so the pool's
+	// cleanup does not wait for its connection; after Commit it is a no-op.
+	t.Cleanup(func() { _ = tm.Rollback(txCtx, txID) })
+	es, err := f.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Save(txCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	key := storedTenantKey(t, pool, ctTenant)
+
+	blocker, err := pool.Begin(context.Background())
+	if err != nil {
+		t.Fatalf("begin blocker: %v", err)
+	}
+	t.Cleanup(func() { _ = blocker.Rollback(context.Background()) })
+	if _, err := blocker.Exec(context.Background(),
+		`INSERT INTO submit_times (tenant_id, tx_id, submit_time) VALUES ($1, $2, now())`,
+		string(ctTenant), txID); err != nil {
+		t.Fatalf("blocker insert: %v", err)
+	}
+
+	committed := make(chan error, 1)
+	go func() { committed <- tm.Commit(txCtx, txID) }()
+
+	var pid int
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := pool.QueryRow(context.Background(),
+			`SELECT pid FROM pg_stat_activity
+			  WHERE datname = current_database() AND wait_event_type = 'Lock'
+			    AND query LIKE '%INSERT INTO submit_times%' LIMIT 1`).Scan(&pid)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("poll pg_stat_activity: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the commit never blocked on its submit_times insert")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var markers, keyTableLocks int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FILTER (WHERE locktype = 'advisory' AND classid = $2::oid AND objsubid = 2
+		                         AND objid <> 0 AND mode = 'ExclusiveLock' AND granted),
+		        count(*) FILTER (WHERE relation = 'consistency_tenant_keys'::regclass)
+		   FROM pg_locks WHERE pid = $1`, pid, key).Scan(&markers, &keyTableLocks); err != nil {
+		t.Fatalf("read the commit's locks: %v", err)
+	}
+	if err := blocker.Rollback(context.Background()); err != nil {
+		t.Fatalf("release blocker: %v", err)
+	}
+	if err := <-committed; err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if markers != 1 {
+		t.Fatalf("the commit holds %d markers under its tenant's key %d, want 1", markers, key)
+	}
+	if keyTableLocks != 0 {
+		t.Fatalf("the commit's transaction holds %d locks on consistency_tenant_keys", keyTableLocks)
+	}
+}
+
+// A tenant key that cannot be resolved fails the operation: Begin, a
+// non-transactional save and ConsistencyTime all return an error, and nothing
+// is written.
+func TestTenantKeys_LookupFailureFailsClosed(t *testing.T) {
+	f, ctx := newCTFactoryOwnDB(t)
+	pool := postgres.PoolForTest(f)
+	if _, err := pool.Exec(context.Background(),
+		`ALTER TABLE consistency_tenant_keys RENAME TO consistency_tenant_keys_gone`); err != nil {
+		t.Fatalf("hide the key table: %v", err)
+	}
+	tm := ctTM(t, f, ctx)
+
+	if txID, _, err := tm.Begin(ctx); err == nil {
+		_ = tm.Rollback(ctx, txID)
+		t.Fatal("Begin succeeded without a tenant key")
+	}
+	es, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err == nil {
+		t.Fatal("a non-transactional Save succeeded without a tenant key")
+	}
+	if c, err := tm.ConsistencyTime(ctx); err == nil {
+		t.Fatalf("ConsistencyTime returned %v without a tenant key", c)
+	}
+	var rows int
+	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM entity_versions`).Scan(&rows); err != nil {
+		t.Fatalf("count versions: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("%d versions written without a tenant key", rows)
 	}
 }

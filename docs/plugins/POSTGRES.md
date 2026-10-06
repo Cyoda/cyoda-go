@@ -114,22 +114,31 @@ Consequences:
 
 ### Consistency time and commit stamping
 
-Migration `000016_consistency_time` adds a sequence and two functions. The
-contract they implement is `docs/CONSISTENCY.md` §1a.
+Migration `000016_consistency_time` adds a sequence, a tenant-key table and
+two functions. The contract they implement is `docs/CONSISTENCY.md` §1a.
 
 - `cyoda_stamp_floor` — a `bigint` sequence holding the highest stamp or
   consistency time issued, in microseconds since the epoch. The migration
   sets it to the highest stamp already stored in `entity_versions` and
   `submit_times`. `search_jobs.point_in_time` is not a source: it holds a
   caller-chosen instant, which must not move the floor.
-- `cyoda_stamp(tenant)` — called once per commit, at the top level of the
+- `consistency_tenant_keys` — one row per tenant: `tenant_id` and
+  `tenant_key`, an `int4` drawn from `consistency_tenant_key_seq` (starts at
+  1). Keys are unique, so two tenants never share commit markers. Rows are
+  never deleted. The plugin resolves a tenant's key once per process, in a
+  short `READ COMMITTED` transaction of its own, before any commit phase (at
+  `Begin`, before a non-transactional write opens its own transaction, and at
+  the start of a consistency-time call); a commit's own transaction never
+  reads the table. A failed lookup fails the operation. The table carries the
+  same tenant row-level security policy as the other tenant-scoped tables.
+- `cyoda_stamp(tenant_key)` — called once per commit, at the top level of the
   commit transaction, by `stampCommitInstant` and `stampOwnCommitInstant` in
   place of `clock_timestamp()`. It returns `max(clock, floor + 1)` and moves
   the floor there, so no two commits share a stamp and stamps never go back.
-  It also takes a transaction-level advisory lock `(hashtext(tenant),
-  xact_key)` — the commit's in-flight marker — held until the transaction
-  ends, after its rows are visible.
-- `cyoda_consistency_time(tenant, wait_budget_ms)` — raises the floor to
+  It also takes a transaction-level advisory lock `(tenant_key, xact_key)` —
+  the commit's in-flight marker — held until the transaction ends, after its
+  rows are visible.
+- `cyoda_consistency_time(tenant_key, wait_budget_ms)` — raises the floor to
   `C = max(clock, floor)` so every later stamp is above `C`, then takes and
   releases a shared lock on each of the tenant's in-flight markers, waiting
   for those commits to end. The call runs on its own pool connection in
@@ -139,9 +148,14 @@ contract they implement is `docs/CONSISTENCY.md` §1a.
 
 Advisory keys use the two-int form (`objsubid = 2`), which nothing else in the
 plugin uses (the scheduler and the migrator use the one-bigint form):
-`(0, 0)` is the floor mutex, held for microseconds; `(hashtext(tenant), n)`
-with `n` in `1..2^31-1` is a commit marker. A hash collision between two
-tenants only adds waiting.
+`(0, 0)` is the floor mutex, held for microseconds; `(tenant_key, n)` with
+`tenant_key` from `consistency_tenant_keys` (never 0) and `n` in `1..2^31-1`
+is a commit marker.
+
+**Load.** Each consistency-time computation reads `pg_locks`, a snapshot of
+the instance-wide lock table. The engine bounds this to two concurrent calls
+per tenant per node. Operators who expose the API to untrusted callers at a
+high request rate should rate-limit at ingress.
 
 **Commit-phase limits.** Inside `cyoda_stamp`, `lock_timeout` is 2 s, so a
 commit that cannot get the floor mutex fails with `55P03`, rolls back, and is
@@ -153,8 +167,9 @@ it never waits on another transaction's lock, and a fenced read made while the
 caller holds a transaction cannot deadlock with the commits it waits for.
 
 **Roles.** The plugin connects as the owner of these objects. A non-owner role
-needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `USAGE` on the schema, and
-`EXECUTE` on both functions (granted to `PUBLIC` by default).
+needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `SELECT, INSERT` on
+`consistency_tenant_keys`, `USAGE` on `consistency_tenant_key_seq`, `USAGE` on
+the schema, and `EXECUTE` on both functions (granted to `PUBLIC` by default).
 
 **Replicas.** With asynchronous replicas, a failover to a host whose clock is
 behind can stamp below a consistency time already returned — the same
@@ -403,6 +418,7 @@ would match no row and answer a confident, wrong "not found".
 | `search_jobs` | Async search job metadata | `id` (with `tenant_id` indexed) |
 | `search_job_results` | Entity ID results per job | `(job_id, seq)`, FK to `search_jobs` |
 | `submit_times` | Durable transaction submit instants (1-hour TTL) | `(tenant_id, tx_id)` |
+| `consistency_tenant_keys` | Per-tenant commit-marker key (consistency time) | `tenant_id`; `tenant_key` unique |
 | `scheduled_tasks` | Scheduled tasks: life, status, claim, attempt record | `(tenant_id, id)` |
 | `scheduled_task_marks` | Unsafe-dispatch marks, one per life | `(tenant_id, task_id, arm_token)` |
 | `scheduler_owners` | Scheduler liveness, one row per pnode incarnation | `owner` |

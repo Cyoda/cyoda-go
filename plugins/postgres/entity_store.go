@@ -61,6 +61,15 @@ type entityStore struct {
 	// matter which call site reaches it, not just the ones a comment warns
 	// about today.
 	ownTx bool
+
+	// keys is the factory's tenant marker-key cache (tenantKeys). markerKey
+	// is this tenant's key, resolved from it before a non-transactional write
+	// opens its own transaction and set on the same ownTx copy;
+	// stampOwnCommitInstant takes it. Resolving it there, not in the stamp,
+	// keeps the key lookup out of the transaction and off a second connection
+	// taken while the transaction holds one.
+	keys      *tenantKeys
+	markerKey int32
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -91,6 +100,10 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 	// alone cannot tell a store already inside a transaction THIS PLUGIN
 	// opened from one that needs to open its own.
 	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return 0, fmt.Errorf("non-transactional save: %w", err)
+		}
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -115,6 +128,7 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 		txStore := *s
 		txStore.q = classifiedQuerier{inner: tx}
 		txStore.ownTx = true
+		txStore.markerKey = markerKey
 		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
 			closeIfStampFailed(ctx, tx, err)
@@ -400,8 +414,9 @@ func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID s
 	// cyoda_stamp takes this write's in-flight marker and a stamp above the
 	// floor (see stampCommitInstant). Nothing after this statement waits on a
 	// lock: the two UPDATEs below address by primary key rows this transaction
-	// already wrote and locks.
-	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1)`, tid).Scan(&instant); err != nil {
+	// already wrote and locks. s.markerKey was resolved before this
+	// transaction began (see the keys field).
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1)`, s.markerKey).Scan(&instant); err != nil {
 		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,
@@ -467,6 +482,10 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// the winner's transaction ID. Under REPEATABLE READ it would instead read
 	// its pre-lock snapshot and abort with a serialization failure — a coarser
 	// answer for a condition this path reports precisely.
+	markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("compare-and-save: %w", err)
+	}
 	acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 	tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -507,6 +526,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	txStore := *s
 	txStore.q = classifiedQuerier{inner: tx}
 	txStore.ownTx = true
+	txStore.markerKey = markerKey
 
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
@@ -650,6 +670,10 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// them in one transaction of its own, mirroring CompareAndSave's
 	// sequence exactly, the same way save does.
 	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return fmt.Errorf("non-transactional delete: %w", err)
+		}
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -666,6 +690,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		txStore := *s
 		txStore.q = classifiedQuerier{inner: tx}
 		txStore.ownTx = true
+		txStore.markerKey = markerKey
 		if err := txStore.deleteOn(ctx, entityID); err != nil {
 			closeIfStampFailed(ctx, tx, err)
 			return err

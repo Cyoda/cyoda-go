@@ -249,10 +249,12 @@ change plus the new path).
 ### 6.3 postgres (`plugins/postgres`)
 
 **Migration `000016_consistency_time`** (up and down; down drops both
-functions and the sequence). SQL as verified by the second spec review on
-postgres 17 with a non-superuser owner role (24 clients, 30 s, 63,410
-commits, 15,815 calls: 0 finality, completeness or monotonicity violations;
-a checker without the wait found 6,607):
+functions, the tenant-key table and both sequences). The locking logic —
+marker, floor mutex, floor and wait loop — was verified by the second spec
+review on postgres 17 with a non-superuser owner role (24 clients, 30 s,
+63,410 commits, 15,815 calls: 0 finality, completeness or monotonicity
+violations; a checker without the wait found 6,607). The tenant key both
+functions take as an argument does not change that logic:
 
 ```sql
 CREATE SEQUENCE cyoda_stamp_floor AS bigint MINVALUE 0 START 0;
@@ -260,15 +262,24 @@ SELECT setval('cyoda_stamp_floor', coalesce(greatest(
   (SELECT (extract(epoch FROM max(transaction_time))*1000000)::bigint FROM entity_versions),
   (SELECT (extract(epoch FROM max(submit_time))*1000000)::bigint FROM submit_times)),0), true);
 
-CREATE FUNCTION cyoda_stamp(tenant text) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
-DECLARE cur_idle bigint; tkey int4 := hashtext(tenant);
+CREATE SEQUENCE consistency_tenant_key_seq AS int4 MINVALUE 1 START 1;
+CREATE TABLE consistency_tenant_keys (
+  tenant_id  text PRIMARY KEY,
+  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq'));
+ALTER SEQUENCE consistency_tenant_key_seq OWNED BY consistency_tenant_keys.tenant_key;
+ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
+CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
+  USING (tenant_id = current_setting('app.current_tenant', true));
+
+CREATE FUNCTION cyoda_stamp(tenant_key int4) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+DECLARE cur_idle bigint;
   xkey int4 := ((pg_current_xact_id()::text::bigint % 2147483647) + 1)::int4; s bigint; held boolean := false;
 BEGIN
   PERFORM set_config('lock_timeout','2000ms',true);
   SELECT setting::bigint INTO cur_idle FROM pg_settings WHERE name='idle_in_transaction_session_timeout';
   PERFORM set_config('idle_in_transaction_session_timeout',
     (CASE WHEN cur_idle=0 THEN 5000 ELSE least(cur_idle,5000) END)::text||'ms', true);
-  PERFORM pg_advisory_xact_lock(tkey, xkey);
+  PERFORM pg_advisory_xact_lock(tenant_key, xkey);
   BEGIN
     held := true; PERFORM pg_advisory_lock(0,0);
     SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM cyoda_stamp_floor;
@@ -280,9 +291,9 @@ BEGIN
   RETURN 'epoch'::timestamptz + s * interval '1 microsecond';
 END $$;
 
-CREATE FUNCTION cyoda_consistency_time(tenant text, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
+CREATE FUNCTION cyoda_consistency_time(tenant_key int4, wait_budget_ms bigint) RETURNS timestamptz LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
-  tkey int4 := hashtext(tenant); c bigint; held boolean := false; k oid; rem bigint;
+  c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
   PERFORM set_config('lock_timeout', greatest(wait_budget_ms,1)::text||'ms', true);
   BEGIN
@@ -295,12 +306,12 @@ BEGIN
   END;
   FOR k IN SELECT objid FROM pg_locks WHERE locktype='advisory'
       AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
-      AND classid=tkey AND objsubid=2 AND objid<>0 AND mode='ExclusiveLock' AND granted LOOP
+      AND classid=tenant_key AND objsubid=2 AND objid<>0 AND mode='ExclusiveLock' AND granted LOOP
     IF clock_timestamp() >= deadline THEN
       RAISE EXCEPTION 'consistency time wait budget exhausted' USING ERRCODE='55P03'; END IF;
     rem := ceil(extract(epoch FROM deadline - clock_timestamp())*1000)::bigint;
     PERFORM set_config('lock_timeout', greatest(rem,1)::text||'ms', true);
-    PERFORM pg_advisory_xact_lock_shared(tkey, k::bigint::int4);
+    PERFORM pg_advisory_xact_lock_shared(tenant_key, k::bigint::int4);
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
 END $$;
@@ -311,7 +322,14 @@ Notes on the SQL:
 - The floor is seeded from the stamps already stored:
   `entity_versions.transaction_time` and `submit_times.submit_time`.
   `search_jobs.point_in_time` is not a source, for the reason in §6.2.
-- The in-flight marker `(hashtext(tenant), xact_key)` is taken outside the
+- The tenant key is the tenant's row in `consistency_tenant_keys`, allocated
+  from `consistency_tenant_key_seq` (starts at 1, so never 0 and never the
+  mutex's first half). Allocated keys are unique by construction, so two
+  tenants never share markers: one tenant's commit in its commit phase never
+  delays another tenant's `C` or shows it that tenant's commit timing. Rows are
+  never deleted. The table has the same row-level security policy as every
+  tenant-scoped table; the lookup transaction sets `app.current_tenant`.
+- The in-flight marker `(tenant_key, xact_key)` is taken outside the
   guarded block (a block is a subtransaction; rolling it back would drop a
   lock taken inside it). It is held until the transaction ends, after its rows
   are visible. `xact_key` is never 0 and unique among live transactions
@@ -322,8 +340,8 @@ Notes on the SQL:
   the next statement cannot leak the session-level mutex; unlocking a mutex
   that was never granted only raises a WARNING. The two-int key form
   (`objsubid = 2`) is used by nothing else in the plugin (the scheduler and
-  golang-migrate use the one-bigint form). `classid = tkey` matches negative
-  hashes (int4 → oid wraps). A tenant-hash collision only adds waiting.
+  golang-migrate use the one-bigint form). Tenant keys are positive, so
+  `classid = tenant_key` compares like for like.
 - `lock_timeout` of 2 s in `cyoda_stamp` bounds the mutex wait (held for
   microseconds) and makes a violation of the design rule below fail fast. In
   `cyoda_consistency_time` the first statement sets `lock_timeout` to the
@@ -338,19 +356,34 @@ Notes on the SQL:
   autocommit statement; `SET search_path FROM CURRENT` does not scope them.
 - Role: the plugin connects as the owner of its objects
   (`docs/plugins/POSTGRES.md:331-344`). A non-owner role needs `SELECT, UPDATE`
-  on the sequence, `USAGE` on the schema and `EXECUTE` on both functions
-  (granted to `PUBLIC` by default). Stated in POSTGRES.md.
+  on `cyoda_stamp_floor`, `SELECT, INSERT` on `consistency_tenant_keys`,
+  `USAGE` on `consistency_tenant_key_seq`, `USAGE` on the schema and `EXECUTE`
+  on both functions (granted to `PUBLIC` by default). Stated in POSTGRES.md.
 
 **Go side:**
 
-- `stampCommitInstant` (`transaction_manager.go:363-453`) and
-  `stampOwnCommitInstant` (`entity_store.go:395-415`) call
-  `SELECT cyoda_stamp($tenant)` instead of `SELECT clock_timestamp()`. These
+- `stampCommitInstant` (`transaction_manager.go:393-490`) and
+  `stampOwnCommitInstant` (`entity_store.go:412-437`) call
+  `SELECT cyoda_stamp($tenant_key)` instead of `SELECT clock_timestamp()`. These
   are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
   in the commit phase; the transaction rolls back) is classified as retryable
   `503 STORAGE_UNAVAILABLE`, like the existing idle-in-transaction abort
   (`isIdleInTxAbort`).
-- `ConsistencyTime` runs `SELECT cyoda_consistency_time($tenant, $budget_ms)`
+- The tenant key is resolved before any commit phase, in a short
+  `READ COMMITTED` lookup transaction of its own that sets
+  `app.current_tenant` — never on a caller's or a committing transaction's
+  connection — and cached per process
+  by exact tenant id (`tenantKeys`, `consistency_time.go`): at `Begin`, before
+  the transaction's connection is taken (`transaction_manager.go:134`); before
+  a non-transactional save, delete or compare-and-save opens its own
+  transaction (`entity_store.go:103`, `:485`, `:673`); and at the start of
+  `ConsistencyTime`, on its own connection (`consistency_time.go:202`). On a
+  miss it reads the row, inserts it with `ON CONFLICT (tenant_id) DO NOTHING`
+  when absent, and reads it again — separate statements under
+  `READ COMMITTED`, so a concurrent allocation by another node is seen. A stamping transaction therefore never
+  touches the table, and no lookup waits for a second connection while holding
+  one. A failed lookup fails the operation.
+- `ConsistencyTime` runs `SELECT cyoda_consistency_time($tenant_key, $budget_ms)`
   on its own pool connection, in autocommit, never on a transaction's
   connection. `budget_ms` is 10 000, or the configured statement timeout when
   that is above 0 and lower (`config.go:56`). Error mapping, in order, before
@@ -362,10 +395,10 @@ Notes on the SQL:
   being returned to the pool, so no session-level lock can outlive the error.
 - **Design rule: nothing after the stamp waits on a lock.** Read-set
   validation (`FOR SHARE`) runs before the stamp
-  (`transaction_manager.go:236-267`). The statements after the stamp touch
+  (`transaction_manager.go:259-282`). The statements after the stamp touch
   only rows the transaction wrote, on both paths, with one exception: the
   `sm_audit_events` UPDATE matches by transaction label
-  (`transaction_manager.go:436-441`), which only this transaction's audit rows
+  (`transaction_manager.go:473-478`), which only this transaction's audit rows
   carry, so it cannot wait on another transaction. A fenced read made while the
   caller holds a transaction therefore cannot deadlock with the commits it
   waits for. A code comment at both stamp sites states the rule.
@@ -582,7 +615,8 @@ storage-unavailable error.
 | `C` complete, final, monotonic, cross-tenant | | | ✓ (§5.5) | | | | |
 | commit held between stamp and visibility makes `C` wait | | ✓ sqlite (gate held by the test), memory (`gatedClock`), postgres (test-driven pgx transaction calls `cyoda_stamp`, holds before COMMIT) | | | | | |
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
-| another tenant's held commit does not delay `C` | | ✓ postgres | | | | | |
+| another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
+| tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); a failed lookup fails `Begin`, a non-transactional save and `ConsistencyTime` | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |

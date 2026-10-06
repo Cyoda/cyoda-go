@@ -27,8 +27,11 @@ import (
 // See docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md
 // for the full semantic model.
 type txState struct {
-	mu         sync.Mutex
-	tenantID   spi.TenantID
+	mu       sync.Mutex
+	tenantID spi.TenantID
+	// markerKey is the tenant's marker key (tenantKeys), resolved at Begin
+	// and fixed for the transaction's life; the commit stamp takes it.
+	markerKey  int32
 	readSet    map[string]int64
 	writeSet   map[string]int64
 	savepoints []savepointEntry

@@ -69,6 +69,8 @@ type TransactionManager struct {
 	// statementTimeout is the configured statement ceiling; ConsistencyTime
 	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
 	statementTimeout time.Duration
+	// keys caches each tenant's marker key; see tenantKeys.
+	keys tenantKeys
 	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
 	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
 	// independent housekeeping statement on the pool, not the maps tm.mu
@@ -125,6 +127,15 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 		return "", nil, fmt.Errorf("Begin: %w", err)
 	}
 
+	// The tenant's marker key, which this transaction's commit stamp takes.
+	// Resolved here, before the transaction's connection is taken, so a miss
+	// waits for no second connection while holding one and the commit phase
+	// never touches the key table (see tenantKeys).
+	markerKey, err := tm.keys.get(ctx, tm.pool, tm.acquireTimeout, tenantID)
+	if err != nil {
+		return "", nil, fmt.Errorf("Begin: %w", err)
+	}
+
 	txID := uuid.UUID(tm.uuids.NewTimeUUID()).String()
 
 	// The deadline bounds the acquire ONLY. It must not reach the context this
@@ -171,7 +182,9 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	func() {
 		tm.txStatesMu.Lock()
 		defer tm.txStatesMu.Unlock()
-		tm.txStates[txID] = newTxState(tenantID)
+		st := newTxState(tenantID)
+		st.markerKey = markerKey
+		tm.txStates[txID] = st
 	}()
 
 	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:
@@ -275,7 +288,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// returned 40001 and left the tx aborted) and had no read set to validate,
 	// the first statement of the stamp fails with SQLSTATE 25P02
 	// (in_failed_sql_transaction), which abortedCommitError reads.
-	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
+	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, state.markerKey, txID)
 	if tsErr != nil {
 		tm.cleanupTx(txID)
 		// A cyoda_stamp failure closes the connection before the rollback
@@ -377,15 +390,16 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // or index on the stamped columns that reaches a parent row; and — the one
 // already live above — a statement whose WHERE matches rows this transaction
 // did not write, which needs its own argument every time it is added.
-func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
+func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, markerKey int32, txID string) (time.Time, error) {
 	var instant time.Time
 	// cyoda_stamp takes this transaction's in-flight marker and a stamp above
 	// the floor. Design rule: nothing after this statement waits on a lock —
 	// the statements below touch only rows this transaction wrote (the
 	// sm_audit_events UPDATE matches this transaction's own label; see its
 	// comment), so a consistency-time call waiting on the marker cannot
-	// deadlock with it.
-	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1)", string(tenantID)).Scan(&instant); err != nil {
+	// deadlock with it. markerKey was resolved at Begin, outside this
+	// transaction (see tenantKeys).
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1)", markerKey).Scan(&instant); err != nil {
 		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)
