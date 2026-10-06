@@ -265,7 +265,7 @@ SELECT setval('cyoda_stamp_floor', coalesce(greatest(
 CREATE SEQUENCE consistency_tenant_key_seq AS int4 MINVALUE 1 START 1;
 CREATE TABLE consistency_tenant_keys (
   tenant_id  text PRIMARY KEY,
-  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq'));
+  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq') CHECK (tenant_key > 0));
 ALTER SEQUENCE consistency_tenant_key_seq OWNED BY consistency_tenant_keys.tenant_key;
 ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
@@ -323,8 +323,8 @@ Notes on the SQL:
   `entity_versions.transaction_time` and `submit_times.submit_time`.
   `search_jobs.point_in_time` is not a source, for the reason in §6.2.
 - The tenant key is the tenant's row in `consistency_tenant_keys`, allocated
-  from `consistency_tenant_key_seq` (starts at 1, so never 0 and never the
-  mutex's first half). Allocated keys are unique by construction, so two
+  from `consistency_tenant_key_seq` (starts at 1; `CHECK (tenant_key > 0)`
+  states it in the schema), so never 0 and never the mutex's first half. Allocated keys are unique by construction, so two
   tenants never share markers: one tenant's commit in its commit phase never
   delays another tenant's `C` or shows it that tenant's commit timing. Rows are
   never deleted. The table has the same row-level security policy as every
@@ -362,8 +362,8 @@ Notes on the SQL:
 
 **Go side:**
 
-- `stampCommitInstant` (`transaction_manager.go:393-490`) and
-  `stampOwnCommitInstant` (`entity_store.go:412-437`) call
+- `stampCommitInstant` (`transaction_manager.go:395-492`) and
+  `stampOwnCommitInstant` (`entity_store.go:425-450`) call
   `SELECT cyoda_stamp($tenant_key)` instead of `SELECT clock_timestamp()`. These
   are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
   in the commit phase; the transaction rolls back) is classified as retryable
@@ -372,12 +372,15 @@ Notes on the SQL:
 - The tenant key is resolved before any commit phase, in a short
   `READ COMMITTED` lookup transaction of its own that sets
   `app.current_tenant` — never on a caller's or a committing transaction's
-  connection — and cached per process
-  by exact tenant id (`tenantKeys`, `consistency_time.go`): at `Begin`, before
-  the transaction's connection is taken (`transaction_manager.go:134`); before
-  a non-transactional save, delete or compare-and-save opens its own
-  transaction (`entity_store.go:103`, `:485`, `:673`); and at the start of
-  `ConsistencyTime`, on its own connection (`consistency_time.go:202`). On a
+  connection — and cached by exact tenant id in one cache per store factory,
+  which its transaction manager shares (`tenantKeys`, `consistency_time.go`;
+  `StoreFactory.setTransactionManager`): at `Begin`, before the transaction's
+  connection is taken (`transaction_manager.go:136`); before a
+  non-transactional save, delete or compare-and-save opens its own
+  transaction (`entity_store.go:118`, `:498`, `:683`), each through the one
+  helper that builds the in-transaction store with the key (`inOwnTx`); and
+  at the start of `ConsistencyTime`, on its own connection
+  (`consistency_time.go:209`). On a
   miss it reads the row, inserts it with `ON CONFLICT (tenant_id) DO NOTHING`
   when absent, and reads it again — separate statements under
   `READ COMMITTED`, so a concurrent allocation by another node is seen. A stamping transaction therefore never
@@ -395,10 +398,10 @@ Notes on the SQL:
   being returned to the pool, so no session-level lock can outlive the error.
 - **Design rule: nothing after the stamp waits on a lock.** Read-set
   validation (`FOR SHARE`) runs before the stamp
-  (`transaction_manager.go:259-282`). The statements after the stamp touch
+  (`transaction_manager.go:261-284`). The statements after the stamp touch
   only rows the transaction wrote, on both paths, with one exception: the
   `sm_audit_events` UPDATE matches by transaction label
-  (`transaction_manager.go:473-478`), which only this transaction's audit rows
+  (`transaction_manager.go:476-481`), which only this transaction's audit rows
   carry, so it cannot wait on another transaction. A fenced read made while the
   caller holds a transaction therefore cannot deadlock with the commits it
   waits for. A code comment at both stamp sites states the rule.
@@ -616,7 +619,7 @@ storage-unavailable error.
 | commit held between stamp and visibility makes `C` wait | | ✓ sqlite (gate held by the test), memory (`gatedClock`), postgres (test-driven pgx transaction calls `cyoda_stamp`, holds before COMMIT) | | | | | |
 | `C` reads the store clock, not `time.Now()` | | ✓ memory, sqlite (`NewTestClockAt` ahead) | | | | | |
 | another tenant's held commit does not delay `C`, also for ids that collide under `hashtext` | | ✓ postgres | | | | | |
-| tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); a failed lookup fails `Begin`, a non-transactional save and `ConsistencyTime` | | ✓ postgres | | | | | |
+| tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
 | wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |

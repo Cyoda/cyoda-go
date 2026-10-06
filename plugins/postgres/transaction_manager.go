@@ -69,8 +69,9 @@ type TransactionManager struct {
 	// statementTimeout is the configured statement ceiling; ConsistencyTime
 	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
 	statementTimeout time.Duration
-	// keys caches each tenant's marker key; see tenantKeys.
-	keys tenantKeys
+	// keys caches each tenant's marker key; see tenantKeys. A factory the
+	// manager is wired into shares it (StoreFactory.setTransactionManager).
+	keys *tenantKeys
 	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
 	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
 	// independent housekeeping statement on the pool, not the maps tm.mu
@@ -108,6 +109,7 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 		origins:        make(map[string]spi.Principal),
 		txStates:       make(map[string]*txState),
 		acquireTimeout: defaultAcquireTimeout,
+		keys:           newTenantKeys(),
 	}
 	for _, apply := range opts {
 		apply(tm)

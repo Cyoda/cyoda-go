@@ -124,9 +124,11 @@ two functions. The contract they implement is `docs/CONSISTENCY.md` §1a.
   caller-chosen instant, which must not move the floor.
 - `consistency_tenant_keys` — one row per tenant: `tenant_id` and
   `tenant_key`, an `int4` drawn from `consistency_tenant_key_seq` (starts at
-  1). Keys are unique, so two tenants never share commit markers. Rows are
-  never deleted. The plugin resolves a tenant's key once per process, in a
-  short `READ COMMITTED` transaction of its own, before any commit phase (at
+  1; a `CHECK` keeps it above 0). Keys are unique, so two tenants never share
+  commit markers. Rows are never deleted. Each store factory, with its
+  transaction manager, keeps one cache of tenant keys; it looks a tenant's key
+  up the first time it needs it, in a short `READ COMMITTED` transaction of
+  its own, before any commit phase (at
   `Begin`, before a non-transactional write opens its own transaction, and at
   the start of a consistency-time call); a commit's own transaction never
   reads the table. A failed lookup fails the operation. The table carries the

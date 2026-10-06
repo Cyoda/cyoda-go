@@ -25,8 +25,9 @@ type StoreFactory struct {
 	// first use and closed by Close.
 	sched schedulerPools
 	// keys caches each tenant's marker key for the entity stores'
-	// non-transactional writes; see tenantKeys.
-	keys tenantKeys
+	// non-transactional writes; see tenantKeys. Once a transaction manager is
+	// wired in, it is the manager's cache, so the two share one.
+	keys *tenantKeys
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -39,7 +40,7 @@ type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
 // empty environment — callers that need non-default config (e.g. a
 // custom SchemaSavepointInterval) should use newStoreFactoryWithConfig.
 func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: defaultStoreConfig()}
+	return &StoreFactory{pool: pool, cfg: defaultStoreConfig(), keys: newTenantKeys()}
 }
 
 // newStoreFactoryWithConfig is the config-aware constructor used by
@@ -50,7 +51,7 @@ func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 // same internal-test helpers; no external caller needs to synthesize
 // a full config.
 func newStoreFactoryWithConfig(pool *pgxpool.Pool, cfg config) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: cfg}
+	return &StoreFactory{pool: pool, cfg: cfg, keys: newTenantKeys()}
 }
 
 // defaultStoreConfig returns the config values produced by parseConfig
@@ -98,12 +99,15 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 // InitTransactionManager at construction time, and again — after
 // construction, with a fresh TransactionManager — by test helpers that wire
 // their own TM (e.g. NewStoreFactoryWithTMForTest); each call fully
-// replaces both fields. Keep this unexported: there is no legitimate
+// replaces both fields. The factory also adopts tm's tenant-key cache, so the
+// factory's entity stores and tm resolve each tenant's key once between them;
+// it is wired before any store is handed out. Keep this unexported: there is no legitimate
 // external caller, and opening it would invite a race the factory isn't
 // designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
 	f.uuids = tm.uuids
+	f.keys = tm.keys
 }
 
 // Pool returns the underlying connection pool.
@@ -219,7 +223,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		tm:             f.tm,
 		pool:           f.pool,
 		acquireTimeout: f.cfg.AcquireTimeout,
-		keys:           &f.keys,
+		keys:           f.keys,
 	}, nil
 }
 

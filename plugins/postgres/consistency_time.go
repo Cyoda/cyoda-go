@@ -26,7 +26,8 @@ const consistencyWaitBudget = 10 * time.Second
 // markers. The key is allocated from a sequence, so two tenants never share
 // one and cannot delay each other or see each other's commit timing. A key
 // never changes once allocated, so a cached key never goes stale. The map is
-// keyed by the exact tenant id, never a normalised form.
+// keyed by the exact tenant id, never a normalised form. A store factory and
+// its transaction manager share one cache (StoreFactory.setTransactionManager).
 //
 // The key is resolved before a commit phase starts — at Begin, before a
 // non-transactional write opens its own transaction, and at the start of
@@ -37,6 +38,8 @@ const consistencyWaitBudget = 10 * time.Second
 type tenantKeys struct {
 	m sync.Map // spi.TenantID -> int32
 }
+
+func newTenantKeys() *tenantKeys { return &tenantKeys{} }
 
 // get returns tenant's marker key. On a miss it resolves the key on a pool
 // connection of its own, with the acquire bounded as Begin's is.
@@ -70,8 +73,8 @@ func (k *tenantKeys) getOn(ctx context.Context, conn *pgxpool.Conn, tenant spi.T
 
 // resolveTenantKey reads tenant's key, allocating it first when the tenant has
 // none, in a READ COMMITTED transaction that sets app.current_tenant for the
-// table's row-level security policy, as every other transaction this plugin
-// opens does. READ COMMITTED is what makes the allocation race-free: when two
+// table's row-level security policy, as every tenant-scoped transaction this
+// plugin opens does. READ COMMITTED is what makes the allocation race-free: when two
 // nodes allocate the same tenant at once, the loser's INSERT waits for the
 // winner and does nothing, and the SELECT after it takes a new snapshot that
 // sees the winner's row. The first SELECT spares a known tenant the INSERT,
@@ -102,8 +105,12 @@ func resolveTenantKey(ctx context.Context, conn *pgxpool.Conn, tenant spi.Tenant
 	if err != nil {
 		return 0, fmt.Errorf("read tenant marker key: %w", classifyError(err))
 	}
+	// classifyError, not classifyCommitOutcome: the lookup is idempotent (a
+	// retry re-reads the row or re-runs the no-op INSERT), so a COMMIT whose
+	// outcome is in doubt is safe to retry and reads as the retryable
+	// storage-unavailable failure it is.
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit tenant marker key lookup: %w", classifyCommitOutcome(err))
+		return 0, fmt.Errorf("commit tenant marker key lookup: %w", classifyError(err))
 	}
 	return key, nil
 }

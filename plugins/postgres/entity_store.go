@@ -64,12 +64,27 @@ type entityStore struct {
 
 	// keys is the factory's tenant marker-key cache (tenantKeys). markerKey
 	// is this tenant's key, resolved from it before a non-transactional write
-	// opens its own transaction and set on the same ownTx copy;
-	// stampOwnCommitInstant takes it. Resolving it there, not in the stamp,
-	// keeps the key lookup out of the transaction and off a second connection
-	// taken while the transaction holds one.
+	// opens its own transaction; inOwnTx sets it, with q and ownTx, on the
+	// copy that runs inside that transaction, and stampOwnCommitInstant takes
+	// it. Resolving it there, not in the stamp, keeps the key lookup out of
+	// the transaction and off a second connection taken while the transaction
+	// holds one.
 	keys      *tenantKeys
 	markerKey int32
+}
+
+// inOwnTx returns the copy of s that runs inside tx, a transaction this plugin
+// opened for itself: q repointed at tx, ownTx set, and markerKey — the
+// tenant's key, resolved before tx began — for the commit stamp. Every ownTx
+// copy is made here, so none can stamp without the key. A copy rather than s
+// itself, because saveOn, deleteOn and replaceClaims read q and ownTx from
+// their receiver (see saveOn's doc comment).
+func (s *entityStore) inOwnTx(tx pgx.Tx, markerKey int32) *entityStore {
+	c := *s
+	c.q = classifiedQuerier{inner: tx}
+	c.ownTx = true
+	c.markerKey = markerKey
+	return &c
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -99,7 +114,7 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 	// ownTx's doc comment on the struct for why spi.GetTransaction(ctx)
 	// alone cannot tell a store already inside a transaction THIS PLUGIN
 	// opened from one that needs to open its own.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
 		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
 		if err != nil {
 			return 0, fmt.Errorf("non-transactional save: %w", err)
@@ -118,17 +133,15 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 			return 0, fmt.Errorf("failed to set tenant for non-transactional save: %w", classifyError(err))
 		}
 
-		// A copy with q repointed at the transaction and ownTx set: saveOn
-		// (and replaceClaims, which it calls) read s.q and s.ownTx on THIS
-		// receiver, not a parameter — see saveOn's doc comment. Setting
+		// A copy (inOwnTx) with q repointed at the transaction, ownTx and the
+		// marker key set: saveOn (and replaceClaims, which it calls) read s.q
+		// and s.ownTx on THIS receiver, not a parameter — see saveOn's doc
+		// comment. Setting
 		// ownTx here is what makes it safe for any future code path to call
 		// back into save/Save on this copy: the guard above will see
 		// s.ownTx == true and fall through to saveOn instead of trying to
 		// open a second transaction.
-		txStore := *s
-		txStore.q = classifiedQuerier{inner: tx}
-		txStore.ownTx = true
-		txStore.markerKey = markerKey
+		txStore := s.inOwnTx(tx, markerKey)
 		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
 			closeIfStampFailed(ctx, tx, err)
@@ -523,10 +536,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// saveOn instead of trying to BeginTx a second transaction on the same
 	// pool while this one still holds the row lock from compareTxID's FOR
 	// UPDATE, which is exactly the self-deadlock this store used to hit here.
-	txStore := *s
-	txStore.q = classifiedQuerier{inner: tx}
-	txStore.ownTx = true
-	txStore.markerKey = markerKey
+	txStore := s.inOwnTx(tx, markerKey)
 
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
@@ -669,7 +679,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// history for a delete the entities table never actually applied. Run
 	// them in one transaction of its own, mirroring CompareAndSave's
 	// sequence exactly, the same way save does.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
 		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
 		if err != nil {
 			return fmt.Errorf("non-transactional delete: %w", err)
@@ -687,10 +697,7 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		}
 
 		// Same reason save needs a receiver copy — see save's non-tx branch.
-		txStore := *s
-		txStore.q = classifiedQuerier{inner: tx}
-		txStore.ownTx = true
-		txStore.markerKey = markerKey
+		txStore := s.inOwnTx(tx, markerKey)
 		if err := txStore.deleteOn(ctx, entityID); err != nil {
 			closeIfStampFailed(ctx, tx, err)
 			return err

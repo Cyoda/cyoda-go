@@ -203,7 +203,7 @@ const PITBaseQueryForTest = pitBaseQueryTemplate
 // equality proxy that store.Search() (which DOES apply the residual)
 // provides.
 func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
-	s := &entityStore{q: pool, pool: pool, tenantID: tenantID}
+	s := &entityStore{q: pool, pool: pool, tenantID: tenantID, keys: newTenantKeys()}
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, err

@@ -849,6 +849,13 @@ func TestConsistencyTime_AcquireTimeoutIsStorageUnavailable(t *testing.T) {
 // own and keeps it until cleanup.
 func holdFloorMutex(t *testing.T) {
 	t.Helper()
+	takeFloorMutex(t)
+}
+
+// takeFloorMutex is holdFloorMutex with an early release: release lets the
+// mutex go (at most once), and cleanup releases it if the test did not.
+func takeFloorMutex(t *testing.T) (release func()) {
+	t.Helper()
 	side, err := newCTPool(t, testDBURL(t), 1, nil).Acquire(context.Background())
 	if err != nil {
 		t.Fatalf("acquire side connection: %v", err)
@@ -856,10 +863,17 @@ func holdFloorMutex(t *testing.T) {
 	if _, err := side.Exec(context.Background(), `SELECT pg_advisory_lock(0, 0)`); err != nil {
 		t.Fatalf("take the floor mutex: %v", err)
 	}
-	t.Cleanup(func() {
+	released := false
+	release = func() {
+		if released {
+			return
+		}
+		released = true
 		_, _ = side.Exec(context.Background(), `SELECT pg_advisory_unlock(0, 0)`)
 		side.Release()
-	})
+	}
+	t.Cleanup(release)
+	return release
 }
 
 // A cyoda_stamp error closes the connection it ran on instead of returning it
@@ -1131,16 +1145,20 @@ func TestStamp_CommitPhaseDoesNotTouchTenantKeys(t *testing.T) {
 	}
 }
 
-// A tenant key that cannot be resolved fails the operation: Begin, a
-// non-transactional save and ConsistencyTime all return an error, and nothing
-// is written.
+// A tenant key that cannot be resolved fails the operation: Begin, every
+// non-transactional write (save, delete, compare-and-save) and ConsistencyTime
+// return an error, and nothing is written. The factory is new, so its cache
+// holds no key and every call must look the key up.
 func TestTenantKeys_LookupFailureFailsClosed(t *testing.T) {
-	f, ctx := newCTFactoryOwnDB(t)
-	pool := postgres.PoolForTest(f)
+	seed, ctx := newCTFactoryOwnDB(t)
+	pool := postgres.PoolForTest(seed)
+	id, txID := seedEntity(t, seed, ctx)
 	if _, err := pool.Exec(context.Background(),
 		`ALTER TABLE consistency_tenant_keys RENAME TO consistency_tenant_keys_gone`); err != nil {
 		t.Fatalf("hide the key table: %v", err)
 	}
+	f := postgres.NewStoreFactory(pool)
+	f.InitTransactionManager(newTestUUIDGenerator())
 	tm := ctTM(t, f, ctx)
 
 	if txID, _, err := tm.Begin(ctx); err == nil {
@@ -1156,14 +1174,49 @@ func TestTenantKeys_LookupFailureFailsClosed(t *testing.T) {
 	}); err == nil {
 		t.Fatal("a non-transactional Save succeeded without a tenant key")
 	}
+	if err := es.Delete(ctx, id); err == nil {
+		t.Fatal("a non-transactional Delete succeeded without a tenant key")
+	}
+	if _, err := es.CompareAndSave(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":2}`),
+	}, txID); err == nil {
+		t.Fatal("a non-transactional CompareAndSave succeeded without a tenant key")
+	}
 	if c, err := tm.ConsistencyTime(ctx); err == nil {
 		t.Fatalf("ConsistencyTime returned %v without a tenant key", c)
 	}
-	var rows int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM entity_versions`).Scan(&rows); err != nil {
-		t.Fatalf("count versions: %v", err)
+	var versions, deleted int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT (SELECT count(*) FROM entity_versions), (SELECT count(*) FROM entities WHERE deleted)`).Scan(&versions, &deleted); err != nil {
+		t.Fatalf("count rows: %v", err)
 	}
-	if rows != 0 {
-		t.Fatalf("%d versions written without a tenant key", rows)
+	if versions != 1 || deleted != 0 {
+		t.Fatalf("%d versions and %d deleted entities after writes without a tenant key, want the seed's 1 and 0", versions, deleted)
 	}
+}
+
+// seedEntity commits one new entity in a transaction and returns its id and
+// the committing transaction's id.
+func seedEntity(t *testing.T, f *postgres.StoreFactory, ctx context.Context) (id, txID string) {
+	t.Helper()
+	tm := ctTM(t, f, ctx)
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	es, err := f.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	id = uuid.NewString()
+	if _, err := es.Save(txCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		_ = tm.Rollback(txCtx, txID)
+		t.Fatalf("seed Save: %v", err)
+	}
+	if err := tm.Commit(txCtx, txID); err != nil {
+		t.Fatalf("seed Commit: %v", err)
+	}
+	return id, txID
 }

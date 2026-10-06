@@ -8,13 +8,14 @@
 --   (0, 0)                     the floor mutex, held for microseconds
 --   (tenant_key, 1..2^31-1)    in-flight markers, one per committing tx
 -- tenant_key is the tenant's row in consistency_tenant_keys: allocated from
--- its own sequence starting at 1, so it is never 0 and unique by construction
+-- its own sequence starting at 1 and checked positive, so it is never 0 and
+-- unique by construction
 -- (a hash of the tenant id would let two tenants share markers, and so delay
--- each other and see each other's commit timing). Rows are never deleted. The
--- plugin resolves a tenant's key once per process, in a short READ COMMITTED
--- transaction of its own that sets app.current_tenant, before any commit
--- phase, so a stamping transaction never touches the table. Row-level security
--- as on every tenant-scoped table.
+-- each other and see each other's commit timing). Rows are never deleted. Each
+-- store factory (with its transaction manager) caches a tenant's key after its
+-- first lookup, made in a short READ COMMITTED transaction of its own that sets
+-- app.current_tenant, before any commit phase, so a stamping transaction never
+-- touches the table. Row-level security as on every tenant-scoped table.
 -- The floor is seeded from the stamps already stored. search_jobs.point_in_time
 -- is not one: it held the caller's pointInTime as sent, with no check against
 -- the future, so seeding from it could move every later stamp far ahead.
@@ -26,7 +27,7 @@ SELECT setval('cyoda_stamp_floor', coalesce(greatest(
 CREATE SEQUENCE consistency_tenant_key_seq AS int4 MINVALUE 1 START 1;
 CREATE TABLE consistency_tenant_keys (
   tenant_id  text PRIMARY KEY,
-  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq'));
+  tenant_key int4 NOT NULL UNIQUE DEFAULT nextval('consistency_tenant_key_seq') CHECK (tenant_key > 0));
 ALTER SEQUENCE consistency_tenant_key_seq OWNED BY consistency_tenant_keys.tenant_key;
 ALTER TABLE consistency_tenant_keys ENABLE ROW LEVEL SECURITY;
 CREATE POLICY consistency_tenant_keys_tenant_isolation ON consistency_tenant_keys
