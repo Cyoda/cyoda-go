@@ -849,23 +849,44 @@ func TestMigrationLockWaitError_LeavesEverythingElseAlone(t *testing.T) {
 // each used to prepend "postgres migrate: ", so a cancelled boot reported
 // "postgres migrate: postgres migrate: context canceled". The inner wrap is the
 // one with something to say; the outer one names the phase.
+//
+// The search_path check runs before the migration phase, so a context
+// cancelled before the boot ends there, and the migration phase is reached
+// only by cancelling once its migrator is built.
 func TestEnsureSchema_CancelledContextSaysItOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires a live PostgreSQL")
 	}
-	dsn := freshDatabase(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	for _, tc := range []struct {
+		name        string
+		phase       string
+		cancelFirst bool // cancel before the boot; otherwise once the migrator is built
+	}{
+		{"before the boot", "postgres: check the search_path schemas: ", true},
+		{"during the migration phase", "postgres migrate: ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := freshDatabase(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var seam func()
+			if tc.cancelFirst {
+				cancel()
+			} else {
+				seam = seamOnCall(1, cancel)
+			}
 
-	err := ensureSchema(ctx, openPool(t, dsn), true, 5*time.Minute)
-	if err == nil {
-		t.Fatal("a cancelled context still completed the boot sequence")
-	}
-	t.Logf("cancelled boot reported: %v", err)
-	if n := strings.Count(err.Error(), "postgres migrate: "); n != 1 {
-		t.Errorf("phase named %d times, want once: %v", n, err)
-	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("cancellation is not recoverable from the error: %v", err)
+			err := ensureSchemaWith(ctx, openPool(t, dsn), true, 5*time.Minute, seam)
+			if err == nil {
+				t.Fatal("a cancelled context still completed the boot sequence")
+			}
+			t.Logf("cancelled boot reported: %v", err)
+			if n := strings.Count(err.Error(), tc.phase); n != 1 {
+				t.Errorf("phase %q named %d times, want once: %v", tc.phase, n, err)
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("cancellation is not recoverable from the error: %v", err)
+			}
+		})
 	}
 }
