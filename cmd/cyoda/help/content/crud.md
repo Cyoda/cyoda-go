@@ -416,7 +416,7 @@ No parameters. Response: `200 OK`, `application/json`: `{"consistencyTime": "202
 
 **GET /api/entity/stats** — Entity count statistics across all models
 
-- `pointInTime` (query, optional): RFC 3339 — count entities as they existed at this instant; must be at or before the consistency time. The three other `GET` stats endpoints accept it too
+- `pointInTime` (query, optional): RFC 3339 — count entities, each in the state it had at this instant; must be at or before the consistency time. The three other `GET` stats endpoints accept it too
 
 Response: `200 OK`, `application/json`:
 
@@ -545,8 +545,8 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 
 **In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via `EntityStore.Iterate`. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
-- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. A `pointInTime` read is committed-only: it ignores the ambient transaction and its buffer, by contract (see POINT-IN-TIME SEMANTICS). Outside a transaction, `GroupedAggregate` pushes a point-in-time read down: it counts in the store over `entity_versions` (latest version per entity at or before the instant, deleted excluded), so no entity document is streamed out. The pushdown is skipped in-tx, so the service streams the tally over `Iterate`, which honours RYW without a `pointInTime`.
-- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE. Outside a transaction, `GroupedAggregate` pushes a point-in-time read down over the same lateral base, so the store counts and no entity document leaves the database; in-tx the service streams through `Iterate`.
+- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. A `pointInTime` read is committed-only: it ignores the ambient transaction and its buffer, by contract (see POINT-IN-TIME SEMANTICS). Outside a transaction, `GroupedAggregate` pushes a point-in-time read down: it counts in the store over `entity_versions` (latest version per entity at or before the instant, deleted excluded), so no entity document is streamed out. Exceptions stream through `Iterate` at the instant, committed-only: a `stdev` aggregation, and a condition with a residual the SQL cannot apply. The pushdown is skipped in-tx, so the service streams the tally over `Iterate`, which honours RYW without a `pointInTime`.
+- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE. Outside a transaction, `GroupedAggregate` pushes a point-in-time read down over the same lateral base, so the store counts and no entity document leaves the database; a condition with a residual the SQL cannot apply, and any in-tx request, stream through `Iterate` (committed-only at an instant).
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
 
@@ -596,12 +596,14 @@ inclusive**: a version whose write timestamp equals `pointInTime` is included
 against stored version timestamps at the storage engine's native precision.
 
 Behaviour is identical across every read path — single-entity read, list,
-search, grouped statistics, change history, and available transitions — and
+search, statistics, grouped statistics, conditional delete, change history, and
+available transitions — and
 across storage backends. Because backends store timestamps at different
 precisions (down to milliseconds on some deployments), cross-backend results are
 guaranteed to agree at **millisecond granularity**; finer-grained ordering
 within a single millisecond is backend-defined. Timestamps are accepted and
-emitted as RFC 3339 with full fractional precision.
+emitted as RFC 3339 with full fractional precision. An instant with an offset
+(`2026-10-05T16:03:07+02:00`) is accepted and compared as the instant it names.
 
 **The instant a version is dated at is its transaction's commit**, on every
 backend — not the instant the transaction started, and not the instant the
@@ -611,7 +613,8 @@ writes or none of them.
 
 **The consistency time.** A read at an instant is only trustworthy if no save
 can still land at or before it. The **consistency time** is the instant up to
-which that holds, for your tenant. It has four properties:
+which that holds, for your tenant. It is normally the store's current time; it
+waits only for saves still committing (milliseconds). It has four properties:
 
 - **Complete** — every save already confirmed to any client, on any node, is
   at or before it.
@@ -625,21 +628,30 @@ which that holds, for your tenant. It has four properties:
 
 `GET /api/entity/consistency-time` returns it. To read the model "as of now"
 with an answer that cannot change, fetch it and pass it as `pointInTime`; a
-read at that value is never refused and includes every save confirmed before
-you asked.
+read at that value is never refused with
+`POINT_IN_TIME_AFTER_CONSISTENCY_TIME` (a `503` is still possible) and includes
+every save confirmed before you asked.
 
 **The fence.** A read with a `pointInTime` later than the consistency time is
 refused with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; the problem's
-`properties.consistencyTime` carries the current value. There is no waiting. A
-future instant, or one a few milliseconds ahead of a commit still in flight, is
-refused; a client clock that runs ahead of the store's is the usual cause. The
+`properties.consistencyTime` carries the current value. There is no waiting. An
+instant at or before the store's clock is never refused: the store waits for the
+tenant's saves still committing, or answers `503 CONSISTENCY_TIME_UNAVAILABLE`
+past its budget. Only an instant later than the store's clock is refused — a
+future instant, or one from a client clock running ahead of the store's. The
 fence covers single-entity read, list, search, async search submit, conditional
 delete, the four stats reads, grouped statistics, change history and
 transitions. Request errors that do not involve the instant (malformed value,
 unknown model, `pointInTime` together with `transactionId`) are reported first;
 a `404` produced by the read itself comes after the fence. A
 `503 CONSISTENCY_TIME_UNAVAILABLE` means the store could not certify the
-consistency time within its wait budget; retry.
+consistency time within its wait budget; retry with back-off.
+
+Over gRPC the fence applies to every read carrying a `pointInTime` (get,
+get-all, search, snapshot search, delete-all, both stats, changes). The
+envelope has no properties, so a refusal carries the consistency time in its
+message text; or call `EntityConsistencyTimeGetRequest`. Payload fields:
+`cyoda help cloudevents json`.
 
 **Reads without `pointInTime` read the current state**: what is committed when
 the store runs the query. Two such reads can differ, and so can the pages of a
@@ -649,7 +661,9 @@ For consistent pages, take the consistency time once and pass it as
 
 **Async search** with no `pointInTime` takes a fresh consistency time at
 submission and records it on the job; status and result pages read at that
-instant, so every page of the result agrees. A `pointInTime` you pass is fenced
+instant, so every page of the result agrees. The default includes every save
+already confirmed when the submit is made; a save not yet confirmed at submit
+may or may not appear. A `pointInTime` you pass is fenced
 at submission and recorded the same way.
 
 **Inside a transaction.** Without `pointInTime`, a read sees the current

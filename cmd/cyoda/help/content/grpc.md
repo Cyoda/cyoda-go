@@ -185,7 +185,7 @@ The full CloudEvent envelope for an ack:
 **Search / query event types**:
 
 - `EntityGetRequest` / `EntityResponse`
-- `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
+- `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused with `POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; a refusal's message text carries the current one. Payload fields: `cyoda help cloudevents json`. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`

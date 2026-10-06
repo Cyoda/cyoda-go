@@ -73,14 +73,7 @@ future `T` on a missing entity answers `400`.
 
 **Inside a transaction.** Without `pointInTime`, a read sees the current
 committed state plus the transaction's own writes. With `pointInTime`, it sees
-committed data at `T` only, and is fenced the same way. The change history, and
-the audit trail built on it, lists committed data only, inside a transaction
-too.
-
-**Stats and get-all honour `pointInTime`.** The four HTTP stats reads, the two
-gRPC stats reads and gRPC get-all accept the field and count or list the
-entities whose latest revision at or before `T` is not deleted. They do not
-ignore it.
+committed data at `T` only, and is fenced the same way.
 
 ## The endpoint and the gRPC pair
 
@@ -136,8 +129,6 @@ entities a delete will touch counts at the instant (the stats read with the same
 - Cloud serves reads later than its consistency time **unfenced**; the contract
   refuses them with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`.
 - Cloud has **no consistency-time endpoint** and no gRPC pair; both are added.
-- Cloud's stats and get-all reads at a point in time must honour `pointInTime`.
-- Cloud's change history inside a transaction must list committed data only.
 
 ## Backend support
 

@@ -68,9 +68,8 @@ Full transaction-lifecycle implementation
   "Consistency time and commit stamping") and applies it to every row the
   transaction wrote, by narrow-column
   `UPDATE`s over `entity_versions`, `entities` and the audit events
-  labelled with the transaction. `CURRENT_TIMESTAMP` is fixed at
-  transaction *start*, so it dated a write when the transaction opened
-  rather than when it became visible; the commit-phase stamp replaces it.
+  labelled with the transaction. The column default `CURRENT_TIMESTAMP` is
+  fixed at transaction *start*; the commit-phase stamp is what dates a write.
   See "Bi-temporal versioning" below for which values move.
 - **Submit-time bookkeeping:** the same instant is the transaction's
   submit time. It is recorded both in an in-process map (the fast path)
@@ -148,9 +147,9 @@ commit that cannot get the floor mutex fails with `55P03`, rolls back, and is
 a retryable `503 STORAGE_UNAVAILABLE`. The function also lowers
 `idle_in_transaction_session_timeout` to at most 5 s for the rest of the
 transaction: a pause of more than 5 s between the stamp and `COMMIT` aborts
-the commit. Nothing after the stamp waits on a lock except rows the
-transaction itself wrote, so a fenced read made while the caller holds a
-transaction cannot deadlock with the commits it waits for.
+the commit. After the stamp, the commit touches only rows it wrote itself, so
+it never waits on another transaction's lock, and a fenced read made while the
+caller holds a transaction cannot deadlock with the commits it waits for.
 
 **Roles.** The plugin connects as the owner of these objects. A non-owner role
 needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `USAGE` on the schema, and
@@ -354,11 +353,9 @@ base query for `Search`, `Iterate` / grouped statistics and
 `GetPage(asAt)` enumerates the model's rows in `entities` and probes each
 one's revision at the instant through a `CROSS JOIN LATERAL` into
 `idx_ev_bitemporal`, with the same ordering and tiebreak as above. It
-therefore costs one index probe per *entity*, where the previous
-`DISTINCT ON (entity_id)` form read every revision of every entity up to
-the instant and applied the caller's condition afterwards — so the read
-cost followed the length of the history rather than the size of the
-model. The result set is unchanged, and rests on three properties:
+therefore costs one index probe per *entity*, not one per revision, so the
+read cost follows the size of the model rather than the length of its
+history. The result set rests on three properties:
 `entities` keeps a row for every entity that has ever existed (delete is
 a soft delete; nothing removes the row, and the foreign key above makes
 that an enforced invariant rather than a habit), an entity's model

@@ -1585,7 +1585,7 @@ paths:
                       lastUpdateTime: "2026-07-01T12:00:00.000Z"
                       transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
-          description: Conflicting request paramters (both pointInTime and transactionId
+          description: Conflicting request parameters (both pointInTime and transactionId
             provided).
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:

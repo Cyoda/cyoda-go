@@ -305,7 +305,7 @@ func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
 	}
 }
 
-// TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation pins the
+// TestSqliteIterate_InTxPlusPointInTime_CommittedOnly pins the
 // contract from plugins/sqlite/grouped_stats.go: when a tx is active AND
 // PointInTime is requested, the iterator reads committed history at that
 // instant and ignores the ambient transaction — the tx buffer is not
@@ -318,7 +318,7 @@ func TestSqliteIterate_InTx_RejectsUnevaluableFilter(t *testing.T) {
 // of), and counts and grouped stats at an instant behave the same way. If
 // this test starts failing because buffered writes become visible at an
 // instant inside a tx, update the godoc and the help topic together.
-func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
+func TestSqliteIterate_InTxPlusPointInTime_CommittedOnly(t *testing.T) {
 	factory, store, ctx := gsNewStore(t)
 
 	// Seed a committed entity well in the past so a PIT capture after the
@@ -358,11 +358,11 @@ func TestSqliteIterate_InTxPlusPointInTime_DocumentedLimitation(t *testing.T) {
 		t.Fatalf("iter err: %v", err)
 	}
 
-	// Documented limitation: e-buffered must NOT surface on the in-tx + PIT
-	// path, even though it would on the non-PIT in-tx path. If this fires,
-	// the behaviour changed — keep code + docs in sync.
+	// Contract: e-buffered must NOT surface on the in-tx + PIT path, even
+	// though it would on the non-PIT in-tx path. If this fires, the behaviour
+	// changed — keep code + docs in sync.
 	if ids["e-buffered"] {
-		t.Fatalf("buffered entity surfaced on in-tx + PIT path — documented limitation has regressed; update both code and docs together")
+		t.Fatalf("buffered entity surfaced on in-tx + PIT path — a read at an instant is committed-only; update both code and docs together")
 	}
 	// Sanity: the committed entity is visible from the historical snapshot.
 	if !ids["e-committed"] {
