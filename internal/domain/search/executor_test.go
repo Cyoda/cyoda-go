@@ -235,19 +235,6 @@ func TestExecutor_StreamsIncrementally(t *testing.T) {
 	for i := 0; i < total; i++ {
 		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%06d", i), []byte(`{}`))
 	}
-	// A burst of saves stamps ahead of a coarse wall clock (the store floors
-	// each stamp one microsecond above the last). Wait until the clock has
-	// passed the consistency time so the job's time.Now() sees every save.
-	tm, err := base.TransactionManager(ctx)
-	if err != nil {
-		t.Fatalf("TransactionManager: %v", err)
-	}
-	c, err := tm.ConsistencyTime(ctx)
-	if err != nil {
-		t.Fatalf("ConsistencyTime: %v", err)
-	}
-	time.Sleep(time.Until(c) + time.Millisecond)
-
 	var nextCalls int64
 	ies := wrapIterate(t, base, ctx, func(it spi.Iterator) spi.Iterator {
 		return &countingIterator{Iterator: it, calls: &nextCalls}

@@ -261,6 +261,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		pushFilter = f
 	}
 
+	// Every request error above wins over the fence; a read at an instant
+	// later than the consistency time is refused before any backend runs.
+	if req.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *req.PointInTime); err != nil {
+			return nil, err
+		}
+	}
+
 	inTx := spi.GetTransaction(ctx) != nil
 
 	// 1. Native pushdown branch.

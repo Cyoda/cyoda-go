@@ -82,6 +82,14 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		pointInTime, usePointInTime = parsed, true
 	}
 
+	// The instant is resolved from either source; fence it before any read.
+	if usePointInTime {
+		if err := h.cons.Fence(r.Context(), pointInTime); err != nil {
+			common.WriteError(w, r, classifyError(err))
+			return
+		}
+	}
+
 	// Load entity to get its modelRef.
 	entityStore, err := h.factory.EntityStore(r.Context())
 	if err != nil {
