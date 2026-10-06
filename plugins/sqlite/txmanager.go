@@ -1303,12 +1303,6 @@ func (m *transactionManager) Rollback(ctx context.Context, txID string) error {
 // the persistent-fallback path. The check runs before any state-dependent
 // response so a cross-tenant caller learns neither the submit time nor
 // whether the transaction is in flight or committed.
-// ConsistencyTime implements spi.TransactionManager. Not yet implemented
-// for this backend; it fails rather than guessing an instant.
-func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
-	return time.Time{}, errors.New("sqlite: ConsistencyTime not implemented")
-}
-
 func (m *transactionManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	uc := spi.GetUserContext(ctx)
 	m.mu.Lock()
@@ -1345,6 +1339,12 @@ func (m *transactionManager) GetSubmitTime(ctx context.Context, txID string) (ti
 		return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxTenantMismatch, txID)
 	}
 	return time.UnixMicro(micro), nil
+}
+
+// ConsistencyTime implements spi.TransactionManager. Not yet implemented
+// for this backend; it fails rather than guessing an instant.
+func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("sqlite: ConsistencyTime not implemented")
 }
 
 // CommittedLogLen returns the current length of the committed log.
