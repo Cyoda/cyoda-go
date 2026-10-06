@@ -267,7 +267,7 @@ BEGIN
     (CASE WHEN cur_idle=0 THEN 5000 ELSE least(cur_idle,5000) END)::text||'ms', true);
   PERFORM pg_advisory_xact_lock(tkey, xkey);
   BEGIN
-    PERFORM pg_advisory_lock(0,0); held := true;
+    held := true; PERFORM pg_advisory_lock(0,0);
     SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM cyoda_stamp_floor;
     PERFORM setval('cyoda_stamp_floor', s, true);
     PERFORM pg_advisory_unlock(0,0); held := false;
@@ -281,8 +281,9 @@ CREATE FUNCTION cyoda_consistency_time(tenant text, wait_budget_ms bigint) RETUR
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   tkey int4 := hashtext(tenant); c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
+  PERFORM set_config('lock_timeout', greatest(wait_budget_ms,1)::text||'ms', true);
   BEGIN
-    PERFORM pg_advisory_lock(0,0); held := true;
+    held := true; PERFORM pg_advisory_lock(0,0);
     SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value) INTO c FROM cyoda_stamp_floor;
     PERFORM setval('cyoda_stamp_floor', c, true);
     PERFORM pg_advisory_unlock(0,0); held := false;
@@ -310,13 +311,17 @@ Notes on the SQL:
   are visible. `xact_key` is never 0 and unique among live transactions
   (`xidStopLimit` < 2^31 − 1). `cyoda_stamp` is called at the top level of the
   commit, never inside a savepoint that may roll back.
-- `(0, 0)` is the mutex; the `held` flag survives the block's rollback, so
-  the handler releases the mutex only when it was taken. The two-int key form
+- `(0, 0)` is the mutex. The `held` flag is set before the lock call and
+  survives the block's rollback, so a cancel serviced between the grant and
+  the next statement cannot leak the session-level mutex; unlocking a mutex
+  that was never granted only raises a WARNING. The two-int key form
   (`objsubid = 2`) is used by nothing else in the plugin (the scheduler and
   golang-migrate use the one-bigint form). `classid = tkey` matches negative
   hashes (int4 → oid wraps). A tenant-hash collision only adds waiting.
 - `lock_timeout` of 2 s in `cyoda_stamp` bounds the mutex wait (held for
-  microseconds) and makes a violation of the design rule below fail fast. The
+  microseconds) and makes a violation of the design rule below fail fast. In
+  `cyoda_consistency_time` the first statement sets `lock_timeout` to the
+  budget, so the mutex wait is inside the budget too. The
   idle-in-transaction limit is the lower of the operator's setting and 5 s
   (0 means unset); a pause of more than 5 s between the stamp and `COMMIT`
   aborts the commit.

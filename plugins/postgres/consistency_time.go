@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgerrcode"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -29,14 +30,38 @@ func (e *stampLockTimeoutError) Error() string {
 func (e *stampLockTimeoutError) Unwrap() error            { return e.cause }
 func (e *stampLockTimeoutError) StorageUnavailable() bool { return true }
 
-// classifyStampError marks a 55P03 from cyoda_stamp. Any other error is
-// returned unchanged for the caller's usual classification.
+// stampError marks any failure of cyoda_stamp. The function can fail with the
+// session-level floor mutex in doubt, so whoever holds the transaction closes
+// its connection instead of returning it to the pool (closeIfStampFailed). It
+// is transparent otherwise: no marker of its own, and Error is the cause's.
+type stampError struct{ cause error }
+
+func (e *stampError) Error() string { return e.cause.Error() }
+func (e *stampError) Unwrap() error { return e.cause }
+
+// classifyStampError marks an error from cyoda_stamp as a stampError, and a
+// 55P03 inside it as a stampLockTimeoutError, which carries the
+// storage-unavailable marker.
 func classifyStampError(err error) error {
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == pgerrcode.LockNotAvailable {
-		return &stampLockTimeoutError{cause: err}
+		err = &stampLockTimeoutError{cause: err}
 	}
-	return err
+	return &stampError{cause: err}
+}
+
+// closeIfStampFailed closes tx's connection when err came from cyoda_stamp, so
+// the pool cannot hand out a session that may still hold the floor mutex. The
+// caller's Rollback afterwards releases the closed connection, and pgxpool
+// destroys it rather than reusing it.
+func closeIfStampFailed(ctx context.Context, tx pgx.Tx, err error) {
+	var se *stampError
+	if !errors.As(err, &se) {
+		return
+	}
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	_ = tx.Conn().Close(closeCtx)
 }
 
 // waitBudgetMillis is 10 s, or the configured statement timeout when that is
@@ -65,7 +90,9 @@ func (tm *TransactionManager) waitBudgetMillis() int64 {
 // transaction cannot be what holds it up.
 //
 // On an error the connection is closed instead of being returned to the
-// pool, so no session-level lock can outlive the error.
+// pool, so no session-level lock can outlive the error. After a client-side
+// cancel the server statement can keep waiting until its budget ends; until
+// then it holds a server connection the pool no longer counts.
 func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
 	tenantID, err := resolveTenant(ctx)
 	if err != nil {

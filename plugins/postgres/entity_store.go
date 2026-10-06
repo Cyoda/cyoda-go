@@ -117,10 +117,13 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 		txStore.ownTx = true
 		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
+			closeIfStampFailed(ctx, tx, err)
 			return 0, err
 		}
+		// classifyCommitOutcome, not classifyError: a torn socket on COMMIT
+		// leaves the outcome in doubt and must not read as retryable.
 		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyError(err))
+			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyCommitOutcome(err))
 		}
 		return version, nil
 	}
@@ -394,7 +397,10 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 // CREATED.
 func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID string, version int64, isNew bool) error {
 	var instant time.Time
-	// See stampCommitInstant for the design rule this statement opens.
+	// cyoda_stamp takes this write's in-flight marker and a stamp above the
+	// floor (see stampCommitInstant). Nothing after this statement waits on a
+	// lock: the two UPDATEs below address by primary key rows this transaction
+	// already wrote and locks.
 	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1)`, tid).Scan(&instant); err != nil {
 		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
@@ -514,10 +520,12 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// backwards. See stampOwnCommitInstant.
 	version, err := txStore.save(ctx, entity)
 	if err != nil {
+		closeIfStampFailed(ctx, tx, err)
 		return 0, err
 	}
+	// classifyCommitOutcome: see save's non-tx branch.
 	if err := tx.Commit(ctx); err != nil {
-		return 0, classifyError(fmt.Errorf("failed to commit compare-and-save: %w", err))
+		return 0, fmt.Errorf("failed to commit compare-and-save: %w", classifyCommitOutcome(err))
 	}
 	return version, nil
 }
@@ -661,10 +669,12 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		txStore.q = classifiedQuerier{inner: tx}
 		txStore.ownTx = true
 		if err := txStore.deleteOn(ctx, entityID); err != nil {
+			closeIfStampFailed(ctx, tx, err)
 			return err
 		}
+		// classifyCommitOutcome: see save's non-tx branch.
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyError(err))
+			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyCommitOutcome(err))
 		}
 		return nil
 	}

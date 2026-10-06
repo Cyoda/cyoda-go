@@ -278,6 +278,9 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
 	if tsErr != nil {
 		tm.cleanupTx(txID)
+		// A cyoda_stamp failure closes the connection before the rollback
+		// below releases it, so the pool never reuses it.
+		closeIfStampFailed(ctx, pgxTx, tsErr)
 		// Only a 25P02 is read as an aborted transaction. Any other error
 		// (context cancellation, network failure, etc.) is classified below so
 		// callers are not misled into treating a transient infrastructure error
@@ -1075,6 +1078,19 @@ func isInFailedTx(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction
 }
 
+// classifyCommitOutcome is classifyCommitError without the manager's
+// bookkeeping, for the COMMIT of a transaction the manager does not track: a
+// non-transactional write's own (save, Delete, CompareAndSave). The same rule
+// holds there: a torn socket on COMMIT leaves the outcome in doubt, so only
+// what the server said is classified.
+func classifyCommitOutcome(err error) error {
+	if err == nil {
+		return nil
+	}
+	classified, _ := classifySQLState(err)
+	return classified
+}
+
 // classifyCommitError classifies a failure of the COMMIT itself, where a torn
 // socket means something different from what it means anywhere else.
 //
@@ -1090,7 +1106,7 @@ func (tm *TransactionManager) classifyCommitError(txID string, err error) error 
 	if err == nil {
 		return nil
 	}
-	classified, _ := classifySQLState(err)
+	classified := classifyCommitOutcome(err)
 	var pgErr *pgconn.PgError
 	if errors.As(classified, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
 		tm.discardTx(txID)

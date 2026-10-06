@@ -23,7 +23,7 @@ BEGIN
     (CASE WHEN cur_idle=0 THEN 5000 ELSE least(cur_idle,5000) END)::text||'ms', true);
   PERFORM pg_advisory_xact_lock(tkey, xkey);
   BEGIN
-    PERFORM pg_advisory_lock(0,0); held := true;
+    held := true; PERFORM pg_advisory_lock(0,0);
     SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value+1) INTO s FROM cyoda_stamp_floor;
     PERFORM setval('cyoda_stamp_floor', s, true);
     PERFORM pg_advisory_unlock(0,0); held := false;
@@ -37,8 +37,9 @@ CREATE FUNCTION cyoda_consistency_time(tenant text, wait_budget_ms bigint) RETUR
 DECLARE deadline timestamptz := clock_timestamp() + wait_budget_ms * interval '1 millisecond';
   tkey int4 := hashtext(tenant); c bigint; held boolean := false; k oid; rem bigint;
 BEGIN
+  PERFORM set_config('lock_timeout', greatest(wait_budget_ms,1)::text||'ms', true);
   BEGIN
-    PERFORM pg_advisory_lock(0,0); held := true;
+    held := true; PERFORM pg_advisory_lock(0,0);
     SELECT greatest((extract(epoch FROM clock_timestamp())*1000000)::bigint, last_value) INTO c FROM cyoda_stamp_floor;
     PERFORM setval('cyoda_stamp_floor', c, true);
     PERFORM pg_advisory_unlock(0,0); held := false;

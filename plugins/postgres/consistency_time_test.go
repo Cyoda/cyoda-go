@@ -268,6 +268,31 @@ func consistencyTimeAsync(ctx context.Context, tm spi.TransactionManager) <-chan
 	return out
 }
 
+// prewarm opens n connections on pool and returns them idle, so a timed
+// section draws on open connections instead of dialling under load.
+func prewarm(t *testing.T, pool *pgxpool.Pool, n int) {
+	t.Helper()
+	conns := make([]*pgxpool.Conn, 0, n)
+	for i := 0; i < n; i++ {
+		conns = append(conns, acquireCT(t, pool))
+	}
+	for _, c := range conns {
+		c.Release()
+	}
+}
+
+// acquireCT takes a connection from pool, released at cleanup unless the
+// caller releases it first.
+func acquireCT(t *testing.T, pool *pgxpool.Pool) *pgxpool.Conn {
+	t.Helper()
+	c, err := pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	t.Cleanup(c.Release)
+	return c
+}
+
 func ctTM(t *testing.T, f *postgres.StoreFactory, ctx context.Context) spi.TransactionManager {
 	t.Helper()
 	tm, err := f.TransactionManager(ctx)
@@ -317,6 +342,9 @@ func TestConsistencyTime_WaitsForACommitInItsCommitPhase(t *testing.T) {
 	f, ctx := newCTFactory(t)
 	pool := postgres.PoolForTest(f)
 	tm := ctTM(t, f, ctx)
+	// The transaction, the blocker, the pollers and ConsistencyTime each take a
+	// connection; opened now, none is dialled inside the 2 s window.
+	prewarm(t, pool, 5)
 
 	txID, txCtx, err := tm.Begin(ctx)
 	if err != nil {
@@ -419,10 +447,12 @@ func TestConsistencyTime_OtherTenantDoesNotDelay(t *testing.T) {
 }
 
 // The SQL budget is enforced for the whole call, not per marker. Three markers
-// are held; each is released 300 ms after the last, whichever the call is
-// waiting on. With a 700 ms budget for the call it fails with 55P03 while
-// waiting on the third (~700 ms). A budget per marker would see each wait end
-// inside 700 ms and return C at ~900 ms.
+// are held; every 400 ms the one the call is waiting on is released. With a
+// 1000 ms budget for the call it fails with 55P03 while waiting on the third
+// (~1000 ms). A budget per marker would see each wait end inside 1000 ms and
+// return C at ~1200 ms. The 400 ms step leaves the releaser up to 600 ms of
+// slack for its first release on a loaded host; its queries and the call run
+// on connections taken before the clock starts.
 func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 	f, _ := newCTFactory(t)
 	pool := postgres.PoolForTest(f)
@@ -431,13 +461,15 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 		h := holdStamp(t, pool, ctTenant)
 		byPID[h.pid] = h
 	}
+	checker := acquireCT(t, pool)
+	poller := acquireCT(t, pool)
 
 	stop := make(chan struct{})
 	released := make(chan int, 1)
 	go func() {
 		n := 0
 		defer func() { released <- n }()
-		tick := time.NewTicker(300 * time.Millisecond)
+		tick := time.NewTicker(400 * time.Millisecond)
 		defer tick.Stop()
 		for {
 			select {
@@ -446,7 +478,7 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 			case <-tick.C:
 			}
 			var pid int
-			err := pool.QueryRow(context.Background(),
+			err := poller.QueryRow(context.Background(),
 				`SELECT h.pid FROM pg_locks w JOIN pg_locks h
 				    ON h.locktype = 'advisory' AND h.database = w.database AND h.classid = w.classid
 				   AND h.objid = w.objid AND h.objsubid = 2 AND h.granted AND h.mode = 'ExclusiveLock'
@@ -466,7 +498,7 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 
 	start := time.Now()
 	var c time.Time
-	err := pool.QueryRow(context.Background(), `SELECT cyoda_consistency_time($1, 700)`, string(ctTenant)).Scan(&c)
+	err := checker.QueryRow(context.Background(), `SELECT cyoda_consistency_time($1, 1000)`, string(ctTenant)).Scan(&c)
 	elapsed := time.Since(start)
 	close(stop)
 	n := <-released
@@ -475,8 +507,8 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
 		t.Fatalf("want SQLSTATE 55P03 from an exhausted budget, got C=%v err=%v (after %v, %d markers released)", c, err, elapsed, n)
 	}
-	if elapsed > 1200*time.Millisecond {
-		t.Fatalf("the budget ended the call after %v, not ~700 ms", elapsed)
+	if elapsed > 2*time.Second {
+		t.Fatalf("the budget ended the call after %v, not ~1000 ms", elapsed)
 	}
 	if n < 1 {
 		t.Fatalf("no marker was released before the call failed; the test did not exercise a second wait")
@@ -729,17 +761,7 @@ func TestConsistencyTimeMigration_SeedsFloorFromStoredStamps(t *testing.T) {
 // non-transactional save.
 func TestStamp_LockTimeoutIsStorageUnavailable(t *testing.T) {
 	f, ctx := newCTFactory(t)
-	side, err := postgres.PoolForTest(f).Acquire(context.Background())
-	if err != nil {
-		t.Fatalf("acquire side connection: %v", err)
-	}
-	if _, err := side.Exec(context.Background(), `SELECT pg_advisory_lock(0, 0)`); err != nil {
-		t.Fatalf("take the floor mutex: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = side.Exec(context.Background(), `SELECT pg_advisory_unlock(0, 0)`)
-		side.Release()
-	})
+	holdFloorMutex(t)
 
 	assertRetryable := func(what string, err error) {
 		t.Helper()
@@ -751,7 +773,7 @@ func TestStamp_LockTimeoutIsStorageUnavailable(t *testing.T) {
 		}
 	}
 
-	_, err = commitOneEntityErr(t, f, ctx)
+	_, err := commitOneEntityErr(t, f, ctx)
 	assertRetryable("Commit", err)
 
 	es, err := f.EntityStore(ctx)
@@ -775,5 +797,99 @@ func TestConsistencyTime_AcquireTimeoutIsStorageUnavailable(t *testing.T) {
 	_, err = ctTM(t, f, ctx).ConsistencyTime(ctx)
 	if !storageUnavailable(err) {
 		t.Fatalf("want the storage-unavailable marker, got %v", err)
+	}
+}
+
+// holdFloorMutex takes the floor mutex (0, 0) on a session of a pool of its
+// own and keeps it until cleanup.
+func holdFloorMutex(t *testing.T) {
+	t.Helper()
+	side, err := newCTPool(t, testDBURL(t), 1, nil).Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire side connection: %v", err)
+	}
+	if _, err := side.Exec(context.Background(), `SELECT pg_advisory_lock(0, 0)`); err != nil {
+		t.Fatalf("take the floor mutex: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = side.Exec(context.Background(), `SELECT pg_advisory_unlock(0, 0)`)
+		side.Release()
+	})
+}
+
+// A cyoda_stamp error closes the connection it ran on instead of returning it
+// to the pool, on the transaction path and on a non-transactional save. The
+// pool has one connection, so a different backend on the next acquire means
+// that connection was closed and replaced.
+func TestStamp_ErrorClosesConnection(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		write func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error
+	}{
+		{"transaction", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error {
+			_, err := commitOneEntityErr(t, f, ctx)
+			return err
+		}},
+		{"non-transactional save", func(t *testing.T, f *postgres.StoreFactory, ctx context.Context) error {
+			es, err := f.EntityStore(ctx)
+			if err != nil {
+				t.Fatalf("EntityStore: %v", err)
+			}
+			_, err = es.Save(ctx, &spi.Entity{
+				Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := newCTPool(t, testDBURL(t), 1, nil)
+			resetSchema(t, pool)
+			f := postgres.NewStoreFactory(pool)
+			f.InitTransactionManager(newTestUUIDGenerator())
+			ctx := ctxWithTenant(ctTenant)
+			backend := func() int {
+				var pid int
+				if err := pool.QueryRow(context.Background(), `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+					t.Fatalf("read backend pid: %v", err)
+				}
+				return pid
+			}
+			before := backend()
+			holdFloorMutex(t)
+
+			if err := tc.write(t, f, ctx); !storageUnavailable(err) {
+				t.Fatalf("precondition: want the stamp to fail on the held mutex, got %v", err)
+			}
+			if after := backend(); after == before {
+				t.Fatalf("the connection whose stamp failed (backend %d) went back to the pool", before)
+			}
+		})
+	}
+}
+
+// The floor-mutex wait in cyoda_consistency_time is bounded by the budget: with
+// the mutex held elsewhere the call fails with 55P03 in about the budget,
+// rather than waiting for statement_timeout or the caller.
+func TestConsistencyTimeSQL_MutexWaitIsUnderTheBudget(t *testing.T) {
+	f, _ := newCTFactory(t)
+	conn, err := postgres.PoolForTest(f).Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	defer conn.Release()
+	holdFloorMutex(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	start := time.Now()
+	var c time.Time
+	err = conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1, 300)`, string(ctTenant)).Scan(&c)
+	elapsed := time.Since(start)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("want SQLSTATE 55P03 from the budget, got C=%v err=%v after %v", c, err, elapsed)
+	}
+	if elapsed > 3*time.Second {
+		t.Fatalf("the 300 ms budget ended the mutex wait after %v", elapsed)
 	}
 }
