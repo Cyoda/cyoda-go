@@ -73,9 +73,11 @@ func (r *ccRun) snapshot() map[string]struct{} {
 	return out
 }
 
-func (r *ccRun) writer(model string, n int, count *atomic.Int64) {
+// writer creates entities until halted or, when max > 0, until it has created
+// max of them; pause spaces the creates.
+func (r *ccRun) writer(model string, n, max int, pause time.Duration, count *atomic.Int64) {
 	r.spawn(func() {
-		for i := 0; !r.stopped(); i++ {
+		for i := 0; !r.stopped() && (max == 0 || i < max); i++ {
 			res := r.h.CreateEntityRaw(model, 1, fmt.Sprintf(`{"name":"w%d-%d","amount":%d,"status":"new"}`, n, i, i))
 			if res.err != nil || res.status != http.StatusOK {
 				r.fail("create: status=%d err=%v body=%s", res.status, res.err, res.body)
@@ -85,6 +87,9 @@ func (r *ccRun) writer(model string, n int, count *atomic.Int64) {
 			r.acked[res.entityID] = struct{}{}
 			r.mu.Unlock()
 			count.Add(1)
+			if pause > 0 {
+				time.Sleep(pause)
+			}
 		}
 	})
 }
@@ -262,7 +267,7 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 
 	var created, listChecks, asyncChecks atomic.Int64
 	for n := 0; n < 8; n++ {
-		r.writer(model, n, &created)
+		r.writer(model, n, 0, 0, &created)
 	}
 	for n := 0; n < 2; n++ {
 		r.spawn(func() {
@@ -319,14 +324,27 @@ func TestConsistency_ConcurrentWritersAndReaders(t *testing.T) {
 		}
 	})
 
-	deadline := time.After(10 * time.Second)
+	// Run for 10 s; then, if a slow host has not yet completed one non-trivial
+	// list check and one async check, keep everything running for up to 30 s
+	// more so the run is never vacuous.
+	window := time.After(10 * time.Second)
+	extra := time.After(40 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	windowOver := false
 wait:
 	for {
 		select {
-		case <-deadline:
+		case <-window:
+			windowOver = true
+		case <-extra:
 			break wait
 		case err := <-r.errs:
 			t.Errorf("%v", err)
+			break wait
+		case <-tick.C:
+		}
+		if windowOver && listChecks.Load() > 0 && asyncChecks.Load() > 0 {
 			break wait
 		}
 	}
@@ -361,7 +379,8 @@ func TestConsistency_PagingAtCIsStable(t *testing.T) {
 		}
 	}
 	for n := 0; n < 4; n++ {
-		r.writer(model, n, &created)
+		// Bounded: unbounded writers outgrow the paging and the run never ends.
+		r.writer(model, n, 150, 20*time.Millisecond, &created)
 	}
 
 	for round := 0; round < 6; round++ {
