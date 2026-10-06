@@ -22,10 +22,6 @@ github.com/cpuguy83/dockercfg v0.3.2 h1:DlJTyZGBDlXqUZ2Dk2Q3xHs/FtnooJJVaad2S9GK
 github.com/cpuguy83/dockercfg v0.3.2/go.mod h1:sugsbF4//dDlL/i+S+rtpIWp+5h0BHJHfjj5/jFyUJc=
 github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
 github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
-github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261003134844-7d96ed62792b h1:l8U9YSRR38JkXudIoJ4KzSX75SHnJ3f/uxfobwZ6Nn0=
-github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261003134844-7d96ed62792b/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
-github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261004134024-9505792114f5 h1:NIs4Iw3CGetKAfrhacnYneLNHdSTvKGxSsdEsQX97P8=
-github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261004134024-9505792114f5/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261006135658-50e45dd67d93 h1:LJnwHL/yNODOhBtT7ocvL5G0ZpJLzzLZEKlGQYYzcOc=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261006135658-50e45dd67d93/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
