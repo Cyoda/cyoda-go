@@ -290,3 +290,46 @@ func TestFence_PropagatesUnavailable(t *testing.T) {
 		})
 	}
 }
+
+func TestFence_GetChangesMetadata_ZeroInstantIsAnInstant(t *testing.T) {
+	f := newFenceFixture(t, "fence-changes-zero", true)
+	f.save(t, "e1", "NEW")
+
+	var zero time.Time
+	entries, err := f.h.GetChangesMetadata(f.ctx, "e1", &zero)
+	if err != nil {
+		t.Fatalf("GetChangesMetadata at the zero instant: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("history up to the zero instant has %d entries, want 0", len(entries))
+	}
+}
+
+func TestFence_Stats_UnknownModelByStateForModel404BeforeFence(t *testing.T) {
+	f := newFenceFixture(t, "fence-stats-bystate-404", false)
+	_, err := f.h.GetStatisticsByStateForModel(f.ctx, "nope", "1", nil, f.after())
+	wantAppErr(t, err, http.StatusNotFound, common.ErrCodeModelNotFound)
+}
+
+func TestFence_Stats_StatesFilterWithPointInTime(t *testing.T) {
+	f := newFenceFixture(t, "fence-stats-filter", true)
+	name, ver := f.ref.EntityName, f.ref.ModelVersion
+	f.save(t, "e1", "NEW")
+	f.save(t, "e2", "APPROVED")
+	time.Sleep(5 * time.Millisecond)
+	mid := time.Now().UTC()
+	time.Sleep(5 * time.Millisecond)
+	f.save(t, "e3", "NEW")
+	filter := []string{"NEW"}
+
+	got, err := f.h.GetStatisticsByStateForModel(f.ctx, name, ver, &filter, &mid)
+	if err != nil || len(got) != 1 || got[0].State != "NEW" || got[0].Count != 1 {
+		t.Errorf("ByStateForModel(NEW) at mid = %v, %v; want NEW=1", got, err)
+	}
+	all, err := f.h.GetStatisticsByState(f.ctx, &filter, &mid)
+	if err != nil || len(all) != 1 || all[0].State != "NEW" || all[0].Count != 1 {
+		t.Errorf("ByState(NEW) at mid = %v, %v; want NEW=1", all, err)
+	}
+	_, err = f.h.GetStatisticsByStateForModel(f.ctx, name, ver, &filter, f.after())
+	wantRefused(t, err)
+}

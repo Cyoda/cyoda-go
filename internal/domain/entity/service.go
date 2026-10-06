@@ -805,8 +805,10 @@ type deleteEntityResult struct {
 //
 // If pointInTime is non-nil, the result is truncated to versions whose
 // Timestamp is at or before pointInTime — the caller sees the change
-// history exactly as it would have appeared at that moment. A nil
-// pointInTime returns the full history.
+// history exactly as it would have appeared at that moment, and the instant
+// is fenced with the consistency time. A zero instant is an instant like any
+// other (it yields an empty history). A nil pointInTime returns the full
+// history.
 func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, pointInTime *time.Time) ([]EntityChangeEntry, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
@@ -817,7 +819,7 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	// rather than fetched-then-truncated.
 	const maxChangesMetadata = 1000
 	opts := spi.VersionMetadataOptions{Limit: maxChangesMetadata}
-	if pointInTime != nil && !pointInTime.IsZero() {
+	if pointInTime != nil {
 		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
 			return nil, err
 		}
@@ -1320,20 +1322,17 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	}
 
 	if pointInTime != nil {
-		// The model check and the fence run before any transaction opens, so
-		// no pooled connection is held while the fence waits, and an unknown
-		// model keeps its 404 ahead of the refusal. Both paths below keep
-		// their own in-scope model check.
+		// An unknown model keeps its 404 ahead of the refusal, so the model
+		// check runs first. For an owned request both run before any
+		// transaction opens, so no pooled connection is held while the fence
+		// waits; inside a joined transaction the caller's connection is in use
+		// regardless. Both paths below keep their own in-scope model check.
 		modelStore, err := h.factory.ModelStore(ctx)
 		if err != nil {
 			return nil, common.Internal("failed to access model store", err)
 		}
-		if _, err := modelStore.Get(ctx, ref); err != nil {
-			if errors.Is(err, spi.ErrNotFound) {
-				return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-					fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
-			}
-			return nil, common.Internal("failed to load model", err)
+		if err := requireModel(ctx, modelStore, ref); err != nil {
+			return nil, err
 		}
 		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
 			return nil, err
@@ -1379,6 +1378,19 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	return result, nil
 }
 
+// requireModel returns the 404 MODEL_NOT_FOUND refusal when ref is not
+// registered in modelStore, and a 500 when the lookup itself fails.
+func requireModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) error {
+	if _, err := modelStore.Get(ctx, ref); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
+		}
+		return common.Internal("failed to load model", err)
+	}
+	return nil
+}
+
 // deleteConditionalSingleTx is one attempt of the single-transaction
 // conditional delete: select, delete each matched id, remove the scheduled
 // tasks of the ids actually deleted, commit. Every attempt builds its own
@@ -1396,12 +1408,8 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
 	}
-	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
-		}
-		return nil, common.Internal("failed to load model", err)
+	if err := requireModel(txCtx, modelStore, ref); err != nil {
+		return nil, err
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -1607,12 +1615,8 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
 	}
-	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
-		}
-		return nil, common.Internal("failed to load model", err)
+	if err := requireModel(txCtx, modelStore, ref); err != nil {
+		return nil, err
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -1963,12 +1967,6 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		return nil, appErr
 	}
 
-	// GetPage requires limit >= 1 (a contract violation is a store-level
-	// error, not an empty page). ValidateOffset above accepts pageSize==0
-	// — it rejects only negative sizes — so a caller-supplied pageSize of
-	// 0 is short-circuited to an empty page here, matching the pre-GetPage
-	// behaviour (entities[start:start] was always empty) without handing
-	// the store a limit it must reject.
 	// The fence runs whether or not a store read follows: a pageSize of 0
 	// reads nothing, and still answers a future instant with the refusal.
 	if pointInTime != nil {
@@ -1977,6 +1975,12 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 		}
 	}
 
+	// GetPage requires limit >= 1 (a contract violation is a store-level
+	// error, not an empty page). ValidateOffset above accepts pageSize==0
+	// — it rejects only negative sizes — so a caller-supplied pageSize of
+	// 0 is short-circuited to an empty page here, matching the pre-GetPage
+	// behaviour (entities[start:start] was always empty) without handing
+	// the store a limit it must reject.
 	var entities []*spi.Entity
 	if page.PageSize > 0 {
 		entities, err = entityStore.GetPage(ctx, ref, int(page.PageSize), int(page.PageNumber)*int(page.PageSize), pointInTime)
