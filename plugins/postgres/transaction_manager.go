@@ -63,8 +63,12 @@ type TransactionManager struct {
 	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
-	// acquireTimeout bounds Begin's wait for a pooled connection.
+	// acquireTimeout bounds Begin's and ConsistencyTime's wait for a pooled
+	// connection.
 	acquireTimeout time.Duration
+	// statementTimeout is the configured statement ceiling; ConsistencyTime
+	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
+	statementTimeout time.Duration
 	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
 	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
 	// independent housekeeping statement on the pool, not the maps tm.mu
@@ -82,6 +86,13 @@ type TransactionManagerOption func(*TransactionManager)
 // manager still gets the shipped default rather than an unbounded wait.
 func WithAcquireTimeout(d time.Duration) TransactionManagerOption {
 	return func(tm *TransactionManager) { tm.acquireTimeout = d }
+}
+
+// withStatementTimeout passes the configured statement ceiling
+// (CYODA_POSTGRES_STATEMENT_TIMEOUT) to the manager, which caps its
+// consistency-time wait at it.
+func withStatementTimeout(d time.Duration) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.statementTimeout = d }
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
@@ -331,8 +342,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // row the transaction wrote, immediately before COMMIT.
 //
 // CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
-// the transaction opened rather than when it became visible. clock_timestamp()
-// read here is the closest a transaction can get to its own commit instant.
+// the transaction opened rather than when it became visible. The stamp is
+// taken here instead, by cyoda_stamp (migration 000016): the DB clock, raised
+// above the stamp floor so it is above every consistency time already
+// returned. It also takes the in-flight marker a consistency-time call waits
+// for, held until this transaction ends.
 //
 // The rows are found by transaction_id rather than from the in-memory write
 // set, which is not authoritative: after a savepoint rollback the write set
@@ -362,8 +376,14 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // did not write, which needs its own argument every time it is added.
 func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
 	var instant time.Time
-	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
-		return time.Time{}, fmt.Errorf("read commit instant: %w", err)
+	// cyoda_stamp takes this transaction's in-flight marker and a stamp above
+	// the floor. Design rule: nothing after this statement waits on a lock —
+	// the statements below touch only rows this transaction wrote (the
+	// sm_audit_events UPDATE matches this transaction's own label; see its
+	// comment), so a consistency-time call waiting on the marker cannot
+	// deadlock with it.
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1)", string(tenantID)).Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)
 
@@ -613,12 +633,6 @@ func (tm *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (t
 	default:
 		return tm.getSubmitTimeFromTable(ctx, txID)
 	}
-}
-
-// ConsistencyTime implements spi.TransactionManager. Not yet implemented
-// for this backend; it fails rather than guessing an instant.
-func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
-	return time.Time{}, errors.New("postgres: ConsistencyTime not implemented")
 }
 
 // getSubmitTimeFromTable answers a lookup that missed both in-process maps:

@@ -394,8 +394,9 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 // CREATED.
 func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID string, version int64, isNew bool) error {
 	var instant time.Time
-	if err := s.q.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&instant); err != nil {
-		return fmt.Errorf("failed to read commit instant: %w", err)
+	// See stampCommitInstant for the design rule this statement opens.
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1)`, tid).Scan(&instant); err != nil {
+		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,
 		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,

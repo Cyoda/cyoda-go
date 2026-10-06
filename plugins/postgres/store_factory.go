@@ -330,7 +330,8 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 // for use within the package; external callers — including test packages —
 // should call this exported form.
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
-	tm := NewTransactionManager(f.pool, uuids, WithAcquireTimeout(f.cfg.AcquireTimeout))
+	tm := NewTransactionManager(f.pool, uuids,
+		WithAcquireTimeout(f.cfg.AcquireTimeout), withStatementTimeout(f.cfg.StatementTimeout))
 	f.setTransactionManager(tm)
 }
 

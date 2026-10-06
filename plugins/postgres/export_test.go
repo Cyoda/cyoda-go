@@ -245,6 +245,16 @@ func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duratio
 	return newStoreFactoryWithConfig(pool, cfg)
 }
 
+// NewStoreFactoryWithStatementTimeoutForTest builds a factory whose config
+// carries statement timeout d, so InitTransactionManager wires d into the
+// manager by the production path. A consistency-time test uses it to bound the
+// wait budget in milliseconds instead of the shipped 10 s. Test-only.
+func NewStoreFactoryWithStatementTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.StatementTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
+}
+
 // RegisterPoolMetricsForTest exposes registerPoolMetrics for a factory's
 // pools to the external postgres_test package. metrics_test.go must live in
 // postgres_test to reuse newTestPool (migrate_test.go), which carries the pgx
