@@ -6,21 +6,73 @@ package e2e_test
 // A groupBy path or aggregation field that falls outside the storage-SPI
 // dotted-identifier grammar used to be caught only by the storage plugin, and
 // only on the pushdown path. Whenever pushdown was declined — a residual
-// filter, a point-in-time query, sqlite declining stdev — the service fell
+// filter, a joined transaction, sqlite declining stdev — the service fell
 // through to the in-process streaming tally, which resolves the path with
 // gjson: the lookup missed, every entity landed in a single null bucket, and
 // the caller got a 200 with plausible-looking-but-wrong groups. That is the
 // wrong-but-available answer .claude/rules/correctness-over-availability.md
 // forbids. Validation now runs at the boundary, so both execution paths
 // reject identically and the plugin check is a backstop.
+//
+// A request inside a joined transaction is what forces the streaming branch on
+// every backend (transaction visibility needs it); the tests below that name
+// "streaming" send their request from a processor callback that joins one, see
+// groupedStatsInTx.
 
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
+
+// groupedStatsInTx sends each body as a grouped-stats query from inside a
+// transaction the request joins (a processor callback echoing X-Tx-Token), over
+// a model of two entities named "a" and "b" (group by "$.name"). A joined
+// request always takes the streaming-tally branch, whatever the backend can
+// push down. Returns the responses in order.
+func groupedStatsInTx(t *testing.T, bodies []string) []callbackResult {
+	t.Helper()
+	h := newCallbackHarness(t)
+	model, primary, proc := uniq("gs-tx-model"), uniq("gs-tx-primary"), uniq("gs-tx-proc")
+	h.SetupModelWithWorkflow(t, model, secondaryWorkflow)
+	for _, n := range []string{"a", "b"} {
+		if _, status, body := h.CreateEntity(t, model, 1, fmt.Sprintf(`{"name":%q,"amount":1,"status":"new"}`, n)); status != http.StatusOK {
+			t.Fatalf("seed %s: %d %s", n, status, body)
+		}
+	}
+	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
+	done := make(chan []callbackResult, 1)
+	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
+		var out []callbackResult
+		defer func() { done <- out }()
+		for _, b := range bodies {
+			res, err := h.callback(http.MethodPost, path, b, rc.token)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, res)
+		}
+		return nil, nil
+	})
+	h.setupModelSampleWithWorkflow(t, primary, workflowSampleWith(`"x": ""`), intxSearchPrimaryWF(uniq("gs-tx-wf"), proc))
+	if _, status, body := h.CreateEntity(t, primary, 1, `{"name":"p","amount":1,"status":"new"}`); status != http.StatusOK {
+		t.Fatalf("primary create: %d %s", status, body)
+	}
+	select {
+	case out := <-done:
+		if len(out) != len(bodies) {
+			t.Fatalf("processor made %d of %d requests", len(out), len(bodies))
+		}
+		return out
+	case <-time.After(20 * time.Second):
+		t.Fatal("processor did not run")
+		return nil
+	}
+}
 
 // TestGroupedStats_MalformedGroupByPath_Returns400 covers the pushdown-eligible
 // shape (no condition, no point-in-time): a groupBy path carrying a quote and a
@@ -44,30 +96,18 @@ func TestGroupedStats_MalformedGroupByPath_Returns400(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, "INVALID_GROUP_BY_PATH")
 }
 
-// TestGroupedStats_MalformedGroupByPath_PointInTime_Returns400 is the
-// regression test proper. A point-in-time request makes postgres decline
-// pushdown (spi.ErrAggregationNotPushdownable), so the service takes the
+// TestGroupedStats_MalformedGroupByPath_InTransaction_Returns400 is the
+// regression test proper. A request inside a joined transaction takes the
 // streaming-tally branch — the branch that never validated the path. Pre-fix
 // this returned 200 with a single bucket keyed on null; it must now be a 400.
-func TestGroupedStats_MalformedGroupByPath_PointInTime_Returns400(t *testing.T) {
+func TestGroupedStats_MalformedGroupByPath_InTransaction_Returns400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-
-	const model = "e2e-grouped-stats-badpath-pit"
-	setupStatsModel(t, model)
-	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
-
-	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
-	reqBody := fmt.Sprintf(`{"groupBy": ["$.variantId';x"], "pointInTime": %q}`, pit)
-	path := fmt.Sprintf("/api/entity/stats/%s/1/query", model)
-	resp := doAuth(t, http.MethodPost, path, reqBody)
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	res := groupedStatsInTx(t, []string{`{"groupBy": ["$.name';x"]}`})[0]
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(res.Body, "INVALID_GROUP_BY_PATH") {
+		t.Fatalf("expected 400 INVALID_GROUP_BY_PATH, got %d: %s", res.StatusCode, res.Body)
 	}
-	commontest.ExpectErrorCode(t, resp, "INVALID_GROUP_BY_PATH")
 }
 
 // TestGroupedStats_MalformedAggregationField_Returns400 covers the sibling
@@ -93,8 +133,8 @@ func TestGroupedStats_MalformedAggregationField_Returns400(t *testing.T) {
 
 // TestGroupedStats_ValidPathForms_Still200 is the positive control over real
 // HTTP: the JSON Path form must still be accepted and must still produce the
-// `$.variantId` group key — on both the pushdown branch and (with pointInTime)
-// the streaming branch — and so must the reserved `state` token, which names
+// `$.variantId` group key — on the pushdown branch, and on the streaming branch
+// (inside a joined transaction, see the subtest below) — and so must the reserved `state` token, which names
 // the lifecycle state rather than a data path and is exempt from the leader
 // rule. A tightening that breaks valid callers is worse than the bug it fixes.
 func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
@@ -105,16 +145,14 @@ func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
 	const model = "e2e-grouped-stats-validpath"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
+	createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
 
-	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
 	cases := []struct {
 		name string
 		body string
 	}{
 		{"dotted leader, pushdown", `{"groupBy": ["$.variantId"]}`},
 		{"reserved state token", `{"groupBy": ["state"]}`},
-		{"dotted leader, streaming", fmt.Sprintf(`{"groupBy": ["$.variantId"], "pointInTime": %q}`, pit)},
 		{"aggregation over dotted field",
 			`{"groupBy": ["$.variantId"], "aggregations": [{"op":"sum","field":"$.price"}]}`},
 	}
@@ -145,6 +183,16 @@ func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
 			}
 		})
 	}
+	t.Run("dotted leader, streaming", func(t *testing.T) {
+		res := groupedStatsInTx(t, []string{`{"groupBy": ["$.name"]}`})[0]
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", res.StatusCode, res.Body)
+		}
+		buckets := decodeBuckets(t, res.Body)
+		if len(buckets) != 2 || findBucket(buckets, "$.name", "a") == nil || findBucket(buckets, "$.name", "b") == nil {
+			t.Fatalf("expected buckets $.name=a and b, got %s", res.Body)
+		}
+	})
 }
 
 // TestGroupedStats_NonJSONPathForms_Returns400 is the running-backend proof
@@ -157,7 +205,7 @@ func TestGroupedStats_ValidPathForms_Still200(t *testing.T) {
 // request could be accepted in `groupBy` and 400'd in `condition` for the same
 // spelling of the same field.
 //
-// Both the pushdown and the streaming (pointInTime) branch are covered: the
+// Both the pushdown and the streaming (joined transaction) branch are covered: the
 // whole reason validation moved to the boundary is that the two branches
 // otherwise disagree.
 func TestGroupedStats_NonJSONPathForms_Returns400(t *testing.T) {
@@ -168,17 +216,14 @@ func TestGroupedStats_NonJSONPathForms_Returns400(t *testing.T) {
 	const model = "e2e-grouped-stats-nonjsonpath"
 	setupStatsModel(t, model)
 	createEntityE2E(t, model, 1, `{"variantId":"v1","price":10.0}`)
-	last := createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
+	createEntityE2E(t, model, 1, `{"variantId":"v2","price":20.0}`)
 
-	pit := waitConsistentAt(t, latestChangeTimeE2E(t, last))
 	cases := []struct {
 		name string
 		body string
 		code string
 	}{
 		{"bare identifier, pushdown", `{"groupBy": ["variantId"]}`, "INVALID_GROUP_BY_PATH"},
-		{"bare identifier, streaming",
-			fmt.Sprintf(`{"groupBy": ["variantId"], "pointInTime": %q}`, pit), "INVALID_GROUP_BY_PATH"},
 		{"bracket quoted after leader", `{"groupBy": ["$.['variantId']"]}`, "INVALID_GROUP_BY_PATH"},
 		{"bracket chain", `{"groupBy": ["$['variantId']"]}`, "INVALID_GROUP_BY_PATH"},
 		{"array projection", `{"groupBy": ["$.variantId[*]"]}`, "INVALID_GROUP_BY_PATH"},
@@ -206,6 +251,12 @@ func TestGroupedStats_NonJSONPathForms_Returns400(t *testing.T) {
 			commontest.ExpectErrorCode(t, resp, tc.code)
 		})
 	}
+	t.Run("bare identifier, streaming", func(t *testing.T) {
+		res := groupedStatsInTx(t, []string{`{"groupBy": ["name"]}`})[0]
+		if res.StatusCode != http.StatusBadRequest || !strings.Contains(res.Body, "INVALID_GROUP_BY_PATH") {
+			t.Fatalf("expected 400 INVALID_GROUP_BY_PATH, got %d: %s", res.StatusCode, res.Body)
+		}
+	})
 }
 
 // TestGroupedStats_NonJSONPathCondition_Returns400 covers the OTHER path

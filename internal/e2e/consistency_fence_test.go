@@ -133,8 +133,9 @@ func TestConsistencyFence(t *testing.T) {
 	})
 
 	t.Run("Transitions_TransactionID_200", func(t *testing.T) {
-		// A transactionId names a committed transaction; no instant is
-		// involved, so there is nothing to fence.
+		// A transactionId is fenced too, at the transaction's commit stamp; a
+		// committed transaction's stamp is at or before any fresh consistency
+		// time, so it is served.
 		id2, tx2 := createEntityE2EWithTxID(t, model, 1, `{"variantId":"v2","price":2.0}`)
 		resp := doAuth(t, http.MethodGet, "/api/entity/"+id2+"/transitions?transactionId="+tx2, "")
 		if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
@@ -184,6 +185,48 @@ func TestConsistencyFence_StatsCountsAtAnInstant(t *testing.T) {
 	buckets := decodeBuckets(t, body)
 	if resp.StatusCode != http.StatusOK || len(buckets) != 1 || buckets[0]["count"] != float64(1) {
 		t.Errorf("GroupedStats at the midpoint: %d %s, want one bucket with count 1", resp.StatusCode, body)
+	}
+
+	// Tenant-wide reads: pick this model's entry out of the list.
+	resp = doAuth(t, http.MethodGet, "/api/entity/stats?pointInTime="+mid, "")
+	body = readBody(t, resp)
+	var all []struct {
+		ModelName string `json:"modelName"`
+		Count     int    `json:"count"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &all) != nil {
+		t.Fatalf("Stats at the midpoint: %d %s", resp.StatusCode, body)
+	}
+	found := false
+	for _, e := range all {
+		if e.ModelName == model {
+			found = true
+			if e.Count != 1 {
+				t.Errorf("Stats at the midpoint: %s count = %d, want 1: %s", model, e.Count, body)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("Stats at the midpoint: no entry for %s: %s", model, body)
+	}
+
+	resp = doAuth(t, http.MethodGet, "/api/entity/stats/states?pointInTime="+mid, "")
+	body = readBody(t, resp)
+	var allStates []struct {
+		ModelName string `json:"modelName"`
+		Count     int    `json:"count"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal([]byte(body), &allStates) != nil {
+		t.Fatalf("StatsByState at the midpoint: %d %s", resp.StatusCode, body)
+	}
+	total := 0
+	for _, e := range allStates {
+		if e.ModelName == model {
+			total += e.Count
+		}
+	}
+	if total != 1 {
+		t.Errorf("StatsByState at the midpoint: %s total = %d, want 1: %s", model, total, body)
 	}
 }
 
@@ -250,9 +293,7 @@ func TestConsistencyFence_JoinedTransaction(t *testing.T) {
 	if o.err != nil {
 		t.Fatalf("joined reads: %v", o.err)
 	}
-	if o.refused.StatusCode != http.StatusBadRequest || !strings.Contains(o.refused.Body, "POINT_IN_TIME_AFTER_CONSISTENCY_TIME") {
-		t.Errorf("joined read at a later instant: %d %s, want 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME", o.refused.StatusCode, o.refused.Body)
-	}
+	expectRefusedAfterConsistencyTime(t, o.refused.StatusCode, o.refused.Body)
 	if o.served.StatusCode != http.StatusOK || !strings.Contains(o.served.Body, "committed") {
 		t.Errorf("joined read at the consistency time: %d %s, want 200 with the committed revision", o.served.StatusCode, o.served.Body)
 	}

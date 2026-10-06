@@ -939,9 +939,8 @@ func consistentInstant(t *testing.T, do func(method, path, body string) *http.Re
 // supplied by the caller: a real submit takes it from the consistency time, so
 // a stored PIT is never later than that. A scenario that reads results takes it
 // from consistentInstant (the instant its seeded entities are all visible at).
-// Re-execution now decodes
-// search_opts (decodeStoredJob), so unlike the pre-reclaim disposition neither
-// column can be NULL/zero.
+// Re-execution now decodes search_opts (decodeStoredJob), so unlike the
+// pre-reclaim disposition neither column can be NULL/zero.
 func insertRunningJobRow(t *testing.T, model string, staleClaims int64, pit time.Time) string {
 	t.Helper()
 	const tenantID = "test-tenant" // callbackHarness's default admin token tenant

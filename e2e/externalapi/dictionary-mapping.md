@@ -99,9 +99,9 @@ Status vocabulary:
 |-----------|-----------------|-------|
 | delete/01-single-by-id | new:RunExternalAPI_06_01_DeleteSingle | tranche 1 |
 | delete/02-all-by-model-version | new:RunExternalAPI_06_02_DeleteByModel | tranche 1 |
-| delete/03-by-condition-jsonpath-equals | gap_on_our_side | The OpenAPI generator emits `DeleteEntitiesJSONRequestBody = AbstractConditionDto` (`api/generated.go:DeleteEntitiesJSONRequestBody`), but `internal/domain/entity/handler.go:DeleteEntities` does not read the body — it only consults `DeleteEntitiesParams` (`transactionSize`/`pointInTime`/`verbose`) and calls `DeleteAllEntities(name, version)`. Implementing this means parsing the existing `AbstractConditionDto` typedef, extending the service with a condition-aware delete path, and propagating to the storage SPI. |
-| delete/04-by-condition-not-null | gap_on_our_side | same as 06/03 — handler ignores the existing `AbstractConditionDto` body type |
-| delete/05-by-condition-at-point-in-time-too-many-entities | gap_on_our_side | same as 06/03 + `entitySearchLimit` enforcement on condition+pointInTime deletes is missing |
+| delete/03-by-condition-jsonpath-equals | pending:tranche-2 | `DELETE /entity/{name}/{version}` reads the condition body (`internal/domain/entity/handler.go:586` into `service.go:1310`); no `RunExternalAPI_06_03` scenario exists yet. |
+| delete/04-by-condition-not-null | pending:tranche-2 | same as 06/03: the condition body is read; no `RunExternalAPI_06_04` scenario exists yet. |
+| delete/05-by-condition-at-point-in-time-too-many-entities | not_applicable | cyoda-go has no entitySearchLimit, so a conditional delete has no match-count limit to exceed. A client that wants the guard counts at an instant (statistics with `pointInTime`) and deletes at the same `pointInTime`. |
 | delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime | `DELETE /entity/{name}/{version}?pointInTime=` selects the entities that existed at the instant and deletes their current rows; an instant later than the consistency time is refused. |
 
 ---

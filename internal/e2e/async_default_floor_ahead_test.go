@@ -38,7 +38,11 @@ func TestAsyncDefault_FloorAhead(t *testing.T) {
 
 	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/async/%s/1", model),
 		`{"type":"lifecycle","field":"state","operatorType":"EQUALS","value":"STORED"}`, "")
-	jobID := strings.Trim(strings.TrimSpace(h.readBody(t, resp)), `"`)
+	submitBody := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("submit: %d %s", resp.StatusCode, submitBody)
+	}
+	jobID := strings.Trim(strings.TrimSpace(submitBody), `"`)
 
 	var status string
 	deadline := time.Now().Add(30 * time.Second)
