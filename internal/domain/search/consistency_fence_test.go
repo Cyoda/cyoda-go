@@ -102,7 +102,10 @@ func TestSubmitAsync_DefaultInstantComesFromTheStore(t *testing.T) {
 func TestSubmitAsync_UnavailableCreatesNoJob(t *testing.T) {
 	f := newFenceSearchFixture(t, "fence-unavail", nil)
 	counting := &createCountingStore{AsyncSearchStore: f.store}
-	realTM, _ := f.base.TransactionManager(f.ctx)
+	realTM, tmErr := f.base.TransactionManager(f.ctx)
+	if tmErr != nil {
+		t.Fatalf("TransactionManager: %v", tmErr)
+	}
 	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), counting,
 		consistency.New(chosenTM{TransactionManager: realTM, err: spi.ErrConsistencyTimeUnavailable}))
 
@@ -119,7 +122,10 @@ func TestSubmitAsync_CapPreCheckWinsOverFence(t *testing.T) {
 	f := newFenceSearchFixture(t, "fence-cap", nil)
 	blocking := &blockingSaveStore{AsyncSearchStore: f.store, release: make(chan struct{})}
 	defer close(blocking.release)
-	realTM, _ := f.base.TransactionManager(f.ctx)
+	realTM, tmErr := f.base.TransactionManager(f.ctx)
+	if tmErr != nil {
+		t.Fatalf("TransactionManager: %v", tmErr)
+	}
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
 	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), blocking,

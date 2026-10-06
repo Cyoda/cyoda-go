@@ -27,7 +27,8 @@ func (s submitTimeTM) GetSubmitTime(context.Context, string) (time.Time, error) 
 
 func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 	f := newFenceFixture(t, "fence-transitions", true)
-	f.save(t, "e1", "NEW")
+	// The entity is deliberately missing: without the fence both calls answer
+	// 404, so the refusal is proven to come first.
 
 	call := func(h *entity.Handler, query string) (int, string) {
 		r := httptest.NewRequest(http.MethodGet, "/entity/e1/transitions?"+query, nil).WithContext(f.ctx)

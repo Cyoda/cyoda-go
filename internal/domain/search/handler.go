@@ -39,6 +39,10 @@ func jobLookupError(err error) *common.AppError {
 	if errors.Is(err, ErrSearchJobNotFound) {
 		return common.Operational(http.StatusNotFound, common.ErrCodeSearchJobNotFound, err.Error())
 	}
+	var appErr *common.AppError
+	if errors.As(err, &appErr) {
+		return appErr
+	}
 	return common.Internal("job lookup failed", err)
 }
 

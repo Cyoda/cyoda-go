@@ -724,12 +724,6 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		return nil, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	if opts.PointInTime != nil {
-		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
-			return nil, err
-		}
-	}
-
 	// One path: translate, push down. Every backend implements Search;
 	// there is no capability ladder and no in-process fallback.
 	filter, translateErr := spi.ConditionToFilter(cond, validatedFields)
@@ -738,6 +732,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			return nil, appErr
 		}
 		return nil, untranslatableCondition(translateErr)
+	}
+
+	// Every request check has passed; a read at an instant later than the
+	// consistency time is refused before the store is touched.
+	if opts.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
+			return nil, err
+		}
 	}
 	res, sErr := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    modelRef.EntityName,
