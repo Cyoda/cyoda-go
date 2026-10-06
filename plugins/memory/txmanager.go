@@ -134,7 +134,7 @@ type TransactionManager struct {
 	commitSeq     int64
 	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin time; cleaned up after commit or rollback (no leak)
 
-	// lastSubmitTime is the monotonic floor every stamped submit time sits
+	// lastSubmitTime is the non-decreasing floor every stamped submit time sits
 	// at or above — see nextSubmitTime. Read and written under mu only.
 	lastSubmitTime time.Time
 
@@ -728,7 +728,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	// earlier-ordered section, and every stamp and snapshot is floored to
 	// lastSubmitTime under mu, so later sections never read an earlier value).
 	//
-	// SnapshotTime is additionally floored to lastSubmitTime, the monotonic
+	// SnapshotTime is additionally floored to lastSubmitTime, the non-decreasing
 	// floor every stamped submit time sits at or above (see nextSubmitTime).
 	// Without the floor a stamped time could stand ahead of the raw clock —
 	// several writes inside one clock tick each bump it by a microsecond, and
@@ -986,7 +986,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 		// 4. Flush buffer to entity store.
 		//
-		// Stamped under the monotonic floor (see nextSubmitTime), and still
+		// Stamped under the non-decreasing floor (see nextSubmitTime), and still
 		// captured HERE — before the mu section at step 6 that assigns this
 		// commit's seq — which is what Begin's atomic-capture argument above
 		// rests on: a commit whose seq section precedes a Begin has already

@@ -35,10 +35,15 @@ func TestConsistencyTime_RequiresTenant(t *testing.T) {
 	tm, err := f.TransactionManager(ctTenantCtx("t1"))
 	require.NoError(t, err)
 	_, err = tm.ConsistencyTime(context.Background())
-	require.Error(t, err)
+	require.Error(t, err, "no user context")
+	emptyTenant := spi.WithUserContext(context.Background(), &spi.UserContext{UserID: "u"})
+	_, err = tm.ConsistencyTime(emptyTenant)
+	require.Error(t, err, "empty tenant id")
 }
 
-// A commit after C is stamped strictly after C even under a frozen clock.
+// A write after C is stamped strictly after C even under a frozen clock. The
+// write is non-transactional so nothing but ConsistencyTime's own reservation
+// raises the floor above the frozen clock value.
 func TestConsistencyTime_ReservesTheFloor(t *testing.T) {
 	clock := memory.NewTestClockAt(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	f := memory.NewStoreFactory(memory.WithClock(clock))
@@ -47,8 +52,35 @@ func TestConsistencyTime_ReservesTheFloor(t *testing.T) {
 	require.NoError(t, err)
 	c, err := tm.ConsistencyTime(ctx)
 	require.NoError(t, err)
+	es, err := f.EntityStore(ctx)
+	require.NoError(t, err)
+	_, err = es.Save(ctx, &spi.Entity{Meta: spi.EntityMeta{ID: "e1", ModelRef: spi.ModelRef{EntityName: "m", ModelVersion: "1"}}, Data: []byte(`{}`)})
+	require.NoError(t, err)
+	_, err = es.GetAsAt(ctx, "e1", c)
+	require.ErrorIs(t, err, spi.ErrNotFound, "a write after C must not be visible at C")
+	got, err := es.Get(ctx, "e1")
+	require.NoError(t, err)
+	require.True(t, got.Meta.LastModifiedDate.After(c), "stamp %v must be after C %v", got.Meta.LastModifiedDate, c)
+}
+
+// Stamps, snapshots and C are wall times: none carries Go's monotonic
+// reading. time.Time == compares the monotonic reading, so t == t.Round(0)
+// holds exactly when t has none.
+func TestWallClockValuesCarryNoMonotonicReading(t *testing.T) {
+	f := memory.NewStoreFactory()
+	ctx := ctTenantCtx("t1")
+	tm, err := f.TransactionManager(ctx)
+	require.NoError(t, err)
+
+	c, err := tm.ConsistencyTime(ctx)
+	require.NoError(t, err)
+	require.True(t, c == c.Round(0), "ConsistencyTime carries a monotonic reading: %v", c)
+
 	txID, txCtx, err := tm.Begin(ctx)
 	require.NoError(t, err)
+	snap := spi.GetTransaction(txCtx).SnapshotTime
+	require.True(t, snap == snap.Round(0), "Begin snapshot carries a monotonic reading: %v", snap)
+
 	es, err := f.EntityStore(txCtx)
 	require.NoError(t, err)
 	_, err = es.Save(txCtx, &spi.Entity{Meta: spi.EntityMeta{ID: "e1", ModelRef: spi.ModelRef{EntityName: "m", ModelVersion: "1"}}, Data: []byte(`{}`)})
@@ -56,7 +88,7 @@ func TestConsistencyTime_ReservesTheFloor(t *testing.T) {
 	require.NoError(t, tm.Commit(txCtx, txID))
 	submit, err := tm.GetSubmitTime(ctx, txID)
 	require.NoError(t, err)
-	require.True(t, submit.After(c))
+	require.True(t, submit == submit.Round(0), "submit stamp carries a monotonic reading: %v", submit)
 }
 
 // steppingClock returns wall times that step back while keeping Go's
@@ -83,13 +115,13 @@ func TestConsistencyTime_FloorSurvivesWallClockStepBack(t *testing.T) {
 	c1, err := tm.ConsistencyTime(ctx)
 	require.NoError(t, err)
 
-	// Step the wall clock back 10 ms while its monotonic reading moves on.
+	// Step the wall clock back an hour while its monotonic reading moves on.
 	// time.Time.Add shifts wall and monotonic together, and they only part
 	// when the OS steps the wall clock, so the stepped reading is built by
 	// shifting the wall value and keeping the unshifted monotonic reading.
 	time.Sleep(2 * time.Millisecond)
 	now := time.Now()
-	sc.t = now.Add(-10 * time.Millisecond)
+	sc.t = now.Add(-time.Hour)
 	(*timeRepr)(unsafe.Pointer(&sc.t)).ext = (*timeRepr)(unsafe.Pointer(&now)).ext
 	require.True(t, sc.t.Round(0).Before(first.Round(0)), "precondition: stepped wall time must be earlier")
 	require.True(t, sc.t.After(first), "precondition: stepped monotonic reading must be later")
@@ -122,6 +154,12 @@ func TestConsistencyTime_ReadAtCSeesCommitParkedInItsStamp(t *testing.T) {
 	}
 	cCh := make(chan res, 1)
 	go func() { c, err := tm.ConsistencyTime(ctx); cCh <- res{c, err} }()
+	// ConsistencyTime must be parked behind the commit's stamp (m.mu).
+	select {
+	case <-cCh:
+		t.Fatal("ConsistencyTime returned while the commit was parked inside its stamp")
+	case <-time.After(50 * time.Millisecond):
+	}
 	close(unblock)
 	r := <-cCh
 	require.NoError(t, r.err)
