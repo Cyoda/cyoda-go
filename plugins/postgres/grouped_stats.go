@@ -439,22 +439,28 @@ func (s *entityStore) GroupedAggregate(
 	if opts.PointInTime != nil {
 		// At an instant: group over the version each entity had as of the
 		// instant (the lateral base every point-in-time read shares), run
-		// committed-only off any ambient transaction. The base projects doc,
-		// creation_date and last_modified under the names the current-state
-		// table uses, so the group, aggregate and filter expressions apply
-		// unchanged; WHERE TRUE lets the filter attach as AND.
-		var base string
-		base, args = s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
-		q += " FROM (" + base + ") pit WHERE TRUE"
+		// committed-only off any ambient transaction. The filter attaches to
+		// the base itself, at the level of its `latest` derived table — as
+		// Search does — not around it: that level exposes entity_id, version
+		// and the model columns a filter may resolve to (a meta "id" filter is
+		// the entity_id column), which the base's own three-column projection
+		// does not. The group and aggregate expressions read only doc, which
+		// the projection carries.
+		base, baseArgs := s.searchBaseQuery(model.EntityName, model.ModelVersion, opts.PointInTime)
+		args = baseArgs
+		if plan.where != "" {
+			base += " AND (" + shiftPlaceholders(plan.where, len(args)) + ")"
+			args = append(args, plan.args...)
+		}
+		q += " FROM (" + base + ") pit"
 		qr = s.committedQuerier()
 	} else {
 		q += " FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted"
 		args = []any{string(s.tenantID), model.EntityName, model.ModelVersion}
-	}
-	if plan.where != "" {
-		shifted := shiftPlaceholders(plan.where, len(args))
-		q += " AND (" + shifted + ")"
-		args = append(args, plan.args...)
+		if plan.where != "" {
+			q += " AND (" + shiftPlaceholders(plan.where, len(args)) + ")"
+			args = append(args, plan.args...)
+		}
 	}
 	if len(groupExprs) > 0 {
 		// GROUP BY uses full expressions (not aliases) for portability — D17.

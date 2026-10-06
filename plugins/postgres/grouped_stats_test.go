@@ -624,6 +624,34 @@ func TestGroupedAggregate_PointInTimeIsPushedDown(t *testing.T) {
 	}
 }
 
+// A meta filter on the entity id resolves to the entity_id column; at an
+// instant the grouped query reads the lateral base, so that column has to be
+// visible to it.
+func TestGroupedAggregate_PointInTimeMetaIDFilter(t *testing.T) {
+	factory, store, ctx := gsNewStore(t)
+	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 10.0})
+	gsSave(t, ctx, store, "b", "allocated", map[string]any{"price": 5.0})
+	pit := dbNow(t, ctx, postgres.PoolForTest(factory))
+	gsSave(t, ctx, store, "c", "available", map[string]any{"price": 7.0})
+
+	ga := store.(spi.GroupedAggregator)
+	res, err := ga.GroupedAggregate(ctx, gsModel,
+		[]spi.GroupExpr{{Kind: spi.GroupExprState}},
+		spi.Filter{Op: spi.FilterNotNull, Source: spi.SourceMeta, Path: "id"},
+		spi.GroupedAggregationsOptions{MaxBuckets: 10, PointInTime: &pit})
+	if err != nil {
+		t.Fatalf("GroupedAggregate at an instant with a meta id filter: %v", err)
+	}
+	counts := map[string]int64{}
+	for _, b := range res {
+		k, _ := b.GroupKey[0].Value.(string)
+		counts[k] = b.Count
+	}
+	if len(counts) != 2 || counts["available"] != 1 || counts["allocated"] != 1 {
+		t.Fatalf("buckets = %v, want available 1, allocated 1", counts)
+	}
+}
+
 func TestPostgresGroupedAggregate_CardinalityExceeded(t *testing.T) {
 	_, store, ctx := gsNewStore(t)
 	for i := 0; i < 5; i++ {
