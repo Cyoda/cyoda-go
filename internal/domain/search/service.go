@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -18,6 +17,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"

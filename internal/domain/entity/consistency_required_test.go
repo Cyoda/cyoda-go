@@ -11,8 +11,12 @@ import (
 func mustPanic(t *testing.T, name string, f func()) {
 	t.Helper()
 	defer func() {
-		if recover() == nil {
+		r := recover()
+		if r == nil {
 			t.Fatalf("%s with a nil consistency service did not panic", name)
+		}
+		if want := name + ": nil consistency service"; r != want {
+			t.Fatalf("panic = %v, want %q", r, want)
 		}
 	}()
 	f()

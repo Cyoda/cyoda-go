@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"net"
 	"sync/atomic"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
