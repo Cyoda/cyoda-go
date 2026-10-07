@@ -591,6 +591,48 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 // The Go mapping: a budget overrun is ErrConsistencyTimeUnavailable, and the
 // budget is the configured statement timeout when that is lower than 10 s;
 // a caller that gives up gets its own context error.
+// A two-int advisory lock (tenant_key, n) that cyoda_stamp did not take, with
+// n < 0, is not a commit marker and does not touch ConsistencyTime.
+//
+// cyoda_stamp's markers are (tenant_key, xkey) with xkey =
+// (xid mod 2147483647) + 1, so always in 1..2^31-1. pg_locks reports the
+// second key as an oid, an unsigned 32-bit number, so n = -5 shows as objid
+// 4294967291. No marker can have that objid; waiting for it would only make
+// ConsistencyTime depend on a lock that has nothing to do with any commit, and
+// converting it back to the int4 key overflows (22003), which reached the
+// caller as a non-retryable error. The scan therefore takes only objids in
+// the marker range, and this ConsistencyTime returns at once.
+func TestConsistencyTime_ForeignNegativeLockIsNotAMarker(t *testing.T) {
+	f, ctx := newCTFactoryWithStatementTimeout(t, 2*time.Second)
+	pool := postgres.PoolForTest(f)
+	key := tenantKey(t, pool, ctTenant)
+	holder := acquireCT(t, pool)
+	if _, err := holder.Exec(context.Background(), `SELECT pg_advisory_lock($1::int4, -5)`, key); err != nil {
+		t.Fatalf("take the foreign lock: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = holder.Exec(context.Background(), `SELECT pg_advisory_unlock($1::int4, -5)`, key)
+	})
+	var objid int64
+	if err := pool.QueryRow(context.Background(),
+		`SELECT objid::bigint FROM pg_locks WHERE locktype = 'advisory' AND objsubid = 2 AND classid = $1::int4::oid AND granted`,
+		key).Scan(&objid); err != nil {
+		t.Fatalf("find the foreign lock: %v", err)
+	}
+	if objid != 4294967291 {
+		t.Fatalf("the foreign lock shows objid %d, want 4294967291", objid)
+	}
+
+	tm := ctTM(t, f, ctx)
+	start := time.Now()
+	if _, err := tm.ConsistencyTime(ctx); err != nil {
+		t.Fatalf("ConsistencyTime with a foreign negative lock held: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("ConsistencyTime waited %v on a lock that is no marker", elapsed)
+	}
+}
+
 func TestConsistencyTime_ErrorMapping(t *testing.T) {
 	f, ctx := newCTFactoryWithStatementTimeout(t, 300*time.Millisecond)
 	holdStamp(t, postgres.PoolForTest(f), ctTenant)

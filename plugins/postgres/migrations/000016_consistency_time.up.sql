@@ -7,6 +7,9 @@
 -- Advisory key layout (two-int form, objsubid = 2, used by nothing else here):
 --   (0, 0)                     the floor mutex, held for microseconds
 --   (tenant_key, 1..2^31-1)    in-flight markers, one per committing tx
+-- cyoda_consistency_time waits only for locks in that range: pg_locks shows the
+-- second key as an unsigned oid, so another session's (tenant_key, n) with
+-- n < 0 shows above 2^31-1, is no marker, and is ignored.
 -- tenant_key is the tenant's row in consistency_tenant_keys: allocated from its
 -- own sequence starting at 1 and checked positive, so it is never 0 and unique
 -- by construction (a hash of the tenant id would let two tenants share
@@ -96,7 +99,7 @@ BEGIN
   END;
   FOR k IN SELECT objid FROM pg_locks WHERE locktype='advisory'
       AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
-      AND classid=tenant_key AND objsubid=2 AND objid<>0 AND mode='ExclusiveLock' AND granted LOOP
+      AND classid=tenant_key AND objsubid=2 AND objid BETWEEN 1 AND 2147483647 AND mode='ExclusiveLock' AND granted LOOP
     IF clock_timestamp() >= deadline THEN
       RAISE EXCEPTION 'consistency time wait budget exhausted' USING ERRCODE='55P03'; END IF;
     rem := ceil(extract(epoch FROM deadline - clock_timestamp())*1000)::bigint;

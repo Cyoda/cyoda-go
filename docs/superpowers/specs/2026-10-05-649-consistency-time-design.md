@@ -310,7 +310,7 @@ BEGIN
   END;
   FOR k IN SELECT objid FROM pg_locks WHERE locktype='advisory'
       AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
-      AND classid=tenant_key AND objsubid=2 AND objid<>0 AND mode='ExclusiveLock' AND granted LOOP
+      AND classid=tenant_key AND objsubid=2 AND objid BETWEEN 1 AND 2147483647 AND mode='ExclusiveLock' AND granted LOOP
     IF clock_timestamp() >= deadline THEN
       RAISE EXCEPTION 'consistency time wait budget exhausted' USING ERRCODE='55P03'; END IF;
     rem := ceil(extract(epoch FROM deadline - clock_timestamp())*1000)::bigint;
@@ -347,7 +347,13 @@ Notes on the SQL:
   that was never granted only raises a WARNING. The two-int key form
   (`objsubid = 2`) is used by nothing else in the plugin (the scheduler and
   golang-migrate use the one-bigint form). Tenant keys are positive, so
-  `classid = tenant_key` compares like for like.
+  `classid = tenant_key` compares like for like. The wait loop takes only
+  `objid BETWEEN 1 AND 2147483647`, the range every `xact_key` is in.
+  `pg_locks` shows the second key as an unsigned `oid`, so a lock
+  `(tenant_key, n)` with `n < 0` that another session took shows above
+  `2^31 − 1`: it is no marker and is ignored, where converting it to `int4`
+  would raise `22003`. A foreign lock with `n` in the range is waited for
+  like a marker, bounded by the budget.
 - `lock_timeout` of 2 s in `cyoda_stamp` bounds the mutex wait (held for
   microseconds) and makes a violation of the design rule below fail fast. In
   `cyoda_consistency_time` the first statement sets `lock_timeout` to the
@@ -694,7 +700,7 @@ storage-unavailable error.
 | tenant keys distinct and stable across a restart; resolved outside the commit transaction (no lock on the key table during a held commit); every non-transactional write (save, save all, delete, delete all, compare-and-save) marks under the stored key; two resolvers racing for a new tenant agree on one key; one cache per factory and manager; key `<= 0` refused by the schema; a torn lookup `COMMIT` is retryable storage-unavailable on `Begin`, a non-transactional save and `ConsistencyTime`; a failed lookup fails `Begin`, every non-transactional write and `ConsistencyTime` | | ✓ postgres | | | | | |
 | a new non-owner role with exactly the documented grants allocates a tenant key, stamps and gets `C`, and cannot `setval`/`nextval`/read `cyoda_stamp_floor`; temporary objects named like the floor or `pg_locks` do not shadow them inside the functions; with `CREATE` on the schema, a planted `setval` or `*(bigint, interval)` never runs as the owner; the migration works in a non-public schema; `float8`, `numeric` and `text` overloads of either function planted in its schema are never chosen by the plugin's typed calls on a commit, a non-transactional save or `ConsistencyTime` | | ✓ postgres | | | | | |
 | with the migration's `search_path` naming a writable schema ahead of `pg_catalog`, overloads and same-signature functions, operators, an aggregate and domains planted there for every name the migration uses are neither called by it nor bound into the default, check, policy or signatures it creates; the default names the sequence by `regclass` | | ✓ postgres | | | | | |
-| wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel | | ✓ postgres | | | | | |
+| wait budget → `ErrConsistencyTimeUnavailable` (`55P03` with a short budget; `57014` under a low statement timeout); client cancel stays a cancel; another session's `(tenant_key, -5)` lock is no marker and `C` returns at once | | ✓ postgres | | | | | |
 | cancelled call or stamp leaves no lock; erroring connection closed; `cyoda_stamp` `55P03` → 503 | | ✓ postgres | | | | | |
 | acquire timeout while getting `C` → storage-unavailable classification | | ✓ postgres | | | | | |
 | floor survives a clock step back | | ✓ memory, sqlite (`Clock`); postgres (sequence set ahead, own DB) | | | | | |
