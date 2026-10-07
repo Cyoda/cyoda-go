@@ -168,86 +168,13 @@ the commit. After the stamp, the commit touches only rows it wrote itself, so
 it never waits on another transaction's lock, and a fenced read made while the
 caller holds a transaction cannot deadlock with the commits it waits for.
 
-**Roles.** By default the plugin connects as the owner of these objects. In a
-two-role deployment an owner role migrates and a runtime role, which owns
-nothing, runs the server. The runtime role needs `USAGE` on the schema, the
-use of the plugin's tables and sequences, and, for the consistency time,
-`SELECT, INSERT` on `consistency_tenant_keys`, `USAGE` on
-`consistency_tenant_key_seq`, and `EXECUTE` on both functions (granted to
-`PUBLIC` by default). Both functions are `SECURITY DEFINER`: they run as their
-owner, the role that ran the migration, so the runtime role needs nothing on
-`cyoda_stamp_floor` and cannot set or advance it itself. `EXECUTE` stays with
-`PUBLIC`, because neither function can move the floor anywhere but along the
-clock (`cyoda_stamp` to `max(clock, floor + 1)`, `cyoda_consistency_time` to
-`max(clock, floor)`). They run with a fixed `search_path` of exactly
-`pg_catalog, pg_temp`, and name the floor sequence with the schema the
-migration ran in, so no object another role creates — in a schema on the path
-or in its temporary schema — can be called in their place with their owner's
-privileges. The plugin's own calls of the two functions give exact argument
-types, named with `pg_catalog`, so neither an overload with other types nor a
-domain named like a built-in type can be chosen in their place.
-
-**Who controls the search path.** Beyond these two functions the plugin names
-its tables, functions, operators and types without a schema, and PostgreSQL
-resolves such a name across every schema on the `search_path` — a function or
-operator by the best argument match, so `pg_catalog` coming first decides only
-ties. Whoever can put an object on that path can make the plugin's
-statements, or its migrations, run code with the plugin's or the migration
-role's privileges. So before it migrates, and on every start whether or not
-`CYODA_POSTGRES_AUTO_MIGRATE` is set, the plugin checks who controls that path
-and refuses to continue unless every such role is trusted. The check covers
-the server, the `cyoda migrate` subcommand and so the Helm chart's migrate
-Job. It is one catalog query, about 2.5 ms on a migrated database.
-
-The trusted roles are: superusers; the connecting role and every role whose
-privileges it inherits (a superuser connecting role counts only itself); the
-owner of the plugin's tables, read from the owner of `schema_migrations`; and
-`pg_database_owner` when the database's owner is trusted. `PUBLIC` never is.
-Two consequences follow: whoever owns the migrations table is trusted, and so
-is every member of a trusted role, since a member can create objects as that
-role. The path is the one the connecting role resolves names through: the
-schemas of its `search_path` that exist and that it may use, `$user`
-included, plus `pg_catalog`. A schema it cannot use takes no part in its name
-resolution; every role that runs the plugin, the migrating role included, runs
-its own check. The plugin refuses when:
-
-- the database is owned by a role that is not trusted (its owner can create
-  a schema that `$user` puts first, and on PostgreSQL 15 and later owns
-  `public`);
-- a schema on the path is owned by a role that is not trusted;
-- the database or a schema on the path grants `CREATE` to a role that is not
-  trusted, `PUBLIC` included;
-- an object in a schema on the path — a table, view, sequence, function,
-  procedure, aggregate, operator, type, domain, collation, conversion,
-  operator class or family, text search configuration or dictionary, or
-  statistics object — is owned by a role that is not trusted. Revoking a grant
-  does not remove what was created while it was held.
-
-So the schemas on cyoda's search path must hold only objects of trusted
-roles: give cyoda a database, or at least a schema, of its own. Each refusal
-names the database, schema or object and its owner or grantee, and the
-statements that fix it. On PostgreSQL 14, where `public` is owned by the
-bootstrap superuser and grants `CREATE` to `PUBLIC`, a migrating role that
-owns the database is refused with:
-
-```
-postgres: refusing to migrate or start: schema public grants CREATE to PUBLIC. Every owner of this database, of a schema on the connection's search_path or of an object in one, and every role that may create in them, must be trusted: a superuser, the connecting role or a role it inherits, or the owner of the plugin's tables (cyoda_owner). Fix each, then restart: ALTER SCHEMA public OWNER TO pg_database_owner; REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-```
-
-That is the PostgreSQL 14 procedure, run as a superuser before upgrading:
-first give `public` to the migrating role — to `pg_database_owner` when that
-role owns the database, as PostgreSQL 15 does, or else to the role itself
-(`ALTER SCHEMA public OWNER TO cyoda_owner`) — then revoke `PUBLIC`'s
-`CREATE`. The `REVOKE` alone is not enough: a migrating role that is not a
-superuser could then no longer create in `public`, and the migration fails
-with `permission denied for schema public`. After the procedure, drop or
-reassign every object the refusal lists that another role created in
-`public` while `PUBLIC` could. PostgreSQL 15 and later do not grant `CREATE`
-on `public` to `PUBLIC`, and no version grants `CREATE` on a database to
-`PUBLIC` by default.
-
-The check runs once, at start: a grant made, or an object created, while a
-node runs is not detected until that node restarts.
+**Roles.** The plugin connects as the owner of these objects. A non-owner role
+needs `SELECT, UPDATE` on `cyoda_stamp_floor`, `SELECT, INSERT` on
+`consistency_tenant_keys`, `USAGE` on `consistency_tenant_key_seq`, `USAGE` on
+the schema, and `EXECUTE` on both functions (granted to `PUBLIC` by default).
+Follow standard PostgreSQL practice and give no untrusted role `CREATE` on the
+schemas in cyoda's search path: PostgreSQL 15 and later do this by default, and
+on PostgreSQL 14 run `REVOKE CREATE ON SCHEMA public FROM PUBLIC`.
 
 **Replicas.** With asynchronous replicas, a failover to a host whose clock is
 behind can stamp below a consistency time already returned — the same

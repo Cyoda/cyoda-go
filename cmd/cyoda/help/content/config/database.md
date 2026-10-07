@@ -65,53 +65,6 @@ Used when `CYODA_STORAGE_BACKEND=postgres`.
 
 The prefix `CYODA_POSTGRES_` is used to namespace all PostgreSQL configuration variables.
 
-#### Who controls the search path
-
-The plugin names its tables, functions, operators and types without a schema, so
-whoever can put an object on the connection's `search_path` can make the plugin's SQL,
-and its migrations, run code with the plugin's privileges. Before migrating, and on
-every start whether or not `CYODA_POSTGRES_AUTO_MIGRATE` is set, the plugin refuses to
-continue unless every role that controls that path is trusted. `cyoda migrate` runs the
-same check.
-
-Trusted roles: superusers; the connecting role and every role whose privileges it
-inherits; the owner of the plugin's tables (the owner of `schema_migrations`); and
-`pg_database_owner` when the database's owner is trusted. `PUBLIC` never is. So whoever
-owns the migrations table is trusted, and so is every member of a trusted role. The path
-is the one the connecting role resolves names through: the schemas of its `search_path`
-that exist and that it may use, `$user` included, plus `pg_catalog`. Every role that
-runs the plugin, the migrating role included, runs its own check. The plugin refuses
-when:
-
-- the database is owned by a role that is not trusted;
-- a schema on the path is owned by a role that is not trusted;
-- the database or a schema on the path grants `CREATE` to a role that is not trusted;
-- an object in a schema on the path (table, view, sequence, function, operator, type,
-  domain, collation, conversion, operator class, text search object, statistics
-  object) is owned by a role that is not trusted. Revoking a grant does not remove
-  what was created while it was held.
-
-Give cyoda a database, or at least a schema, of its own. Each refusal names the
-database, schema or object, its owner or grantee, and the statements that fix it.
-
-On PostgreSQL 14, `public` is owned by the bootstrap superuser and grants `CREATE` to
-`PUBLIC`. A migrating role that owns the database is refused with:
-
-```
-postgres: refusing to migrate or start: schema public grants CREATE to PUBLIC. Every owner of this database, of a schema on the connection's search_path or of an object in one, and every role that may create in them, must be trusted: a superuser, the connecting role or a role it inherits, or the owner of the plugin's tables (cyoda_owner). Fix each, then restart: ALTER SCHEMA public OWNER TO pg_database_owner; REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-```
-
-Run the procedure as a superuser before upgrading: give `public` to the migrating role —
-`pg_database_owner` when that role owns the database, as PostgreSQL 15 does, or else
-the role itself — and then revoke `PUBLIC`'s `CREATE`. The `REVOKE` alone leaves a
-migrating role that is not a superuser unable to create in `public`
-(`permission denied for schema public`). Then drop or reassign every object the
-refusal lists that another role created in `public`. PostgreSQL 15 and later do not
-grant `CREATE` on `public` to `PUBLIC`.
-
-The check runs only at start: a grant made, or an object created, while a node runs is
-not detected until that node restarts.
-
 #### Ceilings
 
 Five limits bound how long the storage layer waits or runs. Each accepts a Go duration
