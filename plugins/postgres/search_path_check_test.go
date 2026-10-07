@@ -1,13 +1,14 @@
 package postgres
 
 // search_path_check_test.go — the plugin refuses to migrate or start when a
-// schema on its connection's search_path lets a role other than the schema's
-// owner create objects there. Such a role could plant a function or operator
+// schema on its connection's search_path, or the database itself, lets a role
+// other than its owner create objects there. Such a role could plant a
+// function or operator (or, on the database, a schema the path puts first)
 // that the plugin's unqualified SQL would then call with the plugin's own
 // privileges.
 //
-// Each test takes a database of its own, so a grant on its public schema
-// reaches nothing else. The default public schema of PostgreSQL 15 and later
+// Each test takes a database of its own, so a grant on it or on its public
+// schema reaches nothing else. The default public schema of PostgreSQL 15 and later
 // grants CREATE only to its owner, so a test that wants PostgreSQL 14's
 // default grants it to PUBLIC itself.
 
@@ -123,15 +124,16 @@ var startupPaths = []struct {
 	}},
 }
 
-// assertRefused checks a refusal: it names the schema and the grantee, gives
-// the REVOKE that fixes it, and carries nothing from the connection string.
-func assertRefused(t *testing.T, err error, dsn, schema, grantee, remedy string) {
+// assertRefused checks a refusal: it names the object ("schema public",
+// "database x") and the grantee, gives the REVOKE that fixes it, and carries
+// nothing from the connection string.
+func assertRefused(t *testing.T, err error, dsn, object, grantee, remedy string) {
 	t.Helper()
 	if err == nil {
-		t.Fatalf("started although schema %s on the search_path grants CREATE to %s", schema, grantee)
+		t.Fatalf("started although %s grants CREATE to %s", object, grantee)
 	}
 	msg := err.Error()
-	for _, want := range []string{"schema " + schema + " ", "CREATE to " + grantee, remedy} {
+	for _, want := range []string{object + " grants CREATE to " + grantee, remedy} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("refusal does not contain %q: %s", want, msg)
 		}
@@ -159,7 +161,7 @@ func TestSearchPathCheck_RefusesCreateForPublic(t *testing.T) {
 			execAs(t, dsn, `GRANT CREATE ON SCHEMA public TO PUBLIC`)
 
 			err := p.run(t, dsn)
-			assertRefused(t, err, dsn, "public", "PUBLIC", "REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+			assertRefused(t, err, dsn, "schema public", "PUBLIC", "REVOKE CREATE ON SCHEMA public FROM PUBLIC")
 			if p.migrate && migrationsRan(t, dsn) {
 				t.Error("the refused path migrated the database before refusing")
 			}
@@ -179,7 +181,7 @@ func TestSearchPathCheck_RefusesCreateForANamedRole(t *testing.T) {
 			execAs(t, dsn, `GRANT CREATE ON SCHEMA public TO `+ident)
 
 			err := p.run(t, dsn)
-			assertRefused(t, err, dsn, "public", `"`+name+`"`, `REVOKE CREATE ON SCHEMA public FROM "`+name+`"`)
+			assertRefused(t, err, dsn, "schema public", `"`+name+`"`, `REVOKE CREATE ON SCHEMA public FROM "`+name+`"`)
 		})
 	}
 }
@@ -213,7 +215,7 @@ func TestSearchPathCheck_StartsWhenOnlyTheOwnerMayCreate(t *testing.T) {
 		`GRANT USAGE ON SCHEMA app TO `+rtIdent)
 
 	pool := openPool(t, dsnWithParam(t, dsnAs(t, dsn, rt, "probe"), "search_path", "app"))
-	if err := checkSearchPath(context.Background(), pool); err != nil {
+	if err := checkCreateGrants(context.Background(), pool); err != nil {
 		t.Fatalf("refused a schema in which only its owner may create: %v", err)
 	}
 }
@@ -230,8 +232,8 @@ func TestSearchPathCheck_RefusesCreateForTheConnectingRole(t *testing.T) {
 		`GRANT USAGE, CREATE ON SCHEMA app TO `+rtIdent)
 
 	rtDSN := dsnWithParam(t, dsnAs(t, dsn, rt, "probe"), "search_path", "app")
-	err := checkSearchPath(context.Background(), openPool(t, rtDSN))
-	assertRefused(t, err, rtDSN, "app", rt, "REVOKE CREATE ON SCHEMA app FROM "+rt)
+	err := checkCreateGrants(context.Background(), openPool(t, rtDSN))
+	assertRefused(t, err, rtDSN, "schema app", rt, "REVOKE CREATE ON SCHEMA app FROM "+rt)
 }
 
 // A schema that grants CREATE to PUBLIC but is not on the search path does
@@ -254,7 +256,7 @@ func TestSearchPathCheck_ChecksEverySchemaOnThePath(t *testing.T) {
 		`GRANT CREATE ON SCHEMA later TO PUBLIC`)
 	pathDSN := dsnWithParam(t, dsn, "search_path", "public,later")
 	err := ensureSchema(context.Background(), openPool(t, pathDSN), true, 5*time.Minute)
-	assertRefused(t, err, pathDSN, "later", "PUBLIC", "REVOKE CREATE ON SCHEMA later FROM PUBLIC")
+	assertRefused(t, err, pathDSN, "schema later", "PUBLIC", "REVOKE CREATE ON SCHEMA later FROM PUBLIC")
 }
 
 // pg_catalog is searched first even when the path does not name it, so its
@@ -262,8 +264,8 @@ func TestSearchPathCheck_ChecksEverySchemaOnThePath(t *testing.T) {
 func TestSearchPathCheck_ChecksPgCatalog(t *testing.T) {
 	dsn := freshDatabase(t)
 	execAs(t, dsn, `GRANT CREATE ON SCHEMA pg_catalog TO PUBLIC`)
-	err := checkSearchPath(context.Background(), openPool(t, dsn))
-	assertRefused(t, err, dsn, "pg_catalog", "PUBLIC", "REVOKE CREATE ON SCHEMA pg_catalog FROM PUBLIC")
+	err := checkCreateGrants(context.Background(), openPool(t, dsn))
+	assertRefused(t, err, dsn, "schema pg_catalog", "PUBLIC", "REVOKE CREATE ON SCHEMA pg_catalog FROM PUBLIC")
 }
 
 // A grantee that holds the owner's privileges anyway — a superuser, or a
@@ -295,14 +297,117 @@ func TestSearchPathCheck_GranteesThatAlreadyHoldTheOwnersRights(t *testing.T) {
 			execAs(t, dsn, stmts...)
 
 			pathDSN := dsnWithParam(t, dsn, "search_path", "app")
-			err := checkSearchPath(context.Background(), openPool(t, pathDSN))
+			err := checkCreateGrants(context.Background(), openPool(t, pathDSN))
 			if !tc.refused {
 				if err != nil {
 					t.Fatalf("refused a grantee that already holds the owner's privileges: %v", err)
 				}
 				return
 			}
-			assertRefused(t, err, pathDSN, "app", name, "REVOKE CREATE ON SCHEMA app FROM "+name)
+			assertRefused(t, err, pathDSN, "schema app", name, "REVOKE CREATE ON SCHEMA app FROM "+name)
+		})
+	}
+}
+
+// CREATE on the database lets a role create a schema. One named after the
+// plugin's role is put first on the default search_path by "$user", ahead of
+// every schema the check has seen, and is owned by that role, so the check
+// refuses CREATE on the current database for any role but its owner, on every
+// path, before anything is migrated.
+func TestSearchPathCheck_RefusesDatabaseCreate(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		named bool
+	}{{"PUBLIC", false}, {"a named role", true}} {
+		for _, p := range startupPaths {
+			t.Run(tc.name+"/"+p.name, func(t *testing.T) {
+				dsn := freshDatabase(t)
+				if !p.migrate {
+					migrateToHead(t, dsn)
+				}
+				db := dsnDatabase(dsn)
+				grantee, ident := "PUBLIC", "PUBLIC"
+				if tc.named {
+					name, quoted := newRole(t, dsn, "Schema_Maker_", "NOLOGIN")
+					grantee, ident = `"`+name+`"`, quoted
+				}
+				execAs(t, dsn, `GRANT CREATE ON DATABASE `+pgx.Identifier{db}.Sanitize()+` TO `+ident)
+
+				err := p.run(t, dsn)
+				assertRefused(t, err, dsn, "database "+db, grantee, "REVOKE CREATE ON DATABASE "+db+" FROM "+grantee)
+				if p.migrate && migrationsRan(t, dsn) {
+					t.Error("the refused path migrated the database before refusing")
+				}
+			})
+		}
+	}
+}
+
+// After the REVOKE on the database, every path starts.
+func TestSearchPathCheck_StartsAfterTheDatabaseRevoke(t *testing.T) {
+	for _, p := range startupPaths {
+		t.Run(p.name, func(t *testing.T) {
+			dsn := freshDatabase(t)
+			if !p.migrate {
+				migrateToHead(t, dsn)
+			}
+			db := pgx.Identifier{dsnDatabase(dsn)}.Sanitize()
+			execAs(t, dsn,
+				`GRANT CREATE ON DATABASE `+db+` TO PUBLIC`,
+				`REVOKE CREATE ON DATABASE `+db+` FROM PUBLIC`)
+			if err := p.run(t, dsn); err != nil {
+				t.Fatalf("refused after the REVOKE: %v", err)
+			}
+		})
+	}
+}
+
+// The database's owner may be any role. A grant that gives its grantee
+// nothing new — to a superuser, or to a role that inherits the owner's
+// privileges — does not stop a start; a member that does not inherit them is
+// refused, as for a schema.
+func TestSearchPathCheck_DatabaseGranteesThatAlreadyHoldTheOwnersRights(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		attrs   string
+		member  bool
+		refused bool
+	}{
+		{"superuser", "NOLOGIN SUPERUSER", false, false},
+		{"inheriting member of the owner", "NOLOGIN INHERIT", true, false},
+		{"non-inheriting member of the owner", "NOLOGIN NOINHERIT", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dsn := freshDatabase(t)
+			db := dsnDatabase(dsn)
+			dbIdent := pgx.Identifier{db}.Sanitize()
+			connecting, _ := url.Parse(dsn)
+			_, ownerIdent := newRole(t, dsn, "cyoda_dbowner_", "NOLOGIN")
+			name, ident := newRole(t, dsn, "cyoda_grantee_", tc.attrs)
+			stmts := []string{
+				`ALTER DATABASE ` + dbIdent + ` OWNER TO ` + ownerIdent,
+				`GRANT CREATE ON DATABASE ` + dbIdent + ` TO ` + ident,
+			}
+			if tc.member {
+				stmts = append(stmts, `GRANT `+ownerIdent+` TO `+ident)
+			}
+			execAs(t, dsn, stmts...)
+			// Runs before the roles are dropped: a role that owns a database,
+			// or holds a privilege on one, cannot be dropped.
+			t.Cleanup(func() {
+				execAs(t, dsn,
+					`REVOKE CREATE ON DATABASE `+dbIdent+` FROM `+ident,
+					`ALTER DATABASE `+dbIdent+` OWNER TO `+pgx.Identifier{connecting.User.Username()}.Sanitize())
+			})
+
+			err := checkCreateGrants(context.Background(), openPool(t, dsn))
+			if !tc.refused {
+				if err != nil {
+					t.Fatalf("refused a grantee that already holds the owner's privileges: %v", err)
+				}
+				return
+			}
+			assertRefused(t, err, dsn, "database "+db, name, "REVOKE CREATE ON DATABASE "+db+" FROM "+name)
 		})
 	}
 }

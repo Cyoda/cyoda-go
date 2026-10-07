@@ -32,7 +32,7 @@ Dispatch is on `CYODA_STORAGE_BACKEND`:
 
 The migrate subcommand respects the schema-compatibility contract: it refuses to run if the database schema is newer than the code's embedded maximum version. This prevents a rollback from accidentally downgrading a schema.
 
-For postgres it also refuses, before migrating anything, when a schema on the connection's `search_path` grants `CREATE` to a role other than its owner — PostgreSQL 14's default for `public`. The error names each schema and grantee and the `REVOKE` that fixes it; see `cyoda help config database`.
+For postgres it also refuses, before migrating anything, when the database or a schema on the connection's `search_path` grants `CREATE` to a role other than its owner — PostgreSQL 14's default for `public` is one such grant. The error names each database or schema and grantee and the `REVOKE` that fixes it; see `cyoda help config database`.
 
 The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which runs `cyoda migrate` before starting the server to ensure the schema is up to date.
 

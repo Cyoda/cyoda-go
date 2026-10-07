@@ -405,9 +405,12 @@ Notes on the SQL:
   such as `bigint` are grammar that PostgreSQL resolves in `pg_catalog` itself.
 - This qualification is defence in depth. The plugin's other SQL — every
   earlier migration and every runtime statement — names its functions and
-  operators without a schema, so the plugin refuses to migrate or start when a
-  schema on the session's `search_path` grants `CREATE` to a role other than
-  its owner (POSTGRES.md "Roles"; `search_path_check.go`).
+  operators without a schema, so the plugin refuses to migrate or start when
+  the database, or a schema on the session's `search_path`, grants `CREATE`
+  to a role other than its owner (POSTGRES.md "Roles";
+  `search_path_check.go`). The database is included because `CREATE` on it
+  lets a role create a schema named after the plugin's role, which `$user`
+  puts first on the default path.
 - Role: the plugin connects as the owner of its objects
   (`docs/plugins/POSTGRES.md:394-408`). A non-owner role needs `USAGE` on the
   schema, `SELECT, INSERT` on `consistency_tenant_keys`, `USAGE` on
@@ -450,8 +453,9 @@ Notes on the SQL:
   overload and run it with the plugin connection's rights, or find the call
   ambiguous and fail every commit. With exact types the real function wins:
   no other function in its schema can have its signature. More generally, no
-  role other than its owner may have `CREATE` on a schema in the plugin's
-  `search_path`, which the plugin checks before it migrates or starts
+  role other than its owner may have `CREATE` on the database or on a schema
+  in the plugin's `search_path`, which the plugin checks before it migrates
+  or starts
   (POSTGRES.md "Roles").
 - `ConsistencyTime` runs `SELECT cyoda_consistency_time($1::int4, $2::bigint)`
   (the tenant key and the budget in milliseconds) on its own pool connection,

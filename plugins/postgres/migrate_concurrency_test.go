@@ -862,7 +862,7 @@ func TestEnsureSchema_CancelledContextSaysItOnce(t *testing.T) {
 		phase       string
 		cancelFirst bool // cancel before the boot; otherwise once the migrator is built
 	}{
-		{"before the boot", "postgres: check the search_path schemas: ", true},
+		{"before the boot", "postgres: check CREATE grants: ", true},
 		{"during the migration phase", "postgres migrate: ", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

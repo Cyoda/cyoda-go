@@ -65,26 +65,31 @@ Used when `CYODA_STORAGE_BACKEND=postgres`.
 
 The prefix `CYODA_POSTGRES_` is used to namespace all PostgreSQL configuration variables.
 
-#### Schemas on the search path
+#### Schemas on the search path, and the database
 
 The plugin names its tables, functions and operators without a schema, so a role that
 may create objects in a schema on the connection's `search_path` could make the plugin's
-SQL run its code with the plugin's privileges. Before migrating, and on every start
-whether or not `CYODA_POSTGRES_AUTO_MIGRATE` is set, the plugin checks each schema on
-the connection's effective `search_path` (`pg_catalog` included) and refuses to continue
-when one grants `CREATE` to a role other than the schema's owner. A grant to a superuser,
-or to a role that inherits the owner's privileges, gives nothing new and is allowed. The
-connecting role itself gets no exception. `cyoda migrate` runs the same check.
+SQL run its code with the plugin's privileges. A role with `CREATE` on the database could
+create a schema named after the plugin's role, which `$user` puts first on the default
+path. Before migrating, and on every start whether or not `CYODA_POSTGRES_AUTO_MIGRATE`
+is set, the plugin checks the current database and each schema on the connection's
+effective `search_path` (`pg_catalog` included), and refuses to continue when one grants
+`CREATE` to a role other than its owner. A grant to a superuser, or to a role that
+inherits the owner's privileges, gives nothing new and is allowed. The connecting role
+itself gets no exception. `cyoda migrate` runs the same check.
 
 PostgreSQL 14 grants `CREATE` on `public` to `PUBLIC` by default, which is refused with:
 
 ```
-postgres: refusing to migrate or start: on this connection's search_path, schema public grants CREATE to PUBLIC. A role that may create objects in a schema on the search_path can make this node's SQL run its code with this node's privileges. Revoke each grant, then restart: REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+postgres: refusing to migrate or start: schema public grants CREATE to PUBLIC. A role that may create objects in the database or in a schema on the connection's search_path can make this node's SQL run its code with this node's privileges. Revoke each grant, then restart: REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 ```
 
-Run each `REVOKE` the message lists, as the schema's owner, and restart. PostgreSQL 15 and
-later do not grant it. The check runs only at start: a grant made while a node runs is
-not detected until that node restarts.
+A grant on the database is reported as `database <name> grants CREATE to <role>`, with
+`REVOKE CREATE ON DATABASE <name> FROM <role>;`. Run each `REVOKE` the message lists, as
+the owner, and restart. PostgreSQL 15 and later do not grant `CREATE` on `public` to
+`PUBLIC`, and no version grants `CREATE` on a database to `PUBLIC` by default. The check
+runs only at start: a grant made while a node runs is not detected until that node
+restarts.
 
 #### Ceilings
 
