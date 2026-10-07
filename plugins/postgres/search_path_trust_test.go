@@ -123,24 +123,24 @@ func TestTrustedSet_RefusesAnUntrustedSchemaOwner(t *testing.T) {
 	}
 }
 
-// (b) The "$user" schema is checked although the connecting role has no USAGE
-// on it, which keeps it off the active path: its owner could grant USAGE at
-// any time after start, and it would come first.
-func TestTrustedSet_ChecksTheUserSchemaWithoutUsage(t *testing.T) {
+// (b) The "$user" schema, owned by another role and usable by the connecting
+// role, is first on the default path, and is checked like any other schema
+// there.
+func TestTrustedSet_ChecksTheUserSchema(t *testing.T) {
 	dsn := freshDatabase(t)
-	rt, _ := newRole(t, dsn, "cyoda_rt_", "LOGIN PASSWORD 'probe' NOSUPERUSER")
+	rt, rtIdent := newRole(t, dsn, "cyoda_rt_", "LOGIN PASSWORD 'probe' NOSUPERUSER")
 	mallory, malloryIdent := newRole(t, dsn, "cyoda_mallory_", "NOLOGIN")
-	execAs(t, dsn, `CREATE SCHEMA `+pgx.Identifier{rt}.Sanitize()+` AUTHORIZATION `+malloryIdent)
+	execAs(t, dsn,
+		`CREATE SCHEMA `+rtIdent+` AUTHORIZATION `+malloryIdent,
+		`GRANT USAGE ON SCHEMA `+rtIdent+` TO `+rtIdent)
 
 	rtPool := openPool(t, dsnAs(t, dsn, rt, "probe"))
 	var active []string
 	if err := rtPool.QueryRow(context.Background(), `SELECT current_schemas(false)::text[]`).Scan(&active); err != nil {
 		t.Fatalf("read the active path: %v", err)
 	}
-	for _, s := range active {
-		if s == rt {
-			t.Fatalf("the schema %s is on the active path %v; the test needs it off", rt, active)
-		}
+	if len(active) == 0 || active[0] != rt {
+		t.Fatalf("the active path is %v; the test needs the schema %s first on it", active, rt)
 	}
 	err := checkSearchPathTrust(context.Background(), rtPool)
 	assertRefusal(t, err, dsn, "schema "+rt+" is owned by "+mallory)

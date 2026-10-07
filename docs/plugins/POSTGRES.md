@@ -203,9 +203,13 @@ The trusted roles are: superusers; the connecting role and every role whose
 privileges it inherits (a superuser connecting role counts only itself); the
 owner of the plugin's tables, read from the owner of `schema_migrations`; and
 `pg_database_owner` when the database's owner is trusted. `PUBLIC` never is.
-The path is the active one, with `pg_catalog`, plus every schema the
-`search_path` setting names, `$user` included, even one the connecting role
-cannot use yet. The plugin refuses when:
+Two consequences follow: whoever owns the migrations table is trusted, and so
+is every member of a trusted role, since a member can create objects as that
+role. The path is the one the connecting role resolves names through: the
+schemas of its `search_path` that exist and that it may use, `$user`
+included, plus `pg_catalog`. A schema it cannot use takes no part in its name
+resolution; every role that runs the plugin, the migrating role included, runs
+its own check. The plugin refuses when:
 
 - the database is owned by a role that is not trusted (its owner can create
   a schema that `$user` puts first, and on PostgreSQL 15 and later owns

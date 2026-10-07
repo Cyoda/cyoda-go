@@ -43,13 +43,15 @@ type rowsQuerier interface {
 //
 // PUBLIC is never in T.
 //
-// The path: the schemas of current_schemas(true) — the active path with
-// pg_catalog and the session's temporary schema — and every schema the
-// search_path setting names, "$user" expanded, whether or not the connecting
-// role has USAGE on it. A schema it cannot use yet is not on the active path,
-// but its owner can grant USAGE at any time, so it is checked the same way.
-// The setting is split as PostgreSQL splits it: double-quoted names keep their
-// case, others are folded to lower case.
+// The path: current_schemas(false) — the schemas that exist and that the
+// connecting role may use, in search order, "$user" expanded. These are
+// exactly the schemas this role's name resolution reaches. A schema the
+// setting names but current_schemas(false) leaves out either does not exist or
+// is not usable by this role, so it takes no part in this role's name
+// resolution; every role that runs the plugin, the migrating role included,
+// runs its own check. pg_catalog is added: it is searched first when the path
+// does not name it. The session's temporary schema holds only the session's
+// own objects and is never searched for functions or operators.
 //
 // The rules:
 //
@@ -105,23 +107,11 @@ WITH me AS (
   SELECT CASE WHEN m.oid OPERATOR(pg_catalog.=) db.datdba THEN 'pg_database_owner'::pg_catalog.text
               ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(m.oid)::pg_catalog.text) END AS name
     FROM m CROSS JOIN db
-), cfg AS (
-  SELECT CASE
-           WHEN x.tok OPERATOR(pg_catalog.=) '"$user"'::pg_catalog.text
-             OR x.tok OPERATOR(pg_catalog.=) '$user'::pg_catalog.text
-             THEN CURRENT_USER::pg_catalog.text
-           WHEN pg_catalog."left"(x.tok, 1) OPERATOR(pg_catalog.=) '"'::pg_catalog.text
-             THEN pg_catalog.replace(pg_catalog.substr(x.tok, 2, pg_catalog.length(x.tok) OPERATOR(pg_catalog.-) 2), '""', '"')
-           ELSE pg_catalog.lower(x.tok)
-         END AS name
-    FROM pg_catalog.regexp_matches(pg_catalog.current_setting('search_path'),
-                                   '("(?:[^"]|"")*"|[^,[:space:]]+)', 'g') AS rm(a)
-   CROSS JOIN LATERAL (SELECT rm.a[1] AS tok) x
 ), named AS (
   SELECT s.name::pg_catalog.text AS name, s.pos
-    FROM pg_catalog.unnest(pg_catalog.current_schemas(true)) WITH ORDINALITY AS s(name, pos)
+    FROM pg_catalog.unnest(pg_catalog.current_schemas(false)) WITH ORDINALITY AS s(name, pos)
   UNION ALL
-  SELECT cfg.name, 1000::pg_catalog.int8 FROM cfg
+  SELECT 'pg_catalog'::pg_catalog.text, 0::pg_catalog.int8
 ), onpath AS (
   SELECT n.oid, pg_catalog.min(named.pos) AS pos
     FROM named JOIN pg_catalog.pg_namespace n ON n.nspname OPERATOR(pg_catalog.=) named.name
