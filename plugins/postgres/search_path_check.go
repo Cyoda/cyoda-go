@@ -8,115 +8,262 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// rowsQuerier is the one method checkCreateGrants needs; *pgxpool.Pool has it.
+// rowsQuerier is the one method checkSearchPathTrust needs; *pgxpool.Pool has it.
 type rowsQuerier interface {
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 }
 
-// unsafeCreateGrantsSQL lists each CREATE grant that lets a role other than
-// the object's owner create objects the plugin's SQL could resolve: on the
-// current database, and on each schema of the session's effective search_path.
-// Each row is the kind ("database" or "schema"), the object's name and the
-// grantee (PUBLIC, or the role's name), quoted as identifiers.
+// untrustedSearchPathSQL finds everything on the connection's name-resolution
+// path that a role outside the trusted set controls. One row per finding: the
+// rule, the finding, its remedy, and the role a remedy hands ownership to.
 //
-// The plugin's SQL names its tables, functions and operators without a schema,
-// and PostgreSQL chooses a function or operator by the best argument match
-// across every schema on the path. So a role that may create in any of them can
-// plant an overload that the plugin's own statements — and its migrations —
-// then run with the plugin's or the migration role's privileges. This is
-// PostgreSQL's "secure schema usage pattern"; it cannot be met call site by
-// call site.
+// Why: the plugin's SQL names its tables, functions, operators and types
+// without a schema, and PostgreSQL resolves such a name across every schema on
+// the search_path — a function or operator by the best argument match, so
+// pg_catalog coming first decides only ties. Whoever can put an object on that
+// path can make the plugin's statements, and its migrations, run code with the
+// plugin's or the migration role's privileges. This is PostgreSQL's "secure
+// schema usage pattern"; it cannot be met call site by call site.
 //
-// CREATE on the database lets a role create a schema. The default path begins
-// with "$user", so a schema named after the plugin's role, created and owned by
-// that other role, would come first on the path once it exists — after the
-// schema check ran, and passing it, since its owner may create in it. So only
-// the database's owner may hold CREATE on it.
+// The trusted set T:
+//   - superusers;
+//   - the connecting role, and every role whose privileges it inherits
+//     (pg_has_role USAGE). USAGE rather than MEMBER: it is the narrower set,
+//     and exactly the roles whose objects the connecting role can already
+//     alter or drop with its own privileges. A superuser connecting role is
+//     a member of every role, so for it this rule adds only itself — trusting
+//     every role it nominally inherits would trust every role there is;
+//   - the owner of the plugin's tables: the owner of golang-migrate's
+//     schema_migrations in current_schema(), when it exists. On a fresh
+//     database there is none, and the connecting role, about to own them,
+//     is already in T. This lets the runtime role of a two-role deployment
+//     trust the role that migrated;
+//   - pg_database_owner, which stands for the database's owner, only when
+//     that owner is in T.
 //
-// current_schemas(true) is the path as the session resolves it: the schemas
-// that exist, with the implicit ones — pg_catalog, searched first when the
-// path does not name it, and the session's temporary schema if it has one —
-// included. Both are checked like any other schema, which costs nothing.
-// An ACL that was never changed is NULL in the catalog; acldefault gives the
-// rights it stands for (for a schema, the owner's alone; for a database, the
-// owner's plus PUBLIC's CONNECT and TEMPORARY). Grantee 0 is PUBLIC.
+// PUBLIC is never in T.
 //
-// A grant is excused when it gives its grantee nothing the grantee does not
-// already hold:
-//   - the grantee is the owner;
-//   - the grantee is a superuser, who bypasses every privilege check;
-//   - the grantee inherits the owner's privileges (pg_has_role USAGE), and so
-//     holds CREATE through the owner whether or not the grant exists. Such a
-//     role is trusted as far as the owner is; revoking its grant would change
-//     nothing. A member that does not inherit (NOINHERIT) is checked like any
-//     other role: the grant is a real privilege it would not otherwise use.
+// The path: the schemas of current_schemas(true) — the active path with
+// pg_catalog and the session's temporary schema — and every schema the
+// search_path setting names, "$user" expanded, whether or not the connecting
+// role has USAGE on it. A schema it cannot use yet is not on the active path,
+// but its owner can grant USAGE at any time, so it is checked the same way.
+// The setting is split as PostgreSQL splits it: double-quoted names keep their
+// case, others are folded to lower case.
 //
-// The connecting role is not excused for being the connecting role. A
-// runtime role with CREATE on a schema it does not own could plant objects
-// that the owner's next migration run calls with the owner's privileges.
+// The rules:
+//
+//	a  the database's owner is not in T: it may create a schema the path puts
+//	   first ("$user"), and owns public on PostgreSQL 15 and later;
+//	b  a schema on the path is owned by a role not in T;
+//	c  the database or a schema on the path grants CREATE to a role not in T,
+//	   PUBLIC included (the owner's own entry is rule a or b);
+//	d  an object in a schema on the path is owned by a role not in T. Revoking
+//	   a grant does not remove what was created while it was held.
+//
+// Rule d reads every catalog whose objects live in a schema and have an
+// owner: pg_class (tables, views, sequences, materialized views, foreign and
+// partitioned tables, composite types; not indexes, which belong to their
+// table), pg_proc (functions, procedures, aggregates), pg_operator, pg_type
+// (types and domains; not the array and row types PostgreSQL creates for
+// another object), pg_collation, pg_conversion (a default conversion is
+// found by path), pg_opclass and pg_opfamily (creating them needs a
+// superuser, but a default operator class decides how a type sorts),
+// pg_ts_config and pg_ts_dict, and pg_statistic_ext. pg_ts_parser and
+// pg_ts_template have no owner and need a superuser. Casts are global and
+// named by type, so an untrusted type covers them.
 //
 // Every name is qualified with pg_catalog, operators included, so the check
-// cannot itself be subverted by what it looks for. The CASE fixes the order of
-// evaluation: pg_has_role is only reached for a real role, never for 0.
-const unsafeCreateGrantsSQL = `
-WITH objects(kind, name, owner, acl, pos) AS (
-  SELECT 'database'::pg_catalog.text, d.datname::pg_catalog.text, d.datdba,
-         COALESCE(d.datacl, pg_catalog.acldefault('d'::pg_catalog."char", d.datdba)), 0::pg_catalog.int8
-    FROM pg_catalog.pg_database d
+// cannot itself be subverted by what it looks for.
+const untrustedSearchPathSQL = `
+WITH me AS (
+  SELECT r.oid, r.rolsuper FROM pg_catalog.pg_roles r
+   WHERE r.rolname OPERATOR(pg_catalog.=) CURRENT_USER
+), db AS (
+  SELECT d.datname, d.datdba, d.datacl FROM pg_catalog.pg_database d
    WHERE d.datname OPERATOR(pg_catalog.=) pg_catalog.current_database()
+), mig AS (
+  SELECT c.relowner AS oid FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) c.relnamespace
+   WHERE n.nspname OPERATOR(pg_catalog.=) pg_catalog.current_schema()
+     AND c.relname OPERATOR(pg_catalog.=) 'schema_migrations'::pg_catalog.name
+     AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p}'::pg_catalog."char"[])
+), t0 AS (
+  SELECT r.oid FROM pg_catalog.pg_roles r CROSS JOIN me
+   WHERE r.rolsuper
+      OR r.oid OPERATOR(pg_catalog.=) me.oid
+      OR (NOT me.rolsuper AND pg_catalog.pg_has_role(me.oid, r.oid, 'USAGE'::pg_catalog.text))
+      OR r.oid OPERATOR(pg_catalog.=) ANY (SELECT mig.oid FROM mig)
+), trusted AS (
+  SELECT t0.oid FROM t0
+  UNION
+  SELECT 'pg_database_owner'::pg_catalog.regrole::pg_catalog.oid FROM db
+   WHERE db.datdba OPERATOR(pg_catalog.=) ANY (SELECT t0.oid FROM t0)
+), m AS (
+  SELECT COALESCE((SELECT mig.oid FROM mig LIMIT 1), (SELECT me.oid FROM me)) AS oid
+), target AS (
+  SELECT CASE WHEN m.oid OPERATOR(pg_catalog.=) db.datdba THEN 'pg_database_owner'::pg_catalog.text
+              ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(m.oid)::pg_catalog.text) END AS name
+    FROM m CROSS JOIN db
+), cfg AS (
+  SELECT CASE
+           WHEN x.tok OPERATOR(pg_catalog.=) '"$user"'::pg_catalog.text
+             OR x.tok OPERATOR(pg_catalog.=) '$user'::pg_catalog.text
+             THEN CURRENT_USER::pg_catalog.text
+           WHEN pg_catalog."left"(x.tok, 1) OPERATOR(pg_catalog.=) '"'::pg_catalog.text
+             THEN pg_catalog.replace(pg_catalog.substr(x.tok, 2, pg_catalog.length(x.tok) OPERATOR(pg_catalog.-) 2), '""', '"')
+           ELSE pg_catalog.lower(x.tok)
+         END AS name
+    FROM pg_catalog.regexp_matches(pg_catalog.current_setting('search_path'),
+                                   '("(?:[^"]|"")*"|[^,[:space:]]+)', 'g') AS rm(a)
+   CROSS JOIN LATERAL (SELECT rm.a[1] AS tok) x
+), named AS (
+  SELECT s.name::pg_catalog.text AS name, s.pos
+    FROM pg_catalog.unnest(pg_catalog.current_schemas(true)) WITH ORDINALITY AS s(name, pos)
   UNION ALL
-  SELECT 'schema'::pg_catalog.text, n.nspname::pg_catalog.text, n.nspowner,
-         COALESCE(n.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", n.nspowner)), p.pos
-    FROM pg_catalog.unnest(pg_catalog.current_schemas(true)) WITH ORDINALITY AS p(nspname, pos)
-    JOIN pg_catalog.pg_namespace n ON n.nspname OPERATOR(pg_catalog.=) p.nspname
+  SELECT cfg.name, 1000::pg_catalog.int8 FROM cfg
+), onpath AS (
+  SELECT n.oid, pg_catalog.min(named.pos) AS pos
+    FROM named JOIN pg_catalog.pg_namespace n ON n.nspname OPERATOR(pg_catalog.=) named.name
+   GROUP BY n.oid
+), schemas AS (
+  SELECT n.oid, n.nspname, n.nspowner, n.nspacl, onpath.pos
+    FROM onpath JOIN pg_catalog.pg_namespace n ON n.oid OPERATOR(pg_catalog.=) onpath.oid
+), objs(classid, objid, nsp, owner) AS (
+  SELECT 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid, c.oid, c.relnamespace, c.relowner
+    FROM pg_catalog.pg_class c
+   WHERE NOT (c.relkind OPERATOR(pg_catalog.=) ANY ('{i,I}'::pg_catalog."char"[]))
+  UNION ALL SELECT 'pg_catalog.pg_proc'::pg_catalog.regclass::pg_catalog.oid, p.oid, p.pronamespace, p.proowner FROM pg_catalog.pg_proc p
+  UNION ALL SELECT 'pg_catalog.pg_operator'::pg_catalog.regclass::pg_catalog.oid, o.oid, o.oprnamespace, o.oprowner FROM pg_catalog.pg_operator o
+  UNION ALL SELECT 'pg_catalog.pg_type'::pg_catalog.regclass::pg_catalog.oid, t.oid, t.typnamespace, t.typowner
+    FROM pg_catalog.pg_type t
+   WHERE t.typrelid OPERATOR(pg_catalog.=) 0::pg_catalog.oid
+     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type e WHERE e.typarray OPERATOR(pg_catalog.=) t.oid)
+  UNION ALL SELECT 'pg_catalog.pg_collation'::pg_catalog.regclass::pg_catalog.oid, c.oid, c.collnamespace, c.collowner FROM pg_catalog.pg_collation c
+  UNION ALL SELECT 'pg_catalog.pg_conversion'::pg_catalog.regclass::pg_catalog.oid, c.oid, c.connamespace, c.conowner FROM pg_catalog.pg_conversion c
+  UNION ALL SELECT 'pg_catalog.pg_opclass'::pg_catalog.regclass::pg_catalog.oid, c.oid, c.opcnamespace, c.opcowner FROM pg_catalog.pg_opclass c
+  UNION ALL SELECT 'pg_catalog.pg_opfamily'::pg_catalog.regclass::pg_catalog.oid, f.oid, f.opfnamespace, f.opfowner FROM pg_catalog.pg_opfamily f
+  UNION ALL SELECT 'pg_catalog.pg_ts_config'::pg_catalog.regclass::pg_catalog.oid, c.oid, c.cfgnamespace, c.cfgowner FROM pg_catalog.pg_ts_config c
+  UNION ALL SELECT 'pg_catalog.pg_ts_dict'::pg_catalog.regclass::pg_catalog.oid, d.oid, d.dictnamespace, d.dictowner FROM pg_catalog.pg_ts_dict d
+  UNION ALL SELECT 'pg_catalog.pg_statistic_ext'::pg_catalog.regclass::pg_catalog.oid, s.oid, s.stxnamespace, s.stxowner FROM pg_catalog.pg_statistic_ext s
+), acls AS (
+  SELECT 'database'::pg_catalog.text AS kind, db.datname::pg_catalog.text AS name, db.datdba AS owner,
+         COALESCE(db.datacl, pg_catalog.acldefault('d'::pg_catalog."char", db.datdba)) AS acl,
+         0::pg_catalog.int8 AS pos, NULL::pg_catalog.oid AS nsp
+    FROM db
+  UNION ALL
+  SELECT 'schema'::pg_catalog.text, s.nspname::pg_catalog.text, s.nspowner,
+         COALESCE(s.nspacl, pg_catalog.acldefault('n'::pg_catalog."char", s.nspowner)), s.pos, s.oid
+    FROM schemas s
+), findings(rule, pos, sortkey, finding, remedy) AS (
+  SELECT 'a'::pg_catalog.text, 0::pg_catalog.int8, ''::pg_catalog.text,
+         pg_catalog.format('database %I is owned by %I', db.datname, pg_catalog.pg_get_userbyid(db.datdba)),
+         pg_catalog.format('ALTER DATABASE %I OWNER TO %I;', db.datname, pg_catalog.pg_get_userbyid(m.oid))
+    FROM db CROSS JOIN m
+   WHERE NOT (db.datdba OPERATOR(pg_catalog.=) ANY (SELECT trusted.oid FROM trusted))
+  UNION ALL
+  SELECT 'b', s.pos, s.nspname::pg_catalog.text,
+         pg_catalog.format('schema %I is owned by %I', s.nspname, pg_catalog.pg_get_userbyid(s.nspowner)),
+         pg_catalog.format('ALTER SCHEMA %I OWNER TO %s;', s.nspname, target.name)
+    FROM schemas s CROSS JOIN target
+   WHERE NOT (s.nspowner OPERATOR(pg_catalog.=) ANY (SELECT trusted.oid FROM trusted))
+  UNION ALL
+  SELECT 'c', o.pos, o.name,
+         pg_catalog.format('%s %I grants CREATE to %s', o.kind, o.name, g.grantee),
+         CASE WHEN o.kind OPERATOR(pg_catalog.=) 'schema'::pg_catalog.text AND NOT (
+                     (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.=) m.oid)
+                  OR pg_catalog.pg_has_role(m.oid, o.owner, 'USAGE'::pg_catalog.text)
+                  OR EXISTS (SELECT 1 FROM pg_catalog.aclexplode(o.acl) k
+                              WHERE k.privilege_type OPERATOR(pg_catalog.=) 'CREATE'::pg_catalog.text
+                                AND NOT (k.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid)
+                                AND k.grantee OPERATOR(pg_catalog.=) ANY (SELECT trusted.oid FROM trusted)
+                                AND pg_catalog.pg_has_role(m.oid, k.grantee, 'USAGE'::pg_catalog.text)))
+              THEN pg_catalog.format('ALTER SCHEMA %I OWNER TO %s; ', o.name, target.name)
+              ELSE ''::pg_catalog.text
+         END OPERATOR(pg_catalog.||)
+         pg_catalog.format('REVOKE CREATE ON %s %I FROM %s;', pg_catalog.upper(o.kind), o.name, g.grantee)
+    FROM acls o
+   CROSS JOIN LATERAL pg_catalog.aclexplode(o.acl) a
+   CROSS JOIN LATERAL (SELECT CASE WHEN a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN 'PUBLIC'::pg_catalog.text
+                                   ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)::pg_catalog.text) END AS grantee) g
+   CROSS JOIN m CROSS JOIN target
+   WHERE a.privilege_type OPERATOR(pg_catalog.=) 'CREATE'::pg_catalog.text
+     AND NOT (a.grantee OPERATOR(pg_catalog.=) o.owner)
+     AND NOT (a.grantee OPERATOR(pg_catalog.=) ANY (SELECT trusted.oid FROM trusted))
+  UNION ALL
+  SELECT 'd', s.pos, pg_catalog.pg_describe_object(x.classid, x.objid, 0),
+         pg_catalog.format('%s in schema %I is owned by %I', pg_catalog.pg_describe_object(x.classid, x.objid, 0),
+                           s.nspname, pg_catalog.pg_get_userbyid(x.owner)),
+         ''::pg_catalog.text
+    FROM objs x JOIN schemas s ON s.oid OPERATOR(pg_catalog.=) x.nsp
+   WHERE NOT (x.owner OPERATOR(pg_catalog.=) ANY (SELECT trusted.oid FROM trusted))
 )
-SELECT o.kind, pg_catalog.quote_ident(o.name),
-       CASE WHEN a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN 'PUBLIC'
-            ELSE pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(a.grantee)::pg_catalog.text) END
-  FROM objects o
- CROSS JOIN LATERAL pg_catalog.aclexplode(o.acl) a
- WHERE a.privilege_type OPERATOR(pg_catalog.=) 'CREATE'::pg_catalog.text
-   AND CASE
-         WHEN a.grantee OPERATOR(pg_catalog.=) o.owner THEN false
-         WHEN a.grantee OPERATOR(pg_catalog.=) 0::pg_catalog.oid THEN true
-         WHEN (SELECT r.rolsuper FROM pg_catalog.pg_roles r WHERE r.oid OPERATOR(pg_catalog.=) a.grantee) THEN false
-         WHEN pg_catalog.pg_has_role(a.grantee, o.owner, 'USAGE'::pg_catalog.text) THEN false
-         ELSE true
-       END
- ORDER BY o.pos, 3`
+SELECT f.rule, f.finding, f.remedy, pg_catalog.quote_ident(pg_catalog.pg_get_userbyid(m.oid)::pg_catalog.text)
+  FROM findings f CROSS JOIN m
+ ORDER BY f.rule, f.pos, f.sortkey, f.finding`
 
-// checkCreateGrants refuses when the current database, or any schema on q's
-// session search_path, grants CREATE to a role other than its owner (see
-// unsafeCreateGrantsSQL). It runs on every start, before anything is migrated
-// and whether or not this node migrates. A grant made after the check passed
-// is not seen until the next start.
+// maxListedObjects bounds how many rule-d objects a refusal names.
+const maxListedObjects = 20
+
+// checkSearchPathTrust refuses when anything on the connection's name-resolution
+// path is controlled by a role the plugin does not trust (see
+// untrustedSearchPathSQL). It runs on every start, before anything is migrated
+// and whether or not this node migrates. A grant made, or an object created,
+// after the check passed is not seen until the next start.
 //
-// The refusal names each object and grantee and the REVOKE that removes the
-// grant. It carries no connection detail: database, schema and role names
-// only.
-func checkCreateGrants(ctx context.Context, q rowsQuerier) error {
-	rows, err := q.Query(ctx, unsafeCreateGrantsSQL)
+// The refusal names each finding and the statements that fix it. It carries
+// no connection detail: database, schema, object and role names only.
+func checkSearchPathTrust(ctx context.Context, q rowsQuerier) error {
+	rows, err := q.Query(ctx, untrustedSearchPathSQL)
 	if err != nil {
-		return fmt.Errorf("postgres: check CREATE grants: %w", err)
+		return fmt.Errorf("postgres: check the search path's owners and grants: %w", err)
 	}
-	var found, remedies []string
+	var (
+		found, remedies []string
+		seen            = map[string]bool{}
+		objects         int
+		trustedOwner    string
+	)
 	for rows.Next() {
-		var kind, name, grantee string
-		if err := rows.Scan(&kind, &name, &grantee); err != nil {
+		var rule, finding, remedy, m string
+		if err := rows.Scan(&rule, &finding, &remedy, &m); err != nil {
 			rows.Close()
-			return fmt.Errorf("postgres: check CREATE grants: %w", err)
+			return fmt.Errorf("postgres: check the search path's owners and grants: %w", err)
 		}
-		found = append(found, fmt.Sprintf("%s %s grants CREATE to %s", kind, name, grantee))
-		remedies = append(remedies, fmt.Sprintf("REVOKE CREATE ON %s %s FROM %s;", strings.ToUpper(kind), name, grantee))
+		trustedOwner = m
+		if rule == "d" {
+			objects++
+			if objects > maxListedObjects {
+				continue
+			}
+		}
+		found = append(found, finding)
+		for _, r := range strings.SplitAfter(remedy, "; ") {
+			if r = strings.TrimSpace(r); r != "" && !seen[r] {
+				seen[r] = true
+				remedies = append(remedies, r)
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("postgres: check CREATE grants: %w", err)
+		return fmt.Errorf("postgres: check the search path's owners and grants: %w", err)
 	}
 	if len(found) == 0 {
 		return nil
 	}
-	return fmt.Errorf("postgres: refusing to migrate or start: %s. "+
-		"A role that may create objects in the database or in a schema on the connection's search_path "+
-		"can make this node's SQL run its code with this node's privileges. Revoke each grant, then restart: %s",
-		strings.Join(found, "; "), strings.Join(remedies, " "))
+	if objects > maxListedObjects {
+		found = append(found, fmt.Sprintf("and %d more objects", objects-maxListedObjects))
+	}
+	msg := fmt.Sprintf("postgres: refusing to migrate or start: %s. "+
+		"Every owner of this database, of a schema on the connection's search_path or of an object in one, "+
+		"and every role that may create in them, must be trusted: a superuser, the connecting role or a role "+
+		"it inherits, or the owner of the plugin's tables (%s). Fix each, then restart:",
+		strings.Join(found, "; "), trustedOwner)
+	if len(remedies) > 0 {
+		msg += " " + strings.Join(remedies, " ")
+	}
+	if objects > 0 {
+		msg += " Drop each object listed, or change its owner to a trusted role once you have reviewed it."
+	}
+	return fmt.Errorf("%s", msg)
 }
