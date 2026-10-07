@@ -274,6 +274,7 @@ func TestTrustedSet_PG14ProcedureLetsTheTwoRoleDeploymentStart(t *testing.T) {
 			}
 
 			err := RunMigrateWithDSN(context.Background(), ownerDSN)
+			t.Logf("refusal: %v", err)
 			assertRefusal(t, err, ownerDSN,
 				"schema public grants CREATE to PUBLIC",
 				"ALTER SCHEMA public OWNER TO "+target+"; REVOKE CREATE ON SCHEMA public FROM PUBLIC;")
