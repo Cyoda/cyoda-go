@@ -367,8 +367,9 @@ Notes on the SQL:
   `USAGE` on `consistency_tenant_key_seq`, `USAGE` on the schema and `EXECUTE`
   on both functions (granted to `PUBLIC` by default). Both functions run with
   the caller's rights. Operators follow standard PostgreSQL practice and give
-  no untrusted role `CREATE` on the schemas in cyoda's search path. Stated in
-  POSTGRES.md and in the COMPATIBILITY.md upgrade row.
+  no untrusted role `CREATE` on the schemas in cyoda's search path.
+  POSTGRES.md states the grants and this practice; the COMPATIBILITY.md
+  upgrade row states the grants.
 
 **Go side:**
 

@@ -620,13 +620,11 @@ func TestConsistencyTime_ForeignNegativeLockIsNotAMarker(t *testing.T) {
 		t.Fatalf("the foreign lock shows objid %d, want 4294967291", objid)
 	}
 
+	// A wait on the foreign lock would run into the 2 s statement timeout and
+	// return an error, so success alone shows the lock was not waited on.
 	tm := ctTM(t, f, ctx)
-	start := time.Now()
 	if _, err := tm.ConsistencyTime(ctx); err != nil {
 		t.Fatalf("ConsistencyTime with a foreign negative lock held: %v", err)
-	}
-	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Fatalf("ConsistencyTime waited %v on a lock that is no marker", elapsed)
 	}
 }
 
