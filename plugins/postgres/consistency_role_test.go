@@ -412,3 +412,105 @@ func TestConsistencyTime_PlantedOverloadsAreNeverCalled(t *testing.T) {
 		})
 	}
 }
+
+// The plugin's calls name their argument types with pg_catalog. Bare `int4` is
+// not a keyword: it resolves through the search path, so on a path that puts
+// public ahead of pg_catalog a domain public.int4 would turn `$1::int4` into a
+// cast to the domain, and an overload taking that domain would then be the
+// exact match. A role granted CREATE on public after the plugin started
+// plants the domain and such overloads of both functions, each recording its
+// call; a commit, a non-transactional save and ConsistencyTime through the
+// plugin call none of them.
+func TestConsistencyTime_PlantedDomainOverloadsAreNeverCalled(t *testing.T) {
+	dsn := freshCTDatabase(t)
+	pathFirst := func(c *pgxpool.Config) { c.ConnConfig.RuntimeParams["search_path"] = "public, pg_catalog" }
+	owner := newCTPool(t, dsn, 10, pathFirst)
+	if err := postgres.Migrate(owner); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	name := "cyoda_ct_domain_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:10]
+	ident := pgx.Identifier{name}.Sanitize()
+	for _, stmt := range []string{
+		`CREATE ROLE ` + ident + ` LOGIN PASSWORD 'probe' NOSUPERUSER`,
+		`GRANT CREATE ON SCHEMA public TO ` + ident,
+	} {
+		if _, err := owner.Exec(context.Background(), stmt); err != nil {
+			t.Fatalf("provision role: %v", err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = owner.Exec(context.Background(), `DROP OWNED BY `+ident+` CASCADE`)
+		_, _ = owner.Exec(context.Background(), `DROP ROLE IF EXISTS `+ident)
+	})
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse dsn: %v", errors.Unwrap(err))
+	}
+	u.User = url.UserPassword(name, "probe")
+	planter := newCTPool(t, u.String(), 1, pathFirst)
+	if _, err := planter.Exec(context.Background(), `
+		CREATE TABLE public.ct_planted_calls (fn pg_catalog.text);
+		GRANT INSERT ON public.ct_planted_calls TO PUBLIC;
+		CREATE DOMAIN public.int4 AS pg_catalog.int4;
+		CREATE FUNCTION public.cyoda_stamp(public.int4) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
+		BEGIN
+		  INSERT INTO public.ct_planted_calls VALUES ('cyoda_stamp');
+		  RETURN '1999-01-01T00:00:00Z';
+		END $f$;
+		CREATE FUNCTION public.cyoda_consistency_time(public.int4, pg_catalog.int8) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
+		BEGIN
+		  INSERT INTO public.ct_planted_calls VALUES ('cyoda_consistency_time');
+		  RETURN '2999-01-01T00:00:00Z';
+		END $f$;`); err != nil {
+		t.Fatalf("plant the domain and overloads: %v", err)
+	}
+
+	f := postgres.NewStoreFactory(owner)
+	f.InitTransactionManager(newTestUUIDGenerator())
+	ctx := ctxWithTenant(ctTenant)
+	tm := ctTM(t, f, ctx)
+	planted := func(after string) {
+		t.Helper()
+		rows, err := owner.Query(context.Background(), `SELECT fn FROM public.ct_planted_calls`)
+		if err != nil {
+			t.Fatalf("read the planted calls: %v", err)
+		}
+		called, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read the planted calls: %v", err)
+		}
+		if len(called) != 0 {
+			t.Fatalf("after %s, planted overloads ran with the plugin's rights: %v", after, called)
+		}
+	}
+
+	before, err := tm.ConsistencyTime(ctx)
+	planted("ConsistencyTime")
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
+	if _, err := commitOneEntityErr(t, f, ctx); err != nil {
+		planted("a transactional commit")
+		t.Fatalf("transactional Commit: %v", err)
+	}
+	planted("a transactional commit")
+	es, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := es.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		planted("a non-transactional save")
+		t.Fatalf("non-transactional Save: %v", err)
+	}
+	planted("a non-transactional save")
+	after, err := tm.ConsistencyTime(ctx)
+	planted("the second ConsistencyTime")
+	if err != nil {
+		t.Fatalf("second ConsistencyTime: %v", err)
+	}
+	if after.Before(before) || after.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("consistency times %v then %v are not real", before, after)
+	}
+}

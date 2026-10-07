@@ -429,7 +429,7 @@ func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID s
 	// already wrote and locks. s.markerKey was resolved before this
 	// transaction began (see the keys field). The argument is typed for the
 	// reason given at stampCommitInstant's call.
-	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::int4)`, s.markerKey).Scan(&instant); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::pg_catalog.int4)`, s.markerKey).Scan(&instant); err != nil {
 		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,

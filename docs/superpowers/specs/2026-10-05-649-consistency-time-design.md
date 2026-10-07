@@ -428,8 +428,8 @@ Notes on the SQL:
 
 - `stampCommitInstant` (`transaction_manager.go:403-503`) and
   `stampOwnCommitInstant` (`entity_store.go:424-450`) call
-  `SELECT cyoda_stamp($1::int4)` instead of `SELECT clock_timestamp()`. These
-  are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
+  `SELECT cyoda_stamp($1::pg_catalog.int4)` instead of
+  `SELECT clock_timestamp()`. These are the only two stamp sites. A `55P03` from `cyoda_stamp` (lock contention
   in the commit phase; the transaction rolls back) is classified as retryable
   `503 STORAGE_UNAVAILABLE`, like the existing idle-in-transaction abort
   (`isIdleInTxAbort`).
@@ -452,18 +452,22 @@ Notes on the SQL:
   stamping transaction therefore never touches the table, and no lookup waits
   for a second connection while holding one. A failed lookup fails the
   operation.
-- Every call of the two functions types its arguments (`$1::int4`,
-  `$2::bigint`). The plugin names the functions without a schema, and a role
-  that may create in their schema can add an overload with other argument
-  types; for an untyped parameter PostgreSQL would prefer, say, a `float8`
-  overload and run it with the plugin connection's rights, or find the call
-  ambiguous and fail every commit. With exact types the real function wins:
-  no other function in its schema can have its signature. More generally, no
-  role other than its owner may have `CREATE` on the database or on a schema
-  in the plugin's `search_path`, which the plugin checks before it migrates
-  or starts
+- Every call of the two functions types its arguments with `pg_catalog`
+  types (`$1::pg_catalog.int4`, `$2::pg_catalog.int8`). The plugin names the
+  functions without a schema, and a role that may create in their schema can
+  add an overload with other argument types; for an untyped parameter
+  PostgreSQL would prefer, say, a `float8` overload and run it with the plugin
+  connection's rights, or find the call ambiguous and fail every commit. With
+  exact types the real function wins: no other function in its schema can
+  have its signature. The types are qualified because `int4` is not a
+  keyword: on a path that names a writable schema first, a domain `int4`
+  there would make an overload on that domain the exact match. More
+  generally, every owner of the database, of a schema on the plugin's
+  `search_path` or of an object in one, and every role that may create in
+  them, must be trusted, which the plugin checks before it migrates or starts
   (POSTGRES.md "Roles").
-- `ConsistencyTime` runs `SELECT cyoda_consistency_time($1::int4, $2::bigint)`
+- `ConsistencyTime` runs
+  `SELECT cyoda_consistency_time($1::pg_catalog.int4, $2::pg_catalog.int8)`
   (the tenant key and the budget in milliseconds) on its own pool connection,
   in autocommit, never on a transaction's connection. The budget is 10 000 ms,
   or the configured statement timeout when that is above 0 and lower

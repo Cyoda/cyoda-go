@@ -412,7 +412,7 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	// of the two functions: an untyped one would let an overload another role
 	// created in the functions' schema be chosen and run with this
 	// connection's rights (see cyoda_consistency_time's call).
-	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::int4)", markerKey).Scan(&instant); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::pg_catalog.int4)", markerKey).Scan(&instant); err != nil {
 		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)

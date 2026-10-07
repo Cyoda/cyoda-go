@@ -222,7 +222,7 @@ func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, e
 	// say) and run it with this connection's rights, or find the call
 	// ambiguous; with exact types the real function wins, since no other
 	// function in the schema can have its signature.
-	qerr := conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1::int4, $2::bigint)`, key, budget).Scan(&c)
+	qerr := conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1::pg_catalog.int4, $2::pg_catalog.int8)`, key, budget).Scan(&c)
 	if qerr == nil {
 		conn.Release()
 		return c, nil

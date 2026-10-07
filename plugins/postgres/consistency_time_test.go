@@ -588,9 +588,6 @@ func TestConsistencyTimeSQL_BudgetIsPerCall(t *testing.T) {
 	}
 }
 
-// The Go mapping: a budget overrun is ErrConsistencyTimeUnavailable, and the
-// budget is the configured statement timeout when that is lower than 10 s;
-// a caller that gives up gets its own context error.
 // A two-int advisory lock (tenant_key, n) that cyoda_stamp did not take, with
 // n < 0, is not a commit marker and does not touch ConsistencyTime.
 //
@@ -633,6 +630,9 @@ func TestConsistencyTime_ForeignNegativeLockIsNotAMarker(t *testing.T) {
 	}
 }
 
+// The Go mapping: a budget overrun is ErrConsistencyTimeUnavailable, and the
+// budget is the configured statement timeout when that is lower than 10 s;
+// a caller that gives up gets its own context error.
 func TestConsistencyTime_ErrorMapping(t *testing.T) {
 	f, ctx := newCTFactoryWithStatementTimeout(t, 300*time.Millisecond)
 	holdStamp(t, postgres.PoolForTest(f), ctTenant)
