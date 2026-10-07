@@ -1,14 +1,16 @@
 package postgres_test
 
 // plugin_functions_search_path_test.go — the plugin's helper functions
-// cyoda_epoch_millis and cyoda_try_float8 run with a fixed search_path of
-// pg_catalog, pg_temp, so the operators their bodies use cannot be replaced
-// by objects planted in a schema on the caller's search_path.
+// cyoda_epoch_millis and cyoda_try_float8 name every function, operator and
+// type in their bodies with pg_catalog, so nothing planted in a schema on the
+// caller's search_path can stand in for them. They carry no SET clause: a
+// per-call search_path would save and restore a setting on every row of a
+// sort or grouped stat.
 //
 // The startup check refuses a start while a role other than a schema's owner
 // may create in a schema on the search path. So the role here is granted
 // CREATE only after the plugin has migrated and started, which is the case the
-// check cannot see: what stops the plant is the functions' own search_path.
+// check cannot see: what stops the plant is the qualified names.
 
 import (
 	"context"
@@ -26,31 +28,62 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
-func TestPluginFunctions_HaveAFixedSearchPath(t *testing.T) {
+// Both functions keep the signature and attributes they were created with
+// (migrations 000002 and 000005), carry no settings, and nothing in the schema
+// depends on them — no index, view, default or constraint, which recreating
+// them could otherwise affect.
+func TestPluginFunctions_AttributesUnchangedAndNoSettings(t *testing.T) {
 	pool := newCTPool(t, freshCTDatabase(t), 2, nil)
 	if err := postgres.Migrate(pool); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	for _, fn := range []string{"cyoda_epoch_millis(text)", "cyoda_try_float8(text)"} {
-		var config []string
-		if err := pool.QueryRow(context.Background(),
-			`SELECT coalesce(proconfig, '{}') FROM pg_proc WHERE oid = $1::text::regprocedure`, fn).Scan(&config); err != nil {
-			t.Fatalf("read %s: %v", fn, err)
+	for _, tc := range []struct{ fn, returns string }{
+		{"cyoda_epoch_millis(text)", "bigint"},
+		{"cyoda_try_float8(text)", "double precision"},
+	} {
+		var (
+			config                 []string
+			lang, returns, args    string
+			volatile, parallel     string
+			strict, definer, leaky bool
+			cost                   float32
+			dependents             int
+		)
+		if err := pool.QueryRow(context.Background(), `
+			SELECT p.proconfig, l.lanname, pg_catalog.format_type(p.prorettype, NULL),
+			       pg_catalog.oidvectortypes(p.proargtypes), p.provolatile::text, p.proparallel::text,
+			       p.proisstrict, p.prosecdef, p.proleakproof, p.procost,
+			       (SELECT count(*) FROM pg_catalog.pg_depend d
+			         WHERE d.refclassid = 'pg_catalog.pg_proc'::regclass AND d.refobjid = p.oid)
+			  FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_language l ON l.oid = p.prolang
+			 WHERE p.oid = $1::text::regprocedure`, tc.fn).Scan(
+			&config, &lang, &returns, &args, &volatile, &parallel, &strict, &definer, &leaky, &cost, &dependents); err != nil {
+			t.Fatalf("read %s: %v", tc.fn, err)
 		}
-		if len(config) != 1 || config[0] != "search_path=pg_catalog, pg_temp" {
-			t.Errorf("%s has settings %q, want exactly search_path=pg_catalog, pg_temp", fn, config)
+		if config != nil {
+			t.Errorf("%s has settings %q, want none (proconfig IS NULL)", tc.fn, config)
+		}
+		got := fmt.Sprintf("lang=%s returns=%s args=%s volatile=%s parallel=%s strict=%v definer=%v leakproof=%v cost=%v",
+			lang, returns, args, volatile, parallel, strict, definer, leaky, cost)
+		want := fmt.Sprintf("lang=plpgsql returns=%s args=text volatile=i parallel=s strict=false definer=false leakproof=false cost=100",
+			tc.returns)
+		if got != want {
+			t.Errorf("%s attributes:\n got %s\nwant %s", tc.fn, got, want)
+		}
+		if dependents != 0 {
+			t.Errorf("%d objects depend on %s", dependents, tc.fn)
 		}
 	}
 }
 
-// The plugin's pool puts public ahead of pg_catalog, so an operator planted
-// in public wins over pg_catalog's even at an exact match. A role granted
-// CREATE on public after startup plants the operators the two functions'
-// bodies use: *(numeric, integer) (cyoda_epoch_millis), and =(float8, float8)
-// and !~(text, text) (cyoda_try_float8). Each records its call. A temporal and
-// a numeric sort through the plugin's search then call neither, and sort
-// correctly.
-func TestPluginFunctions_PlantedOperatorsAreNotCalledBySearch(t *testing.T) {
+// The plugin's pool puts public ahead of pg_catalog, so an object planted in
+// public wins over pg_catalog's even at an exact match. A role granted CREATE
+// on public after startup plants what the two bodies use: the operators
+// *(numeric, integer), =(float8, float8) and !~(text, text), the function
+// floor(numeric), and domains named float8 and timestamptz whose checks run on
+// every cast to them. Each records its use. A temporal and a numeric sort
+// through the plugin's search then use none of them, and sort correctly.
+func TestPluginFunctions_PlantedObjectsAreNotUsedBySearch(t *testing.T) {
 	dsn := freshCTDatabase(t)
 	pathFirst := func(c *pgxpool.Config) { c.ConnConfig.RuntimeParams["search_path"] = "public, pg_catalog" }
 	pool := newCTPool(t, dsn, 10, pathFirst)
@@ -103,16 +136,22 @@ func TestPluginFunctions_PlantedOperatorsAreNotCalledBySearch(t *testing.T) {
 	if _, err := planter.Exec(context.Background(), `
 		CREATE TABLE public.planted_calls (op pg_catalog.text);
 		GRANT INSERT ON public.planted_calls TO PUBLIC;
+		CREATE FUNCTION public.planted(op pg_catalog.text) RETURNS pg_catalog.bool LANGUAGE plpgsql AS $f$
+		  BEGIN INSERT INTO public.planted_calls VALUES (op); RETURN true; END $f$;
 		CREATE FUNCTION public.planted_mul(pg_catalog.numeric, pg_catalog.int4) RETURNS pg_catalog.numeric LANGUAGE plpgsql AS $f$
-		  BEGIN INSERT INTO public.planted_calls VALUES ('*(numeric, integer)'); RETURN $1 OPERATOR(pg_catalog.*) $2::pg_catalog.numeric; END $f$;
+		  BEGIN PERFORM public.planted('*(numeric, integer)'); RETURN $1 OPERATOR(pg_catalog.*) $2::pg_catalog.numeric; END $f$;
 		CREATE OPERATOR public.* (LEFTARG = pg_catalog.numeric, RIGHTARG = pg_catalog.int4, FUNCTION = public.planted_mul);
 		CREATE FUNCTION public.planted_eq(pg_catalog.float8, pg_catalog.float8) RETURNS pg_catalog.bool LANGUAGE plpgsql AS $f$
-		  BEGIN INSERT INTO public.planted_calls VALUES ('=(float8, float8)'); RETURN $1 OPERATOR(pg_catalog.=) $2; END $f$;
+		  BEGIN PERFORM public.planted('=(float8, float8)'); RETURN $1 OPERATOR(pg_catalog.=) $2; END $f$;
 		CREATE OPERATOR public.= (LEFTARG = pg_catalog.float8, RIGHTARG = pg_catalog.float8, FUNCTION = public.planted_eq);
 		CREATE FUNCTION public.planted_nre(pg_catalog.text, pg_catalog.text) RETURNS pg_catalog.bool LANGUAGE plpgsql AS $f$
-		  BEGIN INSERT INTO public.planted_calls VALUES ('!~(text, text)'); RETURN $1 OPERATOR(pg_catalog.!~) $2; END $f$;
-		CREATE OPERATOR public.!~ (LEFTARG = pg_catalog.text, RIGHTARG = pg_catalog.text, FUNCTION = public.planted_nre);`); err != nil {
-		t.Fatalf("plant the operators: %v", err)
+		  BEGIN PERFORM public.planted('!~(text, text)'); RETURN $1 OPERATOR(pg_catalog.!~) $2; END $f$;
+		CREATE OPERATOR public.!~ (LEFTARG = pg_catalog.text, RIGHTARG = pg_catalog.text, FUNCTION = public.planted_nre);
+		CREATE FUNCTION public.floor(pg_catalog.numeric) RETURNS pg_catalog.numeric LANGUAGE plpgsql AS $f$
+		  BEGIN PERFORM public.planted('floor(numeric)'); RETURN pg_catalog.floor($1); END $f$;
+		CREATE DOMAIN public.float8 AS pg_catalog.float8 CHECK (public.planted('domain float8'));
+		CREATE DOMAIN public.timestamptz AS pg_catalog.timestamptz CHECK (public.planted('domain timestamptz'));`); err != nil {
+		t.Fatalf("plant the objects: %v", err)
 	}
 
 	for _, tc := range []struct {
@@ -147,6 +186,6 @@ func TestPluginFunctions_PlantedOperatorsAreNotCalledBySearch(t *testing.T) {
 		t.Fatalf("read the planted calls: %v", err)
 	}
 	if len(called) != 0 {
-		t.Fatalf("a search called planted operators with the plugin's privileges: %v", called)
+		t.Fatalf("a search used planted objects with the plugin's privileges: %v", called)
 	}
 }
