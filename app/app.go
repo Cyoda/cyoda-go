@@ -34,6 +34,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/messaging"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
@@ -56,6 +57,7 @@ type App struct {
 	config             Config
 	storeFactory       spi.StoreFactory
 	transactionManager spi.TransactionManager
+	consistency        *consistency.Service
 	authService        contract.AuthenticationService
 	authSvc            *auth.AuthService // non-nil only in JWT IAM mode; nil in mock IAM mode
 	workflowEngine     *workflow.Engine
@@ -250,6 +252,10 @@ func New(cfg Config) *App {
 		a.transactionManager = observability.NewTracingTransactionManager(a.transactionManager, observability.Meter())
 	}
 
+	// One consistency service for the process: it caches the highest
+	// consistency time per tenant and fences every point-in-time read.
+	a.consistency = consistency.New(a.transactionManager)
+
 	// Auth service: JWT or mock mode
 	var authSvc *auth.AuthService
 
@@ -406,7 +412,7 @@ func New(cfg Config) *App {
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
-		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore).
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthFlag(a.healthFlag).
@@ -534,7 +540,7 @@ func New(cfg Config) *App {
 	a.joiner = joiner
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency)
 	modelHandler := model.New(a.storeFactory)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
@@ -641,7 +647,7 @@ func New(cfg Config) *App {
 		}
 		return entityStore, ref, fields, modelStore, true, nil
 	}
-	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax)
+	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax, a.consistency)
 	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", dataMW(groupedStatsHandler))
 
 	// Generated API routes (with auth) — uses chi to avoid ServeMux
@@ -710,7 +716,7 @@ func New(cfg Config) *App {
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second})
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency)
 
 	return a
 }

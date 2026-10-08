@@ -2282,6 +2282,10 @@ func (m *countingTxManager) Join(ctx context.Context, txID string) (context.Cont
 	return m.inner.Join(ctx, txID)
 }
 
+func (m *countingTxManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (m *countingTxManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return m.inner.GetSubmitTime(ctx, txID)
 }

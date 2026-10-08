@@ -154,7 +154,7 @@ func TestDirectSearchSimpleEquals(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -190,7 +190,7 @@ func TestDirectSearchNoMatches(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -218,7 +218,7 @@ func TestDirectSearchPointInTime(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -285,7 +285,7 @@ func TestDirectSearch_ReturnsEveryMatchUnderTheLimit(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -319,7 +319,7 @@ func TestAsyncLifecycle(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -382,7 +382,7 @@ func TestAsyncCancel(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -439,7 +439,7 @@ func TestAsyncTenantIsolation(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctxA := tenantCtx("tenant-A")
 	ctxB := tenantCtx("tenant-B")
@@ -492,7 +492,7 @@ func TestSubmitAsyncPopulatesSearchOpts(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -580,7 +580,7 @@ func TestCancelRaceDoesNotOverwriteCancelled(t *testing.T) {
 		saveResultsGate:  gate,
 	}
 
-	svc := search.NewSearchService(factory, uuids, blockedStore)
+	svc := search.NewSearchService(factory, uuids, blockedStore, newTestConsistency(t, factory))
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -680,7 +680,7 @@ func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
 		saveResultsGate:  gate,
 	}
 
-	svc := search.NewSearchService(factory, uuids, capture)
+	svc := search.NewSearchService(factory, uuids, capture, newTestConsistency(t, factory))
 
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
@@ -784,7 +784,7 @@ func TestSubmitAsync_SelfExecutingStore_SkipsGoroutine(t *testing.T) {
 	capture := newCaptureSearchStore(baseStore)
 	store := &selfExecutingCaptureStore{captureSearchStore: capture}
 
-	svc := search.NewSearchService(factory, uuids, store)
+	svc := search.NewSearchService(factory, uuids, store, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
@@ -873,7 +873,7 @@ func TestSearchDelegatesToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -921,7 +921,7 @@ func TestSearch_TrackingReadPushedToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -971,7 +971,7 @@ func TestSearchDelegatesToSearcherInTransaction(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	// Create a context with an active transaction.
 	tx := &spi.TransactionState{
@@ -1056,7 +1056,7 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.surname",
@@ -1128,7 +1128,7 @@ func TestSearch_UnknownSortField_ReturnsInvalidFieldPath(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	// LifecycleCondition: extractFieldPaths returns [] so validateConditionPaths
 	// returns early without touching the model store.
@@ -1183,7 +1183,7 @@ func TestSubmitAsync_OrderBy_InvalidField(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	baseStore, _ := base.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
-	svc := search.NewSearchService(factory, uuids, capture)
+	svc := search.NewSearchService(factory, uuids, capture, newTestConsistency(t, factory))
 
 	// LifecycleCondition has no data paths — validateConditionPaths exits
 	// early without consuming from the model store queue.
@@ -1247,7 +1247,7 @@ func TestSubmitAsync_OrderBy_PersistsTypedSpecs(t *testing.T) {
 	baseStore, _ := base.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
 	selfExec := &selfExecutingCaptureStore{captureSearchStore: capture}
-	svc := search.NewSearchService(factory, uuids, selfExec)
+	svc := search.NewSearchService(factory, uuids, selfExec, newTestConsistency(t, factory))
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",
@@ -1302,7 +1302,7 @@ func TestSearch_SortKeyCap_ReturnsError(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	// Cap set to 2 — sending 3 keys must be rejected.
-	svc := search.NewSearchService(factory, uuids, searchStore).WithMaxSortKeys(2)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).WithMaxSortKeys(2)
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -1344,7 +1344,7 @@ func TestSubmitAsync_SortKeyCap_ReturnsError(t *testing.T) {
 	baseStore, _ := factory.AsyncSearchStore(context.Background())
 	capture := newCaptureSearchStore(baseStore)
 	// Cap set to 2 — sending 3 keys must be rejected.
-	svc := search.NewSearchService(factory, uuids, capture).WithMaxSortKeys(2)
+	svc := search.NewSearchService(factory, uuids, capture, newTestConsistency(t, factory)).WithMaxSortKeys(2)
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "item", ModelVersion: "1"}
@@ -1410,7 +1410,7 @@ func TestSearch_DuplicateSortKeys_ReturnsError(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	// Two identical keys — same source+path must be rejected.
 	orderBy := []search.OrderKey{
@@ -1443,7 +1443,7 @@ func TestAsyncSuccessfulWhenNotCancelled(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-1")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
@@ -1537,7 +1537,7 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -1609,7 +1609,7 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	healthFlag.Store(true)
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)).
 		WithHealthFlag(healthFlag)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
@@ -1641,7 +1641,7 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	healthFlag.Store(true)
 
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)).
 		WithHealthFlag(healthFlag)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
@@ -1688,7 +1688,7 @@ func TestSearch_LimitExceedsMax(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-cap")
 	ref := spi.ModelRef{EntityName: "cap-model", ModelVersion: "1"}
@@ -1730,7 +1730,7 @@ func TestSubmitAsync_LimitExceedsMax(t *testing.T) {
 	defer factory.Close()
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	ctx := tenantCtx("tenant-async-cap")
 	ref := spi.ModelRef{EntityName: "async-cap-model", ModelVersion: "1"}
@@ -1843,7 +1843,7 @@ func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore)
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -1883,7 +1883,7 @@ func newStubSearcherService(t *testing.T, fn func(context.Context, spi.Filter, s
 	ses := &searcherEntityStore{EntityStore: realStore, searchFn: fn}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore), ctx, ref
+	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)), ctx, ref
 }
 
 func TestSearch_SearcherResultLimitSentinel_MapsTo400(t *testing.T) {
@@ -1945,7 +1945,7 @@ func runFailingAsyncJob(t *testing.T, searchErr error) *spi.SearchJob {
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})

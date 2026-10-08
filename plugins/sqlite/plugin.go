@@ -40,6 +40,9 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 
-	factory.initTransactionManager(&defaultUUIDGenerator{})
+	if err := factory.initTransactionManager(&defaultUUIDGenerator{}); err != nil {
+		_ = factory.Close()
+		return nil, fmt.Errorf("sqlite: %w", err)
+	}
 	return factory, nil
 }

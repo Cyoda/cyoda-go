@@ -63,7 +63,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 		testApp.TransactionManager(),
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
-		txgate.New(),
+		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
 	).WithMaxDeleteCycles(maxCycles)
 
 	apiServer := internalapi.NewServer()

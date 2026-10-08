@@ -16,6 +16,9 @@ Status vocabulary:
   Schema check than scenario run.
 - `gap_on_our_side` — endpoint or capability missing in cyoda-go
   today; scenario cannot run. See `notes`.
+- `not_applicable` — the dictionary scenario describes behaviour that is
+  not part of the cyoda-go contract (e.g. Cloud's `entitySearchLimit`);
+  the scenario is skipped by design. See `notes`.
 
 ---
 
@@ -96,10 +99,10 @@ Status vocabulary:
 |-----------|-----------------|-------|
 | delete/01-single-by-id | new:RunExternalAPI_06_01_DeleteSingle | tranche 1 |
 | delete/02-all-by-model-version | new:RunExternalAPI_06_02_DeleteByModel | tranche 1 |
-| delete/03-by-condition-jsonpath-equals | gap_on_our_side | The OpenAPI generator emits `DeleteEntitiesJSONRequestBody = AbstractConditionDto` (`api/generated.go:DeleteEntitiesJSONRequestBody`), but `internal/domain/entity/handler.go:DeleteEntities` does not read the body — it only consults `DeleteEntitiesParams` (`transactionSize`/`pointInTime`/`verbose`) and calls `DeleteAllEntities(name, version)`. Implementing this means parsing the existing `AbstractConditionDto` typedef, extending the service with a condition-aware delete path, and propagating to the storage SPI. |
-| delete/04-by-condition-not-null | gap_on_our_side | same as 06/03 — handler ignores the existing `AbstractConditionDto` body type |
-| delete/05-by-condition-at-point-in-time-too-many-entities | gap_on_our_side | same as 06/03 + `entitySearchLimit` enforcement on condition+pointInTime deletes is missing |
-| delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime (skipped pending #124) | tranche 1 — test body in place; t.Skip until #124 ships in v0.7.0. `Handler.DeleteEntities` ignores `params.PointInTime`; storage SPI has no `DeleteAllAsAt`. Cross-repo fix (SPI tag + plugin impls + handler wiring) tracked in #124. |
+| delete/03-by-condition-jsonpath-equals | pending:tranche-2 | `DELETE /entity/{name}/{version}` reads the condition body (`internal/domain/entity/handler.go:586` into `service.go:1310`); no `RunExternalAPI_06_03` scenario exists yet. |
+| delete/04-by-condition-not-null | pending:tranche-2 | same as 06/03: the condition body is read; no `RunExternalAPI_06_04` scenario exists yet. |
+| delete/05-by-condition-at-point-in-time-too-many-entities | not_applicable | cyoda-go has no entitySearchLimit, so a conditional delete has no match-count limit to exceed. A client that wants the guard counts at an instant (statistics with `pointInTime`) and deletes at the same `pointInTime`. |
+| delete/06-all-by-model-at-point-in-time | new:RunExternalAPI_06_06_DeleteAtPointInTime | `DELETE /entity/{name}/{version}?pointInTime=` selects the entities that existed at the instant and deletes their current rows; an instant later than the consistency time is refused. |
 
 ---
 
@@ -179,7 +182,7 @@ The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd
 | neg/04-get-single-entity-at-time-before-creation | new:RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation | tranche 2 / #132 — parity-client surface delivered (`GetEntityAtRaw` now returns `(int, []byte, error)`); test asserts ENTITY_NOT_FOUND@404. equiv_or_better. |
 | neg/05-get-single-entity-with-bogus-transaction-id | new:RunExternalAPI_12_05_GetEntityWithBogusTransactionID | tranche 2 — server-side gap fixed in #150: a bogus `transactionId` now returns `ENTITY_NOT_FOUND@404` (`equiv_or_better`, matches `EntityNotFoundException`). Parity-client `GetEntityByTransactionIDRaw` helper delivered via #132. |
 | neg/06-get-changes-for-missing-entity | new:RunExternalAPI_12_06_GetChangesForMissingEntity | tranche 2 — `equiv_or_better`: cyoda-go emits `ENTITY_NOT_FOUND` @404; matches dictionary's `EntityNotFoundException` semantically. Tightened assertion. |
-| neg/07-condition-delete-at-pit-too-many-matches | gap_on_our_side (#124) | tranche 2 — t.Skip pending #124. Whole delete-by-condition surface is a v0.7.0 server-side gap (handler ignores condition body and pointInTime). |
+| neg/07-condition-delete-at-pit-too-many-matches | not_applicable | cyoda-go has no entitySearchLimit, so a conditional delete has no match-count limit to exceed (t.Skip). A client that wants the guard counts at an instant (statistics with `pointInTime`) and deletes at the same `pointInTime`. |
 | neg/08-update-with-unknown-transition | new:RunExternalAPI_12_08_UpdateUnknownTransition | tranche 2 — `equiv_or_better` after wiring `TRANSITION_NOT_FOUND` into the engine-failure code path (review C1 fix). cyoda-go emits `TRANSITION_NOT_FOUND` @400 — matches dictionary's `(IllegalTransition\|TransitionNotFound)` semantically. |
 | neg/09-get-model-after-delete | new:RunExternalAPI_12_09_GetModelAfterDelete | tranche 2 — `different_naming_same_level`: cyoda-go has no per-model GET endpoint; test verifies via `ListModels` and confirms absence. Semantically equivalent to per-model 404; reconcile in tranche-5 cloud smoke if cyoda-go ever adds a per-model GET. |
 | neg/10-import-workflow-on-unknown-model | new:RunExternalAPI_12_10_ImportWorkflowOnUnknownModel | tranche 2 negative path; resolved by #131. cyoda-go now returns HTTP 404 with `MODEL_NOT_FOUND` for workflow imports on non-existent models, matching dictionary's `(ModelNotFound\|EntityModelNotFound)` regex. `equiv_or_better`. |

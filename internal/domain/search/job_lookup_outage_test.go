@@ -77,7 +77,7 @@ func (s *stubSearchStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([
 
 func stubService(store spi.AsyncSearchStore) *search.SearchService {
 	// factory and uuid generator are untouched on every path exercised here.
-	return search.NewSearchService(nil, nil, store)
+	return search.NewSearchService(nil, nil, store, newFixedConsistency())
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +331,7 @@ func (f *hydrateFactory) EntityStore(context.Context) (spi.EntityStore, error) {
 
 func hydrateService(ids []string, errs map[string]error) *search.SearchService {
 	return search.NewSearchService(
-		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids})
+		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids}, newFixedConsistency())
 }
 
 // A storage outage during hydration used to be logged and skipped, so the caller
@@ -358,10 +358,9 @@ func TestGetAsyncResults_HydrationOutage_FailsThePage(t *testing.T) {
 	}
 }
 
-// The other direction, and the reason the skip exists: an id recorded at scan
-// time whose entity has since been hard-deleted is a genuine miss, not a
-// failure. It is skipped and the rest of the page is served, exactly as before.
-func TestGetAsyncResults_HardDeletedEntity_IsSkipped(t *testing.T) {
+// A recorded result id is readable at the job's final instant, so a miss on it
+// is not a hard-deleted entity to skip: it is an internal failure of the page.
+func TestAsyncResults_NotFoundIsInternal(t *testing.T) {
 	ctx := tenantCtx("tenant-1")
 	jobID := uuid.New().String()
 	ids := []string{"id-1", "id-2"}
@@ -370,13 +369,14 @@ func TestGetAsyncResults_HardDeletedEntity_IsSkipped(t *testing.T) {
 	})
 
 	page, err := svc.GetAsyncResults(ctx, jobID, search.ResultOptions{})
-	if err != nil {
-		t.Fatalf("a hard-deleted result id failed the page: %v", err)
+	if err == nil {
+		t.Fatalf("a missing result entity was skipped: %d of %d results", len(page.Results), page.Total)
 	}
-	if len(page.Results) != 1 || page.Results[0].Meta.ID != "id-1" {
-		t.Fatalf("results = %+v, want just id-1", page.Results)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Status != http.StatusInternalServerError {
+		t.Fatalf("err = %v, want an internal AppError", err)
 	}
-	if page.Total != len(ids) {
-		t.Errorf("total = %d, want %d — total counts recorded ids, not hydrated ones", page.Total, len(ids))
+	if errors.Is(err, search.ErrSearchJobNotFound) {
+		t.Errorf("a missing result entity was reported as a missing job: %v", err)
 	}
 }

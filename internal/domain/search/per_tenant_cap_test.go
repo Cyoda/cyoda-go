@@ -73,7 +73,7 @@ func newCappedService(t *testing.T, base *memory.StoreFactory, maxPerTenant int,
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
 
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base)).
 		WithAsyncPool(pool).
 		WithAsyncMaxPerTenant(maxPerTenant).
 		WithHeartbeat(50 * time.Millisecond)

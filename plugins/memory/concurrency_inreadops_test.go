@@ -203,7 +203,7 @@ func TestCount_VsRollback_NoRace(t *testing.T) {
 			raceSeedOne(t, ctx, store, "e-count")
 		},
 		func(txCtx context.Context, store spi.EntityStore) error {
-			_, err := store.Count(txCtx, raceModelRef)
+			_, err := store.Count(txCtx, raceModelRef, nil)
 			return err
 		},
 	)

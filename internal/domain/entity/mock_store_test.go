@@ -78,10 +78,10 @@ func (s *failingEntityStore) DeleteAll(_ context.Context, _ spi.ModelRef) error 
 func (s *failingEntityStore) Exists(_ context.Context, _ string) (bool, error) {
 	return false, s.err
 }
-func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef) (int64, error) {
+func (s *failingEntityStore) Count(_ context.Context, _ spi.ModelRef, _ *time.Time) (int64, error) {
 	return 0, s.err
 }
-func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string) (map[string]int64, error) {
+func (s *failingEntityStore) CountByState(_ context.Context, _ spi.ModelRef, _ []string, _ *time.Time) (map[string]int64, error) {
 	return nil, s.err
 }
 func (s *failingEntityStore) GetPage(_ context.Context, _ spi.ModelRef, _, _ int, _ *time.Time) ([]*spi.Entity, error) {

@@ -27,8 +27,13 @@ import (
 // See docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md
 // for the full semantic model.
 type txState struct {
-	mu         sync.Mutex
-	tenantID   spi.TenantID
+	mu       sync.Mutex
+	tenantID spi.TenantID
+	// markerKey is the tenant's marker key (tenantKeys), resolved at Begin
+	// and fixed for the transaction's life; the commit stamp takes it. It is
+	// a parameter of newTxState, the only constructor, so no state exists
+	// without one.
+	markerKey  int32
 	readSet    map[string]int64
 	writeSet   map[string]int64
 	savepoints []savepointEntry
@@ -43,11 +48,12 @@ type savepointEntry struct {
 	writeSet map[string]int64
 }
 
-func newTxState(tenantID spi.TenantID) *txState {
+func newTxState(tenantID spi.TenantID, markerKey int32) *txState {
 	return &txState{
-		tenantID: tenantID,
-		readSet:  make(map[string]int64),
-		writeSet: make(map[string]int64),
+		tenantID:  tenantID,
+		markerKey: markerKey,
+		readSet:   make(map[string]int64),
+		writeSet:  make(map[string]int64),
 	}
 }
 

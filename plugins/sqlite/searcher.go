@@ -183,8 +183,8 @@ func (s *entityStore) searchPointInTimeBase(opts spi.SearchOptions) (string, []a
 // package (getSnapshot, the tx overlay in tx_overlay.go, DeleteAll tx). Rows
 // scan via scanVersionEntity.
 func (s *entityStore) searchSnapshotBase(opts spi.SearchOptions, snapshotMicro int64) (string, []any) {
-	query := `SELECT ev.entity_id, ev.model_name, ev.model_version, ev.version,
-	                 json(ev.data), json(ev.meta), ev.submit_time
+	query := `SELECT ev.entity_id AS entity_id, ev.model_name, ev.model_version, ev.version,
+	                 json(ev.data) AS data, json(ev.meta) AS meta, ev.submit_time
 	          FROM entity_versions ev
 	          INNER JOIN (
 	              SELECT entity_id, MAX(version) AS max_ver

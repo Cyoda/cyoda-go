@@ -42,7 +42,7 @@ func TestQueryGroupedStats_FunctionCondition_Is400(t *testing.T) {
 		"type": "function",
 		"function": {"name": "isWeekend", "args": {}}
 	}`)
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),

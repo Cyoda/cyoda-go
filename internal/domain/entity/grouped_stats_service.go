@@ -13,6 +13,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
@@ -32,13 +33,17 @@ var ErrInvalidCondition = errors.New("invalid condition")
 // streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
 type GroupedStatsService struct {
 	maxBuckets int
+	cons       *consistency.Service
 }
 
 // NewGroupedStatsService constructs a service with the configured
 // cardinality ceiling. The ceiling is the value of CYODA_STATS_GROUP_MAX
 // and is enforced inside both the pushdown and the streaming branches.
-func NewGroupedStatsService(maxBuckets int) *GroupedStatsService {
-	return &GroupedStatsService{maxBuckets: maxBuckets}
+func NewGroupedStatsService(maxBuckets int, cons *consistency.Service) *GroupedStatsService {
+	if cons == nil {
+		panic("entity.NewGroupedStatsService: nil consistency service")
+	}
+	return &GroupedStatsService{maxBuckets: maxBuckets, cons: cons}
 }
 
 // QueryGroupedStats runs the grouped-stats query and translates the known
@@ -254,6 +259,14 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 				"condition cannot be translated to a backend predicate")
 		}
 		pushFilter = f
+	}
+
+	// Every request error above wins over the fence; a read at an instant
+	// later than the consistency time is refused before any backend runs.
+	if req.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *req.PointInTime); err != nil {
+			return nil, err
+		}
 	}
 
 	inTx := spi.GetTransaction(ctx) != nil

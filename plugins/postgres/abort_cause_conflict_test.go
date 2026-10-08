@@ -143,10 +143,8 @@ func TestConflictSurvivesSavepointRollback(t *testing.T) {
 	fx := newStatementCeilingFixture(t, 0)
 	ctx := classifyTestCtx()
 	// Commit stamps the entity tables, so a transaction here can only commit
-	// on a migrated schema — which the control below proves it does.
-	if err := runMigrations(ctx, fx.pool, defaultMigrateLockTimeout); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	// on a migrated schema (the fixture migrates it), which the control below
+	// proves it does.
 
 	table := fmt.Sprintf("abort_cause_sp_%s", uuid.NewString()[:8])
 	if _, err := fx.pool.Exec(ctx, "CREATE TABLE "+table+" (id int PRIMARY KEY)"); err != nil {

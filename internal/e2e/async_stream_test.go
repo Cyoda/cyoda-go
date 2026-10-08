@@ -631,7 +631,7 @@ func TestE2E_AsyncSearch_CrashMidSave_PartialCleared(t *testing.T) {
 		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
 	}
 
-	jobID := insertOrphanRunningJob(t, model)
+	jobID := insertOrphanRunningJob(t, model, consistentInstant(t, a.doAuth, model))
 	// A committed partial page from the (now dead) prior epoch: entity ids that
 	// are NOT real entities of this model, so any that survive into the final
 	// result set are unmistakably leftovers.
@@ -767,7 +767,7 @@ func TestE2E_AsyncSearch_OrphanReExecuted(t *testing.T) {
 		t.Fatalf("direct search returned %d, want %d seeded entities", want, seeded)
 	}
 
-	jobID := insertOrphanRunningJob(t, model)
+	jobID := insertOrphanRunningJob(t, model, consistentInstant(t, doAuth, model))
 	backdateJobCreatedAt(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "SUCCESSFUL" {
@@ -849,7 +849,7 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 	// stale_claims = MaxAttempts - 1 = 0: the next staleness claim reaches the
 	// cap. (0 is also the default, but seed it explicitly so intent survives a
 	// change to the default MaxAttempts.)
-	jobID := insertRunningJobRow(t, model, 0)
+	jobID := insertRunningJobRow(t, model, 0, time.Now().Add(-time.Minute))
 	backdateJobCreatedAt(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
@@ -877,9 +877,51 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 //
 // The row is written under the callback harness's tenant, so it is visible
 // to that stack's authenticated status reads. Returns the job id.
-func insertOrphanRunningJob(t *testing.T, model string) string {
+func insertOrphanRunningJob(t *testing.T, model string, pit time.Time) string {
 	t.Helper()
-	return insertRunningJobRow(t, model, 0)
+	return insertRunningJobRow(t, model, 0, pit)
+}
+
+// consistentInstant returns an instant at which every entity of the model that
+// has been created so far is visible and which the consistency time has
+// reached: the newest lastUpdateTime of the model's entities, once the
+// consistency time is at or past it. do issues a request against the stack
+// under test.
+func consistentInstant(t *testing.T, do func(method, path, body string) *http.Response, model string) time.Time {
+	t.Helper()
+	resp := do(http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "")
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	var list []struct {
+		Meta struct {
+			LastUpdateTime time.Time `json:"lastUpdateTime"`
+		} `json:"meta"`
+	}
+	if resp.StatusCode != http.StatusOK || json.Unmarshal(raw, &list) != nil || len(list) == 0 {
+		t.Fatalf("list %s: %d %s", model, resp.StatusCode, raw)
+	}
+	var newest time.Time
+	for _, e := range list {
+		if e.Meta.LastUpdateTime.After(newest) {
+			newest = e.Meta.LastUpdateTime
+		}
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		r := do(http.MethodGet, "/api/entity/consistency-time", "")
+		b, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		var dto struct {
+			ConsistencyTime time.Time `json:"consistencyTime"`
+		}
+		if r.StatusCode == http.StatusOK && json.Unmarshal(b, &dto) == nil && !dto.ConsistencyTime.Before(newest) {
+			return newest
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("consistency time did not reach %s: %d %s", newest, r.StatusCode, b)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // insertRunningJobRow is insertOrphanRunningJob generalised over the
@@ -894,17 +936,17 @@ func insertOrphanRunningJob(t *testing.T, model string) string {
 // point_in_time column (what GetAsyncResults' GetAsAt fetches entities at), so
 // the two must agree here too — otherwise the scan counts N but the results
 // endpoint fetches them as-of the zero time and returns nothing. The PIT is set
-// a minute ahead of every seeded commit (so any small Go/Postgres clock skew
-// still leaves it after them); a PIT past all commits resolves to "all
-// currently committed", exactly the match-all set. Re-execution now decodes
-// search_opts (decodeStoredJob), so unlike the pre-reclaim disposition neither
-// column can be NULL/zero.
-func insertRunningJobRow(t *testing.T, model string, staleClaims int64) string {
+// supplied by the caller: a real submit takes it from the consistency time, so
+// a stored PIT is never later than that. A scenario that reads results takes it
+// from consistentInstant (the instant its seeded entities are all visible at).
+// Re-execution now decodes search_opts (decodeStoredJob), so unlike the
+// pre-reclaim disposition neither column can be NULL/zero.
+func insertRunningJobRow(t *testing.T, model string, staleClaims int64, pit time.Time) string {
 	t.Helper()
 	const tenantID = "test-tenant" // callbackHarness's default admin token tenant
 	jobID := uuid.NewString()
 
-	pit := time.Now().Add(time.Minute).UTC()
+	pit = pit.UTC()
 	optsJSON, err := json.Marshal(struct {
 		Limit       int       `json:"limit"`
 		PointInTime time.Time `json:"pointInTime"`

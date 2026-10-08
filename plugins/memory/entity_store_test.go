@@ -306,7 +306,7 @@ func TestSoftDeleteCountExcludes(t *testing.T) {
 	}
 	store.Save(ctx, entity)
 	store.Delete(ctx, "e-del3")
-	count, _ := store.Count(ctx, modelRef)
+	count, _ := store.Count(ctx, modelRef, nil)
 	if count != 0 {
 		t.Errorf("expected count 0 after delete, got %d", count)
 	}
@@ -693,7 +693,7 @@ func TestTransactionIsolation(t *testing.T) {
 	}
 
 	// Count outside transaction → 0
-	count, _ := store.Count(ctx, modelRef)
+	count, _ := store.Count(ctx, modelRef, nil)
 	if count != 0 {
 		t.Errorf("expected count 0 outside tx, got %d", count)
 	}
@@ -861,7 +861,7 @@ func TestTransactionExistsAndCount(t *testing.T) {
 		t.Error("expected Exists=true within tx")
 	}
 
-	count, _ := store.Count(txCtx, modelRef)
+	count, _ := store.Count(txCtx, modelRef, nil)
 	if count != 1 {
 		t.Errorf("expected count 1 within tx, got %d", count)
 	}

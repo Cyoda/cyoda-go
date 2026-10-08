@@ -17,6 +17,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
@@ -187,6 +188,7 @@ type SearchService struct {
 	factory     spi.StoreFactory
 	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
+	cons        *consistency.Service
 
 	// pathCache is an optional negative cache for unknown field-path
 	// validation. nil-safe: when unset, validation falls back to the
@@ -298,8 +300,12 @@ const (
 )
 
 // NewSearchService creates a SearchService backed by the given store factory.
-func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore) *SearchService {
+func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore, cons *consistency.Service) *SearchService {
+	if cons == nil {
+		panic("search.NewSearchService: nil consistency service")
+	}
 	return &SearchService{
+		cons:        cons,
 		factory:     factory,
 		uuids:       uuids,
 		searchStore: searchStore,
@@ -727,6 +733,14 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 		}
 		return nil, untranslatableCondition(translateErr)
 	}
+
+	// Every request check has passed; a read at an instant later than the
+	// consistency time is refused before the store is touched.
+	if opts.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
+			return nil, err
+		}
+	}
 	res, sErr := store.Search(ctx, filter, spi.SearchOptions{
 		ModelName:    modelRef.EntityName,
 		ModelVersion: modelRef.ModelVersion,
@@ -977,11 +991,6 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		return "", oerr
 	}
 
-	if opts.PointInTime == nil {
-		now := time.Now()
-		opts.PointInTime = &now
-	}
-
 	// Cheap non-authoritative cap pre-check, placed here so that a tenant
 	// already at its cap costs the store NOTHING: without it every rejected
 	// submit still ran an INSERT and a compensating DELETE, write churn every
@@ -994,6 +1003,21 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 		slog.Warn("async search submission rejected: tenant at its in-flight cap",
 			"pkg", "search", "tenant", uc.Tenant.ID, "maxPerTenant", s.maxPerTenant)
 		return "", QueueFullError()
+	}
+
+	// The job's instant: the caller's, fenced, or a fresh consistency time.
+	// Either way it is final, so every page and any reclaim on another node
+	// read the same answer.
+	if opts.PointInTime != nil {
+		if err := s.cons.Fence(ctx, *opts.PointInTime); err != nil {
+			return "", err
+		}
+	} else {
+		c, err := s.cons.Fresh(ctx)
+		if err != nil {
+			return "", err
+		}
+		opts.PointInTime = &c
 	}
 
 	jobID := uuid.UUID(s.uuids.NewTimeUUID()).String()
@@ -1491,27 +1515,16 @@ func (s *SearchService) GetAsyncResults(ctx context.Context, jobID string, opts 
 		return AsyncResultsPage{}, fmt.Errorf("failed to get entity store: %w", err)
 	}
 
-	// A result id whose entity is genuinely gone — hard-deleted since the scan
-	// recorded it — is skipped, and the page comes back short by it while `total`
-	// still counts the recorded ids. That is the documented shape of this
-	// endpoint and is unchanged.
-	//
-	// A read that merely FAILED is not that. Skipping it too would answer 200
-	// with a page silently short by however many entities the store could not
-	// serve, which is a wrong-but-available result
-	// (.claude/rules/correctness-over-availability.md) and the same substituted
-	// answer as reporting an outage as not-found. It fails the page instead,
-	// carrying the cause so a storage outage reaches the door as a retryable 503.
+	// Every recorded result id was read at the job's instant, which the
+	// consistency fence at submission made final, so its entity is readable
+	// at that instant. Any failure to read one — a miss included — fails the
+	// page: skipping it would answer 200 with a page silently short, a
+	// wrong-but-available result (.claude/rules/correctness-over-availability.md).
 	var results []*spi.Entity
 	for _, id := range ids {
 		e, err := entityStore.GetAsAt(ctx, id, job.PointInTime)
 		if err != nil {
-			if !errors.Is(err, spi.ErrNotFound) {
-				return AsyncResultsPage{}, fmt.Errorf("failed to fetch entity %s for async result: %w", id, err)
-			}
-			slog.Warn("async result id has no entity — hard-deleted since the scan recorded it",
-				"pkg", "search", "entityId", id, "err", err)
-			continue
+			return AsyncResultsPage{}, common.Internal("failed to read an async search result", err)
 		}
 		results = append(results, e)
 	}

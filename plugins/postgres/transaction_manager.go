@@ -63,8 +63,16 @@ type TransactionManager struct {
 	origins    map[string]spi.Principal
 	txStatesMu sync.RWMutex
 	txStates   map[string]*txState
-	// acquireTimeout bounds Begin's wait for a pooled connection.
+	// acquireTimeout bounds Begin's and ConsistencyTime's wait for a pooled
+	// connection.
 	acquireTimeout time.Duration
+	// statementTimeout is the configured statement ceiling; ConsistencyTime
+	// waits no longer than it (see waitBudgetMillis). Zero means no limit.
+	statementTimeout time.Duration
+	// keys caches each tenant's marker key; see tenantKeys. A manager built
+	// by a factory uses the factory's cache (withTenantKeys); one built on
+	// its own has a cache of its own.
+	keys *tenantKeys
 	// lastSubmitTimePruneNano rate-limits pruneSubmitTimes (UnixNano since
 	// epoch; zero means "never pruned"). Accessed without tm.mu: it gates an
 	// independent housekeeping statement on the pool, not the maps tm.mu
@@ -84,6 +92,20 @@ func WithAcquireTimeout(d time.Duration) TransactionManagerOption {
 	return func(tm *TransactionManager) { tm.acquireTimeout = d }
 }
 
+// withStatementTimeout passes the configured statement ceiling
+// (CYODA_POSTGRES_STATEMENT_TIMEOUT) to the manager, which caps its
+// consistency-time wait at it.
+func withStatementTimeout(d time.Duration) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.statementTimeout = d }
+}
+
+// withTenantKeys gives the manager the tenant-key cache of the factory that
+// builds it (StoreFactory.InitTransactionManager), so the two share one.
+// Without it the manager has a cache of its own.
+func withTenantKeys(k *tenantKeys) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.keys = k }
+}
+
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
 func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...TransactionManagerOption) *TransactionManager {
 	tm := &TransactionManager{
@@ -99,6 +121,9 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 	for _, apply := range opts {
 		apply(tm)
 	}
+	if tm.keys == nil {
+		tm.keys = newTenantKeys()
+	}
 	return tm
 }
 
@@ -110,6 +135,15 @@ func NewTransactionManager(pool *pgxpool.Pool, uuids spi.UUIDGenerator, opts ...
 // Commit() and docs/superpowers/specs/2026-04-15-postgres-si-first-committer-wins-design.md.
 func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Context, error) {
 	tenantID, err := resolveTenant(ctx)
+	if err != nil {
+		return "", nil, fmt.Errorf("Begin: %w", err)
+	}
+
+	// The tenant's marker key, which this transaction's commit stamp takes.
+	// Resolved here, before the transaction's connection is taken, so a miss
+	// waits for no second connection while holding one and the commit phase
+	// never touches the key table (see tenantKeys).
+	markerKey, err := tm.keys.get(ctx, tm.pool, tm.acquireTimeout, tenantID)
 	if err != nil {
 		return "", nil, fmt.Errorf("Begin: %w", err)
 	}
@@ -160,7 +194,7 @@ func (tm *TransactionManager) Begin(ctx context.Context) (string, context.Contex
 	func() {
 		tm.txStatesMu.Lock()
 		defer tm.txStatesMu.Unlock()
-		tm.txStates[txID] = newTxState(tenantID)
+		tm.txStates[txID] = newTxState(tenantID, markerKey)
 	}()
 
 	// ReadSet/WriteSet/Buffer/Deletes/DeleteAttribution are left nil:
@@ -264,9 +298,12 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 	// returned 40001 and left the tx aborted) and had no read set to validate,
 	// the first statement of the stamp fails with SQLSTATE 25P02
 	// (in_failed_sql_transaction), which abortedCommitError reads.
-	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, txID)
+	submitTime, tsErr := tm.stampCommitInstant(ctx, pgxTx, state.tenantID, state.markerKey, txID)
 	if tsErr != nil {
 		tm.cleanupTx(txID)
+		// A cyoda_stamp failure closes the connection before the rollback
+		// below releases it, so the pool never reuses it.
+		closeIfStampFailed(ctx, pgxTx, tsErr)
 		// Only a 25P02 is read as an aborted transaction. Any other error
 		// (context cancellation, network failure, etc.) is classified below so
 		// callers are not misled into treating a transient infrastructure error
@@ -331,8 +368,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // row the transaction wrote, immediately before COMMIT.
 //
 // CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
-// the transaction opened rather than when it became visible. clock_timestamp()
-// read here is the closest a transaction can get to its own commit instant.
+// the transaction opened rather than when it became visible. The stamp is
+// taken here instead, by cyoda_stamp (migration 000016): the DB clock, raised
+// above the stamp floor so it is above every consistency time already
+// returned. It also takes the in-flight marker a consistency-time call waits
+// for, held until this transaction ends.
 //
 // The rows are found by transaction_id rather than from the in-memory write
 // set, which is not authoritative: after a savepoint rollback the write set
@@ -360,10 +400,20 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 // or index on the stamped columns that reaches a parent row; and — the one
 // already live above — a statement whose WHERE matches rows this transaction
 // did not write, which needs its own argument every time it is added.
-func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, txID string) (time.Time, error) {
+func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx, tenantID spi.TenantID, markerKey int32, txID string) (time.Time, error) {
 	var instant time.Time
-	if err := tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&instant); err != nil {
-		return time.Time{}, fmt.Errorf("read commit instant: %w", err)
+	// cyoda_stamp takes this transaction's in-flight marker and a stamp above
+	// the floor. Design rule: nothing after this statement waits on a lock —
+	// the statements below touch only rows this transaction wrote (the
+	// sm_audit_events UPDATE matches this transaction's own label; see its
+	// comment), so a consistency-time call waiting on the marker cannot
+	// deadlock with it. markerKey was resolved at Begin, outside this
+	// transaction (see tenantKeys). The argument is typed, as at every call
+	// of the two functions: an untyped one would let an overload another role
+	// created in the functions' schema be chosen and run with this
+	// connection's rights (see cyoda_consistency_time's call).
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::pg_catalog.int4)", markerKey).Scan(&instant); err != nil {
+		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)
 
@@ -1055,6 +1105,19 @@ func isInFailedTx(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == pgerrcode.InFailedSQLTransaction
 }
 
+// classifyCommitOutcome is classifyCommitError without the manager's
+// bookkeeping, for the COMMIT of a transaction the manager does not track: a
+// non-transactional write's own (save, Delete, CompareAndSave). The same rule
+// holds there: a torn socket on COMMIT leaves the outcome in doubt, so only
+// what the server said is classified.
+func classifyCommitOutcome(err error) error {
+	if err == nil {
+		return nil
+	}
+	classified, _ := classifySQLState(err)
+	return classified
+}
+
 // classifyCommitError classifies a failure of the COMMIT itself, where a torn
 // socket means something different from what it means anywhere else.
 //
@@ -1070,7 +1133,7 @@ func (tm *TransactionManager) classifyCommitError(txID string, err error) error 
 	if err == nil {
 		return nil
 	}
-	classified, _ := classifySQLState(err)
+	classified := classifyCommitOutcome(err)
 	var pgErr *pgconn.PgError
 	if errors.As(classified, &pgErr) && pgErr.Code == pgerrcode.IdleInTransactionSessionTimeout {
 		tm.discardTx(txID)

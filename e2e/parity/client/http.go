@@ -1297,6 +1297,49 @@ func (c *Client) GetEntityStatsRaw(t *testing.T) (int, error) {
 	return c.doJSON(t, http.MethodGet, "/api/entity/stats", nil, nil)
 }
 
+// GetConsistencyTime issues GET /api/entity/consistency-time and returns the
+// consistencyTime string exactly as the server rendered it, so a caller can
+// pass it back verbatim as a pointInTime.
+func (c *Client) GetConsistencyTime(t *testing.T) (string, error) {
+	t.Helper()
+	var dto struct {
+		ConsistencyTime string `json:"consistencyTime"`
+	}
+	if _, err := c.doJSON(t, http.MethodGet, "/api/entity/consistency-time", nil, &dto); err != nil {
+		return "", err
+	}
+	if dto.ConsistencyTime == "" {
+		return "", fmt.Errorf("consistency-time response carries no consistencyTime")
+	}
+	return dto.ConsistencyTime, nil
+}
+
+// DoRaw issues an arbitrary request with a raw string body and returns
+// status+body without erroring on non-2xx. The fenced operations take their
+// pointInTime as a query parameter or a body field, so the consistency-time
+// scenarios build the path and body themselves; an empty body sends none.
+func (c *Client) DoRaw(t *testing.T, method, path, body string) (int, []byte, error) {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), method, c.baseURL+path, strings.NewReader(body))
+	if err != nil {
+		return 0, nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("transport: %w", err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	return resp.StatusCode, raw, nil
+}
+
 // SyncSearchRaw issues POST /api/search/direct/{name}/{version} and
 // returns the raw HTTP status code and body without erroring on
 // non-2xx. Used for negative-path discover-and-compare.

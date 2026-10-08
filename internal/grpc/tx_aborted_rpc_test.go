@@ -52,7 +52,7 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	factory := &txAbortedSaveFactory{StoreFactory: inner}
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
 	svc.modelHandler = model.New(inner)
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
 
@@ -135,7 +135,7 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 	})
 	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, inner))
 	svc.modelHandler = model.New(inner)
 	importAndLockModel(t, svc, ctx, "racer", "1", map[string]any{"name": "A", "amount": 1})
 

@@ -86,13 +86,13 @@ service CloudEventsService {
 
 **entityModelManage** — unary RPC for entity model operations. Accepts: `EntityModelImportRequest`, `EntityModelExportRequest`, `EntityModelTransitionRequest`, `EntityModelDeleteRequest`, `EntityModelGetAllRequest`, `EntityModelSetUniqueKeysRequest`. It is not a transaction-routed RPC: a `tx-token` metadata value joins nothing here. A request that changes a model — import, transition, delete, set unique keys — and carries one is refused in its own response envelope with `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION`, before anything is read or written; the read-only export and get-all pass.
 
-**entityManage** — unary RPC for single-entity operations. Accepts: `EntityCreateRequest`, `EntityUpdateRequest`, `EntityDeleteRequest`, `EntityDeleteAllRequest`, `EntityTransitionRequest`.
+**entityManage** — unary RPC for single-entity operations. Accepts: `EntityCreateRequest`, `EntityUpdateRequest`, `EntityPatchRequest`, `EntityDeleteRequest`, `EntityTransitionRequest`.
 
-**entityManageCollection** — server-streaming RPC for batch entity operations. Accepts: `EntityCreateCollectionRequest`, `EntityUpdateCollectionRequest`. Streams one response CloudEvent per entity.
+**entityManageCollection** — server-streaming RPC for batch entity operations. Accepts: `EntityCreateCollectionRequest`, `EntityUpdateCollectionRequest`, `EntityDeleteAllRequest`. Streams one response CloudEvent per entity.
 
-**entitySearch** — unary RPC for entity retrieval. Accepts: `EntityGetRequest`, `EntityGetAllRequest`, `EntitySnapshotSearchRequest`, `EntitySearchRequest`, `SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`, `EntityStatsGetRequest`, `EntityStatsByStateGetRequest`, `EntityChangesMetadataGetRequest`.
+**entitySearch** — unary RPC for single-answer retrieval. Accepts: `EntityGetRequest`, `EntityConsistencyTimeGetRequest`, `EntitySnapshotSearchRequest`, `SnapshotGetStatusRequest`, `SnapshotCancelRequest`.
 
-**entitySearchCollection** — server-streaming RPC for collection retrieval. Streams results.
+**entitySearchCollection** — server-streaming RPC for collection retrieval. Accepts: `EntityGetAllRequest`, `EntitySearchRequest`, `SnapshotGetRequest`, `EntityStatsGetRequest`, `EntityStatsByStateGetRequest`, `EntityChangesMetadataGetRequest`. Streams results.
 
 ## MESSAGE TYPES
 
@@ -185,6 +185,7 @@ The full CloudEvent envelope for an ack:
 **Search / query event types**:
 
 - `EntityGetRequest` / `EntityResponse`
+- `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused with `POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; a refusal's message text carries the current one. Payload fields: `cyoda help cloudevents json`. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`

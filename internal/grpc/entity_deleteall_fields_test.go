@@ -211,7 +211,9 @@ func TestRPC_EntityDeleteAll_NotVerbose_EmptyEntityIds_FastPath(t *testing.T) {
 
 func TestRPC_EntityDeleteAll_PointInTime_ModelNotFound_Envelope(t *testing.T) {
 	svc, ctx := newTestEnv(t)
-	pit := time.Now().UTC().Format(time.RFC3339Nano)
+	// A far-future instant would be refused by the fence, so the envelope
+	// asserted below also pins that the model is resolved before the fence.
+	pit := time.Now().UTC().Add(1000 * time.Hour).Format(time.RFC3339Nano)
 	ce := makeCE(EntityDeleteAllRequest, map[string]any{
 		"id":          "test",
 		"model":       map[string]any{"name": "nosuchmodel", "version": 1},

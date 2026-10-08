@@ -24,6 +24,11 @@ type StoreFactory struct {
 	// sched holds the scheduler's own pools (scheduler_pool.go), opened on
 	// first use and closed by Close.
 	sched schedulerPools
+	// keys caches each tenant's marker key; see tenantKeys. The factory owns
+	// it from construction and never replaces it: its entity stores use it
+	// for their non-transactional writes, and InitTransactionManager hands
+	// the same cache to the manager it builds.
+	keys *tenantKeys
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -36,7 +41,7 @@ type ApplyFunc func(base []byte, delta spi.SchemaDelta) ([]byte, error)
 // empty environment — callers that need non-default config (e.g. a
 // custom SchemaSavepointInterval) should use newStoreFactoryWithConfig.
 func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: defaultStoreConfig()}
+	return newStoreFactoryWithKeys(pool, defaultStoreConfig(), newTenantKeys())
 }
 
 // newStoreFactoryWithConfig is the config-aware constructor used by
@@ -47,7 +52,15 @@ func NewStoreFactory(pool *pgxpool.Pool) *StoreFactory {
 // same internal-test helpers; no external caller needs to synthesize
 // a full config.
 func newStoreFactoryWithConfig(pool *pgxpool.Pool, cfg config) *StoreFactory {
-	return &StoreFactory{pool: pool, cfg: cfg}
+	return newStoreFactoryWithKeys(pool, cfg, newTenantKeys())
+}
+
+// newStoreFactoryWithKeys builds a factory around an existing tenant-key
+// cache. Every constructor goes through it, so a factory has exactly one
+// cache from the start. A test that pairs a factory with a transaction
+// manager it built on its own passes the manager's cache here.
+func newStoreFactoryWithKeys(pool *pgxpool.Pool, cfg config, keys *tenantKeys) *StoreFactory {
+	return &StoreFactory{pool: pool, cfg: cfg, keys: keys}
 }
 
 // defaultStoreConfig returns the config values produced by parseConfig
@@ -92,12 +105,13 @@ func (f *StoreFactory) SetApplyFunc(fn func(base []byte, delta spi.SchemaDelta) 
 // setTransactionManager wires tm into the factory, setting both tm and
 // uuids (mirrored from tm.uuids so StateMachineAuditStore.Record can read
 // the generator without going through the TransactionManager). Called by
-// InitTransactionManager at construction time, and again — after
-// construction, with a fresh TransactionManager — by test helpers that wire
-// their own TM (e.g. NewStoreFactoryWithTMForTest); each call fully
-// replaces both fields. Keep this unexported: there is no legitimate
-// external caller, and opening it would invite a race the factory isn't
-// designed for.
+// InitTransactionManager at construction time, and by test helpers that wire
+// a TM of their own (e.g. NewStoreFactoryWithTMForTest); each call fully
+// replaces both fields. tm must use this factory's tenant-key cache:
+// InitTransactionManager builds it with that cache, and the test helpers
+// build the factory around the TM's cache (newStoreFactoryWithKeys). Keep
+// this unexported: there is no legitimate external caller, and opening it
+// would invite a race the factory isn't designed for.
 func (f *StoreFactory) setTransactionManager(tm *TransactionManager) {
 	f.tm = tm
 	f.uuids = tm.uuids
@@ -216,6 +230,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		tm:             f.tm,
 		pool:           f.pool,
 		acquireTimeout: f.cfg.AcquireTimeout,
+		keys:           f.keys,
 	}, nil
 }
 
@@ -330,7 +345,9 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 // for use within the package; external callers — including test packages —
 // should call this exported form.
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
-	tm := NewTransactionManager(f.pool, uuids, WithAcquireTimeout(f.cfg.AcquireTimeout))
+	tm := NewTransactionManager(f.pool, uuids,
+		WithAcquireTimeout(f.cfg.AcquireTimeout), withStatementTimeout(f.cfg.StatementTimeout),
+		withTenantKeys(f.keys))
 	f.setTransactionManager(tm)
 }
 

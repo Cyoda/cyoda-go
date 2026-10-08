@@ -13,6 +13,8 @@ see_also:
   - errors.VALIDATION_FAILED
   - errors.INCOMPATIBLE_TYPE
   - errors.CONFLICT
+  - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
+  - errors.CONSISTENCY_TIME_UNAVAILABLE
   - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
@@ -46,6 +48,7 @@ DELETE /api/entity/{entityName}/{modelVersion}
 GET    /api/entity/{entityName}/{modelVersion}
 GET    /api/entity/{entityId}/changes
 GET    /api/entity/{entityId}/transitions
+GET    /api/entity/consistency-time
 GET    /api/entity/stats
 GET    /api/entity/stats/states
 GET    /api/entity/stats/{entityName}/{modelVersion}
@@ -136,7 +139,7 @@ When the very first chunk fails (no durable progress), the response is the stand
 **GET /api/entity/{entityId}** — Read a single entity by UUID
 
 - `entityId` (path): UUID string
-- `pointInTime` (query, optional): RFC 3339 date-time — load entity state at this instant
+- `pointInTime` (query, optional): RFC 3339 date-time — load entity state at this instant; must be at or before the consistency time (see POINT-IN-TIME SEMANTICS)
 - `transactionId` (query, optional): UUID — load entity state as of the end of this transaction
 
 `pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`.
@@ -320,7 +323,7 @@ Response: `200 OK`, `application/json`:
 - `entityName` (path): string
 - `modelVersion` (path): int32
 - `transactionSize` (query, optional): int32 — when set, matched entities (including a delete-all with no condition) are deleted in version-guarded batches of this size instead of one transaction. Batches already committed stay durable if a later batch fails. A per-id version mismatch (the entity changed after selection) or a batch's commit failure is reported per-id in `deleteResult.idToError`, not retried. Rejected with `400` on a request that joins an open transaction. Absent means a single transaction. Without `pointInTime`, the batched delete re-selects before each batch; if matching entities keep being created it is stopped at its batch cap and fails `409 DELETE_NOT_CONVERGED` (retryable), with the batches already committed left deleted.
-- `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
+- `pointInTime` (query, optional): RFC 3339 — select the entities that existed at this instant (committed state; the ambient transaction is ignored) and delete their current rows. Absent means the current committed state. Must be at or before the consistency time. An entity selected at the instant but already gone is reported in `deleteResult.idToError`.
 - `verbose` (query, optional): boolean, default `false` — when `true`, the response `ids` array lists every entity ID the delete attempted (an empty body lists them too); an ID whose delete failed also appears in `deleteResult.idToError`; on a large model this enumerates every entity of the model in one response.
 
 Request body: optional `AbstractConditionDto` (same condition DSL as `/search/*`). When the body is absent or empty, all entities of the model are deleted.
@@ -349,14 +352,14 @@ Response: `200 OK`, `application/json`:
 - `modelVersion` (path): int32
 - `pageSize` (query, optional): int32, default `20`
 - `pageNumber` (query, optional): int32, default `0`
-- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive)
+- `pointInTime` (query, optional): RFC 3339 — return entities as they existed at this instant (as-at, inclusive); must be at or before the consistency time. Pages taken without it are read at different moments — see POINT-IN-TIME SEMANTICS for consistent paging
 
 Response: `200 OK`, `application/json`, array of entity envelopes (same shape as single-entity GET). Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant. Order is stable and deterministic; the specific order is storage-engine-specific (entity-ID based) — see `docs/plugins/*.md` for each backend's canonical order.
 
 **GET /api/entity/{entityId}/changes** — Get entity change history metadata
 
 - `entityId` (path): UUID
-- `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time
+- `pointInTime` (query, optional): RFC 3339 — view history as it existed at this time; must be at or before the consistency time. The history lists committed changes only, also when the request joins a transaction
 
 Response: `200 OK`, `application/json`, array of change entries in reverse-chronological order (newest first):
 
@@ -389,10 +392,10 @@ Response: `200 OK`, `application/json`, array of change entries in reverse-chron
 **GET /api/entity/{entityId}/transitions** — List available transitions for an entity
 
 - `entityId` (path): UUID
-- `pointInTime` (query, optional): RFC 3339
+- `pointInTime` (query, optional): RFC 3339 — must be at or before the consistency time
 - `transactionId` (query, optional): UUID — derive point-in-time from transaction submit time. The transaction must belong to the caller's tenant; an unknown or foreign transaction ID returns `400 BAD_REQUEST`.
 
-`pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current time is used.
+`pointInTime` and `transactionId` are mutually exclusive; supplying both returns `400 BAD_REQUEST`. When neither is provided, the current state is used. A `transactionId` is fenced like a `pointInTime`, at the transaction's commit instant.
 
 The submit time a `transactionId` resolves to is the transaction's commit instant, recorded durably: **any node** can resolve it, including after a restart, not only the node that ran the transaction. It is retained for one hour after the commit; an id older than that is no longer resolvable and answers `400 BAD_REQUEST`.
 
@@ -407,7 +410,13 @@ The names come from the workflow the entity's criterion selects — the same def
 
 Response: `200 OK`, `application/json`, array of available transition names.
 
+**GET /api/entity/consistency-time** — The current consistency time
+
+No parameters. Response: `200 OK`, `application/json`: `{"consistencyTime": "2026-10-05T14:03:07.123456Z"}`, at the store's full precision (microseconds on sqlite and postgres, nanoseconds on memory). Errors: `503 CONSISTENCY_TIME_UNAVAILABLE` (retryable), `503 STORAGE_UNAVAILABLE`. See POINT-IN-TIME SEMANTICS.
+
 **GET /api/entity/stats** — Entity count statistics across all models
+
+- `pointInTime` (query, optional): RFC 3339 — count entities, each in the state it had at this instant; must be at or before the consistency time. The three other `GET` stats endpoints accept it too
 
 Response: `200 OK`, `application/json`:
 
@@ -420,6 +429,7 @@ Response: `200 OK`, `application/json`:
 
 **GET /api/entity/stats/states** — Entity count by state across all models
 
+- `pointInTime` (query, optional): as above
 - `states` (query, optional): comma-separated list of state names to filter by; maximum 1000 entries
 
 Response: `200 OK`, `application/json`:
@@ -435,6 +445,7 @@ Response: `200 OK`, `application/json`:
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `pointInTime` (query, optional): as above
 
 Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
 
@@ -442,6 +453,7 @@ Response: `200 OK`, `application/json`, single `ModelStatsDto`. Returns `404 MOD
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
+- `pointInTime` (query, optional): as above
 - `states` (query, optional): list of state names to filter by; maximum 1000 entries
 
 Response: `200 OK`, `application/json`, array of `ModelStateStatsDto`. Returns `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant.
@@ -474,7 +486,7 @@ Request fields:
 - `groupBy` (required, 1..N entries): each entry is the reserved token `"state"` or a scalar JSONPath (with the required `$.` leader). Order in the request determines order in the response's `groupKey` array. Duplicate entries → 400 `DUPLICATE_GROUP_BY`. A path outside the grammar below → 400 `INVALID_GROUP_BY_PATH`.
 - `condition` (optional): the existing search `Condition` DSL (SimpleCondition, LifecycleCondition, GroupCondition with `AND`/`OR`/`NOT`, ArrayCondition). Omitted → match-all. A FunctionCondition at any depth → 400 `INVALID_CONDITION`; it is a criterion shape, not a search shape. See the `search` topic for the full DSL.
 - `aggregations` (optional, 0..N): per entry, `op` ∈ {`sum`, `avg`, `min`, `max`, `stdev`}; `field` is a scalar JSONPath into the entity payload; optional `as` alias for the response key. When `as` is omitted the server synthesizes `<op>_<field>` with the leading `$.` stripped from the field (for example, `field: "$.costPrice"` → alias `sum_costPrice`). The server dedupes identical `(op, field)` pairs. Two aliases colliding on distinct `(op, field)` pairs → 400 `DUPLICATE_AGGREGATION_ALIAS`.
-- `pointInTime` (optional RFC 3339): historical snapshot; default = now.
+- `pointInTime` (optional RFC 3339): historical snapshot, at or before the consistency time; absent = the current committed state.
 - `limit` (optional positive int): top-N. Must be `≤ CYODA_STATS_GROUP_MAX` (default 10000); `> CYODA_STATS_GROUP_MAX` → 400 `INVALID_LIMIT`. Default = unlimited (up to the cardinality ceiling).
 
 Response: `200 OK`, `application/json`, array of `GroupedStatsBucket`:
@@ -533,8 +545,8 @@ The function is `IMMUTABLE PARALLEL SAFE` (the planner inlines and parallelizes)
 
 **In-transaction behavior.** Calls made under an active transaction (the request carried a transaction context) route through the streaming-tally path via `EntityStore.Iterate`. The native `GroupedAggregator` pushdown is skipped in this case to preserve read-your-writes semantics. Per backend:
 
-- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. In-tx with `pointInTime` falls through to the plain PIT path — reads `entity_versions` at the supplied snapshot WITHOUT applying the tx-buffer overlay; PIT is historical-read by definition, so the in-flight buffer is a documented limitation, and the result reflects committed history rather than the caller's uncommitted edits at the requested instant. The fully-pushed-down `GroupedAggregate` query (against `entities`) is skipped in-tx by the SPI dispatcher so the service falls through to the streaming tally over `Iterate`, which now honours RYW.
-- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4 AND transaction_time <= CURRENT_TIMESTAMP`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE`. The `GroupedAggregate` pushdown is skipped in-tx, and declines a `pointInTime` request in any case.
+- **memory and sqlite** — Inside a transaction, sqlite streams one merged cursor (committed snapshot on the reader connection plus the transaction's own buffered writes, staged deletes suppressed); memory walks a pointer snapshot of the merged view. Neither copies entity payloads beyond the rows it yields, and `trackingRead` records only yielded rows. Non-tx, non-PIT sqlite queries the live `entities` table directly with `planQuery` WHERE-pushdown (no snapshot involved); non-tx with `pointInTime` queries `entity_versions` with `submit_time <= pointInTime` to read the historical snapshot. A `pointInTime` read is committed-only: it ignores the ambient transaction and its buffer, by contract (see POINT-IN-TIME SEMANTICS). Outside a transaction, `GroupedAggregate` pushes a point-in-time read down: it counts in the store over `entity_versions` (latest version per entity at or before the instant, deleted excluded), so no entity document is streamed out. On sqlite, exceptions stream through `Iterate` at the instant, committed-only: a `stdev` aggregation, and a condition with a residual the SQL cannot apply. The pushdown is skipped in-tx, so the service streams the tally over `Iterate`, which honours RYW without a `pointInTime`.
+- **postgres** — in-tx and non-PIT, `Iterate` selects from the live `entities` table on the transaction's own connection, so it sees that transaction's uncommitted writes on top of its `REPEATABLE READ` snapshot (RYW) and skips soft-deleted rows with `NOT deleted`. With `pointInTime` it is committed-only: it runs off any ambient transaction, enumerates `entities` and probes each entity's revision at the instant with a lateral join into `entity_versions` (`valid_time <= $4`), then drops deletion-marker versions with `(doc->'_meta'->>'deleted')::boolean IS NOT TRUE. Outside a transaction, `GroupedAggregate` pushes a point-in-time read down over the same lateral base, so the store counts and no entity document leaves the database; a condition with a residual the SQL cannot apply, and any in-tx request, stream through `Iterate` (committed-only at an instant).
 
 **Cardinality ceiling.** `CYODA_STATS_GROUP_MAX` (default 10000) bounds the number of distinct group buckets the endpoint will produce. When the result would exceed the ceiling, the request fails with 422 `GROUP_CARDINALITY_EXCEEDED` (retry with a more selective `condition` or fewer `groupBy` dimensions). The same value caps the request `limit`: `limit > CYODA_STATS_GROUP_MAX` is rejected up-front with 400 `INVALID_LIMIT`.
 
@@ -584,20 +596,84 @@ inclusive**: a version whose write timestamp equals `pointInTime` is included
 against stored version timestamps at the storage engine's native precision.
 
 Behaviour is identical across every read path — single-entity read, list,
-search, grouped statistics, change history, and available transitions — and
+search, statistics, grouped statistics, conditional delete, change history, and
+available transitions — and
 across storage backends. Because backends store timestamps at different
 precisions (down to milliseconds on some deployments), cross-backend results are
 guaranteed to agree at **millisecond granularity**; finer-grained ordering
 within a single millisecond is backend-defined. Timestamps are accepted and
-emitted as RFC 3339 with full fractional precision.
+emitted as RFC 3339 with full fractional precision. An instant with an offset
+(`2026-10-05T16:03:07+02:00`) is accepted and compared as the instant it names.
 
 **The instant a version is dated at is its transaction's commit**, on every
 backend — not the instant the transaction started, and not the instant the
 individual write was issued. Every entity a transaction writes carries the
 same instant, so a `pointInTime` read either sees all of a transaction's
-writes or none of them. A read at an instant becomes stable once every
-transaction that started before it has finished. See `docs/CONSISTENCY.md`
-§1a for the full statement and its one residual window.
+writes or none of them.
+
+**The consistency time.** A read at an instant is only trustworthy if no save
+can still land at or before it. The **consistency time** is the instant up to
+which that holds, for your tenant. It is normally the store's current time; it
+waits only for saves still committing (milliseconds). It has four properties:
+
+- **Complete** — every save already confirmed to any client, on any node, is
+  at or before it.
+- **Final** — a read at or before it sees every save of your tenant dated at
+  or before the instant, and gives the same answer for ever. A save not yet
+  dated when the consistency time is returned is dated after it.
+- **Never goes back** — each consistency time is at or after every one
+  returned earlier, on any node, also across a restart.
+- **Exact** — it is never rounded up, and it covers the store's own read
+  resolution.
+
+`GET /api/entity/consistency-time` returns it. To read the model "as of now"
+with an answer that cannot change, fetch it and pass it as `pointInTime`; a
+read at that value is never refused with
+`POINT_IN_TIME_AFTER_CONSISTENCY_TIME` (a `503` is still possible) and includes
+every save confirmed before you asked.
+
+**The fence.** A read with a `pointInTime` later than the consistency time is
+refused with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; the problem's
+`properties.consistencyTime` carries the current value. There is no waiting. An
+instant at or before the store's clock is never refused: the store waits for the
+tenant's saves still committing, or answers `503 CONSISTENCY_TIME_UNAVAILABLE`
+past its budget. Only an instant later than the store's clock is refused — a
+future instant, or one from a client clock running ahead of the store's. The
+fence covers single-entity read, list, search, async search submit, conditional
+delete, the four stats reads, grouped statistics, change history and
+transitions. Request errors that do not involve the instant (malformed value,
+unknown model, `pointInTime` together with `transactionId`) are reported first;
+a `404` produced by the read itself comes after the fence. A
+`503 CONSISTENCY_TIME_UNAVAILABLE` means the store could not certify the
+consistency time within its wait budget; retry with back-off.
+
+Over gRPC the fence applies to every read carrying a `pointInTime` (get,
+get-all, search, snapshot search, delete-all, both stats, changes). The
+envelope has no properties, so a refusal carries the consistency time in its
+message text; or call `EntityConsistencyTimeGetRequest`. Payload fields:
+`cyoda help cloudevents json`.
+
+**Reads without `pointInTime` read the current state**: what is committed when
+the store runs the query. Two such reads can differ, and so can the pages of a
+list — **pages of a list without `pointInTime` are read at different moments.**
+For consistent pages, take the consistency time once and pass it as
+`pointInTime` on every page.
+
+**Async search** with no `pointInTime` takes a fresh consistency time at
+submission and records it on the job; status and result pages read at that
+instant, so every page of the result agrees. The default includes every save
+already confirmed when the submit is made; a save not yet confirmed at submit
+may or may not appear. A `pointInTime` you pass is fenced
+at submission and recorded the same way.
+
+**Inside a transaction.** Without `pointInTime`, a read sees the transaction's
+snapshot plus its own writes: the committed state as it was when the
+transaction began. A commit that completes later is not visible to it, also
+when it reads again. The timing per storage backend is in
+`docs/submit-times-snapshots-consistency-time.html`. With `pointInTime`, it sees
+committed data at that instant only, and is fenced like any other. The change
+history (and the audit trail built on it) lists committed changes only, on every
+backend.
 
 Per backend, a point-in-time read resolves the requested instant like this:
 
@@ -605,9 +681,8 @@ Per backend, a point-in-time read resolves the requested instant like this:
   submit time is `<=` the instant.
 - **sqlite** — reads `entity_versions` with `submit_time <= ?`.
 - **postgres** — enumerates the model's rows in `entities` and probes each
-  one's revision with a lateral join (`valid_time <= $4 AND
-  transaction_time <= CURRENT_TIMESTAMP`, newest first, ties broken by
-  `transaction_time` then `version`). A single-entity `GetAsAt` uses the
+  one's revision with a lateral join (`valid_time <= $4`, newest first, ties
+  broken by `transaction_time` then `version`). A single-entity `GetAsAt` uses the
   same bound and the same tiebreak against one entity's chain. The cost is
   one index probe per entity of the model, not one per revision of its
   history.
@@ -675,6 +750,8 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the operation: a transition criterion did not match, a processor failed, the workflow selected for the entity does not declare its current state, or a workflow selection criterion could not be evaluated. Reachable on create, a named transition, a transition-less (loopback) update, and both transitions reads — selection runs on every door
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a `function` criterion or processor needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
+- `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time; `properties.consistencyTime` carries the current one
+- `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time
 - Grouped-stats query (`POST /api/entity/stats/{entityName}/{modelVersion}/query`) — `404 MODEL_NOT_FOUND` when the model is not registered for the calling tenant; `400` for validation failures (`MALFORMED_REQUEST`, `MISSING_GROUP_BY`, `INVALID_GROUP_BY_PATH`, `DUPLICATE_GROUP_BY`, `INVALID_AGGREGATION_OP`, `INVALID_AGGREGATION_FIELD`, `DUPLICATE_AGGREGATION_ALIAS`, `INVALID_LIMIT`); `400` propagated from the search-condition validator (`INVALID_CONDITION`, `INVALID_FIELD_PATH`, `CONDITION_TYPE_MISMATCH`); `422 GROUP_CARDINALITY_EXCEEDED` when distinct buckets would exceed `CYODA_STATS_GROUP_MAX`. The full enumeration with descriptions is in the grouped-stats endpoint section above.
 
 ## EXAMPLES

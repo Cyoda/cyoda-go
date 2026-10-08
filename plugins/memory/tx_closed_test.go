@@ -73,11 +73,11 @@ func TestTx_ClosedTransaction_RefusesEveryEntryPoint(t *testing.T) {
 			return it.Err()
 		}},
 		{"Count", func(c context.Context) error {
-			_, err := store.Count(c, ref)
+			_, err := store.Count(c, ref, nil)
 			return err
 		}},
 		{"CountByState", func(c context.Context) error {
-			_, err := store.CountByState(c, ref, nil)
+			_, err := store.CountByState(c, ref, nil, nil)
 			return err
 		}},
 		{"DeleteAll", func(c context.Context) error {

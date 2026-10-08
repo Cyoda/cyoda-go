@@ -153,7 +153,7 @@ func WriteSetVersionForTest(s TxStateForTest, entityID string) (int64, bool) {
 // NewStoreFactoryWithTMForTest creates a StoreFactory with the given pool and
 // TransactionManager pre-wired. Use only in tests.
 func NewStoreFactoryWithTMForTest(pool *pgxpool.Pool, tm *TransactionManager) *StoreFactory {
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return f
 }
@@ -203,7 +203,7 @@ const PITBaseQueryForTest = pitBaseQueryTemplate
 // equality proxy that store.Search() (which DOES apply the residual)
 // provides.
 func SearchCandidateIDsForTest(pool *pgxpool.Pool, ctx context.Context, tenantID spi.TenantID, entityName, modelVersion string, filter spi.Filter) ([]string, error) {
-	s := &entityStore{q: pool, pool: pool, tenantID: tenantID}
+	s := &entityStore{q: pool, pool: pool, tenantID: tenantID, keys: newTenantKeys()}
 	plan, err := planFor(filter)
 	if err != nil {
 		return nil, err
@@ -245,6 +245,16 @@ func NewStoreFactoryWithAcquireTimeoutForTest(pool *pgxpool.Pool, d time.Duratio
 	return newStoreFactoryWithConfig(pool, cfg)
 }
 
+// NewStoreFactoryWithStatementTimeoutForTest builds a factory whose config
+// carries statement timeout d, so InitTransactionManager wires d into the
+// manager by the production path. A consistency-time test uses it to bound the
+// wait budget in milliseconds instead of the shipped 10 s. Test-only.
+func NewStoreFactoryWithStatementTimeoutForTest(pool *pgxpool.Pool, d time.Duration) *StoreFactory {
+	cfg := defaultStoreConfig()
+	cfg.StatementTimeout = d
+	return newStoreFactoryWithConfig(pool, cfg)
+}
+
 // RegisterPoolMetricsForTest exposes registerPoolMetrics for a factory's
 // pools to the external postgres_test package. metrics_test.go must live in
 // postgres_test to reuse newTestPool (migrate_test.go), which carries the pgx
@@ -266,7 +276,9 @@ const MeterNameForTest = meterName
 // short enough to observe in milliseconds rather than the shipped 10s default.
 // Test-only.
 func NewStoreFactoryWithTMAndAcquireTimeoutForTest(pool *pgxpool.Pool, tm *TransactionManager, d time.Duration) *StoreFactory {
-	f := NewStoreFactoryWithAcquireTimeoutForTest(pool, d)
+	cfg := defaultStoreConfig()
+	cfg.AcquireTimeout = d
+	f := newStoreFactoryWithKeys(pool, cfg, tm.keys)
 	f.setTransactionManager(tm)
 	return f
 }

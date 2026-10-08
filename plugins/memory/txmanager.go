@@ -134,7 +134,7 @@ type TransactionManager struct {
 	commitSeq     int64
 	txSnapshotSeq map[string]int64 // txID → commitSeq at Begin time; cleaned up after commit or rollback (no leak)
 
-	// lastSubmitTime is the monotonic floor every stamped submit time sits
+	// lastSubmitTime is the non-decreasing floor every stamped submit time sits
 	// at or above — see nextSubmitTime. Read and written under mu only.
 	lastSubmitTime time.Time
 
@@ -662,7 +662,10 @@ func (m *TransactionManager) pruneCommittedLogLocked() {
 func (m *TransactionManager) nextSubmitTime() time.Time {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.factory.clock.Now()
+	// Round(0) drops Go's monotonic reading so the floor compares WALL
+	// time: stamps and point-in-time instants are wall times, and a wall
+	// clock that steps back must be floored, not followed.
+	now := m.factory.clock.Now().Round(0)
 	if !now.After(m.lastSubmitTime) {
 		now = m.lastSubmitTime.Add(time.Microsecond)
 	}
@@ -722,11 +725,10 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	// critical section, so "X's seq excluded from this tx's baseline"
 	// (X's section ran first) provably implies "X's submitTime precedes
 	// this tx's SnapshotTime" (submitTime was read even before X's own,
-	// earlier-ordered section, and the clock is monotonic non-decreasing —
-	// see clock.go: wallClock uses Go's monotonic time.Now(), TestClock's
-	// virtual time only ever advances forward).
+	// earlier-ordered section, and every stamp and snapshot is floored to
+	// lastSubmitTime under mu, so later sections never read an earlier value).
 	//
-	// SnapshotTime is additionally floored to lastSubmitTime, the monotonic
+	// SnapshotTime is additionally floored to lastSubmitTime, the non-decreasing
 	// floor every stamped submit time sits at or above (see nextSubmitTime).
 	// Without the floor a stamped time could stand ahead of the raw clock —
 	// several writes inside one clock tick each bump it by a microsecond, and
@@ -742,7 +744,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		now := m.factory.clock.Now()
+		now := m.factory.clock.Now().Round(0)
 		if now.Before(m.lastSubmitTime) {
 			now = m.lastSubmitTime
 		}
@@ -984,7 +986,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 
 		// 4. Flush buffer to entity store.
 		//
-		// Stamped under the monotonic floor (see nextSubmitTime), and still
+		// Stamped under the non-decreasing floor (see nextSubmitTime), and still
 		// captured HERE — before the mu section at step 6 that assigns this
 		// commit's seq — which is what Begin's atomic-capture argument above
 		// rests on: a commit whose seq section precedes a Begin has already
@@ -1276,6 +1278,28 @@ func (m *TransactionManager) GetSubmitTime(ctx context.Context, txID string) (ti
 	}
 
 	return time.Time{}, fmt.Errorf("GetSubmitTime: %w (txID=%s)", spi.ErrTxNotFound, txID)
+}
+
+// ConsistencyTime implements spi.TransactionManager. It reserves
+// C = max(clock, lastSubmitTime) as the new floor, exactly as Begin does,
+// so every later stamp is strictly after C. No wait is needed: every writer
+// holds factory.entityMu from stamp to publish and every reader takes
+// entityMu.RLock, so a read that starts after C was returned cannot observe
+// a stamp <= C that is not yet published. The floor is shared by all tenants,
+// which makes C complete across tenants. A restart loses every stamp and job
+// with it, so there is no earlier C to stay above.
+func (m *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	if uc := spi.GetUserContext(ctx); uc == nil || uc.Tenant.ID == "" {
+		return time.Time{}, fmt.Errorf("ConsistencyTime: no tenant in context")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.factory.clock.Now().Round(0)
+	if now.Before(m.lastSubmitTime) {
+		now = m.lastSubmitTime
+	}
+	m.lastSubmitTime = now
+	return now, nil
 }
 
 // CommittedLogLen returns the current length of the committed log.

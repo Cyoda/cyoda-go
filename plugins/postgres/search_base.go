@@ -62,7 +62,6 @@ const pitBaseQueryTemplate = `SELECT doc, creation_date, last_modified FROM (
                   WHERE ev.tenant_id = e.tenant_id AND ev.entity_id = e.entity_id
                     AND ev.model_name = $2 AND ev.model_version = $3
                     AND ev.valid_time <= $4
-                    AND ev.transaction_time <= CURRENT_TIMESTAMP
                   ORDER BY ev.valid_time DESC, ev.transaction_time DESC, ev.version DESC
                   LIMIT 1
                 ) v
@@ -122,11 +121,12 @@ func (s *entityStore) searchBaseQuery(entityName, modelVersion string, pit *time
 // A point-in-time read is committed-only — it ignores any ambient transaction
 // and answers from committed state as of the requested instant. s.q would
 // resolve the caller's pgx.Tx and hand back that transaction's own uncommitted
-// writes, and the `transaction_time <= CURRENT_TIMESTAMP` guard in the PIT
-// queries cannot filter them out: Save stamps valid_time/transaction_time from
-// CURRENT_TIMESTAMP, which PostgreSQL fixes at transaction START, so inside the
-// writing transaction the comparison reduces to T_start <= T_start. Pinning the
-// pool is the only thing that actually reads committed state.
+// writes. Pinning the pool is what reads committed state: the queries carry no
+// wall-clock guard of their own (the stamp floor can run ahead of the database
+// clock, so one would hide committed rows). What makes an instant FINAL — no
+// later commit can land at or below it — is the consistency-time fence the
+// engine takes the instant from (TransactionManager.ConsistencyTime), not
+// anything in these queries.
 //
 // Classification is the plain funnel rather than ctxQuerier's transaction-scoped
 // one, for the same reason: the statement does not belong to the caller's

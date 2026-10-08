@@ -399,7 +399,7 @@ func TestEntityStore_Count(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 
-	count, err := store.Count(ctx, ref)
+	count, err := store.Count(ctx, ref, nil)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestEntityStore_Count(t *testing.T) {
 	store.Save(ctx, makeEntity("ent-cnt-1"))
 	store.Save(ctx, makeEntity("ent-cnt-2"))
 
-	count, err = store.Count(ctx, ref)
+	count, err = store.Count(ctx, ref, nil)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -420,7 +420,7 @@ func TestEntityStore_Count(t *testing.T) {
 
 	// Delete one, count should be 1
 	store.Delete(ctx, "ent-cnt-1")
-	count, err = store.Count(ctx, ref)
+	count, err = store.Count(ctx, ref, nil)
 	if err != nil {
 		t.Fatalf("Count after delete: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestEntityStore_TenantIsolation(t *testing.T) {
 	}
 
 	// Tenant B Count should be 0
-	count, err := storeB.Count(ctxB, ref)
+	count, err := storeB.Count(ctxB, ref, nil)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}

@@ -696,7 +696,54 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   every key-value call when it returns, whatever transaction the context
   carries.
 
+- **A read at a `pointInTime` later than the consistency time is refused
+  (`400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`, with the current consistency
+  time in `properties.consistencyTime` and in the message).** The consistency
+  time is the latest instant at which a read is final: it includes every save
+  confirmed before it on any node, and no later save can land at or before
+  it. Every read that takes `pointInTime` is fenced, on HTTP and gRPC:
+  - get by id
+  - get all
+  - direct search
+  - async search submit
+  - conditional delete
+  - the four stats reads
+  - grouped stats
+  - change history
+  - transitions, where a `transactionId` is fenced at that transaction's commit
+
+  There is no waiting. A client that sent "now" from its own clock takes the
+  instant from `GET /entity/consistency-time` instead; a read at a time
+  returned there is never refused, on any node. Reads without `pointInTime`
+  stay current-state reads. The fenced reads and the new endpoint can also
+  answer `503 CONSISTENCY_TIME_UNAVAILABLE` (retryable) when the store cannot
+  certify the consistency time in its wait budget. See
+  `cyoda help errors POINT_IN_TIME_AFTER_CONSISTENCY_TIME` and
+  `cyoda help crud`.
+
+- **The stats reads and gRPC get-all honour `pointInTime`.** Before, these
+  reads accepted `pointInTime` and ignored it:
+  - `GET /entity/stats` and `/entity/stats/{entityName}/{modelVersion}`
+  - `GET /entity/stats/states` and `/entity/stats/states/{entityName}/{modelVersion}`
+  - gRPC `EntityStatsGetRequest`, `EntityStatsByStateGetRequest` and `EntityGetAllRequest`
+
+  They now count or list at that instant: committed data only, inside a
+  transaction too.
+
+- **SPI: the consistency time.** `TransactionManager.ConsistencyTime` is
+  required, `EntityStore.Count` and `CountByState` take `asAt`, and
+  `GetVersionMetadata` reads committed data only inside a transaction (see
+  `COMPATIBILITY.md`). Out-of-tree storage plugins must implement all three
+  and pass the new `spitest` cases.
+
 ### Added
+
+- **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
+  return a fresh consistency time** for the caller's tenant, as
+  `{"consistencyTime": "…"}`: RFC 3339 at the store's full precision, never
+  rounded. It requires `ROLE_M2M`. A transaction token does not change the
+  answer. `cyoda help crud` shows how to read a list in consistent pages:
+  take the consistency time once and pass it as `pointInTime` on every page.
 
 - **gRPC change history carries the attributed kind and the executor.**
   `EntityChangesMetadataGetRequest` answers each change's `changeMeta` with
@@ -1076,6 +1123,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **An async search submitted without `pointInTime` no longer misses
+  confirmed saves.** Before, it ran at the receiving node's clock, which can
+  run ahead of saves still committing or behind another node's. It now runs
+  at a fresh consistency time, recorded on the job, so a submit can now
+  answer `503 CONSISTENCY_TIME_UNAVAILABLE`.
+
+- **PostgreSQL: the change history read inside a transaction lists committed
+  versions only**, as the other backends already did. Before, it also listed
+  the transaction's own uncommitted versions.
 
 - **`POST /tenants/{tenant}/oauth/token` in mock IAM mode answers `501 NOT_IMPLEMENTED`.**
   Mock mode issues no token; the endpoint answered `500` with a ticket and

@@ -76,16 +76,7 @@ func RunExternalAPI_06_02_DeleteByModel(t *testing.T, fixture parity.BackendFixt
 //
 // delete-all-by-model with pointInTime=T1 selectively removes only
 // entities created at or before T1, leaving newer entities intact.
-//
-// Skipped pending server-side support. The OpenAPI declares
-// DeleteEntitiesParams.PointInTime, but internal/domain/entity.Handler.DeleteEntities
-// ignores it and the storage SPI has no DeleteAllAsAt method. Cross-repo
-// fix targeted for v0.7.0 (SPI bump + plugin impls + handler wiring).
-// The test body below is the contract for when that gap closes — remove
-// the t.Skip and the assertion exercises pointInTime selectivity across
-// all backends.
 func RunExternalAPI_06_06_DeleteAtPointInTime(t *testing.T, fixture parity.BackendFixture) {
-	t.Skip("pending server-side support — DeleteEntities handler ignores params.PointInTime; v0.7.0 SPI bump required")
 	d := driver.NewInProcess(t, fixture)
 	if err := d.CreateModelFromSample("delpit", 1, `{"k":1}`); err != nil {
 		t.Fatalf("CreateModelFromSample: %v", err)

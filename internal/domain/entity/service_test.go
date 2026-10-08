@@ -35,7 +35,7 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
-		txgate.New(),
+		txgate.New(), newFixedConsistency(),
 	)
 
 	ctx := context.Background()
@@ -93,7 +93,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
-			txgate.New(),
+			txgate.New(), newFixedConsistency(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -116,7 +116,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			nil,
 			common.NewDefaultUUIDGenerator(),
 			nil,
-			txgate.New(),
+			txgate.New(), newFixedConsistency(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -147,7 +147,7 @@ func TestGetEntity_NotFoundReturns404(t *testing.T) {
 		nil,
 		common.NewDefaultUUIDGenerator(),
 		nil,
-		txgate.New(),
+		txgate.New(), newFixedConsistency(),
 	)
 
 	ctx := context.Background()
@@ -194,7 +194,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -229,7 +229,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	}
 
 	// nil-pointer filter → all states returned.
-	stats, err := h.GetStatisticsByState(ctx, nil)
+	stats, err := h.GetStatisticsByState(ctx, nil, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(nil): %v", err)
 	}
@@ -246,7 +246,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-non-empty: filter to APPROVED only.
 	filter := []string{"APPROVED"}
-	stats, err = h.GetStatisticsByState(ctx, &filter)
+	stats, err = h.GetStatisticsByState(ctx, &filter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&['APPROVED']): %v", err)
 	}
@@ -259,7 +259,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 
 	// Pointer-to-empty-slice: per SPI, empty map → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByState(ctx, &emptyFilter)
+	stats, err = h.GetStatisticsByState(ctx, &emptyFilter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByState(&[]): %v", err)
 	}
@@ -273,7 +273,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -306,7 +306,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	}
 
 	// nil filter → all three states.
-	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil)
+	stats, err := h.GetStatisticsByStateForModel(ctx, "model-m", "1", nil, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(nil): %v", err)
 	}
@@ -323,7 +323,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Filter to two states.
 	filter := []string{"NEW", "REJECTED"}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &filter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&['NEW','REJECTED']): %v", err)
 	}
@@ -344,7 +344,7 @@ func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 
 	// Empty (non-nil) filter → no rows.
 	emptyFilter := []string{}
-	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter)
+	stats, err = h.GetStatisticsByStateForModel(ctx, "model-m", "1", &emptyFilter, nil)
 	if err != nil {
 		t.Fatalf("GetStatisticsByStateForModel(&[]): %v", err)
 	}
@@ -548,7 +548,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
@@ -705,7 +705,7 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New())
+	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base))
 
 	return h, ctx, ref.EntityName, 1
 }

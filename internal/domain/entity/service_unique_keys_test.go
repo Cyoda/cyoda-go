@@ -166,7 +166,7 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -214,7 +214,7 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -289,7 +289,7 @@ func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 
 	registerOrderModel(t, ctx, factory)
 	return h, ctx
@@ -309,7 +309,7 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
 
 	registerOrderModel(t, ctx, spy)
 	return h, ctx, rec
@@ -501,11 +501,11 @@ func (s *spyEntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) e
 func (s *spyEntityStore) Exists(ctx context.Context, entityID string) (bool, error) {
 	return s.delegate.Exists(ctx, entityID)
 }
-func (s *spyEntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
-	return s.delegate.Count(ctx, modelRef)
+func (s *spyEntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	return s.delegate.Count(ctx, modelRef, asAt)
 }
-func (s *spyEntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
-	return s.delegate.CountByState(ctx, modelRef, states)
+func (s *spyEntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
+	return s.delegate.CountByState(ctx, modelRef, states, asAt)
 }
 func (s *spyEntityStore) GetPage(ctx context.Context, modelRef spi.ModelRef, limit, offset int, asAt *time.Time) ([]*spi.Entity, error) {
 	return s.delegate.GetPage(ctx, modelRef, limit, offset, asAt)

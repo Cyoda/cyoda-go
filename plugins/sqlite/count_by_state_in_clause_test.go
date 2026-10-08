@@ -57,7 +57,7 @@ func TestCountByState_ManyStateFilter_ReturnsCorrectCounts(t *testing.T) {
 	// Replace the middle slot with the state our fixtures actually use.
 	states[len(states)/2] = "NEW"
 
-	got, err := store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states)
+	got, err := store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states, nil)
 	if err != nil {
 		t.Fatalf("CountByState with %d states: %v", len(states), err)
 	}
@@ -86,7 +86,7 @@ func TestCountByState_SmallStateFilter_ReturnsCorrectCounts(t *testing.T) {
 
 	states := []string{"S0", "S1", "S2", "S3", "S4", "NEW", "S6", "S7", "S8", "S9"}
 
-	got, err := store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states)
+	got, err := store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states, nil)
 	if err != nil {
 		t.Fatalf("CountByState: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestCountByState_OversizedRejection_WrapsSentinelError(t *testing.T) {
 		states[i] = fmt.Sprintf("STATE_%d", i)
 	}
 
-	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states)
+	_, err = store.CountByState(ctx, spi.ModelRef{EntityName: "person", ModelVersion: "1"}, states, nil)
 	if err == nil {
 		t.Fatalf("CountByState: expected error for %d states, got nil", len(states))
 	}

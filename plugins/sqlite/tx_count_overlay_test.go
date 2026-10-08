@@ -32,14 +32,14 @@ func TestTxCount_EveryBufferShape(t *testing.T) {
 	}
 	check := func(step string, wantTotal int64, wantByState map[string]int64) {
 		t.Helper()
-		got, err := store.Count(txCtx, ref)
+		got, err := store.Count(txCtx, ref, nil)
 		if err != nil {
 			t.Fatalf("%s: Count: %v", step, err)
 		}
 		if got != wantTotal {
 			t.Fatalf("%s: Count = %d, want %d", step, got, wantTotal)
 		}
-		by, err := store.CountByState(txCtx, ref, nil)
+		by, err := store.CountByState(txCtx, ref, nil, nil)
 		if err != nil {
 			t.Fatalf("%s: CountByState: %v", step, err)
 		}

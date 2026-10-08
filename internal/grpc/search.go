@@ -41,6 +41,9 @@ func (s *CloudEventsServiceImpl) EntitySearch(ctx context.Context, ce *cepb.Clou
 	case EntityGetRequest:
 		return s.handleEntityGetRequest(ctx, ce, payload)
 
+	case EntityConsistencyTimeGetRequest:
+		return s.handleConsistencyTimeGetRequest(ctx, ce, payload)
+
 	case EntitySnapshotSearchRequest:
 		return s.handleSnapshotSearchRequest(ctx, ce, payload)
 
@@ -126,6 +129,33 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntityResponse, resp)
+}
+
+// handleConsistencyTimeGetRequest answers the tenant's consistency time. The
+// request carries only the base event fields; the answer never depends on a
+// transaction.
+func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntityConsistencyTimeGetRequestJson
+	if err := json.Unmarshal(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	c, err := s.cons.Fresh(ctx)
+	if err != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeGetRequest, "ceId", ce.Id, "error", err.Error())
+		return consistencyTimeError(ctx, ce.Id, err)
+	}
+
+	diag := common.GetDiagnostics(ctx)
+	resp := events.EntityConsistencyTimeResponseJson{
+		ID:              ce.Id,
+		Success:         true,
+		Warnings:        diag.GetWarnings(),
+		RequestID:       ce.Id,
+		ConsistencyTime: &c,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeResponse, "ceId", ce.Id, "success", true)
+	return NewCloudEvent(EntityConsistencyTimeResponse, resp)
 }
 
 func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
@@ -284,7 +314,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 	envelopes, err := s.entityHandler.ListEntities(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), entity.PaginationParams{
 		PageSize:   int32(pageSize),
 		PageNumber: int32(pageNumber),
-	}, nil)
+	}, req.PointInTime)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityGetAllRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityResponseError(ctx, ce.Id, err)
@@ -446,7 +476,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 
 	// If a specific model is requested, get stats for that model only.
 	if req.Model != nil && req.Model.Name != "" {
-		stat, err := s.entityHandler.GetStatisticsForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version))
+		stat, err := s.entityHandler.GetStatisticsForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), req.PointInTime)
 		if err != nil {
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsError(ctx, ce.Id, err)
@@ -475,7 +505,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 	}
 
 	// All models.
-	stats, err := s.entityHandler.GetStatistics(ctx)
+	stats, err := s.entityHandler.GetStatistics(ctx, req.PointInTime)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsGetRequest, "ceId", ce.Id, "error", err.Error())
 		errCE, ceErr := entityStatsError(ctx, ce.Id, err)
@@ -523,7 +553,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 	var results []entity.EntityStatByState
 	if req.Model != nil && req.Model.Name != "" {
 		var err error
-		results, err = s.entityHandler.GetStatisticsByStateForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), statesFilter)
+		results, err = s.entityHandler.GetStatisticsByStateForModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), statesFilter, req.PointInTime)
 		if err != nil {
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)
@@ -534,7 +564,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 		}
 	} else {
 		var err error
-		results, err = s.entityHandler.GetStatisticsByState(ctx, statesFilter)
+		results, err = s.entityHandler.GetStatisticsByState(ctx, statesFilter, req.PointInTime)
 		if err != nil {
 			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", EntityStatsByStateGetRequest, "ceId", ce.Id, "error", err.Error())
 			errCE, ceErr := entityStatsByStateError(ctx, ce.Id, err)

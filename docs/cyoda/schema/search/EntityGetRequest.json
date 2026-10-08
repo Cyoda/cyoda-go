@@ -17,7 +17,7 @@
     "pointInTime": {
       "type": "string",
       "format": "date-time",
-      "description": "Point in time to retrieve the entity. If not provided, retrieves the entity at the current consistency time."
+      "description": "Point in time to retrieve the entity. Must be at or before the consistency time. If not provided, the current state is read."
     }
   },
   "required": [

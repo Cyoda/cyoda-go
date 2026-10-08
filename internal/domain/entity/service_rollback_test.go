@@ -744,7 +744,7 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 		wfengine.WithExternalProcessing(proc))
 
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(tracker))
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)

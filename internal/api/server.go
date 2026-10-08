@@ -51,6 +51,14 @@ func NewServer() *Server {
 // Entity delegation (15 methods)
 // ---------------------------------------------------------------------------
 
+func (s *Server) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	if s.Entity != nil {
+		s.Entity.GetConsistencyTime(w, r)
+		return
+	}
+	s.Unimplemented.GetConsistencyTime(w, r)
+}
+
 func (s *Server) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
 	if s.Entity != nil {
 		s.Entity.GetEntityStatistics(w, r, params)

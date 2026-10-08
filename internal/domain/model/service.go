@@ -374,7 +374,7 @@ func (h *Handler) UnlockModel(ctx context.Context, entityName, modelVersion stri
 		return nil, common.Internal("failed to access entity store", err)
 	}
 
-	count, err := entityStore.Count(ctx, ref)
+	count, err := entityStore.Count(ctx, ref, nil)
 	if err != nil {
 		return nil, common.Internal("failed to count entities", err)
 	}
@@ -440,7 +440,7 @@ func (h *Handler) DeleteModel(ctx context.Context, entityName, modelVersion stri
 		return common.Internal("failed to access entity store", err)
 	}
 
-	count, err := entityStore.Count(ctx, ref)
+	count, err := entityStore.Count(ctx, ref, nil)
 	if err != nil {
 		return common.Internal("failed to count entities", err)
 	}

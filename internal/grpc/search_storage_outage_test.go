@@ -61,7 +61,7 @@ func newOutageSearchEnv(t *testing.T) (*CloudEventsServiceImpl, *search.Handler,
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svcSearch := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base})
+	svcSearch := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base}, newTestConsistency(t, factory))
 
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "test-user",

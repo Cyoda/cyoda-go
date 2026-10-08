@@ -17,6 +17,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
@@ -46,6 +47,7 @@ type Handler struct {
 	uuids   spi.UUIDGenerator
 	engine  *wfengine.Engine
 	gate    *txgate.Registry
+	cons    *consistency.Service
 	// maxDeleteCycles overrides deleteCycleBudget's built-in bound on how
 	// many selection cycles one streamed batched delete may run. Zero (the
 	// normal case) means the built-in default; tests lower it so the
@@ -83,8 +85,11 @@ func (h *Handler) deleteCycleBudget() int {
 	return defaultMaxDeleteCycles
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry) *Handler {
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate}
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, cons *consistency.Service) *Handler {
+	if cons == nil {
+		panic("entity.New: nil consistency service")
+	}
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, cons: cons}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or
@@ -393,8 +398,20 @@ func (h *Handler) GetOneEntity(w http.ResponseWriter, r *http.Request, entityId 
 	common.WriteJSON(w, http.StatusOK, resp)
 }
 
+// GetConsistencyTime implements GET /entity/consistency-time. The instant is
+// rendered by encoding/json as RFC 3339 with the store's full precision, never
+// rounded, so a client can pass it back verbatim as pointInTime.
+func (h *Handler) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
+	c, err := h.cons.Fresh(r.Context())
+	if err != nil {
+		common.WriteError(w, r, classifyError(err))
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, genapi.ConsistencyTimeDto{ConsistencyTime: c})
+}
+
 func (h *Handler) GetEntityStatistics(w http.ResponseWriter, r *http.Request, params genapi.GetEntityStatisticsParams) {
-	stats, err := h.GetStatistics(r.Context())
+	stats, err := h.GetStatistics(r.Context(), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -424,7 +441,7 @@ func (h *Handler) GetEntityStatisticsByState(w http.ResponseWriter, r *http.Requ
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByState(r.Context(), params.States)
+	stats, err := h.GetStatisticsByState(r.Context(), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -455,7 +472,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 			fmt.Sprintf("states filter has %d entries; maximum is %d", len(*params.States), maxStatesFilterSize)))
 		return
 	}
-	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States)
+	stats, err := h.GetStatisticsByStateForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.States, params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return
@@ -475,7 +492,7 @@ func (h *Handler) GetEntityStatisticsByStateForModel(w http.ResponseWriter, r *h
 }
 
 func (h *Handler) GetEntityStatisticsForModel(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32, params genapi.GetEntityStatisticsForModelParams) {
-	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion))
+	stat, err := h.GetStatisticsForModel(r.Context(), entityName, fmt.Sprintf("%d", modelVersion), params.PointInTime)
 	if err != nil {
 		common.WriteError(w, r, classifyError(err))
 		return

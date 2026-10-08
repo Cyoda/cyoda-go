@@ -416,6 +416,9 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 	case input.TransactionID != "":
 		ent, err = getEntityByTransactionID(ctx, entityStore, input.EntityID, input.TransactionID)
 	case input.PointInTime != nil:
+		if err := h.cons.Fence(ctx, *input.PointInTime); err != nil {
+			return nil, err
+		}
 		ent, err = entityStore.GetAsAt(ctx, input.EntityID, *input.PointInTime)
 	default:
 		ent, err = entityStore.Get(ctx, input.EntityID)
@@ -463,7 +466,7 @@ func (h *Handler) GetEntity(ctx context.Context, input GetOneEntityInput) (*Enti
 }
 
 // GetStatistics retrieves entity count statistics for all models.
-func (h *Handler) GetStatistics(ctx context.Context) ([]EntityStat, error) {
+func (h *Handler) GetStatistics(ctx context.Context, pointInTime *time.Time) ([]EntityStat, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -479,9 +482,15 @@ func (h *Handler) GetStatistics(ctx context.Context) ([]EntityStat, error) {
 		return nil, common.Internal("failed to list models", err)
 	}
 
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
+	}
+
 	result := make([]EntityStat, 0, len(refs))
 	for _, ref := range refs {
-		count, err := entityStore.Count(ctx, ref)
+		count, err := entityStore.Count(ctx, ref, pointInTime)
 		if err != nil {
 			return nil, common.Internal("failed to count entities", err)
 		}
@@ -517,7 +526,7 @@ type EntityStatByState struct {
 // per-model fan-out is the next pressure point now that the per-entity loading
 // bottleneck is gone. Possible directions for a follow-up: a batched
 // CountByStateAll SPI method, or bounded parallelism over models.
-func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([]EntityStatByState, error) {
+func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string, pointInTime *time.Time) ([]EntityStatByState, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
@@ -533,6 +542,12 @@ func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([
 		return nil, common.Internal("failed to list models", err)
 	}
 
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
+	}
+
 	// Dereference the optional filter. Distinguish nil-pointer (no filter)
 	// from pointer-to-empty-slice — per the SPI contract, the latter yields
 	// an empty map without a storage call.
@@ -543,7 +558,7 @@ func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([
 
 	result := make([]EntityStatByState, 0)
 	for _, ref := range refs {
-		counts, err := entityStore.CountByState(ctx, ref, filterStates)
+		counts, err := entityStore.CountByState(ctx, ref, filterStates, pointInTime)
 		if err != nil {
 			return nil, common.Internal("failed to count entities by state", err)
 		}
@@ -561,7 +576,7 @@ func (h *Handler) GetStatisticsByState(ctx context.Context, states *[]string) ([
 }
 
 // GetStatisticsByStateForModel retrieves entity count statistics by state for a specific model.
-func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName string, modelVersion string, states *[]string) ([]EntityStatByState, error) {
+func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName string, modelVersion string, states *[]string, pointInTime *time.Time) ([]EntityStatByState, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -580,6 +595,12 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		return nil, appErr
 	}
 
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
+	}
+
 	// Dereference the optional filter. Distinguish nil-pointer (no filter)
 	// from pointer-to-empty-slice — per the SPI contract, the latter yields
 	// an empty map without a storage call.
@@ -588,7 +609,7 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 		filterStates = *states
 	}
 
-	counts, err := entityStore.CountByState(ctx, ref, filterStates)
+	counts, err := entityStore.CountByState(ctx, ref, filterStates, pointInTime)
 	if err != nil {
 		return nil, common.Internal("failed to count entities by state", err)
 	}
@@ -607,7 +628,7 @@ func (h *Handler) GetStatisticsByStateForModel(ctx context.Context, entityName s
 }
 
 // GetStatisticsForModel retrieves entity count statistics for a specific model.
-func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, modelVersion string) (*EntityStat, error) {
+func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, modelVersion string, pointInTime *time.Time) (*EntityStat, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
 		return nil, common.Internal("failed to access entity store", err)
@@ -626,7 +647,13 @@ func (h *Handler) GetStatisticsForModel(ctx context.Context, entityName string, 
 		return nil, appErr
 	}
 
-	count, err := entityStore.Count(ctx, ref)
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
+	}
+
+	count, err := entityStore.Count(ctx, ref, pointInTime)
 	if err != nil {
 		return nil, common.Internal("failed to count entities", err)
 	}
@@ -778,8 +805,10 @@ type deleteEntityResult struct {
 //
 // If pointInTime is non-nil, the result is truncated to versions whose
 // Timestamp is at or before pointInTime — the caller sees the change
-// history exactly as it would have appeared at that moment. A nil
-// pointInTime returns the full history.
+// history exactly as it would have appeared at that moment, and the instant
+// is fenced with the consistency time. A zero instant is an instant like any
+// other (it yields an empty history). A nil pointInTime returns the full
+// history.
 func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, pointInTime *time.Time) ([]EntityChangeEntry, error) {
 	entityStore, err := h.factory.EntityStore(ctx)
 	if err != nil {
@@ -790,7 +819,10 @@ func (h *Handler) GetChangesMetadata(ctx context.Context, entityID string, point
 	// rather than fetched-then-truncated.
 	const maxChangesMetadata = 1000
 	opts := spi.VersionMetadataOptions{Limit: maxChangesMetadata}
-	if pointInTime != nil && !pointInTime.IsZero() {
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
 		opts.Until = pointInTime
 	}
 
@@ -1289,6 +1321,24 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 		cond = c
 	}
 
+	if pointInTime != nil {
+		// An unknown model keeps its 404 ahead of the refusal, so the model
+		// check runs first. For an owned request both run before any
+		// transaction opens, so no pooled connection is held while the fence
+		// waits; inside a joined transaction the caller's connection is in use
+		// regardless. Both paths below keep their own in-scope model check.
+		modelStore, err := h.factory.ModelStore(ctx)
+		if err != nil {
+			return nil, common.Internal("failed to access model store", err)
+		}
+		if err := requireModel(ctx, modelStore, ref); err != nil {
+			return nil, err
+		}
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
+	}
+
 	if batchSize > 0 {
 		return h.deleteBatched(ctx, ref, cond, pointInTime, verbose, batchSize)
 	}
@@ -1328,6 +1378,19 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	return result, nil
 }
 
+// requireModel returns the 404 MODEL_NOT_FOUND refusal when ref is not
+// registered in modelStore, and a 500 when the lookup itself fails.
+func requireModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) error {
+	if _, err := modelStore.Get(ctx, ref); err != nil {
+		if errors.Is(err, spi.ErrNotFound) {
+			return common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
+				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
+		}
+		return common.Internal("failed to load model", err)
+	}
+	return nil
+}
+
 // deleteConditionalSingleTx is one attempt of the single-transaction
 // conditional delete: select, delete each matched id, remove the scheduled
 // tasks of the ids actually deleted, commit. Every attempt builds its own
@@ -1345,12 +1408,8 @@ func (h *Handler) deleteConditionalSingleTx(ctx context.Context, ref spi.ModelRe
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
 	}
-	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
-		}
-		return nil, common.Internal("failed to load model", err)
+	if err := requireModel(txCtx, modelStore, ref); err != nil {
+		return nil, err
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -1556,12 +1615,8 @@ func (h *Handler) deleteBatched(ctx context.Context, ref spi.ModelRef, cond pred
 	if err != nil {
 		return nil, common.Internal("failed to access model store", err)
 	}
-	if _, err := modelStore.Get(txCtx, ref); err != nil {
-		if errors.Is(err, spi.ErrNotFound) {
-			return nil, common.Operational(http.StatusNotFound, common.ErrCodeModelNotFound,
-				fmt.Sprintf("cannot find model entityName=%s, version=%s", ref.EntityName, ref.ModelVersion))
-		}
-		return nil, common.Internal("failed to load model", err)
+	if err := requireModel(txCtx, modelStore, ref); err != nil {
+		return nil, err
 	}
 
 	entityStore, err := h.factory.EntityStore(txCtx)
@@ -1910,6 +1965,14 @@ func (h *Handler) ListEntities(ctx context.Context, entityName string, modelVers
 	}
 	if appErr := common.EnsureModelRegistered(ctx, modelStore, ref); appErr != nil {
 		return nil, appErr
+	}
+
+	// The fence runs whether or not a store read follows: a pageSize of 0
+	// reads nothing, and still answers a future instant with the refusal.
+	if pointInTime != nil {
+		if err := h.cons.Fence(ctx, *pointInTime); err != nil {
+			return nil, err
+		}
 	}
 
 	// GetPage requires limit >= 1 (a contract violation is a store-level

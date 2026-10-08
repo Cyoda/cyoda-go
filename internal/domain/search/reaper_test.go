@@ -42,7 +42,7 @@ func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFa
 	}
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 	return svc, factory, store
@@ -257,7 +257,7 @@ func TestReclaimStaleJobs_ZeroHeadroomClaimsNothing(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 3) // Cap() == 5
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool)
 
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-headroom"}}
@@ -319,7 +319,7 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool)
 
 	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
@@ -450,7 +450,7 @@ func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 	t.Cleanup(letThrough) // runs before the pool drains

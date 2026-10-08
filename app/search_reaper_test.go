@@ -37,7 +37,7 @@ func newReclaimService(t *testing.T, factory *memory.StoreFactory, store spi.Asy
 	t.Helper()
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).WithAsyncPool(pool)
+	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).WithAsyncPool(pool)
 }
 
 // TestReclaimStaleTick_RecoversPanicAndLatchesHealth pins that one reclaim

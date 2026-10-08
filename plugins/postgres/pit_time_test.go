@@ -12,7 +12,8 @@ import (
 // never from time.Now() in the test process.
 //
 // This plugin stamps valid_time / transaction_time / LastModifiedDate from
-// postgres itself (`SELECT CURRENT_TIMESTAMP`, entity_store.go), so a boundary
+// postgres itself (cyoda_stamp, which draws on the database clock and the
+// stamp floor), so a boundary
 // taken from the test process's clock is a two-clock comparison. Against a
 // testcontainer the database runs in the Docker VM, whose clock was measured
 // lagging the macOS host by 10–13 ms under CPU load — the condition every
@@ -26,8 +27,10 @@ import (
 // (Ownership Rule 4), so a write's stamp cannot be read back off the entity
 // the test passed in — read the clock, or read the version back from the store.
 
-// dbNow returns the database's current transaction timestamp — the same clock
-// the plugin stamps versions from.
+// dbNow returns the database's current transaction timestamp. Stamps come from
+// cyoda_stamp, which takes max(clock_timestamp(), floor + 1), so a stamp can sit
+// above this value; use it for a boundary only where the test waits or reads
+// the stamp back.
 func dbNow(t *testing.T, ctx context.Context, pool *pgxpool.Pool) time.Time {
 	t.Helper()
 	var now time.Time

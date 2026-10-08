@@ -61,6 +61,30 @@ type entityStore struct {
 	// matter which call site reaches it, not just the ones a comment warns
 	// about today.
 	ownTx bool
+
+	// keys is the factory's tenant marker-key cache (tenantKeys). markerKey
+	// is this tenant's key, resolved from it before a non-transactional write
+	// opens its own transaction; inOwnTx sets it, with q and ownTx, on the
+	// copy that runs inside that transaction, and stampOwnCommitInstant takes
+	// it. Resolving it there, not in the stamp, keeps the key lookup out of
+	// the transaction and off a second connection taken while the transaction
+	// holds one.
+	keys      *tenantKeys
+	markerKey int32
+}
+
+// inOwnTx returns the copy of s that runs inside tx, a transaction this plugin
+// opened for itself: q repointed at tx, ownTx set, and markerKey — the
+// tenant's key, resolved before tx began — for the commit stamp. Every ownTx
+// copy is made here, so none can stamp without the key. A copy rather than s
+// itself, because saveOn, deleteOn and replaceClaims read q and ownTx from
+// their receiver (see saveOn's doc comment).
+func (s *entityStore) inOwnTx(tx pgx.Tx, markerKey int32) *entityStore {
+	c := *s
+	c.q = classifiedQuerier{inner: tx}
+	c.ownTx = true
+	c.markerKey = markerKey
+	return &c
 }
 
 // SaveAll delegates to Save per-entity via spi.DefaultSaveAll; each Save
@@ -90,7 +114,11 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 	// ownTx's doc comment on the struct for why spi.GetTransaction(ctx)
 	// alone cannot tell a store already inside a transaction THIS PLUGIN
 	// opened from one that needs to open its own.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return 0, fmt.Errorf("non-transactional save: %w", err)
+		}
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -105,22 +133,23 @@ func (s *entityStore) save(ctx context.Context, entity *spi.Entity) (int64, erro
 			return 0, fmt.Errorf("failed to set tenant for non-transactional save: %w", classifyError(err))
 		}
 
-		// A copy with q repointed at the transaction and ownTx set: saveOn
-		// (and replaceClaims, which it calls) read s.q and s.ownTx on THIS
-		// receiver, not a parameter — see saveOn's doc comment. Setting
-		// ownTx here is what makes it safe for any future code path to call
-		// back into save/Save on this copy: the guard above will see
-		// s.ownTx == true and fall through to saveOn instead of trying to
-		// open a second transaction.
-		txStore := *s
-		txStore.q = classifiedQuerier{inner: tx}
-		txStore.ownTx = true
+		// A copy (inOwnTx) with q repointed at the transaction, ownTx and the
+		// marker key set: saveOn (and replaceClaims, which it calls) read s.q
+		// and s.ownTx on THIS receiver, not a parameter — see saveOn's doc
+		// comment. Setting ownTx here is what makes it safe for any future
+		// code path to call back into save/Save on this copy: the guard above
+		// will see s.ownTx == true and fall through to saveOn instead of
+		// trying to open a second transaction.
+		txStore := s.inOwnTx(tx, markerKey)
 		version, err := txStore.saveOn(ctx, entity)
 		if err != nil {
+			closeIfStampFailed(ctx, tx, err)
 			return 0, err
 		}
+		// classifyCommitOutcome, not classifyError: a torn socket on COMMIT
+		// leaves the outcome in doubt and must not read as retryable.
 		if err := tx.Commit(ctx); err != nil {
-			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyError(err))
+			return 0, fmt.Errorf("failed to commit non-transactional save: %w", classifyCommitOutcome(err))
 		}
 		return version, nil
 	}
@@ -394,8 +423,14 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 // CREATED.
 func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID string, version int64, isNew bool) error {
 	var instant time.Time
-	if err := s.q.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&instant); err != nil {
-		return fmt.Errorf("failed to read commit instant: %w", err)
+	// cyoda_stamp takes this write's in-flight marker and a stamp above the
+	// floor (see stampCommitInstant). Nothing after this statement waits on a
+	// lock: the two UPDATEs below address by primary key rows this transaction
+	// already wrote and locks. s.markerKey was resolved before this
+	// transaction began (see the keys field). The argument is typed for the
+	// reason given at stampCommitInstant's call.
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::pg_catalog.int4)`, s.markerKey).Scan(&instant); err != nil {
+		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,
 		`UPDATE entity_versions SET valid_time = $1, transaction_time = $1,
@@ -449,6 +484,13 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// always there to lock: expectedTxID is non-empty, so an absent row's
 	// current ID ("") cannot match and the check has already conflicted.
 	//
+	// The tenant's marker key, which this write's commit stamp takes, is
+	// resolved first, before the transaction's connection is taken (see the
+	// keys field and tenantKeys).
+	markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+	if err != nil {
+		return 0, fmt.Errorf("compare-and-save: %w", err)
+	}
 	// Same scoping rule as every other acquire in this plugin: the deadline
 	// bounds getting the connection and is cancelled the instant BeginTx
 	// returns, so the transaction handle — which outlives it — cannot inherit
@@ -497,9 +539,7 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// saveOn instead of trying to BeginTx a second transaction on the same
 	// pool while this one still holds the row lock from compareTxID's FOR
 	// UPDATE, which is exactly the self-deadlock this store used to hit here.
-	txStore := *s
-	txStore.q = classifiedQuerier{inner: tx}
-	txStore.ownTx = true
+	txStore := s.inOwnTx(tx, markerKey)
 
 	if err := txStore.compareTxID(ctx, txStore.q, entity.Meta.ID, expectedTxID, true); err != nil {
 		return 0, err
@@ -513,10 +553,12 @@ func (s *entityStore) CompareAndSave(ctx context.Context, entity *spi.Entity, ex
 	// backwards. See stampOwnCommitInstant.
 	version, err := txStore.save(ctx, entity)
 	if err != nil {
+		closeIfStampFailed(ctx, tx, err)
 		return 0, err
 	}
+	// classifyCommitOutcome: see save's non-tx branch.
 	if err := tx.Commit(ctx); err != nil {
-		return 0, classifyError(fmt.Errorf("failed to commit compare-and-save: %w", err))
+		return 0, fmt.Errorf("failed to commit compare-and-save: %w", classifyCommitOutcome(err))
 	}
 	return version, nil
 }
@@ -589,8 +631,7 @@ func (s *entityStore) Get(ctx context.Context, entityID string) (*spi.Entity, er
 
 // GetAsAt is committed-only: it runs through committedQuerier (pool-pinned)
 // rather than s.q, so an ambient transaction's own uncommitted writes are
-// invisible to it — see committedQuerier's doc comment for why the query's
-// transaction_time guard cannot achieve that on its own.
+// invisible to it — see committedQuerier's doc comment.
 //
 // The reported LastModifiedDate is transaction_time, not valid_time: per this
 // project's definitions lastUpdateTime is the submit instant (transaction_time)
@@ -605,7 +646,6 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 		`SELECT doc, creation_date, transaction_time FROM entity_versions
 		 WHERE tenant_id = $1 AND entity_id = $2
 		   AND valid_time <= $3
-		   AND transaction_time <= CURRENT_TIMESTAMP
 		 ORDER BY valid_time DESC, transaction_time DESC, version DESC
 		 LIMIT 1`,
 		string(s.tenantID), entityID, asAt).Scan(&doc, &creationDate, &transactionTime)
@@ -633,6 +673,7 @@ func (s *entityStore) GetAsAt(ctx context.Context, entityID string, asAt time.Ti
 
 	return unmarshalEntityDoc(doc, creationDate, transactionTime)
 }
+
 func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// Same reasoning as save's non-tx branch, including the ownTx guard —
 	// see save's and ownTx's doc comments. Delete issues its own version
@@ -642,7 +683,11 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 	// history for a delete the entities table never actually applied. Run
 	// them in one transaction of its own, mirroring CompareAndSave's
 	// sequence exactly, the same way save does.
-	if spi.GetTransaction(ctx) == nil && s.pool != nil && !s.ownTx {
+	if spi.GetTransaction(ctx) == nil && !s.ownTx {
+		markerKey, err := s.keys.get(ctx, s.pool, s.acquireTimeout, s.tenantID)
+		if err != nil {
+			return fmt.Errorf("non-transactional delete: %w", err)
+		}
 		acquireCtx, cancelAcquire := newAcquireContext(ctx, s.acquireTimeout)
 		tx, err := s.pool.BeginTx(acquireCtx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 		cancelAcquire() // BeginTx has returned; the handle must not inherit the deadline
@@ -656,14 +701,14 @@ func (s *entityStore) Delete(ctx context.Context, entityID string) error {
 		}
 
 		// Same reason save needs a receiver copy — see save's non-tx branch.
-		txStore := *s
-		txStore.q = classifiedQuerier{inner: tx}
-		txStore.ownTx = true
+		txStore := s.inOwnTx(tx, markerKey)
 		if err := txStore.deleteOn(ctx, entityID); err != nil {
+			closeIfStampFailed(ctx, tx, err)
 			return err
 		}
+		// classifyCommitOutcome: see save's non-tx branch.
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyError(err))
+			return fmt.Errorf("failed to commit non-transactional delete: %w", classifyCommitOutcome(err))
 		}
 		return nil
 	}
@@ -887,7 +932,17 @@ func (s *entityStore) Exists(ctx context.Context, entityID string) (bool, error)
 }
 
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See spec §Known limitation (phantom reads).
-func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		// Committed-only, like every instant read: off the ambient transaction.
+		var count int64
+		base, args := s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		err := s.committedQuerier().QueryRow(ctx, `SELECT count(*) FROM (`+base+`) pit`, args...).Scan(&count)
+		if err != nil {
+			return 0, fmt.Errorf("failed to count entities as at: %w", err)
+		}
+		return count, nil
+	}
 	var count int64
 	err := s.q.QueryRow(ctx,
 		`SELECT count(*) FROM entities WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`,
@@ -907,27 +962,44 @@ func (s *entityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 //
 // Deliberately not tracked in readSet: aggregate with no per-row identity. See
 // Count's note on phantom reads.
-func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *entityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
 
-	args := []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
 	// Entities with no $._meta.state are bucketed under "" rather than dropped,
 	// preserving them for diagnostic visibility. This matches the in-tx Go path
 	// which reads e.Meta.State (also "" if unset).
-	q := `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*)
-	      FROM entities
+	const selectState = `SELECT COALESCE(doc -> '_meta' ->> 'state', '') AS state, COUNT(*) `
+	var (
+		q         string
+		args      []any
+		qr        Querier
+		stateJoin string // how the state filter attaches to the query
+	)
+	if asAt != nil {
+		// At an instant: the version as of asAt per entity, committed-only
+		// (off the ambient transaction), like every instant read.
+		var base string
+		base, args = s.searchBaseQuery(modelRef.EntityName, modelRef.ModelVersion, asAt)
+		q = selectState + `FROM (` + base + `) pit`
+		qr = s.committedQuerier()
+		stateJoin = ` WHERE `
+	} else {
+		args = []any{string(s.tenantID), modelRef.EntityName, modelRef.ModelVersion}
+		q = selectState + `FROM entities
 	      WHERE tenant_id = $1 AND model_name = $2 AND model_version = $3 AND NOT deleted`
-
+		qr = s.q
+		stateJoin = ` AND `
+	}
 	if states != nil {
 		// pgx encodes []string as text[] for the ANY() comparison; no manual casting needed.
 		args = append(args, states)
-		q += ` AND doc -> '_meta' ->> 'state' = ANY($4)`
+		q += stateJoin + fmt.Sprintf(`COALESCE(doc -> '_meta' ->> 'state', '') = ANY($%d)`, len(args))
 	}
 	q += ` GROUP BY state`
 
-	rows, err := s.q.Query(ctx, q, args...)
+	rows, err := qr.Query(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to count entities by state: %w", err)
 	}
@@ -1124,6 +1196,10 @@ func (s *entityStore) GetVersionByTransaction(ctx context.Context, entityID, txI
 // spi.EntityStore.GetVersionMetadata's doc comment: this method surfaces
 // audit metadata only.
 //
+// The listing is committed-only, like every history read: both statements run
+// through committedQuerier, so an ambient transaction's own uncommitted
+// versions are not listed.
+//
 // Existence is checked BEFORE the window filter is applied: an entity with
 // a non-empty version history whose versions all fall outside
 // [opts.From, opts.Until] returns an empty slice, not ErrNotFound.
@@ -1133,7 +1209,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 	tid := string(s.tenantID)
 
 	var exists bool
-	if err := s.q.QueryRow(ctx,
+	if err := s.committedQuerier().QueryRow(ctx,
 		`SELECT EXISTS(SELECT 1 FROM entity_versions WHERE tenant_id = $1 AND entity_id = $2)`,
 		tid, entityID).Scan(&exists); err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: existence check: %w", err)
@@ -1158,7 +1234,7 @@ func (s *entityStore) GetVersionMetadata(ctx context.Context, entityID string, o
 		query += fmt.Sprintf(" LIMIT $%d", len(args))
 	}
 
-	rows, err := s.q.Query(ctx, query, args...)
+	rows, err := s.committedQuerier().Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("GetVersionMetadata: query: %w", err)
 	}

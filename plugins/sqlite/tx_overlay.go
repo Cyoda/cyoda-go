@@ -206,7 +206,7 @@ func (o *txOverlay) Close() error {
 // latest-version-at-snapshot join, selecting only the entity id and the
 // meta state. The alias "ev" is kept so plan.where fragments apply unchanged.
 func (s *entityStore) snapshotIDStateBase(opts spi.SearchOptions, snapshotMicro int64) (string, []any) {
-	query := `SELECT ev.entity_id, json_extract(json(ev.meta), '$.state')
+	query := `SELECT ev.entity_id AS entity_id, json_extract(json(ev.meta), '$.state') AS state
 	          FROM entity_versions ev
 	          INNER JOIN (
 	              SELECT entity_id, MAX(version) AS max_ver

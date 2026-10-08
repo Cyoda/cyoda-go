@@ -808,6 +808,10 @@ func (t *txLeakTracker) Join(ctx context.Context, txID string) (context.Context,
 	return t.inner.Join(ctx, txID)
 }
 
+func (t *txLeakTracker) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (t *txLeakTracker) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return t.inner.GetSubmitTime(ctx, txID)
 }

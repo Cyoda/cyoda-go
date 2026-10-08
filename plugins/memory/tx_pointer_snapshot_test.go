@@ -53,7 +53,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 	}
 
 	all := drainAll(t, txCtx, store, refA, nil)
-	n, err := store.Count(txCtx, refA)
+	n, err := store.Count(txCtx, refA, nil)
 	if err != nil {
 		t.Fatalf("Count: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestTx_Count_BufferedOtherModelDoesNotHideCommittedRow(t *testing.T) {
 		t.Fatalf("Count(refA) = %d, Iterate(refA) = %d rows — the count must match the merged view", n, len(all))
 	}
 
-	byState, err := store.CountByState(txCtx, refA, nil)
+	byState, err := store.CountByState(txCtx, refA, nil, nil)
 	if err != nil {
 		t.Fatalf("CountByState: %v", err)
 	}

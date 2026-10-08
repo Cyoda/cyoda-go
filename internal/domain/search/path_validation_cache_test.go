@@ -74,7 +74,7 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -128,7 +128,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -185,7 +185,7 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")

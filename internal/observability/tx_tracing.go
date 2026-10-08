@@ -109,6 +109,16 @@ func (t *TracingTransactionManager) GetSubmitTime(ctx context.Context, txID stri
 	return t.inner.GetSubmitTime(ctx, txID)
 }
 
+func (t *TracingTransactionManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
+	ctx, span := t.tracer.Start(ctx, "tx.consistency_time")
+	defer span.End()
+	ct, err := t.inner.ConsistencyTime(ctx)
+	if err != nil {
+		span.RecordError(err)
+	}
+	return ct, err
+}
+
 func (t *TracingTransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	ctx, span := t.tracer.Start(ctx, "tx.savepoint", trace.WithAttributes(AttrTxID.String(txID)))
 	defer span.End()

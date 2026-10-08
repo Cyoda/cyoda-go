@@ -442,7 +442,7 @@ func (s *EntityStore) saveUnlocked(ctx context.Context, entity *spi.Entity) (int
 	versions := s.factory.entityData[tid][eid]
 	nextVersion := lastVersion(versions) + 1
 
-	// Stamped under the monotonic floor a commit uses (nextSubmitTime), not
+	// Stamped under the non-decreasing floor a commit uses (nextSubmitTime), not
 	// the raw clock: the floor can stand ahead of the clock, and Begin floors
 	// a new transaction's SnapshotTime to it, so a raw-clock stamp could land
 	// at or below a snapshot already open.
@@ -672,7 +672,7 @@ func (s *EntityStore) Delete(ctx context.Context, entityID string) error {
 	attributed, executor := spi.AttributionFor(ctx)
 	// latest.deleted was already checked false above, so latest.entity is
 	// guaranteed non-nil here.
-	// Stamped under the monotonic floor — see saveUnlocked.
+	// Stamped under the non-decreasing floor — see saveUnlocked.
 	deletedAt := s.factory.txManager.nextSubmitTime()
 	s.factory.entityData[s.tenant][entityID] = append(versions, entityVersion{
 		entity:         nil,
@@ -760,7 +760,7 @@ func (s *EntityStore) DeleteAll(ctx context.Context, modelRef spi.ModelRef) erro
 	s.factory.entityMu.Lock()
 	defer s.factory.entityMu.Unlock()
 
-	// Stamped under the monotonic floor — see saveUnlocked. One stamp for the
+	// Stamped under the non-decreasing floor — see saveUnlocked. One stamp for the
 	// whole sweep: a non-transactional DeleteAll is a single write.
 	now := s.factory.txManager.nextSubmitTime()
 	attributed, executor := spi.AttributionFor(ctx)
@@ -871,7 +871,16 @@ func (s *EntityStore) countTx(ctx context.Context, tx *spi.TransactionState, mod
 	return nil
 }
 
-func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, error) {
+func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef, asAt *time.Time) (int64, error) {
+	if asAt != nil {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		ents, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return 0, fmt.Errorf("Count: %w", err)
+		}
+		return int64(len(ents)), nil
+	}
 	tx := spi.GetTransaction(ctx)
 	if tx != nil {
 		tx.OpMu.RLock()
@@ -911,7 +920,7 @@ func (s *EntityStore) Count(ctx context.Context, modelRef spi.ModelRef) (int64, 
 
 // CountByState returns counts of non-deleted entities grouped by state for the
 // given model. See SPI godoc on EntityStore.CountByState for filter semantics.
-func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string) (map[string]int64, error) {
+func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, states []string, asAt *time.Time) (map[string]int64, error) {
 	if states != nil && len(states) == 0 {
 		return map[string]int64{}, nil
 	}
@@ -922,6 +931,25 @@ func (s *EntityStore) CountByState(ctx context.Context, modelRef spi.ModelRef, s
 		for _, st := range states {
 			filter[st] = struct{}{}
 		}
+	}
+
+	if asAt != nil {
+		s.factory.entityMu.RLock()
+		defer s.factory.entityMu.RUnlock()
+		ents, err := s.getAllSnapshotPointersUnlocked(ctx, modelRef, *asAt)
+		if err != nil {
+			return nil, fmt.Errorf("CountByState: %w", err)
+		}
+		result := make(map[string]int64)
+		for _, e := range ents {
+			if filter != nil {
+				if _, ok := filter[e.Meta.State]; !ok {
+					continue
+				}
+			}
+			result[e.Meta.State]++
+		}
+		return result, nil
 	}
 
 	tx := spi.GetTransaction(ctx)

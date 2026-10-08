@@ -505,8 +505,8 @@ type EntityChangesMetadataGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity changes. If not provided, retrieves all
-	// changes up to the current consistency time.
+	// Point in time to retrieve the entity changes. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -660,6 +660,162 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 		plain.Success = true
 	}
 	*j = EntityChangesMetadataResponseJson(plain)
+	return nil
+}
+
+type EntityConsistencyTimeGetRequestJson struct {
+	// Error details (if present).
+	Error *EntityConsistencyTimeGetRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeGetRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityConsistencyTimeGetRequestJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityConsistencyTimeGetRequestJsonError: required")
+	}
+	type Plain EntityConsistencyTimeGetRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeGetRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityConsistencyTimeGetRequestJson: required")
+	}
+	type Plain EntityConsistencyTimeGetRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeGetRequestJson(plain)
+	return nil
+}
+
+type EntityConsistencyTimeResponseJson struct {
+	// The consistency time of the caller's tenant: the instant up to which every save
+	// is final. Set when success is true.
+	ConsistencyTime *time.Time `json:"consistencyTime,omitempty" yaml:"consistencyTime,omitempty" mapstructure:"consistencyTime,omitempty"`
+
+	// Error details (if present).
+	Error *EntityConsistencyTimeResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the original request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityConsistencyTimeResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; raw != nil && !ok {
+		return fmt.Errorf("field code in EntityConsistencyTimeResponseJsonError: required")
+	}
+	if _, ok := raw["message"]; raw != nil && !ok {
+		return fmt.Errorf("field message in EntityConsistencyTimeResponseJsonError: required")
+	}
+	type Plain EntityConsistencyTimeResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityConsistencyTimeResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; raw != nil && !ok {
+		return fmt.Errorf("field id in EntityConsistencyTimeResponseJson: required")
+	}
+	if _, ok := raw["requestId"]; raw != nil && !ok {
+		return fmt.Errorf("field requestId in EntityConsistencyTimeResponseJson: required")
+	}
+	type Plain EntityConsistencyTimeResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success in %T: must not be null", *j)
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityConsistencyTimeResponseJson(plain)
 	return nil
 }
 
@@ -1135,7 +1291,8 @@ type EntityDeleteAllRequestJson struct {
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
 
-	// point in time, i.e. delete all that existed prior to this point in time
+	// Point in time, i.e. delete all that existed at this point in time. Must be at
+	// or before the consistency time. If not provided, the current state is used.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1718,7 +1875,8 @@ type EntityGetAllRequestJson struct {
 	// Page size.
 	PageSize int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -1806,8 +1964,8 @@ type EntityGetRequestJson struct {
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
-	// Point in time to retrieve the entity. If not provided, retrieves the entity at
-	// the current consistency time.
+	// Point in time to retrieve the entity. Must be at or before the consistency
+	// time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3169,7 +3327,8 @@ type EntitySearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3344,7 +3503,8 @@ type EntitySnapshotSearchRequestJson struct {
 	// OrderBy corresponds to the JSON schema field "orderBy".
 	OrderBy []EntitySnapshotSearchRequestJsonOrderByElem `json:"orderBy,omitempty" yaml:"orderBy,omitempty" mapstructure:"orderBy,omitempty"`
 
-	// point in time
+	// Point in time. Must be at or before the consistency time. If not provided, the
+	// consistency time at submission.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
@@ -3580,8 +3740,8 @@ type EntityStatsByStateGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Optional list of states for which to calculate statistics. If not provided,
@@ -3767,8 +3927,8 @@ type EntityStatsGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Defaults to current
-	// consistency time if not provided.
+	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.

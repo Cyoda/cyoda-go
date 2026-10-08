@@ -67,6 +67,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — not retryable — a search condition's operand parses into none of the field's declared data types
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
+- `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not certify a consistency time within its wait budget
 - `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted
 - `errors.DISPATCH_FORWARD_FAILED` — `503` — retryable — a callout was handed over to another cluster node and no usable answer came back; the work may have run
 - `errors.DISPATCH_TIMEOUT` — `503` — retryable (see note) — a compute member did not take, or did not answer, a callout within its answer limit; the work may have run
@@ -106,6 +107,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.MODEL_NOT_LOCKED` — `409` — not retryable — model exists but is not in `LOCKED` state; entity writes require a locked model
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
+- `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — not retryable — the read's pointInTime is later than the consistency time
 - `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header
 - `errors.SCHEDULE_FUNCTION_INVALID_RESULT` — `500` — not retryable — a scheduled transition's arm-time function answered, but its result cannot be read as a schedule
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled

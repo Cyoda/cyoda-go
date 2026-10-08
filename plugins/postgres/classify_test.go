@@ -285,8 +285,9 @@ func newAbortFixture(t *testing.T, idle time.Duration) *abortFixture {
 	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT": idle.String(),
 	}))
+	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
 }
@@ -300,10 +301,30 @@ func newStatementCeilingFixture(t *testing.T, limit time.Duration) *abortFixture
 	pool := openCeilingPool(t, ceilingEnv(testDBURL(t), map[string]string{
 		"CYODA_POSTGRES_STATEMENT_TIMEOUT": limit.String(),
 	}))
+	migrateSharedSchema(t)
 	tm := NewTransactionManager(pool, newTestUUIDGenerator())
-	f := NewStoreFactory(pool)
+	f := newStoreFactoryWithKeys(pool, defaultStoreConfig(), tm.keys)
 	f.setTransactionManager(tm)
 	return &abortFixture{tm: tm, q: f.querier(), pool: pool}
+}
+
+// migrateSharedSchema brings the shared test database's schema up to date,
+// on a pool of its own without the fixture's ceilings. Begin resolves the
+// tenant's marker key from consistency_tenant_keys (migration 000016), so a
+// fixture's transactions need the migrated schema even when they never
+// commit.
+func migrateSharedSchema(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	pool, err := pgxpool.New(ctx, testDBURL(t))
+	if err != nil {
+		t.Fatalf("open migration pool: %v", err)
+	}
+	defer pool.Close()
+	if err := runMigrations(ctx, pool, defaultMigrateLockTimeout); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
 }
 
 func classifyTestCtx() context.Context {

@@ -84,7 +84,7 @@ func newReadOutageHandler(t *testing.T, readErr error) (*entity.Handler, context
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New())
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
 	return h, ctx
 }
 

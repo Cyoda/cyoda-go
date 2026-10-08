@@ -164,7 +164,7 @@ func newStreamingStatsFixture(t *testing.T, iterErr error) (
 	req *entity.ValidatedGroupedStatsRequest,
 ) {
 	t.Helper()
-	svc = entity.NewGroupedStatsService(10000)
+	svc = entity.NewGroupedStatsService(10000, newFixedConsistency())
 	ctx = context.Background()
 	store = &fakeIterable{iterErr: iterErr}
 	model = spi.ModelRef{}
@@ -180,7 +180,7 @@ func TestQueryGroupedStats_FallsBackToStreaming(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -212,7 +212,7 @@ func TestQueryGroupedStats_PrefersPushdownWhenAvailable(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "should-not-be-seen"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -239,7 +239,7 @@ func TestQueryGroupedStats_PushdownNotPushdownableFallsBackToStreaming(t *testin
 		{Meta: spi.EntityMeta{State: "allocated"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -262,7 +262,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -286,7 +286,7 @@ func TestQueryGroupedStats_PushdownArbitraryErrorPropagates(t *testing.T) {
 // silently missed and the query returned success. Reordering to read Err()
 // after Close() runs surfaces it.
 func TestQueryGroupedStats_CloseOnlySurfacedErrorFailsQuery(t *testing.T) {
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -311,7 +311,7 @@ func TestQueryGroupedStats_InTransactionSkipsPushdown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -337,7 +337,7 @@ func TestQueryGroupedStats_CardinalityExceeded(t *testing.T) {
 			Data: []byte(`{}`),
 		})
 	}
-	svc := entity.NewGroupedStatsService(3) // ceiling = 3
+	svc := entity.NewGroupedStatsService(3, newFixedConsistency()) // ceiling = 3
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -360,7 +360,7 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -419,7 +419,7 @@ func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"items":[{"name":"drop"}]}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -470,7 +470,7 @@ func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"blue"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -500,7 +500,7 @@ func TestQueryGroupedStats_FunctionConditionFailsClosed(t *testing.T) {
 	rows := []*spi.Entity{
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -516,7 +516,7 @@ func TestQueryGroupedStats_AggregationsViaStreaming(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"v":20}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"v":30}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 		Aggregations: []entity.AggregationExprValidated{
@@ -547,7 +547,7 @@ func TestQueryGroupedStats_GroupByNumberProducesMultipleBuckets(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":1}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"tier":2}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.tier"}},
 	}
@@ -579,7 +579,7 @@ func TestQueryGroupedStats_GroupByBoolProducesMultipleBuckets(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":true}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"premium":false}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.premium"}},
 	}
@@ -606,7 +606,7 @@ func TestQueryGroupedStats_NonScalarRuntimeValueCoercesToNull(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":{"x":1}}`)},
 		{Meta: spi.EntityMeta{State: "x"}, Data: []byte(`{"variantId":[1,2,3]}`)},
 	}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{Path: "$.variantId"}},
 	}
@@ -633,7 +633,7 @@ func TestQueryGroupedStats_PushdownPropagatesCardinalityError(t *testing.T) {
 	agg := &fakeAggregator{err: spi.ErrGroupCardinalityExceeded}
 	iter := &fakeIterable{}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -653,7 +653,7 @@ func TestQueryGroupedStats_InvalidFilterPathMapsTo400(t *testing.T) {
 	agg := &fakeAggregator{err: fmt.Errorf("plugin detail: %w", spi.ErrInvalidFilterPath)}
 	iter := &fakeIterable{}
 	dual := dualBackend{fakeIterable: iter, fakeAggregator: agg}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy: []entity.GroupExprValidated{{IsState: true}},
 	}
@@ -691,7 +691,7 @@ func TestQueryGroupedStats_MalformedRegexRejected(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -724,7 +724,7 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -758,7 +758,7 @@ func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -794,7 +794,7 @@ func TestQueryGroupedStats_MalformedBetweenArityRejected(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"price":10}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -820,7 +820,7 @@ func TestQueryGroupedStats_UnknownMetaFieldRejected(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -845,7 +845,7 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -871,7 +871,7 @@ func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),
@@ -905,7 +905,7 @@ func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
 		{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)},
 	}
 	iter := &fakeIterable{entities: rows}
-	svc := entity.NewGroupedStatsService(10000)
+	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
 		Condition: []byte(cond),

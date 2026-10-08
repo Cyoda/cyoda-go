@@ -184,6 +184,28 @@ func (c *callbackClient) getEntityAt(ctx context.Context, entityID string, at ti
 	return c.do(ctx, http.MethodGet, path, "", txToken, "")
 }
 
+// consistencyTime issues GET /api/entity/consistency-time within the joined
+// transaction and returns the instant the platform reports. A point-in-time
+// read is refused when it lies after this instant, so a scenario that reads at
+// a point in time takes the instant from the platform instead of the local
+// clock.
+func (c *callbackClient) consistencyTime(ctx context.Context, txToken string) (time.Time, error) {
+	res, err := c.do(ctx, http.MethodGet, "/api/entity/consistency-time", "", txToken, "")
+	if err != nil {
+		return time.Time{}, err
+	}
+	if res.Status != http.StatusOK {
+		return time.Time{}, fmt.Errorf("consistency time status=%d body=%s", res.Status, res.Body)
+	}
+	var body struct {
+		ConsistencyTime time.Time `json:"consistencyTime"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &body); err != nil {
+		return time.Time{}, fmt.Errorf("failed to decode the consistency time: %w", err)
+	}
+	return body.ConsistencyTime, nil
+}
+
 // createSecondaryWithQuery is createSecondary's negative-path sibling: it
 // appends a raw query string (e.g. "transactionTimeoutMillis=5000") to the
 // create URL instead of assuming success. Used by scenarios that expect the
@@ -644,10 +666,15 @@ func newCallbackCatalog(gcb *grpcCallbackClient) (map[string]callbackProcessorFu
 			if err != nil {
 				return nil, fmt.Errorf("callback plain read: %w", err)
 			}
-			// One hour ahead: strictly after the uncommitted create, and far
-			// enough clear of it that no clock skew between this process and
-			// the server can make the instant precede the write.
-			pit, err := cb.getEntityAt(ctx, secID, time.Now().Add(time.Hour), token)
+			// The latest instant a point-in-time read may name is the
+			// consistency time, taken from the platform after the create (a
+			// later instant is refused). The secondary is uncommitted, so it
+			// is invisible at that instant whatever its value.
+			at, err := cb.consistencyTime(ctx, token)
+			if err != nil {
+				return nil, fmt.Errorf("callback consistency time: %w", err)
+			}
+			pit, err := cb.getEntityAt(ctx, secID, at, token)
 			if err != nil {
 				return nil, fmt.Errorf("callback point-in-time read: %w", err)
 			}

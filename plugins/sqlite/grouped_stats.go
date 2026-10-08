@@ -28,8 +28,9 @@ import (
 //         layer falls through to Iterate-streaming-tally with Welford).
 //       * the filter has a residual (post-aggregation residual application
 //         can't reconstruct per-bucket counts safely).
-//       * opts.PointInTime is set (PIT joins are out of scope for v1; service
-//         layer streaming-tally over Iterate handles it).
+//     With opts.PointInTime set it aggregates the latest version of each
+//     entity at or before that instant (committed only, on the read pool),
+//     over the same group / aggregate / filter SQL as the live read.
 //
 // Cardinality detection follows D17: we LIMIT MaxBuckets+1 and surface
 // ErrGroupCardinalityExceeded the moment we observe MaxBuckets+1 rows.
@@ -58,11 +59,10 @@ var _ spi.GroupedAggregator = (*entityStore)(nil)
 // the `entities` table directly and miss buffered writes / fail to mask
 // buffered deletes, violating read-your-writes promised by spec D11.
 //
-// Known limitation: in-tx + PointInTime (exotic combination) falls through
-// to the plain PIT path, which reads from entity_versions WITHOUT applying
-// the tx-buffer overlay. PIT semantics are historical-read by definition,
-// so the in-flight buffer is a tier-2 concern; documented in the
-// grouped-stats help-topic (cmd/cyoda/help/content/crud.md).
+// A point-in-time read is committed-only: with PointInTime set, an ambient
+// transaction is ignored and its buffer is not overlaid. The read goes
+// through the plain PIT path over entity_versions, as do counts and
+// grouped stats at an instant.
 //
 // OrderBy: empty means order is unspecified (a deterministic entity_id
 // order is still emitted — a conformant choice within "unspecified"); a
@@ -212,7 +212,7 @@ func (it *sqliteIter) Close() error {
 
 // GroupedAggregate implements spi.GroupedAggregator. Returns
 // ErrAggregationNotPushdownable for request shapes the SQL path cannot
-// safely cover (stdev / residual filter / point-in-time); the caller is
+// safely cover (stdev / residual filter); the caller is
 // expected to fall back to Iterate-driven streaming tally.
 func (s *entityStore) GroupedAggregate(
 	ctx context.Context,
@@ -221,17 +221,10 @@ func (s *entityStore) GroupedAggregate(
 	filter spi.Filter,
 	opts spi.GroupedAggregationsOptions,
 ) ([]spi.GroupedAggregateBucket, error) {
-	// PIT pushdown is out of scope for v1 — streaming tally over Iterate
-	// (which does support PIT) handles it without per-query SQL plumbing.
-	if opts.PointInTime != nil {
-		return nil, spi.ErrAggregationNotPushdownable
-	}
-
-	// Path validation runs BEFORE the stdev decline below, matching postgres,
-	// which validates immediately after its own PIT early-return. A malformed
-	// path is a client error and must be classified the same way on every
-	// backend; declining first would report an invalid path as
-	// ErrAggregationNotPushdownable whenever the request also asked for stdev,
+	// Path validation runs BEFORE the stdev decline below, on every request
+	// shape including a point in time. A malformed path is a client error
+	// and must be classified the same way on every backend; declining first
+	// would report an invalid path as ErrAggregationNotPushdownable whenever the request also asked for stdev,
 	// and the service layer would then stream a filter it should have refused.
 	if err := validateFilterPaths(filter); err != nil {
 		return nil, err
@@ -296,8 +289,22 @@ func (s *entityStore) GroupedAggregate(
 	}
 
 	q := "SELECT " + strings.Join(selectParts, ", ")
-	q += " FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted"
+	// The live read aggregates the current-state table on the writer; an
+	// instant aggregates the latest version of each entity at or before it,
+	// committed only, on the read pool, over searchSnapshotBase. Both expose
+	// the entity_id, data and meta columns the group, aggregate and filter
+	// SQL reference unqualified.
+	queryDB := s.db
 	args := []any{string(s.tenantID), model.EntityName, model.ModelVersion}
+	if opts.PointInTime != nil {
+		base, baseArgs := s.searchSnapshotBase(
+			spi.SearchOptions{ModelName: model.EntityName, ModelVersion: model.ModelVersion}, timeToMicro(*opts.PointInTime))
+		q += " FROM (" + base + ") pit WHERE 1 = 1"
+		args = baseArgs
+		queryDB = s.readDB
+	} else {
+		q += " FROM entities WHERE tenant_id = ? AND model_name = ? AND model_version = ? AND NOT deleted"
+	}
 	if plan.where != "" {
 		q += " AND (" + plan.where + ")"
 		args = append(args, plan.args...)
@@ -317,7 +324,7 @@ func (s *entityStore) GroupedAggregate(
 		args = append(args, limit)
 	}
 
-	rows, err := s.db.QueryContext(ctx, q, args...)
+	rows, err := queryDB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("grouped aggregate query: %w", err)
 	}

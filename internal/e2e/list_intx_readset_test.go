@@ -58,7 +58,7 @@ func newListHandler(t *testing.T) *entity.Handler {
 		testApp.TransactionManager(),
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
-		txgate.New(),
+		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
 	)
 }
 

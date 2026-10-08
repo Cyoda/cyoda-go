@@ -44,7 +44,7 @@ func TestPathValidationCache_RejectedSortOnArrayContainer_DoesNotPoisonCondition
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)).
 		WithPathValidationCache(cache)
 
 	condition := &predicate.SimpleCondition{JsonPath: "$.tags", OperatorType: "NOT_NULL"}
@@ -111,7 +111,7 @@ func TestPathValidationCache_RejectedSortOnObjectContainer_DoesNotPoisonConditio
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)).
 		WithPathValidationCache(cache)
 
 	condition := &predicate.SimpleCondition{JsonPath: "$.address", OperatorType: "NOT_NULL"}
@@ -165,7 +165,7 @@ func TestPathValidationCache_RejectedCondition_StillRejectsSort(t *testing.T) {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)).
 		WithPathValidationCache(cache)
 
 	// 1. A condition on a genuinely-unknown path is rejected and negative-cached.

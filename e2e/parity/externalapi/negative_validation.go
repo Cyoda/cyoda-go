@@ -189,10 +189,12 @@ func RunExternalAPI_12_06_GetChangesForMissingEntity(t *testing.T, fixture parit
 }
 
 // RunExternalAPI_12_07_DeleteByConditionTooManyMatches — dictionary 12/neg/07.
-// Skipped pending server-side support — delete-by-condition surface entirely missing.
+// Not applicable: cyoda-go has no entitySearchLimit, so a conditional delete has
+// no match-count limit to exceed. A client that wants the guard counts at an
+// instant (statistics with pointInTime) and deletes at the same pointInTime.
 func RunExternalAPI_12_07_DeleteByConditionTooManyMatches(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	t.Skip("pending server-side support — DELETE /entity/{name}/{version} ignores both condition body and pointInTime; full delete-by-condition surface is a v0.7.0 server-side gap")
+	t.Skip("not applicable: cyoda-go has no entitySearchLimit; count at pointInTime, then delete at the same pointInTime")
 }
 
 // RunExternalAPI_12_08_UpdateUnknownTransition — dictionary 12/neg/08.

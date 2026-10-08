@@ -361,6 +361,23 @@ func entityStatsError(ctx context.Context, ceID string, err error) (*cepb.CloudE
 	return NewCloudEvent(EntityStatsResponse, resp)
 }
 
+// consistencyTimeError builds a schema-valid EntityConsistencyTimeResponse error.
+func consistencyTimeError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
+	code, msg, retryable := buildErrorFields(err)
+	resp := events.EntityConsistencyTimeResponseJson{
+		ID:        ceID,
+		Success:   false,
+		Warnings:  ctxWarnings(ctx),
+		RequestID: ceID,
+		Error: &events.EntityConsistencyTimeResponseJsonError{
+			Code:      code,
+			Message:   msg,
+			Retryable: retryable,
+		},
+	}
+	return NewCloudEvent(EntityConsistencyTimeResponse, resp)
+}
+
 // entityStatsByStateError builds a schema-valid EntityStatsByStateResponse error.
 func entityStatsByStateError(ctx context.Context, ceID string, err error) (*cepb.CloudEvent, error) {
 	code, msg, retryable := buildErrorFields(err)

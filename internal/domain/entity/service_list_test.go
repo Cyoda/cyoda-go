@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"testing"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -18,7 +17,7 @@ import (
 // The store guard these tests used to carry — a wrapper failing any
 // whole-model read — is gone with the methods it guarded: there is no
 // whole-model read in the SPI for ListEntities to reach.
-func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRef, n int) (context.Context, *entity.Handler) {
+func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRef, n int) (context.Context, *entity.Handler, *memory.StoreFactory) {
 	t.Helper()
 	base := memory.NewStoreFactory()
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
@@ -54,8 +53,8 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 		}
 	}
 
-	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New())
-	return ctx, h
+	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base))
+	return ctx, h, base
 }
 
 // TestListEntities_PagesViaGetPage asserts ListEntities pages at the store
@@ -63,7 +62,7 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 // exactly ids "id-03","id-04","id-05" (byte-wise ID order).
 func TestListEntities_PagesViaGetPage(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "list-getpage-model", ModelVersion: "1"}
-	ctx, h := newListEntitiesFixture(t, "tenant-list-page", ref, 10)
+	ctx, h, _ := newListEntitiesFixture(t, "tenant-list-page", ref, 10)
 
 	envs, err := h.ListEntities(ctx, ref.EntityName, ref.ModelVersion, entity.PaginationParams{PageSize: 3, PageNumber: 1}, nil)
 	if err != nil {
@@ -85,7 +84,7 @@ func TestListEntities_PagesViaGetPage(t *testing.T) {
 // end of the result set is an empty page, not an error.
 func TestListEntities_PagePastEnd_ReturnsEmpty(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "list-getpage-pastend-model", ModelVersion: "1"}
-	ctx, h := newListEntitiesFixture(t, "tenant-list-pastend", ref, 10)
+	ctx, h, _ := newListEntitiesFixture(t, "tenant-list-pastend", ref, 10)
 
 	envs, err := h.ListEntities(ctx, ref.EntityName, ref.ModelVersion, entity.PaginationParams{PageSize: 3, PageNumber: 10}, nil)
 	if err != nil {
@@ -102,7 +101,7 @@ func TestListEntities_PagePastEnd_ReturnsEmpty(t *testing.T) {
 // GetPage, whose contract requires limit >= 1.
 func TestListEntities_ZeroPageSize_ReturnsEmptyWithoutStoreCall(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "list-getpage-zerosize-model", ModelVersion: "1"}
-	ctx, h := newListEntitiesFixture(t, "tenant-list-zerosize", ref, 5)
+	ctx, h, _ := newListEntitiesFixture(t, "tenant-list-zerosize", ref, 5)
 
 	envs, err := h.ListEntities(ctx, ref.EntityName, ref.ModelVersion, entity.PaginationParams{PageSize: 0, PageNumber: 0}, nil)
 	if err != nil {
@@ -118,9 +117,16 @@ func TestListEntities_ZeroPageSize_ReturnsEmptyWithoutStoreCall(t *testing.T) {
 // meta.pointInTime on every envelope.
 func TestListEntities_PointInTime_UsesGetPageAsAt(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "list-getpage-asat-model", ModelVersion: "1"}
-	ctx, h := newListEntitiesFixture(t, "tenant-list-asat", ref, 4)
+	ctx, h, base := newListEntitiesFixture(t, "tenant-list-asat", ref, 4)
 
-	asAt := time.Now().UTC()
+	tm, err := base.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	asAt, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
 
 	envs, err := h.ListEntities(ctx, ref.EntityName, ref.ModelVersion, entity.PaginationParams{PageSize: 10, PageNumber: 0}, &asAt)
 	if err != nil {

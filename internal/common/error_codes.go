@@ -149,6 +149,16 @@ const (
 	// caller's action is identical, and which bound bit is operator
 	// information. Retryable: capacity frees as in-flight jobs complete.
 	ErrCodeSearchQueueFull = "SEARCH_QUEUE_FULL"
+	// ErrCodePointInTimeAfterConsistencyTime is returned when a read's
+	// pointInTime is later than the consistency time: an answer at that
+	// instant could still change. 400, not retryable as sent; the
+	// problem's properties.consistencyTime carries the current consistency
+	// time, at or before which the read is served.
+	ErrCodePointInTimeAfterConsistencyTime = "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"
+	// ErrCodeConsistencyTimeUnavailable is returned when the store could not
+	// certify a consistency time within its wait budget, typically because a
+	// save of the tenant is held in its commit phase. 503, retryable.
+	ErrCodeConsistencyTimeUnavailable = "CONSISTENCY_TIME_UNAVAILABLE"
 	// ErrCodeServerBusy is returned when the node has no capacity left for
 	// the bounded work a request needs within the wait — today, a
 	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
@@ -288,6 +298,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeComputeMemberDisconnected:        {},
 	ErrCodeConditionTypeMismatch:            {},
 	ErrCodeConflict:                         {},
+	ErrCodeConsistencyTimeUnavailable:       {},
 	ErrCodeDeleteNotConverged:               {},
 	ErrCodeDispatchForwardFailed:            {},
 	ErrCodeDispatchTimeout:                  {},
@@ -326,6 +337,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeModelNotLocked:                   {},
 	ErrCodeNoComputeMemberForTag:            {},
 	ErrCodeNotImplemented:                   {},
+	ErrCodePointInTimeAfterConsistencyTime:  {},
 	ErrCodePreconditionRequired:             {},
 	ErrCodeScheduleFunctionInvalidResult:    {},
 	ErrCodeSearchJobAlreadyTerminal:         {},

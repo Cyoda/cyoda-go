@@ -57,7 +57,7 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 			createStaleReclaimJob(t, base, "tenant-a", "job-refused", ref, cond, time.Now())
 
 			pool := search.NewWorkerPool(1, 4)
-			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 				WithAsyncPool(pool).
 				WithHeartbeat(time.Hour)
 
@@ -100,7 +100,7 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 	if err := pool.Submit(func() { <-hold }); err != nil {
 		t.Fatalf("Submit the holder: %v", err)
 	}
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
 		WithAsyncPool(pool).
 		WithHeartbeat(time.Hour)
 
