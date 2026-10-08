@@ -666,8 +666,11 @@ already confirmed when the submit is made; a save not yet confirmed at submit
 may or may not appear. A `pointInTime` you pass is fenced
 at submission and recorded the same way.
 
-**Inside a transaction.** Without `pointInTime`, a read sees the current
-committed state plus the transaction's own writes. With `pointInTime`, it sees
+**Inside a transaction.** Without `pointInTime`, a read sees the transaction's
+snapshot plus its own writes: the committed state as it was when the
+transaction began. A commit that completes later is not visible to it, also
+when it reads again. The timing per storage backend is in
+`docs/submit-times-snapshots-consistency-time.html`. With `pointInTime`, it sees
 committed data at that instant only, and is fenced like any other. The change
 history (and the audit trail built on it) lists committed changes only, on every
 backend.

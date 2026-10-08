@@ -49,8 +49,10 @@ has finished committing or has aborted.
    `C`. `T ≤ C`: the read runs at `T`, and its answer is final. `T > C`: the
    read is refused with `400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME`, whose
    detail carries the current `C`. There is no waiting.
-3. **Inside a transaction.** With no `pointInTime`, a read sees the current
-   committed state plus the transaction's own writes, as today. With a
+3. **Inside a transaction.** With no `pointInTime`, a read sees the
+   transaction's snapshot plus its own writes: the committed state as it was
+   when the transaction began (snapshot isolation, `docs/CONSISTENCY.md` §1).
+   A commit that completes later is not visible to it. With a
    `pointInTime`, it sees committed data at `T` only, and is fenced as in
    rule 2. The change history (`GetVersionMetadata`), which also backs the
    audit trail (`internal/domain/audit/handler.go:98`), reads committed data

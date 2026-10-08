@@ -278,6 +278,7 @@ Run `cyoda help config all` for the complete env-var reference (add `--format=js
 | Deploy with Helm              | [docs.cyoda.net/help/helm](https://docs.cyoda.net/help/helm)           |
 | Deploy with Docker Compose    | [examples/compose-with-observability/](examples/compose-with-observability/) |
 | Architecture                  | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)      |
+| Transactions and consistency  | [docs/CONSISTENCY.md](docs/CONSISTENCY.md); timing per storage backend: [docs/submit-times-snapshots-consistency-time.html](docs/submit-times-snapshots-consistency-time.html) |
 | Application examples          | [docs/PRD.md#target-applications](docs/PRD.md#target-applications) |
 | Product overview              | [docs/PRD.md](docs/PRD.md)                        |
 | Feature & API inventory       | [docs/FEATURES.md](docs/FEATURES.md)              |

@@ -71,8 +71,11 @@ pre-check — keep precedence over the refusal. A `404 ENTITY_NOT_FOUND` that th
 read itself produces (get by id, change history, transitions) comes after it: a
 future `T` on a missing entity answers `400`.
 
-**Inside a transaction.** Without `pointInTime`, a read sees the current
-committed state plus the transaction's own writes. With `pointInTime`, it sees
+**Inside a transaction.** Without `pointInTime`, a read sees the transaction's
+snapshot plus its own writes: the committed state as it was when the transaction
+began. A commit that completes later is not visible to it, also when it reads
+again. The timing per backend is in
+`docs/submit-times-snapshots-consistency-time.html`. With `pointInTime`, it sees
 committed data at `T` only, and is fenced the same way.
 
 ## The endpoint and the gRPC pair

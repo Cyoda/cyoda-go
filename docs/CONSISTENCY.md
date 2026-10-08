@@ -111,6 +111,12 @@ async search submitted without one records a fresh `C` on the job. The
 change history reads committed data only, inside a transaction too. See
 `cyoda help crud` ("Point-in-time semantics").
 
+**Timing per backend.**
+[`submit-times-snapshots-consistency-time.html`](submit-times-snapshots-consistency-time.html)
+shows, for each storage backend, when a commit gets its submit time, when it
+becomes visible, when a transaction fixes its snapshot, and how the
+consistency time is calculated.
+
 ## 2. What this contract catches
 
 All three anomalies classically prevented by Snapshot Isolation:
