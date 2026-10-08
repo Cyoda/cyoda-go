@@ -6,7 +6,7 @@ require (
 	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261006135658-50e45dd67d93
 	github.com/google/uuid v1.6.0
 	github.com/stretchr/testify v1.12.1
-	github.com/tidwall/gjson v1.19.0
+	github.com/tidwall/gjson v1.20.0
 )
 
 require (
