@@ -15,7 +15,7 @@ import (
 // GRPCTxTokenKey is the gRPC metadata key carrying the transaction routing token.
 const GRPCTxTokenKey = "tx-token"
 
-// ErrNodeUnavailable is returned (wrapped) by ResolveTarget when a token names
+// ErrNodeUnavailable is returned (wrapped) by ResolveNodeInfo when a token names
 // a peer that is dead or unknown to the registry. Callers use errors.Is to map
 // it to a TRANSACTION_NODE_UNAVAILABLE operational error without string-matching.
 var ErrNodeUnavailable = errors.New(common.ErrCodeTransactionNodeUnavailable + ": transaction node is not available")
@@ -34,42 +34,15 @@ func ExtractGRPCToken(ctx context.Context) string {
 	return vals[0]
 }
 
-// ResolveTarget determines whether a request should be proxied to a remote node.
+// ResolveNodeInfo determines whether a request carrying the transaction token
+// tok must be proxied to the node that owns the transaction, and returns that
+// peer's full NodeInfo so the caller can resolve its gRPC endpoint.
 //
-// Returns:
-//   - Empty token: shouldProxy=false (serve locally).
-//   - Token for self: shouldProxy=false.
-//   - Token for alive peer: shouldProxy=true, addr set.
-//   - Token for dead/unknown peer: error with TRANSACTION_NODE_UNAVAILABLE.
-//   - Invalid/expired token: error.
-func ResolveTarget(ctx context.Context, signer *token.Signer, registry contract.NodeRegistry, selfNodeID string, tok string) (addr string, shouldProxy bool, err error) {
-	if tok == "" {
-		return "", false, nil
-	}
-
-	claims, err := signer.Verify(tok)
-	if err != nil {
-		return "", false, fmt.Errorf("%s: %w", common.ErrCodeBadRequest, err)
-	}
-
-	if claims.NodeID == selfNodeID {
-		return "", false, nil
-	}
-
-	nodeAddr, alive, err := registry.Lookup(ctx, claims.NodeID)
-	if err != nil {
-		return "", false, fmt.Errorf("registry lookup: %w", err)
-	}
-	if !alive || nodeAddr == "" {
-		return "", false, fmt.Errorf("%w (node %s)", ErrNodeUnavailable, claims.NodeID)
-	}
-
-	return nodeAddr, true, nil
-}
-
-// ResolveNodeInfo is like ResolveTarget but returns the peer's full NodeInfo
-// so the caller can resolve transport-layer details (e.g. the gRPC endpoint).
-// shouldProxy is true only when the token names a live peer other than self.
+//   - Empty token, or a token for self: shouldProxy=false (serve locally).
+//   - Token for a live peer: shouldProxy=true, with the peer's NodeInfo.
+//   - Token for a dead or unknown peer: an error wrapping ErrNodeUnavailable.
+//   - Invalid or expired token: an error.
+//
 // The returned NodeInfo is only meaningful when shouldProxy is true.
 func ResolveNodeInfo(ctx context.Context, signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, tok string) (ni contract.NodeInfo, shouldProxy bool, err error) {
 	if tok == "" {
