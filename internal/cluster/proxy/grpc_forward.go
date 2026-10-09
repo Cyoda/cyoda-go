@@ -4,12 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
+	"net/url"
 	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/resolver"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -50,14 +51,9 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
 // applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-	// addr is the peer's gRPC endpoint, a bare "host:port": derived by
-	// resolveGRPCAddr in internal/grpc, or the peer's advertised
-	// CYODA_GRPC_NODE_ADDR as gossiped. Any other form is refused. grpc-go
-	// reads "scheme://authority/endpoint" with its own resolver rules, so a
-	// schemed target could dial a host other than the one the guard checks;
-	// for the same reason the dial below names the dns resolver itself.
-	if _, _, err := net.SplitHostPort(addr); err != nil || strings.Contains(addr, "/") {
-		return nil, fmt.Errorf("%w: %q is not a host:port", peeraddr.ErrForbiddenPeerAddress, addr)
+	target, err := dialTarget(addr)
+	if err != nil {
+		return nil, err
 	}
 	lookupCtx, cancel := context.WithTimeout(ctx, peeraddr.LookupTimeout)
 	defer cancel()
@@ -73,7 +69,7 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	// Never a proxy: grpc-go's default dialer reads the environment's proxy
 	// settings, and through one the call goes to an address the guard above
 	// never validated.
-	conn, err := grpc.NewClient("dns:///"+addr,
+	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithNoProxy())
 	if err != nil {
@@ -81,6 +77,31 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	}
 	p.conns[addr] = conn
 	return conn, nil
+}
+
+// dialTarget returns the grpc-go dial target for addr, or refuses addr with
+// peeraddr.ErrForbiddenPeerAddress. addr is the peer's gRPC endpoint, a bare
+// "host:port": derived by resolveGRPCAddr in internal/grpc, or the peer's
+// advertised CYODA_GRPC_NODE_ADDR as gossiped. Any other form is refused.
+// grpc-go parses its target as a URL: it takes a scheme and authority from
+// it, percent-decodes the endpoint and cuts it at ? and #. A target in any
+// such form could dial a host other than the one peeraddr.Validate checks on
+// the raw string, so the target names the dns resolver itself and addr is
+// accepted only if grpc-go's own parse gives it back unchanged.
+func dialTarget(addr string) (string, error) {
+	target := "dns:///" + addr
+	refuse := fmt.Errorf("%w: %q is not a host:port", peeraddr.ErrForbiddenPeerAddress, addr)
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return "", refuse
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", refuse
+	}
+	if (resolver.Target{URL: *u}).Endpoint() != addr {
+		return "", refuse
+	}
+	return target, nil
 }
 
 // Close tears down every pooled connection.
