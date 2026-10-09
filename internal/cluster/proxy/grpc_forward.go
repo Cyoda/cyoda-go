@@ -2,6 +2,9 @@ package proxy
 
 import (
 	"context"
+	"fmt"
+	"net"
+	"strings"
 	"sync"
 
 	"google.golang.org/grpc"
@@ -47,8 +50,15 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
 // applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-	// Validate before dialing: addr is the peer's gRPC endpoint, a bare
-	// "host:port" (see resolveGRPCAddr in internal/grpc).
+	// addr is the peer's gRPC endpoint, a bare "host:port": derived by
+	// resolveGRPCAddr in internal/grpc, or the peer's advertised
+	// CYODA_GRPC_NODE_ADDR as gossiped. Any other form is refused. grpc-go
+	// reads "scheme://authority/endpoint" with its own resolver rules, so a
+	// schemed target could dial a host other than the one the guard checks;
+	// for the same reason the dial below names the dns resolver itself.
+	if _, _, err := net.SplitHostPort(addr); err != nil || strings.Contains(addr, "/") {
+		return nil, fmt.Errorf("%w: %q is not a host:port", peeraddr.ErrForbiddenPeerAddress, addr)
+	}
 	lookupCtx, cancel := context.WithTimeout(ctx, peeraddr.LookupTimeout)
 	defer cancel()
 	if err := peeraddr.Validate(lookupCtx, addr, p.allowLoopback); err != nil {
@@ -63,7 +73,7 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	// Never a proxy: grpc-go's default dialer reads the environment's proxy
 	// settings, and through one the call goes to an address the guard above
 	// never validated.
-	conn, err := grpc.NewClient(addr,
+	conn, err := grpc.NewClient("dns:///"+addr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithNoProxy())
 	if err != nil {
