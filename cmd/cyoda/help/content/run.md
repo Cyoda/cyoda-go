@@ -30,6 +30,7 @@ cyoda
 
 # Docker
 docker run --rm -p 127.0.0.1:8080:8080 -p 127.0.0.1:9090:9090 -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 
 # Docker Compose (bundled compose.yaml)
@@ -111,11 +112,13 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```
 
-`CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` is required when running in Docker so the health probes on port 9091 are reachable from outside the container. Without it, the admin server binds to loopback (127.0.0.1) inside the container and `/livez` and `/readyz` are unreachable.
+The three `*_BIND_ADDRESS=0.0.0.0` settings are required when running in Docker. Every listener binds loopback (`127.0.0.1`) by default, and inside a container that is the container's own loopback, which Docker's port mapping does not forward to: without them the API on 8080, gRPC on 9090 and the health probes on 9091 are unreachable from outside the container. The `-p 127.0.0.1:…` mappings then keep the ports on the host's loopback, which matters most in mock auth.
 
 **SQLite with persistent volume:**
 
@@ -126,6 +129,8 @@ docker run --rm \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_STORAGE_BACKEND=sqlite \
   -e CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -v cyoda-data:/var/lib/cyoda \
   ghcr.io/cyoda/cyoda:latest
@@ -144,6 +149,8 @@ docker run --rm \
   -e CYODA_REQUIRE_JWT=true \
   -e CYODA_JWT_SIGNING_KEY_FILE=/run/secrets/signing.pem \
   -v /path/to/signing.pem:/run/secrets/signing.pem:ro \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```
@@ -167,6 +174,8 @@ services:
     environment:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
+      CYODA_HTTP_BIND_ADDRESS: 0.0.0.0
+      CYODA_GRPC_BIND_ADDRESS: 0.0.0.0
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
     volumes:
       - cyoda-data:/var/lib/cyoda
@@ -287,7 +296,7 @@ A latched node, whatever latched it, claims no scheduled task; its runs in progr
 
 The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise. This is the implementation behind Docker's `HEALTHCHECK: CMD /cyoda health` and is valid as a readiness check for any init system.
 
-**Admin bind address in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container. The Kubernetes Helm chart sets this value in its ConfigMap. Without it, `/livez` and `/readyz` are inaccessible from the kubelet or Docker healthcheck daemon.
+**Bind addresses in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container, and `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` likewise for the API and gRPC ports. The Kubernetes Helm chart sets all three in its ConfigMap. Without it, `/livez` and `/readyz` are inaccessible from the kubelet or Docker healthcheck daemon.
 
 ## SHUTDOWN TIMING
 
@@ -318,8 +327,8 @@ In Kubernetes, the pod `terminationGracePeriodSeconds` must cover the worst case
 
 All ports are configurable via environment variables. The defaults:
 
-- **HTTP REST API** — port `8080`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_HTTP_PORT`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
-- **gRPC** — port `9090`, bind address `0.0.0.0` (all interfaces). Controlled by `CYODA_GRPC_PORT`. Externalized-processor streaming (processor and criteria dispatch). All interfaces, not loopback.
+- **HTTP REST API** — port `8080`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_HTTP_PORT` and `CYODA_HTTP_BIND_ADDRESS`. All entity, model, workflow, search, and auth endpoints, plus `GET /health` (a health summary for humans and simple scripts — not the deployment probe; see HEALTH PROBES above). Context path prefix: `CYODA_CONTEXT_PATH` (default `/api`).
+- **gRPC** — port `9090`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_GRPC_PORT` and `CYODA_GRPC_BIND_ADDRESS`. Externalized-processor streaming (processor and criteria dispatch).
 - **Admin** — port `9091`, bind address `127.0.0.1` (loopback) by default. Controlled by `CYODA_ADMIN_PORT` and `CYODA_ADMIN_BIND_ADDRESS`. Hosts `/livez`, `/readyz`, and `/metrics` — the deployment probes. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` in Docker/Kubernetes to make probes reachable.
 - **Gossip (cluster mode only)** — port `7946` TCP+UDP. Controlled by `CYODA_GOSSIP_ADDR` (default `:7946`). Used by the memberlist gossip protocol for cluster membership and SWIM health checking. Active only when `CYODA_CLUSTER_ENABLED=true`.
 
@@ -347,6 +356,8 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \
@@ -359,6 +370,8 @@ docker run --rm \
 ```
 docker run --rm \
   -e CYODA_SUPPRESS_BANNER=true \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   ghcr.io/cyoda/cyoda:latest
 ```

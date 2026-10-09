@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/muesli/termenv"
@@ -189,6 +191,7 @@ func runServe(cfg app.Config) int {
 		}
 		return 1
 	}
+	warnMockIAMExposure(cfg.IAM.Mode, ls)
 
 	if err := runServers(rootCtx, a, cfg, ls, a.DrainScheduler); err != nil {
 		// runServers has already triggered a.Shutdown / a.Close before
@@ -251,8 +254,10 @@ func printBannerTo(w io.Writer, cfg app.Config) {
 	fmt.Fprintln(w, `   ╚═════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═╝  ╚═╝`)
 	fmt.Fprintf(w, "%s", reset)
 	fmt.Fprintf(w, "  Cyoda-Go %s (%s) built %s\n", version, commit, buildDate)
-	fmt.Fprintf(w, "  HTTP :%d | gRPC :%d | IAM %s | Path %s | Profiles %s\n\n",
-		cfg.HTTPPort, cfg.GRPC.Port, cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
+	fmt.Fprintf(w, "  HTTP %s | gRPC %s | IAM %s | Path %s | Profiles %s\n\n",
+		net.JoinHostPort(cfg.HTTP.BindAddress, strconv.Itoa(cfg.HTTPPort)),
+		net.JoinHostPort(cfg.GRPC.BindAddress, strconv.Itoa(cfg.GRPC.Port)),
+		cfg.IAM.Mode, cfg.ContextPath, app.ProfileBanner())
 }
 
 // printMockAuthWarningTo is silent unless IAM mode is "mock". Respects

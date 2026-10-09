@@ -31,6 +31,7 @@ type ConfigVar struct {
 var rootConfigVars = []ConfigVar{
 	// --- server ---
 	{Name: "CYODA_HTTP_PORT", Topic: "server", Type: "int", Default: "8080", Description: "HTTP listen port."},
+	{Name: "CYODA_HTTP_BIND_ADDRESS", Topic: "server", Type: "string", Default: "127.0.0.1", Description: "HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets. Loopback by default; set 0.0.0.0 (or ::) for clients, cluster peers or a container's port mapping to reach it."},
 	{Name: "CYODA_HTTP_READ_HEADER_TIMEOUT", Topic: "server", Type: "duration", Default: "10s", Description: "Time allowed to receive a request's headers on the API and admin servers. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_HTTP_READ_TIMEOUT", Topic: "server", Type: "duration", Default: "5m", Description: "Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables."},
 	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
@@ -106,6 +107,7 @@ var rootConfigVars = []ConfigVar{
 
 	// --- grpc ---
 	{Name: "CYODA_GRPC_PORT", Topic: "grpc", Type: "int", Default: "9090", Description: "gRPC listen port."},
+	{Name: "CYODA_GRPC_BIND_ADDRESS", Topic: "grpc", Type: "string", Default: "127.0.0.1", Description: "gRPC listener bind address: a bare host, IPv4 or IPv6, without brackets. Loopback by default; set 0.0.0.0 (or ::) for compute nodes, cluster peers or a container's port mapping to reach it."},
 	{Name: "CYODA_KEEPALIVE_INTERVAL", Topic: "grpc", Type: "int", Default: "10", Description: "Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time."},
 	{Name: "CYODA_KEEPALIVE_TIMEOUT", Topic: "grpc", Type: "int", Default: "30", Description: "Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout."},
 	{Name: "CYODA_RETRY_FIXED_NUM_RETRIES", Topic: "grpc", Type: "int", Default: "3", Description: "Retries after the first try of a compute-node callout whose retryPolicy is FIXED or unset; the normal number of tries is this plus one. Must be >= 0; startup fails otherwise."},

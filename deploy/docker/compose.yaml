@@ -8,6 +8,11 @@ services:
     environment:
       CYODA_STORAGE_BACKEND: sqlite
       CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db
+      # Every listener binds the container's interfaces: Docker's port
+      # mapping forwards to the container's eth0, not its loopback. The
+      # 127.0.0.1 host-side mappings above are the network boundary.
+      CYODA_HTTP_BIND_ADDRESS: 0.0.0.0
+      CYODA_GRPC_BIND_ADDRESS: 0.0.0.0
       CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0
       # For production: uncomment the three lines below and set
       # CYODA_JWT_SIGNING_KEY in your shell before `docker compose up`.

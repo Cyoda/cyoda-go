@@ -41,7 +41,9 @@ Without any environment variables, after `cyoda init`:
 - `CYODA_IAM_MODE` = `mock` (all requests accepted without authentication)
 - `CYODA_IAM_MOCK_ROLES` = `ROLE_ADMIN,ROLE_M2M`
 - `CYODA_HTTP_PORT` = `8080`
+- `CYODA_HTTP_BIND_ADDRESS` = `127.0.0.1`
 - `CYODA_GRPC_PORT` = `9090`
+- `CYODA_GRPC_BIND_ADDRESS` = `127.0.0.1`
 - `CYODA_ADMIN_PORT` = `9091`
 - `CYODA_ADMIN_BIND_ADDRESS` = `127.0.0.1`
 - `CYODA_CONTEXT_PATH` = `/api`
@@ -196,12 +198,14 @@ docker run --rm \
   -p 127.0.0.1:9091:9091 \
   -e CYODA_STORAGE_BACKEND=sqlite \
   -e CYODA_SQLITE_PATH=/var/lib/cyoda/cyoda.db \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -v cyoda-data:/var/lib/cyoda \
   ghcr.io/cyoda/cyoda:latest
 ```
 
-The image pre-stages `/var/lib/cyoda` owned by UID 65532. The container runs as non-root (65532:65532). `/livez` and `/readyz` are served on port 9091. Set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` so the health endpoint is reachable from outside the container.
+The image pre-stages `/var/lib/cyoda` owned by UID 65532. The container runs as non-root (65532:65532). `/livez` and `/readyz` are served on port 9091. Every listener binds `127.0.0.1` by default, which inside a container is the container's own loopback, so the three `*_BIND_ADDRESS=0.0.0.0` settings are what make the API, gRPC and health ports reachable through the published ports. The `-p 127.0.0.1:…` mappings keep them, and mock auth, on the host's loopback.
 
 **Docker Compose (sqlite + mock auth):**
 

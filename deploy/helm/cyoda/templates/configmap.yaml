@@ -21,6 +21,11 @@ data:
   CYODA_HTTP_PORT: "8080"
   CYODA_GRPC_PORT: "9090"
   CYODA_ADMIN_PORT: "9091"
+  # The API and gRPC listeners default to loopback. Bind every pod
+  # interface so the Service, peer pods (cluster proxying and callout
+  # forwarding) and compute nodes can reach them.
+  CYODA_HTTP_BIND_ADDRESS: "0.0.0.0"
+  CYODA_GRPC_BIND_ADDRESS: "0.0.0.0"
   # Bind to all pod interfaces so kubelet probes and ServiceMonitor
   # scraping can reach the listener. /livez and /readyz remain
   # unauthenticated (kubelet has no bearer); /metrics is bearer-gated

@@ -65,6 +65,7 @@ loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
 ### Server options
 
 - `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP listen port.
+- `CYODA_HTTP_BIND_ADDRESS` (string, default: `127.0.0.1`) — HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`). The default is loopback, so only processes on the same host reach the API. Set `0.0.0.0` (or `::`) when clients, cluster peers or a container's port mapping must reach it. With `CYODA_IAM_MODE=mock`, a listener that is not on loopback logs a WARN at startup.
 - `CYODA_HTTP_READ_HEADER_TIMEOUT` (duration, default: `10s`) — time allowed to receive a request's headers on the API and admin servers. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`.
 - `CYODA_HTTP_READ_TIMEOUT` (duration, default: `5m`) — time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables.
 - `CYODA_HTTP_WRITE_TIMEOUT` (duration, default: `0s`) — time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests.

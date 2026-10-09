@@ -30,9 +30,11 @@ The server handles graceful shutdown on `SIGINT` (Ctrl+C) or `SIGTERM`: the HTTP
 
 Three TCP listeners are bound before any of them is served — a port that cannot be bound stops the process before a request is accepted — and are then served concurrently:
 
-- **REST API** — `CYODA_HTTP_PORT` (default: 8080). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
-- **gRPC** — `CYODA_GRPC_PORT` (default: 9090). Externalized-processor streaming.
+- **REST API** — `CYODA_HTTP_BIND_ADDRESS:CYODA_HTTP_PORT` (default: `127.0.0.1:8080`). All entity, schema, workflow, and auth endpoints, plus `GET /health` — a health summary for humans and simple scripts, not the deployment probe: `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` after a panic recovered in engine or store work, latched until the node is replaced. Context path prefix: `CYODA_CONTEXT_PATH` (default: `/api`).
+- **gRPC** — `CYODA_GRPC_BIND_ADDRESS:CYODA_GRPC_PORT` (default: `127.0.0.1:9090`). Externalized-processor streaming.
 - **Admin** — `CYODA_ADMIN_BIND_ADDRESS:CYODA_ADMIN_PORT` (default: `127.0.0.1:9091`). `/livez`, `/readyz`, and `/metrics` endpoints — `/livez` (unconditional) and `/readyz` (mirrors the same flag as `/health`) are the deployment probes. Admin port is bound to localhost by default; the Helm chart overrides `CYODA_ADMIN_BIND_ADDRESS` so the kubelet can reach `/readyz` without traversing the service mesh.
+
+All three listeners bind loopback by default, so a server started with no settings is reachable only from its own host. Clients, compute nodes and cluster peers on other hosts, and a container's port mapping, need the bind address set to `0.0.0.0` (or `::`); the Helm chart and the bundled compose file do this. When `CYODA_IAM_MODE=mock` and the HTTP or gRPC listener is bound to an address that is not loopback, the server logs a WARN naming the listener at startup: every caller that reaches it acts as the mock principal.
 
 ## ENVIRONMENT VARIABLES
 
@@ -47,7 +49,9 @@ All configuration is via environment variables. The subtopics below enumerate th
 Variables read specifically during server boot (not covered by the config subtopics above):
 
 - `CYODA_HTTP_PORT` (int, default: `8080`) — HTTP API listen port.
+- `CYODA_HTTP_BIND_ADDRESS` (string, default: `127.0.0.1`) — HTTP API listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_GRPC_PORT` (int, default: `9090`) — gRPC listen port.
+- `CYODA_GRPC_BIND_ADDRESS` (string, default: `127.0.0.1`) — gRPC listener bind address, in the same form.
 - `CYODA_ADMIN_PORT` (int, default: `9091`) — admin listener port for `/livez`, `/readyz`, `/metrics`.
 - `CYODA_ADMIN_BIND_ADDRESS` (string, default: `127.0.0.1`) — admin listener bind address: a bare host, IPv4 or IPv6, without brackets (`::1`, not `[::1]`).
 - `CYODA_OTEL_ENABLED` (bool, default: `false`) — initialize the OpenTelemetry SDK at startup.

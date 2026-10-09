@@ -736,6 +736,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `COMPATIBILITY.md`). Out-of-tree storage plugins must implement all three
   and pass the new `spitest` cases.
 
+- **The HTTP and gRPC listeners bind `127.0.0.1` by default, set by the new
+  `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS`.** Before, both
+  bound every interface and nothing could change that, so a node in mock
+  IAM, where every caller has `ROLE_ADMIN`, was reachable from the whole
+  network. The default is loopback in every IAM mode, as for
+  `CYODA_ADMIN_BIND_ADDRESS`. A deployment that clients, compute nodes or
+  cluster peers reach from other hosts, and every container, sets both to
+  `0.0.0.0` (or `::`); the Helm chart and the bundled compose files now do.
+  In mock IAM, a listener bound to an address that is not loopback logs a
+  WARN at startup; it is not refused, because a container in mock mode must
+  bind `0.0.0.0` for its port mapping to reach it. The startup banner shows
+  each listener's host and port.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`

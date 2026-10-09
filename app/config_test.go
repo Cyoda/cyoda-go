@@ -270,7 +270,7 @@ func TestValidateIAM_TokenEndpointCost(t *testing.T) {
 
 func TestDefaultConfig_HTTPTimeouts(t *testing.T) {
 	cfg := DefaultConfig()
-	want := HTTPConfig{ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 0, IdleTimeout: 120 * time.Second}
+	want := HTTPConfig{BindAddress: "127.0.0.1", ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 5 * time.Minute, WriteTimeout: 0, IdleTimeout: 120 * time.Second}
 	if cfg.HTTP != want {
 		t.Fatalf("HTTP defaults = %+v, want %+v", cfg.HTTP, want)
 	}
@@ -279,7 +279,7 @@ func TestDefaultConfig_HTTPTimeouts(t *testing.T) {
 	t.Setenv("CYODA_HTTP_WRITE_TIMEOUT", "45s")
 	t.Setenv("CYODA_HTTP_IDLE_TIMEOUT", "30s")
 	cfg = DefaultConfig()
-	want = HTTPConfig{ReadHeaderTimeout: 3 * time.Second, ReadTimeout: time.Minute, WriteTimeout: 45 * time.Second, IdleTimeout: 30 * time.Second}
+	want = HTTPConfig{BindAddress: "127.0.0.1", ReadHeaderTimeout: 3 * time.Second, ReadTimeout: time.Minute, WriteTimeout: 45 * time.Second, IdleTimeout: 30 * time.Second}
 	if cfg.HTTP != want {
 		t.Fatalf("HTTP from env = %+v, want %+v", cfg.HTTP, want)
 	}

@@ -66,6 +66,8 @@ func startCyoda(t *testing.T, env ...string) *cyodaChild {
 		"CYODA_HTTP_PORT=0",
 		"CYODA_GRPC_PORT=0",
 		"CYODA_ADMIN_PORT=0",
+		"CYODA_HTTP_BIND_ADDRESS=127.0.0.1",
+		"CYODA_GRPC_BIND_ADDRESS=127.0.0.1",
 		"CYODA_ADMIN_BIND_ADDRESS=127.0.0.1",
 		"CYODA_SUPPRESS_BANNER=true",
 		"CYODA_LOG_LEVEL=info",
@@ -152,9 +154,9 @@ func TestStartup_PortConflict_TearsDownAndExits1(t *testing.T) {
 		t.Skip("skipping subprocess startup test in -short mode")
 	}
 
-	// Every interface, as the child's HTTP surface binds: a loopback-only
-	// holder would not collide with a wildcard bind on every platform.
-	taken, err := net.Listen("tcp", ":0")
+	// The very address the child's HTTP surface binds: a holder on a
+	// different host of the same port does not collide on every platform.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("occupy a port: %v", err)
 	}
@@ -179,4 +181,36 @@ func TestStartup_PortConflict_TearsDownAndExits1(t *testing.T) {
 	if strings.Contains(out, "server starting") {
 		t.Error("a server started although a port could not be bound")
 	}
+}
+
+// TestStartup_MockIAMOffLoopbackWarns pins that the mock-IAM exposure check
+// runs on the real startup path, before any server starts: a mock-IAM child
+// whose HTTP listener is on every interface names it at WARN, and one left at
+// the loopback default does not.
+func TestStartup_MockIAMOffLoopbackWarns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+	const warning = `msg="mock IAM is active on a listener that is not on loopback`
+
+	t.Run("http on every interface", func(t *testing.T) {
+		child := startCyoda(t, "CYODA_HTTP_BIND_ADDRESS=0.0.0.0")
+		child.loopbackAddr(t, "gRPC")
+		child.loopbackAddr(t, "HTTP")
+		out := child.out.String()
+		if !strings.Contains(out, warning) || !strings.Contains(out, "listener=http") {
+			t.Errorf("child output has no WARN naming the HTTP listener")
+		}
+		if strings.Contains(out, "listener=grpc") {
+			t.Errorf("child output names the gRPC listener, which is on loopback")
+		}
+	})
+	t.Run("loopback default", func(t *testing.T) {
+		child := startCyoda(t)
+		child.loopbackAddr(t, "gRPC")
+		child.loopbackAddr(t, "HTTP")
+		if strings.Contains(child.out.String(), warning) {
+			t.Errorf("child output has the exposure WARN although every API listener is on loopback")
+		}
+	})
 }

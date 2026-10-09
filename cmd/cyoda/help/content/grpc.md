@@ -42,7 +42,7 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 ## CONNECTION
 
-**Endpoint**: `host:CYODA_GRPC_PORT` (default `localhost:9090`).
+**Endpoint**: `host:CYODA_GRPC_PORT` (default `localhost:9090`). The listener binds `CYODA_GRPC_BIND_ADDRESS`, loopback by default; a compute node on another host needs it set to `0.0.0.0` (see `cyoda help config grpc`).
 
 **Transport**: plaintext TCP. The listener has no TLS of its own. In production, TLS is terminated by the ingress, gateway or service mesh in front of it (the Helm chart's `ingress.grpc.tls`); compute nodes connect through it and verify the server certificate, and only then may they rely on the identity attributes of a callout. Plaintext is for localhost or a private Docker network during development.
 

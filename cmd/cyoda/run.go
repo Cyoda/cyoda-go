@@ -39,10 +39,9 @@ func (ls serverListeners) close() {
 	}
 }
 
-// listenAll binds the gRPC, HTTP and admin sockets from cfg: the application
-// and gRPC surfaces on every interface, the admin surface on its configured
-// bind address, which is a bare host — an IPv6 literal goes in without
-// brackets. The error names the surface that could not be bound; the address
+// listenAll binds the gRPC, HTTP and admin sockets from cfg, each on its own
+// configured bind address, which is a bare host — an IPv6 literal goes in
+// without brackets. The error names the surface that could not be bound; the address
 // is already in the underlying net error. On failure nothing stays bound:
 // the caller's teardown takes seconds, and a socket left listening through
 // it would go on completing handshakes for a process that will never serve.
@@ -58,16 +57,38 @@ func listenAll(cfg app.Config) (serverListeners, error) {
 	}
 
 	var err error
-	if ls.grpc, err = listen("grpc", "", cfg.GRPC.Port); err != nil {
+	if ls.grpc, err = listen("grpc", cfg.GRPC.BindAddress, cfg.GRPC.Port); err != nil {
 		return serverListeners{}, err
 	}
-	if ls.http, err = listen("http", "", cfg.HTTPPort); err != nil {
+	if ls.http, err = listen("http", cfg.HTTP.BindAddress, cfg.HTTPPort); err != nil {
 		return serverListeners{}, err
 	}
 	if ls.admin, err = listen("admin", cfg.Admin.BindAddress, cfg.Admin.Port); err != nil {
 		return serverListeners{}, err
 	}
 	return ls, nil
+}
+
+// warnMockIAMExposure logs a WARN for each API listener that other hosts can
+// reach while IAM is in mock mode, where every caller is the mock principal.
+// It judges the socket actually bound, so a wildcard and a host name that
+// resolves off loopback both count. It only warns: a container in mock mode
+// must bind 0.0.0.0 for its port mapping to reach it, and the published port
+// is then the boundary. The admin listener is not checked: mock IAM does not
+// govern it.
+func warnMockIAMExposure(iamMode string, ls serverListeners) {
+	if iamMode != "mock" {
+		return
+	}
+	for _, s := range []struct {
+		name string
+		l    net.Listener
+	}{{"http", ls.http}, {"grpc", ls.grpc}} {
+		if addr, ok := s.l.Addr().(*net.TCPAddr); ok && !addr.IP.IsLoopback() {
+			slog.Warn("mock IAM is active on a listener that is not on loopback: every caller that reaches it acts as the mock principal",
+				"listener", s.name, "addr", addr.String())
+		}
+	}
 }
 
 // runServers serves gRPC, HTTP, and admin on the listeners it is handed and
