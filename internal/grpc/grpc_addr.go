@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"strconv"
 	"strings"
@@ -32,5 +33,5 @@ func resolveGRPCAddr(ni contract.NodeInfo, localGRPCPort int) (string, error) {
 	if host == "" {
 		return "", fmt.Errorf("parse peer HTTP addr %q: no host", ni.Addr)
 	}
-	return host + ":" + strconv.Itoa(localGRPCPort), nil
+	return net.JoinHostPort(host, strconv.Itoa(localGRPCPort)), nil
 }

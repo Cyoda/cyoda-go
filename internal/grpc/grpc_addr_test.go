@@ -51,6 +51,23 @@ func TestResolveGRPCAddr_DeriveStripsSchemeAndPort(t *testing.T) {
 	}
 }
 
+// TestResolveGRPCAddr_DeriveKeepsIPv6Brackets pins that a derived address is
+// joined as host and port: url.Hostname drops an IPv6 literal's brackets, and
+// "fd00::5:9090" cannot be dialled.
+func TestResolveGRPCAddr_DeriveKeepsIPv6Brackets(t *testing.T) {
+	ni := contract.NodeInfo{
+		NodeID: "node-v6",
+		Addr:   "http://[fd00::5]:8080",
+	}
+	got, err := resolveGRPCAddr(ni, 9090)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if got != "[fd00::5]:9090" {
+		t.Fatalf("expected %q, got %q", "[fd00::5]:9090", got)
+	}
+}
+
 func TestResolveGRPCAddr_UnparseableAddr_Error(t *testing.T) {
 	// An unparseable HTTP addr should return an error, not panic.
 	ni := contract.NodeInfo{
