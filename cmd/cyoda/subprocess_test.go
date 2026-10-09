@@ -185,8 +185,9 @@ func TestStartup_PortConflict_TearsDownAndExits1(t *testing.T) {
 
 // TestStartup_MockIAMOffLoopbackWarns pins that the mock-IAM exposure check
 // runs on the real startup path, before any server starts: a mock-IAM child
-// whose HTTP listener is on every interface names it at WARN, and one left at
-// the loopback default does not.
+// whose HTTP listener is on every interface names it at WARN, and one with
+// both API listeners on loopback does not. The compiled-in default itself is
+// pinned in package app.
 func TestStartup_MockIAMOffLoopbackWarns(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping subprocess startup test in -short mode")
@@ -205,7 +206,7 @@ func TestStartup_MockIAMOffLoopbackWarns(t *testing.T) {
 			t.Errorf("child output names the gRPC listener, which is on loopback")
 		}
 	})
-	t.Run("loopback default", func(t *testing.T) {
+	t.Run("loopback", func(t *testing.T) {
 		child := startCyoda(t)
 		child.loopbackAddr(t, "gRPC")
 		child.loopbackAddr(t, "HTTP")

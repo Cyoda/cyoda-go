@@ -56,6 +56,10 @@ func TestWarnMockIAMExposure(t *testing.T) {
 				if addr, _ := r["addr"].(string); addr == "" {
 					t.Errorf("WARN for %s listener carries no addr: %v", surface, r)
 				}
+				wantSetting := map[string]string{"http": "CYODA_HTTP_BIND_ADDRESS", "grpc": "CYODA_GRPC_BIND_ADDRESS"}[surface]
+				if r["setting"] != wantSetting {
+					t.Errorf("WARN for %s listener names setting %v; want %s", surface, r["setting"], wantSetting)
+				}
 			}
 			sort.Strings(got)
 			if len(got) != len(tc.wantExposedSurfaces) {

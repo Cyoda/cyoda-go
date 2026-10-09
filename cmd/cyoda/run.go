@@ -81,12 +81,12 @@ func warnMockIAMExposure(iamMode string, ls serverListeners) {
 		return
 	}
 	for _, s := range []struct {
-		name string
-		l    net.Listener
-	}{{"http", ls.http}, {"grpc", ls.grpc}} {
+		name, setting string
+		l             net.Listener
+	}{{"http", "CYODA_HTTP_BIND_ADDRESS", ls.http}, {"grpc", "CYODA_GRPC_BIND_ADDRESS", ls.grpc}} {
 		if addr, ok := s.l.Addr().(*net.TCPAddr); ok && !addr.IP.IsLoopback() {
 			slog.Warn("mock IAM is active on a listener that is not on loopback: every caller that reaches it acts as the mock principal",
-				"listener", s.name, "addr", addr.String())
+				"listener", s.name, "addr", addr.String(), "setting", s.setting)
 		}
 	}
 }

@@ -1137,6 +1137,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
+  port `9090`, so on more than one replica a request proxied to the node
+  that owns its transaction, and a callout handed over to another node,
+  reached that node's gRPC server instead of its HTTP API.
+
 - **An async search submitted without `pointInTime` no longer misses
   confirmed saves.** Before, it ran at the receiving node's clock, which can
   run ahead of saves still committing or behind another node's. It now runs

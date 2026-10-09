@@ -83,7 +83,7 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: CYODA_NODE_ADDR
-              value: "http://$(CYODA_NODE_ID).{{ include "cyoda.fullname" . }}-headless.$(POD_NAMESPACE).svc.cluster.local:9090"
+              value: "http://$(CYODA_NODE_ID).{{ include "cyoda.fullname" . }}-headless.$(POD_NAMESPACE).svc.cluster.local:8080"
             - name: CYODA_GOSSIP_ADDR
               value: "0.0.0.0:7946"
             # Credentials via _FILE suffix (projected-volume mount)
