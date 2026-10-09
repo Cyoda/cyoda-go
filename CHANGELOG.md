@@ -1734,6 +1734,17 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   HTTP help endpoint already use. Previously only the space-separated form
   (`cyoda help auth tokens`) resolved.
 
+### Security
+
+- Bumped the Go toolchain `go 1.26.7` → `go 1.26.9` (root, all three plugin
+  modules and `go.work`) and `golang.org/x/net` `v0.58.0` → `v0.60.0` to clear
+  twelve reachable govulncheck advisories published with go1.26.9, in
+  `net/http` (HTTP/2 included, five of them also in `x/net`), `crypto/tls`,
+  `mime/multipart`, `os` and `html/template`: GO-2026-6599, -6600, -6603,
+  -6604, -6605, -6607, -6608, -6610, -6611, -6612, -6613 and -6617.
+  The `x/net` bump moves the other `golang.org/x` modules with it; the plugin
+  modules carry the same versions as the root.
+
 ## [0.8.4] — 2026-09-09
 
 ### Breaking
