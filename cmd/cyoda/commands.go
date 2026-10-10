@@ -112,8 +112,12 @@ func resolveCommand(args []string) (command, []string, error) {
 		if !slices.Contains(c.names, name) {
 			continue
 		}
-		if c.topic != "" && !c.parsesFlags && len(rest) == 1 && (rest[0] == "-h" || rest[0] == "--help") {
+		answersHelp := c.topic != "" && !c.parsesFlags && len(rest) > 0 && (rest[0] == "-h" || rest[0] == "--help")
+		if answersHelp && len(rest) == 1 {
 			return c.helpTopic(), nil, nil
+		}
+		if answersHelp {
+			return command{}, nil, fmt.Errorf("%q: %s must be the only argument", name, rest[0])
 		}
 		if len(rest) > 0 && !c.takesArgs {
 			return command{}, nil, fmt.Errorf("%q takes no arguments, got %q", name, rest[0])

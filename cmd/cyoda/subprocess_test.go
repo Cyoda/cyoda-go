@@ -80,12 +80,13 @@ func startCyodaWithArgs(t *testing.T, args []string, env ...string) *cyodaChild 
 		"CYODA_LOG_LEVEL=info",
 		"CYODA_OTEL_ENABLED=false",
 		"CYODA_IAM_MODE=mock",
-		// Keep the child off the developer's own configuration and data
-		// store: the user config is looked up under XDG_CONFIG_HOME, and a
-		// shell variable wins over every env file.
+		// Keep the child off the developer's own configuration, data store
+		// and cluster: the user config is looked up under XDG_CONFIG_HOME,
+		// and a shell variable wins over every env file.
 		"XDG_CONFIG_HOME="+t.TempDir(),
 		"CYODA_PROFILES=",
 		"CYODA_STORAGE_BACKEND=memory",
+		"CYODA_CLUSTER_ENABLED=false",
 	), env...)
 	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Logging goes to stdout (see internal/logging.Init); capture both

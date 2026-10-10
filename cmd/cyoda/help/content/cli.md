@@ -16,13 +16,13 @@ cli — the cyoda command-line interface.
 
 ## SYNOPSIS
 
-`cyoda [<subcommand> [<subcommand flags>]]`
+`cyoda [<subcommand> [<arguments>]]`
 
 ## DESCRIPTION
 
 cyoda is a Go binary that embeds the full platform: API server, schema engine, workflow runner, and storage plugins. Invoked with no subcommand, or with `serve`, it starts the server. The server takes no flags: its configuration comes from environment variables only (see `cyoda help config`). Subcommands provide operational affordances — `init` for first-run bootstrap, `health` for readiness probes, `migrate` for schema migrations, `token` for signing an admin token offline.
 
-Global flags `--help` (or `-h`) and `--version` (or `-v`) are recognized in place of a subcommand. `-h` or `--help` after a subcommand prints that subcommand's help and exits `0`: `init`, `migrate` and `token` print their flag usage, the others their help topic.
+Global flags `--help` (or `-h`) and `--version` (or `-v`) are recognized in place of a subcommand. `-h` or `--help` after a subcommand prints that subcommand's help and exits `0`: `init`, `migrate` and `token` print their flag usage; `serve`, `health` and `help` print their help topic when `-h` or `--help` is the only argument after them.
 
 An argument cyoda does not recognise is an error: an unknown subcommand or flag (the server has no flags), or an argument given to a subcommand or global flag that takes none. cyoda then prints `cyoda: unknown command "<arg>"` (or the matching message for a flag or an extra argument) and the usage summary to stderr, and exits `2` without loading any configuration or starting a server.
 

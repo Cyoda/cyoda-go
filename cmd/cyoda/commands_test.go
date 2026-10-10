@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -151,6 +152,7 @@ func TestRunInit_RejectsPositionalArgument(t *testing.T) {
 // TestRunMigrate_RejectsPositionalArgument pins that migrate refuses an
 // argument it does not take before it reads any configuration.
 func TestRunMigrate_RejectsPositionalArgument(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "no-such-backend")
 	if code := runMigrate([]string{"--timeout", "1m", "extra"}); code != 2 {
 		t.Errorf("runMigrate exit code = %d; want 2", code)
@@ -178,11 +180,24 @@ func TestResolveCommand_HelpFlagOnCommandWithoutFlags(t *testing.T) {
 			if len(rest) != 0 {
 				t.Errorf("args = %q; want none", rest)
 			}
+			// The help topic runs in place of the command itself.
+			for _, entry := range commands {
+				if entry.names[0] == args[0] && reflect.ValueOf(c.run).Pointer() == reflect.ValueOf(entry.run).Pointer() {
+					t.Errorf("%q runs the command itself, not its help topic", args)
+				}
+			}
 		})
 	}
-	// Only alone: -h does not license other arguments.
-	if _, _, err := resolveCommand([]string{"serve", "-h", "extra"}); err == nil {
-		t.Error(`resolveCommand("serve -h extra") succeeded; want an error`)
+	// Only alone: -h does not license other arguments, and the error says so.
+	for _, args := range [][]string{{"serve", "-h", "extra"}, {"health", "--help", "-h"}} {
+		_, _, err := resolveCommand(args)
+		if err == nil {
+			t.Errorf("resolveCommand(%q) succeeded; want an error", args)
+			continue
+		}
+		if want := "must be the only argument"; !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q; want it to contain %q", err, want)
+		}
 	}
 }
 
@@ -190,7 +205,7 @@ func TestResolveCommand_HelpFlagOnCommandWithoutFlags(t *testing.T) {
 // request for its usage, not a usage error: exit 0, as 'cyoda token -h' and
 // Go's flag package convention do.
 func TestSubcommandHelpFlag_Exits0(t *testing.T) {
-	setupIsolatedConfig(t)
+	isolateEnvFiles(t)
 	if code := runInit([]string{"-h"}); code != 0 {
 		t.Errorf("runInit(-h) exit code = %d; want 0", code)
 	}

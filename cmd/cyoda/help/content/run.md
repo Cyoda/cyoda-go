@@ -47,7 +47,7 @@ helm install cyoda ./deploy/helm/cyoda \
 
 ## DESCRIPTION
 
-cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
+cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand or with `serve`. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
 
 The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the scheduler drains its runs first, then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline each, then the storage backend is closed and the process exits. See SHUTDOWN TIMING.
 

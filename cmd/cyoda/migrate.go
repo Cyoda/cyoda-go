@@ -38,8 +38,9 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 // -h/--help prints the usage and returns 0.
 //
 // Behavior:
-//   - Loads the same config the server does (via app.DefaultConfig; honors
-//     _FILE suffix resolution and every CYODA_* env var identically).
+//   - Loads the same config the server does: the env files (app.LoadEnvFiles),
+//     then app.DefaultConfig, which honors _FILE suffix resolution and every
+//     CYODA_* env var identically.
 //   - Dispatches on CYODA_STORAGE_BACKEND:
 //     memory  — no-op, exits 0
 //     sqlite  — no-op (migrations applied lazily at open), exits 0
@@ -63,6 +64,7 @@ func runMigrate(args []string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
+	app.LoadEnvFiles()
 	appCfg := app.DefaultConfig()
 
 	switch appCfg.StorageBackend {
