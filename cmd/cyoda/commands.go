@@ -24,7 +24,11 @@ type command struct {
 	// resolveCommand refuses one given to it. A command that takes arguments
 	// refuses the ones it does not understand itself.
 	takesArgs bool
-	run       func(args []string) int
+	// parsesFlags is true for a command with a flag set of its own, which
+	// answers -h and --help with its flag usage. For any other command with
+	// a topic, resolveCommand answers a lone -h or --help with that topic.
+	parsesFlags bool
+	run         func(args []string) int
 }
 
 // serveCommand is what a bare 'cyoda' runs.
@@ -38,11 +42,12 @@ var serveCommand = command{
 var commands = []command{
 	serveCommand,
 	{
-		names:     []string{"init"},
-		synopsis:  "cyoda init [--force]",
-		topic:     "cli.init",
-		takesArgs: true,
-		run:       runInit,
+		names:       []string{"init"},
+		synopsis:    "cyoda init [--force]",
+		topic:       "cli.init",
+		takesArgs:   true,
+		parsesFlags: true,
+		run:         runInit,
 	},
 	{
 		names:    []string{"health"},
@@ -51,18 +56,20 @@ var commands = []command{
 		run:      func([]string) int { return runHealth() },
 	},
 	{
-		names:     []string{"migrate"},
-		synopsis:  "cyoda migrate [--timeout <duration>]",
-		topic:     "cli.migrate",
-		takesArgs: true,
-		run:       runMigrate,
+		names:       []string{"migrate"},
+		synopsis:    "cyoda migrate [--timeout <duration>]",
+		topic:       "cli.migrate",
+		takesArgs:   true,
+		parsesFlags: true,
+		run:         runMigrate,
 	},
 	{
-		names:     []string{"token"},
-		synopsis:  "cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]",
-		topic:     "cli.token",
-		takesArgs: true,
-		run:       func(args []string) int { return runToken(args, os.Stdout, os.Stderr) },
+		names:       []string{"token"},
+		synopsis:    "cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]",
+		topic:       "cli.token",
+		takesArgs:   true,
+		parsesFlags: true,
+		run:         func(args []string) int { return runToken(args, os.Stdout, os.Stderr) },
 	},
 	{
 		names:     []string{"help"},
@@ -90,10 +97,12 @@ var commands = []command{
 }
 
 // resolveCommand returns the command a command line selects and the
-// arguments that command is given. No argument selects the server. An
-// argument that names no command, and an argument given to a command that
-// takes none, are errors: a typo, a guessed command or a flag must not start
-// a server against the user's configuration and data store.
+// arguments that command is given. No argument selects the server. A lone
+// -h or --help after a command without a flag set of its own selects that
+// command's help topic. An argument that names no command, and an argument
+// given to a command that takes none, are errors: a typo, a guessed command
+// or a flag must not start a server against the user's configuration and
+// data store.
 func resolveCommand(args []string) (command, []string, error) {
 	if len(args) == 0 {
 		return serveCommand, nil, nil
@@ -102,6 +111,9 @@ func resolveCommand(args []string) (command, []string, error) {
 	for _, c := range commands {
 		if !slices.Contains(c.names, name) {
 			continue
+		}
+		if c.topic != "" && !c.parsesFlags && len(rest) == 1 && (rest[0] == "-h" || rest[0] == "--help") {
+			return c.helpTopic(), nil, nil
 		}
 		if len(rest) > 0 && !c.takesArgs {
 			return command{}, nil, fmt.Errorf("%q takes no arguments, got %q", name, rest[0])
@@ -112,6 +124,12 @@ func resolveCommand(args []string) (command, []string, error) {
 		return command{}, nil, fmt.Errorf("unknown flag %q; the server takes no flags, it is configured by CYODA_* environment variables (see 'cyoda help config')", name)
 	}
 	return command{}, nil, fmt.Errorf("unknown command %q", name)
+}
+
+// helpTopic returns a command that shows c's help topic in place of running c.
+func (c command) helpTopic() command {
+	c.run = func([]string) int { return runHelpCmd(strings.Split(c.topic, ".")) }
+	return c
 }
 
 // writeUsage writes the usage summary printed on a usage error.

@@ -27,6 +27,7 @@ Release archives include a pre-rendered `help/` directory for offline reference.
 ## OPTIONS
 
 - `--format=<auto|text|markdown|json>` — Default `auto` selects text on a TTY and markdown off-TTY.
+- `-h`, `--help` — print this topic (`cli help`) and exit `0`. It must be the only argument after `help`.
 
 ## TOPIC ACTIONS
 

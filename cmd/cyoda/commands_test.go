@@ -157,6 +157,35 @@ func TestRunMigrate_RejectsPositionalArgument(t *testing.T) {
 	}
 }
 
+// TestResolveCommand_HelpFlagOnCommandWithoutFlags pins that -h or --help
+// after a command that parses no flags of its own is a request for that
+// command's help topic, not a usage error.
+func TestResolveCommand_HelpFlagOnCommandWithoutFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"serve", "-h"},
+		{"serve", "--help"},
+		{"health", "-h"},
+		{"help", "--help"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			c, rest, err := resolveCommand(args)
+			if err != nil {
+				t.Fatalf("resolveCommand(%q): %v", args, err)
+			}
+			if c.names[0] != args[0] {
+				t.Errorf("command = %q; want %q", c.names[0], args[0])
+			}
+			if len(rest) != 0 {
+				t.Errorf("args = %q; want none", rest)
+			}
+		})
+	}
+	// Only alone: -h does not license other arguments.
+	if _, _, err := resolveCommand([]string{"serve", "-h", "extra"}); err == nil {
+		t.Error(`resolveCommand("serve -h extra") succeeded; want an error`)
+	}
+}
+
 // TestSubcommandHelpFlag_Exits0 pins that -h on a subcommand with flags is a
 // request for its usage, not a usage error: exit 0, as 'cyoda token -h' and
 // Go's flag package convention do.

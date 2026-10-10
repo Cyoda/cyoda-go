@@ -34,7 +34,7 @@ The Helm chart does not run this command: its `readinessProbe` sends an HTTP GET
 
 ## OPTIONS
 
-`cyoda health` accepts no flags and no arguments; any argument is refused with exit code `2` before the probe is sent.
+`cyoda health` accepts no flags and no arguments; any argument is refused with exit code `2` before the probe is sent. The one exception is a lone `-h` or `--help`, which prints this topic and exits `0`.
 
 ## ENVIRONMENT VARIABLES
 

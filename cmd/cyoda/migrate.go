@@ -18,7 +18,7 @@ type migrateConfig struct {
 }
 
 func parseMigrateArgs(args []string) (*migrateConfig, error) {
-	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
+	fs := flag.NewFlagSet("cyoda migrate", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	timeout := fs.Duration("timeout", 5*time.Minute, "maximum duration for migration run")
 	if err := fs.Parse(args); err != nil {

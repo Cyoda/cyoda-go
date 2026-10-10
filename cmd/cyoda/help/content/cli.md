@@ -22,7 +22,7 @@ cli — the cyoda command-line interface.
 
 cyoda is a Go binary that embeds the full platform: API server, schema engine, workflow runner, and storage plugins. Invoked with no subcommand, or with `serve`, it starts the server. The server takes no flags: its configuration comes from environment variables only (see `cyoda help config`). Subcommands provide operational affordances — `init` for first-run bootstrap, `health` for readiness probes, `migrate` for schema migrations, `token` for signing an admin token offline.
 
-Global flags `--help` (or `-h`) and `--version` (or `-v`) are recognized in place of a subcommand.
+Global flags `--help` (or `-h`) and `--version` (or `-v`) are recognized in place of a subcommand. `-h` or `--help` after a subcommand prints that subcommand's help and exits `0`: `init`, `migrate` and `token` print their flag usage, the others their help topic.
 
 An argument cyoda does not recognise is an error: an unknown subcommand or flag (the server has no flags), or an argument given to a subcommand or global flag that takes none. cyoda then prints `cyoda: unknown command "<arg>"` (or the matching message for a flag or an extra argument) and the usage summary to stderr, and exits `2` without loading any configuration or starting a server.
 
@@ -32,8 +32,8 @@ An argument cyoda does not recognise is an error: an unknown subcommand or flag 
 - `cyoda init [--force]` — Write a starter user config enabling sqlite. See `cyoda help cli init`. Exit codes: `0` success or idempotent no-op; `1` I/O error; `2` bad flags or arguments.
 - `cyoda health` — Probe `/readyz` on the admin listener. See `cyoda help cli health`. Exit codes: `0` readyz returned 200; `1` connection error or non-200 status; `2` any argument (it takes none).
 - `cyoda migrate [--timeout <duration>]` — Run schema migrations for the configured backend and exit. See `cyoda help cli migrate`. Exit codes: `0` success or no-op (memory/sqlite); `1` runtime error (bad config, DB unreachable, migration failure, timeout); `2` bad flags or arguments.
-- `cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]` — Sign a short-lived admin token with the signing key and print it. See `cyoda help cli token`. Exit codes: `0` token printed; `1` key or configuration error; `2` flag error.
-- `cyoda help [<topic>...] [--format=<fmt>]` — Browse the help topic tree. See `cyoda help cli help`. Exit codes: `0` topic found; `1` topic not found; `2` bad `--format`.
+- `cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]` — Sign a short-lived admin token with the signing key and print it. See `cyoda help cli token`. Exit codes: `0` token printed; `1` key or configuration error; `2` flag error or unexpected argument.
+- `cyoda help [<topic>...] [--format=<fmt>]` — Browse the help topic tree. See `cyoda help cli help`. Exit codes: `0` topic found; `1` render failure; `2` unknown topic or action, or bad `--format`.
 
 ## OPTIONS
 

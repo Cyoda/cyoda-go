@@ -622,7 +622,7 @@ func TestErrorIndex_ListsEveryCode(t *testing.T) {
 var printHelpMustAppearPhrases = []string{
 	"_FILE",          // secret-from-file pattern
 	"--force",        // cyoda init flag
-	"--timeout",      // cyoda health/migrate flag
+	"--timeout",      // cyoda migrate flag
 	"CYODA_PROFILES", // profile loader (config.md covers this)
 	"mock",           // mock IAM default warning
 	"docker",         // run-docker.sh reference or docker run example

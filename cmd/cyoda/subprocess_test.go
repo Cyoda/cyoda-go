@@ -80,6 +80,12 @@ func startCyodaWithArgs(t *testing.T, args []string, env ...string) *cyodaChild 
 		"CYODA_LOG_LEVEL=info",
 		"CYODA_OTEL_ENABLED=false",
 		"CYODA_IAM_MODE=mock",
+		// Keep the child off the developer's own configuration and data
+		// store: the user config is looked up under XDG_CONFIG_HOME, and a
+		// shell variable wins over every env file.
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"CYODA_PROFILES=",
+		"CYODA_STORAGE_BACKEND=memory",
 	), env...)
 	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Logging goes to stdout (see internal/logging.Init); capture both
@@ -264,4 +270,37 @@ func TestStartup_ServeCommandStartsServer(t *testing.T) {
 
 	child := startCyodaWithArgs(t, []string{"serve"})
 	child.loopbackAddr(t, "HTTP")
+}
+
+// TestStartup_HelpFlagAfterCommandShowsTopic pins end to end that -h after a
+// command that parses no flags prints that command's help topic and exits 0,
+// without starting anything.
+func TestStartup_HelpFlagAfterCommandShowsTopic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	for _, tc := range []struct {
+		args  []string
+		topic string
+	}{
+		{[]string{"serve", "--help"}, "cli.serve"},
+		{[]string{"health", "-h"}, "cli.health"},
+		{[]string{"help", "-h"}, "cli.help"},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			child := startCyodaWithArgs(t, tc.args)
+
+			if code := child.wait(t, 30*time.Second); code != 0 {
+				t.Errorf("exit code = %d; want 0", code)
+			}
+			out := child.out.String()
+			if !strings.Contains(out, tc.topic) {
+				t.Errorf("child output does not show help topic %q", tc.topic)
+			}
+			if strings.Contains(out, "server starting") {
+				t.Error("a server started on a help request")
+			}
+		})
+	}
 }

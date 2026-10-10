@@ -36,6 +36,10 @@ Three TCP listeners are bound before any of them is served — a port that canno
 
 All three listeners bind loopback by default, so a server started with no settings is reachable only from its own host. Clients, compute nodes and cluster peers on other hosts, and a container's port mapping, need the bind address set to `0.0.0.0` (or `::`); the Helm chart and the bundled compose file do this. When `CYODA_IAM_MODE=mock` and the HTTP or gRPC listener is bound to an address that is not loopback, the server logs a WARN naming the listener at startup: every caller that reaches it acts as the mock principal.
 
+## OPTIONS
+
+- `-h`, `--help` — print this topic and exit `0`. Nothing is loaded or started. It must be the only argument after `serve`.
+
 ## ENVIRONMENT VARIABLES
 
 All configuration is via environment variables. The subtopics below enumerate the complete per-subsystem variable sets:
