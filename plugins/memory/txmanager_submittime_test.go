@@ -26,7 +26,13 @@ func TestGetSubmitTime_CommittedTx(t *testing.T) {
 		t.Fatalf("Commit failed: %v", err)
 	}
 
-	after := time.Now()
+	// The upper bound is the consistency time, not the process clock: a
+	// Commit in the same microsecond as Begin's floor reservation is stamped
+	// one microsecond past it, which can stand ahead of the clock.
+	after, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime failed: %v", err)
+	}
 
 	submitTime, err := tm.GetSubmitTime(ctx, txID)
 	if err != nil {

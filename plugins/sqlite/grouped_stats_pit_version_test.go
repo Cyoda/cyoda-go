@@ -12,10 +12,21 @@ import (
 // bucket uses the older version of the entity, and agrees with what Iterate at
 // the same instant yields.
 func TestSqliteGroupedAggregate_PointInTimeUsesOlderVersion(t *testing.T) {
-	_, store, ctx := gsNewStore(t)
+	factory, store, ctx := gsNewStore(t)
 	gsSave(t, ctx, store, "a", "available", map[string]any{"price": 10.0})
 	gsSave(t, ctx, store, "b", "available", map[string]any{"price": 20.0})
-	at := time.Now()
+	// The instant is the consistency time, not the process clock: the second
+	// of two saves in the same microsecond is stamped one microsecond past the
+	// first, which can stand ahead of the clock, so a time.Now() taken here
+	// can fall before b's stamp.
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	at, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
 	time.Sleep(10 * time.Millisecond)
 	gsSave(t, ctx, store, "a", "allocated", map[string]any{"price": 99.0})
 

@@ -461,15 +461,32 @@ func TestIterateAsAt(t *testing.T) {
 		},
 		Data: []byte(`{"v": 1}`),
 	}
-	store.Save(ctx, e1)
-	store.Save(ctx, e2)
-	t1 := time.Now()
+	if _, err := store.Save(ctx, e1); err != nil {
+		t.Fatalf("Save e1: %v", err)
+	}
+	if _, err := store.Save(ctx, e2); err != nil {
+		t.Fatalf("Save e2: %v", err)
+	}
+	// t1 is the consistency time, not the process clock: the second of two
+	// saves in the same microsecond is stamped one microsecond past the
+	// first, which can stand ahead of the clock, so a time.Now() taken here
+	// can fall before e2's stamp.
+	tm, err := factory.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	t1, err := tm.ConsistencyTime(ctx)
+	if err != nil {
+		t.Fatalf("ConsistencyTime: %v", err)
+	}
 
 	time.Sleep(time.Millisecond)
 
 	// Update entity 1 at t2
 	e1.Data = []byte(`{"v": 2}`)
-	store.Save(ctx, e1)
+	if _, err := store.Save(ctx, e1); err != nil {
+		t.Fatalf("Save e1 update: %v", err)
+	}
 	t2 := time.Now()
 
 	// Iterate(t1) → both at original state
