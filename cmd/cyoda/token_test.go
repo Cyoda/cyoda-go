@@ -22,7 +22,8 @@ func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 }
 
 // setTokenEnv sets the JWT variables runToken reads and makes its call to
-// app.LoadEnvFiles hermetic through isolateEnvFiles.
+// app.LoadEnvFiles hermetic, apart from the Linux system config, through
+// isolateEnvFiles.
 func setTokenEnv(t *testing.T, pemText string) {
 	t.Helper()
 	isolateEnvFiles(t)
