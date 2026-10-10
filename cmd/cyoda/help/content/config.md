@@ -65,7 +65,10 @@ overriding an earlier one:
 3. `./.env`.
 4. Each `./.env.N`, in the order `CYODA_PROFILES` names them.
 
-A variable set in the process environment wins over every file. A file that is missing,
+A variable set in the process environment wins over the same variable in any file. Precedence
+is per variable name: a `CYODA_X_FILE` set in a file still overrides `CYODA_X` set in the
+process environment (see Precedence above); export `CYODA_X_FILE=` (empty) to block it. A
+file that is missing,
 cannot be read, or is not valid env syntax is skipped as a whole.
 
 **Example:**

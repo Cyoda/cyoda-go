@@ -33,7 +33,7 @@ The binary starts with no required configuration. Default mode: sqlite storage (
 
 Without any environment variables, after `cyoda init`:
 
-- `CYODA_STORAGE_BACKEND` = `memory` (before `cyoda init`; `sqlite` after init writes the user config)
+- `CYODA_STORAGE_BACKEND` = `sqlite` (written by `cyoda init`, or by the deb/rpm system config; `memory` without either)
 - `CYODA_SQLITE_PATH` = `~/.local/share/cyoda/cyoda.db` (Linux/macOS XDG; `%LocalAppData%\cyoda\cyoda.db` on Windows)
 - `CYODA_SQLITE_AUTO_MIGRATE` = `true`
 - `CYODA_SQLITE_BUSY_TIMEOUT` = `5s`

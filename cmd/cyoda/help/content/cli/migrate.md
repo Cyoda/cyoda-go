@@ -21,7 +21,7 @@ cli.migrate — run schema migrations for the configured storage backend and exi
 
 `cyoda migrate` is a short-lived process that applies pending schema migrations for the configured storage backend, then exits cleanly — no admin listener, no background loops, no lingering goroutines.
 
-It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see the profile loader in `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over every env file.
+It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see the profile loader in `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over the same variable in any env file; a `_FILE` variant from a file still beats the plain variable.
 
 Dispatch is on `CYODA_STORAGE_BACKEND`:
 

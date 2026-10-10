@@ -41,7 +41,7 @@ helm install cyoda ./deploy/helm/cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt
 
-# Dev script (in-memory, mock auth)
+# Dev script (local profile: .env.local, copied from .env.local.example)
 ./scripts/dev/run-local.sh
 ```
 
@@ -93,7 +93,7 @@ cyoda
 
 First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
 
-The binary reads env vars from the process environment and from env files: the system config, the user config written by `cyoda init`, `./.env`, and the profile files that `CYODA_PROFILES` selects from the **current working directory** (`CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt`). A variable set in the process environment wins over every file. The profile loader in `cyoda help config` gives the per-OS paths and the full order.
+The binary reads env vars from the process environment and from env files: the system config, the user config written by `cyoda init`, `./.env`, and the profile files that `CYODA_PROFILES` selects from the **current working directory** (`CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt`). A variable set in the process environment wins over the same variable in any file (a `_FILE` variant from a file still beats the plain variable). The profile loader in `cyoda help config` gives the per-OS paths and the full order.
 
 ### Docker
 
@@ -254,10 +254,10 @@ helm upgrade --install cyoda ./deploy/helm/cyoda \
 
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
-- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
+- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile: `.env.local`, which you copy from `.env.local.example` (in-memory storage, mock auth). Without that file, the defaults and any `cyoda init` user config apply. Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
 - `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. The compose file's defaults apply: sqlite storage and mock auth. Intended for contributors testing local changes in a container before they land.
 
-**Run with in-memory storage and mock auth (go run):**
+**Run with the `local` profile (go run; in-memory storage and mock auth once `.env.local` exists):**
 
 ```
 ./scripts/dev/run-local.sh

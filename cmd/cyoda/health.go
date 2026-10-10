@@ -36,7 +36,12 @@ func runHealth() int {
 		}
 		port = p
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		// /readyz never redirects; following one would carry the probe off
+		// 127.0.0.1. A 3xx is a non-200 answer.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/readyz"
 	resp, err := client.Get(url)
 	if err != nil {

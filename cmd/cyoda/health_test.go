@@ -190,3 +190,26 @@ func TestCyodaHealth_RefusesPortThatIsNotANumber(t *testing.T) {
 		t.Errorf("the probe reached another host %d time(s)", hits.Load())
 	}
 }
+
+// TestCyodaHealth_DoesNotFollowRedirects pins that a redirect from the local
+// listener cannot carry the probe to another host: a 3xx is a non-200 answer,
+// and the redirect target must not be reached.
+func TestCyodaHealth_DoesNotFollowRedirects(t *testing.T) {
+	isolateEnvFiles(t)
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	local := httptest.NewServer(http.RedirectHandler(target.URL+"/readyz", http.StatusFound))
+	defer local.Close()
+
+	t.Setenv("CYODA_ADMIN_PORT", portFromURL(t, local.URL))
+	if code := runHealth(); code != 1 {
+		t.Errorf("runHealth exit code = %d; want 1", code)
+	}
+	if hits.Load() != 0 {
+		t.Errorf("the probe followed the redirect to another server %d time(s)", hits.Load())
+	}
+}
