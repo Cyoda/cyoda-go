@@ -47,8 +47,8 @@ All server configuration is via environment variables with the `CYODA_` prefix. 
 ## EXAMPLES
 
 ```
-# Start the server with defaults: mock auth, and sqlite storage once
-# `cyoda init` has written its config (in-memory storage before that)
+# Start the server with defaults: mock auth; sqlite storage once
+# `cyoda init` or the deb/rpm package has written a config, in-memory before
 cyoda
 
 # First-run bootstrap then start

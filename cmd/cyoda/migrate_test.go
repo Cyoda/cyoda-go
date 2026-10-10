@@ -15,22 +15,6 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// isolateEnvFiles makes a call to app.LoadEnvFiles hermetic: the user
-// config, a ./.env and profile files are looked up in empty temporary
-// directories, so the developer's own user config and env files are never
-// read, and nothing from them is left set in the test process. The Linux
-// system config (/etc/cyoda/cyoda.env) cannot be redirected, so a test that
-// depends on a variable sets it itself. It returns the XDG_CONFIG_HOME
-// directory, under which a test may write a user config.
-func isolateEnvFiles(t *testing.T) string {
-	t.Helper()
-	xdg := setupIsolatedConfig(t)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("CYODA_PROFILES", "")
-	t.Chdir(t.TempDir())
-	return xdg
-}
-
 // TestRunMigrate_ReadsEnvFiles pins that migrate reads the env files the
 // server reads. Without them, a postgres backend configured in the user
 // config or a profile file migrated nothing and reported success as a

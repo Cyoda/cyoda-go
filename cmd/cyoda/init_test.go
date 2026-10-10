@@ -22,6 +22,24 @@ func setupIsolatedConfig(t *testing.T) string {
 	return tmp
 }
 
+// isolateEnvFiles makes a call to app.LoadEnvFiles hermetic: the user config
+// (XDG_CONFIG_HOME, AppData), the Windows system config, ./.env and profile
+// files are looked up in empty temporary directories, so the developer's own
+// user config and env files are never read, and nothing from them is left
+// set in the test process. HOME is left alone: the user config path never
+// falls back to it while XDG_CONFIG_HOME is set, and testcontainers reads its
+// own settings and the Docker socket from it. The Linux system config
+// (/etc/cyoda/cyoda.env) cannot be redirected, so a test that depends on a
+// variable sets it itself. It returns the XDG_CONFIG_HOME directory, under
+// which a test may write a user config.
+func isolateEnvFiles(t *testing.T) string {
+	t.Helper()
+	xdg := setupIsolatedConfig(t)
+	t.Setenv("CYODA_PROFILES", "")
+	t.Chdir(t.TempDir())
+	return xdg
+}
+
 func TestCyodaInit_WritesUserConfigFresh(t *testing.T) {
 	tmp := setupIsolatedConfig(t)
 

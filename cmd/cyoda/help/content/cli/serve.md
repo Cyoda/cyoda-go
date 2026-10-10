@@ -71,8 +71,8 @@ Variables read specifically during server boot (not covered by the config subtop
 ## EXAMPLES
 
 ```
-# Run with defaults: mock auth, and sqlite storage once `cyoda init`
-# has written its config (in-memory storage before that)
+# Run with defaults: mock auth; sqlite storage once `cyoda init` or the
+# deb/rpm package has written a config, in-memory before
 cyoda
 
 # The same, with the subcommand spelled out

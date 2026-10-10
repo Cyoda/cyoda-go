@@ -65,7 +65,7 @@ The prebuilt binary is the canonical artifact. Build from source or download fro
 go build -o bin/cyoda ./cmd/cyoda
 ```
 
-**Run with defaults (mock auth; in-memory storage until `cyoda init` has written its sqlite config):**
+**Run with defaults (mock auth; in-memory storage until `cyoda init` or the deb/rpm package has written a sqlite config):**
 
 ```
 ./bin/cyoda
