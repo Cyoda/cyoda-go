@@ -51,8 +51,14 @@ The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<pat
 ### Profile loader
 
 `CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file
-`cyoda.N.env` is loaded from the working directory before the process's own environment is
-consulted. This supports local development without exporting many variables.
+`.env.N` is loaded from the working directory. This supports local development without
+exporting many variables.
+
+The server, `cyoda migrate` and `cyoda token` load env files in this order, a later file
+overriding an earlier one: the system config (`/etc/cyoda/cyoda.env` on Linux), the user
+config (`~/.config/cyoda/cyoda.env`, or `$XDG_CONFIG_HOME/cyoda/cyoda.env`, written by
+`cyoda init`), `./.env`, then each `./.env.N` in the order `CYODA_PROFILES` names them. A
+variable set in the process environment wins over every file. A missing file is skipped.
 
 **Example:**
 
@@ -60,7 +66,7 @@ consulted. This supports local development without exporting many variables.
 CYODA_PROFILES=postgres,otel go run ./cmd/cyoda
 ```
 
-loads `cyoda.postgres.env` and `cyoda.otel.env` from the working directory.
+loads `.env`, `.env.postgres` and `.env.otel` from the working directory.
 
 ### Server options
 

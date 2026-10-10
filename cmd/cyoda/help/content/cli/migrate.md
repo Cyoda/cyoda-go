@@ -21,7 +21,7 @@ cli.migrate — run schema migrations for the configured storage backend and exi
 
 `cyoda migrate` is a short-lived process that applies pending schema migrations for the configured storage backend, then exits cleanly — no admin listener, no background loops, no lingering goroutines.
 
-It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over every env file.
+It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see the profile loader in `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over every env file.
 
 Dispatch is on `CYODA_STORAGE_BACKEND`:
 
@@ -40,7 +40,7 @@ The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which 
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (default: `memory`).
+- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (bare default: `memory`; `sqlite` after `cyoda init` has written its user config).
 - `CYODA_POSTGRES_URL` — PostgreSQL DSN, required when backend is `postgres`. Accepts `CYODA_POSTGRES_URL_FILE` variant.
 
 ## EXIT CODES
@@ -62,7 +62,7 @@ CYODA_STORAGE_BACKEND=postgres \
   CYODA_POSTGRES_URL="postgres://user:pass@localhost/cyoda" \
   cyoda migrate --timeout 2m
 
-# No-op — memory backend
+# No-op — memory backend, or sqlite after `cyoda init`
 cyoda migrate
 ```
 

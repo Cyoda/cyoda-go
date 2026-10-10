@@ -15,10 +15,12 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
-// isolateEnvFiles makes runMigrate's call to app.LoadEnvFiles hermetic: the
-// user config, a ./.env and profile files are looked up in empty temporary
-// directories, so the developer's own config is never read, and nothing from
-// it is left set in the test process. It returns the XDG_CONFIG_HOME
+// isolateEnvFiles makes a call to app.LoadEnvFiles hermetic: the user
+// config, a ./.env and profile files are looked up in empty temporary
+// directories, so the developer's own user config and env files are never
+// read, and nothing from them is left set in the test process. The Linux
+// system config (/etc/cyoda/cyoda.env) cannot be redirected, so a test that
+// depends on a variable sets it itself. It returns the XDG_CONFIG_HOME
 // directory, under which a test may write a user config.
 func isolateEnvFiles(t *testing.T) string {
 	t.Helper()

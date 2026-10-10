@@ -27,15 +27,12 @@ func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 // read (and nothing from them is left set after the test).
 func setTokenEnv(t *testing.T, pemText string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Chdir(t.TempDir())
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_JWT_SIGNING_KEY", pemText)
 	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
 	t.Setenv("CYODA_JWT_ISSUER", "cyoda-test")
 	t.Setenv("CYODA_JWT_AUDIENCE", "")
 	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "3600")
-	t.Setenv("CYODA_PROFILES", "")
 }
 
 func TestRunToken_StdoutIsOnlyTheToken(t *testing.T) {
