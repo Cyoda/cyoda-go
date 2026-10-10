@@ -28,21 +28,23 @@ Despite the command name, this probes `/readyz` on the admin listener, not `GET 
 
 Primary consumers:
 
-- **Docker Compose** — `HEALTHCHECK` stanza in the service definition.
-- **Helm chart** — `readinessProbe` invokes `cyoda health` before the pod is marked ready.
+- **Docker Compose** — the `healthcheck` of the bundled compose file runs `cyoda health`.
+
+The Helm chart does not run this command: its `readinessProbe` sends an HTTP GET to `/readyz` itself.
 
 ## OPTIONS
 
-`cyoda health` accepts no flags.
+`cyoda health` accepts no flags and no arguments; any argument is refused with exit code `2` before the probe is sent. The one exception is a lone `-h` or `--help`, which prints this topic and exits `0`.
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`).
+- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`); a port number, 1–65535. Read from the process environment and the env files, as the server reads it; see the profile loader in `cyoda help config`.
 
 ## EXIT CODES
 
 - `0` — Server responded HTTP 200. Instance is ready.
-- `1` — Connection failed, timed out, or server returned a non-200 status.
+- `1` — Connection failed, timed out, or server returned a non-200 status; or `CYODA_ADMIN_PORT` is not a port number (1–65535), in which case no probe is sent.
+- `2` — An argument was given. No probe is sent.
 
 ## EXAMPLES
 

@@ -21,7 +21,7 @@ cli.migrate — run schema migrations for the configured storage backend and exi
 
 `cyoda migrate` is a short-lived process that applies pending schema migrations for the configured storage backend, then exits cleanly — no admin listener, no background loops, no lingering goroutines.
 
-It loads the same configuration the server does via `app.DefaultConfig`, honoring all `CYODA_*` environment variables and `_FILE` suffix resolution identically to the main server process.
+It loads the same configuration the server does: the env files (system config, user config, `./.env` and the `CYODA_PROFILES` files; see the profile loader in `cyoda help config`), then all `CYODA_*` environment variables with `_FILE` suffix resolution, identically to the main server process. A variable set in the shell wins over the same variable in any env file; a `_FILE` variant from a file still beats the plain variable.
 
 Dispatch is on `CYODA_STORAGE_BACKEND`:
 
@@ -40,14 +40,14 @@ The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which 
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (default: `memory`).
+- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (bare default: `memory`; `sqlite` after `cyoda init` has written its user config, or from the system config the deb and rpm packages install).
 - `CYODA_POSTGRES_URL` — PostgreSQL DSN, required when backend is `postgres`. Accepts `CYODA_POSTGRES_URL_FILE` variant.
 
 ## EXIT CODES
 
-- `0` — Migration succeeded (or was a no-op for memory/sqlite).
+- `0` — Migration succeeded (or was a no-op for memory/sqlite), or `-h` / `--help` (the usage goes to stderr).
 - `1` — Runtime error: bad config, database unreachable, migration failure, or timeout.
-- `2` — Flag-parse error.
+- `2` — Flag-parse error, or an argument `migrate` does not take. No configuration is read.
 
 ## EXAMPLES
 
@@ -62,7 +62,7 @@ CYODA_STORAGE_BACKEND=postgres \
   CYODA_POSTGRES_URL="postgres://user:pass@localhost/cyoda" \
   cyoda migrate --timeout 2m
 
-# No-op — memory backend
+# No-op — memory or sqlite backend
 cyoda migrate
 ```
 

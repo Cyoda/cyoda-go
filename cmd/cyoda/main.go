@@ -58,30 +58,18 @@ func runHelpCmd(args []string) int {
 }
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "--help", "-h":
-			// Delegate to the help subsystem so there is a single source
-			// of truth. No positional args → writeTreeSummary with USAGE +
-			// FLAGS + TOPICS block. Users can still run 'cyoda help cli'
-			// for the full CLI reference.
-			os.Exit(runHelpCmd(nil))
-		case "--version", "-v":
-			printVersion(os.Stdout)
-			return
-		case "help":
-			os.Exit(runHelpCmd(os.Args[2:]))
-		case "init":
-			os.Exit(runInit(os.Args[2:]))
-		case "health":
-			os.Exit(runHealth(os.Args[2:]))
-		case "migrate":
-			os.Exit(runMigrate(os.Args[2:]))
-		case "token":
-			os.Exit(runToken(os.Args[2:], os.Stdout, os.Stderr))
-		}
+	c, args, err := resolveCommand(os.Args[1:])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cyoda: %v\n\n", err)
+		writeUsage(os.Stderr)
+		os.Exit(2)
 	}
+	os.Exit(c.run(args))
+}
 
+// runServeCmd loads the configuration, starts the server and returns the
+// process exit code once it stops.
+func runServeCmd() int {
 	app.LoadEnvFiles()
 	cfg := app.DefaultConfig()
 	cfg.Version = version
@@ -93,14 +81,14 @@ func main() {
 	// than surfacing only once app.New (called from runServe) is reached.
 	if err := cfg.Validate(); err != nil {
 		slog.Error("startup failure", "phase", "config-validation", "error", err.Error())
-		os.Exit(1)
+		return 1
 	}
 	logCORSMode(cfg.CORS)
 
 	printBanner(cfg)
 	printMockAuthWarningTo(os.Stdout, cfg)
 
-	os.Exit(runServe(cfg))
+	return runServe(cfg)
 }
 
 // runServe runs the server until it is signalled to stop and returns the

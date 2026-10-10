@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -17,11 +18,18 @@ var goos = runtime.GOOS
 
 // runInit implements 'cyoda init'. See the desktop provisioning spec for
 // design rationale. Exit codes: 0 success (incl. idempotent no-op), 1
-// I/O error, 2 bad flags.
+// I/O error, 2 bad flags or arguments. -h/--help prints the usage and exits 0.
 func runInit(args []string) int {
 	fs := flag.NewFlagSet("cyoda init", flag.ContinueOnError)
 	force := fs.Bool("force", false, "overwrite an existing user config or bypass the system-config check")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0 // -h/--help: the flag package printed the usage to stderr
+		}
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintf(os.Stderr, "cyoda init: unexpected argument %q\n", fs.Arg(0))
 		return 2
 	}
 

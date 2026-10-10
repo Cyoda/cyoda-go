@@ -41,13 +41,13 @@ helm install cyoda ./deploy/helm/cyoda \
   --set postgres.existingSecret=cyoda-pg \
   --set jwt.existingSecret=cyoda-jwt
 
-# Dev script (in-memory, mock auth)
+# Dev script (local profile: .env.local, copied from .env.local.example)
 ./scripts/dev/run-local.sh
 ```
 
 ## DESCRIPTION
 
-cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
+cyoda-go is a single-process, multi-tenant REST and gRPC API server. It starts in serving mode when invoked with no subcommand or with `serve`. All configuration is via environment variables with a `CYODA_` prefix. The binary, Docker image, and Helm chart run the same binary; only the environment configuration differs across run modes.
 
 The process binds three TCP listeners before it serves on any of them: gRPC (default port 9090), the REST API (default port 8080), and an admin server (default port 9091). A port that cannot be bound stops the process with exit status `1` and a `listen failed` log naming the listener, before a single request is served. The admin server hosts health probes and the Prometheus metrics endpoint. On receiving `SIGINT` or `SIGTERM`, the scheduler drains its runs first, then the HTTP, admin and gRPC servers drain in-flight requests within a 10-second deadline each, then the storage backend is closed and the process exits. See SHUTDOWN TIMING.
 
@@ -65,7 +65,7 @@ The prebuilt binary is the canonical artifact. Build from source or download fro
 go build -o bin/cyoda ./cmd/cyoda
 ```
 
-**Run (default — in-memory storage, mock auth):**
+**Run with defaults (mock auth; in-memory storage until `cyoda init` or the deb/rpm package has written a sqlite config):**
 
 ```
 ./bin/cyoda
@@ -93,7 +93,7 @@ cyoda
 
 First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
 
-The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
+The binary reads env vars from the process environment and from env files: the system config, the user config written by `cyoda init`, `./.env`, and the profile files that `CYODA_PROFILES` selects from the **current working directory** (`CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt`). A variable set in the process environment wins over the same variable in any file (a `_FILE` variant from a file still beats the plain variable). The profile loader in `cyoda help config` gives the per-OS paths and the full order.
 
 ### Docker
 
@@ -103,7 +103,7 @@ The image uses `gcr.io/distroless/static` as its base. The binary is placed at `
 
 Exposed ports: `8080` (HTTP), `9090` (gRPC), `9091` (admin).
 
-The entrypoint is `/cyoda` with no default arguments. Subcommands (`init`, `health`, `migrate`) are passed as Docker CMD arguments.
+The entrypoint is `/cyoda` with no default arguments. Subcommands (`serve`, `init`, `health`, `migrate`, `token`, `help`) are passed as Docker CMD arguments.
 
 **Minimal run (in-memory + mock auth):**
 
@@ -254,10 +254,10 @@ helm upgrade --install cyoda ./deploy/helm/cyoda \
 
 Developer convenience scripts live under `scripts/dev/`. These are not canonical provisioning artifacts. Canonical artifacts are in `deploy/`.
 
-- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile (in-memory storage, mock auth). Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
+- `scripts/dev/run-local.sh` — runs `cyoda-go` via `go run ./cmd/cyoda` using the `local` profile: `.env.local`, which you copy from `.env.local.example` (in-memory storage, mock auth). Without that file, the defaults and any `cyoda init` user config apply. Override with `CYODA_PROFILES=postgres,otel ./scripts/dev/run-local.sh`.
 - `scripts/dev/run-docker-dev.sh` — builds the binary from source for the host platform (`linux/amd64` or `linux/arm64`), builds a local Docker image tagged `ghcr.io/cyoda/cyoda:dev`, and runs it via `docker compose -f deploy/docker/compose.yaml up`. The compose file's defaults apply: sqlite storage and mock auth. Intended for contributors testing local changes in a container before they land.
 
-**Run with in-memory storage and mock auth (go run):**
+**Run with the `local` profile (go run; in-memory storage and mock auth once `.env.local` exists):**
 
 ```
 ./scripts/dev/run-local.sh
@@ -294,7 +294,7 @@ Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BI
 
 A latched node, whatever latched it, claims no scheduled task; its runs in progress go on unless the panic was inside the scheduler, and it keeps heartbeating unless the heartbeat itself panicked.
 
-The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise. This is the implementation behind Docker's `HEALTHCHECK: CMD /cyoda health` and is valid as a readiness check for any init system.
+The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise, and 2 on an argument; see `cyoda help cli health`. The bundled compose file's `healthcheck` runs it, and it is valid as a readiness check for any init system.
 
 **Bind addresses in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container, and `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` likewise for the API and gRPC ports. The Kubernetes Helm chart sets all three in its ConfigMap. Without them, the API, gRPC and probe ports are unreachable from the Service, peer nodes, compute nodes and the kubelet. The probes cannot show the API and gRPC part: with only the admin listener open, `/readyz` passes while nothing reaches ports 8080 and 9090.
 

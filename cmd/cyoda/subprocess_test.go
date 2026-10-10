@@ -53,6 +53,13 @@ type cyodaChild struct {
 // neighbouring test can take it. env entries override the defaults.
 func startCyoda(t *testing.T, env ...string) *cyodaChild {
 	t.Helper()
+	return startCyodaWithArgs(t, nil, env...)
+}
+
+// startCyodaWithArgs is startCyoda with a command line: args are passed to
+// the child after the program name.
+func startCyodaWithArgs(t *testing.T, args []string, env ...string) *cyodaChild {
+	t.Helper()
 
 	bin := filepath.Join(t.TempDir(), "cyoda-test")
 	build := exec.Command("go", "build", "-o", bin, ".")
@@ -61,7 +68,7 @@ func startCyoda(t *testing.T, env ...string) *cyodaChild {
 		t.Fatalf("go build cyoda: %v", err)
 	}
 
-	c := &cyodaChild{cmd: exec.Command(bin), out: &childOutput{}, exited: make(chan struct{})}
+	c := &cyodaChild{cmd: exec.Command(bin, args...), out: &childOutput{}, exited: make(chan struct{})}
 	c.cmd.Env = append(append(os.Environ(),
 		"CYODA_HTTP_PORT=0",
 		"CYODA_GRPC_PORT=0",
@@ -73,6 +80,13 @@ func startCyoda(t *testing.T, env ...string) *cyodaChild {
 		"CYODA_LOG_LEVEL=info",
 		"CYODA_OTEL_ENABLED=false",
 		"CYODA_IAM_MODE=mock",
+		// Keep the child off the developer's own configuration, data store
+		// and cluster: the user config is looked up under XDG_CONFIG_HOME,
+		// and a shell variable wins over every env file.
+		"XDG_CONFIG_HOME="+t.TempDir(),
+		"CYODA_PROFILES=",
+		"CYODA_STORAGE_BACKEND=memory",
+		"CYODA_CLUSTER_ENABLED=false",
 	), env...)
 	c.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	// Logging goes to stdout (see internal/logging.Init); capture both
@@ -214,4 +228,114 @@ func TestStartup_MockIAMOffLoopbackWarns(t *testing.T) {
 			t.Errorf("child output has the exposure WARN although every API listener is on loopback")
 		}
 	})
+}
+
+// TestStartup_UnknownArgumentExits2 pins end to end that a command line cyoda
+// does not understand stops the process with exit status 2 and the usage
+// summary on stderr, before any configuration is loaded or any server starts.
+func TestStartup_UnknownArgumentExits2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	for _, args := range [][]string{
+		{"version"},
+		{"--http-port", "8081"},
+		{"serve", "extra"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			child := startCyodaWithArgs(t, args)
+
+			if code := child.wait(t, 30*time.Second); code != 2 {
+				t.Errorf("exit code = %d; want 2", code)
+			}
+			out := child.out.String()
+			for _, want := range []string{"cyoda: ", "USAGE", "cyoda help cli"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("child output is missing %q", want)
+				}
+			}
+			if strings.Contains(out, "server starting") {
+				t.Error("a server started on an unknown argument")
+			}
+		})
+	}
+}
+
+// TestStartup_UnknownArgumentLoadsNoConfig pins that a refused command line
+// reads no env file: the child has a user config, and the log line that
+// app.LoadEnvFiles writes for a loaded file never appears. migrate, which
+// loads the env files, is the positive control for that log line.
+func TestStartup_UnknownArgumentLoadsNoConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+	const loaded = "loaded env files"
+	xdg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(xdg, "cyoda"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "cyoda", "cyoda.env"), []byte("CYODA_LOG_LEVEL=info\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	control := startCyodaWithArgs(t, []string{"migrate"}, "XDG_CONFIG_HOME="+xdg)
+	if code := control.wait(t, 30*time.Second); code != 0 {
+		t.Fatalf("control: migrate exit code = %d; want 0", code)
+	}
+	if !strings.Contains(control.out.String(), loaded) {
+		t.Fatalf("control: migrate did not log %q; the assertion below would prove nothing", loaded)
+	}
+
+	refused := startCyodaWithArgs(t, []string{"version"}, "XDG_CONFIG_HOME="+xdg)
+	if code := refused.wait(t, 30*time.Second); code != 2 {
+		t.Errorf("exit code = %d; want 2", code)
+	}
+	if strings.Contains(refused.out.String(), loaded) {
+		t.Error("a refused command line loaded the env files")
+	}
+}
+
+// TestStartup_ServeCommandStartsServer pins that 'cyoda serve' starts the
+// server, as a bare 'cyoda' does.
+func TestStartup_ServeCommandStartsServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	child := startCyodaWithArgs(t, []string{"serve"})
+	child.loopbackAddr(t, "HTTP")
+}
+
+// TestStartup_HelpFlagAfterCommandShowsTopic pins end to end that -h after a
+// command that parses no flags prints that command's help topic and exits 0,
+// without starting anything.
+func TestStartup_HelpFlagAfterCommandShowsTopic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	for _, tc := range []struct {
+		args  []string
+		topic string
+	}{
+		{[]string{"serve", "--help"}, "cli.serve"},
+		{[]string{"health", "-h"}, "cli.health"},
+		{[]string{"help", "-h"}, "cli.help"},
+	} {
+		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
+			child := startCyodaWithArgs(t, tc.args)
+
+			if code := child.wait(t, 30*time.Second); code != 0 {
+				t.Errorf("exit code = %d; want 0", code)
+			}
+			out := child.out.String()
+			if !strings.Contains(out, tc.topic) {
+				t.Errorf("child output does not show help topic %q", tc.topic)
+			}
+			if strings.Contains(out, "server starting") {
+				t.Error("a server started on a help request")
+			}
+		})
+	}
 }

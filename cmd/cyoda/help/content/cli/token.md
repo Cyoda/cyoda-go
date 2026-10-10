@@ -67,7 +67,7 @@ The token and a newline on stdout, nothing else, so `TOKEN=$(cyoda token …)` c
 
 - `0` — token printed, or `-h` / `--help` (the usage goes to stderr).
 - `1` — the signing key or configuration is missing, unreadable or unusable.
-- `2` — flag error.
+- `2` — flag error, or an argument `token` does not take.
 
 ## EXAMPLES
 

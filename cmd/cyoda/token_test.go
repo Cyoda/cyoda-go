@@ -22,20 +22,16 @@ func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 }
 
 // setTokenEnv sets the JWT variables runToken reads and makes its call to
-// app.LoadEnvFiles hermetic: HOME, XDG_CONFIG_HOME and the working directory
-// point at empty temporary directories, so no user config and no ./.env is
-// read (and nothing from them is left set after the test).
+// app.LoadEnvFiles hermetic, apart from the Linux system config, through
+// isolateEnvFiles.
 func setTokenEnv(t *testing.T, pemText string) {
 	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Chdir(t.TempDir())
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_JWT_SIGNING_KEY", pemText)
 	t.Setenv("CYODA_JWT_SIGNING_KEY_FILE", "")
 	t.Setenv("CYODA_JWT_ISSUER", "cyoda-test")
 	t.Setenv("CYODA_JWT_AUDIENCE", "")
 	t.Setenv("CYODA_JWT_EXPIRY_SECONDS", "3600")
-	t.Setenv("CYODA_PROFILES", "")
 }
 
 func TestRunToken_StdoutIsOnlyTheToken(t *testing.T) {
@@ -206,8 +202,8 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 
 // TestSetTokenEnv_IgnoresDeveloperEnvFiles pins that runToken's call to
 // app.LoadEnvFiles cannot pick up the developer's user config or a ./.env:
-// setTokenEnv points HOME, XDG_CONFIG_HOME and the working directory at empty
-// temporary directories.
+// setTokenEnv points XDG_CONFIG_HOME and the working directory at empty
+// temporary directories (through isolateEnvFiles).
 func TestSetTokenEnv_IgnoresDeveloperEnvFiles(t *testing.T) {
 	const userVar, cwdVar = "CYODA_TOKEN_TEST_FROM_USER_CONFIG", "CYODA_TOKEN_TEST_FROM_DOTENV"
 	for _, v := range []string{userVar, cwdVar} {

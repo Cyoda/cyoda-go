@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,8 +15,29 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
+// TestRunMigrate_ReadsEnvFiles pins that migrate reads the env files the
+// server reads. Without them, a postgres backend configured in the user
+// config or a profile file migrated nothing and reported success as a
+// memory no-op.
+func TestRunMigrate_ReadsEnvFiles(t *testing.T) {
+	xdg := isolateEnvFiles(t)
+	t.Setenv("CYODA_STORAGE_BACKEND", "") // restores the variable's absence at cleanup
+	os.Unsetenv("CYODA_STORAGE_BACKEND")
+	if err := os.MkdirAll(filepath.Join(xdg, "cyoda"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "cyoda", "cyoda.env"), []byte("CYODA_STORAGE_BACKEND=no-such-backend\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := runMigrate(nil); code != 1 {
+		t.Errorf("runMigrate exit code = %d; want 1 (unknown backend from the user config)", code)
+	}
+}
+
 // TestRunMigrate_MemoryBackendNoOp confirms the memory backend exits 0.
 func TestRunMigrate_MemoryBackendNoOp(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "memory")
 
 	code := runMigrate(nil)
@@ -26,6 +49,7 @@ func TestRunMigrate_MemoryBackendNoOp(t *testing.T) {
 // TestRunMigrate_UnknownFlagRejected verifies argument parsing errors
 // produce non-zero exit.
 func TestRunMigrate_UnknownFlagRejected(t *testing.T) {
+	isolateEnvFiles(t)
 	code := runMigrate([]string{"--notaflag"})
 	if code == 0 {
 		t.Error("unknown flag should cause non-zero exit")
@@ -34,6 +58,7 @@ func TestRunMigrate_UnknownFlagRejected(t *testing.T) {
 
 // TestRunMigrate_TimeoutFlagParsed verifies --timeout is honored.
 func TestRunMigrate_TimeoutFlagParsed(t *testing.T) {
+	isolateEnvFiles(t)
 	cfg, err := parseMigrateArgs([]string{"--timeout", "10m"})
 	if err != nil {
 		t.Fatalf("parse failed: %v", err)
@@ -46,6 +71,7 @@ func TestRunMigrate_TimeoutFlagParsed(t *testing.T) {
 // TestRunMigrate_MissingPostgresDSN confirms a clear error when the
 // postgres backend is selected but no DSN is provided.
 func TestRunMigrate_MissingPostgresDSN(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
 	t.Setenv("CYODA_POSTGRES_URL", "")
 	t.Setenv("CYODA_POSTGRES_URL_FILE", "")
@@ -58,6 +84,7 @@ func TestRunMigrate_MissingPostgresDSN(t *testing.T) {
 
 // TestRunMigrate_SQLiteBackendNoOp confirms the sqlite backend exits 0.
 func TestRunMigrate_SQLiteBackendNoOp(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "sqlite")
 
 	code := runMigrate(nil)
@@ -68,6 +95,7 @@ func TestRunMigrate_SQLiteBackendNoOp(t *testing.T) {
 
 // TestRunMigrate_UnknownBackend confirms an unknown backend exits non-zero.
 func TestRunMigrate_UnknownBackend(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "cassandra")
 
 	code := runMigrate(nil)
@@ -79,6 +107,7 @@ func TestRunMigrate_UnknownBackend(t *testing.T) {
 // TestRunMigrate_PostgresTimeoutPath verifies the context.DeadlineExceeded
 // branch exits 1 without requiring Docker.
 func TestRunMigrate_PostgresTimeoutPath(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
 	t.Setenv("CYODA_POSTGRES_URL", "postgres://fake@localhost:1/fake")
 
@@ -97,6 +126,7 @@ func TestRunMigrate_PostgresTimeoutPath(t *testing.T) {
 // TestRunMigrate_PostgresGenericError verifies a non-timeout migration error
 // exits 1, keeping the generic-error branch distinct from the timeout branch.
 func TestRunMigrate_PostgresGenericError(t *testing.T) {
+	isolateEnvFiles(t)
 	t.Setenv("CYODA_STORAGE_BACKEND", "postgres")
 	t.Setenv("CYODA_POSTGRES_URL", "postgres://fake@localhost:1/fake")
 
@@ -116,6 +146,7 @@ func TestRunMigrate_PostgresGenericError(t *testing.T) {
 // applies migrations; second call is idempotent; schema-newer-than-code
 // refuses. Requires Docker (testcontainers).
 func TestRunMigrate_IntegrationPostgres(t *testing.T) {
+	isolateEnvFiles(t)
 	if testing.Short() {
 		t.Skip("integration test; run without -short")
 	}

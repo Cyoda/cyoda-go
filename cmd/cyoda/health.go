@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // runHealth implements 'cyoda health': GET /readyz on the admin listener,
@@ -16,13 +20,29 @@ import (
 // handler looks exactly like "server accepts connection then hangs" to
 // this client; without the timeout, Docker's HEALTHCHECK inherits the
 // deadlock and never marks the container unhealthy.
-func runHealth(args []string) int {
-	port := os.Getenv("CYODA_ADMIN_PORT")
-	if port == "" {
-		port = "9091"
+func runHealth() int {
+	// The env files the server reads, so an admin port set in one of them is
+	// the port probed.
+	app.LoadEnvFiles()
+	port := 9091
+	if v := os.Getenv("CYODA_ADMIN_PORT"); v != "" {
+		// A port number and nothing else: the value can come from ./.env in
+		// the working directory, and any other text could move the probe's
+		// host off 127.0.0.1 (e.g. "9091@host").
+		p, err := strconv.Atoi(v)
+		if err != nil || p < 1 || p > 65535 {
+			fmt.Fprintf(os.Stderr, "cyoda health: CYODA_ADMIN_PORT %q is not a port number\n", v)
+			return 1
+		}
+		port = p
 	}
-	client := &http.Client{Timeout: 2 * time.Second}
-	url := fmt.Sprintf("http://127.0.0.1:%s/readyz", port)
+	client := &http.Client{
+		Timeout: 2 * time.Second,
+		// /readyz never redirects; following one would carry the probe off
+		// 127.0.0.1. A 3xx is a non-200 answer.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(port)) + "/readyz"
 	resp, err := client.Get(url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cyoda health: %v\n", err)

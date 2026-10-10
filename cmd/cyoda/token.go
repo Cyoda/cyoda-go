@@ -21,10 +21,10 @@ const defaultTokenTTL = 15 * time.Minute
 // runToken is `cyoda token`: sign a short-lived admin token offline with
 // CYODA_JWT_SIGNING_KEY and print it, and nothing else, on stdout. It opens no
 // store and makes no network call. Exit codes: 0 success (or -h/--help); 1
-// key or configuration error; 2 flag error. It never calls logging.Init (which
+// key or configuration error; 2 bad flags or arguments. It never calls logging.Init (which
 // writes to stdout) and never writes the token or key material to stderr.
 func runToken(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("token", flag.ContinueOnError)
+	fs := flag.NewFlagSet("cyoda token", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	tenant := fs.String("tenant", "", "tenant id the token acts in (required)")
 	user := fs.String("user", "operator", "user id recorded for calls made with the token")
