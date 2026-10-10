@@ -120,15 +120,22 @@ func resolveCommand(args []string) (command, []string, error) {
 			return command{}, nil, fmt.Errorf("%q: %s must be the only argument", name, rest[0])
 		}
 		if len(rest) > 0 && !c.takesArgs {
+			if c.names[0] == serveCommand.names[0] && strings.HasPrefix(rest[0], "-") {
+				return command{}, nil, fmt.Errorf("%q takes no arguments, got %q; %s", name, rest[0], serverFlagHint)
+			}
 			return command{}, nil, fmt.Errorf("%q takes no arguments, got %q", name, rest[0])
 		}
 		return c, rest, nil
 	}
 	if strings.HasPrefix(name, "-") {
-		return command{}, nil, fmt.Errorf("unknown flag %q; the server takes no flags, it is configured by CYODA_* environment variables (see 'cyoda help config')", name)
+		return command{}, nil, fmt.Errorf("unknown flag %q; %s", name, serverFlagHint)
 	}
 	return command{}, nil, fmt.Errorf("unknown command %q", name)
 }
+
+// serverFlagHint follows an error for a flag given to the server, which has
+// none: it says where the server's configuration comes from.
+const serverFlagHint = "the server takes no flags, it is configured by CYODA_* environment variables (see 'cyoda help config')"
 
 // helpTopic returns a command that shows c's help topic in place of running c.
 func (c command) helpTopic() command {

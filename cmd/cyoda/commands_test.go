@@ -83,13 +83,18 @@ func TestResolveCommand_RejectsUnknownArguments(t *testing.T) {
 // the server has no configuration flags, so the error says where its
 // configuration comes from.
 func TestResolveCommand_FlagErrorPointsAtEnvironment(t *testing.T) {
-	_, _, err := resolveCommand([]string{"--http-port", "8081"})
-	if err == nil {
-		t.Fatal("resolveCommand succeeded; want an error")
-	}
-	for _, want := range []string{"CYODA_", "cyoda help config"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q; want it to mention %q", err, want)
+	for _, args := range [][]string{
+		{"--http-port", "8081"},
+		{"serve", "--http-port", "8081"},
+	} {
+		_, _, err := resolveCommand(args)
+		if err == nil {
+			t.Fatalf("resolveCommand(%q) succeeded; want an error", args)
+		}
+		for _, want := range []string{"CYODA_", "cyoda help config"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("resolveCommand(%q) error = %q; want it to mention %q", args, err, want)
+			}
 		}
 	}
 }

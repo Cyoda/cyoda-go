@@ -50,26 +50,16 @@ The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<pat
 
 ### Profile loader
 
-`CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file
-`.env.N` is loaded from the working directory. This supports local development without
-exporting many variables. `CYODA_PROFILES` selects profile files only when it is set in
-the process environment.
+`CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file `.env.N` is loaded from the working directory. This supports local development without exporting many variables. `CYODA_PROFILES` selects profile files only when it is set in the process environment.
 
-The server, `cyoda migrate`, `cyoda token` and `cyoda health` load env files in this order, a later file
-overriding an earlier one:
+The server, `cyoda migrate`, `cyoda token` and `cyoda health` load env files in this order, a later file overriding an earlier one:
 
-1. The system config: `/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on
-   Windows, none on macOS.
-2. The user config, written by `cyoda init`: `$XDG_CONFIG_HOME/cyoda/cyoda.env`, else
-   `~/.config/cyoda/cyoda.env`; on Windows `%AppData%\cyoda\cyoda.env`.
+1. The system config: `/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on Windows, none on macOS.
+2. The user config, written by `cyoda init`: `$XDG_CONFIG_HOME/cyoda/cyoda.env`, else `~/.config/cyoda/cyoda.env`; on Windows `%AppData%\cyoda\cyoda.env`.
 3. `./.env`.
 4. Each `./.env.N`, in the order `CYODA_PROFILES` names them.
 
-A variable set in the process environment wins over the same variable in any file. Precedence
-is per variable name: a `CYODA_X_FILE` set in a file still overrides `CYODA_X` set in the
-process environment (see Precedence above); export `CYODA_X_FILE=` (empty) to block it. A
-file that is missing,
-cannot be read, or is not valid env syntax is skipped as a whole.
+A variable set in the process environment wins over the same variable in any file. Precedence is per variable name: a `CYODA_X_FILE` set in a file still overrides `CYODA_X` set in the process environment (see Precedence above); export `CYODA_X_FILE=` (empty) to block it. A file that is missing, cannot be read, or is not valid env syntax is skipped as a whole.
 
 **Example:**
 

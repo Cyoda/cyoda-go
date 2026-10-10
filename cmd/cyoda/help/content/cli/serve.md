@@ -20,7 +20,7 @@ cli.serve — start the cyoda API server.
 
 ## DESCRIPTION
 
-`cyoda` with no subcommand and `cyoda serve` are the same command. It takes no arguments and no flags: any argument after `serve` is refused with exit code `2` before anything starts. Starting loads configuration from environment variables and the env files (see the profile loader in `cyoda help config`), validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
+`cyoda` with no subcommand and `cyoda serve` are the same command. It takes no arguments and no flags: any argument after `serve` other than a lone `-h` / `--help` is refused with exit code `2` before anything starts. Starting loads configuration from environment variables and the env files (see the profile loader in `cyoda help config`), validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
 
 On startup, the binary prints an ASCII banner with version, commit, build date, HTTP port, gRPC port, IAM mode, context path, and active storage profiles. The banner is suppressed by `CYODA_SUPPRESS_BANNER=true`.
 
@@ -66,7 +66,7 @@ Variables read specifically during server boot (not covered by the config subtop
 
 - `0` — clean shutdown after SIGINT or SIGTERM.
 - `1` — startup failure, or a server that failed while running (`server group exited with error` in the log). Startup failures include: a setting that `Config.Validate` rejects (`startup failure` in the log, `phase=config-validation`) — for example an unsupported `CYODA_IAM_MODE` or an unmet `CYODA_REQUIRE_JWT` contract — OTel SDK initialization error, a gRPC, HTTP or admin port that cannot be bound, or backend connection failure during `app.New`.
-- `2` — an argument after `serve` (nothing is loaded or started), or a hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on that path.
+- `2` — an argument after `serve` other than a lone `-h` / `--help` (nothing is loaded or started), or a hard exit forced by a second SIGINT or SIGTERM delivered while the graceful drain was still running. Nothing is drained or flushed on that path.
 
 ## EXAMPLES
 
