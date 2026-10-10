@@ -93,7 +93,7 @@ cyoda
 
 First admin token: `cyoda token --tenant <tenant>` in the same environment; see `cyoda help cli token`.
 
-The binary accepts env vars from the process environment, from `.env` files loaded by `CYODA_PROFILES`, and from the user config written by `cyoda init`. The `CYODA_PROFILES` variable selects which `.env` profile files to load from the **current working directory**. For example, `CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt` from the working directory. The user config at `~/.config/cyoda/cyoda.env` (written by `cyoda init`) is always loaded automatically as a separate step — it is not a profile file.
+The binary reads env vars from the process environment and from env files: the system config, the user config written by `cyoda init`, `./.env`, and the profile files that `CYODA_PROFILES` selects from the **current working directory** (`CYODA_PROFILES=postgres,jwt` loads `.env.postgres` then `.env.jwt`). A variable set in the process environment wins over every file. The profile loader in `cyoda help config` gives the per-OS paths and the full order.
 
 ### Docker
 

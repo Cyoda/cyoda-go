@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/app"
 )
 
 // runHealth implements 'cyoda health': GET /readyz on the admin listener,
@@ -17,6 +19,9 @@ import (
 // this client; without the timeout, Docker's HEALTHCHECK inherits the
 // deadlock and never marks the container unhealthy.
 func runHealth() int {
+	// The env files the server reads, so an admin port set in one of them is
+	// the port probed.
+	app.LoadEnvFiles()
 	port := os.Getenv("CYODA_ADMIN_PORT")
 	if port == "" {
 		port = "9091"

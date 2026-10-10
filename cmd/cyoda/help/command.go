@@ -264,7 +264,7 @@ func writeTreeSummary(tree *Tree, out io.Writer, style string) int {
 	fmt.Fprintf(out, "%scyoda help — browse the topic tree%s\n\n", bold, reset)
 	fmt.Fprintf(out, "%sUSAGE%s\n", bold, reset)
 	fmt.Fprintln(out, "  cyoda help [<topic>...] [--format=<fmt>]")
-	fmt.Fprintln(out, "  cyoda --help                  alias for 'cyoda help'")
+	fmt.Fprintln(out, "  cyoda --help                  same as 'cyoda help' with no arguments")
 	fmt.Fprintln(out)
 	fmt.Fprintf(out, "%sFLAGS%s\n", bold, reset)
 	fmt.Fprintln(out, "  --format=<fmt>   output format: auto (default), text, markdown, json")

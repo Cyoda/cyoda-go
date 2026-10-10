@@ -38,7 +38,7 @@ The Helm chart does not run this command: its `readinessProbe` sends an HTTP GET
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`).
+- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`). Read from the process environment and the env files, as the server reads it; see the profile loader in `cyoda help config`.
 
 ## EXIT CODES
 

@@ -262,6 +262,40 @@ func TestStartup_UnknownArgumentExits2(t *testing.T) {
 	}
 }
 
+// TestStartup_UnknownArgumentLoadsNoConfig pins that a refused command line
+// reads no env file: the child has a user config, and the log line that
+// app.LoadEnvFiles writes for a loaded file never appears. migrate, which
+// loads the env files, is the positive control for that log line.
+func TestStartup_UnknownArgumentLoadsNoConfig(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+	const loaded = "loaded env files"
+	xdg := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(xdg, "cyoda"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(xdg, "cyoda", "cyoda.env"), []byte("CYODA_LOG_LEVEL=info\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	control := startCyodaWithArgs(t, []string{"migrate"}, "XDG_CONFIG_HOME="+xdg)
+	if code := control.wait(t, 30*time.Second); code != 0 {
+		t.Fatalf("control: migrate exit code = %d; want 0", code)
+	}
+	if !strings.Contains(control.out.String(), loaded) {
+		t.Fatalf("control: migrate did not log %q; the assertion below would prove nothing", loaded)
+	}
+
+	refused := startCyodaWithArgs(t, []string{"version"}, "XDG_CONFIG_HOME="+xdg)
+	if code := refused.wait(t, 30*time.Second); code != 2 {
+		t.Errorf("exit code = %d; want 2", code)
+	}
+	if strings.Contains(refused.out.String(), loaded) {
+		t.Error("a refused command line loaded the env files")
+	}
+}
+
 // TestStartup_ServeCommandStartsServer pins that 'cyoda serve' starts the
 // server, as a bare 'cyoda' does.
 func TestStartup_ServeCommandStartsServer(t *testing.T) {

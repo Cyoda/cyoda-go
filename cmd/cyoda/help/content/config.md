@@ -55,7 +55,7 @@ The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<pat
 exporting many variables. `CYODA_PROFILES` selects profile files only when it is set in
 the process environment.
 
-The server, `cyoda migrate` and `cyoda token` load env files in this order, a later file
+The server, `cyoda migrate`, `cyoda token` and `cyoda health` load env files in this order, a later file
 overriding an earlier one:
 
 1. The system config: `/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on
