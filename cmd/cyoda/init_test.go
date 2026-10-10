@@ -25,15 +25,26 @@ func setupIsolatedConfig(t *testing.T) string {
 // isolateEnvFiles makes a call to app.LoadEnvFiles hermetic: the user config
 // (XDG_CONFIG_HOME, AppData), the Windows system config, ./.env and profile
 // files are looked up in empty temporary directories, so the developer's own
-// user config and env files are never read, and nothing from them is left
-// set in the test process. HOME is left alone: the user config path never
-// falls back to it while XDG_CONFIG_HOME is set, and testcontainers reads its
-// own settings and the Docker socket from it. The Linux system config
+// user config and env files are never read. The Linux system config
 // (/etc/cyoda/cyoda.env) cannot be redirected, so a test that depends on a
-// variable sets it itself. It returns the XDG_CONFIG_HOME directory, under
+// variable sets it itself, and the whole process environment is restored when
+// the test ends: whatever LoadEnvFiles set, from any file, never reaches a
+// later test. HOME is left alone: the user config path never falls back to it
+// while XDG_CONFIG_HOME is set, and testcontainers reads its own settings and
+// the Docker socket from it. It returns the XDG_CONFIG_HOME directory, under
 // which a test may write a user config.
 func isolateEnvFiles(t *testing.T) string {
 	t.Helper()
+	// Registered first, so it runs last, after t.Setenv's own restores.
+	saved := os.Environ()
+	t.Cleanup(func() {
+		os.Clearenv()
+		for _, kv := range saved {
+			if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+				os.Setenv(k, v)
+			}
+		}
+	})
 	xdg := setupIsolatedConfig(t)
 	t.Setenv("CYODA_PROFILES", "")
 	t.Chdir(t.TempDir())
@@ -169,4 +180,24 @@ func TestCyodaInit_SkipsWhenSystemConfigPresent_Windows(t *testing.T) {
 // depend on the stdlib runtime import directly in the test body.
 func runtimeGOOS() string {
 	return goos
+}
+
+// TestIsolateEnvFiles_RestoresEnvironment pins that a variable app.LoadEnvFiles
+// sets during an isolated test is gone after it. The Linux system config
+// (/etc/cyoda/cyoda.env) cannot be redirected, and a value it sets, such as the
+// sqlite backend the deb and rpm packages install, must not reach a later test
+// that builds a server from the environment.
+func TestIsolateEnvFiles_RestoresEnvironment(t *testing.T) {
+	const leaked = "CYODA_TEST_ISOLATE_ENV_LEAK"
+	t.Setenv(leaked, "") // restores the variable's absence at cleanup
+	os.Unsetenv(leaked)
+
+	t.Run("isolated", func(t *testing.T) {
+		isolateEnvFiles(t)
+		os.Setenv(leaked, "sqlite") // what LoadEnvFiles does with a system-config value
+	})
+
+	if v, ok := os.LookupEnv(leaked); ok {
+		t.Errorf("%s=%q is still set after the isolated test", leaked, v)
+	}
 }

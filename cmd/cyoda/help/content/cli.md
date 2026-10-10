@@ -28,9 +28,9 @@ An argument cyoda does not recognise is an error: an unknown subcommand or flag 
 
 ## SUBCOMMANDS
 
-- `cyoda` or `cyoda serve` — start the API server. See `cyoda help cli serve`. Exit codes: `0` clean shutdown after SIGINT/SIGTERM; `1` startup failure (configuration validation, OTel init, port bind, backend connect); `2` an argument after `serve`, or a hard exit forced by a second signal.
+- `cyoda` or `cyoda serve` — start the API server. See `cyoda help cli serve`. Exit codes: `0` clean shutdown after SIGINT/SIGTERM; `1` startup failure (configuration validation, OTel init, port bind, backend connect); `2` an argument after `serve` other than a lone `-h` / `--help`, or a hard exit forced by a second signal.
 - `cyoda init [--force]` — Write a starter user config enabling sqlite. See `cyoda help cli init`. Exit codes: `0` success or idempotent no-op; `1` I/O error; `2` bad flags or arguments.
-- `cyoda health` — Probe `/readyz` on the admin listener. See `cyoda help cli health`. Exit codes: `0` readyz returned 200; `1` connection error or non-200 status; `2` any argument (it takes none).
+- `cyoda health` — Probe `/readyz` on the admin listener. See `cyoda help cli health`. Exit codes: `0` readyz returned 200; `1` connection error or non-200 status; `2` any argument other than a lone `-h` / `--help`.
 - `cyoda migrate [--timeout <duration>]` — Run schema migrations for the configured backend and exit. See `cyoda help cli migrate`. Exit codes: `0` success or no-op (memory/sqlite); `1` runtime error (bad config, DB unreachable, migration failure, timeout); `2` bad flags or arguments.
 - `cyoda token --tenant <tenantId> [--user <userId>] [--roles <r1,r2>] [--ttl <duration>]` — Sign a short-lived admin token with the signing key and print it. See `cyoda help cli token`. Exit codes: `0` token printed; `1` key or configuration error; `2` flag error or unexpected argument.
 - `cyoda help [<topic>...] [--format=<fmt>]` — Browse the help topic tree. See `cyoda help cli help`. Exit codes: `0` topic found, or a lone `-h` / `--help`; `1` render failure; `2` unknown topic or action, bad `--format`, or `-h` / `--help` followed by more arguments.

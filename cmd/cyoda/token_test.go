@@ -202,8 +202,8 @@ func TestRunToken_FlagErrorsExit2(t *testing.T) {
 
 // TestSetTokenEnv_IgnoresDeveloperEnvFiles pins that runToken's call to
 // app.LoadEnvFiles cannot pick up the developer's user config or a ./.env:
-// setTokenEnv points HOME, XDG_CONFIG_HOME and the working directory at empty
-// temporary directories.
+// setTokenEnv points XDG_CONFIG_HOME and the working directory at empty
+// temporary directories (through isolateEnvFiles).
 func TestSetTokenEnv_IgnoresDeveloperEnvFiles(t *testing.T) {
 	const userVar, cwdVar = "CYODA_TOKEN_TEST_FROM_USER_CONFIG", "CYODA_TOKEN_TEST_FROM_DOTENV"
 	for _, v := range []string{userVar, cwdVar} {
