@@ -44,7 +44,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_MAX_STATE_VISITS", Topic: "server", Type: "int", Default: "10", Description: "Max visits per state in workflow cascade."},
 	{Name: "CYODA_MODEL_CACHE_LEASE", Topic: "server", Type: "duration", Default: "5m", Description: "Model cache lease duration; actual expiry is jittered ±10%."},
 	{Name: "CYODA_STORAGE_BACKEND", Topic: "server", Type: "string", Default: "memory", Description: "Storage backend selection (memory|sqlite|postgres)."},
-	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; loads cyoda.<name>.env files before the process's own environment is consulted."},
+	{Name: "CYODA_PROFILES", Topic: "server", Type: "csv", Default: "", Description: "Comma-separated profile names; for each name, loads ./.env.<name> after the system config, the user config and ./.env. Read only from the process environment. The process environment wins over every file."},
 	{Name: "CYODA_DEBUG", Topic: "server", Type: "", Default: "", Description: "Reserved; not currently read by the server."},
 
 	// --- admin ---

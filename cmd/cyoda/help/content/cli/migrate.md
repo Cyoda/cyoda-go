@@ -40,7 +40,7 @@ The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which 
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (bare default: `memory`; `sqlite` after `cyoda init` has written its user config).
+- `CYODA_STORAGE_BACKEND` — Selects the backend to migrate (bare default: `memory`; `sqlite` after `cyoda init` has written its user config, or from the system config the deb and rpm packages install).
 - `CYODA_POSTGRES_URL` — PostgreSQL DSN, required when backend is `postgres`. Accepts `CYODA_POSTGRES_URL_FILE` variant.
 
 ## EXIT CODES
@@ -62,7 +62,7 @@ CYODA_STORAGE_BACKEND=postgres \
   CYODA_POSTGRES_URL="postgres://user:pass@localhost/cyoda" \
   cyoda migrate --timeout 2m
 
-# No-op — memory backend, or sqlite after `cyoda init`
+# No-op — memory or sqlite backend
 cyoda migrate
 ```
 

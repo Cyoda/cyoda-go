@@ -52,13 +52,21 @@ The following variables support the `_FILE` suffix. Setting `CYODA_FOO_FILE=<pat
 
 `CYODA_PROFILES` is a comma-separated list of profile names. For each name `N`, a file
 `.env.N` is loaded from the working directory. This supports local development without
-exporting many variables.
+exporting many variables. `CYODA_PROFILES` is read only from the process environment; a
+`CYODA_PROFILES` line in an env file has no effect.
 
 The server, `cyoda migrate` and `cyoda token` load env files in this order, a later file
-overriding an earlier one: the system config (`/etc/cyoda/cyoda.env` on Linux), the user
-config (`~/.config/cyoda/cyoda.env`, or `$XDG_CONFIG_HOME/cyoda/cyoda.env`, written by
-`cyoda init`), `./.env`, then each `./.env.N` in the order `CYODA_PROFILES` names them. A
-variable set in the process environment wins over every file. A missing file is skipped.
+overriding an earlier one:
+
+1. The system config: `/etc/cyoda/cyoda.env` on Linux, `%ProgramData%\cyoda\cyoda.env` on
+   Windows, none on macOS.
+2. The user config, written by `cyoda init`: `$XDG_CONFIG_HOME/cyoda/cyoda.env`, else
+   `~/.config/cyoda/cyoda.env`; on Windows `%AppData%\cyoda\cyoda.env`.
+3. `./.env`.
+4. Each `./.env.N`, in the order `CYODA_PROFILES` names them.
+
+A variable set in the process environment wins over every file. A file that is missing or
+cannot be read is skipped.
 
 **Example:**
 

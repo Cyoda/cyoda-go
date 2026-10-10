@@ -22,9 +22,7 @@ func tokenTestKey(t *testing.T) (*rsa.PrivateKey, string) {
 }
 
 // setTokenEnv sets the JWT variables runToken reads and makes its call to
-// app.LoadEnvFiles hermetic: HOME, XDG_CONFIG_HOME and the working directory
-// point at empty temporary directories, so no user config and no ./.env is
-// read (and nothing from them is left set after the test).
+// app.LoadEnvFiles hermetic through isolateEnvFiles.
 func setTokenEnv(t *testing.T, pemText string) {
 	t.Helper()
 	isolateEnvFiles(t)
