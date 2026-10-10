@@ -20,7 +20,7 @@ cli.serve — start the cyoda API server.
 
 ## DESCRIPTION
 
-`cyoda` with no subcommand and `cyoda serve` are the same command. It takes no arguments and no flags: any argument after `serve` is refused with exit code `2` before anything starts. Starting loads configuration from environment variables, validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
+`cyoda` with no subcommand and `cyoda serve` are the same command. It takes no arguments and no flags: any argument after `serve` is refused with exit code `2` before anything starts. Starting loads configuration from environment variables and the env files (see the profile loader in `cyoda help config`), validates the IAM mode, and binds the REST, gRPC, and admin listeners. The server is single-process, multi-tenant, and stateful — storage is provided by one of the pluggable backends (`memory`, `sqlite`, or `postgres`); see `cyoda help config` for backend selection.
 
 On startup, the binary prints an ASCII banner with version, commit, build date, HTTP port, gRPC port, IAM mode, context path, and active storage profiles. The banner is suppressed by `CYODA_SUPPRESS_BANNER=true`.
 
@@ -42,7 +42,7 @@ All three listeners bind loopback by default, so a server started with no settin
 
 ## ENVIRONMENT VARIABLES
 
-All configuration is via environment variables. The subtopics below enumerate the complete per-subsystem variable sets:
+All configuration is via environment variables, set in the process environment or in the env files. The subtopics below enumerate the complete per-subsystem variable sets:
 
 - `config` — all top-level server options (HTTP port, log level, OTel, etc.)
 - `config.database` — storage backend selection and per-backend connection settings

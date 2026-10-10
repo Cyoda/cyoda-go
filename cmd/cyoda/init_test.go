@@ -36,11 +36,24 @@ func setupIsolatedConfig(t *testing.T) string {
 func isolateEnvFiles(t *testing.T) string {
 	t.Helper()
 	// Registered first, so it runs last, after t.Setenv's own restores.
-	saved := os.Environ()
+	saved := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+			saved[k] = v
+		}
+	}
 	t.Cleanup(func() {
-		os.Clearenv()
-		for _, kv := range saved {
-			if k, v, ok := strings.Cut(kv, "="); ok && k != "" {
+		// Only what differs is changed: the environment is never empty, even
+		// for a goroutine that outlived its test.
+		for _, kv := range os.Environ() {
+			if k, _, ok := strings.Cut(kv, "="); ok && k != "" {
+				if _, kept := saved[k]; !kept {
+					os.Unsetenv(k)
+				}
+			}
+		}
+		for k, v := range saved {
+			if cur, ok := os.LookupEnv(k); !ok || cur != v {
 				os.Setenv(k, v)
 			}
 		}

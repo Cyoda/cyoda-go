@@ -157,3 +157,36 @@ func TestCyodaHealth_ReadsEnvFiles(t *testing.T) {
 		t.Error("runHealth did not probe the admin port set in the user config")
 	}
 }
+
+// TestCyodaHealth_RefusesPortThatIsNotANumber pins that the probe only ever
+// goes to 127.0.0.1. CYODA_ADMIN_PORT can come from an env file, ./.env in
+// the working directory included, and a value such as "9091@host:port" would
+// otherwise make the URL's host "host:port" — an outbound call a planted file
+// could steer. The test server stands in for that host: it must not be hit.
+func TestCyodaHealth_RefusesPortThatIsNotANumber(t *testing.T) {
+	isolateEnvFiles(t)
+	var hits atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	for _, port := range []string{
+		"9091@127.0.0.1:" + portFromURL(t, server.URL),
+		"abc",
+		"0",
+		"65536",
+		"-1",
+	} {
+		t.Run(port, func(t *testing.T) {
+			t.Setenv("CYODA_ADMIN_PORT", port)
+			if code := runHealth(); code != 1 {
+				t.Errorf("runHealth exit code = %d; want 1", code)
+			}
+		})
+	}
+	if hits.Load() != 0 {
+		t.Errorf("the probe reached another host %d time(s)", hits.Load())
+	}
+}

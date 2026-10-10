@@ -103,7 +103,7 @@ The image uses `gcr.io/distroless/static` as its base. The binary is placed at `
 
 Exposed ports: `8080` (HTTP), `9090` (gRPC), `9091` (admin).
 
-The entrypoint is `/cyoda` with no default arguments. Subcommands (`init`, `health`, `migrate`) are passed as Docker CMD arguments.
+The entrypoint is `/cyoda` with no default arguments. Subcommands (`serve`, `init`, `health`, `migrate`, `token`, `help`) are passed as Docker CMD arguments.
 
 **Minimal run (in-memory + mock auth):**
 
@@ -294,7 +294,7 @@ Both probes are served on `CYODA_ADMIN_PORT` (default `9091`) at `CYODA_ADMIN_BI
 
 A latched node, whatever latched it, claims no scheduled task; its runs in progress go on unless the panic was inside the scheduler, and it keeps heartbeating unless the heartbeat itself panicked.
 
-The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise. This is the implementation behind Docker's `HEALTHCHECK: CMD /cyoda health` and is valid as a readiness check for any init system.
+The `cyoda health` subcommand calls `/readyz` on the admin port with a 2-second HTTP client timeout and exits 0 on `200 OK`, 1 otherwise, and 2 on an argument; see `cyoda help cli health`. The bundled compose file's `healthcheck` runs it, and it is valid as a readiness check for any init system.
 
 **Bind addresses in container environments:** set `CYODA_ADMIN_BIND_ADDRESS=0.0.0.0` to make health probes reachable from outside the container, and `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` likewise for the API and gRPC ports. The Kubernetes Helm chart sets all three in its ConfigMap. Without them, the API, gRPC and probe ports are unreachable from the Service, peer nodes, compute nodes and the kubelet. The probes cannot show the API and gRPC part: with only the admin listener open, `/readyz` passes while nothing reaches ports 8080 and 9090.
 

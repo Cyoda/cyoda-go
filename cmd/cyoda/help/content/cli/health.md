@@ -38,12 +38,12 @@ The Helm chart does not run this command: its `readinessProbe` sends an HTTP GET
 
 ## ENVIRONMENT VARIABLES
 
-- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`). Read from the process environment and the env files, as the server reads it; see the profile loader in `cyoda help config`.
+- `CYODA_ADMIN_PORT` — Admin listener port to probe (default: `9091`); a port number, 1–65535. Read from the process environment and the env files, as the server reads it; see the profile loader in `cyoda help config`.
 
 ## EXIT CODES
 
 - `0` — Server responded HTTP 200. Instance is ready.
-- `1` — Connection failed, timed out, or server returned a non-200 status.
+- `1` — Connection failed, timed out, or server returned a non-200 status; or `CYODA_ADMIN_PORT` is not a port number (1–65535), in which case no probe is sent.
 - `2` — An argument was given. No probe is sent.
 
 ## EXAMPLES
