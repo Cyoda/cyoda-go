@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"os"
 	"time"
@@ -23,12 +24,18 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+	if fs.NArg() != 0 {
+		err := fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "cyoda migrate: %v\n", err)
+		return nil, err
+	}
 	return &migrateConfig{Timeout: *timeout}, nil
 }
 
 // runMigrate is the entry point for `cyoda migrate`. Returns exit code:
 // 0 on success; 1 on runtime error (bad config, DB unreachable, migration
-// failure, timeout); 2 on flag-parse error (Unix convention: misuse).
+// failure, timeout); 2 on a flag or argument error (Unix convention: misuse).
+// -h/--help prints the usage and returns 0.
 //
 // Behavior:
 //   - Loads the same config the server does (via app.DefaultConfig; honors
@@ -44,8 +51,12 @@ func parseMigrateArgs(args []string) (*migrateConfig, error) {
 //     goroutines. Short-lived process.
 func runMigrate(args []string) int {
 	cfg, err := parseMigrateArgs(args)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0 // -h/--help: the flag package printed the usage to stderr
+	}
 	if err != nil {
-		// flag package already wrote the error to stderr
+		// parseMigrateArgs, or the flag package, already wrote the error
+		// to stderr.
 		return 2
 	}
 

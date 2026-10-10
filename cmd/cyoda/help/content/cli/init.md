@@ -43,9 +43,9 @@ The database path can be overridden by setting `CYODA_SQLITE_PATH` in the config
 
 ## EXIT CODES
 
-- `0` — Success, including the no-op case (config already exists).
+- `0` — Success, including the no-op case (config already exists), or `-h` / `--help` (the usage goes to stderr).
 - `1` — I/O error (cannot compute user path, cannot create directory, cannot write file).
-- `2` — Flag-parse error.
+- `2` — Flag-parse error, or an argument `init` does not take. Nothing is written.
 
 ## EXAMPLES
 

@@ -16,7 +16,7 @@ import (
 // handler looks exactly like "server accepts connection then hangs" to
 // this client; without the timeout, Docker's HEALTHCHECK inherits the
 // deadlock and never marks the container unhealthy.
-func runHealth(args []string) int {
+func runHealth() int {
 	port := os.Getenv("CYODA_ADMIN_PORT")
 	if port == "" {
 		port = "9091"

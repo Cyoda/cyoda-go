@@ -45,9 +45,9 @@ The primary consumer is the Helm chart's pre-install and pre-upgrade Job, which 
 
 ## EXIT CODES
 
-- `0` — Migration succeeded (or was a no-op for memory/sqlite).
+- `0` — Migration succeeded (or was a no-op for memory/sqlite), or `-h` / `--help` (the usage goes to stderr).
 - `1` — Runtime error: bad config, database unreachable, migration failure, or timeout.
-- `2` — Flag-parse error.
+- `2` — Flag-parse error, or an argument `migrate` does not take. No configuration is read.
 
 ## EXAMPLES
 

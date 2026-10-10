@@ -34,7 +34,7 @@ func TestCyodaHealth_Ready(t *testing.T) {
 
 	t.Setenv("CYODA_ADMIN_PORT", portFromURL(t, server.URL))
 
-	if code := runHealth(nil); code != 0 {
+	if code := runHealth(); code != 0 {
 		t.Fatalf("expected exit 0 (ready); got %d", code)
 	}
 }
@@ -47,7 +47,7 @@ func TestCyodaHealth_NotReady(t *testing.T) {
 
 	t.Setenv("CYODA_ADMIN_PORT", portFromURL(t, server.URL))
 
-	if code := runHealth(nil); code != 1 {
+	if code := runHealth(); code != 1 {
 		t.Fatalf("expected exit 1 (503 → not ready); got %d", code)
 	}
 }
@@ -63,7 +63,7 @@ func TestCyodaHealth_ConnectionRefused(t *testing.T) {
 
 	t.Setenv("CYODA_ADMIN_PORT", port)
 
-	if code := runHealth(nil); code != 1 {
+	if code := runHealth(); code != 1 {
 		t.Fatalf("expected exit 1 (connection refused → not ready); got %d", code)
 	}
 }
@@ -89,7 +89,7 @@ func TestCyodaHealth_Timeout(t *testing.T) {
 	t.Setenv("CYODA_ADMIN_PORT", portFromURL(t, server.URL))
 
 	start := time.Now()
-	code := runHealth(nil)
+	code := runHealth()
 	elapsed := time.Since(start)
 
 	if code != 1 {
@@ -114,7 +114,7 @@ func TestCyodaHealth_RespectsAdminPort(t *testing.T) {
 	}
 	t.Setenv("CYODA_ADMIN_PORT", port)
 
-	if code := runHealth(nil); code != 0 {
+	if code := runHealth(); code != 0 {
 		t.Fatalf("expected exit 0 when CYODA_ADMIN_PORT points at real server; got %d", code)
 	}
 }

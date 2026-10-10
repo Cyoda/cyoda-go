@@ -53,6 +53,13 @@ type cyodaChild struct {
 // neighbouring test can take it. env entries override the defaults.
 func startCyoda(t *testing.T, env ...string) *cyodaChild {
 	t.Helper()
+	return startCyodaWithArgs(t, nil, env...)
+}
+
+// startCyodaWithArgs is startCyoda with a command line: args are passed to
+// the child after the program name.
+func startCyodaWithArgs(t *testing.T, args []string, env ...string) *cyodaChild {
+	t.Helper()
 
 	bin := filepath.Join(t.TempDir(), "cyoda-test")
 	build := exec.Command("go", "build", "-o", bin, ".")
@@ -61,7 +68,7 @@ func startCyoda(t *testing.T, env ...string) *cyodaChild {
 		t.Fatalf("go build cyoda: %v", err)
 	}
 
-	c := &cyodaChild{cmd: exec.Command(bin), out: &childOutput{}, exited: make(chan struct{})}
+	c := &cyodaChild{cmd: exec.Command(bin, args...), out: &childOutput{}, exited: make(chan struct{})}
 	c.cmd.Env = append(append(os.Environ(),
 		"CYODA_HTTP_PORT=0",
 		"CYODA_GRPC_PORT=0",
@@ -214,4 +221,47 @@ func TestStartup_MockIAMOffLoopbackWarns(t *testing.T) {
 			t.Errorf("child output has the exposure WARN although every API listener is on loopback")
 		}
 	})
+}
+
+// TestStartup_UnknownArgumentExits2 pins end to end that a command line cyoda
+// does not understand stops the process with exit status 2 and the usage
+// summary on stderr, before any configuration is loaded or any server starts.
+func TestStartup_UnknownArgumentExits2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	for _, args := range [][]string{
+		{"version"},
+		{"--http-port", "8081"},
+		{"serve", "extra"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			child := startCyodaWithArgs(t, args)
+
+			if code := child.wait(t, 30*time.Second); code != 2 {
+				t.Errorf("exit code = %d; want 2", code)
+			}
+			out := child.out.String()
+			for _, want := range []string{"cyoda: ", "USAGE", "cyoda help cli"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("child output is missing %q", want)
+				}
+			}
+			if strings.Contains(out, "server starting") {
+				t.Error("a server started on an unknown argument")
+			}
+		})
+	}
+}
+
+// TestStartup_ServeCommandStartsServer pins that 'cyoda serve' starts the
+// server, as a bare 'cyoda' does.
+func TestStartup_ServeCommandStartsServer(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess startup test in -short mode")
+	}
+
+	child := startCyodaWithArgs(t, []string{"serve"})
+	child.loopbackAddr(t, "HTTP")
 }
