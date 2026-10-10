@@ -29,9 +29,9 @@ When adding or changing user-facing behavior (API responses, workflow semantics,
 add or update E2E tests in `internal/e2e/` to cover the change through the full HTTP stack.
 E2E tests are self-contained: `TestMain` starts a PostgreSQL container via testcontainers-go
 and an in-process `httptest.Server` with JWT auth — no external instance needed.
-Run `make test-full`, which includes them (requires Docker running). To iterate on
-E2E alone, `go test -timeout 30m ./internal/e2e/...` is fine (the package takes ~10 min,
-which is `go test`'s default timeout) — but do not read a green from it
+CI's `test` job runs them on every PR push (see Gate 5). To iterate on
+E2E locally, `go test -timeout 30m ./internal/e2e/...` is fine (the package takes ~10 min,
+which is `go test`'s default timeout, and requires Docker) — but do not read a green from it
 as whole-suite verification, and do not add `-v`.
 For API/gRPC features the bar is **full coverage** — happy path AND every documented
 status/error code on a running backend, plus a cross-backend parity scenario for
@@ -52,15 +52,24 @@ When changing the `WorkflowConfigurationDto` import surface — DTO shape, valid
 
 ### Gate 5: Verify before claiming done
 Use `superpowers:verification-before-completion` skill before claiming work is complete.
-Run `make test-full` and confirm green (root + every plugin submodule, including E2E). Run `go vet ./...` for static analysis.
-A raw `go test ./...` is not sufficient: it reports `ok` for suites that never ran.
-E2E tests spin up their own PostgreSQL + HTTP server automatically — just run them.
-Do not claim work is done if any test — unit, integration, or E2E — is failing.
 
-Race detector (`make race`) is a one-shot sanity check before PR creation,
-not a per-step gate — see `.claude/rules/race-testing.md`. The target excludes
-`internal/e2e` from the race scope (timeout-driven carve-out, rationale in the
-rule) and CI runs the identical target, so local and CI stay in lock-step.
+- **Locally:** `make test` (unit + cross-backend parity) and the touched packages'
+  tests, plus `go vet ./...`. A raw `go test ./...` is not sufficient: it reports
+  `ok` for suites that never ran.
+- **CI is the full-suite gate.** Push and let CI run it: the `test` (root module,
+  E2E included), `plugins`, `race` and `smoke` jobs are the same targets as
+  `make test-full` and `make race`. **Do not also run `make test-full` or
+  `make race` locally.** Running the same suite twice only delays the work; CI
+  passes most of the time, and a CI failure is simply fixed and pushed again.
+- **Done means CI green on the exact PR head.** Read the printed check list, not
+  the exit code of `gh pr checks`. Do not claim work is done while any check —
+  unit, integration, E2E, race — is failing.
+- Run `make test-full` or `make race` locally only to reproduce or debug a CI
+  failure, or before a change lands without a PR (a direct push to a release
+  branch), where CI would report only after it has landed.
+
+The race target excludes `internal/e2e` (timeout-driven carve-out; rationale in
+`.claude/rules/race-testing.md`), and CI runs the identical target.
 
 ### Gate 6: Continuous improvement — resolve, don't defer
 We strive for continual improvement of code quality and progressively reduce
@@ -162,12 +171,14 @@ nothing and prints failures verbatim instead of burying them in `-v` output.
   ~85s warm against the test cache; the warm floor is the parity suites
   re-executing, which they always do. Excludes
   `internal/e2e` and the plugin submodules, and says so when it runs.
-- **End of deliverable: `make test-full`** — everything, root + all three
-  plugin submodules, ~15 min. This is the Gate 5 command.
+- **Everything: `make test-full`** — root + all three plugin submodules,
+  ~15 min. CI runs the same on every PR push, so it is not a local gate; run it
+  only to reproduce a CI failure or before a direct push without a PR (Gate 5).
 - Race detector (CI-parity scope): `make race` — `go test -race` on every
-  package except `internal/e2e`; the same scope CI runs. Use
+  package except `internal/e2e`; the same target CI runs. Local use is for
+  debugging a race or reproducing a CI race failure. Use
   `go test -race -timeout=20m ./internal/e2e/...` separately if you need race
-  coverage on E2E. Once before a PR, not per step.
+  coverage on E2E.
 - One package while iterating: `go test ./internal/domain/search/...` is fine
   — the tiers are for verification, not for every edit.
 

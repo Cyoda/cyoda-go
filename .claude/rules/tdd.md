@@ -10,5 +10,5 @@ In this project:
   the e2e, parity and gRPC tests that `test-coverage.md` lists, not only a unit
   test.
 - "The rest of the suite still passes" means `make test` while iterating and
-  `make test-full` before calling the work done — not a hand-rolled
-  `go test ./...`.
+  CI green on the PR head before calling the work done — not a hand-rolled
+  `go test ./...`, and not `make test-full` run locally on top of CI.

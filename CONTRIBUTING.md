@@ -49,7 +49,7 @@ Every feature must have tests at the appropriate level before it can be merged.
 ```bash
 make test        # iteration tier: unit + cross-backend parity (~115s cold, ~85s warm)
 make test-full   # everything, root + all three plugin submodules (~15 min)
-make race        # race detector (CI-parity scope) — once before a PR
+make race        # race detector (CI-parity scope) — CI runs it on every PR push
 go test -tags cyoda_recon ./test/recon/   # reconciliation (optional, needs Cloud)
 ```
 
