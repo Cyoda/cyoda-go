@@ -17,7 +17,8 @@ config.grpc — gRPC listener settings and compute-node credentials.
 ## SYNOPSIS
 
 cyoda exposes a gRPC endpoint for compute-node integration. The listener port is configured
-via `CYODA_GRPC_PORT`. The listener serves plaintext: TLS comes from the ingress,
+via `CYODA_GRPC_PORT` and its address via `CYODA_GRPC_BIND_ADDRESS`, which is loopback by
+default. The listener serves plaintext: TLS comes from the ingress,
 gateway or service mesh in front of it. External compute nodes authenticate as an M2M
 client of their own (see `cyoda help auth integration`). The `CYODA_COMPUTE_*` variables
 below are read by compute-node clients, not by the server.
@@ -27,6 +28,12 @@ below are read by compute-node clients, not by the server.
 ### gRPC listener
 
 - `CYODA_GRPC_PORT` — gRPC listen port (default: `9090`)
+- `CYODA_GRPC_BIND_ADDRESS` — gRPC listener bind address: a bare host, IPv4
+  or IPv6, without brackets (`::1`, not `[::1]`). The default is loopback, so
+  only compute nodes on the same host can connect. Set `0.0.0.0` (or `::`)
+  when compute nodes or cluster peers on other hosts, or a container's port
+  mapping, must reach it. With `CYODA_IAM_MODE=mock`, a listener that is not
+  on loopback logs a WARN at startup (default: `127.0.0.1`)
 - `CYODA_KEEPALIVE_INTERVAL` — seconds between server keep-alive pings to each
   compute member; also the transport keepalive idle time (default: `10`)
 - `CYODA_KEEPALIVE_TIMEOUT` — seconds of inbound silence or write stall before
@@ -131,9 +138,16 @@ transaction.
 
 ## EXAMPLES
 
-**Server (default port):**
+**Server (default port, loopback only):**
 
 ```
+CYODA_GRPC_PORT=9090
+```
+
+**Server reachable from other hosts:**
+
+```
+CYODA_GRPC_BIND_ADDRESS=0.0.0.0
 CYODA_GRPC_PORT=9090
 ```
 

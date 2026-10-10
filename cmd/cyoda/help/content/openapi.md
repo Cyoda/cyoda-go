@@ -259,6 +259,7 @@ curl -s http://localhost:8080/api/help/models | jq '.title'
 ```
 docker run --rm \
   -p 127.0.0.1:8080:8080 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_STORAGE_BACKEND=memory \
   ghcr.io/cyoda/cyoda:latest &
 sleep 2

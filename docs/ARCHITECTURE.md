@@ -2133,6 +2133,7 @@ credentials from Secrets into the process without exposing them in
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_HTTP_PORT` | `8080` | HTTP server listen port |
+| `CYODA_HTTP_BIND_ADDRESS` | `127.0.0.1` | HTTP listener bind address. Helm chart and bundled compose set `0.0.0.0`. With mock IAM, a bind that is not loopback logs a startup WARN. |
 | `CYODA_HTTP_READ_HEADER_TIMEOUT` | `10s` | Time allowed to receive a request's headers on the API and admin servers. 0 falls back to `CYODA_HTTP_READ_TIMEOUT`. |
 | `CYODA_HTTP_READ_TIMEOUT` | `5m` | Time allowed to receive a whole request, body included. Does not limit handler execution. 0 disables. |
 | `CYODA_HTTP_WRITE_TIMEOUT` | `0s` | Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests. |
@@ -2234,6 +2235,7 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CYODA_GRPC_PORT` | `9090` | gRPC server listen port |
+| `CYODA_GRPC_BIND_ADDRESS` | `127.0.0.1` | gRPC listener bind address. Helm chart and bundled compose set `0.0.0.0`. With mock IAM, a bind that is not loopback logs a startup WARN. |
 | `CYODA_KEEPALIVE_INTERVAL` | `10` | Seconds between server keep-alive pings to each compute member; also the transport keepalive idle time |
 | `CYODA_KEEPALIVE_TIMEOUT` | `30` | Seconds of inbound silence or write stall before a compute member is evicted; also the transport keepalive ack timeout |
 | `CYODA_RETRY_FIXED_NUM_RETRIES` | `3` | Retries after the first try when `retryPolicy` is `FIXED` or unset. |

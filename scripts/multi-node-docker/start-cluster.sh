@@ -329,6 +329,8 @@ x-minicyoda-common: &minicyoda-common
 x-minicyoda-env: &minicyoda-env
   CYODA_HTTP_PORT: "${HTTP_PORT}"
   CYODA_GRPC_PORT: "${GRPC_PORT}"
+  CYODA_HTTP_BIND_ADDRESS: "0.0.0.0"
+  CYODA_GRPC_BIND_ADDRESS: "0.0.0.0"
   CYODA_LOG_LEVEL: "info"
 ${BACKEND_ENV}
   CYODA_IAM_MODE: "jwt"

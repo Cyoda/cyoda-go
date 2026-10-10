@@ -35,7 +35,7 @@ then cribs the fragment into their own `docker-compose.yml`.
 Key elements to copy:
 
 - `CYODA_STORAGE_BACKEND: sqlite` + `CYODA_SQLITE_PATH: /var/lib/cyoda/cyoda.db` — the default storage path.
-- `CYODA_ADMIN_BIND_ADDRESS: 0.0.0.0` — required inside the container because Docker port mapping forwards to the container's eth0, not its loopback.
+- `CYODA_HTTP_BIND_ADDRESS`, `CYODA_GRPC_BIND_ADDRESS` and `CYODA_ADMIN_BIND_ADDRESS` set to `0.0.0.0` — required inside the container because Docker port mapping forwards to the container's eth0, not its loopback. All three default to `127.0.0.1`, so a container that leaves them out is unreachable through its published ports.
 - Named volume mount at `/var/lib/cyoda`.
 - Compose-level `healthcheck` invoking `cyoda health`.
 
@@ -55,7 +55,13 @@ Key elements to copy:
   stack, assume any sidecar can hit `/metrics` and `/readyz`
   without auth.
 - **Mock auth is the startup default.** `CYODA_IAM_MODE=mock` accepts
-  all requests. For production, set `CYODA_IAM_MODE=jwt` and
+  all requests. The HTTP and gRPC ports are published on host loopback
+  (`127.0.0.1:8080`, `127.0.0.1:9090`) for this reason: with the
+  container-side bind at `0.0.0.0`, the host-side mapping is what keeps
+  mock auth off the network, and any other service on the compose
+  network can still reach both ports. cyoda logs a WARN at startup
+  when mock IAM listens on an address other than loopback, which this
+  compose does by design. For production, set `CYODA_IAM_MODE=jwt` and
   `CYODA_REQUIRE_JWT=true` AND provide `CYODA_JWT_SIGNING_KEY` (multi-line PEM:
   `export CYODA_JWT_SIGNING_KEY="$(cat key.pem)"` before
   `docker compose up`). A startup banner warns when running in mock

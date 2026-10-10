@@ -2,12 +2,15 @@ package proxy
 
 import (
 	"context"
-	"strings"
+	"fmt"
+	"net"
+	"net/url"
 	"sync"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/resolver"
 
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
@@ -48,19 +51,19 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
 // applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
-	// Validate BEFORE converting to gRPC target — peeraddr.Validate handles
-	// both "http://host:port" and bare "host:port" forms.
+	target, err := dialTarget(addr)
+	if err != nil {
+		return nil, err
+	}
 	lookupCtx, cancel := context.WithTimeout(ctx, peeraddr.LookupTimeout)
 	defer cancel()
 	if err := peeraddr.Validate(lookupCtx, addr, p.allowLoopback); err != nil {
 		return nil, err
 	}
 
-	target := grpcTarget(addr)
-
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if conn, ok := p.conns[target]; ok {
+	if conn, ok := p.conns[addr]; ok {
 		return conn, nil
 	}
 	// Never a proxy: grpc-go's default dialer reads the environment's proxy
@@ -72,8 +75,33 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	if err != nil {
 		return nil, err
 	}
-	p.conns[target] = conn
+	p.conns[addr] = conn
 	return conn, nil
+}
+
+// dialTarget returns the grpc-go dial target for addr, or refuses addr with
+// peeraddr.ErrForbiddenPeerAddress. addr is the peer's gRPC endpoint, a bare
+// "host:port": derived by resolveGRPCAddr in internal/grpc, or the peer's
+// advertised CYODA_GRPC_NODE_ADDR as gossiped. Any other form is refused.
+// grpc-go parses its target as a URL: it takes a scheme and authority from
+// it, percent-decodes the endpoint and cuts it at ? and #. A target in any
+// such form could dial a host other than the one peeraddr.Validate checks on
+// the raw string, so the target names the dns resolver itself and addr is
+// accepted only if grpc-go's own parse gives it back unchanged.
+func dialTarget(addr string) (string, error) {
+	target := "dns:///" + addr
+	refuse := fmt.Errorf("%w: %q is not a host:port", peeraddr.ErrForbiddenPeerAddress, addr)
+	if _, _, err := net.SplitHostPort(addr); err != nil {
+		return "", refuse
+	}
+	u, err := url.Parse(target)
+	if err != nil || u.Host != "" || u.RawQuery != "" || u.Fragment != "" {
+		return "", refuse
+	}
+	if (resolver.Target{URL: *u}).Endpoint() != addr {
+		return "", refuse
+	}
+	return target, nil
 }
 
 // Close tears down every pooled connection.
@@ -84,22 +112,6 @@ func (p *ClientPool) Close() {
 		_ = conn.Close()
 		delete(p.conns, addr)
 	}
-}
-
-// grpcTarget normalises a registry address into a gRPC dial target. Registry
-// addresses carry an HTTP scheme (e.g. "http://host:8080"); grpc.NewClient
-// wants a bare "host:port" (a leading scheme is parsed as a resolver name and
-// fails). The scheme is stripped here.
-//
-// NOTE: the stripped host:port still points at the peer's HTTP port. The node
-// registry advertises only the HTTP NodeAddr, not a distinct gRPC endpoint, so
-// cross-node gRPC forwarding requires the registry to advertise a gRPC address
-// (or a derivable convention) before it reaches a real peer's gRPC server.
-func grpcTarget(addr string) string {
-	if i := strings.Index(addr, "://"); i >= 0 {
-		return addr[i+3:]
-	}
-	return addr
 }
 
 // ForwardEntityManage dials the owning node and replays a unary EntityManage

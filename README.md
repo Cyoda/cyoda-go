@@ -33,7 +33,7 @@ curl http://localhost:8080/api/health
 # {"status":"UP"}
 ```
 
-`cyoda init` writes a sqlite-backed user config (default path `~/.local/share/cyoda/cyoda.db`); `cyoda` then starts the server with that config and mock auth. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
+`cyoda init` writes a sqlite-backed user config (default path `~/.local/share/cyoda/cyoda.db`); `cyoda` then starts the server with that config and mock auth. Every listener binds `127.0.0.1` by default, so mock auth is reachable only from your own machine; set `CYODA_HTTP_BIND_ADDRESS` and `CYODA_GRPC_BIND_ADDRESS` (and `CYODA_ADMIN_BIND_ADDRESS`) to `0.0.0.0` for other hosts or a container's port mapping — see `cyoda help run`. See **Install** for non-Homebrew options and **First real call** for jwt + a real authenticated request.
 
 ## Install
 

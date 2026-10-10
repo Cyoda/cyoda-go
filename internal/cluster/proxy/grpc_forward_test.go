@@ -103,6 +103,53 @@ func TestClientPool_SSRFGuard_RejectsLoopback(t *testing.T) {
 	}
 }
 
+// TestClientPool_SSRFGuard_RefusesSchemedTargets pins that the guard and the
+// dialer read the same host. grpc-go reads "scheme://authority/endpoint" with
+// its own resolver rules: passthrough dials the endpoint whatever the
+// authority, and dns asks the authority to resolve the endpoint. The guard
+// would check only the authority, so a target in either form must be refused
+// before any dial, and nothing may reach the loopback listener behind it.
+func TestClientPool_SSRFGuard_RefusesSchemedTargets(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer lis.Close()
+	accepted := make(chan struct{}, 1)
+	go func() {
+		if c, err := lis.Accept(); err == nil {
+			accepted <- struct{}{}
+			_ = c.Close()
+		}
+	}()
+	loop := lis.Addr().String()
+
+	pool := proxy.NewClientPool(false) // production posture — loopback forbidden
+	defer pool.Close()
+
+	for _, target := range []string{
+		"passthrough://8.8.8.8/" + loop,
+		"dns://8.8.8.8/" + loop,
+		"passthrough:///" + loop,
+		"passthrough:" + loop,
+	} {
+		conn, err := pool.Get(context.Background(), target)
+		if err == nil {
+			conn.Connect()
+			t.Errorf("Get(%q) succeeded; want it refused", target)
+			continue
+		}
+		if !errors.Is(err, peeraddr.ErrForbiddenPeerAddress) {
+			t.Errorf("Get(%q) error = %v; want ErrForbiddenPeerAddress", target, err)
+		}
+	}
+	select {
+	case <-accepted:
+		t.Fatal("a refused target still reached the loopback listener")
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // TestClientPool_SSRFGuard_AllowsLoopback verifies that allowLoopback=true
 // permits loopback targets (so test fixtures that bind cluster nodes on
 // 127.0.0.1 can dial through the pool without special casing).

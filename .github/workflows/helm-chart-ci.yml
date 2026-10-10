@@ -150,6 +150,14 @@ jobs:
             /tmp/replicas3.yaml
           # Must render a PDB at replicas=3.
           grep -q "kind: PodDisruptionBudget" /tmp/replicas3.yaml
+          # CYODA_NODE_ADDR is the HTTP base URL peers proxy requests and
+          # hand callouts over to: it must name the HTTP port, not gRPC.
+          grep -A1 "name: CYODA_NODE_ADDR" /tmp/replicas3.yaml \
+            | grep -q 'svc.cluster.local:8080"'
+          # The API and gRPC listeners default to loopback; the Service,
+          # peers and compute nodes reach them only if the chart opens them.
+          grep -q 'CYODA_HTTP_BIND_ADDRESS: "0.0.0.0"' /tmp/replicas3.yaml
+          grep -q 'CYODA_GRPC_BIND_ADDRESS: "0.0.0.0"' /tmp/replicas3.yaml
 
       - name: helm template — monitoring + networkPolicy
         run: |

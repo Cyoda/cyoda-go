@@ -89,6 +89,7 @@ func defaultFor(c app.Config) map[string]string {
 	return map[string]string{
 		// --- server ---
 		"CYODA_HTTP_PORT":                strconv.Itoa(c.HTTPPort),
+		"CYODA_HTTP_BIND_ADDRESS":        c.HTTP.BindAddress,
 		"CYODA_HTTP_READ_HEADER_TIMEOUT": renderDuration(c.HTTP.ReadHeaderTimeout),
 		"CYODA_HTTP_READ_TIMEOUT":        renderDuration(c.HTTP.ReadTimeout),
 		"CYODA_HTTP_WRITE_TIMEOUT":       renderDuration(c.HTTP.WriteTimeout),
@@ -161,6 +162,7 @@ func defaultFor(c app.Config) map[string]string {
 
 		// --- grpc ---
 		"CYODA_GRPC_PORT":                         strconv.Itoa(c.GRPC.Port),
+		"CYODA_GRPC_BIND_ADDRESS":                 c.GRPC.BindAddress,
 		"CYODA_RETRY_FIXED_NUM_RETRIES":           strconv.Itoa(c.Callout.FixedNumRetries),
 		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MS":       renderMillis(c.Callout.ResponseTimeout),
 		"CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS":   renderMillis(c.Callout.ResponseTimeoutMax),

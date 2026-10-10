@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/app"
@@ -22,6 +23,22 @@ func TestPrintBannerTo_NotSuppressed(t *testing.T) {
 	printBannerTo(&buf, app.DefaultConfig())
 	if buf.Len() == 0 {
 		t.Fatal("expected banner output, got empty")
+	}
+}
+
+// TestPrintBannerTo_ShowsBindAddresses pins that the banner names the host each
+// API listener binds, not only its port: ":8080" reads as every interface.
+func TestPrintBannerTo_ShowsBindAddresses(t *testing.T) {
+	t.Setenv("CYODA_SUPPRESS_BANNER", "")
+	cfg := app.DefaultConfig()
+	cfg.HTTP.BindAddress, cfg.HTTPPort = "127.0.0.1", 8080
+	cfg.GRPC.BindAddress, cfg.GRPC.Port = "::1", 9090
+	var buf bytes.Buffer
+	printBannerTo(&buf, cfg)
+	for _, want := range []string{"HTTP 127.0.0.1:8080", "gRPC [::1]:9090"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("banner is missing %q:\n%s", want, buf.String())
+		}
 	}
 }
 

@@ -275,6 +275,9 @@ docker run --rm \
   -p 127.0.0.1:8080:8080 \
   -p 127.0.0.1:9090:9090 \
   -p 127.0.0.1:9091:9091 \
+  -e CYODA_HTTP_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_GRPC_BIND_ADDRESS=0.0.0.0 \
+  -e CYODA_ADMIN_BIND_ADDRESS=0.0.0.0 \
   -e CYODA_STORAGE_BACKEND=memory \
   -e CYODA_OTEL_ENABLED=true \
   -e OTEL_EXPORTER_OTLP_ENDPOINT=http://host.docker.internal:4318 \

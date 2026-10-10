@@ -189,33 +189,53 @@ func TestServerListeners_CloseReleasesWhatIsBound(t *testing.T) {
 }
 
 // TestListenAll_BindsEveryListenerFromConfig pins where each socket is bound:
-// the application and gRPC surfaces on every interface, the admin surface on
-// its configured bind address only.
+// every surface on its own configured bind address. The two cases swap which
+// API surface listens on every interface, so a surface that read another
+// one's setting, or none, fails one of them.
 func TestListenAll_BindsEveryListenerFromConfig(t *testing.T) {
-	cfg := app.DefaultConfig()
-	cfg.HTTPPort, cfg.GRPC.Port, cfg.Admin.Port = 0, 0, 0
-	cfg.Admin.BindAddress = "127.0.0.1"
+	for _, tc := range []struct {
+		name, httpHost, grpcHost string
+	}{
+		{"http loopback, grpc every interface", "127.0.0.1", "0.0.0.0"},
+		{"http every interface, grpc loopback", "0.0.0.0", "127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := app.DefaultConfig()
+			cfg.HTTPPort, cfg.GRPC.Port, cfg.Admin.Port = 0, 0, 0
+			cfg.HTTP.BindAddress = tc.httpHost
+			cfg.GRPC.BindAddress = tc.grpcHost
+			cfg.Admin.BindAddress = "127.0.0.1"
 
-	ls, err := listenAll(cfg)
-	if err != nil {
-		t.Fatalf("listenAll: %v", err)
-	}
-	t.Cleanup(ls.close)
+			ls, err := listenAll(cfg)
+			if err != nil {
+				t.Fatalf("listenAll: %v", err)
+			}
+			t.Cleanup(ls.close)
 
-	if ip := ls.admin.Addr().(*net.TCPAddr).IP; !ip.IsLoopback() {
-		t.Errorf("admin listener bound %v; want the configured loopback bind address", ip)
-	}
-	for name, l := range map[string]net.Listener{"grpc": ls.grpc, "http": ls.http} {
-		if ip := l.Addr().(*net.TCPAddr).IP; !ip.IsUnspecified() {
-			t.Errorf("%s listener bound %v; want every interface", name, ip)
-		}
+			for _, c := range []struct {
+				name string
+				l    net.Listener
+				host string
+			}{
+				{"http", ls.http, tc.httpHost},
+				{"grpc", ls.grpc, tc.grpcHost},
+				{"admin", ls.admin, "127.0.0.1"},
+			} {
+				// Go serves 0.0.0.0 on a dual-stack socket that reports ::,
+				// so a wildcard matches any unspecified address.
+				ip, want := c.l.Addr().(*net.TCPAddr).IP, net.ParseIP(c.host)
+				if !ip.Equal(want) && !(want.IsUnspecified() && ip.IsUnspecified()) {
+					t.Errorf("%s listener bound %v; want its configured bind address %s", c.name, ip, c.host)
+				}
+			}
+		})
 	}
 }
 
-// TestListenAll_AdminBindAddressMayBeIPv6 pins that the admin bind address is
-// joined to its port as a host, not pasted in front of it: an IPv6 literal
-// needs its brackets.
-func TestListenAll_AdminBindAddressMayBeIPv6(t *testing.T) {
+// TestListenAll_BindAddressesMayBeIPv6 pins that every bind address is joined
+// to its port as a host, not pasted in front of it: an IPv6 literal needs its
+// brackets.
+func TestListenAll_BindAddressesMayBeIPv6(t *testing.T) {
 	probe, err := net.Listen("tcp", "[::1]:0")
 	if err != nil {
 		t.Skipf("no IPv6 loopback on this host: %v", err)
@@ -224,15 +244,17 @@ func TestListenAll_AdminBindAddressMayBeIPv6(t *testing.T) {
 
 	cfg := app.DefaultConfig()
 	cfg.HTTPPort, cfg.GRPC.Port, cfg.Admin.Port = 0, 0, 0
-	cfg.Admin.BindAddress = "::1"
+	cfg.HTTP.BindAddress, cfg.GRPC.BindAddress, cfg.Admin.BindAddress = "::1", "::1", "::1"
 
 	ls, err := listenAll(cfg)
 	if err != nil {
-		t.Fatalf("listenAll with an IPv6 admin bind address: %v", err)
+		t.Fatalf("listenAll with IPv6 bind addresses: %v", err)
 	}
 	t.Cleanup(ls.close)
-	if ip := ls.admin.Addr().(*net.TCPAddr).IP; !ip.Equal(net.IPv6loopback) {
-		t.Errorf("admin listener bound %v; want ::1", ip)
+	for name, l := range map[string]net.Listener{"grpc": ls.grpc, "http": ls.http, "admin": ls.admin} {
+		if ip := l.Addr().(*net.TCPAddr).IP; !ip.Equal(net.IPv6loopback) {
+			t.Errorf("%s listener bound %v; want ::1", name, ip)
+		}
 	}
 }
 
@@ -240,9 +262,9 @@ func TestListenAll_AdminBindAddressMayBeIPv6(t *testing.T) {
 // port that cannot be bound is an error before any server starts, and the
 // error says which surface it was.
 func TestListenAll_BindFailureNamesTheListener(t *testing.T) {
-	// Every interface, as the HTTP surface binds: a loopback-only holder
-	// would not collide with a wildcard bind on every platform.
-	taken, err := net.Listen("tcp", ":0")
+	// The very address the HTTP surface is configured to bind: a holder on a
+	// different host of the same port does not collide on every platform.
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("occupy a port: %v", err)
 	}
@@ -250,7 +272,7 @@ func TestListenAll_BindFailureNamesTheListener(t *testing.T) {
 
 	cfg := app.DefaultConfig()
 	cfg.GRPC.Port, cfg.Admin.Port = 0, 0
-	cfg.Admin.BindAddress = "127.0.0.1"
+	cfg.HTTP.BindAddress, cfg.GRPC.BindAddress, cfg.Admin.BindAddress = "127.0.0.1", "127.0.0.1", "127.0.0.1"
 	cfg.HTTPPort = taken.Addr().(*net.TCPAddr).Port
 
 	ls, err := listenAll(cfg)

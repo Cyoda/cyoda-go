@@ -104,6 +104,10 @@ type Config struct {
 // net/http.Server fallback — so those two are off only when ReadTimeout is
 // also zero.
 type HTTPConfig struct {
+	// BindAddress (CYODA_HTTP_BIND_ADDRESS) is the host the API listener
+	// binds: a bare host, an IPv6 literal without brackets. Loopback by
+	// default, as for the admin listener; a container sets 0.0.0.0.
+	BindAddress       string
 	ReadHeaderTimeout time.Duration
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
@@ -246,6 +250,9 @@ type AdminConfig struct {
 }
 
 type GRPCConfig struct {
+	// BindAddress (CYODA_GRPC_BIND_ADDRESS) is the host the gRPC listener
+	// binds, with the same form and loopback default as HTTPConfig.BindAddress.
+	BindAddress       string
 	Port              int
 	KeepAliveInterval int // seconds
 	KeepAliveTimeout  int // seconds
@@ -365,6 +372,7 @@ func DefaultConfig() Config {
 		LogLevel:          envString("CYODA_LOG_LEVEL", "info"),
 		Version:           "dev",
 		GRPC: GRPCConfig{
+			BindAddress:       envString("CYODA_GRPC_BIND_ADDRESS", "127.0.0.1"),
 			Port:              envInt("CYODA_GRPC_PORT", 9090),
 			KeepAliveInterval: envInt("CYODA_KEEPALIVE_INTERVAL", 10),
 			KeepAliveTimeout:  envInt("CYODA_KEEPALIVE_TIMEOUT", 30),
@@ -466,6 +474,7 @@ func DefaultConfig() Config {
 			JoinedMaxWaiters:       envInt("CYODA_CALLOUT_JOINED_MAX_WAITERS", 128),
 		},
 		HTTP: HTTPConfig{
+			BindAddress:       envString("CYODA_HTTP_BIND_ADDRESS", "127.0.0.1"),
 			ReadHeaderTimeout: envDuration("CYODA_HTTP_READ_HEADER_TIMEOUT", 10*time.Second),
 			ReadTimeout:       envDuration("CYODA_HTTP_READ_TIMEOUT", 5*time.Minute),
 			WriteTimeout:      envDuration("CYODA_HTTP_WRITE_TIMEOUT", 0),
