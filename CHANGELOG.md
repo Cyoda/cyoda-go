@@ -792,6 +792,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   already answered `INVALID_CONDITION`. The help pages always documented
   `INVALID_CONDITION`. The status stays `400`; only the code changes.
 
+- **A search condition that does not parse is `400 INVALID_CONDITION` on
+  direct and async search**, as it already was on conditional delete and
+  grouped stats. This covers an unknown or missing `type`, a field of the
+  wrong JSON type, and a body that is not a condition. Before, search
+  answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
+  does not parse is still the transport status `InvalidArgument`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
@@ -1179,6 +1186,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **Grouped statistics checks a condition's structure before its field
+  types.** A malformed condition (for example an object operand) answers
+  `400 INVALID_CONDITION`, as search does, not `CONDITION_TYPE_MISMATCH`.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node
