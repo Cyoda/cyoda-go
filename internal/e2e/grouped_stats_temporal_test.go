@@ -18,10 +18,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 )
 
-// TestGroupedStats_TemporalStringOp_Returns400_InvalidCondition verifies
+// TestGroupedStats_TemporalStringOp_Returns400_ConditionTypeMismatch verifies
 // that CONTAINS — a string operator on the temporal creationDate meta field
-// — is REJECTED as 400 INVALID_CONDITION, matching the equivalent /search
-// request.
+// — is REJECTED as 400 CONDITION_TYPE_MISMATCH, matching the equivalent
+// /search request.
 //
 // This reverses an earlier deliberate acceptance: the two evaluators this
 // endpoint's fallback path can reach answer a temporal-field string operator
@@ -30,7 +30,7 @@ import (
 // while internal/match's prepareLifecycle guards the identical case to a
 // never-match on field identity. Rejecting the predicate at this shared
 // boundary makes both evaluators' conflicting behaviour unreachable.
-func TestGroupedStats_TemporalStringOp_Returns400_InvalidCondition(t *testing.T) {
+func TestGroupedStats_TemporalStringOp_Returns400_ConditionTypeMismatch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
@@ -50,7 +50,7 @@ func TestGroupedStats_TemporalStringOp_Returns400_InvalidCondition(t *testing.T)
 		body := readBody(t, resp)
 		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, body)
 	}
-	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
 // TestGroupedStats_TemporalBadOperand_Returns400 verifies that a

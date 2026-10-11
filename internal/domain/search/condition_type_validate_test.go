@@ -366,8 +366,8 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("CONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("CONTAINS on creationDate must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -378,8 +378,8 @@ func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 func TestValidate_TemporalRejectsPatternOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "lastUpdateTime", OperatorType: "MATCHES_PATTERN", Value: "^2021.*"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("MATCHES_PATTERN on lastUpdateTime must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("MATCHES_PATTERN on lastUpdateTime must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 
@@ -389,8 +389,8 @@ func TestValidate_TemporalRejectsPatternOp(t *testing.T) {
 func TestValidate_TemporalRejectsCaseInsensitiveStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "ICONTAINS", Value: "2021"}
 	err := validateLifecycleType(c)
-	if !errors.Is(err, ErrInvalidCondition) {
-		t.Errorf("ICONTAINS on creationDate must be rejected as ErrInvalidCondition, got %v", err)
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("ICONTAINS on creationDate must be rejected as errConditionTypeMismatch, got %v", err)
 	}
 }
 

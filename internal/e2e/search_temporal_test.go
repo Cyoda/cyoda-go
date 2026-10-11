@@ -278,7 +278,7 @@ func TestSearchTemporal_Accepted200(t *testing.T) {
 
 // TestSearchTemporal_400_StringOpOnTemporalField verifies that a string
 // operator (CONTAINS) on a temporal meta field is REJECTED as 400
-// INVALID_CONDITION.
+// CONDITION_TYPE_MISMATCH: the operator does not apply to the field's type.
 //
 // This reverses an earlier deliberate acceptance: served by the SPI kernel
 // on a pushdown route, the field bridges to its RFC3339 text and CONTAINS
@@ -300,7 +300,7 @@ func TestSearchTemporal_400_StringOpOnTemporalField(t *testing.T) {
 		body := readBody(t, resp)
 		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 	}
-	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
 func TestSearchTemporal_400_BadOperand(t *testing.T) {

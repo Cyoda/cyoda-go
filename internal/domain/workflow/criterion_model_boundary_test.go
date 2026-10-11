@@ -146,8 +146,8 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	if errors.Is(err, ErrCriterionTypingInfra) {
 		t.Fatalf("must be a structural refusal (no model read happened for a lifecycle-only criterion), got infra error: %v", err)
 	}
-	if !errors.Is(err, search.ErrInvalidCondition) {
-		t.Fatalf("expected search.ErrInvalidCondition (unsupported operator on temporal field), got: %v", err)
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("expected search.ErrConditionTypeMismatch (operator does not apply to a temporal field), got: %v", err)
 	}
 }
 

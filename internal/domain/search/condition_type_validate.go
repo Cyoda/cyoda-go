@@ -12,7 +12,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
-	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
 // ValidateConditionValueTypes walks a condition tree and checks each simple
@@ -370,25 +369,16 @@ var (
 var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 
 // validateLifecycleType enforces type-soundness for LifecycleCondition
-// (meta) clauses, parse-based (spec §6):
+// (meta) clauses, by the same rules a data field gets:
 //   - the field must be a known meta filter field (sortableMetaFields key,
 //     or the previousTransition alias) — otherwise errInvalidFieldPath.
-//   - for fields the meta vocabulary classifies as temporal (creationDate,
-//     lastUpdateTime), the operator must be one of the ten
-//     match.IsTemporalOperator admits (the eight comparison/range operators
-//     plus the two null tests) — otherwise ErrInvalidCondition. A string or
-//     pattern operator on a temporal field answered two ways depending on
-//     the query plan: the SPI kernel's pushdown re-check bridges the field
-//     to its RFC3339 text and matches lexically, while internal/match's
-//     prepareLifecycle guards the identical case to a never-match on field
-//     identity. Both evaluators' own "KNOWN DIVERGENCE" comments name this
-//     exact fix — reject the predicate here, at the boundary every surface
-//     funnels through, which makes both evaluators' behaviour unreachable
-//     rather than aligning them (operator-semantics.md §7,
-//     path-grammar.md §10).
-//   - for an operator that survives that check, a comparison/range operand
-//     must parse into a temporal type — otherwise errConditionTypeMismatch.
-//     A coarse operand upscales rather than being rejected.
+//   - on a temporal meta field (creationDate, lastUpdateTime), declared
+//     metaTemporalDeclared, the operator must apply to that type
+//     (operatorAppliesTo) — a string or pattern operator does not, and is
+//     errConditionTypeMismatch;
+//   - and a comparison/range operand must parse into a temporal type —
+//     otherwise errConditionTypeMismatch. A coarse operand upscales rather
+//     than being rejected.
 //
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
@@ -414,19 +404,15 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isTemporalMetaField(field) {
 		return nil
 	}
-	// A string or pattern operator on a temporal field is not a supported
-	// predicate — reject it here rather than letting either evaluator answer
-	// it two different ways (see the doc comment above). Reuses
-	// match.IsTemporalOperator's set rather than a second copy.
-	if !match.IsTemporalOperator(c.OperatorType) {
-		return fmt.Errorf(
-			"operator %q is not valid on temporal meta field %q; only comparison, range and null-presence operators are supported: %w",
-			c.OperatorType, c.Field, ErrInvalidCondition)
+	op := spi.MapOperator(c.OperatorType)
+	if !operatorAppliesTo(op, metaTemporalDeclared) {
+		return fmt.Errorf("operator %q does not apply to temporal meta field %q: %w",
+			c.OperatorType, c.Field, errConditionTypeMismatch)
 	}
 	// The two null tests skip operand parsing (the value is unused); every
 	// other operator that survived the check above is one of the eight
 	// comparison/range operators and requires a temporal-parsing operand.
-	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
+	if !isParseConstrainedOp(op) {
 		return nil
 	}
 	for i, elem := range operandElements(c.Value) {
@@ -477,11 +463,8 @@ func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 
 // classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
 // its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
-// itself is unknown), ErrInvalidCondition → INVALID_CONDITION (an operator
-// that is not a supported predicate for the field it's applied to — e.g. a
-// string/pattern operator on a temporal meta field, operator-semantics.md
-// §4/§7), anything else → CONDITION_TYPE_MISMATCH (the value is
-// type-incompatible with a known field/operator).
+// itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
+// or the operand does not fit a known field's type).
 //
 // Shared by every caller of ValidateConditionValueTypes —
 // validateConditionTypes below (SearchService), and grouped stats' handler
@@ -492,8 +475,6 @@ func classifyConditionTypeErrCode(err error) string {
 	switch {
 	case errors.Is(err, errInvalidFieldPath):
 		return common.ErrCodeInvalidFieldPath
-	case errors.Is(err, ErrInvalidCondition):
-		return common.ErrCodeInvalidCondition
 	default:
 		return common.ErrCodeConditionTypeMismatch
 	}
