@@ -76,6 +76,14 @@ func TestArrayConditionDtoShape(t *testing.T) {
 	if values.MinItems != 1 {
 		t.Errorf("ArrayConditionDto.values minItems = %d, want 1", values.MinItems)
 	}
+	// A whole condition tests at most 10,000 entries (search.MaxConditionEntries),
+	// so one clause's values cannot hold more.
+	if values.MaxItems == nil || *values.MaxItems != 10000 {
+		t.Errorf("ArrayConditionDto.values maxItems = %v, want 10000", values.MaxItems)
+	}
+	if !strings.Contains(values.Description, "10,000") {
+		t.Errorf("ArrayConditionDto.values description must state the 10,000-entry cap, got %q", values.Description)
+	}
 	items := values.Items
 	if items == nil || items.Value == nil {
 		t.Fatal("ArrayConditionDto.values has no item schema")

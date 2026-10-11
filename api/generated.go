@@ -1095,7 +1095,7 @@ type ArrayConditionDto struct {
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
 
-	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`.
+	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
 	Values *[]interface{} `json:"values,omitempty"`
 }
 
