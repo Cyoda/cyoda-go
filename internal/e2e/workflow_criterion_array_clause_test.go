@@ -87,3 +87,40 @@ func TestCriterionArrayClause_TrailingWildcardImportsAndFires(t *testing.T) {
 		t.Errorf(`array-clause criterion on "$.tags[*]" values=["A"] with tags=["A","B"]: expected ADVANCED, got %q`, state)
 	}
 }
+
+func TestCriterionArrayClause_OperatorDecidesTheTransition(t *testing.T) {
+	const model = "e2e-crit-array-op"
+	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"crit-array-op-wf","initialState":"NONE","active":true,
+		"states":{"NONE":{"transitions":[{"name":"init","next":"CREATED","manual":false}]},
+		"CREATED":{"transitions":[{"name":"advance","next":"ADVANCED","manual":false,
+			"criterion":{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}}]},
+		"ADVANCED":{}}}]}`
+	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3]}`, wf)
+	if s := getEntityState(t, createEntityE2E(t, model, 1, `{"name":"A","scores":[90,40,75]}`)); s != "ADVANCED" {
+		t.Errorf("A satisfies the criterion: want ADVANCED, got %q", s)
+	}
+	if s := getEntityState(t, createEntityE2E(t, model, 1, `{"name":"B","scores":[10,95,60]}`)); s != "CREATED" {
+		t.Errorf("B does not: want CREATED, got %q", s)
+	}
+}
+
+func TestCriterionArrayClause_RefusedAtImport(t *testing.T) {
+	const model = "e2e-crit-array-refuse"
+	importModelSampleE2E(t, model, 1, `{"name":"S","scores":[1]}`)
+	lockModelE2E(t, model, 1)
+	for _, crit := range []string{
+		`{"type":"array","jsonPath":"$.scores[*]","values":[50]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`,
+		`{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[1]}`,
+		`{"type":"bogus"}`,
+	} {
+		wf := fmt.Sprintf(`{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"w","initialState":"NONE","active":true,
+			"states":{"NONE":{"transitions":[{"name":"go","next":"DONE","manual":false,"criterion":%s}]},"DONE":{}}}]}`, crit)
+		resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", model), wf)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d: %s", crit, resp.StatusCode, readBody(t, resp))
+		}
+		commontest.ExpectErrorCode(t, resp, "VALIDATION_FAILED")
+		resp.Body.Close()
+	}
+}
