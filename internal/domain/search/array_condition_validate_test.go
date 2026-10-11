@@ -117,3 +117,27 @@ func TestValidateCondition_BetweenArity_IsInvalidCondition(t *testing.T) {
 		}
 	}
 }
+
+// A null bound inside a BETWEEN pair is INVALID_CONDITION on every clause.
+func TestValidateCondition_BetweenNullBound_IsInvalidCondition(t *testing.T) {
+	pairs := [][]any{{nil, 5}, {5, nil}, {nil, nil}}
+	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
+		for _, p := range pairs {
+			lifePair := make([]any, len(p))
+			for i, v := range p {
+				if v != nil {
+					lifePair[i] = "2021-01-01T00:00:00Z"
+				}
+			}
+			for _, c := range []predicate.Condition{
+				&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: op, Value: p},
+				&predicate.LifecycleCondition{Field: "creationDate", OperatorType: op, Value: lifePair},
+				&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{p}},
+			} {
+				if err := ValidateCondition(c); !errors.Is(err, ErrInvalidCondition) {
+					t.Errorf("%s %v %+v: want ErrInvalidCondition, got %v", op, p, c, err)
+				}
+			}
+		}
+	}
+}

@@ -258,6 +258,21 @@ func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	if !containsErrorCode(body, "INVALID_CONDITION") {
 		t.Errorf("expected errorCode INVALID_CONDITION, body=%s", body)
 	}
+
+	// A null bound inside a well-formed two-element pair is refused the same way.
+	for _, pair := range [][]any{{nil, "2021-01-01T00:00:00Z"}, {"2021-01-01T00:00:00Z", nil}, {nil, nil}} {
+		nullCond := lifecycleTemporalCond(t, "creationDate", "BETWEEN", pair)
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, nullCond)
+		if err != nil {
+			t.Fatalf("SyncSearchRaw (null bound %v): %v", pair, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("null bound %v: expected 400, got %d; body=%s", pair, status, body)
+		}
+		if !containsErrorCode(body, "INVALID_CONDITION") {
+			t.Errorf("null bound %v: expected errorCode INVALID_CONDITION, body=%s", pair, body)
+		}
+	}
 }
 
 // RunSearchScalarOnContainerPath400 pins the type-directed contract that a
