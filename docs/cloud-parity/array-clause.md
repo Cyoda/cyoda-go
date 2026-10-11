@@ -12,16 +12,16 @@ cyoda-go defines the array clause's wire shape; Cyoda Cloud aligns to it.
   accepted names are those of a `simple` clause. `operator` and `operation`
   are accepted as aliases.
 - `values` holds one entry per position from index 0. `null` does not test
-  that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN`
-  and `BETWEEN_INCLUSIVE`. For `IS_NULL`/`NOT_NULL` a non-null entry only
-  selects the position.
+  that position. An entry is a scalar, or for `BETWEEN` and
+  `BETWEEN_INCLUSIVE` a `[low, high]` pair of two non-null scalar bounds. For
+  `IS_NULL`/`NOT_NULL` a non-null entry only selects the position.
 - The clause means an AND of one `simple` clause per tested position, and
   every `simple`-clause rule applies to those clauses.
 - Refused: no operator or an unknown one, a clause that tests no position
   (missing, empty or all-null `values`), an object entry, an array entry
   under any operator other than `BETWEEN` and `BETWEEN_INCLUSIVE`, a
-  `BETWEEN` or `BETWEEN_INCLUSIVE` entry that is not a `[low, high]` pair or
-  has a `null` bound — `400 INVALID_CONDITION`; a path that does not end in
+  `BETWEEN` or `BETWEEN_INCLUSIVE` entry that is not a pair of two non-null
+  scalar bounds — `400 INVALID_CONDITION`; a path that does not end in
   `[*]` or has an earlier `[*]` — `400 INVALID_FIELD_PATH`; an operator or
   entry that does not fit the element's declared type — `400
   CONDITION_TYPE_MISMATCH`. On workflow
@@ -43,6 +43,9 @@ applies the operator at every listed position, on REST search only. To align:
 - For `IS_NULL`/`NOT_NULL`, use a non-null entry only to select the position.
 - Refuse an object entry, and an array entry under any operator other than
   `BETWEEN` and `BETWEEN_INCLUSIVE`.
+- Refuse a `BETWEEN` or `BETWEEN_INCLUSIVE` bound that is `null`, an object or
+  an array, on an `array` clause's entry and on a `simple` or `lifecycle`
+  clause's `value`.
 - Refuse a missing operator, a clause that tests no position, and a path with
   a wildcard before its trailing `[*]`.
 - Accept the clause in workflow criteria and in gRPC search.

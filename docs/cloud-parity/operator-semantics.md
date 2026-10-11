@@ -179,7 +179,7 @@ one otherwise fails silently or differs between backends:
 |---|---|
 | an object | refused — an object denotes no scalar any operator compares against |
 | an array, under any operator other than `BETWEEN` / `BETWEEN_INCLUSIVE` | refused — no other operator takes a set of values; unrefused, one backend compares the array's text, another matches every row under `NOT_EQUAL` and none under `EQUALS` |
-| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries, or a `null` entry | refused — the operator needs exactly `[lo, hi]`, both non-null |
+| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries, or an entry that is `null`, an object or an array | refused — the operator needs exactly `[lo, hi]`, both non-null scalars |
 | an uncompilable `LIKE` or `MATCHES_PATTERN` pattern | refused |
 
 A `MATCHES_PATTERN` operand is checked **twice**, and both checks are required.

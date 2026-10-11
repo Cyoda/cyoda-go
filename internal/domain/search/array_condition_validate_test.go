@@ -214,3 +214,33 @@ func TestValidateCriterionCondition_BetweenNullBound_IsInvalidCondition(t *testi
 		}
 	}
 }
+
+// A BETWEEN bound is a non-null scalar. An object or an array bound denotes no
+// value the range could compare against: unchecked, PostgreSQL answers 500 and
+// the in-memory path compares against the bound's printed form, which on a
+// conditional delete chooses the rows deleted. INVALID_CONDITION on every
+// clause, from both the search and the criterion entry point.
+func TestValidateCondition_BetweenNonScalarBound_IsInvalidCondition(t *testing.T) {
+	pairs := [][]any{
+		{map[string]any{"a": 1}, "z"},
+		{"a", map[string]any{}},
+		{[]any{"a"}, "z"},
+		{"a", []any{}},
+	}
+	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
+		for _, p := range pairs {
+			for _, c := range []predicate.Condition{
+				&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: op, Value: p},
+				&predicate.LifecycleCondition{Field: "creationDate", OperatorType: op, Value: p},
+				&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{p}},
+			} {
+				if err := ValidateCondition(c); !errors.Is(err, ErrInvalidCondition) {
+					t.Errorf("%s %v %+v: ValidateCondition: want ErrInvalidCondition, got %v", op, p, c, err)
+				}
+				if err := ValidateCriterionCondition(c); !errors.Is(err, ErrInvalidCondition) {
+					t.Errorf("%s %v %+v: ValidateCriterionCondition: want ErrInvalidCondition, got %v", op, p, c, err)
+				}
+			}
+		}
+	}
+}

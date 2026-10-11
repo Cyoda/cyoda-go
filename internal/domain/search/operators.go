@@ -14,14 +14,14 @@ import (
 // (shape) validation: an unknown or missing operatorType, an operand that is
 // an object/map, an array operand under an operator other than BETWEEN /
 // BETWEEN_INCLUSIVE, a BETWEEN operand that is not a two-element pair of
-// non-null bounds, an unknown group operator or a NOT group without exactly
-// one child, and an array clause that is malformed or tests nothing. An object denotes no scalar value any
-// operator could evaluate, so it is rejected as INVALID_CONDITION (spec
-// §6/§8: a shape/arity error, not a type mismatch) regardless of the operator
-// or the field's declared types — unlike CONDITION_TYPE_MISMATCH, which
-// requires a known field with declared types to compare against. Handlers
-// check errors.Is(err, ErrInvalidCondition) to emit HTTP 400 with the
-// INVALID_CONDITION code.
+// non-null scalar bounds, an unknown group operator or a NOT group without
+// exactly one child, and an array clause that is malformed or tests nothing.
+// An object denotes no scalar value any operator could evaluate, so it is
+// rejected as INVALID_CONDITION (spec §6/§8: a shape/arity error, not a type
+// mismatch) regardless of the operator or the field's declared types —
+// unlike CONDITION_TYPE_MISMATCH, which requires a known field with declared
+// types to compare against. Handlers check errors.Is(err,
+// ErrInvalidCondition) to emit HTTP 400 with the INVALID_CONDITION code.
 var ErrInvalidCondition = errors.New("invalid condition")
 
 // MaxConditionDepth caps recursion in the condition validators
@@ -344,7 +344,7 @@ func validateOperandShape(op string, value any) error {
 
 // validateBetweenArity enforces that a BETWEEN / BETWEEN_INCLUSIVE
 // condition's value is exactly a 2-element array (the [lo, hi] bounds pair)
-// with no null bound.
+// whose bounds are both non-null scalars.
 // Model-independent and shared by SimpleCondition (data leaves) and
 // LifecycleCondition (meta leaves, including temporal fields) — the same
 // malformed-arity bug affects both.
@@ -352,9 +352,12 @@ func validateOperandShape(op string, value any) error {
 // A scalar, a 1- or 3-element array, or a null bound is refused here because
 // betweenValues (filter_translate.go) accepts only a 2-element []any and
 // otherwise leaves spi.Filter.Values nil, and the storage plugins do not
-// agree on what a nil-Values BETWEEN filter means. This is the one
-// validation boundary every transport (HTTP, gRPC) and workflow import
-// funnels through, so the malformed condition never reaches them.
+// agree on what a nil-Values BETWEEN filter means. An object or array bound
+// is refused because it denotes no value a range can compare against:
+// PostgreSQL fails on it, and the in-memory evaluator compares against its
+// printed form, which on a conditional delete chooses the rows deleted. This
+// is the one validation boundary every transport (HTTP, gRPC) and workflow
+// import funnels through, so the malformed condition never reaches them.
 func validateBetweenArity(op string, value any) error {
 	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
 		return nil
@@ -367,8 +370,11 @@ func validateBetweenArity(op string, value any) error {
 		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(vals))
 	}
 	for _, b := range vals {
-		if b == nil {
+		switch b.(type) {
+		case nil:
 			return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
+		case map[string]any, []any:
+			return fmt.Errorf("%w: operator %q bounds must be scalars, not objects or arrays", ErrInvalidCondition, op)
 		}
 	}
 	return nil

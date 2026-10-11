@@ -49,6 +49,10 @@ var arrayClauseRefusals = []struct {
 	// NOT_EQUAL a conditional delete would remove nearly every entity.
 	{"array entry outside BETWEEN", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`, "INVALID_CONDITION"},
 	{"null BETWEEN bound", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[[null,5]]}`, "INVALID_CONDITION"},
+	// A BETWEEN bound is a scalar. On a STRING array an object or array bound
+	// otherwise reaches the backend: PostgreSQL answers 500.
+	{"object BETWEEN bound", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"BETWEEN","values":[[{"a":1},"z"]]}`, "INVALID_CONDITION"},
+	{"array BETWEEN bound", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"BETWEEN_INCLUSIVE","values":[[["a"],"z"]]}`, "INVALID_CONDITION"},
 	{"bare path", `{"type":"array","jsonPath":"$.scores","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"earlier wildcard", `{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"text operator on numbers", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}`, "CONDITION_TYPE_MISMATCH"},
@@ -260,6 +264,42 @@ func TestConditionValidationOrder_SameCodeOnEverySurface(t *testing.T) {
 			}
 			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 			resp.Body.Close()
+		}
+	}
+}
+
+// A simple clause's BETWEEN bound is a scalar too. Unchecked, PostgreSQL
+// answered 500 for the pushed-down form, and inside NOT the in-memory path
+// compared against the bound's printed form, so a conditional delete removed
+// the entities that comparison chose.
+func TestConditionSurfaces_BetweenNonScalarBound_IsInvalidCondition(t *testing.T) {
+	const model = "e2e-between-nonscalar-bound"
+	idA, idB := setupScoresModel(t, model)
+	for _, leaf := range []string{
+		`{"type":"simple","jsonPath":"$.name","operatorType":"BETWEEN","value":[{"a":1},"z"]}`,
+		`{"type":"simple","jsonPath":"$.name","operatorType":"BETWEEN_INCLUSIVE","value":[["a"],"z"]}`,
+	} {
+		for _, cond := range []string{leaf, `{"type":"group","operator":"NOT","conditions":[` + leaf + `]}`} {
+			for _, s := range []struct{ name, method, path, body string }{
+				{"search direct", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model), cond},
+				{"search async", http.MethodPost, fmt.Sprintf("/api/search/async/%s/1", model), cond},
+				{"conditional delete", http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), cond},
+				{"grouped stats", http.MethodPost, fmt.Sprintf("/api/entity/stats/%s/1/query", model),
+					`{"groupBy":["$.name"],"condition":` + cond + `}`},
+			} {
+				resp := doAuth(t, s.method, s.path, s.body)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("%s %s: expected 400, got %d; body: %s", s.name, cond, resp.StatusCode, readBody(t, resp))
+					continue
+				}
+				commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+				resp.Body.Close()
+			}
+		}
+	}
+	for _, id := range []string{idA, idB} {
+		if r := doAuth(t, http.MethodGet, "/api/entity/"+id, ""); r.StatusCode != http.StatusOK {
+			t.Errorf("entity %s must survive refused deletes, got %d", id, r.StatusCode)
 		}
 	}
 }

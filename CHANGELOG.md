@@ -813,9 +813,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
   does not parse is still the transport status `InvalidArgument`.
 
-- **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair with a `null` bound is
-  `400 INVALID_CONDITION`; workflow import answers `400 VALIDATION_FAILED`
-  for it.** Before, it was accepted, and the backends answered differently.
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair must hold two non-null scalar
+  bounds. A `null`, object or array bound is `400 INVALID_CONDITION`;
+  workflow import answers `400 VALIDATION_FAILED` for it.** Before, a `null`
+  bound was accepted and the backends answered differently. An object or
+  array bound made PostgreSQL answer `500`, and inside `NOT` the in-memory
+  evaluator compared against the bound's printed form, so a conditional
+  delete removed the entities that comparison chose.
 
 - **Search, conditional delete and grouped statistics check a condition in
   one order — structure, then patterns, then the model's paths, then types

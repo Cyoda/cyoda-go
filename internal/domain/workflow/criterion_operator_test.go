@@ -169,3 +169,23 @@ func TestValidateImportRequest_RejectsNullBetweenBound(t *testing.T) {
 		}
 	}
 }
+
+// An object or array BETWEEN bound is refused at import, on a simple and an
+// array clause. Imported, it would fail or compare against the bound's
+// printed form at every evaluation.
+func TestValidateImportRequest_RejectsNonScalarBetweenBound(t *testing.T) {
+	for _, c := range []string{
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN","value":[{"a":1},5]}`,
+		`{"type":"simple","jsonPath":"$.name","operatorType":"BETWEEN_INCLUSIVE","value":[["a"],"z"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"BETWEEN","values":[[{"a":1},"z"]]}`,
+	} {
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))})
+		if err == nil {
+			t.Errorf("%s: an object or array BETWEEN bound must be rejected at import", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "scalar") {
+			t.Errorf("%s: detail must say a bound is a scalar, got: %v", c, err)
+		}
+	}
+}
