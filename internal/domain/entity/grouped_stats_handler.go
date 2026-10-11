@@ -186,6 +186,14 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		// temporal operands) runs there.
 		if len(validated.Condition) > 0 {
 			if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
+				// Structure before types, as on search: a malformed
+				// condition is INVALID_CONDITION (or INVALID_FIELD_PATH),
+				// never a type mismatch against the model.
+				if sErr := search.ValidateCondition(cond); sErr != nil {
+					common.WriteError(w, r, common.Operational(http.StatusBadRequest,
+						search.StructuralConditionErrCode(sErr), sErr.Error()))
+					return
+				}
 				if tErr := search.ValidateConditionValueTypes(fields, cond); tErr != nil {
 					code := search.ClassifyConditionTypeErrCode(tErr)
 					common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
