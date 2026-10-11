@@ -21,7 +21,7 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Validation is parse-based: a comparison or range operand is rejected only when it parses into none of the field's declared DataTypes. For example `"abc"` against a DOUBLE field is rejected — it is not a number. A numeric-looking string against a polymorphic `[INTEGER, STRING]` field is accepted (it parses as STRING).
+Validation is parse-based: a comparison or range operand is rejected when it parses into none of the field's declared DataTypes (and, below, when it fits none of the types its operator applies to). For example `"abc"` against a DOUBLE field is rejected — it is not a number. A numeric-looking string against a polymorphic `[INTEGER, STRING]` field is accepted (it parses as STRING).
 
 An operator must also apply to at least one of the field's declared types, and a comparison or range operand must parse into one of the types it applies to. String and pattern operators (`IEQUALS`/`INOT_EQUAL` included) require a text type, `STRING` or `CHARACTER`: `ICONTAINS "1"` on a DOUBLE field is this error, because it could only ever match nothing (or, negated, every value). `STARTS_WITH "2024"` on a LOCAL_DATE field is this error too: a date compares by its own type, not as text — use `GREATER_OR_EQUAL "2024"` with `LESS_THAN "2025"`. Ordering operators require a number, text or a date/time, and range operators a number, `STRING` or a date/time with both bounds in the same one: `GREATER_THAN "false"` on a BOOLEAN field is this error. `IS_NULL`/`NOT_NULL` carry no operand-type constraint. A field with no declared types, and paths not present in the schema, carry no constraint here; an unknown field path is instead rejected by a separate validation pass with `INVALID_FIELD_PATH`.
 

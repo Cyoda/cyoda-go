@@ -762,10 +762,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   operator on a date, time or UUID field used to match its stored text**
   (`STARTS_WITH "2024"` on a date); it is now refused, because those values
   compare by their own type — query a date with `GREATER_OR_EQUAL "2024"` and
-  `LESS_THAN "2025"`. A boolean or UUID has no order. The rule holds on
-  direct and async search, conditional delete, grouped stats and over gRPC. A workflow criterion is checked when it
-  is evaluated, so a criterion that used to read as "not satisfied" now
-  aborts the save with `400 WORKFLOW_FAILED`. A string or pattern operator on
+  `LESS_THAN "2025"`. A boolean or UUID has no order. A range whose two bounds
+  fit no single type, and a range on a `CHARACTER` field, used to fail as
+  `400 INVALID_CONDITION` when evaluated; they are now refused up front as
+  `CONDITION_TYPE_MISMATCH`. The rule holds on direct and async search,
+  conditional delete, grouped stats and over gRPC. A workflow criterion is
+  checked when it is evaluated, so a criterion that used to read as "not
+  satisfied" now aborts the save with `400 WORKFLOW_FAILED`. A string or pattern operator on
   `creationDate` or `lastUpdateTime` moves from `400 INVALID_CONDITION` to
   `400 CONDITION_TYPE_MISMATCH`.
 
