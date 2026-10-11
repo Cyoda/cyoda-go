@@ -31,7 +31,7 @@ func TestValidateConditionTypes_PositionalSubscript_TypeMismatch(t *testing.T) {
 	model := buildArrayModel()
 	for _, path := range []string{"$.arr[*]", "$.arr[0]", "$.arr[7]"} {
 		t.Run(path, func(t *testing.T) {
-			err := ValidateConditionValueTypes(model, &predicate.SimpleCondition{
+			err := ValidateConditionValueTypes(model.FieldsMap(), &predicate.SimpleCondition{
 				JsonPath: path, OperatorType: "EQUALS", Value: "not-a-number",
 			})
 			if !errors.Is(err, errConditionTypeMismatch) {
@@ -56,7 +56,7 @@ func TestValidateConditionTypes_PositionalSubscript_Accepted(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.path, func(t *testing.T) {
-			if err := ValidateConditionValueTypes(model, &predicate.SimpleCondition{
+			if err := ValidateConditionValueTypes(model.FieldsMap(), &predicate.SimpleCondition{
 				JsonPath: tc.path, OperatorType: "EQUALS", Value: tc.value,
 			}); err != nil {
 				t.Errorf("ValidateConditionValueTypes(%q EQUALS %v) = %v, want accepted", tc.path, tc.value, err)
@@ -70,7 +70,7 @@ func TestValidateConditionTypes_PositionalSubscript_Accepted(t *testing.T) {
 // a canonicalised form the caller never wrote.
 func TestValidateConditionTypes_PositionalSubscript_ContainerRejected(t *testing.T) {
 	model := buildArrayModel()
-	err := ValidateConditionValueTypes(model, &predicate.SimpleCondition{
+	err := ValidateConditionValueTypes(model.FieldsMap(), &predicate.SimpleCondition{
 		JsonPath: "$.items[0]", OperatorType: "EQUALS", Value: "x",
 	})
 	if !errors.Is(err, errInvalidFieldPath) {

@@ -40,7 +40,7 @@ func TestValidateConditionTypes_TextOperatorOnNonTextField_Rejects(t *testing.T)
 		for _, op := range textOperators {
 			t.Run(typ.String()+"/"+op, func(t *testing.T) {
 				cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: "1"}
-				err := ValidateConditionValueTypes(leafModel(typ), cond)
+				err := ValidateConditionValueTypes(leafModel(typ).FieldsMap(), cond)
 				if !errors.Is(err, errConditionTypeMismatch) {
 					t.Fatalf("want errConditionTypeMismatch, got %v", err)
 				}
@@ -60,7 +60,7 @@ func TestValidateConditionTypes_TextOperatorOnTextField_Accepts(t *testing.T) {
 		for _, op := range textOperators {
 			t.Run(name+"/"+op, func(t *testing.T) {
 				cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: "1"}
-				if err := ValidateConditionValueTypes(leafModel(types...), cond); err != nil {
+				if err := ValidateConditionValueTypes(leafModel(types...).FieldsMap(), cond); err != nil {
 					t.Fatalf("want accepted, got %v", err)
 				}
 			})
@@ -89,7 +89,7 @@ func TestValidateConditionTypes_OrderingOperatorOnUnorderedField_Rejects(t *test
 		} {
 			t.Run(typ.String()+"/"+tc.op, func(t *testing.T) {
 				cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: tc.op, Value: tc.value}
-				err := ValidateConditionValueTypes(leafModel(typ), cond)
+				err := ValidateConditionValueTypes(leafModel(typ).FieldsMap(), cond)
 				if !errors.Is(err, errConditionTypeMismatch) {
 					t.Fatalf("want errConditionTypeMismatch, got %v", err)
 				}
@@ -116,7 +116,7 @@ func TestValidateConditionTypes_OrderingOperatorOnOrderedField_Accepts(t *testin
 		for _, op := range []string{"GREATER_THAN", "LESS_OR_EQUAL"} {
 			t.Run(tc.name+"/"+op, func(t *testing.T) {
 				cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: tc.value}
-				if err := ValidateConditionValueTypes(leafModel(tc.types...), cond); err != nil {
+				if err := ValidateConditionValueTypes(leafModel(tc.types...).FieldsMap(), cond); err != nil {
 					t.Fatalf("want accepted, got %v", err)
 				}
 			})
@@ -126,7 +126,7 @@ func TestValidateConditionTypes_OrderingOperatorOnOrderedField_Accepts(t *testin
 		}
 		t.Run(tc.name+"/BETWEEN", func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: "BETWEEN", Value: []any{tc.value, tc.value}}
-			if err := ValidateConditionValueTypes(leafModel(tc.types...), cond); err != nil {
+			if err := ValidateConditionValueTypes(leafModel(tc.types...).FieldsMap(), cond); err != nil {
 				t.Fatalf("want accepted, got %v", err)
 			}
 		})
@@ -138,7 +138,7 @@ func TestValidateConditionTypes_OrderingOperatorOnOrderedField_Accepts(t *testin
 func TestValidateConditionTypes_EqualityOnUnorderedField_Accepts(t *testing.T) {
 	for _, op := range []string{"EQUALS", "NOT_EQUAL"} {
 		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: "true"}
-		if err := ValidateConditionValueTypes(leafModel(schema.Boolean), cond); err != nil {
+		if err := ValidateConditionValueTypes(leafModel(schema.Boolean).FieldsMap(), cond); err != nil {
 			t.Fatalf("%s on BOOLEAN: want accepted, got %v", op, err)
 		}
 	}
@@ -150,7 +150,7 @@ func TestValidateConditionTypes_EqualityOnUnorderedField_Accepts(t *testing.T) {
 func TestValidateConditionTypes_RangeOperatorOnCharacterField_Rejects(t *testing.T) {
 	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
 		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: []any{"a", "c"}}
-		err := ValidateConditionValueTypes(leafModel(schema.Character), cond)
+		err := ValidateConditionValueTypes(leafModel(schema.Character).FieldsMap(), cond)
 		if !errors.Is(err, errConditionTypeMismatch) {
 			t.Fatalf("%s on CHARACTER: want errConditionTypeMismatch, got %v", op, err)
 		}
@@ -178,7 +178,7 @@ func TestValidateConditionTypes_OperandMustFitATypeTheOperatorAppliesTo(t *testi
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: tc.op, Value: tc.value}
-			err := ValidateConditionValueTypes(leafModel(tc.types...), cond)
+			err := ValidateConditionValueTypes(leafModel(tc.types...).FieldsMap(), cond)
 			if tc.accept && err != nil {
 				t.Fatalf("want accepted, got %v", err)
 			}
@@ -205,7 +205,7 @@ func TestValidateConditionTypes_RangeBoundsMustFitOneTypeTogether(t *testing.T) 
 		{[]any{"2024-01-01", "2024-12-31"}, true},
 	} {
 		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: "BETWEEN", Value: tc.bounds}
-		err := ValidateConditionValueTypes(model, cond)
+		err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 		if tc.accept && err != nil {
 			t.Errorf("BETWEEN %v: want accepted, got %v", tc.bounds, err)
 		}

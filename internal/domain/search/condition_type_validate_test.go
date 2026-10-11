@@ -29,7 +29,7 @@ func TestValidateConditionTypes_Between_TypeMismatch(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{"abc", "def"},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for string values against DOUBLE BETWEEN condition, got nil")
 	}
@@ -48,7 +48,7 @@ func TestValidateConditionTypes_Between_ValidIntegers(t *testing.T) {
 		// float64 is what json.Unmarshal produces for numbers
 		Value: []any{float64(10), float64(20)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err != nil {
 		t.Fatalf("expected no error for numeric BETWEEN values against DOUBLE field, got: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        []any{float64(1), "abc", float64(3)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for mixed-type array value against DOUBLE field, got nil")
 	}
@@ -86,7 +86,7 @@ func TestValidateConditionTypes_In_AllNumeric(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        []any{float64(1), float64(2), float64(3)},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err != nil {
 		t.Fatalf("expected no error for all-numeric array value against DOUBLE field, got: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err != nil {
 		t.Fatalf("expected no error for empty array value, got: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestValidateConditionTypes_ScalarOnPureContainer_Rejects(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for scalar EQUALS on a pure-container path, got nil")
 	}
@@ -154,7 +154,7 @@ func TestValidateConditionTypes_LeafUnderContainer_Accepts(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "some-key",
 	}
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Fatalf("expected no error for scalar EQUALS on the leaf path, got: %v", err)
 	}
 }
@@ -169,7 +169,7 @@ func TestValidateConditionTypes_NullPresenceOnContainer_Accepts(t *testing.T) {
 			JsonPath:     "$.some-object",
 			OperatorType: op,
 		}
-		if err := ValidateConditionValueTypes(model, cond); err != nil {
+		if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 			t.Errorf("%s on container path should be accepted, got: %v", op, err)
 		}
 	}
@@ -190,7 +190,7 @@ func TestValidateConditionTypes_MixedObjectOrScalar_Accepts(t *testing.T) {
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	if err := ValidateConditionValueTypes(root, cond); err != nil {
+	if err := ValidateConditionValueTypes(root.FieldsMap(), cond); err != nil {
 		t.Fatalf("mixed object-or-string leaf should accept a string operand, got: %v", err)
 	}
 }
@@ -206,7 +206,7 @@ func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.
 		OperatorType: "EQUALS",
 		Value:        "abc",
 	}
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Fatalf("unknown non-container path should not be rejected here, got: %v", err)
 	}
 }
@@ -297,7 +297,7 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 		OperatorType: "BETWEEN",
 		Value:        []any{float64(10), nil},
 	}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err != nil {
 		t.Fatalf("expected no error for array with null element, got: %v", err)
 	}
@@ -321,7 +321,7 @@ func TestValidateConditionTypes_ArrayCondition_TypeMismatch(t *testing.T) {
 		JsonPath: "$.nums[*]",
 		Values:   []any{"not-a-number"},
 	}
-	err := ValidateConditionValueTypes(node, cond)
+	err := ValidateConditionValueTypes(node.FieldsMap(), cond)
 	if err == nil {
 		t.Fatal("expected error for string value against an INTEGER array element, got nil")
 	}
@@ -339,7 +339,7 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 		JsonPath: "$.nums[*]",
 		Values:   []any{float64(3)},
 	}
-	if err := ValidateConditionValueTypes(node, cond); err != nil {
+	if err := ValidateConditionValueTypes(node.FieldsMap(), cond); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -489,29 +489,28 @@ func TestValidate_UnknownMetaField(t *testing.T) {
 func TestValidate_WalkConditionTypes_LifecycleNoLongerExempt(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
 		t.Errorf("expected errConditionTypeMismatch through ValidateConditionValueTypes, got %v", err)
 	}
 }
 
 // ---------------------------------------------------------------------------
-// Nil model — lifecycle/temporal (model-independent) validation must still
-// run when no schema is available; only the data-field-vs-schema check is
-// schema-dependent and gracefully skipped. This is what lets grouped-stats
-// (which has no model-schema plumbing) reuse ValidateConditionValueTypes for
-// temporal/lifecycle type-soundness by passing a nil model.
+// Nil fields map — lifecycle/temporal (model-independent) validation must
+// still run when no fields map is passed; only the data-field-vs-schema check
+// is schema-dependent and skipped. A lifecycle-only condition has no fields
+// map, and grouped stats' service layer passes none.
 // ---------------------------------------------------------------------------
 
 // TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound verifies that
-// a nil model no longer causes ValidateConditionValueTypes to no-op: a
+// a nil fields map does not cause ValidateConditionValueTypes to no-op: a
 // type-unsound lifecycle/temporal condition (a comparison operand that parses
 // into no temporal type) is still rejected even without a model schema.
 func TestValidateConditionValueTypes_NilModel_LifecycleTypeUnsound(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "GREATER_THAN", Value: "not-a-date"}
 	err := ValidateConditionValueTypes(nil, cond)
 	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch even with nil model, got: %v", err)
+		t.Errorf("expected errConditionTypeMismatch even with a nil fields map, got: %v", err)
 	}
 }
 
@@ -522,19 +521,19 @@ func TestValidateConditionValueTypes_NilModel_UnknownMetaField(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "bogus", OperatorType: "EQUALS", Value: "x"}
 	err := ValidateConditionValueTypes(nil, cond)
 	if !errors.Is(err, errInvalidFieldPath) {
-		t.Errorf("expected errInvalidFieldPath even with nil model, got: %v", err)
+		t.Errorf("expected errInvalidFieldPath even with a nil fields map, got: %v", err)
 	}
 }
 
 // TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted
-// verifies that a nil model gracefully skips the schema-dependent data-field
+// verifies that a nil fields map skips the schema-dependent data-field
 // type check (no schema to check against) rather than rejecting a
 // perfectly valid condition.
 func TestValidateConditionValueTypes_NilModel_ValidDataCondition_Accepted(t *testing.T) {
 	cond := &predicate.SimpleCondition{JsonPath: "$.price", OperatorType: "EQUALS", Value: float64(10)}
 	err := ValidateConditionValueTypes(nil, cond)
 	if err != nil {
-		t.Fatalf("expected no error for data condition with nil model (schema check skipped), got: %v", err)
+		t.Fatalf("expected no error for data condition with a nil fields map (schema check skipped), got: %v", err)
 	}
 }
 

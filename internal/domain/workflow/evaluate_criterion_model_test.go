@@ -217,7 +217,7 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 // (criterion_model_boundary_test.go), proves the other half of the same
 // gate: the model READ is skipped here, but the VALIDATION CALL
 // (search.ValidateConditionValueTypes) is never gated — it always runs with
-// a nil model — because that is the one call that still refuses a
+// a nil fields map — because that is the one call that still refuses a
 // text/pattern operator on a temporal meta field for a lifecycle-only
 // criterion.
 func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {

@@ -200,7 +200,7 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// produce an empty result here instead of the 400 CONDITION_TYPE_MISMATCH
 	// the equivalent /search request returns.
 	//
-	// A nil model is passed because this layer has none. The SCHEMA-dependent
+	// A nil fields map is passed because this layer has none. The SCHEMA-dependent
 	// arm — an operand parsing into none of a declared field's types — runs at
 	// the handler, which holds the model store and validates the condition's,
 	// groupBy's and aggregates' paths against the model in the same place. A

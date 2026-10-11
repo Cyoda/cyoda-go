@@ -854,8 +854,9 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 
 // TestQueryGroupedStats_ValidDataConditionStillSucceeds guards against an
 // over-broad fix: a well-formed data-field condition must still succeed
-// even though grouped-stats now runs search.ValidateConditionValueTypes with
-// a nil model (data-field checks are gracefully skipped without a schema).
+// even though grouped-stats' service layer runs
+// search.ValidateConditionValueTypes with a nil fields map (data-field checks
+// are skipped without one).
 func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",

@@ -1074,7 +1074,7 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		} else {
 			// ONE read, ONE parse: the fields map derived from it feeds the
 			// path check below, the type-soundness check
-			// (ValidateConditionFieldTypes) and Prepare's fieldTypes, so all
+			// (ValidateConditionValueTypes) and Prepare's fieldTypes, so all
 			// three type against the same schema snapshot.
 			if n != nil {
 				fields = n.FieldsMap()
@@ -1149,7 +1149,7 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	//     never matches (its own doc comment: "Callers wanting a rejection
 	//     ask ValidateLeafPattern FIRST") — so Prepare alone would silently
 	//     never-match rather than abort.
-	//  3. ValidateConditionFieldTypes — ALWAYS called, with fields nil when
+	//  3. ValidateConditionValueTypes — ALWAYS called, with fields nil when
 	//     the condition carries no data path. This is deliberate: gating the
 	//     CALL (rather than just the model READ, which is correctly gated
 	//     above on len(paths)>0) would leave validateLifecycleType unreached,
@@ -1194,7 +1194,7 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	if err := search.ValidatePatterns(cond); err != nil {
 		return false, "", err
 	}
-	if err := search.ValidateConditionFieldTypes(fields, cond); err != nil {
+	if err := search.ValidateConditionValueTypes(fields, cond); err != nil {
 		return false, "", err
 	}
 

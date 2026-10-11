@@ -117,7 +117,7 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // whole-block gate on the model read would miss: `creationDate CONTAINS
 // "2024"` carries NO data path at all (a LifecycleCondition contributes
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
-// skips it — but the VALIDATION CALL must still run with a nil model,
+// skips it — but the VALIDATION CALL must still run with a nil fields map,
 // because search.ValidateConditionValueTypes's lifecycle branch
 // (validateLifecycleType) is the one check that refuses a text operator on a
 // temporal meta field. Without it, this criterion reaches match.Prepare

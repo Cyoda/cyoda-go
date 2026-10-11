@@ -26,10 +26,15 @@ import (
 //     (spi.ExpandLeaf) performs at evaluation time. A numeric-looking string
 //     on an [INTEGER, STRING] field parses and is accepted.
 //
-// The model's FieldsMap provides a lookup from JSONPath (e.g. "$.price") to
-// a FieldDescriptor carrying the observed DataType(s). Conditions referencing
-// unknown paths are accepted (the condition may traverse a path not yet seen
-// in training data); a field with no declared types carries no constraint.
+// fields is the model's FieldsMap, a lookup from JSONPath (e.g. "$.price") to
+// a FieldDescriptor carrying the declared DataType(s). Pass the map the
+// caller validated the condition's paths against (search.ValidateKnownPaths,
+// which refreshes it once on a miss), so the type check sees the schema the
+// leaves are typed against. A nil map runs only the model-independent checks
+// (the meta fields); a lifecycle-only condition needs no more. Conditions
+// referencing unknown paths are accepted here (the path check is
+// ValidateKnownPaths's); a field with no declared types carries no
+// constraint.
 //
 // Returns a non-nil error only when an operator does not apply to the field's
 // declared types or an operand parses into none of them
@@ -39,32 +44,7 @@ import (
 // 2-element bounds shape — is enforced separately by
 // ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
 // this type check.
-func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Condition) error {
-	if cond == nil {
-		return nil
-	}
-	// fm stays nil when model is nil. walkConditionTypes/validateSimpleConditionType
-	// gracefully skip the data-field-vs-schema check on a nil map (an
-	// unknown-path lookup returns ok=false, the "accept" branch) — so the
-	// only checks that still run without a model are the model-independent
-	// ones: operator/BETWEEN-arity (via the caller's ValidateCondition) and
-	// lifecycle/temporal type-soundness (validateLifecycleType below). This
-	// lets callers with no schema plumbing (e.g. grouped-stats) reuse this
-	// function for temporal/lifecycle validation by passing model=nil.
-	var fm map[string]schema.FieldDescriptor
-	if model != nil {
-		fm = model.FieldsMap()
-	}
-	return ValidateConditionFieldTypes(fm, cond)
-}
-
-// ValidateConditionFieldTypes is ValidateConditionValueTypes against a fields
-// map rather than a model node: the same checks, the same errors. A caller
-// whose fields map may come from a bounded schema refresh (the workflow
-// engine, after search.ValidateKnownPaths) passes that map, so the type check
-// runs against the schema the leaves are typed against at evaluation. A nil
-// map runs only the model-independent checks.
-func ValidateConditionFieldTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
+func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
 	return walkConditionTypes(fields, cond, 0)
 }
 
@@ -421,8 +401,9 @@ var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 
 // ValidateLifecycleCondition checks a lifecycle/meta condition for type
 // soundness (known meta field; on temporal fields, an operator that applies to
-// a temporal type and a comparison/range operand that parses into one). Shared by the search API boundary and
-// workflow-criterion import so both reject the same malformed conditions.
+// a temporal type and a comparison/range operand that parses into one).
+// Shared by the search API boundary and workflow-criterion import so both
+// reject the same malformed conditions.
 // Returns a descriptive error; callers map it to their own 4xx code.
 func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
 	return validateLifecycleType(c)
@@ -488,8 +469,8 @@ func operandElements(v any) []any {
 	return []any{v}
 }
 
-// loadModelNode fetches and parses the model schema for ref, returning the
-// *schema.ModelNode used for condition-type validation.
+// loadModelNode fetches and parses the model schema for ref, for the workflow
+// engine's criterion check (via LoadModelNode).
 //
 // A load or parse FAILURE is an error, not an absent node: the schema is what
 // the check needs, and answering the request without it is the fail-open this
@@ -545,52 +526,15 @@ func ClassifyConditionTypeErrCode(err error) string {
 
 // validateConditionTypes is the single boundary enforcing condition
 // type-soundness for every SearchService entry point (HTTP, gRPC, and any
-// future transport funnel through Search/SubmitAsync). It loads the model
-// schema and delegates to ValidateConditionValueTypes, mapping the returned
+// future transport funnel through Search/SubmitAsync). It runs
+// ValidateConditionValueTypes against fields — the map validateConditionPaths
+// returned, nil for a lifecycle-only condition — and maps the returned
 // sentinel error to the appropriate 400-classified *common.AppError via
-// classifyConditionTypeErrCode.
-//
-// A schema-load failure fails the request. The previous behaviour — skip the
-// check and search anyway — was justified in a comment here as "empty results,
-// never a wrong match", on the reasoning that a missing model leaves every leaf
-// with an empty Declared and so degrades uniformly. That reasoning is wrong,
-// and spi.ConditionToFilter's own godoc says why: an empty declared set
-// annihilates the eight comparison and ordering leaves to a non-match while the
-// other eighteen — the presence tests, the string and pattern operators, and
-// the whole case-insensitive family — keep evaluating normally. The result set
-// is skewed, not empty, and it is returned as though it were complete.
-//
-// The workflow engine already fails closed on the same load error; search now
-// matches it, per .claude/rules/correctness-over-availability.md.
-func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
-	// Gate the model READ on whether cond addresses any data path — a
-	// lifecycle-only condition needs no schema to validate (mirrors
-	// workflow/engine.go's evaluateCriterion) — but never gate the
-	// VALIDATION CALL itself on whether that read was attempted, succeeded,
-	// or found a schema. This used to return nil without calling
-	// ValidateConditionValueTypes at all in two cases — an unreadable
-	// schema paired with a lifecycle-only condition, and a model that
-	// loaded cleanly but carries no schema yet — and both silently skipped
-	// its model-independent half too: validateLifecycleType, the one check
-	// that refuses a text or pattern operator on a temporal meta field
-	// (creationDate/lastUpdateTime). Left unrejected, that predicate reaches
-	// the evaluators unvalidated and tests the instant's RFC3339 text — a
-	// question nobody asked — and a NOT wrapping it selects every entity
-	// whose text does not match. The workflow-criterion path already
-	// refuses it the same way. ValidateConditionValueTypes tolerates a nil
-	// model by design (its own doc: the model-independent checks still run),
-	// so calling it unconditionally here, with node possibly nil, is always
-	// safe and never a behaviour change for a condition with a genuine data
-	// path against a loadable schema.
-	var node *schema.ModelNode
-	if len(extractFieldPaths(cond)) > 0 {
-		var err error
-		node, err = loadModelNode(ctx, modelStore, modelRef)
-		if err != nil {
-			return common.Internal("failed to load model schema for condition type validation", err)
-		}
-	}
-	if err := ValidateConditionValueTypes(node, cond); err != nil {
+// classifyConditionTypeErrCode. The validation call is never skipped: its
+// model-independent half refuses a string or pattern operator on a temporal
+// meta field, a condition that carries no data path at all.
+func (s *SearchService) validateConditionTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) *common.AppError {
+	if err := ValidateConditionValueTypes(fields, cond); err != nil {
 		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
 	}
 	return nil
@@ -598,10 +542,9 @@ func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore s
 
 // LoadModelNode fetches and parses the model schema for ref.
 //
-// Exported for callers outside this package that must run
-// [ValidateConditionValueTypes] against the real model rather than against nil
-// — currently the grouped-stats handler, whose type check was schema-blind
-// while every other condition surface's was not. Failure policy is the one
+// Exported for the workflow engine, which reads the schema once per criterion
+// and derives the fields map it validates and types against. Failure policy
+// is the one
 // stated on the unexported loader: a load or parse failure is an error, while
 // (nil, nil) means the descriptor carries no schema and there is no type
 // constraint to apply.

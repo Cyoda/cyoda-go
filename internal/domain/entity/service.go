@@ -1120,17 +1120,10 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 		return deleteSelectionPlan{}, pathErr
 	}
 
-	// Condition type-soundness — mirrors SearchService.Search's
-	// validateConditionTypes boundary, including its failure policy: a schema
-	// that cannot be loaded fails the request. A conditional delete decided
-	// against a condition nobody could type-check is the last place to prefer
-	// an available answer to a correct one. Extracted into its own function
-	// (deleteConditionTypeCheck) so it is directly unit-testable independent
-	// of the search.ValidateCondition structural gate a few lines above,
-	// which today already rejects a GroupCondition{Operator:"NOT"} outright
-	// — see that function's own doc for why the gating bug it fixes must
-	// still be tested at this level.
-	if tErr := deleteConditionTypeCheck(ctx, modelStore, ref, cond); tErr != nil {
+	// Condition type-soundness against the fields the paths were just
+	// validated against — mirrors SearchService.Search's
+	// validateConditionTypes boundary.
+	if tErr := deleteConditionTypeCheck(fields, cond); tErr != nil {
 		return deleteSelectionPlan{}, tErr
 	}
 
@@ -1151,55 +1144,16 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	return deleteSelectionPlan{filter: filter}, nil
 }
 
-// deleteModelSchemaNode loads and parses ref's schema for
-// planDeleteSelection's type-soundness check, mirroring search's unexported
-// loadModelNode — failure policy included. A load or parse failure is an
-// ERROR: the schema is what the check needs. A (nil, nil) return means the
-// descriptor carries no schema, so there is no type constraint to apply. The
-// caller has already gated model existence separately.
-func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
-	desc, err := modelStore.Get(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	if desc == nil || len(desc.Schema) == 0 {
-		// No schema bound: the model declares no typed fields, so there is no
-		// constraint to apply. Distinct from a failure to read it.
-		return nil, nil
-	}
-	return schema.Unmarshal(desc.Schema)
-}
-
-// deleteConditionTypeCheck runs condition type-soundness for planDeleteSelection,
-// gating the model READ (never the validation CALL) on whether cond addresses
-// any data path — mirrors search.validateConditionTypes and
-// workflow/engine.go's evaluateCriterion. A lifecycle-only condition
-// needs no schema to validate: ValidateConditionValueTypes tolerates a nil
-// model by design, still running its model-independent half —
-// validateLifecycleType, the one check that refuses a text or pattern
-// operator on a temporal meta field (creationDate/lastUpdateTime).
-//
-// This used to be inlined in planDeleteSelection as "if node != nil { ... }",
-// which skipped the validation call ENTIRELY whenever deleteModelSchemaNode
-// returned a nil node — the ordinary "model has no schema yet" state, not a
-// failure — silently accepting a predicate validateLifecycleType exists to
-// reject. Left unrejected, that predicate reaches the evaluators
-// unvalidated, and a NOT wrapping it selects every entity the inner leaf does
-// not match: on conditional delete, the highest blast-radius surface this
-// predicate reaches, that is a mass delete. Extracted into its own function
-// so it is directly unit-testable (delete_condition_type_gating_test.go)
-// apart from search.ValidateCondition's structural gate a few lines up in
-// planDeleteSelection.
-func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) error {
-	var node *schema.ModelNode
-	if len(search.ConditionFieldPaths(cond)) > 0 {
-		var nodeErr error
-		node, nodeErr = deleteModelSchemaNode(ctx, modelStore, ref)
-		if nodeErr != nil {
-			return fmt.Errorf("failed to load model schema for condition validation: %w", nodeErr)
-		}
-	}
-	if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
+// deleteConditionTypeCheck runs condition type-soundness for
+// planDeleteSelection against fields — the map search.ValidateKnownPaths
+// returned, refreshed once on a miss — the same check search and the
+// workflow engine run. The call is never skipped: its model-independent half
+// refuses a string or pattern operator on a temporal meta field
+// (creationDate/lastUpdateTime), a condition that carries no data path at
+// all. Left unrejected, a NOT wrapping that leaf selects every entity the
+// leaf does not match: on conditional delete, a mass delete.
+func deleteConditionTypeCheck(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
+	if tErr := search.ValidateConditionValueTypes(fields, cond); tErr != nil {
 		code := search.ClassifyConditionTypeErrCode(tErr)
 		return common.Operational(http.StatusBadRequest, code, tErr.Error())
 	}
