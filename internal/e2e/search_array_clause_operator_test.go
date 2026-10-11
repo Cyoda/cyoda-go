@@ -41,22 +41,9 @@ var arrayClauseRefusals = []struct {
 	{"empty values", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[]}`, "INVALID_CONDITION"},
 	{"object entry", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[{"a":1}]}`, "INVALID_CONDITION"},
 	{"BETWEEN not a pair", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[5]}`, "INVALID_CONDITION"},
-	{"values not an array", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":"x"}`, "BAD_REQUEST"},
+	{"values not an array", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":"x"}`, "INVALID_CONDITION"},
 	{"bare path", `{"type":"array","jsonPath":"$.scores","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"text operator on numbers", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}`, "CONDITION_TYPE_MISMATCH"},
-}
-
-// wantCodeOnParseFailureSurface returns the code a surface answers for tc. A
-// body whose `values` is not an array fails to parse; search answers
-// BAD_REQUEST, while conditional delete (entity/service.go,
-// DeleteEntitiesConditional) and grouped stats (entity/grouped_stats_service.go,
-// queryGroupedStatsInner) wrap the parse failure in ErrInvalidCondition and
-// answer INVALID_CONDITION.
-func wantCodeOnParseFailureSurface(code, name string) string {
-	if name == "values not an array" {
-		return "INVALID_CONDITION"
-	}
-	return code
 }
 
 func TestSearch_Sync_ArrayClauseOperator(t *testing.T) {
@@ -157,7 +144,7 @@ func TestDeleteConditional_ArrayClauseRefusals_NothingDeleted(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s: expected 400, got %d; body: %s", tc.name, resp.StatusCode, readBody(t, resp))
 		}
-		commontest.ExpectErrorCode(t, resp, wantCodeOnParseFailureSurface(tc.code, tc.name))
+		commontest.ExpectErrorCode(t, resp, tc.code)
 		resp.Body.Close()
 	}
 	for _, id := range []string{idA, idB} {
@@ -181,12 +168,37 @@ func TestGroupedStats_ArrayClauseCondition(t *testing.T) {
 	if len(buckets) != 1 || findBucket(buckets, "$.name", "A") == nil {
 		t.Errorf("want one bucket for A, got %s", body)
 	}
+	// A simple clause is refused on structure before types too.
+	if r := doAuth(t, http.MethodPost, path, `{"groupBy":["$.name"],"condition":`+
+		`{"type":"simple","jsonPath":"$.scores[0]","operatorType":"EQUALS","value":{"a":1}}}`); r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("simple object operand: expected 400, got %d; body: %s", r.StatusCode, readBody(t, r))
+	} else {
+		commontest.ExpectErrorCode(t, r, "INVALID_CONDITION")
+		r.Body.Close()
+	}
 	for _, tc := range arrayClauseRefusals {
 		r := doAuth(t, http.MethodPost, path, `{"groupBy":["$.name"],"condition":`+tc.cond+`}`)
 		if r.StatusCode != http.StatusBadRequest {
 			t.Fatalf("%s: expected 400, got %d; body: %s", tc.name, r.StatusCode, readBody(t, r))
 		}
-		commontest.ExpectErrorCode(t, r, wantCodeOnParseFailureSurface(tc.code, tc.name))
+		commontest.ExpectErrorCode(t, r, tc.code)
 		r.Body.Close()
+	}
+}
+
+// A body that does not parse as a condition is 400 INVALID_CONDITION on both
+// search doors; a missing or unknown type is such a body.
+func TestSearch_UnparseableCondition_IsInvalidCondition(t *testing.T) {
+	const model = "e2e-search-unparseable"
+	setupScoresModel(t, model)
+	for _, door := range []string{"direct", "async"} {
+		for _, body := range []string{`{}`, `{"type":"bogus"}`, `not json`} {
+			resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/%s/%s/1", door, model), body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s %s: expected 400, got %d; body: %s", door, body, resp.StatusCode, readBody(t, resp))
+			}
+			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+			resp.Body.Close()
+		}
 	}
 }

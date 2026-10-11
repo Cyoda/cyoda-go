@@ -113,7 +113,7 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 
 	cond, err := predicate.ParseCondition(body)
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
 	// Structural validation (canonical operator set, BETWEEN arity) and
@@ -241,7 +241,7 @@ func (h *Handler) SubmitAsyncSearchJob(w http.ResponseWriter, r *http.Request, e
 
 	cond, err := predicate.ParseCondition(body)
 	if err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid condition: %v", err)))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, fmt.Sprintf("invalid condition: %v", err)))
 		return
 	}
 	// Structural validation (canonical operator set, BETWEEN arity) and
