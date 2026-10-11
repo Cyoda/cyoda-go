@@ -199,8 +199,9 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 // requestNonConditionPaths collects the data paths a grouped-stats request
 // names outside its condition — the groupBy entries and the aggregate
-// fields — as one set for [search.ValidateKnownPaths]. The condition's own
-// paths are checked by [search.ValidateConditionForModel].
+// fields — as one set. It goes as extraPaths into
+// [search.ValidateConditionForModel], which checks it together with the
+// condition's own paths in one [search.ValidateKnownPaths] call.
 //
 // The groupBy "state" entry addresses entity metadata, not a schema field, and
 // is excluded; validateGroupedStatsRequest has already marked it IsState. Both

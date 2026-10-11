@@ -29,7 +29,7 @@ import (
 
 // registerModelWithSchema saves a LOCKED model descriptor with the given
 // data fields and returns its ModelRef, so EnsureModelRegistered succeeds
-// and validateConditionTypes has a real schema to build a *schema.ModelNode
+// and the type step of ValidateConditionForModel has a real schema to build a *schema.ModelNode
 // from (a nil/empty schema would make ValidateConditionValueTypes a no-op).
 func registerModelWithSchema(t *testing.T, factory *memory.StoreFactory, entityName string, fields ...string) spi.ModelRef {
 	t.Helper()

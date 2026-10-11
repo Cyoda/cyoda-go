@@ -1033,8 +1033,8 @@ func TestSearch_SortByDataField_PushesOrderSpecToSearcher(t *testing.T) {
 	// Model declares "surname" as a String field.
 	desc := buildSearchDescriptor(t, ref, "surname")
 	ms := &refreshingModelStore{
-		// EnsureModelRegistered + validateConditionPaths (for $.surname) +
-		// validateConditionTypes + resolveSortKeys each call Get once.
+		// EnsureModelRegistered + the path step of ValidateConditionForModel
+		// (for $.surname) + its type step + resolveSortKeys each call Get once.
 		getQueue: []*spi.ModelDescriptor{desc, desc, desc, desc},
 	}
 
@@ -1803,9 +1803,9 @@ func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.Mode
 // Searcher pushdown branch of Search loads the model's FieldsMap and
 // threads it into ConditionToFilter, rather than hardcoding nil.
 //
-// The condition addresses one data path ($.name), so validateConditionPaths
-// loads and returns a real FieldsMap (extractFieldPaths is non-empty — see
-// path_validate.go) and validateConditionTypes's own type-soundness check
+// The condition addresses one data path ($.name), so the path step of
+// ValidateConditionForModel loads and returns a real FieldsMap (extractFieldPaths
+// is non-empty — see path_validate.go) and its type-soundness step
 // consults the schema too (its own read is gated on exactly the same
 // path-need, per this task's fix to a validation-skip bug — a LIFECYCLE-ONLY
 // condition, by contrast, now makes NO ModelStore.Get call at all, covered

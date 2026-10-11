@@ -133,9 +133,9 @@ func TestSearch_StaleSchema_RefreshesOnceAndSucceeds(t *testing.T) {
 	ms := &refreshingModelStore{
 		// Get sequence within one Search under type-directed evaluation:
 		//  1) EnsureModelRegistered            → stale
-		//  2) validateConditionPaths           → stale (misses $.z, triggers the
+		//  2) the path step                    → stale (misses $.z, triggers the
 		//     single RefreshAndGet → fresh, which validates the path)
-		//  3) validateConditionTypes           → fresh (must carry $.z, else it
+		//  3) the type step                    → fresh (must carry $.z, else it
 		//     would 400 on an unknown field path)
 		//  4) the plugin Searcher's FieldsMap  → fresh (so the type-directed
 		//     searcher resolves $.z as String and matches the entity)
@@ -280,7 +280,7 @@ func TestSearch_RefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 // the cached schema whose confirming RefreshAndGet itself fails must report
 // infrastructure, not the client-facing 400 INVALID_FIELD_PATH a genuinely
 // unknown sort field gets. The condition is lifecycle-only, so
-// validateConditionPaths/validateConditionTypes have no data path to refuse
+// the path and type steps of ValidateConditionForModel have no data path to refuse
 // first — this isolates the sort-key path.
 func TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 	base := memory.NewStoreFactory()

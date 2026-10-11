@@ -11,7 +11,7 @@ import (
 )
 
 // FieldsLoader yields the model's path -> descriptor map. It is called only
-// when the condition names a data path, and at most once.
+// when the condition or extraPaths name a data path, and at most once.
 type FieldsLoader func() (map[string]schema.FieldDescriptor, error)
 
 // ValidateConditionForModel is the one validation sequence every surface that

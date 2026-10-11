@@ -108,8 +108,8 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		t.Errorf("appErr.Status = %d, want 5xx: an unloadable schema is a dependency "+
 			"failure, not client fault", appErr.Status)
 	}
-	// Pin WHICH guard refused. validateConditionTypes loads the same schema
-	// immediately afterwards and now also fails closed, so a test asserting
+	// Pin WHICH guard refused. the type check of ValidateConditionForModel loads
+	// the same schema immediately afterwards and now also fails closed, so a test asserting
 	// only "some error" passes with the path-validation guard reverted — it
 	// would be satisfied by the downstream one and the primary fix would be
 	// unprotected. These two messages are the only thing that tells them
