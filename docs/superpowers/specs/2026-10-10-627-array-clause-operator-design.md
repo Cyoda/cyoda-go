@@ -129,7 +129,8 @@ other code defines what it means.
 | `POST /search/async/{entityName}/{modelVersion}` | each row above | the same codes |
 | `DELETE /entity/{entityName}/{modelVersion}` (with a condition) | each row above | the same codes |
 | `POST /entity/stats/{entityName}/{modelVersion}/query`, `condition` | each row above | the same codes |
-| gRPC `EntitySearchRequest` / `EntitySnapshotSearchRequest` | each row above | envelope `Success=false`, `Error.Code` as above (a body that does not parse: `BAD_REQUEST`) |
+| gRPC `EntitySearchRequest` / `EntitySnapshotSearchRequest` | each validation row above | envelope `Success=false`, `Error.Code` `CLIENT_ERROR`, the code above in `Error.Message` |
+| same | the condition does not parse (`values` not an array) | transport status `InvalidArgument` (as for any condition that does not parse) |
 | `POST /model/{entityName}/{modelVersion}/workflow/import`, array criterion | any of the above | 400 `VALIDATION_FAILED` |
 | same | criterion that does not parse at all | 400 `VALIDATION_FAILED` |
 
