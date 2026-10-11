@@ -557,15 +557,20 @@ func RunSearchTextOperatorOnNonTextField400(t *testing.T, fixture BackendFixture
 // RunSearchOrderingOperatorOnUnorderedField400 pins that an ordering or range
 // operator on a field with no ordered type — here a boolean — is refused with
 // 400 CONDITION_TYPE_MISMATCH on every backend, while equality still answers.
+// It also pins the range rule on a polymorphic [INTEGER, LOCAL_DATE] field:
+// bounds that each fit a declared type but no single type together (one a
+// number, one a date) leave no range to evaluate, and are refused the same
+// way.
 func RunSearchOrderingOperatorOnUnorderedField400(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "parity-search-ordop-400"
 	const modelVersion = 1
-	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"name":"seed","active":true}`, searchWorkflowJSON)
+	setupModelWithWorkflow(t, c, modelName, modelVersion,
+		`[{"name":"seed","active":true,"code":1},{"name":"seed2","active":true,"code":"2024-01-01"}]`, searchWorkflowJSON)
 
-	aID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","active":true}`)
+	aID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","active":true,"code":5}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
 	}
@@ -573,6 +578,7 @@ func RunSearchOrderingOperatorOnUnorderedField400(t *testing.T, fixture BackendF
 	for _, cond := range []string{
 		`{"type":"simple","jsonPath":"$.active","operatorType":"GREATER_THAN","value":"false"}`,
 		`{"type":"simple","jsonPath":"$.active","operatorType":"BETWEEN","value":[false,true]}`,
+		`{"type":"simple","jsonPath":"$.code","operatorType":"BETWEEN","value":[5.5,"2024-01-01"]}`,
 	} {
 		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
 		if err != nil {
@@ -591,4 +597,11 @@ func RunSearchOrderingOperatorOnUnorderedField400(t *testing.T, fixture BackendF
 		t.Fatalf("SyncSearch EQUALS true: %v", err)
 	}
 	assertResultIDSet(t, "active EQUALS true", results, []string{aID.String()})
+
+	// A range whose bounds share a type still answers on the polymorphic field.
+	rangeResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.code","operatorType":"BETWEEN","value":[1,10]}`)
+	if err != nil {
+		t.Fatalf("SyncSearch code BETWEEN [1,10]: %v", err)
+	}
+	assertResultIDSet(t, "code BETWEEN [1,10]", rangeResults, []string{aID.String()})
 }

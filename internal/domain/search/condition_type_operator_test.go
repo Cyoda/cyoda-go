@@ -121,6 +121,9 @@ func TestValidateConditionTypes_OrderingOperatorOnOrderedField_Accepts(t *testin
 				}
 			})
 		}
+		if tc.name == "CHARACTER" {
+			continue // the kernel has no range over a single character; see below
+		}
 		t.Run(tc.name+"/BETWEEN", func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: "BETWEEN", Value: []any{tc.value, tc.value}}
 			if err := ValidateConditionValueTypes(leafModel(tc.types...), cond); err != nil {
@@ -137,6 +140,77 @@ func TestValidateConditionTypes_EqualityOnUnorderedField_Accepts(t *testing.T) {
 		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: "true"}
 		if err := ValidateConditionValueTypes(leafModel(schema.Boolean), cond); err != nil {
 			t.Fatalf("%s on BOOLEAN: want accepted, got %v", op, err)
+		}
+	}
+}
+
+// TestValidateConditionTypes_RangeOperatorOnCharacterField_Rejects: the
+// kernel compares a CHARACTER by order (GREATER_THAN works) but has no range
+// over one, so BETWEEN on a CHARACTER-only field could not be evaluated.
+func TestValidateConditionTypes_RangeOperatorOnCharacterField_Rejects(t *testing.T) {
+	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
+		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: op, Value: []any{"a", "c"}}
+		err := ValidateConditionValueTypes(leafModel(schema.Character), cond)
+		if !errors.Is(err, errConditionTypeMismatch) {
+			t.Fatalf("%s on CHARACTER: want errConditionTypeMismatch, got %v", op, err)
+		}
+	}
+}
+
+// TestValidateConditionTypes_OperandMustFitATypeTheOperatorAppliesTo: on a
+// field with several types, the operand must parse into one the operator
+// applies to. GREATER_THAN with a UUID operand on a [UUID, DOUBLE] field
+// parses as the UUID, which has no order, and fits no number — no entity
+// could ever match.
+func TestValidateConditionTypes_OperandMustFitATypeTheOperatorAppliesTo(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		types  []schema.DataType
+		op     string
+		value  any
+		accept bool
+	}{
+		{"UUID operand on [UUID, DOUBLE]", []schema.DataType{schema.UUIDType, schema.Double}, "GREATER_THAN", "6f1c5a5e-8f43-4b5e-9a39-3f2d2b8f2a10", false},
+		{"number operand on [UUID, DOUBLE]", []schema.DataType{schema.UUIDType, schema.Double}, "GREATER_THAN", "5", true},
+		{"boolean operand on [BOOLEAN, INTEGER]", []schema.DataType{schema.Boolean, schema.Integer}, "LESS_THAN", "true", false},
+		{"boolean bounds on [BOOLEAN, INTEGER]", []schema.DataType{schema.Boolean, schema.Integer}, "BETWEEN", []any{"false", "true"}, false},
+		{"equality keeps every type", []schema.DataType{schema.Boolean, schema.Integer}, "EQUALS", "true", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: tc.op, Value: tc.value}
+			err := ValidateConditionValueTypes(leafModel(tc.types...), cond)
+			if tc.accept && err != nil {
+				t.Fatalf("want accepted, got %v", err)
+			}
+			if !tc.accept && !errors.Is(err, errConditionTypeMismatch) {
+				t.Fatalf("want errConditionTypeMismatch, got %v", err)
+			}
+		})
+	}
+}
+
+// TestValidateConditionTypes_RangeBoundsMustFitOneTypeTogether: the kernel
+// evaluates a range only where both bounds parse into the same type family.
+// Each bound fitting some declared type is not enough: on an [INTEGER,
+// LOCAL_DATE] field, [5.5, "2024-01-01"] has one numeric and one temporal
+// bound, so no range exists to evaluate.
+func TestValidateConditionTypes_RangeBoundsMustFitOneTypeTogether(t *testing.T) {
+	model := leafModel(schema.Integer, schema.LocalDate)
+	for _, tc := range []struct {
+		bounds []any
+		accept bool
+	}{
+		{[]any{5.5, "2024-01-01"}, false},
+		{[]any{1, 10}, true},
+		{[]any{"2024-01-01", "2024-12-31"}, true},
+	} {
+		cond := &predicate.SimpleCondition{JsonPath: "$.f", OperatorType: "BETWEEN", Value: tc.bounds}
+		err := ValidateConditionValueTypes(model, cond)
+		if tc.accept && err != nil {
+			t.Errorf("BETWEEN %v: want accepted, got %v", tc.bounds, err)
+		}
+		if !tc.accept && !errors.Is(err, errConditionTypeMismatch) {
+			t.Errorf("BETWEEN %v: want errConditionTypeMismatch, got %v", tc.bounds, err)
 		}
 	}
 }

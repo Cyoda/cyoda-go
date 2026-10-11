@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -18,7 +17,7 @@ import (
 // clause against the field's declared types, in two steps:
 //
 //   - the operator must apply to at least one declared type
-//     (operatorAppliesTo): a string or pattern operator needs a text type, an
+//     (applicableTypes): a string or pattern operator needs a text type, an
 //     ordering or range operator an ordered one. CONTAINS on a numeric field
 //     or GREATER_THAN on a boolean can never match, so it is refused rather
 //     than answered with an empty result.
@@ -169,7 +168,8 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	// error (spec §6/§8), not a field-type mismatch.
 
 	op := spi.MapOperator(c.OperatorType)
-	if !operatorAppliesTo(op, fd.Types) {
+	applicable := applicableTypes(op, fd.Types)
+	if len(applicable) == 0 {
 		return fmt.Errorf("operator %q does not apply to field %q's declared types %v: %w",
 			c.OperatorType, c.JsonPath, fd.Types, errConditionTypeMismatch)
 	}
@@ -194,16 +194,20 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 			if elem == nil {
 				continue
 			}
-			if !operandParsesDeclared(fd.Types, elem) {
-				return fmt.Errorf("value[%d] %s parses into none of field %q's declared types %v: %w",
-					i, truncateOperand(elem), c.JsonPath, fd.Types, errConditionTypeMismatch)
+			if !operandParsesDeclared(applicable, elem) {
+				return fmt.Errorf("value[%d] %s parses into none of field %q's types %v that operator %q applies to: %w",
+					i, truncateOperand(elem), c.JsonPath, applicable, c.OperatorType, errConditionTypeMismatch)
 			}
+		}
+		if !rangeBoundsParseTogether(op, applicable, v) {
+			return fmt.Errorf("bounds %s and %s parse into no single type of field %q's types %v: %w",
+				truncateOperand(v[0]), truncateOperand(v[1]), c.JsonPath, applicable, errConditionTypeMismatch)
 		}
 		return nil
 	default:
-		if !operandParsesDeclared(fd.Types, v) {
-			return fmt.Errorf("operand %s parses into none of field %q's declared types %v: %w",
-				truncateOperand(v), c.JsonPath, fd.Types, errConditionTypeMismatch)
+		if !operandParsesDeclared(applicable, v) {
+			return fmt.Errorf("operand %s parses into none of field %q's types %v that operator %q applies to: %w",
+				truncateOperand(v), c.JsonPath, applicable, c.OperatorType, errConditionTypeMismatch)
 		}
 		return nil
 	}
@@ -213,7 +217,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 // type for the condition to be valid. Only the six comparison operators and the
 // two range operators are constrained; string operators (CONTAINS, LIKE, the
 // case-insensitive/negated variants, ...) and the null-presence tests (IS_NULL,
-// NOT_NULL) parse any operand and are always accepted — mirroring the kernel,
+// NOT_NULL) carry no operand-parse constraint — mirroring the kernel,
 // where ExpandLeaf only reports a "parses into no declared type" error for the
 // compare (expandCompare) and range (expandBetween) families.
 func isParseConstrainedOp(op spi.FilterOp) bool {
@@ -225,39 +229,57 @@ func isParseConstrainedOp(op spi.FilterOp) bool {
 	return false
 }
 
-// operatorAppliesTo reports whether op can be satisfied by a value of at least
-// one of the declared types. A string or pattern operator needs a text type:
-// the kernel tests it against stored text only, so on any other field it can
-// never match, and a negated one matches every value. An ordering or range
-// operator needs an ordered type: the kernel compares a boolean or an
-// identifier for equality only, so GREATER_THAN on one matches nothing. A leaf
-// the operator cannot apply to is refused, rather than answered with a result
-// that only looks like an answer.
-func operatorAppliesTo(op spi.FilterOp, declared []schema.DataType) bool {
+// applicableTypes returns the declared types op applies to; none means the
+// leaf is refused. The rule follows what the kernel (spi.ExpandLeaf/EvalLeaf)
+// can evaluate, narrowed by one decision:
+//
+//   - a string or pattern operator applies to a text type (STRING,
+//     CHARACTER). The kernel would test any value stored as a JSON string,
+//     temporal and identifier values included, but those compare by their own
+//     type, never as text: a date is compared with the ordering and range
+//     operators. On a field with no text type at all, a string operator could
+//     only ever match nothing, or, negated, everything.
+//   - an ordering operator applies to a numeric, text or temporal type; the
+//     kernel compares a boolean or an identifier for equality only, so
+//     GREATER_THAN on one matches nothing.
+//   - a range operator applies to a numeric, STRING or temporal type; the
+//     kernel has no range over a single CHARACTER.
+//   - every other operator applies to every declared type.
+//
+// A comparison or range operand must then parse into one of the applicable
+// types, so GREATER_THAN with a UUID operand on a [UUID, DOUBLE] field is
+// refused rather than answered with a result no entity could ever be in.
+func applicableTypes(op spi.FilterOp, declared []schema.DataType) []schema.DataType {
+	var applies func(schema.DataType) bool
 	switch {
 	case isTextOp(op):
-		return slices.ContainsFunc(declared, isTextType)
-	case isOrderingOp(op):
-		return slices.ContainsFunc(declared, isOrderedType)
+		applies = isTextType
+	case op == spi.FilterBetween, op == spi.FilterBetweenInclusive:
+		applies = isRangeType
+	case op == spi.FilterGt, op == spi.FilterGte, op == spi.FilterLt, op == spi.FilterLte:
+		applies = isOrderedType
+	default:
+		return declared
 	}
-	return true
-}
-
-// isOrderingOp reports whether op compares by order: the four inequalities
-// and the two range operators.
-func isOrderingOp(op spi.FilterOp) bool {
-	switch op {
-	case spi.FilterGt, spi.FilterGte, spi.FilterLt, spi.FilterLte,
-		spi.FilterBetween, spi.FilterBetweenInclusive:
-		return true
+	var out []schema.DataType
+	for _, t := range declared {
+		if applies(t) {
+			out = append(out, t)
+		}
 	}
-	return false
+	return out
 }
 
 // isOrderedType reports whether the kernel orders values of t: numbers, text
 // and the temporal subtypes.
 func isOrderedType(t schema.DataType) bool {
 	return schema.IsNumeric(t) || isTextType(t) || isTemporalType(t)
+}
+
+// isRangeType reports whether the kernel evaluates a range over values of t:
+// numbers, STRING and the temporal subtypes (spi's expandBetween).
+func isRangeType(t schema.DataType) bool {
+	return schema.IsNumeric(t) || t == schema.String || isTemporalType(t)
 }
 
 // isTemporalType reports whether t is one of the six temporal subtypes.
@@ -329,6 +351,25 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 	return false
 }
 
+// rangeBoundsParseTogether reports whether a range operator's two bounds parse
+// into one declared type family together, by asking the kernel's own range
+// expansion (spi.ExpandLeaf). Each bound parsing into some declared type is
+// not enough: [5.5, "2024-01-01"] on an [INTEGER, LOCAL_DATE] field has no
+// family holding both, so no range exists to evaluate. Anything other than a
+// range operator with exactly two non-null bounds is left to the arity and
+// per-element checks.
+func rangeBoundsParseTogether(op spi.FilterOp, declared []schema.DataType, bounds []any) bool {
+	if op != spi.FilterBetween && op != spi.FilterBetweenInclusive {
+		return true
+	}
+	if len(bounds) != 2 || bounds[0] == nil || bounds[1] == nil {
+		return true
+	}
+	values := []string{spi.OperandString(bounds[0]), spi.OperandString(bounds[1])}
+	_, err := spi.ExpandLeaf(op, "", values, declared)
+	return err == nil
+}
+
 // operandParsesDeclared reports whether a single scalar operand parses into at
 // least one of the declared types. It calls the kernel's own comparison-parse
 // (spi.ExpandLeaf with FilterEq): the parse decision — "does this operand
@@ -384,7 +425,7 @@ var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 //     or the previousTransition alias) — otherwise errInvalidFieldPath.
 //   - on a temporal meta field (creationDate, lastUpdateTime), declared
 //     metaTemporalDeclared, the operator must apply to that type
-//     (operatorAppliesTo) — a string or pattern operator does not, and is
+//     (applicableTypes) — a string or pattern operator does not, and is
 //     errConditionTypeMismatch;
 //   - and a comparison/range operand must parse into a temporal type —
 //     otherwise errConditionTypeMismatch. A coarse operand upscales rather
@@ -415,7 +456,8 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 		return nil
 	}
 	op := spi.MapOperator(c.OperatorType)
-	if !operatorAppliesTo(op, metaTemporalDeclared) {
+	applicable := applicableTypes(op, metaTemporalDeclared)
+	if len(applicable) == 0 {
 		return fmt.Errorf("operator %q does not apply to temporal meta field %q: %w",
 			c.OperatorType, c.Field, errConditionTypeMismatch)
 	}
@@ -429,7 +471,7 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 		if elem == nil {
 			continue
 		}
-		if !operandParsesDeclared(metaTemporalDeclared, elem) {
+		if !operandParsesDeclared(applicable, elem) {
 			return fmt.Errorf("operand[%d] %s parses into no temporal type for field %q: %w",
 				i, truncateOperand(elem), c.Field, errConditionTypeMismatch)
 		}
