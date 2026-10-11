@@ -202,3 +202,29 @@ func TestSearch_UnparseableCondition_IsInvalidCondition(t *testing.T) {
 		}
 	}
 }
+
+// One malformed condition gets one code on every surface: the checks that need
+// no model (structure, patterns) run before the checks that do (paths, types).
+func TestConditionValidationOrder_SameCodeOnEverySurface(t *testing.T) {
+	const model = "e2e-cond-order"
+	setupScoresModel(t, model)
+	for _, tc := range []struct{ name, cond string }{
+		{"structural fault on an undeclared path", `{"type":"simple","jsonPath":"$.nope","value":1}`},
+		{"bad pattern on a numeric field", `{"type":"simple","jsonPath":"$.scores[0]","operatorType":"MATCHES_PATTERN","value":"("}`},
+	} {
+		for _, s := range []struct{ name, method, path, body string }{
+			{"search direct", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model), tc.cond},
+			{"search async", http.MethodPost, fmt.Sprintf("/api/search/async/%s/1", model), tc.cond},
+			{"conditional delete", http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), tc.cond},
+			{"grouped stats", http.MethodPost, fmt.Sprintf("/api/entity/stats/%s/1/query", model),
+				`{"groupBy":["$.name"],"condition":` + tc.cond + `}`},
+		} {
+			resp := doAuth(t, s.method, s.path, s.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("%s / %s: expected 400, got %d; body: %s", tc.name, s.name, resp.StatusCode, readBody(t, resp))
+			}
+			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+			resp.Body.Close()
+		}
+	}
+}

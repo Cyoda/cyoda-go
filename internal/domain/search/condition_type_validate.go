@@ -3,7 +3,6 @@ package search
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -473,11 +472,8 @@ func operandElements(v any) []any {
 // itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
 // or the operand does not fit a known field's type).
 //
-// Shared by every caller of ValidateConditionValueTypes —
-// validateConditionTypes below (SearchService), and grouped stats' handler
-// and service layers (internal/domain/entity) via ClassifyConditionTypeErrCode
-// — so the four call sites cannot drift on what code an operator-class
-// rejection answers the way they had before this function existed.
+// validateConditionSequence is its one caller, so every surface that takes a
+// condition answers an operator-class rejection with the same code.
 func classifyConditionTypeErrCode(err error) string {
 	switch {
 	case errors.Is(err, errInvalidFieldPath):
@@ -497,20 +493,4 @@ func classifyConditionTypeErrCode(err error) string {
 // shape already used in this package (service.go).
 func ClassifyConditionTypeErrCode(err error) string {
 	return classifyConditionTypeErrCode(err)
-}
-
-// validateConditionTypes is the single boundary enforcing condition
-// type-soundness for every SearchService entry point (HTTP, gRPC, and any
-// future transport funnel through Search/SubmitAsync). It runs
-// ValidateConditionValueTypes against fields — the map validateConditionPaths
-// returned, nil for a lifecycle-only condition — and maps the returned
-// sentinel error to the appropriate 400-classified *common.AppError via
-// classifyConditionTypeErrCode. The validation call is never skipped: its
-// model-independent half refuses a string or pattern operator on a temporal
-// meta field, a condition that carries no data path at all.
-func (s *SearchService) validateConditionTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) *common.AppError {
-	if err := ValidateConditionValueTypes(fields, cond); err != nil {
-		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
-	}
-	return nil
 }

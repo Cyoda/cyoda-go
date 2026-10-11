@@ -684,35 +684,13 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 			fmt.Sprintf("limit exceeds maximum %d", pagination.MaxPageSize))
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — model-independent, so it runs before any model-store access.
-	// This is the single boundary every transport (HTTP, gRPC) funnels
-	// through; the HTTP handler no longer duplicates this check.
-	if cErr := ValidateCondition(cond); cErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
-	}
-
-	modelStore, err := s.factory.ModelStore(ctx)
-	if err != nil {
-		return nil, common.Internal("failed to access model store", err)
-	}
-	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
-		return nil, appErr
-	}
-
-	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	// The one condition-validation sequence (structure, patterns, paths,
+	// types — see ValidateConditionForModel), shared with async submit,
+	// conditional delete and grouped stats. This is the single boundary
+	// every transport (HTTP, gRPC) funnels through.
+	validatedFields, vErr := s.validateConditionForModel(ctx, modelRef, cond)
 	if vErr != nil {
 		return nil, vErr
-	}
-	if rErr := ValidatePatterns(cond); rErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-	// Condition type-soundness (correctness-over-availability): every
-	// transport funnels through Search, so this is the single boundary that
-	// closes the gap where gRPC previously bypassed HTTP-only validation.
-	if tErr := s.validateConditionTypes(validatedFields, cond); tErr != nil {
-		return nil, tErr
 	}
 
 	orderBy, oerr := s.resolveSortKeys(ctx, modelRef, opts.OrderBy)
@@ -936,39 +914,16 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 			"condition is required")
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — same single boundary as Search, so an async job is never
-	// created for a structurally-malformed condition regardless of transport.
-	if cErr := ValidateCondition(cond); cErr != nil {
-		return "", common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
-	}
-
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
 		return "", fmt.Errorf("no user context — cannot determine tenant")
 	}
 
-	modelStore, err := s.factory.ModelStore(ctx)
-	if err != nil {
-		return "", common.Internal("failed to access model store", err)
-	}
-	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
-		return "", appErr
-	}
-
-	validatedFields, vErr := s.validateConditionPaths(ctx, modelStore, modelRef, cond)
+	// The same sequence as Search, so an async job is never created for a
+	// malformed or type-unsound condition regardless of transport.
+	validatedFields, vErr := s.validateConditionForModel(ctx, modelRef, cond)
 	if vErr != nil {
 		return "", vErr
-	}
-	if rErr := ValidatePatterns(cond); rErr != nil {
-		return "", common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-	// Condition type-soundness (correctness-over-availability): same
-	// single-boundary guard as Search, so an async job is never created for
-	// a type-unsound condition regardless of transport.
-	if tErr := s.validateConditionTypes(validatedFields, cond); tErr != nil {
-		return "", tErr
 	}
 
 	// Translate once at submission: a persisted job carries a condition that

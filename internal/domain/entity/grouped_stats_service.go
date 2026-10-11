@@ -149,81 +149,17 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 		parsedCond = c
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — model-independent, mirrors the single boundary the search
-	// path enforces in SearchService.Search/SubmitAsync via the same
-	// search.ValidateCondition call. Without this, a malformed-arity BETWEEN
-	// (or an unknown operatorType) slips past every downstream layer here:
-	// ConditionToFilter's translate-time check catches some shapes, but both
-	// it and match.Prepare now FAIL CLOSED WITH AN ERROR on an unevaluable
-	// leaf (never silently non-matching) — so without this earlier,
-	// better-classified check the request would surface as a generic
-	// internal error instead of a clean 400 INVALID_CONDITION naming the
-	// actual structural fault.
-	if parsedCond != nil {
-		if cErr := search.ValidateCondition(parsedCond); cErr != nil {
-			// A jsonPath outside JSON Path nomenclature is propagated
-			// unwrapped so classifyGroupedStatsError sees the
-			// search.ErrInvalidFieldPath sentinel and emits INVALID_FIELD_PATH
-			// — the same code /search returns for the same input. Re-wrapping
-			// in ErrInvalidCondition would shadow it: that arm is tested first.
-			if errors.Is(cErr, search.ErrInvalidFieldPath) {
-				return nil, cErr
-			}
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, cErr)
-		}
-	}
-
-	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
-	// before any backend runs. Every plugin's residual filter evaluator
-	// (sqlite's evaluateFilter, postgres's evalPostFilter) delegates to the
-	// error-free spi.PreparedFilter.Match kernel, which returns false
-	// (non-match) rather than erroring on a bad pattern — so an unvalidated
-	// malformed pattern would silently under-include buckets instead of
-	// failing the request. Validating here, in the backend-independent domain
-	// layer, makes every backend reject identically. It runs after the
-	// structural validation above, as it does on the search path: the pattern
-	// error names the leaf by the jsonPath the caller wrote, and that string
-	// should have cleared the path grammar first.
-	if parsedCond != nil {
-		if rErr := search.ValidatePatterns(parsedCond); rErr != nil {
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, rErr)
-		}
-	}
-
-	// Condition type-soundness (correctness-over-availability): mirrors the
-	// search path's validateConditionTypes boundary for its model-independent
-	// parts — the lifecycle/temporal/meta-field rules validateLifecycleType
-	// enforces (known meta field; a supported operator + RFC3339 operand on
-	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
-	// operator against the temporal creationDate meta field would silently
-	// produce an empty result here instead of the 400 CONDITION_TYPE_MISMATCH
-	// the equivalent /search request returns.
-	//
-	// A nil fields map is passed because this layer has none. The SCHEMA-dependent
-	// arm — an operand parsing into none of a declared field's types — runs at
-	// the handler, which holds the model store and validates the condition's,
-	// groupBy's and aggregates' paths against the model in the same place. A
-	// direct caller of this service that bypasses the handler gets only the
-	// model-independent half, which is why the handler is the boundary.
-	if parsedCond != nil {
-		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
-			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
-			// so classifyGroupedStatsError classifies it via errors.Is against
-			// those same exported sentinels — the identical classification
-			// the search path's validateConditionTypes performs — and maps to
-			// the matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
-			return nil, tErr
-		}
-	}
+	// The condition was validated by the handler through
+	// search.ValidateConditionForModel (structure, patterns, paths, types),
+	// the one sequence every surface runs; this layer translates and
+	// executes it.
 
 	// Translate to a pushdown Filter. A nil parsedCond yields the zero-value
 	// Filter ("match all").
 	//
 	// One path, as on search and conditional delete: the condition either
 	// translates or the request is refused. A translation failure is
-	// unreachable from input that cleared search.ValidateCondition above —
+	// unreachable from input that cleared search.ValidateConditionForModel —
 	// the same pairing search runs, checked by
 	// TestDeleteAndGroupedStats_ClearingImpliesTranslates — so refusing
 	// costs no valid request.
