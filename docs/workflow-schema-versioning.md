@@ -293,8 +293,8 @@ here, under the rubric of §"Tightening releases":
    every other clause counts one). This one does reject configurations that
    worked. It is taken because an `array` clause expands into one clause per
    entry, and the engine expands the criterion again each time it evaluates
-   it, so an unbounded criterion costs every save that reaches its
-   transition. The limit is fixed, not a server setting, and the error names
+   it. The limit bounds that expansion; it does not bound the total cost of
+   a criterion. The limit is fixed, not a server setting, and the error names
    the limit and the count.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older

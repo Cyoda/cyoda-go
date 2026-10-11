@@ -778,11 +778,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   or that tests no position (`values` missing, empty or all `null`), is `400
   INVALID_CONDITION`. Before, a clause without an operator compared with
   `EQUALS`, and a clause that tested no position matched every entity — a
-  conditional delete with all-`null` `values` deleted the whole model. A path with a
-  wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`. Workflow
-  import answers `400 VALIDATION_FAILED` for each. `ArrayConditionDto` in the OpenAPI
-  spec is `{type, jsonPath, operatorType, values}`, and the operator enums of
-  the condition DTOs list only the 26 operators the server accepts.
+  conditional delete with all-`null` `values` deleted the whole model. A
+  path with a wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`.
+  Workflow import answers `400 VALIDATION_FAILED` for each. `ArrayConditionDto`
+  in the OpenAPI spec is `{type, jsonPath, operatorType, values}`, and the
+  operator enums of the condition DTOs list only the 26 operators the server
+  accepts.
   Migration: add `"operatorType":"EQUALS"` to existing array clauses.
 
 - **Workflow import refuses a criterion that is not a valid condition
@@ -827,9 +828,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   counts one, `null` entries included, and every other clause counts one.
   The count is taken before the condition is expanded, on search (sync and
   async, HTTP and gRPC), conditional delete, grouped statistics and workflow
-  import. Before, nothing bounded it: an `array` clause expands into one
-  clause per entry, and one 10 MiB body of pattern entries held about 5 GiB
-  on a node.
+  import. The limit bounds the expansion: an `array` clause expands into one
+  clause per entry, and each check expands it again. It does not bound the
+  total cost of a request; one with large `MATCHES_PATTERN` or `LIKE`
+  operands can still cost about 1.5 GiB inside the limit, as a group of
+  simple pattern clauses does.
 
 - **Search, conditional delete and grouped statistics check a condition in
   one order — structure, then patterns, then the model's paths, then types
@@ -1232,10 +1235,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
-
-- **Grouped statistics checks a condition's structure before its field
-  types.** A malformed condition (for example an object operand) answers
-  `400 INVALID_CONDITION`, as search does, not `CONDITION_TYPE_MISMATCH`.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

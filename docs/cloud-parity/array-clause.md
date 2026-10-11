@@ -50,5 +50,6 @@ applies the operator at every listed position, on REST search only. To align:
 - Refuse a missing operator, a clause that tests no position, and a path with
   a wildcard before its trailing `[*]`.
 - Refuse a condition that tests more than 10,000 entries, counted before the
-  clause is expanded (see `condition-check-order.md`, step 3).
+  clause is expanded (see `condition-check-order.md`, step 3). The limit
+  bounds the expansion; it does not bound the total cost of a request.
 - Accept the clause in workflow criteria and in gRPC search.

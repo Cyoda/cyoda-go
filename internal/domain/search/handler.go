@@ -75,8 +75,9 @@ func submitAsyncError(err error) *common.AppError {
 // (schema-vs-value, meta-vocabulary checks — condition_type_validate.go's
 // ValidateConditionValueTypes) are both enforced, in the one sequence
 // condition_validation.go's ValidateConditionForModel states, inside
-// SearchService.Search / SubmitAsync — the single boundary every transport (HTTP via this handler,
-// gRPC via internal/grpc/search.go) funnels through — not here.
+// SearchService.Search / SubmitAsync — the single boundary every transport
+// (HTTP via this handler, gRPC via internal/grpc/search.go) funnels
+// through — not here.
 type Handler struct {
 	searchSvc   *SearchService
 	maxSortKeys int

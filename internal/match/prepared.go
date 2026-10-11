@@ -133,10 +133,11 @@ func Prepare(cond predicate.Condition, fieldTypes FieldTypes) (Prepared, error) 
 
 // prepare desugars cond before dispatching on its shape, so no evaluator
 // below this point ever sees a *predicate.ArrayCondition — spi.DesugarCondition
-// rewrites it into an AND of positional leaves carrying the clause's operator (see that function's
-// doc). This is the same call spi.ConditionToFilter makes at its own entry
-// point; one implementation, two entry points, so a bracket-indexed array
-// clause means the same thing under a pushdown and under this evaluator.
+// rewrites it into an AND of positional leaves carrying the clause's operator
+// (see that function's doc). This is the same call spi.ConditionToFilter makes
+// at its own entry point; one implementation, two entry points, so a
+// bracket-indexed array clause means the same thing under a pushdown and under
+// this evaluator.
 func prepare(cond predicate.Condition, fieldTypes FieldTypes) (prepNode, error) {
 	d, err := spi.DesugarCondition(cond)
 	if err != nil {

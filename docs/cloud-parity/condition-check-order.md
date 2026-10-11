@@ -70,7 +70,8 @@ POST /api/search/direct/{model}/1
 - Refuse a condition that tests more than 10,000 entries with
   `400 INVALID_CONDITION`, counted by the rule in step 3, before any other
   structural check and before the condition is expanded. Workflow import
-  refuses such a criterion with `400 VALIDATION_FAILED`.
+  refuses such a criterion with `400 VALIDATION_FAILED`. The limit bounds the
+  expansion; it does not bound the total cost of a request.
 
 ## Where it is enforced
 

@@ -617,9 +617,10 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 // (errInvalidFieldPath) maps to INVALID_FIELD_PATH — the same code the
 // schema-driven path check emits, because both mean "that is not a field this
 // request can address"; an object operand, an array operand outside BETWEEN,
-// a BETWEEN operand that is not a two-element pair, an unknown or missing operatorType
-// (operator-semantics.md §4: "on every surface that carries a condition"), an
-// unknown group operator and a malformed array clause all wrap
+// a BETWEEN operand that is not a pair of two non-null scalar bounds (not a
+// two-element array, or a null or non-scalar bound), an unknown or missing
+// operatorType (operator-semantics.md §4: "on every surface that carries a
+// condition"), an unknown group operator and a malformed array clause all wrap
 // ErrInvalidCondition and map to INVALID_CONDITION; any other structural
 // failure (e.g. condition depth exceeded) keeps the BAD_REQUEST default —
 // nothing in the current validator set reaches it besides that one guard.

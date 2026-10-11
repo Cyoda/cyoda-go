@@ -46,11 +46,12 @@ const MaxConditionDepth = spi.MaxConditionDepth
 //
 // An array clause expands into one simple clause per tested entry, and each
 // check on the way to a store (structure, patterns, types, translation, the
-// prepared matcher) expands it again, so the cost of one request body
-// multiplies: without a bound, one 10 MiB body of pattern entries held about
-// 5 GiB and took about 15 s on a node. The count is taken first, in
-// ValidateCondition and ValidateCriterionCondition, so no expansion runs on a
-// condition over the limit.
+// prepared matcher) expands it again. The limit bounds that expansion: the
+// count is taken first, in ValidateCondition and ValidateCriterionCondition,
+// so no expansion runs on a condition over the limit. It does not bound the
+// total cost of a request; a request with large MATCHES_PATTERN or LIKE
+// operands can still cost about 1.5 GiB inside the limit, as a group of
+// simple pattern clauses does.
 const MaxConditionEntries = 10_000
 
 // canonicalOperators is the single source of truth for the valid
@@ -211,13 +212,10 @@ func ValidateCriterionCondition(cond predicate.Condition) error {
 
 // validateConditionSize refuses a condition that tests more than
 // MaxConditionEntries entries. It counts without expanding anything, so it is
-// the first check ValidateCondition and ValidateCriterionCondition run.
+// the first check ValidateCondition and ValidateCriterionCondition run. It
+// bounds the expansion, not the total cost of a request.
 func validateConditionSize(cond predicate.Condition) error {
-	n, err := conditionEntries(cond, 0)
-	if err != nil {
-		return err
-	}
-	if n > MaxConditionEntries {
+	if n := conditionEntries(cond); n > MaxConditionEntries {
 		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, every other clause one)",
 			ErrInvalidCondition, n, MaxConditionEntries)
 	}
@@ -225,29 +223,23 @@ func validateConditionSize(cond predicate.Condition) error {
 }
 
 // conditionEntries counts the entries cond tests, by the rule on
-// MaxConditionEntries. The depth guard matches the validators' own, so a
-// tree too deep to validate is refused with the same error.
-func conditionEntries(cond predicate.Condition, depth int) (int, error) {
-	if depth >= MaxConditionDepth {
-		return 0, fmt.Errorf("condition depth exceeded (max %d)", MaxConditionDepth)
-	}
+// MaxConditionEntries. It does not guard depth: every caller parses the
+// condition first, which caps nesting at 50, and the validators that follow
+// cap it at MaxConditionDepth.
+func conditionEntries(cond predicate.Condition) int {
 	switch c := cond.(type) {
 	case nil:
-		return 0, nil
+		return 0
 	case *predicate.GroupCondition:
 		n := 0
 		for _, child := range c.Conditions {
-			k, err := conditionEntries(child, depth+1)
-			if err != nil {
-				return 0, err
-			}
-			n += k
+			n += conditionEntries(child)
 		}
-		return n, nil
+		return n
 	case *predicate.ArrayCondition:
-		return len(c.Values), nil
+		return len(c.Values)
 	default:
-		return 1, nil
+		return 1
 	}
 }
 
