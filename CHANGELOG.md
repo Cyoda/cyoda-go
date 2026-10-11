@@ -800,6 +800,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
   does not parse is still the transport status `InvalidArgument`.
 
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair with a `null` bound is
+  `400 INVALID_CONDITION`.** Before, it was accepted, and the backends
+  answered differently.
+
+- **Search, conditional delete and grouped statistics check a condition in
+  one order — structure, then patterns, then the model's paths, then types
+  — so one malformed condition gets the same code on each.** A bad pattern
+  on an undeclared path is now `400 INVALID_CONDITION` on search; it was
+  `400 INVALID_FIELD_PATH`.
+
+- **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model
+  before checking the condition.** A malformed condition on an unknown model
+  was `400`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
