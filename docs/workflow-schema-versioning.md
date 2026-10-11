@@ -224,7 +224,7 @@ Additive MINOR — two new optional fields:
 - **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
   `NONE` / `FIXED` selector a processor and a criterion function already carry.
 
-Every payload 1.4 accepted that does not fall under the two tightenings below
+Every payload 1.4 accepted that does not fall under the five tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -232,7 +232,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Three tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Five tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported and *worked* — so they are recorded
 here, under the rubric of §"Tightening releases":
@@ -265,6 +265,16 @@ here, under the rubric of §"Tightening releases":
    and no longer import unchanged: remove the `delayMs` field and import
    again. The import reads the raw request, since the decoded integer cannot
    tell a sent `0` or `null` from an absent key.
+4. **An `array` criterion carries `operatorType`, tests at least one
+   position, and names one array.** A criterion without an operator imported
+   and worked as `EQUALS`, so this is an optional-to-required change — a MAJOR
+   change by the bump rules. It is taken inside 1.5 because no deployment of
+   either tier exists and 1.5 is unreleased. An all-`null` clause matched
+   every entity; it is refused, as is a path with a wildcard before its
+   trailing `[*]` (its positions came from different inner arrays).
+5. **A criterion that is not a valid condition is refused at import.** It
+   imported and then failed every evaluation, so no working configuration is
+   affected.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -273,7 +283,7 @@ transition and callout, and there are no deployments of either tier whose
 stored workflows could be affected. Retiring 1.1–1.4 would turn 298 fixtures
 and every client's existing files into `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
 to guard a few fields. The third rule touches only exports of v0.8.3 and
-v0.8.4, and its error names the field to remove. All three rules apply to an
+v0.8.4, and its error names the field to remove. All five rules apply to an
 import under **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 

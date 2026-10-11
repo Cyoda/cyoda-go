@@ -772,6 +772,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   pattern operator on `creationDate` or `lastUpdateTime` moves from
   `400 INVALID_CONDITION` to `400 CONDITION_TYPE_MISMATCH`.
 
+- **An `array` condition carries a required `operatorType`, applied at every
+  tested position.** `{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}`
+  means `scores[0] > 50` and `scores[2] > 70`. A clause without an operator,
+  or that tests no position (`values` missing, empty or all `null`), is `400
+  INVALID_CONDITION`; before, it matched every entity — a conditional delete
+  in the shape the spec documented deleted the whole model. A path with a
+  wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`. Workflow
+  import answers `400 VALIDATION_FAILED` for each, and now also refuses a
+  criterion that is not a valid condition. `ArrayConditionDto` in the OpenAPI
+  spec is `{type, jsonPath, operatorType, values}`, and the operator enums of
+  the condition DTOs list only the 26 operators the server accepts.
+  Migration: add `"operatorType":"EQUALS"` to existing array clauses.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
+  array is `400 INVALID_CONDITION` on every search surface and every clause
+  type.** Before, direct and async search answered `400 BAD_REQUEST` for a
+  `simple` or `lifecycle` clause, while grouped stats and conditional delete
+  already answered `INVALID_CONDITION`. The help pages always documented
+  `INVALID_CONDITION`. The status stays `400`; only the code changes.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
