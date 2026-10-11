@@ -129,6 +129,12 @@ func ValidateArrayClauseJSONPath(path string) error {
 				"an array clause tests elements by position and a bare path addresses the array itself",
 			errInvalidFieldPath, path)
 	}
+	if strings.Count(path, "[*]") != 1 {
+		return fmt.Errorf(
+			"%w: jsonPath %q has a wildcard before its trailing \"[*]\"; "+
+				"an array clause tests the positions of one array — index the outer array (e.g. \"$.orders[0].lines[*]\")",
+			errInvalidFieldPath, path)
+	}
 	return nil
 }
 

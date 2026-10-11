@@ -313,7 +313,7 @@ func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
 // array clause tested against an integer-declared array field rejects a
 // string value the same way a positional SimpleCondition would —
 // walkConditionTypes' ArrayCondition arm desugars into SimpleCondition
-// EQUALS leaves and recurses, rather than skipping the check entirely.
+// leaves carrying the clause's operator and recurses, rather than skipping the check entirely.
 func TestValidateConditionTypes_ArrayCondition_TypeMismatch(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))

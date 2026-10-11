@@ -52,14 +52,42 @@ func TestValidateCondition_ArrayClauseRejectsObjectOperand(t *testing.T) {
 	}
 }
 
-// TestValidateCondition_ArrayClauseRejectsObjectOperand_NullEntriesSkipped
-// proves a null entry (the clause's documented "skip this position" spelling)
-// does not itself trip the operand-shape check — only a non-nil object does.
-func TestValidateCondition_ArrayClauseAcceptsAllNullValues(t *testing.T) {
-	if err := ValidateCondition(&predicate.ArrayCondition{
-		OperatorType: "EQUALS",
-		JsonPath:     "$.tags[*]", Values: []any{nil, nil},
-	}); err != nil {
-		t.Errorf("unexpected error: %v", err)
+func TestValidateCondition_ArrayClauseRefusals(t *testing.T) {
+	cases := []struct {
+		name string
+		cond *predicate.ArrayCondition
+		want error
+	}{
+		{"missing operator", &predicate.ArrayCondition{JsonPath: "$.s[*]", Values: []any{1}}, ErrInvalidCondition},
+		{"unknown operator", &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "FROBNICATE", Values: []any{1}}, ErrInvalidCondition},
+		{"missing values", &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "EQUALS"}, ErrInvalidCondition},
+		{"empty values", &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "EQUALS", Values: []any{}}, ErrInvalidCondition},
+		{"all-null values", &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "EQUALS", Values: []any{nil, nil}}, ErrInvalidCondition},
+		{"BETWEEN entry not a pair", &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "BETWEEN", Values: []any{5}}, ErrInvalidCondition},
+		{"earlier wildcard", &predicate.ArrayCondition{JsonPath: "$.orders[*].lines[*]", OperatorType: "EQUALS", Values: []any{"a"}}, ErrInvalidFieldPath},
+		{"matrix wildcard", &predicate.ArrayCondition{JsonPath: "$.m[*][*]", OperatorType: "EQUALS", Values: []any{1}}, ErrInvalidFieldPath},
+	}
+	for _, tc := range cases {
+		if err := ValidateCondition(tc.cond); !errors.Is(err, tc.want) {
+			t.Errorf("%s: ValidateCondition: want %v, got %v", tc.name, tc.want, err)
+		}
+		if tc.want == ErrInvalidCondition {
+			if err := ValidateCriterionCondition(tc.cond); !errors.Is(err, ErrInvalidCondition) {
+				t.Errorf("%s: ValidateCriterionCondition: want ErrInvalidCondition, got %v", tc.name, err)
+			}
+		}
+	}
+}
+
+func TestValidateCondition_ArrayClauseAcceptsOperators(t *testing.T) {
+	for _, c := range []*predicate.ArrayCondition{
+		{JsonPath: "$.s[*]", OperatorType: "GREATER_THAN", Values: []any{50, nil, 70}},
+		{JsonPath: "$.s[*]", OperatorType: "BETWEEN_INCLUSIVE", Values: []any{[]any{1, 5}}},
+		{JsonPath: "$.s[*]", OperatorType: "IS_NULL", Values: []any{nil, true}},
+		{JsonPath: "$.orders[0].lines[*]", OperatorType: "EQUALS", Values: []any{"a"}},
+	} {
+		if err := ValidateCondition(c); err != nil {
+			t.Errorf("%+v: unexpected error: %v", c, err)
+		}
 	}
 }

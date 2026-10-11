@@ -190,10 +190,8 @@ func TestValidateImportRequest_FunctionCriterionExempt(t *testing.T) {
 
 // The ArrayCondition arm of walkCriterion did not exist at all, so array
 // criteria were skipped by every check the walker performs. Paths are the
-// check that applies to them — an ArrayCondition carries no OperatorType, so
-// the MATCHES_PATTERN compile is inapplicable by construction, and it is not a
-// lifecycle clause. This pins that the walker now descends into a group to
-// reach an array leaf as well.
+// check that applies to them — it is not a lifecycle clause. This pins that
+// the walker now descends into a group to reach an array leaf as well.
 func TestValidateImportRequest_ArrayCriterionNestedInGroup(t *testing.T) {
 	crit := json.RawMessage(`{
 		"type": "group",
@@ -218,19 +216,19 @@ func TestValidateImportRequest_ArrayCriterionNestedInGroup(t *testing.T) {
 // still imported cleanly as a criterion: two doors, two answers for the
 // identical clause.
 var invalidArrayCriterionPaths = []string{
-	"$.tags",         // bare — addresses the container, not its elements
-	"$.arr[0]",       // positional-only — one element, not a positional test
-	"$.tags[*].name", // trailing segment after the wildcard, not itself a wildcard
-	"$.matrix[*][0]", // trailing subscript is a positional index, not "[*]"
-	"$._meta.state",  // bare, non-array-shaped path
+	"$.tags",               // bare — addresses the container, not its elements
+	"$.arr[0]",             // positional-only — one element, not a positional test
+	"$.tags[*].name",       // trailing segment after the wildcard, not itself a wildcard
+	"$.matrix[*][0]",       // trailing subscript is a positional index, not "[*]"
+	"$._meta.state",        // bare, non-array-shaped path
+	"$.matrix[*][*]",       // a second wildcard: one clause tests the positions of one array
+	"$.orders[*].lines[*]", // an earlier wildcard, same reason
 }
 
 // validArrayCriterionPaths carry a genuine trailing "[*]" and must keep
 // importing as an array clause.
 var validArrayCriterionPaths = []string{
 	"$.tags[*]",
-	"$.matrix[*][*]",
-	"$.orders[*].lines[*]",
 }
 
 // TestValidateImportRequest_RejectsBareArrayCriterionPath is the RED-phase

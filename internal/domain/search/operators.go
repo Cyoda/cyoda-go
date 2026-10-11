@@ -107,27 +107,17 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		}
 		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
-		// ArrayCondition doesn't carry an operator — each non-null positional
-		// value becomes an EQUALS leaf once spi.DesugarCondition rewrites it,
-		// which every evaluator (this validator's own condition surface, the
-		// pushdown translator, and internal/match) calls before it ever sees
-		// the condition's real shape.
+		// The clause as a whole: its path names the elements of one array.
 		if err := ValidateArrayClauseJSONPath(c.JsonPath); err != nil {
 			return err
 		}
-		// Each non-null value becomes an EQUALS leaf's operand once desugared
-		// — run the same shape check a SimpleCondition's operand gets, so an
-		// object value doesn't reach the kernel and get stringified into a
-		// spuriously "matching" literal.
-		for _, v := range c.Values {
-			if v == nil {
-				continue
-			}
-			if err := validateOperandShape(v); err != nil {
-				return err
-			}
+		// Its meaning is its desugared leaves (spi.DesugarCondition); each is
+		// held to the simple-clause rules.
+		d, err := spi.DesugarCondition(c)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
-		return nil
+		return asClauseError(validateConditionAtDepth(d, depth+1))
 	case *predicate.GroupCondition:
 		// A group operator other than exactly "AND"/"OR"/"NOT" previously
 		// cleared validation and then behaved differently depending on which
@@ -221,18 +211,13 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		}
 		return validateBetweenArity(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
-		// ArrayCondition doesn't carry an operator (see the mirroring
-		// comment in validateConditionAtDepth) — only the operand shape of
-		// each non-null positional value is checked here.
-		for _, v := range c.Values {
-			if v == nil {
-				continue
-			}
-			if err := validateOperandShape(v); err != nil {
-				return err
-			}
+		// Held to the rules of its desugared leaves; the path shape is checked
+		// by the caller (workflow's walkCriterion) before this runs.
+		d, err := spi.DesugarCondition(c)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
-		return nil
+		return asClauseError(validateCriterionConditionAtDepth(d, depth+1))
 	case *predicate.GroupCondition:
 		// Shares validateGroupOperator with validateConditionAtDepth's own
 		// GroupCondition arm — see that arm's doc for the operator-name and
@@ -365,4 +350,15 @@ func canonicalOperatorList() string {
 	}
 	sort.Strings(ops)
 	return strings.Join(ops, ", ")
+}
+
+// asClauseError classifies a refusal of an array clause's desugared leaves: a
+// path failure keeps ErrInvalidFieldPath and a structural one keeps
+// ErrInvalidCondition; any other refusal (a BETWEEN entry that is not a pair)
+// is a malformed clause, so it wraps ErrInvalidCondition.
+func asClauseError(err error) error {
+	if err == nil || errors.Is(err, ErrInvalidCondition) || errors.Is(err, ErrInvalidFieldPath) {
+		return err
+	}
+	return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 }

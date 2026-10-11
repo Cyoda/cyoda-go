@@ -209,7 +209,7 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 			// trailing "[*]", since the clause tests elements by position and
 			// a path that does not address elements cannot. So a grammar-valid
 			// path here is accepted for the array clause only when it also
-			// ends in "[*]" — everything else in this table is still
+			// ends in exactly one "[*]" — everything else in this table is still
 			// GRAMMATICALLY fine (that's what makes it a member of
 			// validJSONPaths) but rejected for THIS clause specifically, the
 			// same rejection TestValidateCondition_ArrayClauseRequiresWildcard
@@ -218,7 +218,7 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 				OperatorType: "EQUALS",
 				JsonPath:     tc.path, Values: []any{"v"},
 			})
-			if strings.HasSuffix(tc.path, "[*]") {
+			if strings.HasSuffix(tc.path, "[*]") && strings.Count(tc.path, "[*]") == 1 {
 				if err != nil {
 					t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want accepted", tc.path, err)
 				}
