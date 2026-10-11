@@ -1,6 +1,7 @@
 package sqlite
 
 import (
+	"fmt"
 	"net/url"
 	"path/filepath"
 	"testing"
@@ -40,6 +41,25 @@ func awaitRestartTask(t *testing.T, c *client.Client, id uuid.UUID, within time.
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// awaitRestartClaim polls like awaitRestartTask until cond holds, with the
+// deadline of a lost-owner claim by node (fixtureutil.HeartbeatGate): 30s
+// after the later of claimFrom and a stale period of clean heartbeats after
+// node's last failed one.
+func awaitRestartClaim(t *testing.T, c *client.Client, id uuid.UUID, claimFrom time.Time, node *fixtureutil.NodeProc, what string, cond func(*client.ScheduledTask) bool) *client.ScheduledTask {
+	t.Helper()
+	var task *client.ScheduledTask
+	g := fixtureutil.HeartbeatGate{ReadyAt: claimFrom, Clean: fixtureutil.TunedStaleAfter, Slack: 30 * time.Second}
+	g.Await(t, func() []string { return []string{node.Logs.String()} },
+		"task of "+id.String()+": "+what, func() (bool, string) {
+			task = restartTask(t, c, id)
+			if task == nil {
+				return cond(task), "no task"
+			}
+			return cond(task), fmt.Sprintf("%+v", *task)
+		})
+	return task
 }
 
 // TestSchedulerRestart_ReclaimsOwnRunningTasks: one SQLite pnode runs two
@@ -125,8 +145,11 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 	hold1 := start(second, tag1, parity.ComputeBehaviourHold)
 	fresh2 := start(second, tag2, parity.ComputeBehaviourCatalog)
 
-	within := fixtureutil.TunedStaleAfter + 30*time.Second
-	failed := awaitRestartTask(t, c2, r2, within, "R2 FAILED", func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
+	// Each claim is due 30s after spec §6.1 allows it: a stale period of the
+	// new process's own clean heartbeats, from its start or from its last
+	// failed heartbeat. The first process's heartbeats ended before that.
+	claimFrom := restartAt.Add(fixtureutil.TunedStaleAfter)
+	failed := awaitRestartClaim(t, c2, r2, claimFrom, second, "R2 FAILED", func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if since := time.Since(restartAt); since < fixtureutil.TunedStaleAfter-2*time.Second {
 		t.Errorf("R2 was decided %s after the restart; the new process may not claim a lost owner's task before a stale period of its own heartbeats", since)
 	}
@@ -134,7 +157,7 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 		t.Errorf("R2 = %+v; want FAILED UNSAFE_WORK_NOT_COMPLETED, lostOwners 1", *failed)
 	}
 
-	awaitRestartTask(t, c2, r1, within, "R1 reclaimed", func(tk *client.ScheduledTask) bool {
+	awaitRestartClaim(t, c2, r1, claimFrom, second, "R1 reclaimed", func(tk *client.ScheduledTask) bool {
 		return tk != nil && tk.Status == "RUNNING" && tk.LostOwners == 1
 	})
 	parity.AwaitReceived(t, hold1, 1, 10*time.Second)

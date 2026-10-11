@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -105,6 +106,40 @@ func (s *schedMN) awaitTask(t *testing.T, id uuid.UUID, transition string, withi
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+// logsOf returns a reader of nodes' captured logs, for a HeartbeatGate.
+func (s *schedMN) logsOf(nodes []int) func() []string {
+	return func() []string {
+		out := make([]string, len(nodes))
+		for i, n := range nodes {
+			out[i] = s.pg.NodeLogs(n)
+		}
+		return out
+	}
+}
+
+// awaitTaskGated polls like awaitTask until cond holds, with g's deadline:
+// g.Slack after the first of nodes is allowed to act
+// (fixtureutil.HeartbeatGate). nodes are the pnodes that may act.
+func (s *schedMN) awaitTaskGated(t *testing.T, id uuid.UUID, transition string, g fixtureutil.HeartbeatGate, nodes []int, what string, cond func(mnTask, bool) bool) mnTask {
+	t.Helper()
+	var r mnTask
+	g.Await(t, s.logsOf(nodes), fmt.Sprintf("task %s/%s: %s", id, transition, what), func() (bool, string) {
+		got, ok := s.task(t, id, transition)
+		r = got
+		return cond(got, ok), fmt.Sprintf("present=%t %+v", ok, got)
+	})
+	return r
+}
+
+// awaitLostOwnerClaim awaits a lost-owner claim by one of claimers: due slack
+// after the first of them is allowed one by spec §6.1, once the owner went
+// stale at ownerStaleAt and its own heartbeats have run clean for STALE_AFTER.
+func (s *schedMN) awaitLostOwnerClaim(t *testing.T, id uuid.UUID, transition string, ownerStaleAt time.Time, slack time.Duration, claimers []int, what string, cond func(mnTask, bool) bool) mnTask {
+	t.Helper()
+	g := fixtureutil.HeartbeatGate{ReadyAt: ownerStaleAt, Clean: fixtureutil.TunedStaleAfter, Slack: slack}
+	return s.awaitTaskGated(t, id, transition, g, claimers, what, cond)
 }
 
 // ownerNode maps a claim_owner to the pnode whose scheduler announced that

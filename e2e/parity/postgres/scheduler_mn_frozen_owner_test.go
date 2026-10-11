@@ -55,8 +55,15 @@ func TestSchedulerMN_FrozenOwnerSendsNoUnsafe(t *testing.T) {
 		t.Fatalf("SIGSTOP node %d: %v", owner, err)
 	}
 	t.Cleanup(func() { _ = s.pg.SignalNode(owner, syscall.SIGCONT) })
+	ownerStaleAt := time.Now().Add(fixtureutil.TunedStaleAfter)
+	var claimers []int
+	for i := 0; i < host; i++ {
+		if i != owner {
+			claimers = append(claimers, i)
+		}
+	}
 
-	re := s.awaitTask(t, id, "Fire", fixtureutil.TunedStaleAfter+40*time.Second, "the reclaim",
+	re := s.awaitLostOwnerClaim(t, id, "Fire", ownerStaleAt, 40*time.Second, claimers, "the reclaim",
 		func(r mnTask, ok bool) bool {
 			return ok && r.Status == "RUNNING" && r.ClaimOwner != first.ClaimOwner && r.LostOwners == 1
 		})

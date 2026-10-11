@@ -33,7 +33,8 @@ type lostSubject struct {
 // First, for longer than STALE_AFTER — while every other pnode may make
 // lost-owner claims — nobody claims them: the owners heartbeat, and liveness
 // is not progress (§6.2). Then every owner is killed. After STALE_AFTER a
-// survivor claims each with lostOwners 1 and decides (§5.1): B is FAILED
+// survivor claims each with lostOwners 1 (later when a survivor's heartbeat
+// failed meanwhile, §6.1) and decides (§5.1): B is FAILED
 // UNSAFE_WORK_NOT_COMPLETED and its processor was sent exactly once; C is
 // FAILED EXPIRED_AFTER_FAILED_ATTEMPTS; D is FAILED STOPPED_AFTER_PARTIAL_COMMIT;
 // A runs again and fires.
@@ -113,10 +114,13 @@ func TestSchedulerMN_LostOwners(t *testing.T) {
 	for n := range owners {
 		s.pg.KillNode(n)
 	}
+	ownerStaleAt := time.Now().Add(fixtureutil.TunedStaleAfter)
 	survivors := map[string]bool{}
+	var claimers []int
 	for i := 0; i < host; i++ {
 		if !owners[i] {
 			survivors[s.pg.Incarnation(t, i).String()] = true
+			claimers = append(claimers, i)
 		}
 	}
 
@@ -129,8 +133,10 @@ func TestSchedulerMN_LostOwners(t *testing.T) {
 	cFresh := s.startClient(t, host, cc.tenant, cc.tag, parity.ComputeBehaviourCatalog)
 	dFresh := s.startClient(t, host, d.tenant, d.tag, parity.ComputeBehaviourCatalog)
 
-	within := fixtureutil.TunedStaleAfter + 30*time.Second
-	ra := s.awaitTask(t, a.id, "Fire", within, "A claimed as a lost owner",
+	// Each claim is due 30s after spec §6.1 allows it: after the owners went
+	// stale and after a whole stale period of clean heartbeats on a survivor.
+	const slack = 30 * time.Second
+	ra := s.awaitLostOwnerClaim(t, a.id, "Fire", ownerStaleAt, slack, claimers, "A claimed as a lost owner",
 		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.LostOwners == 1 })
 	if !survivors[ra.ClaimOwner] {
 		t.Errorf("A was claimed by %q; want a surviving pnode", ra.ClaimOwner)
@@ -150,7 +156,7 @@ func TestSchedulerMN_LostOwners(t *testing.T) {
 		{cc, "EXPIRED_AFTER_FAILED_ATTEMPTS"},
 		{d, "STOPPED_AFTER_PARTIAL_COMMIT"},
 	} {
-		r := s.awaitTask(t, tc.sub.id, "Fire", within, "FAILED", func(r mnTask, ok bool) bool { return ok && r.Status == "FAILED" })
+		r := s.awaitLostOwnerClaim(t, tc.sub.id, "Fire", ownerStaleAt, slack, claimers, "FAILED", func(r mnTask, ok bool) bool { return ok && r.Status == "FAILED" })
 		if r.FailureReason != tc.reason || r.LostOwners != 1 {
 			t.Errorf("task %s = %+v; want FAILED %s with lostOwners 1", tc.sub.id, r, tc.reason)
 		}

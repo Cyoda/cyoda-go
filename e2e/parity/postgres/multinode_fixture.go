@@ -117,11 +117,10 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 func (f *pgMultiNode) ComputeServiceID() string { return f.computeClientID }
 
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
-// snapshot. Its callers are Incarnation, which reads the scheduler's start
-// line from it, and TestMultiNodeFixture_ControlSurface
-// (multinode_control_test.go), which proves a node with the scheduler off
-// announces no incarnation. Returns "" for an out-of-range index. Not part of
-// the MultiNodeFixture interface.
+// snapshot. Scenarios read lines from it as data, such as the scheduler's
+// start line (Incarnation), its failed heartbeats (a HeartbeatGate's
+// deadline) and cluster membership lines. Returns "" for an out-of-range
+// index. Not part of the MultiNodeFixture interface.
 func (f *pgMultiNode) NodeLogs(idx int) string {
 	if idx < 0 || idx >= len(f.nodeLogs) || f.nodeLogs[idx] == nil {
 		return ""

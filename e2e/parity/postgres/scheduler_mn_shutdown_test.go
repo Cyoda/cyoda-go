@@ -52,13 +52,21 @@ func TestSchedulerMN_ShutdownDrain(t *testing.T) {
 	}
 	signalAt := time.Now()
 	t.Logf("owners signalled: %v", owners)
-
-	// T1: cut, recorded uncounted, claimed at once elsewhere.
-	again := s.awaitTask(t, t1, "Fire", 20*time.Second, "T1 claimed by a survivor",
-		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.ClaimOwner != r1.ClaimOwner })
-	if since := time.Since(signalAt); since > 15*time.Second {
-		t.Errorf("T1 was claimed again %s after SIGTERM; want at once, not after STALE_AFTER", since)
+	var survivors []int
+	for i := 0; i < host; i++ {
+		if !owners[i] {
+			survivors = append(survivors, i)
+		}
 	}
+
+	// T1: cut, recorded uncounted, claimed at once elsewhere: within 15s of
+	// the signal, not after STALE_AFTER. A pnode claims only while its
+	// heartbeats succeed (§6.1), so a survivor's failed heartbeat moves the
+	// bound to 15s after the heartbeat that follows it. A claim as a lost
+	// owner instead would carry lostOwners 1, checked below.
+	again := s.awaitTaskGated(t, t1, "Fire", fixtureutil.HeartbeatGate{ReadyAt: signalAt, Slack: 15 * time.Second}, survivors,
+		"T1 claimed by a survivor",
+		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.ClaimOwner != r1.ClaimOwner })
 	if n := s.ownerNode(t, again.ClaimOwner); owners[n] || n == host || n < 0 {
 		t.Errorf("T1 was claimed by node %d; want a pnode that was not signalled", n)
 	}

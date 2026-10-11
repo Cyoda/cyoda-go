@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -47,6 +48,7 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	// its run has sent the processor.
 	mnAwait(t, 10*time.Second, "T1's processor sent by its owner", func() bool { return mnReceived(t, stall, t1) == 1 })
 	s.pg.KillNode(owner)
+	ownerStaleAt := time.Now().Add(fixtureutil.TunedStaleAfter)
 
 	// T2 can only be claimed by the survivor now.
 	t2 := mnSetup(t, c, "mn-outage-2", wf)
@@ -78,13 +80,17 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 		survivorInc).Scan(&removedAt); err != nil {
 		t.Fatalf("remove the survivor's liveness record: %v", err)
 	}
-	mnAwait(t, 5*fixtureutil.TunedHeartbeatInterval, "the recreated liveness record", func() bool {
+	// The next heartbeat that succeeds recreates it (§6.2): within five
+	// intervals, counted from the heartbeat after the survivor's last failure
+	// when one failed meanwhile.
+	recreate := fixtureutil.HeartbeatGate{ReadyAt: removedAt, Slack: 5 * fixtureutil.TunedHeartbeatInterval}
+	recreate.Await(t, s.logsOf([]int{survivor}), "the recreated liveness record", func() (bool, string) {
 		var n int
 		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM scheduler_owners WHERE owner::text = $1 AND heartbeat_at > $2`,
 			survivorInc, removedAt).Scan(&n); err != nil {
 			t.Fatalf("read liveness: %v", err)
 		}
-		return n == 1
+		return n == 1, fmt.Sprintf("%d records", n)
 	})
 
 	// T1: no lost-owner claim before a whole stale period of clean heartbeats.
@@ -100,7 +106,9 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	r1 = s.awaitTask(t, t1, "Fire", 30*time.Second, "T1 claimed as a lost owner",
+	// Then the claim is due 30s after §6.1 allows it: a stale period after
+	// the survivor's last failed heartbeat, the outage's or a later one.
+	r1 = s.awaitLostOwnerClaim(t, t1, "Fire", ownerStaleAt, 30*time.Second, []int{survivor}, "T1 claimed as a lost owner",
 		func(r mnTask, ok bool) bool { return ok && r.ClaimOwner == survivorInc && r.LostOwners == 1 })
 	if r1.Status != "RUNNING" {
 		t.Errorf("T1 = %+v; want RUNNING under the survivor", r1)
