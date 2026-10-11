@@ -1851,6 +1851,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Security
 
+- **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}`) reads
+  at most 10 MiB of condition body**, as every other entity write endpoint
+  does; a larger body is `400 BAD_REQUEST` and deletes nothing. Before, the
+  body was read whole with no limit, so one request could exhaust a node's
+  memory.
+
 - Bumped the Go toolchain `go 1.26.7` → `go 1.26.9` (root, all three plugin
   modules and `go.work`) and `golang.org/x/net` `v0.58.0` → `v0.60.0` to clear
   twelve reachable govulncheck advisories published with go1.26.9, in

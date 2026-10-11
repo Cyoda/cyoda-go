@@ -344,7 +344,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator or value does not fit the field's declared types (see `predicates`); nothing is deleted in each case.
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator or value does not fit the field's declared types (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 

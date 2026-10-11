@@ -577,6 +577,7 @@ func (h *Handler) DeleteEntities(w http.ResponseWriter, r *http.Request, entityN
 		batchSize = int(*params.TransactionSize)
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxEntityBodySize)
 	condBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
