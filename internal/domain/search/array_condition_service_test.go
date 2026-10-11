@@ -75,7 +75,7 @@ func TestSearch_ArrayConditionOnContainerPath_IsRejected(t *testing.T) {
 	}
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base))
 
-	cond := &predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{"red"}}
+	cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags", Values: []any{"red"}}
 	_, err = svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
@@ -136,7 +136,7 @@ func TestSearch_ArrayConditionOnUnknownPath_IsRejected(t *testing.T) {
 	}
 	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base))
 
-	cond := &predicate.ArrayCondition{JsonPath: "$.tag", Values: []any{"red"}}
+	cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tag", Values: []any{"red"}}
 	if _, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10}); err == nil {
 		t.Fatal("Search on an undeclared array path = nil error, want rejection")
 	}

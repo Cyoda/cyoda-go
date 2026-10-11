@@ -318,8 +318,9 @@ func TestValidateConditionTypes_ArrayCondition_TypeMismatch(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.nums[*]",
-		Values:   []any{"not-a-number"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.nums[*]",
+		Values:       []any{"not-a-number"},
 	}
 	err := ValidateConditionValueTypes(node.FieldsMap(), cond)
 	if err == nil {
@@ -336,8 +337,9 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 	node := schema.NewObjectNode()
 	node.SetChild("nums", schema.NewArrayNode(schema.NewLeafNode(schema.Integer)))
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.nums[*]",
-		Values:   []any{float64(3)},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.nums[*]",
+		Values:       []any{float64(3)},
 	}
 	if err := ValidateConditionValueTypes(node.FieldsMap(), cond); err != nil {
 		t.Errorf("unexpected error: %v", err)

@@ -1,6 +1,7 @@
 package match_test
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -120,11 +121,12 @@ func TestPrepare_PreviousTransitionCanonicalisedBeforeFieldCheck(t *testing.T) {
 // TestPrepare_ArrayConditionOneExpansionPerPosition pins that an
 // ArrayCondition resolves one expansion per NON-NIL position — each position
 // is an EQUALS with its own operand, so a single leaf-level expansion cannot
-// serve them. Nil positions are skipped, and an all-nil condition matches.
+// serve them. Nil positions are skipped, and an all-nil condition is refused.
 func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.tags",
-		Values:   []any{"red", nil, "blue"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags",
+		Values:       []any{"red", nil, "blue"},
 	}
 	p, err := match.Prepare(cond, typed(spi.String))
 	if err != nil {
@@ -137,13 +139,9 @@ func TestPrepare_ArrayConditionOneExpansionPerPosition(t *testing.T) {
 		t.Error("Match() = true, want false: position 2 does not match")
 	}
 
-	allNil := &predicate.ArrayCondition{JsonPath: "$.tags", Values: []any{nil, nil}}
-	pn, err := match.Prepare(allNil, typed(spi.String))
-	if err != nil {
-		t.Fatalf("Prepare() error = %v", err)
-	}
-	if !pn.Match([]byte(`{"tags":[]}`), spi.EntityMeta{}) {
-		t.Error("Match() = false for an all-nil array condition, want true")
+	allNil := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags", Values: []any{nil, nil}}
+	if _, err := match.Prepare(allNil, typed(spi.String)); !errors.Is(err, spi.ErrArrayClauseTestsNothing) {
+		t.Fatalf("Prepare() error = %v, want ErrArrayClauseTestsNothing", err)
 	}
 }
 

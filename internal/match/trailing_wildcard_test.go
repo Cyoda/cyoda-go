@@ -118,7 +118,7 @@ func TestPrepare_TrailingWildcardIteratesElements(t *testing.T) {
 func TestPrepareArray_TrailingWildcardBase(t *testing.T) {
 	for _, path := range []string{"$.tags", "$.tags[*]"} {
 		t.Run(path, func(t *testing.T) {
-			cond := &predicate.ArrayCondition{JsonPath: path, Values: []any{"red", "blue"}}
+			cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: path, Values: []any{"red", "blue"}}
 			p, err := Prepare(cond, func(string) []spi.DataType { return []spi.DataType{spi.String} })
 			if err != nil {
 				t.Fatalf("Prepare(%q): %v", path, err)

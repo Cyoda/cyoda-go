@@ -13,7 +13,8 @@ import (
 // the spelling and the meaning disagreed.
 func TestValidateCondition_ArrayClauseRequiresWildcard(t *testing.T) {
 	err := ValidateCondition(&predicate.ArrayCondition{
-		JsonPath: "$.tags", Values: []any{"A"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags", Values: []any{"A"},
 	})
 	if err == nil {
 		t.Fatal("array clause on a bare path must be rejected")
@@ -27,7 +28,8 @@ func TestValidateCondition_ArrayClauseRequiresWildcard(t *testing.T) {
 // a trailing wildcard is the well-formed spelling and must be accepted.
 func TestValidateCondition_ArrayClauseAcceptsWildcard(t *testing.T) {
 	if err := ValidateCondition(&predicate.ArrayCondition{
-		JsonPath: "$.tags[*]", Values: []any{"A", nil, "C"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags[*]", Values: []any{"A", nil, "C"},
 	}); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
@@ -39,7 +41,8 @@ func TestValidateCondition_ArrayClauseAcceptsWildcard(t *testing.T) {
 // "map[a:1]".
 func TestValidateCondition_ArrayClauseRejectsObjectOperand(t *testing.T) {
 	err := ValidateCondition(&predicate.ArrayCondition{
-		JsonPath: "$.tags[*]", Values: []any{map[string]any{"a": 1}},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags[*]", Values: []any{map[string]any{"a": 1}},
 	})
 	if err == nil {
 		t.Fatal("array clause with an object operand must be rejected")
@@ -54,7 +57,8 @@ func TestValidateCondition_ArrayClauseRejectsObjectOperand(t *testing.T) {
 // does not itself trip the operand-shape check — only a non-nil object does.
 func TestValidateCondition_ArrayClauseAcceptsAllNullValues(t *testing.T) {
 	if err := ValidateCondition(&predicate.ArrayCondition{
-		JsonPath: "$.tags[*]", Values: []any{nil, nil},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags[*]", Values: []any{nil, nil},
 	}); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}

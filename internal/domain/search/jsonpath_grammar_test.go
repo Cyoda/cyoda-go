@@ -163,7 +163,8 @@ func TestValidateCondition_RejectsNonJSONPath(t *testing.T) {
 		})
 		t.Run("array/"+tc.name, func(t *testing.T) {
 			err := search.ValidateCondition(&predicate.ArrayCondition{
-				JsonPath: tc.path, Values: []any{"v"},
+				OperatorType: "EQUALS",
+				JsonPath:     tc.path, Values: []any{"v"},
 			})
 			if err == nil {
 				t.Fatalf("ValidateCondition(array jsonPath=%q) = nil, want rejection", tc.path)
@@ -214,7 +215,8 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 			// same rejection TestValidateCondition_ArrayClauseRequiresWildcard
 			// pins directly.
 			err := search.ValidateCondition(&predicate.ArrayCondition{
-				JsonPath: tc.path, Values: []any{"v"},
+				OperatorType: "EQUALS",
+				JsonPath:     tc.path, Values: []any{"v"},
 			})
 			if strings.HasSuffix(tc.path, "[*]") {
 				if err != nil {
