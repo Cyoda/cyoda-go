@@ -129,17 +129,20 @@ other code defines what it means.
 |---|---|---|
 | `POST /search/direct/{entityName}/{modelVersion}` | missing or unknown `operatorType` | 400 `INVALID_CONDITION` |
 | same | `values` missing, empty or all `null` | 400 `INVALID_CONDITION` |
-| same | an entry is an object, or a `BETWEEN` entry is not a two-element array or has a `null` bound | 400 `INVALID_CONDITION` |
+| same | an entry is an object, or a `BETWEEN` entry is not a two-element array of two non-null scalar bounds | 400 `INVALID_CONDITION` |
 | same | an entry (or a `simple`/`lifecycle` `value`) is an array under an operator other than `BETWEEN`/`BETWEEN_INCLUSIVE` | 400 `INVALID_CONDITION` |
 | same | `values` is not an array (the condition does not parse) | 400 `INVALID_CONDITION` |
+| same | the condition tests more than 10,000 entries (each entry in `values` counts one, `null` entries included; every other clause counts one) | 400 `INVALID_CONDITION` |
 | same | path without trailing `[*]`, or with an earlier `[*]` | 400 `INVALID_FIELD_PATH` |
 | same | operator does not apply to the element's declared type | 400 `CONDITION_TYPE_MISMATCH` |
 | `POST /search/async/{entityName}/{modelVersion}` | each row above | the same codes |
 | `DELETE /entity/{entityName}/{modelVersion}` (with a condition) | each row above | the same codes |
+| same | body over 10 MiB | 400 `BAD_REQUEST`, nothing deleted |
 | `POST /entity/stats/{entityName}/{modelVersion}/query`, `condition` | each row above | the same codes |
 | gRPC `EntitySearchRequest` / `EntitySnapshotSearchRequest` | each validation row above | envelope `Success=false`, `Error.Code` `CLIENT_ERROR`, the code above in `Error.Message` |
 | same | the condition does not parse (`values` not an array) | transport status `InvalidArgument` (as for any condition that does not parse) |
-| `POST /model/{entityName}/{modelVersion}/workflow/import`, array criterion | any of the above | 400 `VALIDATION_FAILED` |
+| `POST /model/{entityName}/{modelVersion}/workflow/import`, array criterion | any row above except the type row | 400 `VALIDATION_FAILED` |
+| same | operator does not apply to the element's declared type | imports; the type check runs when the criterion is evaluated, and the save that evaluates it fails with 400 `WORKFLOW_FAILED` |
 | same | criterion that does not parse at all | 400 `VALIDATION_FAILED` |
 
 Happy path on every surface: 200, and only the entities whose tested positions

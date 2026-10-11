@@ -801,8 +801,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
   array is `400 INVALID_CONDITION` on every search surface and every clause
-  type.** Before, direct and async search answered `400 BAD_REQUEST` for a
-  `simple` or `lifecycle` clause, while grouped stats and conditional delete
+  type.** Before, direct and async search and conditional delete answered
+  `400 BAD_REQUEST` for a `simple` or `lifecycle` clause, while grouped stats
   already answered `INVALID_CONDITION`. The status stays `400`; only the
   code changes.
 
@@ -835,7 +835,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   one order — structure, then patterns, then the model's paths, then types
   — so one malformed condition gets the same code on each.** A bad pattern
   on an undeclared path is now `400 INVALID_CONDITION` on search; it was
-  `400 INVALID_FIELD_PATH`.
+  `400 INVALID_FIELD_PATH`. On grouped statistics an object operand is now
+  `400 INVALID_CONDITION`; it was `400 CONDITION_TYPE_MISMATCH`. A
+  structural fault on an undeclared path, such as a missing `operatorType`,
+  is now `400 INVALID_CONDITION` there too; it was `400 INVALID_FIELD_PATH`.
 
 - **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model,
   before checking a condition that parses.** A malformed condition on an

@@ -224,7 +224,7 @@ Additive MINOR — two new optional fields:
 - **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
   `NONE` / `FIXED` selector a processor and a criterion function already carry.
 
-Every payload 1.4 accepted that does not fall under the five tightenings below
+Every payload 1.4 accepted that does not fall under the nine tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -232,7 +232,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Five tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Nine tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported and *worked* — so they are recorded
 here, under the rubric of §"Tightening releases":
@@ -275,6 +275,27 @@ here, under the rubric of §"Tightening releases":
 5. **A criterion that is not a valid condition is refused at import.** It
    imported and then failed every evaluation, so no working configuration is
    affected.
+6. **An array operand is refused under every operator other than `BETWEEN`
+   and `BETWEEN_INCLUSIVE`**, as a `simple` or `lifecycle` clause's `value`
+   and as an `array` clause's entry. No other operator takes a set of values.
+   The criterion imported, and the evaluator compared the field with the
+   array's printed text, which answers a question the author did not ask.
+   Rubric point 1 applies: fail loud where the old answer was wrong.
+7. **A `null` `BETWEEN` or `BETWEEN_INCLUSIVE` bound is refused.** The
+   evaluator read it as an empty text bound, a range nobody wrote, and the
+   stores do not agree on what it means. Rubric point 1 applies.
+8. **An object or array `BETWEEN` or `BETWEEN_INCLUSIVE` bound is refused.**
+   A bound must be a non-null scalar. The evaluator compared against the
+   bound's printed form, so the criterion answered as if the author had
+   written that text. Rubric point 1 applies.
+9. **A criterion that tests more than 10,000 entries is refused** (each entry
+   in an `array` clause's `values` counts one, `null` entries included, and
+   every other clause counts one). This one does reject configurations that
+   worked. It is taken because an `array` clause expands into one clause per
+   entry, and the engine expands the criterion again each time it evaluates
+   it, so an unbounded criterion costs every save that reaches its
+   transition. The limit is fixed, not a server setting, and the error names
+   the limit and the count.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -286,7 +307,10 @@ to guard a few fields. The third rule touches only exports of v0.8.3 and
 v0.8.4, and its error names the field to remove. Rules 4 and 5 touch only
 `array` criteria and criteria that cannot be evaluated, and the error names
 where the criterion is. An `array` criterion without an operator is fixed by
-adding `"operatorType":"EQUALS"`. All five rules apply to an import under
+adding `"operatorType":"EQUALS"`. Rules 6 to 8 touch only criteria whose
+operand has a shape no operator can evaluate as written, and rule 9 only a
+criterion far larger than a guard needs; each error names where the
+criterion is. All nine rules apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 

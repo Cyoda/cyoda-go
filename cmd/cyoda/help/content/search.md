@@ -378,7 +378,7 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 
 ## ERRORS
 
-A condition is checked in one fixed order, and the first failing step gives the code: the body must parse (`INVALID_CONDITION`), then the model must exist (`404 MODEL_NOT_FOUND`, before any check of a condition that parses), then structure (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a malformed path), then patterns (`INVALID_CONDITION`), then the model's paths (`INVALID_FIELD_PATH`), then types (`CONDITION_TYPE_MISMATCH`) — the same on direct and async search, conditional delete and grouped stats.
+A condition is checked in one fixed order, and the first failing step gives the code: the body must parse (`INVALID_CONDITION`), then the model must exist (`404 MODEL_NOT_FOUND`, before any check of a condition that parses), then structure (`INVALID_CONDITION`, or `INVALID_FIELD_PATH` for a malformed path), then patterns (`INVALID_CONDITION`), then the model's paths (`INVALID_FIELD_PATH`), then types (`CONDITION_TYPE_MISMATCH`, or `INVALID_FIELD_PATH` for a `lifecycle` field that is not a meta field) — the same on direct and async search, conditional delete and grouped stats.
 
 - `errors.MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant (search, async submit)
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — async job UUID does not exist.
