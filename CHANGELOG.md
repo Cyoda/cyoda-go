@@ -768,9 +768,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `CONDITION_TYPE_MISMATCH`. The rule holds on direct and async search,
   conditional delete, grouped stats and over gRPC. A workflow criterion is
   checked when it is evaluated, so a criterion that used to read as "not
-  satisfied" now aborts the save with `400 WORKFLOW_FAILED`. A string or pattern operator on
-  `creationDate` or `lastUpdateTime` moves from `400 INVALID_CONDITION` to
-  `400 CONDITION_TYPE_MISMATCH`.
+  satisfied" now aborts the save with `400 WORKFLOW_FAILED`. A string or
+  pattern operator on `creationDate` or `lastUpdateTime` moves from
+  `400 INVALID_CONDITION` to `400 CONDITION_TYPE_MISMATCH`.
 
 ### Added
 

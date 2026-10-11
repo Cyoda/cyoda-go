@@ -1,7 +1,6 @@
 package search
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -469,30 +468,6 @@ func operandElements(v any) []any {
 	return []any{v}
 }
 
-// loadModelNode fetches and parses the model schema for ref, for the workflow
-// engine's criterion check (via LoadModelNode).
-//
-// A load or parse FAILURE is an error, not an absent node: the schema is what
-// the check needs, and answering the request without it is the fail-open this
-// function used to perform. A (nil, nil) return means something different and
-// benign — the descriptor carries no schema, so the model declares no typed
-// fields and there is no constraint to apply. EnsureModelRegistered has
-// already confirmed the model exists by the time this runs.
-func loadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
-	// Reuse the store's cached parse when it has one; see loadFieldsMap.
-	if p, ok := store.(schemaNodeProvider); ok {
-		return p.SchemaNode(ctx, ref)
-	}
-	desc, err := store.Get(ctx, ref)
-	if err != nil {
-		return nil, err
-	}
-	if desc == nil || len(desc.Schema) == 0 {
-		return nil, nil
-	}
-	return schema.Unmarshal(desc.Schema)
-}
-
 // classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
 // its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
 // itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
@@ -538,16 +513,4 @@ func (s *SearchService) validateConditionTypes(fields map[string]schema.FieldDes
 		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
 	}
 	return nil
-}
-
-// LoadModelNode fetches and parses the model schema for ref.
-//
-// Exported for the workflow engine, which reads the schema once per criterion
-// and derives the fields map it validates and types against. Failure policy
-// is the one
-// stated on the unexported loader: a load or parse failure is an error, while
-// (nil, nil) means the descriptor carries no schema and there is no type
-// constraint to apply.
-func LoadModelNode(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (*schema.ModelNode, error) {
-	return loadModelNode(ctx, store, ref)
 }

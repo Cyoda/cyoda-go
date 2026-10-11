@@ -160,8 +160,8 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 // mirroring a real caching model store, whose Get keeps serving the
 // now-updated cache indefinitely after a RefreshAndGet repopulates it,
 // rather than reverting to nothing. evaluateCriterion itself performs only
-// ONE read (search.LoadModelNode, consolidated — the fields map it types
-// against is derived from that same node, not a second independent read)
+// ONE read (search.LoadFieldsMap — the fields map it types against, not a
+// second independent read)
 // plus, on the rare path where that read misses a path, the ONE bounded
 // refresh search.ValidateKnownPaths performs internally; this fallback
 // keeps the fixture correct for any OTHER caller in this file that issues
@@ -300,12 +300,10 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	if rc := ms.RefreshCount(); rc != 1 {
 		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
 	}
 }
 
@@ -493,11 +491,9 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 	if rc := ms.RefreshCount(); rc != 1 {
 		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
 	}
 }

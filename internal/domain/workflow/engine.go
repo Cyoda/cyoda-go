@@ -1068,17 +1068,15 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 		modelStore, err := e.factory.ModelStore(cc.ctx)
 		if err != nil {
 			loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
-		} else if n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
+		} else if fm, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
 			loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
 				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
 		} else {
-			// ONE read, ONE parse: the fields map derived from it feeds the
-			// path check below, the type-soundness check
-			// (ValidateConditionValueTypes) and Prepare's fieldTypes, so all
-			// three type against the same schema snapshot.
-			if n != nil {
-				fields = n.FieldsMap()
-			}
+			// ONE read: the fields map feeds the path check below, the
+			// type-soundness check (ValidateConditionValueTypes) and
+			// Prepare's fieldTypes, so all three type against the same
+			// schema snapshot.
+			fields = fm
 			// A query never executes against a field the model does not
 			// declare (ruling, spec §5): hold every path the criterion
 			// names to the model's declared fields. This carries the one

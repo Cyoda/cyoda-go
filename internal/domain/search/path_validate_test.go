@@ -291,8 +291,8 @@ func TestSearch_SortKeyRefreshFailure_ReportedAsInfraNot4xx(t *testing.T) {
 
 	stale := buildSearchDescriptor(t, ref, "a")
 	ms := &refreshingModelStore{
-		// Generous supply: EnsureModelRegistered, validateConditionTypes'
-		// own loadModelNode Get, and resolveSortKeys' loadFieldsMap Get all
+		// Generous supply: EnsureModelRegistered, validateConditionPaths'
+		// loadFieldsMap Get, and resolveSortKeys' loadFieldsMap Get all
 		// consume from this queue before the sort-key refresh is reached.
 		getQueue:   []*spi.ModelDescriptor{stale, stale, stale, stale, stale},
 		refreshErr: errors.New("connection refused"),
