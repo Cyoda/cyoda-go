@@ -132,3 +132,21 @@ func TestCriterionArrayClause_RefusedAtImport(t *testing.T) {
 		resp.Body.Close()
 	}
 }
+
+// Import checks a criterion's grammar, not the model's types: an operator that
+// does not fit the element's declared type imports, and the save that
+// evaluates it fails with 400 WORKFLOW_FAILED.
+func TestCriterionArrayClause_TypeMismatchFailsTheSave(t *testing.T) {
+	const model = "e2e-crit-array-type-mismatch"
+	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"crit-array-type-wf","initialState":"NONE","active":true,
+		"states":{"NONE":{"transitions":[{"name":"init","next":"CREATED","manual":false,
+			"criterion":{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}}]},
+		"CREATED":{}}}]}`
+	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3]}`, wf)
+	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), `{"name":"A","scores":[90,40,75]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "WORKFLOW_FAILED")
+	resp.Body.Close()
+}

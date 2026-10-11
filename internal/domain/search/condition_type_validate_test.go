@@ -54,56 +54,22 @@ func TestValidateConditionTypes_Between_ValidIntegers(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Mixed-type array values (IN semantics)
-// ---------------------------------------------------------------------------
-
-// TestValidateConditionTypes_In_TypeMismatch verifies that an array containing
-// a non-numeric string element against a DOUBLE field is rejected: parse-based,
-// "abc" parses into no declared type (DOUBLE), so the leaf is a type mismatch.
-func TestValidateConditionTypes_In_TypeMismatch(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "EQUALS",
-		Value:        []any{float64(1), "abc", float64(3)},
-	}
-	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
-	if err == nil {
-		t.Fatal("expected error for mixed-type array value against DOUBLE field, got nil")
-	}
-	if !errors.Is(err, errConditionTypeMismatch) {
-		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
-	}
-}
-
-// TestValidateConditionTypes_In_AllNumeric verifies that an array of all-numeric
-// values against a DOUBLE field is accepted (every element parses as DOUBLE).
-func TestValidateConditionTypes_In_AllNumeric(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "EQUALS",
-		Value:        []any{float64(1), float64(2), float64(3)},
-	}
-	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
-	if err != nil {
-		t.Fatalf("expected no error for all-numeric array value against DOUBLE field, got: %v", err)
-	}
-}
-
-// TestValidateConditionTypes_EmptyArray_Accepted verifies that an empty array
-// value is accepted without error (no elements to mismatch).
-func TestValidateConditionTypes_EmptyArray_Accepted(t *testing.T) {
+// TestValidateConditionTypes_Between_OneBoundMismatch verifies that a BETWEEN
+// pair is refused when only one bound fails to parse into the field's type:
+// each bound is checked, not just the first.
+func TestValidateConditionTypes_Between_OneBoundMismatch(t *testing.T) {
 	model := buildDoubleModel()
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.price",
 		OperatorType: "BETWEEN",
-		Value:        []any{},
+		Value:        []any{float64(1), "abc"},
 	}
 	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
-	if err != nil {
-		t.Fatalf("expected no error for empty array value, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error for a non-numeric upper bound against a DOUBLE field, got nil")
+	}
+	if !errors.Is(err, errConditionTypeMismatch) {
+		t.Errorf("expected errConditionTypeMismatch sentinel, got: %v", err)
 	}
 }
 

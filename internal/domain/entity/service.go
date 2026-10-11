@@ -1173,6 +1173,13 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 	return ids, nil
 }
 
+// ErrInvalidCondition wraps a predicate.ParseCondition failure on the
+// conditional-delete path. The HTTP handler maps it (via errors.Is) to 400
+// INVALID_CONDITION. The sentinel is needed because the predicate package
+// returns plain fmt.Errorf values, so the handler has no other typed signal
+// to tell a malformed condition (client fault) from a storage error.
+var ErrInvalidCondition = errors.New("invalid condition")
+
 // DeleteEntitiesConditional deletes entities of a model. An empty condBody
 // selects every entity. A present condBody is parsed and only matching
 // entities are deleted. pointInTime, when supplied, selects the committed

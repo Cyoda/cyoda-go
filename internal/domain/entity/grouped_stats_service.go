@@ -17,13 +17,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ErrInvalidCondition wraps a predicate.ParseCondition failure on the
-// conditional-delete path. The HTTP handler maps it (via errors.Is) to 400
-// INVALID_CONDITION. The sentinel is needed because the predicate package
-// returns plain fmt.Errorf values, so the handler has no other typed signal
-// to tell a malformed condition (client fault) from a storage error.
-var ErrInvalidCondition = errors.New("invalid condition")
-
 // GroupedStatsService is the per-request dispatcher described in spec §4.
 // It decides between native pushdown (spi.GroupedAggregator) and the
 // streaming-tally fallback (EntityStore.Iterate + in-process accumulator).
