@@ -379,9 +379,10 @@ var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
 var errInvalidFieldPath = fmt.Errorf("invalid field path")
 
 // ErrConditionTypeMismatch and ErrInvalidFieldPath are exported aliases of
-// the sentinels above, letting other domain packages (e.g. entity's
-// grouped-stats) classify a returned error via errors.Is without duplicating
-// the sentinel or depending on package-internal identifiers.
+// the sentinels above. No production code outside this package uses them;
+// they let tests in other domain packages (entity, workflow) assert a
+// returned error via errors.Is without depending on package-internal
+// identifiers.
 var (
 	ErrConditionTypeMismatch = errConditionTypeMismatch
 	ErrInvalidFieldPath      = errInvalidFieldPath

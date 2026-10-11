@@ -830,9 +830,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   async, HTTP and gRPC), conditional delete, grouped statistics and workflow
   import. The limit bounds the expansion: an `array` clause expands into one
   clause per entry, and each check expands it again. It does not bound the
-  total cost of a request; one with large `MATCHES_PATTERN` or `LIKE`
-  operands can still cost about 1.5 GiB inside the limit, as a group of
-  simple pattern clauses does.
+  total cost of a request, just as a group of simple pattern clauses does
+  not.
 
 - **Search, conditional delete and grouped statistics check a condition in
   one order — structure, then patterns, then the model's paths, then types

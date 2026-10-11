@@ -49,9 +49,8 @@ const MaxConditionDepth = spi.MaxConditionDepth
 // prepared matcher) expands it again. The limit bounds that expansion: the
 // count is taken first, in ValidateCondition and ValidateCriterionCondition,
 // so no expansion runs on a condition over the limit. It does not bound the
-// total cost of a request; a request with large MATCHES_PATTERN or LIKE
-// operands can still cost about 1.5 GiB inside the limit, as a group of
-// simple pattern clauses does.
+// total cost of a request, just as a group of simple pattern clauses does
+// not.
 const MaxConditionEntries = 10_000
 
 // canonicalOperators is the single source of truth for the valid
