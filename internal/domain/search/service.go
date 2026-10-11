@@ -616,8 +616,8 @@ func (s *SearchService) ReleaseRegisteredJobs(ctx context.Context) int {
 // Search/SubmitAsync boundary: a jsonPath outside JSON Path nomenclature
 // (errInvalidFieldPath) maps to INVALID_FIELD_PATH — the same code the
 // schema-driven path check emits, because both mean "that is not a field this
-// request can address"; an object-operand shape violation, a BETWEEN operand
-// that is not a two-element pair, an unknown or missing operatorType
+// request can address"; an object operand, an array operand outside BETWEEN,
+// a BETWEEN operand that is not a two-element pair, an unknown or missing operatorType
 // (operator-semantics.md §4: "on every surface that carries a condition"), an
 // unknown group operator and a malformed array clause all wrap
 // ErrInvalidCondition and map to INVALID_CONDITION; any other structural

@@ -11,15 +11,16 @@ import (
 // RunArrayClauseOperator pins that an array clause's operatorType applies at
 // every tested position, identically on every backend, on the pushed-down
 // path, on the in-memory path (the clause inside NOT), and through async
-// search, which stores the condition and re-parses it where the job runs.
+// search, which stores the condition and re-parses it where the job runs. The
+// refusals are identical on every backend too.
 func RunArrayClauseOperator(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "parity-array-clause-operator"
 	const modelVersion = 1
-	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"name":"S","scores":[1,2,3]}`, searchWorkflowJSON)
-	for _, doc := range []string{`{"name":"A","scores":[90,40,75]}`, `{"name":"B","scores":[10,95,60]}`} {
+	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"name":"S","scores":[1,2,3],"tags":["t"]}`, searchWorkflowJSON)
+	for _, doc := range []string{`{"name":"A","scores":[90,40,75],"tags":["a","b"]}`, `{"name":"B","scores":[10,95,60],"tags":["c"]}`} {
 		if _, err := c.CreateEntity(t, modelName, modelVersion, doc); err != nil {
 			t.Fatalf("CreateEntity: %v", err)
 		}
@@ -68,12 +69,20 @@ func RunArrayClauseOperator(t *testing.T, fixture BackendFixture) {
 		t.Errorf("async GREATER_THAN: want 1 result, got %d", len(page.Content))
 	}
 
-	status, body, err := c.SyncSearchRaw(t, modelName, modelVersion,
-		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`)
-	if err != nil {
-		t.Fatalf("SyncSearchRaw: %v", err)
-	}
-	if status != http.StatusBadRequest || !containsErrorCode(body, "INVALID_CONDITION") {
-		t.Errorf("clause testing nothing: want 400 INVALID_CONDITION, got %d %s", status, body)
+	// Refused on every backend before any backend evaluates it. An array
+	// operand outside BETWEEN is refused because the backends would otherwise
+	// each answer it differently.
+	for _, r := range []struct{ name, condition string }{
+		{"clause testing nothing", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`},
+		{"array entry under NOT_EQUAL", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`},
+		{"array value under NOT_EQUAL", `{"type":"simple","jsonPath":"$.name","operatorType":"NOT_EQUAL","value":["A","B"]}`},
+	} {
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, r.condition)
+		if err != nil {
+			t.Fatalf("[%s] SyncSearchRaw: %v", r.name, err)
+		}
+		if status != http.StatusBadRequest || !containsErrorCode(body, "INVALID_CONDITION") {
+			t.Errorf("[%s] want 400 INVALID_CONDITION, got %d %s", r.name, status, body)
+		}
 	}
 }

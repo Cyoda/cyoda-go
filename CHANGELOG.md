@@ -786,6 +786,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the condition DTOs list only the 26 operators the server accepts.
   Migration: add `"operatorType":"EQUALS"` to existing array clauses.
 
+- **An array operand is `400 INVALID_CONDITION` under every operator other
+  than `BETWEEN` and `BETWEEN_INCLUSIVE`,** on a `simple` or `lifecycle`
+  clause's `value` and on an `array` clause's entry, on every search surface,
+  conditional delete, grouped stats and gRPC search; workflow import answers
+  `400 VALIDATION_FAILED`. No other operator takes a set of values. Before,
+  it was accepted and the backends answered differently: on a text field
+  `NOT_EQUAL ["a","b"]` matched every entity on some backends, so a
+  conditional delete removed nearly the whole model.
+
 - **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
   array is `400 INVALID_CONDITION` on every search surface and every clause
   type.** Before, direct and async search answered `400 BAD_REQUEST` for a

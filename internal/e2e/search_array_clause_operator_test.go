@@ -11,7 +11,8 @@ import (
 )
 
 // An array clause applies its operatorType at every position whose entry in
-// `values` is not null. Entities: A scores [90,40,75], B scores [10,95,60].
+// `values` is not null. Entities: A scores [90,40,75] tags [a,b], B scores
+// [10,95,60] tags [c].
 
 const scoresWorkflow = `{
 	"importMode": "REPLACE",
@@ -23,9 +24,9 @@ const scoresWorkflow = `{
 
 func setupScoresModel(t *testing.T, model string) (idA, idB string) {
 	t.Helper()
-	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3]}`, scoresWorkflow)
-	idA = createEntityE2E(t, model, 1, `{"name":"A","scores":[90,40,75]}`)
-	idB = createEntityE2E(t, model, 1, `{"name":"B","scores":[10,95,60]}`)
+	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3],"tags":["t"]}`, scoresWorkflow)
+	idA = createEntityE2E(t, model, 1, `{"name":"A","scores":[90,40,75],"tags":["a","b"]}`)
+	idB = createEntityE2E(t, model, 1, `{"name":"B","scores":[10,95,60],"tags":["c"]}`)
 	return idA, idB
 }
 
@@ -42,6 +43,10 @@ var arrayClauseRefusals = []struct {
 	{"object entry", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[{"a":1}]}`, "INVALID_CONDITION"},
 	{"BETWEEN not a pair", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[5]}`, "INVALID_CONDITION"},
 	{"values not an array", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":"x"}`, "INVALID_CONDITION"},
+	// An array entry is a single value except under BETWEEN. On a STRING array
+	// it would otherwise match on some backends and not on others; under
+	// NOT_EQUAL a conditional delete would remove nearly every entity.
+	{"array entry outside BETWEEN", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`, "INVALID_CONDITION"},
 	{"bare path", `{"type":"array","jsonPath":"$.scores","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"text operator on numbers", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}`, "CONDITION_TYPE_MISMATCH"},
 }

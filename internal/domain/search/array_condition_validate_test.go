@@ -2,6 +2,7 @@ package search
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -138,6 +139,63 @@ func TestValidateCondition_BetweenNullBound_IsInvalidCondition(t *testing.T) {
 					t.Errorf("%s %v %+v: want ErrInvalidCondition, got %v", op, p, c, err)
 				}
 			}
+		}
+	}
+}
+
+// An array operand is refused except under BETWEEN / BETWEEN_INCLUSIVE, where
+// it is the [low, high] pair. No other operator takes a set of values; left
+// unchecked, the backends evaluate such an operand differently (memory
+// compares the stringified array, sqlite errors on CONTAINS, matches every
+// row on NOT_EQUAL and none on EQUALS). It is a shape error: INVALID_CONDITION
+// on every clause, from both the search and the criterion entry point.
+func TestValidateCondition_ArrayOperand_RefusedExceptBetween(t *testing.T) {
+	pair := []any{"a", "b"}
+	for _, op := range []string{"EQUALS", "NOT_EQUAL", "CONTAINS", "GREATER_THAN", "IS_NULL", "MATCHES_PATTERN"} {
+		for _, c := range []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: op, Value: pair},
+			&predicate.LifecycleCondition{Field: "state", OperatorType: op, Value: pair},
+			&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{pair}},
+			&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{"a", []any{}}},
+		} {
+			if err := ValidateCondition(c); !errors.Is(err, ErrInvalidCondition) {
+				t.Errorf("%s %+v: ValidateCondition: want ErrInvalidCondition, got %v", op, c, err)
+			}
+			if err := ValidateCriterionCondition(c); !errors.Is(err, ErrInvalidCondition) {
+				t.Errorf("%s %+v: ValidateCriterionCondition: want ErrInvalidCondition, got %v", op, c, err)
+			}
+		}
+	}
+	// The pair stays accepted where it belongs.
+	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
+		for _, c := range []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: op, Value: []any{1, 5}},
+			&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{[]any{1, 5}}},
+		} {
+			if err := ValidateCondition(c); err != nil {
+				t.Errorf("%s %+v: ValidateCondition: unexpected error %v", op, c, err)
+			}
+			if err := ValidateCriterionCondition(c); err != nil {
+				t.Errorf("%s %+v: ValidateCriterionCondition: unexpected error %v", op, c, err)
+			}
+		}
+	}
+}
+
+// A clause with no tested position names the field a client must send. A
+// client on the old shape (`value` instead of `values`) otherwise reads only
+// "tests no position" and has nothing to correct.
+func TestValidateCondition_ArrayClauseTestsNothing_NamesValues(t *testing.T) {
+	c := &predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: "EQUALS"}
+	for name, err := range map[string]error{
+		"ValidateCondition":          ValidateCondition(c),
+		"ValidateCriterionCondition": ValidateCriterionCondition(c),
+	} {
+		if !errors.Is(err, spi.ErrArrayClauseTestsNothing) || !errors.Is(err, ErrInvalidCondition) {
+			t.Fatalf("%s: want ErrInvalidCondition wrapping ErrArrayClauseTestsNothing, got %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "`values` with at least one non-null entry") {
+			t.Errorf("%s: message must name `values`, got %q", name, err.Error())
 		}
 	}
 }

@@ -112,6 +112,7 @@ func TestCriterionArrayClause_RefusedAtImport(t *testing.T) {
 		`{"type":"array","jsonPath":"$.scores[*]","values":[50]}`,
 		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`,
 		`{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[1]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"NOT_EQUAL","values":[[1,2]]}`,
 		`{"type":"bogus"}`,
 	} {
 		wf := fmt.Sprintf(`{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"w","initialState":"NONE","active":true,

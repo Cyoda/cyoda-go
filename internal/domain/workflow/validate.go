@@ -304,9 +304,10 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
 //   - an operatorType outside the canonical set, or an operand shape/arity
-//     violation (an object operand, or a BETWEEN with other than two
-//     entries). Delegates to search.ValidateCriterionCondition — the same
-//     operator table search.ValidateCondition enforces, minus the
+//     violation (an object operand, an array operand outside BETWEEN, or a
+//     BETWEEN without exactly two non-null bounds). Delegates to
+//     search.ValidateCriterionCondition — the same operator table
+//     search.ValidateCondition enforces, minus the
 //     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
 //     every surface that carries a condition, workflow import included").
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates

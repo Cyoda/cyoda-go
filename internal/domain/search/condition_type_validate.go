@@ -38,8 +38,8 @@ import (
 // declared types or an operand parses into none of them
 // (errConditionTypeMismatch), or a lifecycle field is unknown
 // (errInvalidFieldPath). Operand shape/arity — an object operand
-// (never valid for any operator), null on a binary op, a range op's
-// 2-element bounds shape — is enforced separately by
+// (never valid for any operator), an array operand (valid only as a range
+// op's 2-element bounds), a range op's bounds shape — is enforced separately by
 // ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
 // this type check.
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
@@ -163,11 +163,11 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// Null operand carries no type to mismatch; arity is enforced elsewhere.
 		return nil
 	case []any:
-		// Array operand — BETWEEN's [lo, hi] bounds or a legacy positional
-		// (IN-style) set. Every non-null element must parse into a declared
-		// type; a null element is compatible with any type; an empty array has
-		// nothing to mismatch. Range-op arity (exactly two bounds) is enforced
-		// by validateBetweenArity, not here.
+		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
+		// validateOperandShape refuses an array under every other operator,
+		// and validateBetweenArity refuses a pair that is not exactly two
+		// non-null bounds, before this check runs. Every element must parse
+		// into a declared type.
 		for i, elem := range v {
 			if elem == nil {
 				continue
@@ -456,8 +456,9 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 }
 
 // operandElements normalises a condition value into its operand elements: a
-// scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, or a
-// positional set) becomes one element per member. Callers skip nil elements.
+// scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, the
+// only array operand validateOperandShape accepts) becomes one element per
+// member. Callers skip nil elements.
 func operandElements(v any) []any {
 	if arr, ok := v.([]any); ok {
 		return arr
