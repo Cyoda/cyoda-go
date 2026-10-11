@@ -123,7 +123,7 @@ other code defines what it means.
 | `POST /search/direct/{entityName}/{modelVersion}` | missing or unknown `operatorType` | 400 `INVALID_CONDITION` |
 | same | `values` missing, empty or all `null` | 400 `INVALID_CONDITION` |
 | same | an entry is an object, or a `BETWEEN` entry is not a two-element array | 400 `INVALID_CONDITION` |
-| same | `values` is not an array (body does not parse) | 400 `BAD_REQUEST` |
+| same | `values` is not an array (the condition does not parse) | 400 `INVALID_CONDITION` |
 | same | path without trailing `[*]`, or with an earlier `[*]` | 400 `INVALID_FIELD_PATH` |
 | same | operator does not apply to the element's declared type | 400 `CONDITION_TYPE_MISMATCH` |
 | `POST /search/async/{entityName}/{modelVersion}` | each row above | the same codes |
