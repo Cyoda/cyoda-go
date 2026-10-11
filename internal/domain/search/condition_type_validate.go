@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -14,24 +15,28 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ValidateConditionValueTypes walks a condition tree and checks that each
-// simple clause's operand PARSES into at least one of the field's declared
-// types — the same type-directed parse the leaf-comparison kernel
-// (spi.ExpandLeaf) performs at evaluation time. This replaces the older
-// JSON-kind-vs-DataType assignability check and its operator-class matrix:
-// there is no operator-vs-field-type rejection anymore. CONTAINS on a numeric
-// field, GREATER_THAN "true" on a boolean, a numeric-looking string on a
-// [INTEGER, STRING] field — all parse and are ACCEPTED; the kernel evaluates
-// them to a (non-)match, never a type error (spec §6).
+// ValidateConditionValueTypes walks a condition tree and checks each simple
+// clause against the field's declared types, in two steps:
+//
+//   - the operator must apply to at least one declared type
+//     (operatorAppliesTo): a string or pattern operator needs a text type, an
+//     ordering or range operator an ordered one. CONTAINS on a numeric field
+//     or GREATER_THAN on a boolean can never match, so it is refused rather
+//     than answered with an empty result.
+//   - a comparison or range operand must PARSE into at least one declared
+//     type — the same type-directed parse the leaf-comparison kernel
+//     (spi.ExpandLeaf) performs at evaluation time. A numeric-looking string
+//     on an [INTEGER, STRING] field parses and is accepted.
 //
 // The model's FieldsMap provides a lookup from JSONPath (e.g. "$.price") to
 // a FieldDescriptor carrying the observed DataType(s). Conditions referencing
 // unknown paths are accepted (the condition may traverse a path not yet seen
 // in training data); a field with no declared types carries no constraint.
 //
-// Returns a non-nil error only when an operand parses into NONE of the
-// field's declared types (errConditionTypeMismatch), or a lifecycle field is
-// unknown (errInvalidFieldPath). Operand shape/arity — an object operand
+// Returns a non-nil error only when an operator does not apply to the field's
+// declared types or an operand parses into none of them
+// (errConditionTypeMismatch), or a lifecycle field is unknown
+// (errInvalidFieldPath). Operand shape/arity — an object operand
 // (never valid for any operator), null on a binary op, a range op's
 // 2-element bounds shape — is enforced separately by
 // ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
@@ -154,10 +159,15 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	// type check runs) as INVALID_CONDITION, not here: it is a shape/arity
 	// error (spec §6/§8), not a field-type mismatch.
 
+	op := spi.MapOperator(c.OperatorType)
+	if !operatorAppliesTo(op, fd.Types) {
+		return fmt.Errorf("operator %q does not apply to field %q's declared types %v: %w",
+			c.OperatorType, c.JsonPath, fd.Types, errConditionTypeMismatch)
+	}
+
 	// Only the comparison/range family constrains the operand's type. String
-	// operators and the null-presence tests parse any operand — they evaluate
-	// to a (non-)match, never a type error (spec §6, parse-based).
-	if !isParseConstrainedOp(spi.MapOperator(c.OperatorType)) {
+	// operators and the null-presence tests parse any operand.
+	if !isParseConstrainedOp(op) {
 		return nil
 	}
 
@@ -204,6 +214,75 @@ func isParseConstrainedOp(op spi.FilterOp) bool {
 		return true
 	}
 	return false
+}
+
+// operatorAppliesTo reports whether op can be satisfied by a value of at least
+// one of the declared types. A string or pattern operator needs a text type:
+// the kernel tests it against stored text only, so on any other field it can
+// never match, and a negated one matches every value. An ordering or range
+// operator needs an ordered type: the kernel compares a boolean or an
+// identifier for equality only, so GREATER_THAN on one matches nothing. A leaf
+// the operator cannot apply to is refused, rather than answered with a result
+// that only looks like an answer.
+func operatorAppliesTo(op spi.FilterOp, declared []schema.DataType) bool {
+	switch {
+	case isTextOp(op):
+		return slices.ContainsFunc(declared, isTextType)
+	case isOrderingOp(op):
+		return slices.ContainsFunc(declared, isOrderedType)
+	}
+	return true
+}
+
+// isOrderingOp reports whether op compares by order: the four inequalities
+// and the two range operators.
+func isOrderingOp(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterGt, spi.FilterGte, spi.FilterLt, spi.FilterLte,
+		spi.FilterBetween, spi.FilterBetweenInclusive:
+		return true
+	}
+	return false
+}
+
+// isOrderedType reports whether the kernel orders values of t: numbers, text
+// and the temporal subtypes.
+func isOrderedType(t schema.DataType) bool {
+	return schema.IsNumeric(t) || isTextType(t) || isTemporalType(t)
+}
+
+// isTemporalType reports whether t is one of the six temporal subtypes.
+func isTemporalType(t schema.DataType) bool {
+	switch t {
+	case schema.LocalDate, schema.LocalDateTime, schema.LocalTime,
+		schema.ZonedDateTime, schema.Year, schema.YearMonth:
+		return true
+	}
+	return false
+}
+
+// isTextOp reports whether op is one of the sixteen string and pattern
+// operators — the set spi.ExpandLeaf evaluates as a text test.
+func isTextOp(op spi.FilterOp) bool {
+	switch op {
+	case spi.FilterContains, spi.FilterNotContains,
+		spi.FilterStartsWith, spi.FilterNotStartsWith,
+		spi.FilterEndsWith, spi.FilterNotEndsWith,
+		spi.FilterLike, spi.FilterMatchesRegex,
+		spi.FilterIEq, spi.FilterINe,
+		spi.FilterIContains, spi.FilterINotContains,
+		spi.FilterIStartsWith, spi.FilterINotStartsWith,
+		spi.FilterIEndsWith, spi.FilterINotEndsWith:
+		return true
+	}
+	return false
+}
+
+// isTextType reports whether t is a text type. A temporal or identifier value
+// is stored as a JSON string too, but it compares by its own type, never as
+// text.
+func isTextType(t schema.DataType) bool {
+	return t == schema.String || t == schema.Character
 }
 
 // carriesScalarOperand reports whether op compares the field against a scalar

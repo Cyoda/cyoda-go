@@ -2,6 +2,7 @@ package parity
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -515,4 +516,75 @@ func RunSearchDataFieldTemporalResolution(t *testing.T, fixture BackendFixture) 
 		t.Fatalf("SyncSearch yr >= 2024-09-09: %v", err)
 	}
 	assertResultIDSet(t, "yr >= 2024-09-09 resolves to > 2024", yrResults, []string{y2025ID.String()})
+}
+
+// RunSearchTextOperatorOnNonTextField400 pins that a string or pattern
+// operator on a field with no text type is refused with 400
+// CONDITION_TYPE_MISMATCH on every backend. Such a leaf can never match a
+// stored value: before the refusal it answered an empty result for a positive
+// operator, and every entity holding a number for a negated one.
+func RunSearchTextOperatorOnNonTextField400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-textop-400"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":100,"status":"active"}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	for _, op := range []string{"CONTAINS", "NOT_CONTAINS", "ISTARTS_WITH", "LIKE", "MATCHES_PATTERN"} {
+		cond := `{"type":"simple","jsonPath":"$.amount","operatorType":"` + op + `","value":"1"}`
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("[%s] SyncSearchRaw: %v", op, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("[%s] expected 400, got %d; body=%s", op, status, body)
+		}
+		if !containsErrorCode(body, "CONDITION_TYPE_MISMATCH") {
+			t.Errorf("[%s] expected errorCode CONDITION_TYPE_MISMATCH, body=%s", op, body)
+		}
+	}
+}
+
+// RunSearchOrderingOperatorOnUnorderedField400 pins that an ordering or range
+// operator on a field with no ordered type — here a boolean — is refused with
+// 400 CONDITION_TYPE_MISMATCH on every backend, while equality still answers.
+func RunSearchOrderingOperatorOnUnorderedField400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-ordop-400"
+	const modelVersion = 1
+	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"name":"seed","active":true}`, searchWorkflowJSON)
+
+	aID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","active":true}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	for _, cond := range []string{
+		`{"type":"simple","jsonPath":"$.active","operatorType":"GREATER_THAN","value":"false"}`,
+		`{"type":"simple","jsonPath":"$.active","operatorType":"BETWEEN","value":[false,true]}`,
+	} {
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("SyncSearchRaw %s: %v", cond, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d; body=%s", cond, status, body)
+		}
+		if !containsErrorCode(body, "CONDITION_TYPE_MISMATCH") {
+			t.Errorf("%s: expected errorCode CONDITION_TYPE_MISMATCH, body=%s", cond, body)
+		}
+	}
+
+	results, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.active","operatorType":"EQUALS","value":true}`)
+	if err != nil {
+		t.Fatalf("SyncSearch EQUALS true: %v", err)
+	}
+	assertResultIDSet(t, "active EQUALS true", results, []string{aID.String()})
 }
