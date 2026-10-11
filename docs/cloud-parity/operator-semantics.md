@@ -32,15 +32,20 @@ CONDITION_TYPE_MISMATCH`.
 | Operators | Need a declared type that is |
 |---|---|
 | the sixteen string and pattern operators (section 4) | text: `STRING` or `CHARACTER` |
-| `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE` | ordered: numeric, text or temporal |
+| `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL` | ordered: numeric, text or temporal |
+| `BETWEEN`, `BETWEEN_INCLUSIVE` | numeric, `STRING` or temporal, with both bounds parsing into the same type |
 
-A temporal or identifier value is not text, even though it is stored as a JSON
-string: it compares by its own type. A boolean or an identifier has no order,
-only equality. On a field with no such type, the leaf can never be satisfied,
-and a negated one is satisfied by every value — an answer that only looks like
-one. The rule covers the temporal meta fields (`creationDate`,
-`lastUpdateTime`) as `ZonedDateTime` fields. A field with a matching type among
-several takes the operator.
+A comparison or range operand must parse into one of the types the operator
+applies to. A field with a matching type among several takes the operator.
+
+On a numeric or boolean field a string operator can never be satisfied, and a
+negated one is satisfied by every value — an answer that only looks like one.
+A boolean or an identifier has no order, only equality, so an ordering
+operator on one matches nothing. A temporal or identifier value is stored as a
+JSON string, and the evaluator could test it as text; it is **not** text by
+decision: it compares by its own type, so a date is queried with the ordering
+and range operators, never as a string. The rule covers the temporal meta
+fields (`creationDate`, `lastUpdateTime`) as `ZonedDateTime` fields.
 
 Cloud has no such check. A string operator on a field that is not `STRING`
 answers `400` when the operand does not parse into the field's type, `500` when

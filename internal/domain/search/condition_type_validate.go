@@ -419,6 +419,15 @@ var (
 // accepted.
 var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 
+// ValidateLifecycleCondition checks a lifecycle/meta condition for type
+// soundness (known meta field; on temporal fields, an operator that applies to
+// a temporal type and a comparison/range operand that parses into one). Shared by the search API boundary and
+// workflow-criterion import so both reject the same malformed conditions.
+// Returns a descriptive error; callers map it to their own 4xx code.
+func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
+	return validateLifecycleType(c)
+}
+
 // validateLifecycleType enforces type-soundness for LifecycleCondition
 // (meta) clauses, by the same rules a data field gets:
 //   - the field must be a known meta filter field (sortableMetaFields key,
@@ -434,16 +443,6 @@ var metaTemporalDeclared = []spi.DataType{spi.ZonedDateTime}
 // Non-temporal meta fields (state, transitionForLatestSave, transactionId,
 // id) carry no further constraint here: they compare as their stored
 // text/string form regardless of operator.
-
-// ValidateLifecycleCondition checks a lifecycle/meta condition for type
-// soundness (known meta field; a comparison/range operand that parses into a
-// temporal type on temporal fields). Shared by the search API boundary and
-// workflow-criterion import so both reject the same malformed conditions.
-// Returns a descriptive error; callers map it to their own 4xx code.
-func ValidateLifecycleCondition(c *predicate.LifecycleCondition) error {
-	return validateLifecycleType(c)
-}
-
 func validateLifecycleType(c *predicate.LifecycleCondition) error {
 	if !isKnownMetaFilterField(c.Field) {
 		return fmt.Errorf("unknown meta filter field %q: %w", c.Field, errInvalidFieldPath)
@@ -566,7 +565,7 @@ func ClassifyConditionTypeErrCode(err error) string {
 func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore spi.ModelStore, modelRef spi.ModelRef, cond predicate.Condition) *common.AppError {
 	// Gate the model READ on whether cond addresses any data path — a
 	// lifecycle-only condition needs no schema to validate (mirrors
-	// workflow/engine.go's evaluateCriterion, Task 7) — but never gate the
+	// workflow/engine.go's evaluateCriterion) — but never gate the
 	// VALIDATION CALL itself on whether that read was attempted, succeeded,
 	// or found a schema. This used to return nil without calling
 	// ValidateConditionValueTypes at all in two cases — an unreadable

@@ -87,8 +87,9 @@ func resolveOrderBy(keys []OrderKey, fields map[string]schema.FieldDescriptor) (
 		// SORT uses sortKindForData, not spi.ClassifyType: a data-temporal
 		// field sorts lexically (OrderText) — its ISO-8601 bytes are
 		// chronological and byte-identical across backends — while the FILTER
-		// path keeps OrderTemporal via spi.ClassifyType. Decoupling here is what fixes the
-		// cross-backend ORDER BY divergence for data-temporal fields.
+		// path keeps OrderTemporal via spi.ClassifyType. Decoupling here is
+		// what fixes the cross-backend ORDER BY divergence for data-temporal
+		// fields.
 		kind, err := sortKindForData(fd.Types)
 		if err != nil {
 			return nil, fmt.Errorf("field %q: %w", k.Path, err)

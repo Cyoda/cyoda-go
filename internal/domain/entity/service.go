@@ -1173,7 +1173,7 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 // deleteConditionTypeCheck runs condition type-soundness for planDeleteSelection,
 // gating the model READ (never the validation CALL) on whether cond addresses
 // any data path — mirrors search.validateConditionTypes and
-// workflow/engine.go's evaluateCriterion (Task 7). A lifecycle-only condition
+// workflow/engine.go's evaluateCriterion. A lifecycle-only condition
 // needs no schema to validate: ValidateConditionValueTypes tolerates a nil
 // model by design, still running its model-independent half —
 // validateLifecycleType, the one check that refuses a text or pattern
@@ -1186,12 +1186,10 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 // reject. Left unrejected, that predicate reaches the evaluators
 // unvalidated, and a NOT wrapping it selects every entity the inner leaf does
 // not match: on conditional delete, the highest blast-radius surface this
-// predicate reaches, that is a mass delete. Extracted into its own function so it is directly
-// unit-testable (delete_condition_type_gating_test.go) independent of
-// search.ValidateCondition's structural gate a few lines up in
-// planDeleteSelection, which today already rejects a
-// GroupCondition{Operator:"NOT"} outright — the wire-level acceptance this
-// fix pre-empts is a later, separate change.
+// predicate reaches, that is a mass delete. Extracted into its own function
+// so it is directly unit-testable (delete_condition_type_gating_test.go)
+// apart from search.ValidateCondition's structural gate a few lines up in
+// planDeleteSelection.
 func deleteConditionTypeCheck(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) error {
 	var node *schema.ModelNode
 	if len(search.ConditionFieldPaths(cond)) > 0 {

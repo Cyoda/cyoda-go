@@ -8,10 +8,11 @@ import (
 // sortKindForData returns the ORDER-BY sort class for a SourceData leaf. It
 // mirrors spi.ClassifyType but folds temporal subtypes onto OrderText,
 // decoupling the SORT path from the FILTER path (which keeps OrderTemporal via
-// spi.ClassifyType in the condition translator). A data-temporal field is stored as its bare ISO-8601 string,
-// and ISO-8601 lexical order IS chronological order and is byte-identical across
-// every backend: memory bytes.Compare (LessByOrder OrderText), postgres
-// COLLATE "C", sqlite COLLATE BINARY. Sorting it as OrderTemporal would instead
+// spi.ClassifyType in the condition translator). A data-temporal field is
+// stored as its bare ISO-8601 string, and ISO-8601 lexical order IS
+// chronological order and is byte-identical across every backend: memory
+// bytes.Compare (LessByOrder OrderText), postgres COLLATE "C", sqlite COLLATE
+// BINARY. Sorting it as OrderTemporal would instead
 // demand an epoch-ms normalization the bare stored subtype cannot supply
 // (offset-less "2024-09-09"/"2024"), which each backend degrades differently —
 // memory ties on Num=0, postgres yields NULL, sqlite coerces leading digits —
