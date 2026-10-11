@@ -821,6 +821,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluator compared against the bound's printed form, so a conditional
   delete removed the entities that comparison chose.
 
+- **A condition tests at most 10,000 entries; a larger one is
+  `400 INVALID_CONDITION`, and workflow import answers
+  `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
+  counts one, `null` entries included, and every other clause counts one.
+  The count is taken before the condition is expanded, on search (sync and
+  async, HTTP and gRPC), conditional delete, grouped statistics and workflow
+  import. Before, nothing bounded it: an `array` clause expands into one
+  clause per entry, and one 10 MiB body of pattern entries held about 5 GiB
+  on a node.
+
 - **Search, conditional delete and grouped statistics check a condition in
   one order — structure, then patterns, then the model's paths, then types
   — so one malformed condition gets the same code on each.** A bad pattern

@@ -68,6 +68,7 @@ var arrayClauseRefusals = []struct {
 	{"text operator on numbers", map[string]any{"type": "array", "jsonPath": "$.scores[*]", "operatorType": "CONTAINS", "values": []any{"9"}}, "CONDITION_TYPE_MISMATCH"},
 	{"array operand outside BETWEEN", map[string]any{"type": "array", "jsonPath": "$.scores[*]", "operatorType": "NOT_EQUAL", "values": []any{[]any{1, 2}}}, "INVALID_CONDITION"},
 	{"object BETWEEN bound", map[string]any{"type": "array", "jsonPath": "$.scores[*]", "operatorType": "BETWEEN", "values": []any{[]any{map[string]any{"a": 1}, 5}}}, "INVALID_CONDITION"},
+	{"over the size limit", map[string]any{"type": "array", "jsonPath": "$.scores[*]", "operatorType": "EQUALS", "values": append([]any{1}, make([]any, 10_000)...)}, "INVALID_CONDITION"},
 }
 
 func snapshotSearchCE(cond map[string]any) *cepb.CloudEvent {

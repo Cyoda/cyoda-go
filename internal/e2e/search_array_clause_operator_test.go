@@ -53,6 +53,7 @@ var arrayClauseRefusals = []struct {
 	// otherwise reaches the backend: PostgreSQL answers 500.
 	{"object BETWEEN bound", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"BETWEEN","values":[[{"a":1},"z"]]}`, "INVALID_CONDITION"},
 	{"array BETWEEN bound", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"BETWEEN_INCLUSIVE","values":[[["a"],"z"]]}`, "INVALID_CONDITION"},
+	{"over the size limit", arrayClauseWithEntries(10_001), "INVALID_CONDITION"},
 	{"bare path", `{"type":"array","jsonPath":"$.scores","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"earlier wildcard", `{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"text operator on numbers", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}`, "CONDITION_TYPE_MISMATCH"},

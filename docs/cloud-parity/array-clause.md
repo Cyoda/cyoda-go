@@ -21,7 +21,8 @@ cyoda-go defines the array clause's wire shape; Cyoda Cloud aligns to it.
   (missing, empty or all-null `values`), an object entry, an array entry
   under any operator other than `BETWEEN` and `BETWEEN_INCLUSIVE`, a
   `BETWEEN` or `BETWEEN_INCLUSIVE` entry that is not a pair of two non-null
-  scalar bounds — `400 INVALID_CONDITION`; a path that does not end in
+  scalar bounds, a condition that tests more than 10,000 entries (each entry
+  in `values` counts one, `null` entries included) — `400 INVALID_CONDITION`; a path that does not end in
   `[*]` or has an earlier `[*]` — `400 INVALID_FIELD_PATH`; an operator or
   entry that does not fit the element's declared type — `400
   CONDITION_TYPE_MISMATCH`. On workflow
@@ -48,4 +49,6 @@ applies the operator at every listed position, on REST search only. To align:
   clause's `value`.
 - Refuse a missing operator, a clause that tests no position, and a path with
   a wildcard before its trailing `[*]`.
+- Refuse a condition that tests more than 10,000 entries, counted before the
+  clause is expanded (see `condition-check-order.md`, step 3).
 - Accept the clause in workflow criteria and in gRPC search.

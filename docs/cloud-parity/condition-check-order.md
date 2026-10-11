@@ -18,7 +18,7 @@ The first step that fails gives the answer. A later step does not run.
 |---|---|---|
 | 1. Parse | The body is a condition: valid JSON, a known `type`, members of the correct JSON type | `400 INVALID_CONDITION` |
 | 2. Model | The model named in the path exists for the tenant | `404 MODEL_NOT_FOUND` |
-| 3. Structure | Operators, operand shapes, `BETWEEN` pairs, group operators, the `array` clause's shape, `function` clauses (refused in search), path grammar | `400 INVALID_CONDITION`; `400 INVALID_FIELD_PATH` for a path that is not valid path grammar |
+| 3. Structure | First the size: at most 10,000 tested entries, counted before anything is expanded (an `array` clause counts one per entry in `values`, `null` entries included; every other clause counts one). Then operators, operand shapes, `BETWEEN` pairs, group operators, the `array` clause's shape, `function` clauses (refused in search), path grammar | `400 INVALID_CONDITION`; `400 INVALID_FIELD_PATH` for a path that is not valid path grammar |
 | 4. Patterns | Every `LIKE` and `MATCHES_PATTERN` operand compiles | `400 INVALID_CONDITION` |
 | 5. Model paths | Every path the condition names is declared by the model | `400 INVALID_FIELD_PATH` |
 | 6. Types | Every operator applies to the declared type of its field, and every operand fits that type | `400 CONDITION_TYPE_MISMATCH` |
@@ -67,6 +67,10 @@ POST /api/search/direct/{model}/1
   condition that parses.
 - Check patterns before model paths. A bad pattern on an undeclared path is
   `400 INVALID_CONDITION`, not `400 INVALID_FIELD_PATH`.
+- Refuse a condition that tests more than 10,000 entries with
+  `400 INVALID_CONDITION`, counted by the rule in step 3, before any other
+  structural check and before the condition is expanded. Workflow import
+  refuses such a criterion with `400 VALIDATION_FAILED`.
 
 ## Where it is enforced
 
