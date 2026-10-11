@@ -277,8 +277,9 @@ above:
   `internal/domain/search/operators_test.go` and
   `internal/domain/search/handler_unknown_operator_test.go` (an unknown operator
   answers `INVALID_CONDITION`, section 2).
-- The `array` clause's own type and operand-shape checks, section 8 of
-  `path-grammar.md` folded into this document's operator rules:
+- The `array` clause's operator and operands, checked as its positional
+  `simple` clauses (section 8 of `path-grammar.md`), so every operator rule in
+  this document applies to them:
   `internal/domain/search/array_condition_validate_test.go`.
 - An operator that applies to none of the field's declared types, section 1:
   `internal/domain/search/condition_type_operator_test.go`; on every HTTP

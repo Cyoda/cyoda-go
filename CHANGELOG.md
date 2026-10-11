@@ -772,6 +772,34 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   pattern operator on `creationDate` or `lastUpdateTime` moves from
   `400 INVALID_CONDITION` to `400 CONDITION_TYPE_MISMATCH`.
 
+- **An `array` condition carries a required `operatorType`, applied at every
+  tested position.** `{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}`
+  means `scores[0] > 50` and `scores[2] > 70`. A clause without an operator,
+  or that tests no position (`values` missing, empty or all `null`), is `400
+  INVALID_CONDITION`. Before, a clause without an operator compared with
+  `EQUALS`, and a clause that tested no position matched every entity — a
+  conditional delete with all-`null` `values` deleted the whole model. A path with a
+  wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`. Workflow
+  import answers `400 VALIDATION_FAILED` for each, and now also refuses a
+  criterion that is not a valid condition. `ArrayConditionDto` in the OpenAPI
+  spec is `{type, jsonPath, operatorType, values}`, and the operator enums of
+  the condition DTOs list only the 26 operators the server accepts.
+  Migration: add `"operatorType":"EQUALS"` to existing array clauses.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
+  array is `400 INVALID_CONDITION` on every search surface and every clause
+  type.** Before, direct and async search answered `400 BAD_REQUEST` for a
+  `simple` or `lifecycle` clause, while grouped stats and conditional delete
+  already answered `INVALID_CONDITION`. The status stays `400`; only the
+  code changes.
+
+- **A search condition that does not parse is `400 INVALID_CONDITION` on
+  direct and async search**, as it already was on conditional delete and
+  grouped stats. This covers an unknown or missing `type`, a field of the
+  wrong JSON type, and a body that is not a condition. Before, search
+  answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
+  does not parse is still the transport status `InvalidArgument`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
@@ -1159,6 +1187,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **Grouped statistics checks a condition's structure before its field
+  types.** A malformed condition (for example an object operand) answers
+  `400 INVALID_CONDITION`, as search does, not `CONDITION_TYPE_MISMATCH`.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

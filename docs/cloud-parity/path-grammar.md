@@ -350,27 +350,37 @@ Five clause types exist. Two carry a path.
 ### The `array` clause
 
 An `array` clause tests elements of an array by position. Its `jsonPath` **must**
-carry a trailing array wildcard, and the array's element must be a primitive:
+carry a trailing array wildcard. Under an operator that takes an operand, the
+array's element must be a primitive; `IS_NULL` and `NOT_NULL` are valid on any
+element, as section 6 says. Its `operatorType` is required and is applied at
+every tested position:
 
 ```json
-{"type":"array","jsonPath":"$.tags[*]","values":["A",null,"C"]}
+{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}
 ```
 
 Each non-null entry of `values` tests the element at that index. A `null` entry
-tests nothing at that index. The clause above means: element 0 equals `"A"` and
-element 2 equals `"C"`.
+does not test that index. The clause above means: element 0 is greater than `50`
+and element 2 is greater than `70`.
 
 The engine reads the clause as an `AND` of positional comparisons:
 
 ```json
 {"type":"group","operator":"AND","conditions":[
-  {"type":"simple","jsonPath":"$.tags[0]","operatorType":"EQUALS","value":"A"},
-  {"type":"simple","jsonPath":"$.tags[2]","operatorType":"EQUALS","value":"C"}
+  {"type":"simple","jsonPath":"$.scores[0]","operatorType":"GREATER_THAN","value":50},
+  {"type":"simple","jsonPath":"$.scores[2]","operatorType":"GREATER_THAN","value":70}
 ]}
 ```
 
 The two forms are the same condition and answer identically. An `array` clause
-whose `values` are all null tests nothing and matches every entity.
+must test at least one position. A clause whose `values` are missing, empty or
+all null is refused with `400 INVALID_CONDITION`.
+
+The path carries no `[*]` other than the trailing one. One clause tests the
+positions of one array. With an earlier wildcard (`$.orders[*].lines[*]`), the
+positions would come from different inner arrays, so the clause has no single
+meaning. Such a path is rejected with `400 INVALID_FIELD_PATH`. To test one inner
+array, index the outer array: `$.orders[0].lines[*]`.
 
 Because the clause is read as positional comparisons, every rule in this document
 applies to it without exception — the model check of section 6, the union rule of
@@ -378,9 +388,12 @@ section 4, and the type check of `operator-semantics.md`.
 
 A bare path (`$.tags`) is not accepted for an `array` clause. A bare path
 addresses the array itself, not its elements, so it cannot carry a positional
-test. An array of objects is not accepted either, for the reason section 6 gives:
-an element with substructure and no scalar form is not comparable to a scalar.
-Both are rejected with the code section 7 gives for the surface.
+test. Under an operator that takes an operand, an array of objects is not
+accepted either, for the reason section 6 gives: an element with substructure and
+no scalar form is not comparable to a scalar. Both are rejected with the code
+section 7 gives for the surface. `IS_NULL` and `NOT_NULL` carry no operand, so an
+`array` clause with either operator stays valid on an array of objects, as a
+`simple` clause does.
 
 This restricts the `array` clause only. On a `simple` clause a bare path still
 addresses the array itself, and section 6 decides what may be asked of it. On a

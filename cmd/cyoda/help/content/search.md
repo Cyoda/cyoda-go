@@ -107,7 +107,7 @@ The `$.` leader is **required**. A bare `amount` is not a path and is rejected `
 
 An empty array answers the three path forms differently, because each addresses something different. A bare `$.a` addresses the array itself, which exists when it is empty, so `NOT_NULL` is **true**. `$.a[*]` addresses the elements and never the array's own nullness, so over `[]` both `IS_NULL` and `NOT_NULL` are **false** — on a wildcard path the two are complements only where at least one element exists. `$.a[0]` addresses one position, which is absent and therefore null, so `IS_NULL` is **true**. Full addressing, branch and vacuity rules: `docs/cloud-parity/path-grammar.md`.
 
-Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), whitespace inside (`$.a[ 0]`), or a positional index too large to fit a signed 32-bit integer (`$.a[2147483648]`) — `2147483647` is the largest index accepted, and no entity array is long enough for a larger one to address a real position. The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`). These used to go unvalidated and return `200` with an empty page.
+Every other bracket spelling is rejected `400 errors.INVALID_FIELD_PATH`: unclosed or unmatched (`$.a[`, `$.a[0`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), whitespace inside (`$.a[ 0]`), or a positional index too large to fit a signed 32-bit integer (`$.a[2147483648]`) — `2147483647` is the largest index accepted, and no entity array is long enough for a larger one to address a real position. The path is scanned to the end, so trailing junk after a valid subscript is caught too (`$.a[0]b`, `$.a[0];DROP`, `$.a[*]..b`).
 
 Metadata is not addressed through `jsonPath` at all — a `lifecycle` condition names a meta field directly (see **LifecycleCondition**) and is not subject to this grammar. A *data* path that happens to spell `$._meta.state` is an ordinary dotted path.
 
@@ -164,21 +164,22 @@ A `NOT` anywhere in a condition makes the whole query residual: no backend pushe
 
 **EMPTY CONDITION**: Submitting an empty body (`{}`) or a body with no `type` field as the top-level search condition is rejected with `errors.INVALID_CONDITION` — the parser requires a valid `type` field. Submitting a valid `AND` group with an empty `conditions` array (`{"type":"group","operator":"AND","conditions":[]}`) is accepted and matches all entities — this is the correct way to retrieve all entities without filtering.
 
-**ArrayCondition** — match positional values in a JSON array:
+**ArrayCondition** — test the elements of one array by position:
 
 ```json
 {
   "type": "array",
-  "jsonPath": "$.laureates[*]",
-  "values": ["John", null, "Hopfield"]
+  "jsonPath": "$.scores[*]",
+  "operatorType": "GREATER_THAN",
+  "values": [50, null, 70]
 }
 ```
 
-- `type`: `"array"`
-- `jsonPath`: JSON Path to the array's elements, and **must carry a trailing `[*]`** (see **JSONPath grammar** below) — a bare path (`$.laureates`) addresses the array itself, not its elements, and is rejected `400 errors.INVALID_FIELD_PATH`
-- `values`: positional values, one per array index in order; a `null` entry tests nothing at that index and is skipped
+- `jsonPath`: the array's elements. It **must end in `[*]`** and contain no other `[*]`; otherwise `400 errors.INVALID_FIELD_PATH`. To test one inner array of an outer array, index the outer one: `$.orders[0].lines[*]`.
+- `operatorType` (required): any operator a `simple` clause accepts (see `predicates`). It is applied at every tested position.
+- `values`: one entry per position, from index 0. A `null` entry does not test that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN`/`BETWEEN_INCLUSIVE`. For `IS_NULL`/`NOT_NULL` a non-null entry only selects the position.
 
-Each non-null entry is a positional test: `values[i]` compared against element `i`. The clause is read as an `AND` of those positional comparisons — `["John", null, "Hopfield"]` means element 0 equals `"John"` and element 2 equals `"Hopfield"`. `values` made entirely of `null` matches every entity.
+The clause means an `AND` of one `simple` clause per tested position: the example is `$.scores[0] > 50` AND `$.scores[2] > 70`. Every rule of a `simple` clause applies to those positional clauses, including the type check (`CONDITION_TYPE_MISMATCH`). A clause must test at least one position: a missing, empty or all-`null` `values` is `400 errors.INVALID_CONDITION`. To match every entity, send an empty `AND` group.
 
 **FunctionCondition** — server-side function predicate dispatched to a compute member. **Criteria only — search requests reject it.** Documented here because criteria and search share the one `Condition` DSL; a search, async-search, grouped-stats or conditional-delete body carrying a `function` clause at any depth is rejected `400 INVALID_CONDITION`. Use it in a workflow or transition `criterion` (see `workflows`).
 
@@ -386,9 +387,9 @@ Synchronous search neither paginates nor truncates: the matched set must fit wit
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time (direct search, and async submit with a `pointInTime`); `properties.consistencyTime` carries the current one
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time (a direct search with a `pointInTime`, or an async submit)
-- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field; the response detail names each offending path and why
+- `errors.INVALID_FIELD_PATH` — `400` — a `jsonPath` is not valid JSON Path syntax (missing `$.` leader, bracket-quoted access, empty/trailing segment, disallowed character), or references field paths absent from the model's locked schema, or a `lifecycle` condition names an unknown meta filter field, or an `array` clause's path does not end in `[*]` or has another `[*]` before it; the response detail names each offending path and why
 - `errors.CONDITION_TYPE_MISMATCH` — `400` — the operand fits none of the field's declared types, or the operator applies to none of them: a string or pattern operator on a field with no text type (a number, boolean, UUID or date/time, `creationDate`/`lastUpdateTime` included), or an ordering or range operator on a field with no ordered type (a boolean or UUID); see `predicates`
-- `errors.INVALID_CONDITION` — `400` — a body that does not parse as a condition, or a condition that fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a malformed `LIKE`/`MATCHES_PATTERN` operand, an `array` clause on a bare path or with a badly-shaped `values` entry, or a `function` clause at any depth (criteria only — see `predicates`)
+- `errors.INVALID_CONDITION` — `400` — a body that does not parse as a condition, or a condition that fails a structural or shape check rather than a path or type check: an unknown or missing `operatorType`, a `null`/object/complex operand on a binary or range operator, a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array or has a `null` bound, a malformed `LIKE`/`MATCHES_PATTERN` operand, an `array` clause that has no `operatorType` or tests no position (`values` missing, empty or all `null`), an object entry in an `array` clause's `values`, or a `function` clause at any depth (criteria only — see `predicates`)
 - `errors.BAD_REQUEST` — `400` — an unreadable request body, invalid limit/pageSize/pageNumber (a body that does not parse as a condition is `errors.INVALID_CONDITION`, not this), result retrieval on non-SUCCESSFUL job, unknown async job ID in result retrieval
 - `errors.SERVER_ERROR` — `500` — the target model's schema could not be loaded or parsed, so the condition could not be checked against it. The request fails with a ticket id and no result set rather than skipping validation: without declared types, comparison and ordering leaves match nothing, so the answer would be a short page indistinguishable from a complete one. HTTP and gRPC fail alike — over gRPC it is an envelope error, never an empty stream. A condition built only of `lifecycle` clauses needs no schema and is unaffected
 

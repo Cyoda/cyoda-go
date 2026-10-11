@@ -36,7 +36,9 @@ subscript = "[" ( "*" / 1*DIGIT ) "]"          ; the digit run must fit a signed
 
 A **well-formed** array subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid JSON Path and is **accepted** (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`, `$.orders[*].lines[*].sku`); it cannot be pushed into the storage query, so it is evaluated in memory.
 
-Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). A positional index must also fit a signed 32-bit integer: `2147483647` is the largest accepted, and a wider digit run (`$.a[2147483648]`) is rejected with this code rather than truncated or wrapped — no entity array is long enough for such an index to address a real position. Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. These previously slipped through unvalidated and answered `200` with an empty page (or, on the grouped-stats `condition` and workflow-criterion surfaces, wrong buckets and a criterion that silently never fired).
+Any other bracket spelling is rejected with this code: an unclosed or unmatched bracket (`$.a[`, `$.a[0`, `$.a]`), a subscript with no field name before it (`$.[0]`), an empty subscript (`$.a[]`), a negative or signed index (`$.a[-1]`, `$.a[+1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), and whitespace inside one (`$.a[ 0]`). A positional index must also fit a signed 32-bit integer: `2147483647` is the largest accepted, and a wider digit run (`$.a[2147483648]`) is rejected with this code rather than truncated or wrapped — no entity array is long enough for such an index to address a real position. Characters after a well-formed subscript are checked too — `$.a[0]b`, `$.a[0];DROP` and `$.a[*]..b` are all rejected. A workflow or transition criterion is held to the same grammar and is rejected at import with `400 VALIDATION_FAILED`.
+
+An `array` clause's path has two more rules. It must end in `[*]`: a bare path (`$.tags`) addresses the array, not its elements. It must contain no other `[*]`: one clause tests the positions of one array, so `$.orders[*].lines[*]` is rejected. To test one inner array, index the outer array: `$.orders[0].lines[*]`.
 
 This check is syntactic and runs on every search-shaped surface regardless of whether a schema is loaded: `/search` (sync and async), conditional delete, and the `condition` of a grouped-statistics query.
 
@@ -56,6 +58,7 @@ Common causes:
 
 - The `$.` leader is missing (`amount` instead of `$.amount`).
 - Bracket-quoted access (`$['amount']`) instead of dotted access (`$.amount`).
+- An `array` clause whose path does not end in `[*]`, or has a `[*]` before the trailing one.
 - The condition references a field that has not been declared in the model schema.
 - The model has been re-imported with a different shape and the client's condition uses an old field name.
 - The path is misspelled (e.g. `$.Name` vs `$.name`).
