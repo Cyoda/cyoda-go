@@ -6,42 +6,23 @@ import (
 	"testing"
 )
 
-// TestDeleteConditional_NOT_TemporalTextOperator_TypeCheckRuns proves that
-// deleteConditionTypeCheck's temporal type-soundness check
-// (search.ValidateConditionValueTypes -> validateLifecycleType) actually
-// runs on the public DELETE /entity/... surface for a NOT-wrapped lifecycle
-// condition, and refuses it — CONTAINS is not a valid operator on the
-// temporal meta field creationDate, NOT wrapper or not. Before Task 12,
-// search.ValidateCondition rejected "NOT" outright before
-// deleteConditionTypeCheck ever ran, so no request carrying this shape
-// could reach it through this endpoint at all; this is the first case that
-// can.
+// TestDeleteConditional_NOT_TemporalTextOperator_TypeCheckRuns pins that the
+// type check of the shared condition sequence (search.ValidateConditionForModel,
+// whose type step is search.ValidateConditionValueTypes) runs on the public
+// DELETE /entity/{entityName}/{modelVersion} surface for a NOT-wrapped
+// lifecycle condition, and refuses it: CONTAINS does not apply to the
+// temporal meta field creationDate, inside a NOT or not.
 //
-// What this test does NOT prove: the specific nil-schema-node gating fix
-// (commit "never gate condition type-validation on a model read" —
-// deleteConditionTypeCheck must run the type check whether or not a model
-// read happened, not skip it when the read is gated off). The model here
-// is imported via SAMPLE_DATA with an empty object (`{}`), which still
-// persists a non-empty schema — the only public model-creating route,
-// POST /model/import/..., always writes one — so this is NOT the
-// schema-less (node == nil) case the gating fix addresses; it is confirmed
-// by reverting deleteConditionTypeCheck's own type-check call (stubbing it
-// to `return nil`) and observing this test starts failing at all — see the
-// task-12-report.md's revert-under-test section for that run: 200, 3 of 3
-// entities deleted. That failure shows the check runs on this surface; it
-// does not discriminate the gating path from an ordinary always-run check.
-//
-// The nil-node gating case specifically is not reachable through the
-// public API at all (no import route can produce a model with a truly
-// empty/nil schema) and is covered instead at the unit level, directly
-// against deleteConditionTypeCheck with a hand-built model-store double, in
+// The condition names no data path, so the sequence never loads the model's
+// fields; the lifecycle type check needs none. The no-data-path case is also
+// pinned at unit level, against the same sequence, in
 // internal/domain/entity/delete_condition_type_gating_test.go
-// (TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoSchema_Refused
+// (TestDeleteConditionValidation_NotWrappedTemporalTextOperator_NoDataPath_Refused
 // and its siblings).
 //
 // The assertion that matters here is "no rows deleted", not merely
-// "non-2xx": a fail-open on this check would delete every entity in the
-// model with a response the caller might not even check carefully.
+// "non-2xx": a NOT around a leaf that matches nothing selects every entity,
+// so a fail-open on this check would delete the whole model.
 func TestDeleteConditional_NOT_TemporalTextOperator_TypeCheckRuns(t *testing.T) {
 	const model = "e2e-delete-not-temporal-typecheck"
 

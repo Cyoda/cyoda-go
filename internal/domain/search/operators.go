@@ -268,14 +268,11 @@ func desugarArrayClause(c *predicate.ArrayCondition) (predicate.Condition, error
 // criterion walk) so a NOT group is accepted or rejected identically on
 // both surfaces.
 //
-// NOT's arity check belongs here, not in predicate.ParseCondition: a
-// criterion that fails to parse is left alone by validateCriterion (the
-// workflow-import boundary) rather than rejected, so a parser-level arity
-// check would let a malformed NOT criterion import with 200 and then fail
-// every subsequent save on that transition, permanently, with no error ever
-// surfaced anywhere. This validator is the one boundary every search- and
-// criterion-shaped entry point funnels through instead — the same reasoning
-// the operator-name rejection above it already relies on.
+// NOT's arity check lives here, beside the operator-name check, because this
+// validator is the one boundary every search- and criterion-shaped entry
+// point funnels through: a search, a conditional delete, grouped stats and
+// workflow import (validateCriterion) all refuse a NOT group without exactly
+// one child with the same code, whatever the parser accepts.
 //
 // n is len(GroupCondition.Conditions). Zero or two-or-more is rejected as
 // ErrInvalidCondition — the same sentinel every other structural rejection
@@ -352,16 +349,12 @@ func validateOperandShape(op string, value any) error {
 // LifecycleCondition (meta leaves, including temporal fields) — the same
 // malformed-arity bug affects both.
 //
-// A scalar or a 1- or 3-element array previously slipped past validation:
-// betweenValues (filter_translate.go) rejects anything but a 2-element []any
-// and leaves spi.Filter.Values nil, and that nil-Values filter reaches the
-// storage plugins with catastrophically divergent behavior — postgres
-// panicked indexing f.Values[0] with no length guard, sqlite's BETWEEN
-// fallback emitted a match-all "1=1", and only memory's
-// spi.Prepare/PreparedFilter.Match correctly excluded. Rejecting the
-// malformed condition here, at the single validation boundary every
-// transport (HTTP, gRPC) funnels through, closes the gap before any of that
-// divergence can occur.
+// A scalar, a 1- or 3-element array, or a null bound is refused here because
+// betweenValues (filter_translate.go) accepts only a 2-element []any and
+// otherwise leaves spi.Filter.Values nil, and the storage plugins do not
+// agree on what a nil-Values BETWEEN filter means. This is the one
+// validation boundary every transport (HTTP, gRPC) and workflow import
+// funnels through, so the malformed condition never reaches them.
 func validateBetweenArity(op string, value any) error {
 	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
 		return nil

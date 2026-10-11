@@ -36,8 +36,15 @@ removing function. The clause therefore keeps both sides' function.
   also accepts the `operator` and `operation` aliases, exactly as it does for a
   simple clause.
 - **`values`** has one entry per position, from index 0. An entry is a scalar, or
-  a two-element array `[low, high]` for `BETWEEN`/`BETWEEN_INCLUSIVE`. `null` means
-  "do not test this position".
+  a two-element array `[low, high]` for `BETWEEN`/`BETWEEN_INCLUSIVE`, with no
+  `null` bound. `null` means "do not test this position".
+- **An array operand is refused under every other operator** — as an array
+  clause's entry, and as a `simple` or `lifecycle` clause's `value`. None of the
+  26 operators other than `BETWEEN`/`BETWEEN_INCLUSIVE` takes a set of values,
+  and the backends do not agree on what such an operand means (memory compares
+  the array's text; sqlite matches every row under `NOT_EQUAL` and none under
+  `EQUALS`). The array clause meets this rule through its positional simple
+  clauses.
 - **Meaning:** an AND of one simple clause per tested position. The example
   means `$.scores[0] > 50` AND `$.scores[2] > 70`.
 - **Operators with no operand** (`IS_NULL`, `NOT_NULL`): a non-null entry selects
@@ -107,8 +114,8 @@ other code defines what it means.
   `jsonPath` example becomes `$.scores[*]`, and the schema gets a whole-clause
   example.
 - **The operator enum** on `ArrayConditionDto`, `SimpleConditionDto` and
-  `LifecycleConditionDto` lists 62 names. The server accepts 26
-  (`spi.OperatorNames`). The other 36 have always been refused with
+  `LifecycleConditionDto` lists 66 names. The server accepts 26
+  (`spi.OperatorNames`). The other 40 have always been refused with
   `INVALID_CONDITION`. `IS_CHANGED`/`IS_UNCHANGED` are documented as unsupported
   (`cyoda help predicates`). The three enums are cut to the 26. This is a
   spec-to-reality reconciliation under ADR 0003 Decision 7: the oasdiff gate
@@ -122,7 +129,8 @@ other code defines what it means.
 |---|---|---|
 | `POST /search/direct/{entityName}/{modelVersion}` | missing or unknown `operatorType` | 400 `INVALID_CONDITION` |
 | same | `values` missing, empty or all `null` | 400 `INVALID_CONDITION` |
-| same | an entry is an object, or a `BETWEEN` entry is not a two-element array | 400 `INVALID_CONDITION` |
+| same | an entry is an object, or a `BETWEEN` entry is not a two-element array or has a `null` bound | 400 `INVALID_CONDITION` |
+| same | an entry (or a `simple`/`lifecycle` `value`) is an array under an operator other than `BETWEEN`/`BETWEEN_INCLUSIVE` | 400 `INVALID_CONDITION` |
 | same | `values` is not an array (the condition does not parse) | 400 `INVALID_CONDITION` |
 | same | path without trailing `[*]`, or with an earlier `[*]` | 400 `INVALID_FIELD_PATH` |
 | same | operator does not apply to the element's declared type | 400 `CONDITION_TYPE_MISMATCH` |

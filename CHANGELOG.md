@@ -780,11 +780,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `EQUALS`, and a clause that tested no position matched every entity — a
   conditional delete with all-`null` `values` deleted the whole model. A path with a
   wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`. Workflow
-  import answers `400 VALIDATION_FAILED` for each, and now also refuses a
-  criterion that is not a valid condition. `ArrayConditionDto` in the OpenAPI
+  import answers `400 VALIDATION_FAILED` for each. `ArrayConditionDto` in the OpenAPI
   spec is `{type, jsonPath, operatorType, values}`, and the operator enums of
   the condition DTOs list only the 26 operators the server accepts.
   Migration: add `"operatorType":"EQUALS"` to existing array clauses.
+
+- **Workflow import refuses a criterion that is not a valid condition
+  (`400 VALIDATION_FAILED`).** This covers an unknown or missing `type`, a
+  member of the wrong JSON type, and a body that is not a condition. Before,
+  such a criterion was imported and then failed each time it was evaluated.
 
 - **An array operand is `400 INVALID_CONDITION` under every operator other
   than `BETWEEN` and `BETWEEN_INCLUSIVE`,** on a `simple` or `lifecycle`
@@ -810,8 +814,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   does not parse is still the transport status `InvalidArgument`.
 
 - **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair with a `null` bound is
-  `400 INVALID_CONDITION`.** Before, it was accepted, and the backends
-  answered differently.
+  `400 INVALID_CONDITION`; workflow import answers `400 VALIDATION_FAILED`
+  for it.** Before, it was accepted, and the backends answered differently.
 
 - **Search, conditional delete and grouped statistics check a condition in
   one order — structure, then patterns, then the model's paths, then types
@@ -819,9 +823,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   on an undeclared path is now `400 INVALID_CONDITION` on search; it was
   `400 INVALID_FIELD_PATH`.
 
-- **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model
-  before checking the condition.** A malformed condition on an unknown model
-  was `400`.
+- **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model,
+  before checking a condition that parses.** A malformed condition on an
+  unknown model was `400`. A body that does not parse is still
+  `400 INVALID_CONDITION`, because it is refused before the model is looked up.
 
 ### Added
 
