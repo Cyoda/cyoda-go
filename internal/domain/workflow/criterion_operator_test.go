@@ -100,3 +100,36 @@ func TestValidateImportRequest_KnownCriterionOperatorAccepted(t *testing.T) {
 		t.Fatalf("a known operator must be accepted: %v", err)
 	}
 }
+
+func TestValidateImportRequest_RejectsUnparseableCriterion(t *testing.T) {
+	for _, c := range []string{`{"type":"bogus"}`, `[1,2]`, `{"type":"simple","jsonPath":5}`, `{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","values":"x"}`} {
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))})
+		if err == nil {
+			t.Errorf("%s: an unparseable criterion must be rejected at import", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "wf-regex") {
+			t.Errorf("%s: error must name the workflow, got: %v", c, err)
+		}
+	}
+}
+
+func TestValidateImportRequest_ArrayCriterion(t *testing.T) {
+	reject := []string{
+		`{"type":"array","jsonPath":"$.t[*]","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"FROBNICATE","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","values":[null]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","value":["a"]}`,
+		`{"type":"array","jsonPath":"$.o[*].t[*]","operatorType":"EQUALS","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"MATCHES_PATTERN","values":["("]}`,
+	}
+	for _, c := range reject {
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))}); err == nil {
+			t.Errorf("%s: must be rejected at import", c)
+		}
+	}
+	ok := `{"type":"array","jsonPath":"$.t[*]","operatorType":"GREATER_THAN","values":[1,null,3]}`
+	if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(ok))}); err != nil {
+		t.Errorf("valid array criterion rejected: %v", err)
+	}
+}

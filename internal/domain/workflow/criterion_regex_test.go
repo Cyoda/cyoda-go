@@ -129,13 +129,12 @@ func TestValidateWorkflowStructure_ValidNonRegexCriterionAccepted(t *testing.T) 
 	}
 }
 
-// (f) a criterion that does not parse as a condition at all is left alone
-// (not newly rejected by this change) — pre-existing behaviour preserved.
-func TestValidateWorkflowStructure_UnparseableCriterionNotNewlyRejected(t *testing.T) {
-	criterion := json.RawMessage(`{"type":"totally-unknown-shape"}`)
-	wf := wfWithTransitionCriterion(criterion)
-	if err := validateWorkflowStructure(wf); err != nil {
-		t.Fatalf("unparseable criterion must not be newly rejected by regex validation: %v", err)
+// (f) a criterion that does not parse as a condition is refused at import:
+// it can never be evaluated, so every save that reached it would fail.
+func TestValidateWorkflowStructure_UnparseableCriterionRejected(t *testing.T) {
+	wf := wfWithTransitionCriterion(json.RawMessage(`{"type":"totally-unknown-shape"}`))
+	if err := validateWorkflowStructure(wf); err == nil {
+		t.Fatal("an unparseable criterion must be rejected at import")
 	}
 }
 

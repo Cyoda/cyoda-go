@@ -139,7 +139,7 @@ func checkCriterionResponseTimeout(criterion json.RawMessage, location string, m
 	}
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
-		return nil // not this rule's to report; see validateCriterion
+		return nil // validateCriterion has already refused a criterion that does not parse
 	}
 	if _, ok := cond.(*predicate.FunctionCondition); !ok {
 		return nil
@@ -348,10 +348,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
-// not parse as a predicate.Condition at all is left alone — this validator
-// only tightens already-parseable conditions, it does not newly reject
-// shapes ParseCondition already rejects (that is out of scope for this
-// check; those criteria fail at evaluation time exactly as before).
+// not parse as a predicate.Condition at all is refused: it can never be
+// evaluated, so every save that reached its transition would fail.
 func validateCriterion(criterion json.RawMessage, location string) error {
 	trimmed := bytes.TrimSpace(criterion)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -359,7 +357,7 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	}
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: criterion is not a valid condition: %w", location, err)
 	}
 	// A function criterion is a callout: its config is checked like a
 	// processor's. Only a top-level function criterion is ever dispatched
