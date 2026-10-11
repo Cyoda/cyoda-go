@@ -1096,24 +1096,7 @@ type ArrayConditionDto struct {
 	Type         string                 `json:"type"`
 
 	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`.
-	Values *[]*ArrayConditionDto_Values_Item `json:"values,omitempty"`
-}
-
-// ArrayConditionDtoValues0 defines model for .
-type ArrayConditionDtoValues0 = string
-
-// ArrayConditionDtoValues1 defines model for .
-type ArrayConditionDtoValues1 = float32
-
-// ArrayConditionDtoValues2 defines model for .
-type ArrayConditionDtoValues2 = bool
-
-// ArrayConditionDtoValues3 defines model for .
-type ArrayConditionDtoValues3 = []interface{}
-
-// ArrayConditionDto_Values_Item defines model for ArrayConditionDto.values.Item.
-type ArrayConditionDto_Values_Item struct {
-	union json.RawMessage
+	Values *[]interface{} `json:"values,omitempty"`
 }
 
 // AsyncSearchStatusDto defines model for AsyncSearchStatusDto.
@@ -3770,120 +3753,6 @@ func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(object)
-}
-
-// AsArrayConditionDtoValues0 returns the union data inside the ArrayConditionDto_Values_Item as a ArrayConditionDtoValues0
-func (t ArrayConditionDto_Values_Item) AsArrayConditionDtoValues0() (ArrayConditionDtoValues0, error) {
-	var body ArrayConditionDtoValues0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDtoValues0 overwrites any union data inside the ArrayConditionDto_Values_Item as the provided ArrayConditionDtoValues0
-func (t *ArrayConditionDto_Values_Item) FromArrayConditionDtoValues0(v ArrayConditionDtoValues0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDtoValues0 performs a merge with any union data inside the ArrayConditionDto_Values_Item, using the provided ArrayConditionDtoValues0
-func (t *ArrayConditionDto_Values_Item) MergeArrayConditionDtoValues0(v ArrayConditionDtoValues0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsArrayConditionDtoValues1 returns the union data inside the ArrayConditionDto_Values_Item as a ArrayConditionDtoValues1
-func (t ArrayConditionDto_Values_Item) AsArrayConditionDtoValues1() (ArrayConditionDtoValues1, error) {
-	var body ArrayConditionDtoValues1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDtoValues1 overwrites any union data inside the ArrayConditionDto_Values_Item as the provided ArrayConditionDtoValues1
-func (t *ArrayConditionDto_Values_Item) FromArrayConditionDtoValues1(v ArrayConditionDtoValues1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDtoValues1 performs a merge with any union data inside the ArrayConditionDto_Values_Item, using the provided ArrayConditionDtoValues1
-func (t *ArrayConditionDto_Values_Item) MergeArrayConditionDtoValues1(v ArrayConditionDtoValues1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsArrayConditionDtoValues2 returns the union data inside the ArrayConditionDto_Values_Item as a ArrayConditionDtoValues2
-func (t ArrayConditionDto_Values_Item) AsArrayConditionDtoValues2() (ArrayConditionDtoValues2, error) {
-	var body ArrayConditionDtoValues2
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDtoValues2 overwrites any union data inside the ArrayConditionDto_Values_Item as the provided ArrayConditionDtoValues2
-func (t *ArrayConditionDto_Values_Item) FromArrayConditionDtoValues2(v ArrayConditionDtoValues2) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDtoValues2 performs a merge with any union data inside the ArrayConditionDto_Values_Item, using the provided ArrayConditionDtoValues2
-func (t *ArrayConditionDto_Values_Item) MergeArrayConditionDtoValues2(v ArrayConditionDtoValues2) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsArrayConditionDtoValues3 returns the union data inside the ArrayConditionDto_Values_Item as a ArrayConditionDtoValues3
-func (t ArrayConditionDto_Values_Item) AsArrayConditionDtoValues3() (ArrayConditionDtoValues3, error) {
-	var body ArrayConditionDtoValues3
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDtoValues3 overwrites any union data inside the ArrayConditionDto_Values_Item as the provided ArrayConditionDtoValues3
-func (t *ArrayConditionDto_Values_Item) FromArrayConditionDtoValues3(v ArrayConditionDtoValues3) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDtoValues3 performs a merge with any union data inside the ArrayConditionDto_Values_Item, using the provided ArrayConditionDtoValues3
-func (t *ArrayConditionDto_Values_Item) MergeArrayConditionDtoValues3(v ArrayConditionDtoValues3) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t ArrayConditionDto_Values_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *ArrayConditionDto_Values_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
 }
 
 // AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto

@@ -41,10 +41,25 @@ func TestArrayConditionDtoExampleParsesAndValidates(t *testing.T) {
 	if !ok || len(g.Conditions) != 2 {
 		t.Fatalf("spec example must test two positions, got %#v", d)
 	}
-	for i, wantPath := range []string{"$.scores[0]", "$.scores[2]"} {
-		leaf := g.Conditions[i].(*predicate.SimpleCondition)
-		if leaf.JsonPath != wantPath || leaf.OperatorType != "GREATER_THAN" {
-			t.Errorf("leaf %d = %+v, want %s GREATER_THAN", i, leaf, wantPath)
+	if g.Operator != "AND" {
+		t.Errorf("spec example's positions combine with %q, want AND", g.Operator)
+	}
+	for i, want := range []struct{ path, value string }{
+		{"$.scores[0]", "50"},
+		{"$.scores[2]", "70"},
+	} {
+		leaf, ok := g.Conditions[i].(*predicate.SimpleCondition)
+		if !ok {
+			t.Errorf("leaf %d is %T, want *predicate.SimpleCondition", i, g.Conditions[i])
+			continue
+		}
+		n, ok := leaf.Value.(json.Number)
+		if !ok {
+			t.Errorf("leaf %d value is %T, want json.Number", i, leaf.Value)
+			continue
+		}
+		if leaf.JsonPath != want.path || leaf.OperatorType != "GREATER_THAN" || n.String() != want.value {
+			t.Errorf("leaf %d = %+v, want %s GREATER_THAN %s", i, leaf, want.path, want.value)
 		}
 	}
 }

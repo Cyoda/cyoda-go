@@ -9545,14 +9545,22 @@ components:
                 non-null; a clause that tests no position is refused with
                 400 `INVALID_CONDITION`.
               items:
-                nullable: true
+                # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+                # the Go type it cannot derive.
+                x-go-type: interface{}
                 oneOf:
+                  - type: "null"
                   - type: string
                   - type: number
                   - type: boolean
                   - type: array
                     minItems: 2
                     maxItems: 2
+                    items:
+                      oneOf:
+                        - type: string
+                        - type: number
+                        - type: boolean
       required:
         - jsonPath
         - operatorType
@@ -11102,7 +11110,10 @@ components:
           example: $.country
         value:
           description: Observed value for this dimension, or null.
-          nullable: true
+          type: [string, number, boolean, "null"]
+          # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
+          # Go type it cannot derive.
+          x-go-type: interface{}
           example: SE
       required:
         - path
@@ -11133,8 +11144,10 @@ components:
             (when the aggregation has no eligible inputs). Absent when
             the request specified no aggregations.
           additionalProperties:
-            type: number
-            nullable: true
+            type: [number, "null"]
+            # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
+            # Go type it cannot derive.
+            x-go-type: "*float32"
       required:
         - count
         - groupKey
@@ -11525,8 +11538,10 @@ components:
                 - SCHEDULED_TRANSITION_CANCEL
                 - SCHEDULED_TRANSITION_FAIL
             data:
-              type: object
-              nullable: true
+              type: [object, "null"]
+              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+              # the Go type it cannot derive.
+              x-go-type: map[string]interface{}
               description: >
                 Optional event-specific payload. Present for some event types
                 (e.g. STATE_MACHINE_FINISH includes {"success": true},
