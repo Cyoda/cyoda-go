@@ -738,15 +738,11 @@ func TestQueryGroupedStats_LifecycleTemporalTypeMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestQueryGroupedStats_LifecycleTemporalStringOpRejected is the fifth
-// defect this batch closes: a string or pattern operator on a temporal meta
-// field (creationDate, lastUpdateTime) previously produced two different
-// answers depending on the query plan — the SPI kernel's pushdown re-check
-// bridges the field to RFC3339 text and matches CONTAINS lexically, while
-// internal/match's residual route guarded the same case to a never-match.
-// classifyGroupedStatsError must classify the shared boundary's rejection as
-// search.ErrInvalidCondition (400 INVALID_CONDITION), the same code /search
-// now answers for the identical condition.
+// TestQueryGroupedStats_LifecycleTemporalStringOpRejected: a string or
+// pattern operator on a temporal meta field (creationDate, lastUpdateTime)
+// does not apply to the field's type. classifyGroupedStatsError must classify
+// the shared boundary's rejection as 400 CONDITION_TYPE_MISMATCH, the same
+// code /search answers for the identical condition.
 func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "lifecycle",
@@ -767,15 +763,15 @@ func TestQueryGroupedStats_LifecycleTemporalStringOpRejected(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for CONTAINS against temporal field creationDate, got nil")
 	}
-	if !errors.Is(err, search.ErrInvalidCondition) {
-		t.Fatalf("want search.ErrInvalidCondition (parity with /search's INVALID_CONDITION), got %v", err)
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("want search.ErrConditionTypeMismatch (parity with /search's CONDITION_TYPE_MISMATCH), got %v", err)
 	}
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
 		t.Fatalf("want *common.AppError, got %T: %v", err, err)
 	}
-	if appErr.Code != common.ErrCodeInvalidCondition {
-		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeInvalidCondition)
+	if appErr.Code != common.ErrCodeConditionTypeMismatch {
+		t.Fatalf("got code %s, want %s", appErr.Code, common.ErrCodeConditionTypeMismatch)
 	}
 }
 
@@ -858,8 +854,9 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 
 // TestQueryGroupedStats_ValidDataConditionStillSucceeds guards against an
 // over-broad fix: a well-formed data-field condition must still succeed
-// even though grouped-stats now runs search.ValidateConditionValueTypes with
-// a nil model (data-field checks are gracefully skipped without a schema).
+// even though grouped-stats' service layer runs
+// search.ValidateConditionValueTypes with a nil fields map (data-field checks
+// are skipped without one).
 func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "simple",

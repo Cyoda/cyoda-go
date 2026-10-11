@@ -278,15 +278,7 @@ func TestSearchTemporal_Accepted200(t *testing.T) {
 
 // TestSearchTemporal_400_StringOpOnTemporalField verifies that a string
 // operator (CONTAINS) on a temporal meta field is REJECTED as 400
-// INVALID_CONDITION.
-//
-// This reverses an earlier deliberate acceptance: served by the SPI kernel
-// on a pushdown route, the field bridges to its RFC3339 text and CONTAINS
-// matches lexically; served by internal/match on the fallback route (and by
-// every workflow criterion), prepareLifecycle refuses the operator and
-// never-matches. The same condition and the same data answered two ways
-// depending only on the query plan. Rejecting at this shared boundary makes
-// both evaluators' conflicting behaviour unreachable.
+// CONDITION_TYPE_MISMATCH: the operator does not apply to the field's type.
 func TestSearchTemporal_400_StringOpOnTemporalField(t *testing.T) {
 	const model = "e2e-search-temporal-400-string-op"
 	setupSearchModel(t, model)
@@ -300,7 +292,7 @@ func TestSearchTemporal_400_StringOpOnTemporalField(t *testing.T) {
 		body := readBody(t, resp)
 		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 	}
-	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+	commontest.ExpectErrorCode(t, resp, "CONDITION_TYPE_MISMATCH")
 }
 
 func TestSearchTemporal_400_BadOperand(t *testing.T) {

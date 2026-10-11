@@ -28,13 +28,8 @@ import (
 // spi.ErrUnevaluableLeaf, but the disposition is the same: an unevaluable
 // leaf is a structural fault, not a row-dependent non-match.
 //
-// Errors are structural properties of the CONDITION, never of the row.
-// Exactly one swallow stays a deliberate non-match rather than an error: the
-// temporal-meta guard in prepareLifecycle (a text or pattern operator on
-// creationDate/lastUpdateTime), pinned as permanent by
-// TestPrepare_TemporalMetaGuardStaysANonMatch and
-// TestMatch_TemporalMetaField_StringOperatorNeverMatches. Every other
-// row-dependent failure stays a non-match, exactly as before.
+// Errors are structural properties of the CONDITION, never of the row. Every
+// row-dependent failure stays a non-match.
 
 // ErrUnsupportedOperator marks an operator NAME with no kernel op — a
 // structural fault that fails Prepare. It is deliberately a distinct
@@ -69,12 +64,9 @@ const (
 	// prepNever is the ZERO VALUE on purpose: an unpopulated node, and the
 	// zero Prepared that Prepare returns alongside an error, must fail closed.
 	//
-	// Exactly one node deliberately carries this kind as a real, wired-in
-	// value with a nil error: prepareLifecycle's temporal-meta guard (a text
-	// or pattern operator on creationDate/lastUpdateTime never matches,
-	// permanently — see that function). Everywhere else, prepNever is
+	// No node carries this kind as a real, wired-in value: prepNever is
 	// reached only as the discarded zero value paired with a non-nil error —
-	// leafNode and prepareSimple no longer construct a bare
+	// leafNode and prepareSimple never construct a bare
 	// prepNode{kind: prepNever} to swallow a failure; they return an error
 	// instead, so a half-built node can never be wired into a live tree. The
 	// caller either propagates that error immediately (prepareGroup) or, at
@@ -305,38 +297,9 @@ func prepareLifecycle(c *predicate.LifecycleCondition) (prepNode, error) {
 
 	switch field {
 	case "creationDate", "lastUpdateTime":
-		// Field-identity guard, sitting in FRONT of the operator check: a
-		// temporal field admits only comparison, range and null operators, and
-		// anything else is a never-match leaf rather than an error. It must
-		// never lexically substring-match the formatted RFC3339 rendering.
-		//
-		// A string or pattern operator on a temporal field is now rejected at
-		// the shared validation boundary (search.validateLifecycleType) —
-		// operator-semantics.md §4/§7 — for every VALIDATED entry point. This
-		// guard stays regardless, unconditionally, for every caller: a
-		// workflow criterion is validated once at import and then stored
-		// verbatim, evaluated on every subsequent save by calling this
-		// package's Prepare directly with NO revalidation
-		// (workflow/engine.go), so a criterion imported before the boundary
-		// existed — or any future caller that reaches Prepare without going
-		// through the boundary — must still answer never-match, not a lexical
-		// substring match. Removing this guard would silently reactivate a
-		// dormant criterion's transition, on the binary upgrade alone, for a
-		// predicate the system has just declared unsupported. Per
-		// .claude/rules/correctness-over-availability.md, never-match is the
-		// fail-closed answer here; lexical match is a false positive nobody
-		// authored.
-		//
-		// Do NOT resolve the divergence with the kernel by aligning this
-		// evaluator to it. A text or pattern operator on a temporal field is
-		// not a supported predicate; the validation boundary is what makes
-		// the disagreement unreachable for a validated request, and there is
-		// no "two doors" problem to reconcile for a criterion, which never
-		// routes through the SPI kernel at all — match.Prepare is and always
-		// has been its sole evaluator.
-		if !IsTemporalOperator(c.OperatorType) {
-			return prepNode{kind: prepNever}, nil
-		}
+		// Which operators apply to a temporal field is decided at the
+		// validation boundary (search.ValidateConditionValueTypes), which the
+		// workflow engine runs on every criterion before Prepare.
 		// leafNode(prepMetaTemporal, ...) either fails or returns a node
 		// whose kind is exactly prepMetaTemporal — see leafNode's doc.
 		n, err := leafNode(prepMetaTemporal, c.OperatorType, c.Value, []spi.DataType{spi.ZonedDateTime})

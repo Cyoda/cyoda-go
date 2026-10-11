@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 235 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 237 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -165,6 +165,11 @@ var allTests = []NamedTest{
 	{"SearchPathRequiresJSONPathLeader", RunSearchPathRequiresJSONPathLeader},
 	{"SearchArraySubscriptPathStillServed", RunSearchArraySubscriptPathStillServed},
 	{"SearchPathTypeMismatch400", RunSearchPathTypeMismatch400},
+	// An operator that does not apply to the field's type — a string or pattern
+	// operator on a non-text field, an ordering operator on a boolean — is
+	// refused, not answered with an empty (or, negated, a full) result set.
+	{"SearchTextOperatorOnNonTextField400", RunSearchTextOperatorOnNonTextField400},
+	{"SearchOrderingOperatorOnUnorderedField400", RunSearchOrderingOperatorOnUnorderedField400},
 	// The same grammar governs a workflow/transition criterion, enforced at
 	// workflow import; and a path addressing one array element by position
 	// resolves to that element on every surface. Both are per-backend claims:

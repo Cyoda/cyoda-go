@@ -33,14 +33,8 @@ func TestValidateWorkflowStructure_RejectsBadTemporalOperandOnTemporalField(t *t
 }
 
 // (a2) a string operator (CONTAINS) on a temporal field is REJECTED at
-// import. This reverses an earlier deliberate acceptance: the runtime
-// evaluator (internal/match's prepareLifecycle) has always guarded this case
-// to a never-match on field identity, while the SPI kernel's own pushdown
-// re-check bridges the field to its RFC3339 text and matches CONTAINS
-// lexically — so the identical criterion answered two ways depending on
-// which query plan served the search request it happened to share
-// validation with. Rejecting at import (the one boundary a criterion
-// crosses) makes both evaluators' conflicting behaviour unreachable.
+// import: the operator does not apply to the field's type, the same refusal
+// search answers with CONDITION_TYPE_MISMATCH.
 func TestValidateWorkflowStructure_RejectsStringOperatorOnTemporalField(t *testing.T) {
 	wf := wfWithTransitionCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2021"))
 	err := validateWorkflowStructure(wf)

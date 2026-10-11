@@ -710,7 +710,7 @@ func (s *SearchService) Search(ctx context.Context, modelRef spi.ModelRef, cond 
 	// Condition type-soundness (correctness-over-availability): every
 	// transport funnels through Search, so this is the single boundary that
 	// closes the gap where gRPC previously bypassed HTTP-only validation.
-	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+	if tErr := s.validateConditionTypes(validatedFields, cond); tErr != nil {
 		return nil, tErr
 	}
 
@@ -966,7 +966,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	// Condition type-soundness (correctness-over-availability): same
 	// single-boundary guard as Search, so an async job is never created for
 	// a type-unsound condition regardless of transport.
-	if tErr := s.validateConditionTypes(ctx, modelStore, modelRef, cond); tErr != nil {
+	if tErr := s.validateConditionTypes(validatedFields, cond); tErr != nil {
 		return "", tErr
 	}
 

@@ -90,7 +90,7 @@ func TestValidateConditionValueTypes_RejectsExcessivelyDeepNotGroup(t *testing.T
 	model.SetChild("x", schema.NewLeafNode(schema.String))
 	cond := buildNestedNotCondition(tooDeep)
 
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatalf("expected depth-exceeded error for %d-level NOT chain, got nil", tooDeep)
 	}
@@ -108,7 +108,7 @@ func TestValidateConditionValueTypes_AcceptsNotBoundary(t *testing.T) {
 	model := schema.NewObjectNode()
 	model.SetChild("x", schema.NewLeafNode(schema.String))
 	cond := buildNestedNotCondition(MaxConditionDepth - 1)
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Errorf("expected NOT chain at depth %d (= MaxConditionDepth-1) to validate cleanly, got: %v", MaxConditionDepth-1, err)
 	}
 }
@@ -159,7 +159,7 @@ func TestValidateConditionValueTypes_RejectsExcessivelyDeepGroup(t *testing.T) {
 	model.SetChild("x", schema.NewLeafNode(schema.String))
 	cond := buildNestedGroupCondition(tooDeep)
 
-	err := ValidateConditionValueTypes(model, cond)
+	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
 	if err == nil {
 		t.Fatalf("expected depth-exceeded error for %d-level group, got nil", tooDeep)
 	}
@@ -179,7 +179,7 @@ func TestValidateConditionValueTypes_AcceptsBoundary(t *testing.T) {
 	model := schema.NewObjectNode()
 	model.SetChild("x", schema.NewLeafNode(schema.String))
 	cond := buildNestedGroupCondition(MaxConditionDepth - 1)
-	if err := ValidateConditionValueTypes(model, cond); err != nil {
+	if err := ValidateConditionValueTypes(model.FieldsMap(), cond); err != nil {
 		t.Errorf("expected predicate at depth %d (= MaxConditionDepth-1) to validate cleanly, got: %v", MaxConditionDepth-1, err)
 	}
 }
