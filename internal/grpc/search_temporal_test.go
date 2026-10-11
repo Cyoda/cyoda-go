@@ -258,15 +258,8 @@ func TestSearchTemporal_GRPC_CreationDate_Equals_MixedPrecision(t *testing.T) {
 // TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected verifies that a
 // string operator (CONTAINS) applied to the temporal creationDate field is
 // REJECTED over the gRPC envelope as a CLIENT_ERROR carrying
-// INVALID_CONDITION in the message — the same classification HTTP uses.
-//
-// This reverses an earlier deliberate acceptance: served by the SPI kernel
-// on the pushdown route, the field bridges to its RFC3339 text and CONTAINS
-// matches lexically; served by internal/match on a residual route,
-// prepareLifecycle refuses the operator and never-matches. Rejecting at the
-// shared validation boundary — which both HTTP and gRPC funnel through —
-// makes both evaluators' conflicting behaviour unreachable on either
-// transport.
+// CONDITION_TYPE_MISMATCH in the message — the same classification HTTP uses:
+// the operator does not apply to the field's type.
 func TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	const model = "grpc-search-temporal-400-string-op"
@@ -307,8 +300,8 @@ func TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected(t *testing.T) {
 	if typed.Error.Code != "CLIENT_ERROR" {
 		t.Errorf("expected code=CLIENT_ERROR, got %q", typed.Error.Code)
 	}
-	if !strings.Contains(typed.Error.Message, "INVALID_CONDITION") {
-		t.Errorf("expected message to contain INVALID_CONDITION, got %s", typed.Error.Message)
+	if !strings.Contains(typed.Error.Message, "CONDITION_TYPE_MISMATCH") {
+		t.Errorf("expected message to contain CONDITION_TYPE_MISMATCH, got %s", typed.Error.Message)
 	}
 }
 

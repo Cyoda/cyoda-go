@@ -72,23 +72,6 @@ func TestLoadFieldsMap_NilNodeIsNotAnError(t *testing.T) {
 	}
 }
 
-// loadModelNode takes the same route.
-func TestLoadModelNode_UsesCachedParseWhenOffered(t *testing.T) {
-	store := &countingSchemaStore{node: testNode(t)}
-	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
-
-	node, err := loadModelNode(context.Background(), store, ref)
-	if err != nil {
-		t.Fatalf("loadModelNode: %v", err)
-	}
-	if node == nil {
-		t.Fatal("expected a node")
-	}
-	if store.getCalls != 0 {
-		t.Errorf("loadModelNode fetched the raw descriptor %d times", store.getCalls)
-	}
-}
-
 // A store without the capability keeps the original descriptor-parsing path,
 // so nothing that supplies a plain ModelStore changes behaviour.
 func TestLoadFieldsMap_FallsBackWhenCapabilityAbsent(t *testing.T) {

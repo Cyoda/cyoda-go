@@ -38,8 +38,9 @@ var EntityErrorCodeMatrix = map[string][]codeCell{
 		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
 		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
 		{Status: 400, Code: "INVALID_CONDITION"},
-		{Status: 400, Code: "INVALID_FIELD_PATH"}, // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
-		{Status: 400, Code: "BAD_REQUEST"},        // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
+		{Status: 400, Code: "INVALID_FIELD_PATH"},      // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
+		{Status: 400, Code: "CONDITION_TYPE_MISMATCH"}, // TestDeleteConditional_TextOperatorOnNumericField_ConditionTypeMismatch_NothingDeleted
+		{Status: 400, Code: "BAD_REQUEST"},             // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
 		{Status: 404, Code: "MODEL_NOT_FOUND"},
 		// TestDeleteEntities_Batched_NonConvergence_409: the batched delete's
 		// progress guard. Produced on that test's own mount of this endpoint

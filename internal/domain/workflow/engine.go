@@ -1062,31 +1062,21 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 
 	var loadErr error
 	var pathErr error
-	var node *schema.ModelNode
 	var fields map[string]schema.FieldDescriptor
 
 	if len(paths) > 0 {
 		modelStore, err := e.factory.ModelStore(cc.ctx)
 		if err != nil {
 			loadErr = fmt.Errorf("%w: model store unavailable: %w", ErrCriterionTypingInfra, err)
-		} else if n, err := search.LoadModelNode(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
+		} else if fm, err := search.LoadFieldsMap(cc.ctx, modelStore, entity.Meta.ModelRef); err != nil {
 			loadErr = fmt.Errorf("%w: model %s/%s: %w", ErrCriterionTypingInfra,
 				entity.Meta.ModelRef.EntityName, entity.Meta.ModelRef.ModelVersion, err)
 		} else {
-			// ONE read, ONE parse: node feeds BOTH the path check below (via
-			// its own FieldsMap()) and the type-soundness check
-			// (ValidateConditionValueTypes(node, cond)) at the bottom of
-			// this function. Two separate reads here — one via
-			// LoadFieldsMap, one via LoadModelNode — would double the
-			// store Get and schema.Unmarshal cost on every criterion, every
-			// transition, every save, for no benefit on the common
-			// (unrefreshed) path, and would open a TOCTOU where Prepare and
-			// ValidateConditionValueTypes could silently disagree about
-			// which schema snapshot they are typing against.
-			node = n
-			if node != nil {
-				fields = node.FieldsMap()
-			}
+			// ONE read: the fields map feeds the path check below, the
+			// type-soundness check (ValidateConditionValueTypes) and
+			// Prepare's fieldTypes, so all three type against the same
+			// schema snapshot.
+			fields = fm
 			// A query never executes against a field the model does not
 			// declare (ruling, spec §5): hold every path the criterion
 			// names to the model's declared fields. This carries the one
@@ -1095,16 +1085,13 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 			// refused. That refresh is itself a SECOND read, but only on
 			// the rare path where the first one missed a path — the common
 			// case above pays for exactly one. The (possibly refreshed)
-			// fields map is what feeds fieldTypes below, so the actual
-			// match evaluation sees the same authoritative schema this
-			// check validated against; node is deliberately NOT
-			// re-derived from that refresh (there is no cheap way to turn
-			// a refreshed fields map back into a *schema.ModelNode without
-			// a third read) — ValidateConditionValueTypes treats a path
-			// absent from its own (possibly one-refresh-stale) node as
-			// "no type constraint here" and defers to this already-passed
-			// check, exactly the leniency it already documents for any
-			// path it doesn't recognise.
+			// fields map is what feeds both the type-soundness check and
+			// fieldTypes below, so the match evaluation and the type check
+			// see the same authoritative schema this check validated
+			// against. Typing against the pre-refresh schema instead would
+			// leave a path a peer just added with no declared type, and
+			// skip the check that refuses an operator its type cannot
+			// satisfy.
 			fields, pathErr = search.ValidateKnownPaths(cc.ctx, modelStore, entity.Meta.ModelRef, paths, fields)
 			if errors.Is(pathErr, search.ErrPathRefreshInfra) {
 				// The bounded refresh itself failed — RefreshAndGet errored
@@ -1160,22 +1147,24 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	//     never matches (its own doc comment: "Callers wanting a rejection
 	//     ask ValidateLeafPattern FIRST") — so Prepare alone would silently
 	//     never-match rather than abort.
-	//  3. ValidateConditionValueTypes — ALWAYS called, with node nil when the
-	//     condition carries no data path. This is deliberate: gating the
+	//  3. ValidateConditionValueTypes — ALWAYS called, with fields nil when
+	//     the condition carries no data path. This is deliberate: gating the
 	//     CALL (rather than just the model READ, which is correctly gated
 	//     above on len(paths)>0) would leave validateLifecycleType unreached,
 	//     and that is the one check that refuses a text/pattern operator on
 	//     a temporal meta field (e.g. `creationDate CONTAINS "2024"`, which
 	//     carries no data path at all). Without it, such a criterion would
-	//     reach internal/match's deliberate temporal-meta never-match guard —
-	//     exactly the fail-open a later NOT node would invert into
-	//     matching every entity. Also not fully redundant with Prepare for a
-	//     data leaf: a KNOWN CONTAINER path (declared, but only via a nested
-	//     leaf beneath it) compared with a scalar-carrying operator like
-	//     CONTAINS is accepted by ValidateKnownPaths (a container with a
-	//     known leaf beneath it counts as known) and by Prepare (CONTAINS is
-	//     declaration-independent), but is not a sound comparison — only this
-	//     check's container-vs-scalar guard refuses it.
+	//     reach match.Prepare, which tests the instant's RFC3339 text — and
+	//     a NOT node would select every entity whose text does not match.
+	//     Nor is it redundant with Prepare for a data leaf: Prepare evaluates
+	//     a string operator on a numeric field by polarity, so only this
+	//     check refuses an operator the field's type cannot satisfy. And a
+	//     KNOWN CONTAINER path (declared, but only via a nested leaf beneath
+	//     it) compared with a scalar-carrying operator like CONTAINS is
+	//     accepted by ValidateKnownPaths (a container with a known leaf
+	//     beneath it counts as known) and by Prepare (CONTAINS is
+	//     declaration-independent), but is not a sound comparison — only
+	//     this check's container-vs-scalar guard refuses it.
 	//
 	// pathErr, when it names a genuinely unknown path, is re-wrapped as a
 	// plain error rather than returned as-is: search.ValidateKnownPaths
@@ -1203,7 +1192,7 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	if err := search.ValidatePatterns(cond); err != nil {
 		return false, "", err
 	}
-	if err := search.ValidateConditionValueTypes(node, cond); err != nil {
+	if err := search.ValidateConditionValueTypes(fields, cond); err != nil {
 		return false, "", err
 	}
 

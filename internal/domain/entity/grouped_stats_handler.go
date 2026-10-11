@@ -180,24 +180,16 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 		fields = refreshed
 
-		// Type-soundness against the REAL model. The service layer also calls
-		// ValidateConditionValueTypes, but with a nil model, so only its
-		// model-independent arm (meta fields, temporal operands) ran and an
-		// operand parsing into none of a declared field's types was accepted
-		// where /search/direct returns 400 CONDITION_TYPE_MISMATCH.
+		// Type-soundness against the fields the paths were just validated
+		// against. The service layer also calls ValidateConditionValueTypes,
+		// but with a nil map, so only its model-independent arm (meta fields,
+		// temporal operands) runs there.
 		if len(validated.Condition) > 0 {
-			node, nErr := search.LoadModelNode(r.Context(), modelStore, model)
-			if nErr != nil {
-				common.WriteError(w, r, common.Internal("failed to load model schema for condition validation", nErr))
-				return
-			}
-			if node != nil {
-				if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
-					if tErr := search.ValidateConditionValueTypes(node, cond); tErr != nil {
-						code := search.ClassifyConditionTypeErrCode(tErr)
-						common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
-						return
-					}
+			if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
+				if tErr := search.ValidateConditionValueTypes(fields, cond); tErr != nil {
+					code := search.ClassifyConditionTypeErrCode(tErr)
+					common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
+					return
 				}
 			}
 		}

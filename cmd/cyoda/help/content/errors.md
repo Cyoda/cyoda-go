@@ -65,7 +65,7 @@ The `retryable` property is present and `true` only when the operation is safe t
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — not retryable — a write made under a transaction token ran a workflow that reached a `COMMIT_BEFORE_DISPATCH` processor, which would commit the transaction the request joined; refused before that transaction is flushed or committed and before the processor is dispatched
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — not retryable — the storage backend does not enforce composite unique keys
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
-- `errors.CONDITION_TYPE_MISMATCH` — `400` — not retryable — a search condition's operand parses into none of the field's declared data types
+- `errors.CONDITION_TYPE_MISMATCH` — `400` — not retryable — a search condition's operand parses into none of the field's declared data types, or its operator applies to none of them
 - `errors.CONFLICT` — `409` — retryable — generic 409 used by storage-level transaction serialization aborts (`RetryableConflict`); permanent business-logic conflicts use a specific code instead (e.g. `MODEL_ALREADY_LOCKED`, `ENTITY_MODIFIED`)
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not certify a consistency time within its wait budget
 - `errors.DELETE_NOT_CONVERGED` — `409` — retryable — batched delete (`transactionSize`) kept finding newly created matching entities and was stopped at its batch cap; earlier batches stay deleted

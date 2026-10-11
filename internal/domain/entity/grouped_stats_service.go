@@ -77,15 +77,6 @@ func classifyGroupedStatsError(err error) error {
 			"group cardinality exceeds the configured maximum").WithCause(err)
 	case errors.Is(err, ErrInvalidCondition):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
-	case errors.Is(err, search.ErrInvalidCondition):
-		// The queryGroupedStatsInner ValidateConditionValueTypes call
-		// (below) propagates this sentinel unwrapped, not re-wrapped under
-		// this package's own ErrInvalidCondition above — same disposition
-		// (400 INVALID_CONDITION) via the search package's own sentinel, for
-		// an operator that is not a supported predicate for the field it's
-		// applied to (e.g. a string/pattern operator on a temporal meta
-		// field, operator-semantics.md §4/§7).
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
 	case errors.Is(err, search.ErrInvalidFieldPath):
 		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath),
@@ -206,10 +197,10 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	// enforces (known meta field; a supported operator + RFC3339 operand on
 	// temporal fields), which need no schema. Without this, e.g. a CONTAINS
 	// operator against the temporal creationDate meta field would silently
-	// produce an empty result here instead of the 400 INVALID_CONDITION the
-	// equivalent /search request returns.
+	// produce an empty result here instead of the 400 CONDITION_TYPE_MISMATCH
+	// the equivalent /search request returns.
 	//
-	// A nil model is passed because this layer has none. The SCHEMA-dependent
+	// A nil fields map is passed because this layer has none. The SCHEMA-dependent
 	// arm — an operand parsing into none of a declared field's types — runs at
 	// the handler, which holds the model store and validates the condition's,
 	// groupBy's and aggregates' paths against the model in the same place. A
@@ -218,13 +209,11 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	if parsedCond != nil {
 		if tErr := search.ValidateConditionValueTypes(nil, parsedCond); tErr != nil {
 			// Propagate tErr directly (not re-wrapped): it already wraps
-			// search.ErrConditionTypeMismatch, search.ErrInvalidCondition or
-			// search.ErrInvalidFieldPath, so classifyGroupedStatsError
-			// classifies it via errors.Is against those same exported
-			// sentinels — the identical classification the search path's
-			// validateConditionTypes performs — and maps to the matching
-			// CONDITION_TYPE_MISMATCH / INVALID_CONDITION / INVALID_FIELD_PATH
-			// code.
+			// search.ErrConditionTypeMismatch or search.ErrInvalidFieldPath,
+			// so classifyGroupedStatsError classifies it via errors.Is against
+			// those same exported sentinels — the identical classification
+			// the search path's validateConditionTypes performs — and maps to
+			// the matching CONDITION_TYPE_MISMATCH / INVALID_FIELD_PATH code.
 			return nil, tErr
 		}
 	}

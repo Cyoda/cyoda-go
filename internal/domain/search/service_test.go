@@ -1816,14 +1816,8 @@ func (f *wrapModelStoreCounterFactory) ModelStore(ctx context.Context) (spi.Mode
 // EnsureModelRegistered's own lookup — at least 2, whichever two of those
 // three a given code shape happens to route through.
 //
-// (dataCoercion's routing effect is not separately observable via the
-// result set today — classifyType never classifies a *data* field as
-// spi.OrderTemporal until a future polymorphic-temporal-typing follow-up
-// flips scalarClass; meta-field temporal stamping, exercised in Task 6,
-// already works unconditionally of this fields argument. This test proves
-// the wiring itself: the schema is loaded and handed to ConditionToFilter
-// on the pushdown path, which is the forward-compatible behavior that
-// follow-up needs.)
+// This test proves the wiring itself: the schema is loaded and handed to
+// ConditionToFilter on the pushdown path.
 func TestSearch_ThreadsFieldsMapIntoConditionToFilter(t *testing.T) {
 	base := memory.NewStoreFactory()
 	defer base.Close()

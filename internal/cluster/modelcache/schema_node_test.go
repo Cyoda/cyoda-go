@@ -126,7 +126,7 @@ func TestSchemaNode_UnlockedModelParsesButIsNotCached(t *testing.T) {
 }
 
 // A descriptor with no schema bound is "no type constraints", not an error —
-// matching what fieldsFromDescriptor and loadModelNode already do.
+// matching what fieldsFromDescriptor already does.
 func TestSchemaNode_NoSchemaBoundIsNotAnError(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
 	inner := &stubStore{desc: &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}}

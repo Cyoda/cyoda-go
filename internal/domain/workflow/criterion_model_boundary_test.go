@@ -117,13 +117,12 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // whole-block gate on the model read would miss: `creationDate CONTAINS
 // "2024"` carries NO data path at all (a LifecycleCondition contributes
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
-// skips it — but the VALIDATION CALL must still run with a nil model,
+// skips it — but the VALIDATION CALL must still run with a nil fields map,
 // because search.ValidateConditionValueTypes's lifecycle branch
 // (validateLifecycleType) is the one check that refuses a text operator on a
-// temporal meta field. Without it, this criterion reaches
-// internal/match's deliberate temporal-meta never-match guard, which a
-// later task's NOT node would invert into matching every entity — the exact
-// fail-open this task closes. The model store is made to error so a
+// temporal meta field. Without it, this criterion reaches match.Prepare
+// unvalidated, and a NOT node over it would select every entity the leaf
+// does not match. The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
 func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) {
@@ -146,8 +145,8 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	if errors.Is(err, ErrCriterionTypingInfra) {
 		t.Fatalf("must be a structural refusal (no model read happened for a lifecycle-only criterion), got infra error: %v", err)
 	}
-	if !errors.Is(err, search.ErrInvalidCondition) {
-		t.Fatalf("expected search.ErrInvalidCondition (unsupported operator on temporal field), got: %v", err)
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("expected search.ErrConditionTypeMismatch (operator does not apply to a temporal field), got: %v", err)
 	}
 }
 
@@ -161,8 +160,8 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 // mirroring a real caching model store, whose Get keeps serving the
 // now-updated cache indefinitely after a RefreshAndGet repopulates it,
 // rather than reverting to nothing. evaluateCriterion itself performs only
-// ONE read (search.LoadModelNode, consolidated — the fields map it types
-// against is derived from that same node, not a second independent read)
+// ONE read (search.LoadFieldsMap — the fields map it types against, not a
+// second independent read)
 // plus, on the rare path where that read misses a path, the ONE bounded
 // refresh search.ValidateKnownPaths performs internally; this fallback
 // keeps the fixture correct for any OTHER caller in this file that issues
@@ -301,12 +300,42 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	if rc := ms.RefreshCount(); rc != 1 {
 		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
+	}
+}
+
+// TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked: the type check
+// must run against the schema the refresh returned, the one Prepare types the
+// leaf against. Checked against the pre-refresh schema, a path a peer just
+// added has no declared type there and passes unchecked, so NOT_CONTAINS on a
+// numeric field would match every entity on the node that refreshed while
+// every other node refuses the same criterion.
+func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
+	baseFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { baseFactory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := baseFactory.NewTransactionManager(uuids)
+
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	stale := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String})
+	fresh := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String, "peer_field": schema.Integer})
+
+	ms := &refreshingModelStore{
+		getQueue:     []*spi.ModelDescriptor{stale},
+		refreshQueue: []*spi.ModelDescriptor{fresh},
+	}
+	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
+	engine := NewEngine(factory, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
+
+	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", got, err)
 	}
 }
 
@@ -462,11 +491,9 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 	if rc := ms.RefreshCount(); rc != 1 {
 		t.Errorf("expected exactly 1 bounded RefreshAndGet call, got %d", rc)
 	}
-	// Regression guard for the consolidated single-read shape: evaluateCriterion
-	// must issue exactly ONE Get (via search.LoadModelNode) on this path, not
-	// two (the old LoadFieldsMap-then-LoadModelNode shape this test's fixture
-	// comment used to describe).
+	// Regression guard for the single-read shape: evaluateCriterion must
+	// issue exactly ONE Get (via search.LoadFieldsMap) on this path.
 	if gc := ms.GetCount(); gc != 1 {
-		t.Errorf("expected exactly 1 Get call (the model node is loaded once and the fields map derived from it), got %d", gc)
+		t.Errorf("expected exactly 1 Get call (the fields map is loaded once), got %d", gc)
 	}
 }

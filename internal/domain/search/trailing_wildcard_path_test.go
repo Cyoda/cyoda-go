@@ -122,7 +122,7 @@ func TestValidateConditionTypes_TrailingWildcard(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateConditionValueTypes(model, &predicate.SimpleCondition{
+			err := ValidateConditionValueTypes(model.FieldsMap(), &predicate.SimpleCondition{
 				JsonPath: tc.path, OperatorType: tc.op, Value: tc.value,
 			})
 			if tc.wantReject {
@@ -141,7 +141,7 @@ func TestValidateConditionTypes_TrailingWildcard(t *testing.T) {
 // The rejection must be INVALID_FIELD_PATH — the path itself does not address
 // anything comparable — and must name the spelling the request actually sent.
 func TestValidateConditionTypes_TrailingWildcardOnContainer_IsInvalidFieldPath(t *testing.T) {
-	err := ValidateConditionValueTypes(buildTrailingWildcardModel(), &predicate.SimpleCondition{
+	err := ValidateConditionValueTypes(buildTrailingWildcardModel().FieldsMap(), &predicate.SimpleCondition{
 		JsonPath: "$.items[*]", OperatorType: "EQUALS", Value: "x",
 	})
 	if !errors.Is(err, errInvalidFieldPath) {
@@ -165,7 +165,7 @@ func TestValidateConditionTypes_TrailingWildcard_NoSchemaAccepts(t *testing.T) {
 	if err := ValidateConditionValueTypes(nil, &predicate.SimpleCondition{
 		JsonPath: "$.items[*]", OperatorType: "EQUALS", Value: "x",
 	}); err != nil {
-		t.Fatalf("ValidateConditionValueTypes(nil model) = %v, want accepted", err)
+		t.Fatalf("ValidateConditionValueTypes(nil fields) = %v, want accepted", err)
 	}
 }
 

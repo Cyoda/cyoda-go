@@ -3,7 +3,6 @@ package match_test
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -68,6 +67,11 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 			&predicate.LifecycleCondition{Field: "state", OperatorType: "IS_CHANGED"},
 			"unsupported operator: IS_CHANGED",
 		},
+		{
+			"IS_CHANGED on a temporal meta field",
+			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
+			"unsupported operator: IS_CHANGED",
+		},
 	}
 
 	for _, tc := range tests {
@@ -78,58 +82,6 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 			}
 			if err.Error() != tc.want {
 				t.Errorf("Prepare() error = %q, want %q", err.Error(), tc.want)
-			}
-		})
-	}
-}
-
-// TestPrepare_NeverMatchIsNotAnError pins the two cases that sit in FRONT of
-// the error path: they are deliberate never-match behaviour (the
-// prepareLifecycle temporal-meta guard) and turning either into a Prepare
-// error would silently reactivate a dormant workflow-criterion transition on
-// a binary upgrade alone (see the guard's own doc in prepared.go).
-//
-// The other two cases this table used to carry — a comparison leaf on an
-// untyped path, and an operand that parses into no declared type — moved to
-// TestPrepare_UnevaluableLeafIsAnError: both are leafNode's expansion-failure
-// branch, which now fails Prepare instead of building a silent never-match
-// leaf.
-func TestPrepare_NeverMatchIsNotAnError(t *testing.T) {
-	meta := spi.EntityMeta{
-		State:        "active",
-		CreationDate: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
-	}
-
-	tests := []struct {
-		name       string
-		cond       predicate.Condition
-		fieldTypes match.FieldTypes
-		data       []byte
-	}{
-		{
-			// Field-dependent, not operator-dependent: the same operator on
-			// `state` IS an error (covered above).
-			"IS_CHANGED on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "IS_CHANGED"},
-			nil,
-			[]byte(`{}`),
-		},
-		{
-			"CONTAINS on a temporal meta field",
-			&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2026"},
-			nil,
-			[]byte(`{}`),
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			p, err := match.Prepare(tc.cond, tc.fieldTypes)
-			if err != nil {
-				t.Fatalf("Prepare() error = %v, want nil (never-match, not an error)", err)
-			}
-			if p.Match(tc.data, meta) {
-				t.Error("Match() = true, want false (never-match leaf)")
 			}
 		})
 	}
@@ -375,19 +327,6 @@ func TestPrepare_MalformedPatternIsAnError(t *testing.T) {
 			t.Logf("%s: err = %v", c.name, err)
 		})
 	}
-}
-
-// TestPrepare_TemporalMetaGuardStaysANonMatch pins the fourth swallow — the
-// temporal-meta guard in prepareLifecycle — as the one that does NOT become
-// an error. operator-semantics.md and prepared_equivalence_test.go pin this
-// as a deliberate, permanent never-match: relaxing it would silently
-// reactivate a dormant transition in a stored workflow criterion on a binary
-// upgrade alone.
-func TestPrepare_TemporalMetaGuardStaysANonMatch(t *testing.T) {
-	p, err := match.Prepare(&predicate.LifecycleCondition{
-		Field: "creationDate", OperatorType: "CONTAINS", Value: "2024"}, nil)
-	require.NoError(t, err)
-	require.False(t, p.Match([]byte(`{}`), spi.EntityMeta{CreationDate: time.Now()}))
 }
 
 // notOf wraps cond in a GroupCondition{Operator: "NOT"} with exactly one

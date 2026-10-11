@@ -269,109 +269,6 @@ func genFieldsMap(types []spi.DataType) map[string]spi.FieldDescriptor {
 	}
 }
 
-// hasKnownTemporalMetaDivergence reports whether cond, anywhere in its tree,
-// carries a LifecycleCondition on a temporal meta field (creationDate /
-// lastUpdateTime, or previousTransition/state's canonicalised equivalents —
-// only the two temporal fields matter here) paired with a NON-temporal
-// operator (a string/pattern operator outside IsTemporalOperator's set).
-//
-// This is a DELIBERATE, PERMANENT divergence between this evaluator and the
-// SPI kernel for an UNVALIDATED direct caller — not a gap this task or any
-// future one closes by aligning the two. search.validateLifecycleType
-// rejects this predicate at the shared validation boundary for every
-// VALIDATED entry point (operator-semantics.md §4/§7), which is what makes
-// the disagreement unreachable in production. But a workflow criterion is
-// validated once at import and then stored verbatim; every subsequent save
-// calls this package's Prepare directly with no revalidation
-// (workflow/engine.go). prepareLifecycle therefore guards a temporal meta
-// field to a never-match leaf for any non-temporal operator UNCONDITIONALLY,
-// for every caller including this corpus generator, which constructs exactly
-// such an unvalidated caller on purpose — while the SPI kernel bridges the
-// field to its RFC3339 string and applies the operator to that string
-// LEXICALLY, because the kernel has no such caller (a search condition
-// always crosses the validation boundary before reaching it). Aligning
-// either evaluator to the other would be wrong: the kernel's behaviour is
-// unreachable from validated input and not worth preserving structurally,
-// while relaxing this evaluator's guard would silently reactivate a
-// pre-existing stored criterion's dormant transition on a binary upgrade
-// alone, for a predicate the system has declared unsupported — a
-// correctness regression, not a cleanup (see the guard's own doc comment in
-// prepared.go). Excluded from comparison for the same reason a
-// spi.ConditionToFilter translate error is (see below): no meaningful "the
-// resolver disagreed" comparison exists here, because the two evaluators are
-// not required to agree on an unvalidated predicate.
-func hasKnownTemporalMetaDivergence(cond predicate.Condition) bool {
-	switch c := cond.(type) {
-	case *predicate.LifecycleCondition:
-		field := c.Field
-		if field == "previousTransition" {
-			field = "transitionForLatestSave"
-		}
-		if field != "creationDate" && field != "lastUpdateTime" {
-			return false
-		}
-		return !IsTemporalOperator(c.OperatorType)
-	case *predicate.GroupCondition:
-		for _, child := range c.Conditions {
-			if hasKnownTemporalMetaDivergence(child) {
-				return true
-			}
-		}
-		return false
-	default:
-		return false
-	}
-}
-
-// TestHasKnownTemporalMetaDivergence_PropagatesThroughNot confirms, by
-// running rather than assuming, that the GroupCondition case above is
-// genuinely operator-agnostic: it recurses into c.Conditions regardless of
-// whether c.Operator is "AND", "OR", or "NOT", so a NOT wrapping a
-// known-divergent temporal-meta leaf is still caught. A NOT wrapping the leaf
-// does not "cancel" the divergence — NOT(divergent) is still divergent,
-// because the two evaluators would disagree about what the WRAPPED leaf
-// itself evaluates to before either one negates it. Without this
-// propagation, the corpus's NOT nodes would spuriously fail
-// TestPrepare_EquivalentToKernel on an already-known, permanent gap — which
-// invites "fixing" the failure by relaxing the guard this test pins.
-func TestHasKnownTemporalMetaDivergence_PropagatesThroughNot(t *testing.T) {
-	divergentLeaf := &predicate.LifecycleCondition{
-		Field:        "creationDate",
-		OperatorType: "CONTAINS", // non-temporal operator on a temporal meta field
-		Value:        "2024",
-	}
-	if !hasKnownTemporalMetaDivergence(divergentLeaf) {
-		t.Fatal("sanity check failed: the leaf itself must be flagged divergent")
-	}
-
-	notWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{divergentLeaf}}
-	if !hasKnownTemporalMetaDivergence(notWrapped) {
-		t.Error("NOT wrapping a known-divergent temporal-meta leaf must still be flagged divergent")
-	}
-
-	nestedNotWrapped := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{notWrapped}}
-	if !hasKnownTemporalMetaDivergence(nestedNotWrapped) {
-		t.Error("nested NOT(NOT(divergent leaf)) must still be flagged divergent")
-	}
-
-	andWithNotChild := &predicate.GroupCondition{Operator: "AND", Conditions: []predicate.Condition{
-		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
-		notWrapped,
-	}}
-	if !hasKnownTemporalMetaDivergence(andWithNotChild) {
-		t.Error("an AND containing a NOT-wrapped divergent leaf must still be flagged divergent")
-	}
-
-	// Negative control: a NOT wrapping a NON-divergent condition must not be
-	// flagged.
-	nonDivergent := &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
-		&predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"},
-	}}
-	if hasKnownTemporalMetaDivergence(nonDivergent) {
-		t.Error("NOT wrapping a non-divergent condition must not be flagged divergent")
-	}
-}
-
 // TestPrepare_EquivalentToKernel is the fuzz-corpus merge gate: exact answer
 // agreement between match.Prepare and the SPI kernel
 // (spi.ConditionToFilter + spi.Prepare) on every well-formed condition the
@@ -396,22 +293,12 @@ func TestHasKnownTemporalMetaDivergence_PropagatesThroughNot(t *testing.T) {
 //   - Exactly one fails: a genuine divergence, and the test fails.
 //   - Both succeed: the two Match answers must agree exactly, as before.
 //
-// Two further kinds of case are skipped, both for a documented "no kernel
-// answer to compare against" reason, never to dodge a genuine resolver
-// disagreement:
-//
-//   - A spi.ConditionToFilter TRANSLATE error: expected for the leader-less
-//     "name" path (see genJSONPaths) — a wire-grammar strictness difference,
-//     not an evaluability disagreement, so it is decided before either
-//     side's Prepare is even compared.
-//   - hasKnownTemporalMetaDivergence: the deliberate, permanent divergence
-//     for an unvalidated direct caller (see that function). The validation
-//     boundary makes it unreachable in production; this corpus deliberately
-//     bypasses that boundary and so cannot be a comparison against it. Like
-//     the translate check, this is decided before either side's Prepare
-//     result is inspected, because prepareLifecycle's guard answers
-//     never-match with a NIL error — it is not one of the new evaluability
-//     failures the disposition check above targets.
+// One further kind of case is skipped, for a documented "no kernel answer to
+// compare against" reason, never to dodge a genuine resolver disagreement: a
+// spi.ConditionToFilter TRANSLATE error, expected for the leader-less "name"
+// path (see genJSONPaths) — a wire-grammar strictness difference, not an
+// evaluability disagreement, so it is decided before either side's Prepare is
+// even compared.
 //
 // TestGenValidCondition_EmitsNot pins that the corpus generator actually
 // produces NOT nodes — including nested ones (a NOT whose child is itself a
@@ -449,7 +336,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 	cases := equivCases()
 	r := rand.New(rand.NewSource(equivSeed()))
 	skippedTranslate := 0
-	skippedTemporal := 0
 	skippedUnevaluable := 0
 	compared := 0
 
@@ -459,11 +345,6 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		meta := equivMetas[r.Intn(len(equivMetas))]
 		types := genFieldTypeSets[r.Intn(len(genFieldTypeSets))]
 		fieldTypes := func(string) []spi.DataType { return types }
-
-		if hasKnownTemporalMetaDivergence(cond) {
-			skippedTemporal++
-			continue
-		}
 
 		filter, translateErr := spi.ConditionToFilter(cond, genFieldsMap(types))
 		if translateErr != nil {
@@ -495,8 +376,8 @@ func TestPrepare_EquivalentToKernel(t *testing.T) {
 		compared++
 	}
 
-	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d compared, %d skipped (untranslatable leader-less path), %d skipped (known temporal-meta divergence), %d skipped (both sides agree unevaluable)",
-		cases, compared, skippedTranslate, skippedTemporal, skippedUnevaluable)
+	t.Logf("TestPrepare_EquivalentToKernel: %d cases, %d compared, %d skipped (untranslatable leader-less path), %d skipped (both sides agree unevaluable)",
+		cases, compared, skippedTranslate, skippedUnevaluable)
 
 	if floor := cases / 2; compared <= floor {
 		t.Fatalf("compared %d of %d cases (%.1f%%), want more than %d (50%%): skips are swallowing too much of the corpus for this gate to mean anything",

@@ -2,6 +2,7 @@ package parity
 
 import (
 	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
@@ -20,7 +21,7 @@ import (
 // pinned by RunSearchDataFieldTemporalResolution below. Model discovery now
 // content-sniffs ISO-8601 sample strings into their most specific temporal
 // subtype (schema.InferDataType via spi.ClassifyTemporalString), and
-// classifyType/scalarClass (orderclass.go) buckets those subtypes under
+// spi.ClassifyType buckets those subtypes under
 // spi.OrderTemporal — so a data field whose samples are date-shaped compares
 // chronologically (with cross-subtype resolution), exactly as META temporal
 // fields (creationDate/lastUpdateTime) already do.
@@ -273,16 +274,22 @@ func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 
 // RunSearchStringOpsCaseSensitivityAndNonTextual pins spec §10's string-ops
 // row: case-sensitive ops vs their `I*` case-insensitive twins, and the
-// same-type gate — a string op against a non-textual (numeric) stored value
-// is a non-match, not a stringify-and-compare or an error.
+// same-type gate — on a field declared [INTEGER, STRING], a string op against
+// an entity whose stored value is numeric is a non-match, not a
+// stringify-and-compare. (On a field with no text type at all the op is
+// refused instead; RunSearchTextOperatorOnNonTextField400 pins that.)
 func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "parity-search-string-ops"
 	const modelVersion = 1
-	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed","amount":1}`); err != nil {
-		t.Fatalf("ImportModel: %v", err)
+	// Two samples before lock make $.code polymorphic [INTEGER, STRING].
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed","code":1}`); err != nil {
+		t.Fatalf("ImportModel (int sample): %v", err)
+	}
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed2","code":"s"}`); err != nil {
+		t.Fatalf("ImportModel (string sample): %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
 		t.Fatalf("LockModel: %v", err)
@@ -291,11 +298,11 @@ func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture Backen
 		t.Fatalf("ImportWorkflow: %v", err)
 	}
 
-	aliceID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":10}`)
+	aliceID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","code":10}`)
 	if err != nil {
 		t.Fatalf("CreateEntity Alice: %v", err)
 	}
-	lowerID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"alice","amount":5}`)
+	lowerID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"alice","code":"10"}`)
 	if err != nil {
 		t.Fatalf("CreateEntity alice: %v", err)
 	}
@@ -315,17 +322,15 @@ func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture Backen
 	}
 	assertResultIDSet(t, "name ISTARTS_WITH alice (case-insensitive)", ciResults, []string{aliceID.String(), lowerID.String()})
 
-	// A string op (CONTAINS) against the non-textual $.amount field: the
-	// operand "1" parses fine as INTEGER (so validation accepts it, no
-	// 400), but the same-type gate makes a string op against a numeric
-	// stored slot a non-match — 200 with zero results, not an error.
-	nonTextualResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.amount","operatorType":"CONTAINS","value":"1"}`)
+	// CONTAINS "1" on the polymorphic $.code: the field has a text type, so
+	// the op is accepted, but the same-type gate makes it a non-match for
+	// Alice's numeric 10 — only the stored string "10" matches. A
+	// stringify-and-compare would return both.
+	nonTextualResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.code","operatorType":"CONTAINS","value":"1"}`)
 	if err != nil {
-		t.Fatalf("SyncSearch CONTAINS \"1\" on numeric field: %v", err)
+		t.Fatalf("SyncSearch CONTAINS \"1\" on [INTEGER, STRING] field: %v", err)
 	}
-	if len(nonTextualResults) != 0 {
-		t.Errorf("CONTAINS on non-textual field: want 0 results (non-match, not stringify-compare), got %d", len(nonTextualResults))
-	}
+	assertResultIDSet(t, "code CONTAINS 1 (numeric value not stringified)", nonTextualResults, []string{lowerID.String()})
 }
 
 // RunSearchNegativeOpOnAbsentField pins spec §10's negative-op-on-absent-field
@@ -515,4 +520,88 @@ func RunSearchDataFieldTemporalResolution(t *testing.T, fixture BackendFixture) 
 		t.Fatalf("SyncSearch yr >= 2024-09-09: %v", err)
 	}
 	assertResultIDSet(t, "yr >= 2024-09-09 resolves to > 2024", yrResults, []string{y2025ID.String()})
+}
+
+// RunSearchTextOperatorOnNonTextField400 pins that a string or pattern
+// operator on a field with no text type is refused with 400
+// CONDITION_TYPE_MISMATCH on every backend. Such a leaf can never match a
+// stored value: before the refusal it answered an empty result for a positive
+// operator, and every entity holding a number for a negated one.
+func RunSearchTextOperatorOnNonTextField400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-textop-400"
+	const modelVersion = 1
+	setupSearchModel(t, c, modelName, modelVersion)
+
+	if _, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":100,"status":"active"}`); err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	for _, op := range []string{"CONTAINS", "NOT_CONTAINS", "ISTARTS_WITH", "LIKE", "MATCHES_PATTERN"} {
+		cond := `{"type":"simple","jsonPath":"$.amount","operatorType":"` + op + `","value":"1"}`
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("[%s] SyncSearchRaw: %v", op, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("[%s] expected 400, got %d; body=%s", op, status, body)
+		}
+		if !containsErrorCode(body, "CONDITION_TYPE_MISMATCH") {
+			t.Errorf("[%s] expected errorCode CONDITION_TYPE_MISMATCH, body=%s", op, body)
+		}
+	}
+}
+
+// RunSearchOrderingOperatorOnUnorderedField400 pins that an ordering or range
+// operator on a field with no ordered type — here a boolean — is refused with
+// 400 CONDITION_TYPE_MISMATCH on every backend, while equality still answers.
+// It also pins the range rule on a polymorphic [INTEGER, LOCAL_DATE] field:
+// bounds that each fit a declared type but no single type together (one a
+// number, one a date) leave no range to evaluate, and are refused the same
+// way.
+func RunSearchOrderingOperatorOnUnorderedField400(t *testing.T, fixture BackendFixture) {
+	tenant := fixture.NewTenant(t)
+	c := client.NewClient(fixture.BaseURL(), tenant.Token)
+
+	const modelName = "parity-search-ordop-400"
+	const modelVersion = 1
+	setupModelWithWorkflow(t, c, modelName, modelVersion,
+		`[{"name":"seed","active":true,"code":1},{"name":"seed2","active":true,"code":"2024-01-01"}]`, searchWorkflowJSON)
+
+	aID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"A","active":true,"code":5}`)
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+
+	for _, cond := range []string{
+		`{"type":"simple","jsonPath":"$.active","operatorType":"GREATER_THAN","value":"false"}`,
+		`{"type":"simple","jsonPath":"$.active","operatorType":"BETWEEN","value":[false,true]}`,
+		`{"type":"simple","jsonPath":"$.code","operatorType":"BETWEEN","value":[5.5,"2024-01-01"]}`,
+	} {
+		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, cond)
+		if err != nil {
+			t.Fatalf("SyncSearchRaw %s: %v", cond, err)
+		}
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d; body=%s", cond, status, body)
+		}
+		if !containsErrorCode(body, "CONDITION_TYPE_MISMATCH") {
+			t.Errorf("%s: expected errorCode CONDITION_TYPE_MISMATCH, body=%s", cond, body)
+		}
+	}
+
+	results, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.active","operatorType":"EQUALS","value":true}`)
+	if err != nil {
+		t.Fatalf("SyncSearch EQUALS true: %v", err)
+	}
+	assertResultIDSet(t, "active EQUALS true", results, []string{aID.String()})
+
+	// A range whose bounds share a type still answers on the polymorphic field.
+	rangeResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.code","operatorType":"BETWEEN","value":[1,10]}`)
+	if err != nil {
+		t.Fatalf("SyncSearch code BETWEEN [1,10]: %v", err)
+	}
+	assertResultIDSet(t, "code BETWEEN [1,10]", rangeResults, []string{aID.String()})
 }
