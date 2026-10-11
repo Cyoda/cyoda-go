@@ -749,6 +749,22 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   bind `0.0.0.0` for its port mapping to reach it. The startup banner shows
   each listener's host and port.
 
+- **A condition whose operator does not apply to the field's type is refused
+  with `400 CONDITION_TYPE_MISMATCH`.** A string or pattern operator
+  (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, `IEQUALS`, the `NOT_*` and `INOT_*`
+  forms, …) needs a text field (`STRING` or `CHARACTER`); an ordering or range
+  operator needs a number, text or a date/time. Before, such a condition was
+  evaluated: a positive operator answered an empty result, and a negated one
+  matched every entity holding a value there — on conditional delete,
+  `NOT_CONTAINS` on a numeric field deleted them all. A date, time or UUID is
+  not text, even though it is stored as a JSON string, and a boolean or UUID
+  has no order. The rule holds on direct and async search, conditional
+  delete, grouped stats and over gRPC. A workflow criterion is checked when it
+  is evaluated, so a criterion that used to read as "not satisfied" now
+  aborts the save with `400 WORKFLOW_FAILED`. A string or pattern operator on
+  `creationDate` or `lastUpdateTime` moves from `400 INVALID_CONDITION` to
+  `400 CONDITION_TYPE_MISMATCH`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
