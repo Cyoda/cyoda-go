@@ -313,7 +313,8 @@ func validateOperandShape(value any) error {
 }
 
 // validateBetweenArity enforces that a BETWEEN / BETWEEN_INCLUSIVE
-// condition's value is exactly a 2-element array (the [lo, hi] bounds pair).
+// condition's value is exactly a 2-element array (the [lo, hi] bounds pair)
+// with no null bound.
 // Model-independent and shared by SimpleCondition (data leaves) and
 // LifecycleCondition (meta leaves, including temporal fields) — the same
 // malformed-arity bug affects both.
@@ -338,6 +339,11 @@ func validateBetweenArity(op string, value any) error {
 	}
 	if len(vals) != 2 {
 		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(vals))
+	}
+	for _, b := range vals {
+		if b == nil {
+			return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
+		}
 	}
 	return nil
 }
