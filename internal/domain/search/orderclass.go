@@ -1,25 +1,14 @@
 package search
 
 import (
-	"fmt"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
-// classifyType returns the single canonical ordering class for a leaf's
-// declared types, used by the FILTER path (filter_translate.go) to route
-// coercion. Null members are ignored (nullable fields are fine). The remaining
-// members must all map to the same class, else there is no deterministic order
-// and the field is unsortable. Temporal data subtypes classify as
-// OrderTemporal here so data-temporal comparisons route to the residual /
-// temporal-aware pushdown — see sortKindForData for why the SORT path differs.
-func classifyType(types []schema.DataType) (spi.OrderKind, error) { return spi.ClassifyType(types) }
-
 // sortKindForData returns the ORDER-BY sort class for a SourceData leaf. It
-// mirrors classifyType but folds temporal subtypes onto OrderText, decoupling
-// the SORT path from the FILTER path (which keeps OrderTemporal — do not change
-// classifyType). A data-temporal field is stored as its bare ISO-8601 string,
+// mirrors spi.ClassifyType but folds temporal subtypes onto OrderText,
+// decoupling the SORT path from the FILTER path (which keeps OrderTemporal via
+// spi.ClassifyType in the condition translator). A data-temporal field is stored as its bare ISO-8601 string,
 // and ISO-8601 lexical order IS chronological order and is byte-identical across
 // every backend: memory bytes.Compare (LessByOrder OrderText), postgres
 // COLLATE "C", sqlite COLLATE BINARY. Sorting it as OrderTemporal would instead
@@ -32,7 +21,7 @@ func classifyType(types []schema.DataType) (spi.OrderKind, error) { return spi.C
 // Because temporal folds to OrderText, a polymorphic [String, LocalDate] field
 // unifies to OrderText and sorts lexically rather than erroring on mixed class.
 func sortKindForData(types []schema.DataType) (spi.OrderKind, error) {
-	return classifyTypesFold(types, foldTemporalToText)
+	return spi.ClassifyTypesFold(types, foldTemporalToText)
 }
 
 // foldTemporalToText maps OrderTemporal onto OrderText, leaving every other
@@ -43,38 +32,6 @@ func foldTemporalToText(k spi.OrderKind) spi.OrderKind {
 		return spi.OrderText
 	}
 	return k
-}
-
-// classifyTypesFold is the shared unification core for classifyType and
-// sortKindForData. Each non-null member is classified via scalarClass, then
-// (optionally) folded; all folded classes must agree, else the field has no
-// deterministic order and is unsortable.
-func classifyTypesFold(types []schema.DataType, fold func(spi.OrderKind) spi.OrderKind) (spi.OrderKind, error) {
-	return spi.ClassifyTypesFold(types, fold)
-}
-
-func scalarClass(t schema.DataType) (spi.OrderKind, error) {
-	switch {
-	case schema.IsNumeric(t):
-		return spi.OrderNumeric, nil
-	case t == schema.Boolean:
-		return spi.OrderBool, nil
-	case t == schema.String, t == schema.Character, t == schema.UUIDType,
-		t == schema.TimeUUIDType:
-		// Compared as their stored ISO/string form (Text/byte order).
-		return spi.OrderText, nil
-	case t == schema.LocalDate, t == schema.LocalDateTime,
-		t == schema.LocalTime, t == schema.ZonedDateTime, t == schema.Year,
-		t == schema.YearMonth:
-		// Temporal subtypes compare chronologically (with cross-subtype
-		// resolution), not lexically. Routing them to OrderTemporal makes
-		// dataCoercion stamp CoerceTemporal for a temporal data field —
-		// lighting up the pushdown temporal path and temporal-aware sort —
-		// and matches how temporal meta fields (creationDate/…) are ordered.
-		return spi.OrderTemporal, nil
-	default: // ByteArray and anything non-scalar
-		return 0, fmt.Errorf("type %s is not sortable", t)
-	}
 }
 
 // metaField is an alias for [spi.MetaField]. The vocabulary itself lives in the

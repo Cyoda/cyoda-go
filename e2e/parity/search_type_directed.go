@@ -21,7 +21,7 @@ import (
 // pinned by RunSearchDataFieldTemporalResolution below. Model discovery now
 // content-sniffs ISO-8601 sample strings into their most specific temporal
 // subtype (schema.InferDataType via spi.ClassifyTemporalString), and
-// classifyType/scalarClass (orderclass.go) buckets those subtypes under
+// spi.ClassifyType buckets those subtypes under
 // spi.OrderTemporal — so a data field whose samples are date-shaped compares
 // chronologically (with cross-subtype resolution), exactly as META temporal
 // fields (creationDate/lastUpdateTime) already do.
