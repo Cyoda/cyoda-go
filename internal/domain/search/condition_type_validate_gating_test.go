@@ -21,9 +21,8 @@ import (
 // (nil, nil) "no schema bound" return). Both silently skipped
 // validateLifecycleType, the one check that refuses a text or pattern
 // operator on a temporal meta field (creationDate/lastUpdateTime). Left
-// unrejected, that predicate reaches internal/match's deliberate
-// temporal-meta never-match guard unvalidated, and a NOT wrapping it
-// inverts that guard into matching every entity.
+// unrejected, that predicate reaches the evaluators unvalidated, and a NOT
+// wrapping it selects every entity the inner leaf does not match.
 //
 // These tests construct the dangerous GroupCondition{Operator:"NOT"} shape
 // directly rather than going through Search/ValidateCondition: ValidateCondition
@@ -78,8 +77,8 @@ func notCreationDateContains2024() *predicate.GroupCondition {
 // TestValidateConditionTypes_NotWrappedTemporalTextOperator_NoSchema_Refused
 // is the entity-of-this-fix test: a model with NO schema registered yet
 // (loadModelNode's ordinary (nil, nil) case) must still refuse
-// NOT(creationDate CONTAINS "2024") — the exact shape a NOT arm inverts a
-// permanent never-match guard into matching everything.
+// NOT(creationDate CONTAINS "2024") — a NOT over a leaf that does not apply
+// to its field, which selects every entity the leaf does not match.
 func TestValidateConditionTypes_NotWrappedTemporalTextOperator_NoSchema_Refused(t *testing.T) {
 	store := &gatingModelStore{desc: &spi.ModelDescriptor{Ref: spi.ModelRef{EntityName: "x", ModelVersion: "1"}}}
 	svc := &SearchService{}
@@ -88,7 +87,7 @@ func TestValidateConditionTypes_NotWrappedTemporalTextOperator_NoSchema_Refused(
 	if appErr == nil {
 		t.Fatal("validateConditionTypes returned nil (accepted) for NOT(creationDate CONTAINS \"2024\") " +
 			"against a schema-less model; want a refusal — this predicate must never reach " +
-			"internal/match's temporal-meta guard unvalidated")
+			"the evaluators unvalidated")
 	}
 	if appErr.Status != http.StatusBadRequest {
 		t.Errorf("appErr.Status = %d, want %d", appErr.Status, http.StatusBadRequest)

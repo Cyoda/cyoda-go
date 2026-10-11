@@ -22,23 +22,13 @@ import (
 // skipped ValidateConditionValueTypes entirely whenever deleteModelSchemaNode
 // returned a nil node — the ordinary "model has no schema yet" state, not a
 // failure. That silently accepted a text or pattern operator on a temporal
-// meta field (creationDate/lastUpdateTime), which internal/match's
-// prepareLifecycle answers with a deliberate, permanent never-match. A NOT
-// wrapping that leaf inverts the guard into matching every entity — on
-// conditional delete, the highest blast-radius surface this predicate
-// reaches, that is a delete-everything.
+// meta field (creationDate/lastUpdateTime). A NOT wrapping that leaf selects
+// every entity the inner leaf does not match — on conditional delete, the
+// highest blast-radius surface this predicate reaches, that is a mass delete.
 //
-// These tests construct the dangerous GroupCondition{Operator:"NOT"} shape
-// directly and call deleteConditionTypeCheck, bypassing
-// planDeleteSelection's own search.ValidateCondition call (a few lines
-// above the type-check in the real flow): ValidateCondition already rejects
-// "NOT" unconditionally today (Task 12 of this plan — accepting NOT
-// structurally — has not landed), so a real end-to-end
-// DeleteEntitiesConditional call with this shape is refused there first,
-// for an unrelated reason, and would pass whether or not this fix exists.
-// Calling deleteConditionTypeCheck directly is what actually exercises —
-// and would have caught — this specific gating regression, independent of
-// when NOT becomes reachable end-to-end.
+// These tests call deleteConditionTypeCheck directly, so they exercise this
+// gating on its own, apart from planDeleteSelection's structural
+// search.ValidateCondition call a few lines above it in the real flow.
 
 // gatingModelStore is a minimal spi.ModelStore double, local to this test
 // file: it records how many times Get was called, so a test can assert "no
@@ -84,9 +74,9 @@ func notCreationDateContains2024() *predicate.GroupCondition {
 // TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoSchema_Refused
 // is the crux of this fix: a model with NO schema registered yet
 // (deleteModelSchemaNode's ordinary (nil, nil) case) must still refuse
-// NOT(creationDate CONTAINS "2024") — the exact shape a NOT arm inverts a
-// permanent never-match guard into matching every entity, on the delete
-// surface where that means every entity is removed.
+// NOT(creationDate CONTAINS "2024") — a NOT over a leaf that does not apply
+// to its field, which selects every entity the leaf does not match, on the
+// delete surface where that means those entities are removed.
 func TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoSchema_Refused(t *testing.T) {
 	store := &gatingModelStore{desc: &spi.ModelDescriptor{Ref: spi.ModelRef{EntityName: "x", ModelVersion: "1"}}}
 	ref := spi.ModelRef{EntityName: "x", ModelVersion: "1"}
@@ -95,7 +85,7 @@ func TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoSchema_Refuse
 	if err == nil {
 		t.Fatal("deleteConditionTypeCheck returned nil (accepted) for NOT(creationDate CONTAINS \"2024\") " +
 			"against a schema-less model; want a refusal — this predicate must never reach " +
-			"internal/match's temporal-meta guard unvalidated, or every entity gets deleted")
+			"the evaluators unvalidated, or a mass delete follows")
 	}
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
@@ -115,8 +105,8 @@ func TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoSchema_Refuse
 // match.Prepare alone would answer for the SAME condition if it were ever
 // reached unvalidated (the pre-fix consequence, reproduced directly against
 // match.Prepare rather than by reverting production code): every entity
-// matches, because NOT inverts prepareLifecycle's permanent never-match
-// guard.
+// matches, because none of them holds a creationDate the inner leaf could
+// match, and NOT selects them all.
 func TestDeleteConditionTypeCheck_RefusalMeansNothingIsSelected(t *testing.T) {
 	store := &gatingModelStore{desc: &spi.ModelDescriptor{Ref: spi.ModelRef{EntityName: "x", ModelVersion: "1"}}}
 	ref := spi.ModelRef{EntityName: "x", ModelVersion: "1"}

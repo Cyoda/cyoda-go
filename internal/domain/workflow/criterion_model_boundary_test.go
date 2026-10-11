@@ -120,10 +120,9 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // skips it — but the VALIDATION CALL must still run with a nil model,
 // because search.ValidateConditionValueTypes's lifecycle branch
 // (validateLifecycleType) is the one check that refuses a text operator on a
-// temporal meta field. Without it, this criterion reaches
-// internal/match's deliberate temporal-meta never-match guard, which a
-// later task's NOT node would invert into matching every entity — the exact
-// fail-open this task closes. The model store is made to error so a
+// temporal meta field. Without it, this criterion reaches match.Prepare
+// unvalidated, and a NOT node over it would select every entity the leaf
+// does not match. The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
 func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) {

@@ -1183,11 +1183,10 @@ func deleteModelSchemaNode(ctx context.Context, modelStore spi.ModelStore, ref s
 // which skipped the validation call ENTIRELY whenever deleteModelSchemaNode
 // returned a nil node — the ordinary "model has no schema yet" state, not a
 // failure — silently accepting a predicate validateLifecycleType exists to
-// reject. Left unrejected, that predicate reaches internal/match's
-// deliberate temporal-meta never-match guard unvalidated, and a NOT wrapping
-// it inverts that guard into matching every entity: on conditional delete,
-// the highest blast-radius surface this predicate reaches, that is a
-// delete-everything. Extracted into its own function so it is directly
+// reject. Left unrejected, that predicate reaches the evaluators
+// unvalidated, and a NOT wrapping it selects every entity the inner leaf does
+// not match: on conditional delete, the highest blast-radius surface this
+// predicate reaches, that is a mass delete. Extracted into its own function so it is directly
 // unit-testable (delete_condition_type_gating_test.go) independent of
 // search.ValidateCondition's structural gate a few lines up in
 // planDeleteSelection, which today already rejects a

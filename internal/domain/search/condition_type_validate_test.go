@@ -351,18 +351,10 @@ func TestValidateConditionTypes_ArrayCondition_Accepted(t *testing.T) {
 
 // TestValidate_TemporalRejectsStringOp verifies that a string or pattern
 // operator (CONTAINS) against a temporal meta field (creationDate) is
-// REJECTED as 400 INVALID_CONDITION.
-//
-// This reverses an earlier deliberate acceptance (see git history): the SPI
-// kernel's pushdown re-check bridges a temporal field to its RFC3339 text
-// and matches CONTAINS lexically, while internal/match's prepareLifecycle
-// guards the same case to a never-match on field identity — the same
-// request answering two ways depending only on which query plan served it
-// (a pushdown narrowing vs. a residual re-check). Both evaluators' own
-// "KNOWN DIVERGENCE" comments name this exact fix: reject the predicate here,
-// at the one boundary every condition surface — search, conditional delete,
-// grouped stats, and workflow-criterion import — funnels through, which
-// makes both evaluators' now-conflicting behaviour unreachable.
+// REJECTED as 400 CONDITION_TYPE_MISMATCH: the operator does not apply to the
+// field's type. The refusal sits at the one boundary every condition surface
+// — search, conditional delete, grouped stats, workflow-criterion import and
+// evaluation — funnels through.
 func TestValidate_TemporalRejectsStringOp(t *testing.T) {
 	c := &predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2021"}
 	err := validateLifecycleType(c)

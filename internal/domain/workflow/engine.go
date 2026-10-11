@@ -1167,9 +1167,8 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	//     and that is the one check that refuses a text/pattern operator on
 	//     a temporal meta field (e.g. `creationDate CONTAINS "2024"`, which
 	//     carries no data path at all). Without it, such a criterion would
-	//     reach internal/match's deliberate temporal-meta never-match guard —
-	//     exactly the fail-open a later NOT node would invert into
-	//     matching every entity. Also not fully redundant with Prepare for a
+	//     reach match.Prepare, which tests the instant's RFC3339 text — and
+	//     a NOT node would select every entity whose text does not match. Also not fully redundant with Prepare for a
 	//     data leaf: a KNOWN CONTAINER path (declared, but only via a nested
 	//     leaf beneath it) compared with a scalar-carrying operator like
 	//     CONTAINS is accepted by ValidateKnownPaths (a container with a

@@ -523,10 +523,10 @@ func (s *SearchService) validateConditionTypes(ctx context.Context, modelStore s
 	// its model-independent half too: validateLifecycleType, the one check
 	// that refuses a text or pattern operator on a temporal meta field
 	// (creationDate/lastUpdateTime). Left unrejected, that predicate reaches
-	// internal/match's deliberate temporal-meta never-match guard
-	// unvalidated, and a NOT wrapping it inverts that guard into matching
-	// every entity — the exact fail-open Task 7 already closed for the
-	// workflow-criterion path. ValidateConditionValueTypes tolerates a nil
+	// the evaluators unvalidated and tests the instant's RFC3339 text — a
+	// question nobody asked — and a NOT wrapping it selects every entity
+	// whose text does not match. The workflow-criterion path already
+	// refuses it the same way. ValidateConditionValueTypes tolerates a nil
 	// model by design (its own doc: the model-independent checks still run),
 	// so calling it unconditionally here, with node possibly nil, is always
 	// safe and never a behaviour change for a condition with a genuine data

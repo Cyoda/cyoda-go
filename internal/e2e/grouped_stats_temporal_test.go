@@ -22,14 +22,6 @@ import (
 // that CONTAINS — a string operator on the temporal creationDate meta field
 // — is REJECTED as 400 CONDITION_TYPE_MISMATCH, matching the equivalent
 // /search request.
-//
-// This reverses an earlier deliberate acceptance: the two evaluators this
-// endpoint's fallback path can reach answer a temporal-field string operator
-// two different ways depending on the query plan — the SPI kernel's pushdown
-// re-check bridges the field to RFC3339 text and matches CONTAINS lexically,
-// while internal/match's prepareLifecycle guards the identical case to a
-// never-match on field identity. Rejecting the predicate at this shared
-// boundary makes both evaluators' conflicting behaviour unreachable.
 func TestGroupedStats_TemporalStringOp_Returns400_ConditionTypeMismatch(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")

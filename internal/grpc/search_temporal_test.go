@@ -260,14 +260,6 @@ func TestSearchTemporal_GRPC_CreationDate_Equals_MixedPrecision(t *testing.T) {
 // REJECTED over the gRPC envelope as a CLIENT_ERROR carrying
 // CONDITION_TYPE_MISMATCH in the message — the same classification HTTP uses:
 // the operator does not apply to the field's type.
-//
-// This reverses an earlier deliberate acceptance: served by the SPI kernel
-// on the pushdown route, the field bridges to its RFC3339 text and CONTAINS
-// matches lexically; served by internal/match on a residual route,
-// prepareLifecycle refuses the operator and never-matches. Rejecting at the
-// shared validation boundary — which both HTTP and gRPC funnel through —
-// makes both evaluators' conflicting behaviour unreachable on either
-// transport.
 func TestSearchTemporal_GRPC_StringOpOnTemporalField_Rejected(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	const model = "grpc-search-temporal-400-string-op"
