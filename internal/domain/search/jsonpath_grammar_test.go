@@ -225,7 +225,7 @@ func TestValidateCondition_AcceptsValidJSONPath(t *testing.T) {
 				return
 			}
 			if !errors.Is(err, search.ErrInvalidFieldPath) {
-				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want rejected (no trailing \"[*]\")", tc.path, err)
+				t.Fatalf("ValidateCondition(array jsonPath=%q) = %v, want rejected (not exactly one trailing \"[*]\")", tc.path, err)
 			}
 		})
 	}

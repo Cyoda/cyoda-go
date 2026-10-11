@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 )
 
@@ -71,6 +72,11 @@ func TestValidateCondition_ArrayClauseRefusals(t *testing.T) {
 		if err := ValidateCondition(tc.cond); !errors.Is(err, tc.want) {
 			t.Errorf("%s: ValidateCondition: want %v, got %v", tc.name, tc.want, err)
 		}
+		if tc.name == "all-null values" {
+			if err := ValidateCondition(tc.cond); !errors.Is(err, spi.ErrArrayClauseTestsNothing) {
+				t.Errorf("%s: want spi.ErrArrayClauseTestsNothing in the chain, got %v", tc.name, err)
+			}
+		}
 		if tc.want == ErrInvalidCondition {
 			if err := ValidateCriterionCondition(tc.cond); !errors.Is(err, ErrInvalidCondition) {
 				t.Errorf("%s: ValidateCriterionCondition: want ErrInvalidCondition, got %v", tc.name, err)
@@ -80,14 +86,34 @@ func TestValidateCondition_ArrayClauseRefusals(t *testing.T) {
 }
 
 func TestValidateCondition_ArrayClauseAcceptsOperators(t *testing.T) {
-	for _, c := range []*predicate.ArrayCondition{
+	for _, c := range acceptedArrayClauses {
+		if err := ValidateCondition(c); err != nil {
+			t.Errorf("%+v: unexpected error: %v", c, err)
+		}
+		if err := ValidateCriterionCondition(c); err != nil {
+			t.Errorf("%+v: ValidateCriterionCondition: unexpected error: %v", c, err)
+		}
+	}
+}
+
+var acceptedArrayClauses = func() []*predicate.ArrayCondition {
+	return []*predicate.ArrayCondition{
 		{JsonPath: "$.s[*]", OperatorType: "GREATER_THAN", Values: []any{50, nil, 70}},
 		{JsonPath: "$.s[*]", OperatorType: "BETWEEN_INCLUSIVE", Values: []any{[]any{1, 5}}},
 		{JsonPath: "$.s[*]", OperatorType: "IS_NULL", Values: []any{nil, true}},
 		{JsonPath: "$.orders[0].lines[*]", OperatorType: "EQUALS", Values: []any{"a"}},
+	}
+}()
+
+// A BETWEEN without a two-element pair is INVALID_CONDITION on every clause.
+func TestValidateCondition_BetweenArity_IsInvalidCondition(t *testing.T) {
+	for _, c := range []predicate.Condition{
+		&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: "BETWEEN", Value: 5},
+		&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: "BETWEEN", Value: []any{1, 2, 3}},
+		&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "BETWEEN", Value: "2021-01-01T00:00:00Z"},
 	} {
-		if err := ValidateCondition(c); err != nil {
-			t.Errorf("%+v: unexpected error: %v", c, err)
+		if err := ValidateCondition(c); !errors.Is(err, ErrInvalidCondition) {
+			t.Errorf("%+v: want ErrInvalidCondition, got %v", c, err)
 		}
 	}
 }

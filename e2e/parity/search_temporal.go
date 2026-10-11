@@ -227,7 +227,7 @@ func RunSearchUnknownMetaField400(t *testing.T, fixture BackendFixture) {
 
 // RunSearchBetweenArity400 asserts a BETWEEN lifecycle condition with a
 // malformed operand (a scalar, not the required 2-element [lo, hi] array) is
-// rejected with HTTP 400 and errorCode BAD_REQUEST on every backend — before
+// rejected with HTTP 400 and errorCode INVALID_CONDITION on every backend — before
 // the fix, this diverged catastrophically: postgres panicked indexing an
 // empty spi.Filter.Values (500), sqlite's BETWEEN fallback emitted a
 // match-all "1=1" (200, wrong result set), and only memory's
@@ -255,8 +255,8 @@ func RunSearchBetweenArity400(t *testing.T, fixture BackendFixture) {
 	if status != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d; body=%s", status, body)
 	}
-	if !containsErrorCode(body, "BAD_REQUEST") {
-		t.Errorf("expected errorCode BAD_REQUEST, body=%s", body)
+	if !containsErrorCode(body, "INVALID_CONDITION") {
+		t.Errorf("expected errorCode INVALID_CONDITION, body=%s", body)
 	}
 }
 

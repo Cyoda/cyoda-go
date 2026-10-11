@@ -155,7 +155,7 @@ func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testin
 
 // TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary verifies
 // that DirectSearch rejects a lifecycle BETWEEN condition whose value is a
-// bare scalar (not a 2-element array) with a 400 BAD_REQUEST AppError.
+// bare scalar (not a 2-element array) with a 400 INVALID_CONDITION AppError.
 func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -174,12 +174,12 @@ func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T
 	}
 
 	_, err := svc.DirectSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
-	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+	assertAppErrorCode(t, err, common.ErrCodeInvalidCondition)
 }
 
 // TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary
 // verifies that SubmitAsyncSearch rejects the same malformed BETWEEN
-// condition with a 400 BAD_REQUEST AppError, and that no job is created
+// condition with a 400 INVALID_CONDITION AppError, and that no job is created
 // before the rejection.
 func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T) {
 	factory := memory.NewStoreFactory()
@@ -197,7 +197,7 @@ func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *test
 	}
 
 	jobID, err := svc.SubmitAsyncSearch(tenantCtx("tenant-1"), ref, cond, search.SearchOptions{Limit: 10})
-	assertAppErrorCode(t, err, common.ErrCodeBadRequest)
+	assertAppErrorCode(t, err, common.ErrCodeInvalidCondition)
 	if jobID != "" {
 		t.Errorf("jobID = %q, want empty (no job created before rejection)", jobID)
 	}

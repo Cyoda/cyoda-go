@@ -11,15 +11,16 @@ import (
 )
 
 // ErrInvalidCondition is the sentinel for a condition that fails structural
-// (shape) validation — currently, an operand that is an object/map rather
-// than a scalar or array. An object denotes no scalar value any operator
-// (comparison, string, range, or null-presence) could evaluate, so it is
-// rejected as INVALID_CONDITION (spec §6/§8: a shape/arity error, not a
-// type mismatch) regardless of the operator or the field's declared types —
-// unlike CONDITION_TYPE_MISMATCH, which requires a known field with declared
-// types to compare against. Handlers check errors.Is(err, ErrInvalidCondition)
-// to emit HTTP 400 with the INVALID_CONDITION code, mirroring
-// validateBetweenArity's arity rejection.
+// (shape) validation: an unknown or missing operatorType, an operand that is
+// an object/map, a BETWEEN operand that is not a two-element pair, an unknown
+// group operator or a NOT group without exactly one child, and an array clause
+// that is malformed or tests nothing. An object denotes no scalar value any
+// operator could evaluate, so it is rejected as INVALID_CONDITION (spec
+// §6/§8: a shape/arity error, not a type mismatch) regardless of the operator
+// or the field's declared types — unlike CONDITION_TYPE_MISMATCH, which
+// requires a known field with declared types to compare against. Handlers
+// check errors.Is(err, ErrInvalidCondition) to emit HTTP 400 with the
+// INVALID_CONDITION code.
 var ErrInvalidCondition = errors.New("invalid condition")
 
 // MaxConditionDepth caps recursion in the condition validators
@@ -115,9 +116,9 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		// held to the simple-clause rules.
 		d, err := spi.DesugarCondition(c)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
+			return fmt.Errorf("%w: %w", ErrInvalidCondition, err)
 		}
-		return asClauseError(validateConditionAtDepth(d, depth+1))
+		return validateConditionAtDepth(d, depth+1)
 	case *predicate.GroupCondition:
 		// A group operator other than exactly "AND"/"OR"/"NOT" previously
 		// cleared validation and then behaved differently depending on which
@@ -215,9 +216,9 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		// by the caller (workflow's walkCriterion) before this runs.
 		d, err := spi.DesugarCondition(c)
 		if err != nil {
-			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
+			return fmt.Errorf("%w: %w", ErrInvalidCondition, err)
 		}
-		return asClauseError(validateCriterionConditionAtDepth(d, depth+1))
+		return validateCriterionConditionAtDepth(d, depth+1)
 	case *predicate.GroupCondition:
 		// Shares validateGroupOperator with validateConditionAtDepth's own
 		// GroupCondition arm — see that arm's doc for the operator-name and
@@ -333,10 +334,10 @@ func validateBetweenArity(op string, value any) error {
 	}
 	vals, ok := value.([]any)
 	if !ok {
-		return fmt.Errorf("operator %q requires exactly two operands, got %T", op, value)
+		return fmt.Errorf("%w: operator %q requires exactly two operands, got %T", ErrInvalidCondition, op, value)
 	}
 	if len(vals) != 2 {
-		return fmt.Errorf("operator %q requires exactly two operands, got %d", op, len(vals))
+		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(vals))
 	}
 	return nil
 }
@@ -350,15 +351,4 @@ func canonicalOperatorList() string {
 	}
 	sort.Strings(ops)
 	return strings.Join(ops, ", ")
-}
-
-// asClauseError classifies a refusal of an array clause's desugared leaves: a
-// path failure keeps ErrInvalidFieldPath and a structural one keeps
-// ErrInvalidCondition; any other refusal (a BETWEEN entry that is not a pair)
-// is a malformed clause, so it wraps ErrInvalidCondition.
-func asClauseError(err error) error {
-	if err == nil || errors.Is(err, ErrInvalidCondition) || errors.Is(err, ErrInvalidFieldPath) {
-		return err
-	}
-	return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 }
