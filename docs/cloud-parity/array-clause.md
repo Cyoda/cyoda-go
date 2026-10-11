@@ -18,10 +18,13 @@ cyoda-go defines the array clause's wire shape; Cyoda Cloud aligns to it.
 - The clause means an AND of one `simple` clause per tested position, and
   every `simple`-clause rule applies to those clauses.
 - Refused: no operator or an unknown one, a clause that tests no position
-  (missing, empty or all-null `values`), an object entry — `400
+  (missing, empty or all-null `values`), an object entry, a `BETWEEN` or
+  `BETWEEN_INCLUSIVE` entry that is not a `[low, high]` pair — `400
   INVALID_CONDITION`; a path that does not end in `[*]` or has an earlier
-  `[*]` — `400 INVALID_FIELD_PATH`. On workflow import every refusal is `400
-  VALIDATION_FAILED`.
+  `[*]` — `400 INVALID_FIELD_PATH`; an operator or entry that does not fit
+  the element's declared type — `400 CONDITION_TYPE_MISMATCH`. On workflow
+  import every refusal that needs no model is `400 VALIDATION_FAILED`; the
+  type check runs when the criterion is evaluated.
 - Accepted on every surface that takes a condition: direct and async search,
   conditional delete, grouped-stats `condition`, gRPC search, workflow and
   transition criteria.
@@ -35,6 +38,8 @@ applies the operator at every listed position, on REST search only. To align:
 - Accept `null` entries as "do not test this position".
 - Accept non-string scalars and `[low, high]` pairs; apply range operators
   per position (Cloud refuses them today).
+- For `IS_NULL`/`NOT_NULL`, use a non-null entry only to select the position.
+- Refuse an object entry.
 - Refuse a missing operator, a clause that tests no position, and a path with
   a wildcard before its trailing `[*]`.
 - Accept the clause in workflow criteria and in gRPC search.

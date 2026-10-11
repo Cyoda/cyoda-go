@@ -350,8 +350,10 @@ Five clause types exist. Two carry a path.
 ### The `array` clause
 
 An `array` clause tests elements of an array by position. Its `jsonPath` **must**
-carry a trailing array wildcard, and the array's element must be a primitive. Its
-`operatorType` is required and is applied at every tested position:
+carry a trailing array wildcard. Under an operator that takes an operand, the
+array's element must be a primitive; `IS_NULL` and `NOT_NULL` are valid on any
+element, as section 6 says. Its `operatorType` is required and is applied at
+every tested position:
 
 ```json
 {"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}
@@ -386,9 +388,12 @@ section 4, and the type check of `operator-semantics.md`.
 
 A bare path (`$.tags`) is not accepted for an `array` clause. A bare path
 addresses the array itself, not its elements, so it cannot carry a positional
-test. An array of objects is not accepted either, for the reason section 6 gives:
-an element with substructure and no scalar form is not comparable to a scalar.
-Both are rejected with the code section 7 gives for the surface.
+test. Under an operator that takes an operand, an array of objects is not
+accepted either, for the reason section 6 gives: an element with substructure and
+no scalar form is not comparable to a scalar. Both are rejected with the code
+section 7 gives for the surface. `IS_NULL` and `NOT_NULL` carry no operand, so an
+`array` clause with either operator stays valid on an array of objects, as a
+`simple` clause does.
 
 This restricts the `array` clause only. On a `simple` clause a bare path still
 addresses the array itself, and section 6 decides what may be asked of it. On a

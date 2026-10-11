@@ -776,8 +776,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   tested position.** `{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}`
   means `scores[0] > 50` and `scores[2] > 70`. A clause without an operator,
   or that tests no position (`values` missing, empty or all `null`), is `400
-  INVALID_CONDITION`; before, it matched every entity — a conditional delete
-  in the shape the spec documented deleted the whole model. A path with a
+  INVALID_CONDITION`. Before, a clause without an operator compared with
+  `EQUALS`, and a clause that tested no position matched every entity — a
+  conditional delete with all-`null` `values` deleted the whole model. A path with a
   wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`. Workflow
   import answers `400 VALIDATION_FAILED` for each, and now also refuses a
   criterion that is not a valid condition. `ArrayConditionDto` in the OpenAPI
@@ -789,8 +790,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   array is `400 INVALID_CONDITION` on every search surface and every clause
   type.** Before, direct and async search answered `400 BAD_REQUEST` for a
   `simple` or `lifecycle` clause, while grouped stats and conditional delete
-  already answered `INVALID_CONDITION`. The help pages always documented
-  `INVALID_CONDITION`. The status stays `400`; only the code changes.
+  already answered `INVALID_CONDITION`. The status stays `400`; only the
+  code changes.
 
 - **A search condition that does not parse is `400 INVALID_CONDITION` on
   direct and async search**, as it already was on conditional delete and

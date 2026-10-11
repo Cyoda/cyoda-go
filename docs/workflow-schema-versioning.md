@@ -283,8 +283,11 @@ transition and callout, and there are no deployments of either tier whose
 stored workflows could be affected. Retiring 1.1–1.4 would turn 298 fixtures
 and every client's existing files into `WORKFLOW_SCHEMA_VERSION_UNSUPPORTED`
 to guard a few fields. The third rule touches only exports of v0.8.3 and
-v0.8.4, and its error names the field to remove. All five rules apply to an
-import under **any** schema version, 1.1 through 1.5 alike — they are
+v0.8.4, and its error names the field to remove. Rules 4 and 5 touch only
+`array` criteria and criteria that cannot be evaluated, and the error names
+where the criterion is. An `array` criterion without an operator is fixed by
+adding `"operatorType":"EQUALS"`. All five rules apply to an import under
+**any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 
 No rule is retroactive: a workflow already stored is not re-checked at
