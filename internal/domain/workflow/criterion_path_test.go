@@ -31,7 +31,7 @@ func simplePathCriterion(path string) json.RawMessage {
 }
 
 func arrayPathCriterion(path string) json.RawMessage {
-	return json.RawMessage(`{"type":"array","jsonPath":"` + path + `","values":["a"]}`)
+	return json.RawMessage(`{"type":"array","jsonPath":"` + path + `","operatorType":"EQUALS","values":["a"]}`)
 }
 
 func groupWithNestedPath(path string) json.RawMessage {

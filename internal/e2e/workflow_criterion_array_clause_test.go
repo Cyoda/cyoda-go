@@ -11,8 +11,8 @@ import (
 // arrayClauseCriterionWorkflow builds a workflow whose CREATED state has one
 // automated transition to ADVANCED, gated by an ArrayCondition on jsonPath.
 // Mirrors dataCriterionWorkflow (workflow_criterion_path_key_test.go) but for
-// the "array" clause shape, which carries "values" instead of "operatorType"
-// and "value".
+// the "array" clause shape, which carries "values" (one operand per position)
+// plus one "operatorType" instead of a single "value".
 func arrayClauseCriterionWorkflow(wfName, jsonPath string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
@@ -21,7 +21,7 @@ func arrayClauseCriterionWorkflow(wfName, jsonPath string) string {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "advance", "next": "ADVANCED", "manual": false,
-					"criterion": {"type":"array","jsonPath":%q,"values":["A"]}}]},
+					"criterion": {"type":"array","jsonPath":%q,"operatorType":"EQUALS","values":["A"]}}]},
 				"ADVANCED": {}
 			}
 		}]
