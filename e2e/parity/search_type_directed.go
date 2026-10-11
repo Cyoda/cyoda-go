@@ -274,16 +274,22 @@ func RunSearchLikeAnchoredEscapedGlob(t *testing.T, fixture BackendFixture) {
 
 // RunSearchStringOpsCaseSensitivityAndNonTextual pins spec §10's string-ops
 // row: case-sensitive ops vs their `I*` case-insensitive twins, and the
-// same-type gate — a string op against a non-textual (numeric) stored value
-// is a non-match, not a stringify-and-compare or an error.
+// same-type gate — on a field declared [INTEGER, STRING], a string op against
+// an entity whose stored value is numeric is a non-match, not a
+// stringify-and-compare. (On a field with no text type at all the op is
+// refused instead; RunSearchTextOperatorOnNonTextField400 pins that.)
 func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "parity-search-string-ops"
 	const modelVersion = 1
-	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed","amount":1}`); err != nil {
-		t.Fatalf("ImportModel: %v", err)
+	// Two samples before lock make $.code polymorphic [INTEGER, STRING].
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed","code":1}`); err != nil {
+		t.Fatalf("ImportModel (int sample): %v", err)
+	}
+	if err := c.ImportModel(t, modelName, modelVersion, `{"name":"seed2","code":"s"}`); err != nil {
+		t.Fatalf("ImportModel (string sample): %v", err)
 	}
 	if err := c.LockModel(t, modelName, modelVersion); err != nil {
 		t.Fatalf("LockModel: %v", err)
@@ -292,11 +298,11 @@ func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture Backen
 		t.Fatalf("ImportWorkflow: %v", err)
 	}
 
-	aliceID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","amount":10}`)
+	aliceID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"Alice","code":10}`)
 	if err != nil {
 		t.Fatalf("CreateEntity Alice: %v", err)
 	}
-	lowerID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"alice","amount":5}`)
+	lowerID, err := c.CreateEntity(t, modelName, modelVersion, `{"name":"alice","code":"10"}`)
 	if err != nil {
 		t.Fatalf("CreateEntity alice: %v", err)
 	}
@@ -316,17 +322,15 @@ func RunSearchStringOpsCaseSensitivityAndNonTextual(t *testing.T, fixture Backen
 	}
 	assertResultIDSet(t, "name ISTARTS_WITH alice (case-insensitive)", ciResults, []string{aliceID.String(), lowerID.String()})
 
-	// A string op (CONTAINS) against the non-textual $.amount field: the
-	// operand "1" parses fine as INTEGER (so validation accepts it, no
-	// 400), but the same-type gate makes a string op against a numeric
-	// stored slot a non-match — 200 with zero results, not an error.
-	nonTextualResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.amount","operatorType":"CONTAINS","value":"1"}`)
+	// CONTAINS "1" on the polymorphic $.code: the field has a text type, so
+	// the op is accepted, but the same-type gate makes it a non-match for
+	// Alice's numeric 10 — only the stored string "10" matches. A
+	// stringify-and-compare would return both.
+	nonTextualResults, err := c.SyncSearch(t, modelName, modelVersion, `{"type":"simple","jsonPath":"$.code","operatorType":"CONTAINS","value":"1"}`)
 	if err != nil {
-		t.Fatalf("SyncSearch CONTAINS \"1\" on numeric field: %v", err)
+		t.Fatalf("SyncSearch CONTAINS \"1\" on [INTEGER, STRING] field: %v", err)
 	}
-	if len(nonTextualResults) != 0 {
-		t.Errorf("CONTAINS on non-textual field: want 0 results (non-match, not stringify-compare), got %d", len(nonTextualResults))
-	}
+	assertResultIDSet(t, "code CONTAINS 1 (numeric value not stringified)", nonTextualResults, []string{lowerID.String()})
 }
 
 // RunSearchNegativeOpOnAbsentField pins spec §10's negative-op-on-absent-field
