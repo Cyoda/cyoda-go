@@ -112,6 +112,11 @@ func TestCriterionArrayClause_RefusedAtImport(t *testing.T) {
 		`{"type":"array","jsonPath":"$.scores[*]","values":[50]}`,
 		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`,
 		`{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[1]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"FROBNICATE","values":[50]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[{"a":1}]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[5]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":"x"}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[[null,5]]}`,
 		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"NOT_EQUAL","values":[[1,2]]}`,
 		`{"type":"bogus"}`,
 	} {

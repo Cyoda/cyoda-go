@@ -157,3 +157,15 @@ func TestValidateImportRequest_RejectsArrayOperandOutsideBetween(t *testing.T) {
 		t.Errorf("a BETWEEN pair must stay accepted: %v", err)
 	}
 }
+
+// A null BETWEEN bound is refused at import, on a simple and an array clause.
+func TestValidateImportRequest_RejectsNullBetweenBound(t *testing.T) {
+	for _, c := range []string{
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN","value":[null,5]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"BETWEEN_INCLUSIVE","values":[[null,5]]}`,
+	} {
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))}); err == nil {
+			t.Errorf("%s: a null BETWEEN bound must be rejected at import", c)
+		}
+	}
+}

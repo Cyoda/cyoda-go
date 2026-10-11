@@ -199,3 +199,18 @@ func TestValidateCondition_ArrayClauseTestsNothing_NamesValues(t *testing.T) {
 		}
 	}
 }
+
+// The criterion entry point refuses a null BETWEEN bound exactly as the
+// search entry point does.
+func TestValidateCriterionCondition_BetweenNullBound_IsInvalidCondition(t *testing.T) {
+	for _, op := range []string{"BETWEEN", "BETWEEN_INCLUSIVE"} {
+		for _, c := range []predicate.Condition{
+			&predicate.SimpleCondition{JsonPath: "$.n", OperatorType: op, Value: []any{nil, 5}},
+			&predicate.ArrayCondition{JsonPath: "$.s[*]", OperatorType: op, Values: []any{[]any{nil, 5}}},
+		} {
+			if err := ValidateCriterionCondition(c); !errors.Is(err, ErrInvalidCondition) {
+				t.Errorf("%s %+v: want ErrInvalidCondition, got %v", op, c, err)
+			}
+		}
+	}
+}

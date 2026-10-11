@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"testing"
 	"time"
 
@@ -47,7 +48,9 @@ var arrayClauseRefusals = []struct {
 	// it would otherwise match on some backends and not on others; under
 	// NOT_EQUAL a conditional delete would remove nearly every entity.
 	{"array entry outside BETWEEN", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`, "INVALID_CONDITION"},
+	{"null BETWEEN bound", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[[null,5]]}`, "INVALID_CONDITION"},
 	{"bare path", `{"type":"array","jsonPath":"$.scores","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
+	{"earlier wildcard", `{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[90]}`, "INVALID_FIELD_PATH"},
 	{"text operator on numbers", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}`, "CONDITION_TYPE_MISMATCH"},
 }
 
@@ -67,6 +70,32 @@ func TestSearch_Sync_ArrayClauseOperator(t *testing.T) {
 		}
 		if len(results) != 1 || extractDataString(t, results[0], "name") != tc.want {
 			t.Errorf("%s: want only %s, got %v", tc.name, tc.want, results)
+		}
+	}
+}
+
+// IS_NULL at a position answers what the positional simple clause answers.
+// The comparison, not a fixed count, is the contract: the array clause is the
+// AND of its positional simple clauses.
+func TestSearch_Sync_ArrayClauseIsNullPerPosition(t *testing.T) {
+	const model = "e2e-array-op-isnull"
+	setupScoresModel(t, model)
+	for _, tc := range []struct{ array, simple string }{
+		{`{"type":"array","jsonPath":"$.scores[*]","operatorType":"IS_NULL","values":[null,true]}`,
+			`{"type":"simple","jsonPath":"$.scores[1]","operatorType":"IS_NULL"}`},
+		{`{"type":"array","jsonPath":"$.scores[*]","operatorType":"IS_NULL","values":[null,null,null,true]}`,
+			`{"type":"simple","jsonPath":"$.scores[3]","operatorType":"IS_NULL"}`},
+	} {
+		aStatus, aResults := directSearch(t, model, 1, tc.array)
+		sStatus, sResults := directSearch(t, model, 1, tc.simple)
+		if aStatus != http.StatusOK || sStatus != http.StatusOK {
+			t.Fatalf("%s: expected 200 for both, got array %d, simple %d", tc.array, aStatus, sStatus)
+		}
+		got, want := extractDataStrings(t, aResults, "name"), extractDataStrings(t, sResults, "name")
+		slices.Sort(got)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Errorf("%s: array clause matched %v, positional simple clause matched %v", tc.array, got, want)
 		}
 	}
 }
