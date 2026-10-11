@@ -56,7 +56,17 @@ func ValidateConditionValueTypes(model *schema.ModelNode, cond predicate.Conditi
 	if model != nil {
 		fm = model.FieldsMap()
 	}
-	return walkConditionTypes(fm, cond, 0)
+	return ValidateConditionFieldTypes(fm, cond)
+}
+
+// ValidateConditionFieldTypes is ValidateConditionValueTypes against a fields
+// map rather than a model node: the same checks, the same errors. A caller
+// whose fields map may come from a bounded schema refresh (the workflow
+// engine, after search.ValidateKnownPaths) passes that map, so the type check
+// runs against the schema the leaves are typed against at evaluation. A nil
+// map runs only the model-independent checks.
+func ValidateConditionFieldTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
+	return walkConditionTypes(fields, cond, 0)
 }
 
 func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Condition, depth int) error {

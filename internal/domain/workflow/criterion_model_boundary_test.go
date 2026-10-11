@@ -309,6 +309,38 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	}
 }
 
+// TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked: the type check
+// must run against the schema the refresh returned, the one Prepare types the
+// leaf against. Checked against the pre-refresh schema, a path a peer just
+// added has no declared type there and passes unchecked, so NOT_CONTAINS on a
+// numeric field would match every entity on the node that refreshed while
+// every other node refuses the same criterion.
+func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
+	baseFactory := memory.NewStoreFactory()
+	t.Cleanup(func() { baseFactory.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	txMgr := baseFactory.NewTransactionManager(uuids)
+
+	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
+	stale := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String})
+	fresh := buildBoundaryDescriptor(t, ref, map[string]schema.DataType{"a": schema.String, "peer_field": schema.Integer})
+
+	ms := &refreshingModelStore{
+		getQueue:     []*spi.ModelDescriptor{stale},
+		refreshQueue: []*spi.ModelDescriptor{fresh},
+	}
+	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
+	engine := NewEngine(factory, uuids, txMgr)
+
+	ctx := ctxWithTenant(testTenant)
+	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
+
+	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, search.ErrConditionTypeMismatch) {
+		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", got, err)
+	}
+}
+
 // buildNestedAddressModel saves a model whose schema declares ONLY
 // "address.street" (String) — "address" itself is a KNOWN CONTAINER (a
 // structural node with substructure) but never a leaf. Used to isolate
