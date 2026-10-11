@@ -47,7 +47,7 @@ func TestQueryGroupedStats_BareLeafField_UnevaluableLeaf_MapsTo400(t *testing.T)
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: cond,
+		Condition: mustParseCond(t, cond),
 	}
 
 	_, gsErr := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, fields, req)

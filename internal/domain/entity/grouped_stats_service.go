@@ -3,7 +3,6 @@ package entity
 import (
 	"context"
 	"errors"
-	"fmt"
 	"math"
 	"net/http"
 	"sort"
@@ -11,7 +10,6 @@ import (
 	"github.com/tidwall/gjson"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -19,13 +17,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 )
 
-// ErrInvalidCondition wraps any predicate.ParseCondition failure that
-// surfaces from the service-layer dispatch. The HTTP handler maps this
-// (via errors.Is) to 400 INVALID_CONDITION per spec §3. We need the
-// sentinel because the predicate package returns plain fmt.Errorf
-// values, so the handler has no other typed signal to distinguish a
-// malformed condition (client fault) from an upstream/storage error
-// (5xx with ticket).
+// ErrInvalidCondition wraps a predicate.ParseCondition failure on the
+// conditional-delete path. The HTTP handler maps it (via errors.Is) to 400
+// INVALID_CONDITION. The sentinel is needed because the predicate package
+// returns plain fmt.Errorf values, so the handler has no other typed signal
+// to tell a malformed condition (client fault) from a storage error.
 var ErrInvalidCondition = errors.New("invalid condition")
 
 // GroupedStatsService is the per-request dispatcher described in spec §4.
@@ -75,17 +71,14 @@ func classifyGroupedStatsError(err error) error {
 	case errors.Is(err, spi.ErrGroupCardinalityExceeded):
 		return common.Operational(http.StatusUnprocessableEntity, common.ErrCodeGroupCardinalityExceeded,
 			"group cardinality exceeds the configured maximum").WithCause(err)
-	case errors.Is(err, ErrInvalidCondition):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, err.Error()).WithCause(err)
-	case errors.Is(err, search.ErrInvalidFieldPath):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeInvalidFieldPath, err.Error()).WithCause(err)
 	case errors.Is(err, spi.ErrInvalidFilterPath),
 		errors.Is(err, spi.ErrUnevaluableLeaf),
 		errors.Is(err, spi.ErrInvalidPattern),
 		errors.Is(err, match.ErrUnevaluableLeaf),
 		errors.Is(err, match.ErrUnsupportedOperator):
-		// spi.ErrInvalidFilterPath is the PLUGIN-side twin of the arm above: a
-		// backend's own backstop rejecting a path outside the model's syntax.
+		// spi.ErrInvalidFilterPath is a backend's own backstop rejecting a path
+		// outside the model's syntax; request validation has already refused
+		// such a path, so it surfaces here only from a backend.
 		//
 		// spi.ErrUnevaluableLeaf / spi.ErrInvalidPattern reach here from the
 		// streaming tally's own store.Iterate call (tallyStreaming passes it
@@ -104,8 +97,6 @@ func classifyGroupedStatsError(err error) error {
 		// that function's doc). Delegating keeps one mapping table instead of
 		// several.
 		return search.ClassifyStoreQueryError(err)
-	case errors.Is(err, search.ErrConditionTypeMismatch):
-		return common.Operational(http.StatusBadRequest, common.ErrCodeConditionTypeMismatch, err.Error()).WithCause(err)
 	}
 	return err
 }
@@ -132,22 +123,9 @@ func (s *GroupedStatsService) queryGroupedStatsInner(
 	fields map[string]schema.FieldDescriptor,
 	req *ValidatedGroupedStatsRequest,
 ) ([]GroupedStatsBucket, error) {
-	// Parse Condition once. A nil/empty Condition is the "match all" case
-	// (no predicate filtering). Any parse error here is the first sign of
-	// a malformed condition — surface it so the handler can return 400.
-	var parsedCond predicate.Condition
-	if len(req.Condition) > 0 {
-		c, err := predicate.ParseCondition(req.Condition)
-		if err != nil {
-			// Wrap with ErrInvalidCondition sentinel so the handler can
-			// route this to 400 INVALID_CONDITION via errors.Is. The
-			// underlying predicate error message is preserved in the
-			// chain (and surfaces in server-side logs) but the client
-			// sees a stable error code.
-			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)
-		}
-		parsedCond = c
-	}
+	// A nil Condition is the "match all" case (no predicate filtering). The
+	// request carries it already parsed.
+	parsedCond := req.Condition
 
 	// The condition was validated by the handler through
 	// search.ValidateConditionForModel (structure, patterns, paths, types),

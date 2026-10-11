@@ -74,7 +74,7 @@ var canonicalOperators = func() map[string]struct{} {
 // A jsonPath failure wraps [ErrInvalidFieldPath] — see
 // [ValidateConditionJSONPath] for the grammar and for why array-subscripted
 // paths are deliberately accepted here. Callers classify it via
-// [StructuralConditionErrCode], which maps it to
+// the structural classifier in [ValidateConditionForModel], which maps it to
 // INVALID_FIELD_PATH rather than the coarser INVALID_CONDITION/BAD_REQUEST.
 func ValidateCondition(cond predicate.Condition) error {
 	return validateConditionAtDepth(cond, 0)

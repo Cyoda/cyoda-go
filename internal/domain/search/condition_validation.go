@@ -21,16 +21,27 @@ type FieldsLoader func() (map[string]schema.FieldDescriptor, error)
 // model's types. The checks that need no model come first, so a structural
 // or pattern fault is INVALID_CONDITION whatever the model declares; a path
 // the model lacks is INVALID_FIELD_PATH; an operand or operator the declared
-// types cannot take is CONDITION_TYPE_MISMATCH.
+// types cannot take is CONDITION_TYPE_MISMATCH. The caller has already
+// resolved the model: an unknown model is a 404 before any of this runs.
 //
 // load supplies the model's fields; the path step checks the condition's
-// paths against them and refreshes the model once on a miss (a peer may have
-// extended it), returning the refreshed map, which is the map the types are
-// checked against and the caller translates with. A condition that names no
-// data path never calls load.
-func ValidateConditionForModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition, load FieldsLoader) (map[string]schema.FieldDescriptor, error) {
+// paths — plus extraPaths, the data paths the request names outside its
+// condition (grouped stats' groupBy and aggregate fields) — against them in
+// one pass, refreshing the model at most once on a miss (a peer may have
+// extended it). It returns the refreshed map, which is the map the types are
+// checked against and the caller translates with. A request that names no
+// data path never calls load. A nil cond skips the condition checks and
+// validates extraPaths alone.
+func ValidateConditionForModel(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition, extraPaths []string, load FieldsLoader) (map[string]schema.FieldDescriptor, error) {
 	return validateConditionSequence(cond, func() (map[string]schema.FieldDescriptor, error) {
-		paths := ConditionFieldPaths(cond)
+		var paths []string
+		seen := map[string]struct{}{}
+		for _, p := range append(conditionPathsOf(cond), extraPaths...) {
+			if _, dup := seen[p]; !dup && p != "" {
+				seen[p] = struct{}{}
+				paths = append(paths, p)
+			}
+		}
 		if len(paths) == 0 {
 			return nil, nil
 		}
@@ -42,28 +53,39 @@ func ValidateConditionForModel(ctx context.Context, modelStore spi.ModelStore, r
 	})
 }
 
+func conditionPathsOf(cond predicate.Condition) []string {
+	if cond == nil {
+		return nil
+	}
+	return ConditionFieldPaths(cond)
+}
+
 // validateConditionSequence holds the order stated on ValidateConditionForModel;
 // modelPaths is the surface's path step (search's carries its negative cache).
 func validateConditionSequence(cond predicate.Condition, modelPaths func() (map[string]schema.FieldDescriptor, error)) (map[string]schema.FieldDescriptor, error) {
-	if cErr := ValidateCondition(cond); cErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
-	}
-	if rErr := ValidatePatterns(cond); rErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, rErr.Error())
+	if cond != nil {
+		if cErr := ValidateCondition(cond); cErr != nil {
+			return nil, common.Operational(http.StatusBadRequest, structuralConditionErrCode(cErr), cErr.Error())
+		}
+		if rErr := ValidatePatterns(cond); rErr != nil {
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition, rErr.Error())
+		}
 	}
 	fields, err := modelPaths()
 	if err != nil {
 		return nil, err
 	}
-	if tErr := ValidateConditionValueTypes(fields, cond); tErr != nil {
-		return nil, common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(tErr), tErr.Error())
+	if cond != nil {
+		if tErr := ValidateConditionValueTypes(fields, cond); tErr != nil {
+			return nil, common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(tErr), tErr.Error())
+		}
 	}
 	return fields, nil
 }
 
 // validateConditionForModel is the search service's run of the sequence: its
-// path step ensures the model is registered (404 before any path verdict) and
-// uses the service's negative cache.
+// path step ensures the model is registered and uses the service's negative
+// cache.
 func (s *SearchService) validateConditionForModel(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
 	return validateConditionSequence(cond, func() (map[string]schema.FieldDescriptor, error) {
 		modelStore, err := s.factory.ModelStore(ctx)

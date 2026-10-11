@@ -742,8 +742,8 @@ func TestDeleteEntitiesConditional_ForwardsSelection4xx(t *testing.T) {
 // TestDeleteEntitiesConditional_StructuralErrorClassification pins that
 // planDeleteSelection's structural-condition validation (search.ValidateCondition,
 // internal/domain/entity/service.go) classifies failures identically to
-// SearchService.Search — via the same exported search.StructuralConditionErrCode
-// — rather than collapsing every structural failure under one code.
+// SearchService.Search — through the one shared validation sequence
+// (search.ValidateConditionForModel) — rather than collapsing every structural failure under one code.
 //
 // An unknown operatorType and an object-shaped operand both map to
 // INVALID_CONDITION (operator-semantics.md §4: "An operator name outside
@@ -793,9 +793,9 @@ func TestDeleteEntitiesConditional_StructuralErrorClassification(t *testing.T) {
 // meta field (creationDate, lastUpdateTime) does not apply to the field's type
 // and is 400 CONDITION_TYPE_MISMATCH, not a silent under- or over-selection
 // decided by which evaluator happened to serve the delete.
-// planDeleteSelection classifies via search.ClassifyConditionTypeErrCode —
-// the same function search.validateConditionTypes and grouped stats use —
-// so a regression in that shared classifier surfaces here too.
+// planDeleteSelection runs search.ValidateConditionForModel, the sequence
+// search and grouped stats run, so a regression in its type classification
+// surfaces here too.
 func TestDeleteEntitiesConditional_TemporalStringOp_ConditionTypeMismatch(t *testing.T) {
 	h, ctx, entityName, modelVersion := newDeleteFixtureWithSchema(t)
 

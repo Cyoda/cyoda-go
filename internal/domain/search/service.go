@@ -633,20 +633,6 @@ func structuralConditionErrCode(cErr error) string {
 	return common.ErrCodeBadRequest
 }
 
-// StructuralConditionErrCode is the exported entry point for
-// structuralConditionErrCode, so a caller outside this package that
-// validates a condition via the exported ValidateCondition — currently
-// entity.Handler's delete paths, which select entities via their own
-// Iterate drain instead of Search and so must replicate Search's
-// pre-execution validation rather than inherit it as a side effect —
-// classifies a ValidateCondition failure identically to Search/SubmitAsync
-// instead of drifting onto a coarser code of its own. Mirrors the
-// LoadFieldsMap/loadFieldsMap exported-wrapper shape already used in this
-// package (path_validate.go).
-func StructuralConditionErrCode(cErr error) string {
-	return structuralConditionErrCode(cErr)
-}
-
 // Search performs a synchronous, bounded-or-fail entity search.
 //
 // Contract: opts.Limit >= 1 (a non-positive limit is a caller error, not a

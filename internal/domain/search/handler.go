@@ -73,8 +73,9 @@ func submitAsyncError(err error) *common.AppError {
 // Structural condition validation (canonical operator set, BETWEEN arity —
 // operators.go's ValidateCondition) and condition type-soundness
 // (schema-vs-value, meta-vocabulary checks — condition_type_validate.go's
-// validateConditionTypes) are both enforced inside SearchService.Search /
-// SubmitAsync — the single boundary every transport (HTTP via this handler,
+// ValidateConditionValueTypes) are both enforced, in the one sequence
+// condition_validation.go's ValidateConditionForModel states, inside
+// SearchService.Search / SubmitAsync — the single boundary every transport (HTTP via this handler,
 // gRPC via internal/grpc/search.go) funnels through — not here.
 type Handler struct {
 	searchSvc   *SearchService

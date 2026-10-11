@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -167,33 +166,18 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	//
 	// The condition runs the one sequence every surface shares
 	// (search.ValidateConditionForModel: structure, patterns, paths, types);
-	// the groupBy and aggregate paths, which are not part of the condition,
-	// are then checked against the fields that sequence settled on.
-
-	if len(validated.Condition) > 0 {
-		cond, pErr := predicate.ParseCondition(validated.Condition)
-		if pErr != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest,
-				common.ErrCodeInvalidCondition, "invalid condition: "+pErr.Error()))
-			return
-		}
-		refreshed, vErr := search.ValidateConditionForModel(r.Context(), modelStore, model, cond,
-			func() (map[string]schema.FieldDescriptor, error) { return fields, nil })
-		if vErr != nil {
-			writeValidationError(w, r, vErr)
-			return
-		}
-		if refreshed != nil {
-			fields = refreshed
-		}
-	}
-	refreshed, pErr := search.ValidateKnownPaths(
-		r.Context(), modelStore, model, requestNonConditionPaths(validated), fields)
-	if pErr != nil {
-		writeValidationError(w, r, pErr)
+	// the groupBy and aggregate paths ride in the same path check, so one
+	// request refreshes the schema at most once.
+	refreshed, vErr := search.ValidateConditionForModel(r.Context(), modelStore, model,
+		validated.Condition, requestNonConditionPaths(validated),
+		func() (map[string]schema.FieldDescriptor, error) { return fields, nil })
+	if vErr != nil {
+		writeValidationError(w, r, vErr)
 		return
 	}
-	fields = refreshed
+	if refreshed != nil {
+		fields = refreshed
+	}
 
 	// Dispatch to the service layer. QueryGroupedStats already classifies
 	// the known domain/SPI sentinels into *common.AppError (transport-

@@ -26,7 +26,7 @@ import (
 // data path: no model is consulted, so neither the store nor the loader is
 // ever called.
 func noPathCondition(cond predicate.Condition) error {
-	_, err := search.ValidateConditionForModel(context.Background(), nil, spi.ModelRef{}, cond,
+	_, err := search.ValidateConditionForModel(context.Background(), nil, spi.ModelRef{}, cond, nil,
 		func() (map[string]schema.FieldDescriptor, error) {
 			return nil, errors.New("loader must not be called for a condition with no data path")
 		})

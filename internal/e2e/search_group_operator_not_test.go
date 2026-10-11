@@ -15,7 +15,7 @@ import (
 // async submit, conditional delete, grouped stats) now accept a
 // GroupCondition{Operator:"NOT"} with exactly one entry in `conditions`,
 // and reject zero or two-or-more with 400 INVALID_CONDITION — the same
-// classification search.StructuralConditionErrCode already gives every
+// classification the shared validation sequence already gives every
 // other structural condition failure on these surfaces (see
 // search_unknown_operator_test.go and search_function_condition_test.go for
 // the sibling coverage this file mirrors).

@@ -1038,8 +1038,8 @@ func mintDeleteTicket(entityID string, err error) string {
 // It used to carry a prepared residual for an untranslatable condition,
 // re-applied per streamed entity over a zero-value filter — a whole-model
 // scan plus an in-process match, the shape search deleted. planDeleteSelection
-// runs the same four checks search does (ValidateCondition, ValidatePatterns,
-// ValidateKnownPaths, the type check) before translating, and clearing them
+// runs the same sequence search does (search.ValidateConditionForModel:
+// structure, patterns, paths, types) before translating, and clearing it
 // implies translating, so the residual had no reachable input:
 // TestDeleteAndGroupedStats_ClearingImpliesTranslates is the check that keeps
 // that true. Delete now refuses a translation failure exactly as search does.
@@ -1050,15 +1050,11 @@ type deleteSelectionPlan struct {
 // planDeleteSelection validates cond and resolves how DeleteEntitiesConditional
 // / deleteBatched select matching entities. Delete reuses the search
 // condition primitive so no special engine rights are claimed (design
-// §6.1), but — now that selection streams via the delete path's own
-// Iterate drain rather than through SearchService.Search — the
-// validation Search enforces along the way (structural condition shape,
-// regex compilability, unknown data-field paths, type soundness) has to be
-// replicated here instead of arriving as a side effect of that call. Same
-// checks, same error codes, via the same exported search.* helpers
-// GroupedStatsService already established this pattern with
-// (grouped_stats_service.go). A nil cond selects everything (zero-value
-// plan, no validation to do).
+// §6.1). Selection streams via the delete path's own Iterate drain rather
+// than through SearchService.Search, so it runs the validation sequence
+// Search runs — search.ValidateConditionForModel, shared with search and
+// grouped stats — itself. A nil cond selects everything (zero-value plan,
+// no validation to do).
 func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) (deleteSelectionPlan, error) {
 	if cond == nil {
 		return deleteSelectionPlan{}, nil
@@ -1071,7 +1067,7 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 	// through DeleteEntitiesConditional/deleteBatched unchanged. A cluster
 	// node whose cached schema lacks a peer-added field is refreshed once on
 	// a path miss inside it.
-	fields, vErr := search.ValidateConditionForModel(ctx, modelStore, ref, cond,
+	fields, vErr := search.ValidateConditionForModel(ctx, modelStore, ref, cond, nil,
 		func() (map[string]schema.FieldDescriptor, error) {
 			f, err := search.LoadFieldsMap(ctx, modelStore, ref)
 			if err != nil {

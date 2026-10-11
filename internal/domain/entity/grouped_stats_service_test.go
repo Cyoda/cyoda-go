@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -362,7 +363,7 @@ func TestQueryGroupedStats_StreamingWithFilterPushdown(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// fakeIterable genuinely applies the pushed Filter (spi.Prepare(flt).Match),
 	// and the pushdown Filter's Declared type comes from fields: an EQUALS leaf
@@ -421,7 +422,7 @@ func TestQueryGroupedStats_WildcardArrayPathConditionPushesDown(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// The pushed Filter's Declared type comes from fields: an EQUALS leaf
 	// with no declared type degrades to non-match in the shared kernel.
@@ -472,7 +473,7 @@ func TestQueryGroupedStats_TallyTrustsTheTranslatedFilter(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// The pushdown Filter's Declared type comes from fields: an EQUALS leaf
 	// with no declared type degrades to non-match in the shared kernel, so
@@ -502,7 +503,7 @@ func TestQueryGroupedStats_FunctionConditionFailsClosed(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	if _, err := svc.QueryGroupedStats(context.Background(), &fakeIterable{entities: rows}, spi.ModelRef{}, nil, req); err == nil {
 		t.Fatal("expected a function condition to fail closed, got nil")
@@ -687,7 +688,7 @@ func TestQueryGroupedStats_ValidTemporalConditionStillSucceeds(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	_, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err != nil {
@@ -714,7 +715,7 @@ func TestQueryGroupedStats_ValidDataConditionStillSucceeds(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	// fakeIterable genuinely applies the pushed Filter, whose Declared type
 	// comes from fields: an EQUALS leaf with no declared type degrades to
@@ -748,7 +749,7 @@ func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	buckets, err := svc.QueryGroupedStats(context.Background(), iter, spi.ModelRef{}, nil, req)
 	if err != nil {
@@ -757,4 +758,14 @@ func TestQueryGroupedStats_ValidRegexStillSucceeds(t *testing.T) {
 	if len(buckets) != 1 || buckets[0].Count != 1 {
 		t.Fatalf("buckets = %+v, want one bucket count=1", buckets)
 	}
+}
+
+// mustParseCond parses a request condition the way request validation does.
+func mustParseCond(t *testing.T, raw []byte) predicate.Condition {
+	t.Helper()
+	c, err := predicate.ParseCondition(raw)
+	if err != nil {
+		t.Fatalf("parse condition: %v", err)
+	}
+	return c
 }
