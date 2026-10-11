@@ -211,6 +211,7 @@ func TestConditionValidationOrder_SameCodeOnEverySurface(t *testing.T) {
 	for _, tc := range []struct{ name, cond string }{
 		{"structural fault on an undeclared path", `{"type":"simple","jsonPath":"$.nope","value":1}`},
 		{"bad pattern on a numeric field", `{"type":"simple","jsonPath":"$.scores[0]","operatorType":"MATCHES_PATTERN","value":"("}`},
+		{"bad pattern on an undeclared path", `{"type":"simple","jsonPath":"$.nope","operatorType":"MATCHES_PATTERN","value":"("}`},
 	} {
 		for _, s := range []struct{ name, method, path, body string }{
 			{"search direct", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model), tc.cond},
@@ -224,6 +225,32 @@ func TestConditionValidationOrder_SameCodeOnEverySurface(t *testing.T) {
 				t.Fatalf("%s / %s: expected 400, got %d; body: %s", tc.name, s.name, resp.StatusCode, readBody(t, resp))
 			}
 			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+			resp.Body.Close()
+		}
+	}
+}
+
+// An unknown model is 404 MODEL_NOT_FOUND before any condition check, on every
+// endpoint that takes a condition.
+func TestConditionEndpoints_UnknownModel_404BeforeConditionChecks(t *testing.T) {
+	const model = "e2e-cond-unknown-model"
+	for _, cond := range []string{
+		`{"type":"simple","jsonPath":"$.x"}`,
+		`{"type":"simple","jsonPath":"$.x","operatorType":"MATCHES_PATTERN","value":"("}`,
+	} {
+		for _, s := range []struct{ name, method, path, body string }{
+			{"search direct", http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model), cond},
+			{"search async", http.MethodPost, fmt.Sprintf("/api/search/async/%s/1", model), cond},
+			{"conditional delete", http.MethodDelete, fmt.Sprintf("/api/entity/%s/1", model), cond},
+			{"grouped stats", http.MethodPost, fmt.Sprintf("/api/entity/stats/%s/1/query", model),
+				`{"groupBy":["$.name"],"condition":` + cond + `}`},
+		} {
+			resp := doAuth(t, s.method, s.path, s.body)
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("%s %s: expected 404, got %d; body: %s", s.name, cond, resp.StatusCode, readBody(t, resp))
+				continue
+			}
+			commontest.ExpectErrorCode(t, resp, "MODEL_NOT_FOUND")
 			resp.Body.Close()
 		}
 	}

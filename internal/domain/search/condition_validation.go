@@ -83,18 +83,18 @@ func validateConditionSequence(cond predicate.Condition, modelPaths func() (map[
 	return fields, nil
 }
 
-// validateConditionForModel is the search service's run of the sequence: its
-// path step ensures the model is registered and uses the service's negative
-// cache.
+// validateConditionForModel is the search service's run of the sequence. The
+// model is resolved first (404 MODEL_NOT_FOUND before any condition verdict);
+// its path step uses the service's negative cache.
 func (s *SearchService) validateConditionForModel(ctx context.Context, modelRef spi.ModelRef, cond predicate.Condition) (map[string]schema.FieldDescriptor, error) {
+	modelStore, err := s.factory.ModelStore(ctx)
+	if err != nil {
+		return nil, common.Internal("failed to access model store", err)
+	}
+	if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
+		return nil, appErr
+	}
 	return validateConditionSequence(cond, func() (map[string]schema.FieldDescriptor, error) {
-		modelStore, err := s.factory.ModelStore(ctx)
-		if err != nil {
-			return nil, common.Internal("failed to access model store", err)
-		}
-		if appErr := common.EnsureModelRegistered(ctx, modelStore, modelRef); appErr != nil {
-			return nil, appErr
-		}
 		return s.validateConditionPaths(ctx, modelStore, modelRef, cond)
 	})
 }
