@@ -97,6 +97,16 @@ func TestCriterionFunctionImport_Refused(t *testing.T) {
 		{"bad retryPolicy at depth", cfGroup("OR", cfAmountGT100, `{"type":"function","function":{"name":"g","config":{"retryPolicy":"SOMETIMES"}}}`),
 			`criterion function "g" at /conditions/1: unknown retryPolicy "SOMETIMES"`},
 		{"engine group with unknown operator", cfGroup("XOR", cfFn("f", "")), `unknown group operator "XOR"`},
+		{"pre-check unknown lifecycle field", cfFn("f", `{"type":"lifecycle","field":"nope","operatorType":"EQUALS","value":"x"}`),
+			`condition at /function/criterion: unknown meta filter field "nope"`},
+		{"pre-check array clause without [*]", cfFn("f", `{"type":"array","jsonPath":"$.tags","operatorType":"EQUALS","values":["a"]}`),
+			`condition at /function/criterion: invalid field path: jsonPath "$.tags" must end in a trailing array wildcard`},
+		{"pre-check group with unknown operator", cfGroup("OR", cfAmountGT100, cfFn("f", cfGroup("XOR", cfAmountGT100))),
+			`condition at /conditions/1/function/criterion: invalid condition: unknown group operator "XOR"`},
+		{"pre-check NOT with two members", cfFn("f", cfGroup("NOT", cfAmountGT100, cfStateIsCreated)),
+			"condition at /function/criterion: invalid condition: NOT requires exactly one condition, got 2"},
+		{"config not an object at depth", cfGroup("OR", cfAmountGT100, `{"type":"function","function":{"name":"g","config":"x"}}`),
+			"function condition at /conditions/1: failed to parse criterion function"},
 		{"entry limit through a pre-check", cfFn("f", bigArray), "the limit is 10000"},
 		{"depth limit in a pre-check", cfFn("f", deep), "maximum depth"},
 	}
@@ -108,13 +118,14 @@ func TestCriterionFunctionImport_Refused(t *testing.T) {
 				t.Fatalf("expected 400, got %d: %.500s", status, body)
 			}
 			assertErrorCode(t, body, "VALIDATION_FAILED")
-			// The body is JSON; compare on the decoded detail as well as the raw text.
 			var pd struct {
 				Detail string `json:"detail"`
 			}
-			_ = json.Unmarshal([]byte(body), &pd)
-			if !strings.Contains(pd.Detail, tc.want) && !strings.Contains(body, tc.want) {
-				t.Errorf("body does not contain %q:\n%.800s", tc.want, body)
+			if err := json.Unmarshal([]byte(body), &pd); err != nil {
+				t.Fatalf("decode problem detail: %v\nbody: %.800s", err, body)
+			}
+			if !strings.Contains(pd.Detail, tc.want) {
+				t.Errorf("detail does not contain %q:\n%.800s", tc.want, pd.Detail)
 			}
 		})
 	}
