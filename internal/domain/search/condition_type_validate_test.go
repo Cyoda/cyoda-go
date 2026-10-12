@@ -251,25 +251,6 @@ func TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects(t *testing.T) 
 }
 
 // ---------------------------------------------------------------------------
-// Null element inside array — accepted (null compatible with any type)
-// ---------------------------------------------------------------------------
-
-// TestValidateConditionTypes_ArrayWithNullElement_Accepted verifies that a nil
-// element inside an array value is accepted (null is compatible with any type).
-func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "BETWEEN",
-		Value:        []any{float64(10), nil},
-	}
-	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
-	if err != nil {
-		t.Fatalf("expected no error for array with null element, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // ArrayCondition — routed through spi.DesugarCondition rather than a second
 // type check, so it gets the SAME declared-type check a simple clause's
 // positional leaf gets.

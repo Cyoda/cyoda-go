@@ -822,11 +822,22 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluator compared against the bound's printed form, so a conditional
   delete removed the entities that comparison chose.
 
+- **A missing or `null` operand is `400 INVALID_CONDITION` under every
+  operator other than `IS_NULL` and `NOT_NULL`,** on a `simple` or
+  `lifecycle` clause, on every search surface, conditional delete, grouped
+  stats and gRPC search; workflow import answers `400 VALIDATION_FAILED`, for
+  a criterion and a pre-check alike. Only `IS_NULL` and `NOT_NULL` may omit
+  the operand. Before, the request answered `200` and the field was compared
+  with an empty string: `EQUALS` matched `""`, and `CONTAINS` or
+  `STARTS_WITH` matched every string, so a conditional delete removed every
+  entity with a string at the path.
+
 - **A condition tests at most 10,000 entries; a larger one is
   `400 INVALID_CONDITION`, and workflow import answers
   `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
-  counts one, `null` entries included, and every other clause counts one.
-  The count is taken before the condition is expanded, on search (sync and
+  counts one, `null` entries included, a `function` clause counts one plus
+  the entries of its pre-check, and every other clause counts one. The count
+  is taken before the condition is expanded, on search (sync and
   async, HTTP and gRPC), conditional delete, grouped statistics and workflow
   import. The limit bounds the expansion: an `array` clause expands into one
   clause per entry, and each check expands it again. It does not bound the
@@ -1300,15 +1311,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   now says so. Every condition `oneOf` (criteria, the pre-check, search)
   carries a discriminator mapping `type` to its member, so a validator checks
   only that member. The wire is unchanged.
-
-- **A missing or `null` operand on an operator that takes one is refused.**
-  Every operator except `IS_NULL` and `NOT_NULL` takes an operand. Without
-  one, the condition compared the field with an empty string: `EQUALS`
-  matched `""`, and `CONTAINS` or `STARTS_WITH` matched every string, so a
-  conditional delete removed every entity with a string at the path. Search,
-  async search, grouped statistics and conditional delete now answer 400
-  `INVALID_CONDITION`, over HTTP and gRPC; workflow import answers 400
-  `VALIDATION_FAILED`, for a criterion and a pre-check alike.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

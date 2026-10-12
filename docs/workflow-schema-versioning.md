@@ -294,14 +294,15 @@ they are recorded here, under the rubric of §"Tightening releases":
    A bound must be a non-null scalar. The evaluator compared against the
    bound's printed form, so the criterion answered as if the author had
    written that text. Rubric point 1 applies.
-9. **A criterion that tests more than 10,000 entries is refused** (each entry
-   in an `array` clause's `values` counts one, `null` entries included,
-   a `function` clause counts one plus the entries of its pre-check, and every other clause counts one). This one does reject configurations that
-   worked. It is taken because an `array` clause expands into one clause per
-   entry, and the engine expands the criterion again each time it evaluates
-   it. The limit bounds that expansion; it does not bound the total cost of
-   a criterion. The limit is fixed, not a server setting, and the error names
-   the limit and the count.
+9. **A criterion that tests more than 10,000 entries is refused** (each entry in
+   an `array` clause's `values` counts one, `null` entries included, a
+   `function` clause counts one plus the entries of its pre-check, and every
+   other clause counts one). This one does reject configurations that worked. It
+   is taken because an `array` clause expands into one clause per entry, and the
+   engine expands the criterion again each time it evaluates it. The limit
+   bounds that expansion; it does not bound the total cost of a criterion. The
+   limit is fixed, not a server setting, and the error names the limit and the
+   count.
 10. **A function condition's pre-check (`function.criterion`) is evaluated**,
     and a pre-check that holds a function condition, at any depth, or that
     breaks a check or limit the rest of the criterion is held to (path

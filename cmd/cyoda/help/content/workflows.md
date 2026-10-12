@@ -609,6 +609,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 - A criterion that is not a valid condition (unknown `type`, not a JSON object, a malformed clause). It could never be evaluated.
 - A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA above.
+- A criterion operator or operand the evaluator cannot use: an unknown or missing `operatorType`; an object operand, or an array operand under any operator other than `BETWEEN`/`BETWEEN_INCLUSIVE`; a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array of two non-null scalar bounds; a missing or `null` operand on an operator that takes one (every operator except `IS_NULL` and `NOT_NULL`).
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.

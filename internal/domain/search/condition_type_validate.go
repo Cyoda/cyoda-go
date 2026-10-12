@@ -164,9 +164,6 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// non-null bounds, before this check runs. Every element must parse
 		// into a declared type.
 		for i, elem := range v {
-			if elem == nil {
-				continue
-			}
 			if !operandParsesDeclared(applicable, elem) {
 				return fmt.Errorf("value[%d] %s parses into none of field %q's types %v that operator %q applies to: %w",
 					i, truncateOperand(elem), c.JsonPath, applicable, c.OperatorType, errConditionTypeMismatch)
