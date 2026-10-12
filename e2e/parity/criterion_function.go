@@ -241,7 +241,39 @@ func RunCriterionFunction_ManualRefusedReason(t *testing.T, fixture BackendFixtu
 		t.Errorf("approve: detail\n got %q\nwant %q", pd.Detail, wantDetail)
 	}
 	k.requireCriteria(t, "always-true", "always-false")
-	if ent, err := k.c.GetEntity(t, id); err != nil || ent.Meta.State != "CREATED" {
-		t.Errorf("after the refused approve: state = %q err=%v; want CREATED", ent.Meta.State, err)
+	ent, err := k.c.GetEntity(t, id)
+	if err != nil {
+		t.Fatalf("GetEntity after the refused approve: %v", err)
+	}
+	if ent.Meta.State != "CREATED" {
+		t.Errorf("after the refused approve: state = %q; want CREATED", ent.Meta.State)
+	}
+}
+
+// RunCriterionFunction_AuditKeepsPreCheckNumbers: the audit lists a function
+// condition's pre-check as written, so a number in it keeps every digit on
+// every backend, including one a float64 cannot hold.
+func RunCriterionFunction_AuditKeepsPreCheckNumbers(t *testing.T, fixture BackendFixture) {
+	const big = "12345678901234567890"
+	preCheck := `{"type":"simple","jsonPath":"$.amount","operatorType":"LESS_THAN","value":` + big + `}`
+	k := newCFCase(t, fixture, "audit-numbers", func(tag string) string {
+		return cfSelectionWF(cfFn("always-true", tag, preCheck))
+	})
+
+	id, state := k.create(t, cfLow)
+	if state != "A" {
+		t.Errorf("state = %q; want A (pre-check matched, wf-fn selected)", state)
+	}
+	k.requireCriteria(t, "always-true")
+	found := FunctionRecords(t, StateMachineEventData(t, k.c, id, "WORKFLOW_FOUND"))
+	if len(found) != 1 {
+		t.Fatalf("WORKFLOW_FOUND functions = %v; want one entry", found)
+	}
+	pc, ok := found[0]["preCheck"].(map[string]any)
+	if !ok {
+		t.Fatalf("WORKFLOW_FOUND functions[0].preCheck = %v; want the pre-check object", found[0]["preCheck"])
+	}
+	if got, ok := pc["value"].(json.Number); !ok || got.String() != big {
+		t.Errorf("WORKFLOW_FOUND functions[0].preCheck.value = %v (%T); want the number %s with every digit", pc["value"], pc["value"], big)
 	}
 }

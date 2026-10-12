@@ -1,6 +1,7 @@
 package parity
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 	"time"
@@ -266,6 +267,7 @@ func RunAuditCommitInstantSharedWithVersionHistory(t *testing.T, fixture Backend
 
 // StateMachineEventData returns the decoded data of the entity's first
 // state-machine audit event of type eventType, failing when there is none.
+// Numbers decode as json.Number, so they keep every digit.
 func StateMachineEventData(t *testing.T, c *client.Client, id uuid.UUID, eventType string) map[string]any {
 	t.Helper()
 	resp, err := c.GetAuditEvents(t, id)
@@ -286,7 +288,9 @@ func StateMachineEventData(t *testing.T, c *client.Client, id uuid.UUID, eventTy
 		}
 		data := map[string]any{}
 		if len(sm.Data) > 0 {
-			if err := json.Unmarshal(sm.Data, &data); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(sm.Data))
+			dec.UseNumber()
+			if err := dec.Decode(&data); err != nil {
 				t.Fatalf("decode %s data: %v (data: %s)", eventType, err, sm.Data)
 			}
 		}
