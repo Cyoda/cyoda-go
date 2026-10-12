@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
@@ -59,6 +62,35 @@ func TestRPC_DirectSearch_FunctionCondition_400_InvalidCondition(t *testing.T) {
 	// The 5xx this replaces carried a ticket UUID and no domain detail.
 	if strings.Contains(typed.Error.Message, "SERVER_ERROR") {
 		t.Errorf("a client-supplied condition must not surface as SERVER_ERROR: %s", typed.Error.Message)
+	}
+}
+
+// A function whose pre-check is malformed fails at parse, so it travels as a
+// transport InvalidArgument rather than the function refusal's envelope.
+func TestRPC_DirectSearch_FunctionWithMalformedPreCheck_InvalidArgument(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+
+	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "Bob"})
+
+	ce := makeCE(EntitySearchRequest, map[string]any{
+		"id":    "test",
+		"model": map[string]any{"name": "person", "version": 1},
+		"condition": map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name":      "x",
+				"criterion": map[string]any{"type": "bogus"},
+			},
+		},
+	})
+
+	stream := &mockEntityStream{ctx: ctx}
+	err := svc.EntitySearchCollection(ce, stream)
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected codes.InvalidArgument, got err=%v (code %v)", err, status.Code(err))
+	}
+	if !strings.Contains(err.Error(), "invalid condition") {
+		t.Errorf("expected message to contain %q, got %v", "invalid condition", err)
 	}
 }
 

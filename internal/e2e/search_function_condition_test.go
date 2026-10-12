@@ -140,6 +140,23 @@ func TestSearch_Sync_FunctionConditionNestedInNot_Returns400(t *testing.T) {
 		fmt.Sprintf("/api/search/direct/%s/1", model), functionConditionNestedInNot)
 }
 
+// A function whose pre-check is malformed fails at parse, before search's own
+// refusal of function conditions; the client still sees 400 INVALID_CONDITION.
+func TestSearch_Sync_FunctionWithMalformedPreCheck_Returns400(t *testing.T) {
+	const model = "e2e-search-fn-bad-precheck"
+	setupSearchModel(t, model)
+	createEntityE2E(t, model, 1, `{"name":"Alice","amount":100,"status":"active"}`)
+
+	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1", model),
+		`{"type":"function","function":{"name":"x","criterion":{"type":"bogus"}}}`)
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
+}
+
 // The accept-side counterpart: rejecting function clauses in search must not
 // touch the other condition types travelling the same validator.
 func TestSearch_Sync_NonFunctionCondition_StillReturns200(t *testing.T) {
