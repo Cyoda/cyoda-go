@@ -1291,6 +1291,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   back as a 64-bit float, so a number such as `12345678901234567890` lost
   digits; the memory backend kept it exactly.
 
+- **OpenAPI: a condition's `value` is described as the server accepts it,
+  and each condition union selects its member by `type`.** `value` on
+  `SimpleConditionDto` and `LifecycleConditionDto` was typed as an object and
+  required. The server accepts `null`, a string, a number or a boolean, or a
+  `[low, high]` pair of those for `BETWEEN` and `BETWEEN_INCLUSIVE`, and
+  accepts no `value` for `IS_NULL` and `NOT_NULL`; the schema now says so. Every
+  condition `oneOf` (criteria, the pre-check, search) carries a discriminator
+  mapping `type` to its member, so a validator checks only that member. The
+  wire is unchanged.
+
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node
   that owns its transaction, and a callout handed over to another node,
