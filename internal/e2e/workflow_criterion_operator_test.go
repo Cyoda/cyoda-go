@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -100,5 +101,57 @@ func TestCriterionOperator_KnownOperatorImportsAndFires(t *testing.T) {
 
 	if state := getEntityState(t, entityID); state != "ADVANCED" {
 		t.Errorf("criterion with a known operator (amount=100 > 50): expected ADVANCED, got %q", state)
+	}
+}
+
+// A null-presence test (IS_NULL, NOT_NULL) takes no operand, so a simple or
+// lifecycle condition may omit `value`: workflow import accepts it, export
+// returns it as imported (and the export conforms to the schema), and search
+// accepts it.
+func TestCriterionOperator_NoOperandWithoutValue(t *testing.T) {
+	const model = "e2e-crit-operator-no-value"
+	importModelSampleE2E(t, model, 1, `{"name":"Sample","amount":0}`)
+	lockModelE2E(t, model, 1)
+
+	simple := `{"type":"simple","jsonPath":"$.amount","operatorType":"NOT_NULL"}`
+	lifecycle := `{"type":"lifecycle","field":"state","operatorType":"NOT_NULL"}`
+	criterion := `{"type":"group","operator":"AND","conditions":[` + simple + `,` + lifecycle + `]}`
+	if status, body := importWorkflowE2E(t, model, 1, cfWorkflow("crit-no-value", criterion)); status != http.StatusOK {
+		t.Fatalf("import: expected 200, got %d: %s", status, body)
+	}
+	status, exp := exportWorkflowE2E(t, model, 1)
+	if status != http.StatusOK {
+		t.Fatalf("export: expected 200, got %d: %v", status, exp)
+	}
+	wfs, _ := exp["workflows"].([]any)
+	if len(wfs) != 1 {
+		t.Fatalf("expected 1 workflow, got %d", len(wfs))
+	}
+	wf, _ := wfs[0].(map[string]any)
+	states, _ := wf["states"].(map[string]any)
+	created, _ := states["CREATED"].(map[string]any)
+	trs, _ := created["transitions"].([]any)
+	if len(trs) != 1 {
+		t.Fatalf("expected 1 transition in CREATED, got %d", len(trs))
+	}
+	tr, _ := trs[0].(map[string]any)
+	var want any
+	if err := json.Unmarshal([]byte(criterion), &want); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr["criterion"]; !reflect.DeepEqual(got, want) {
+		gj, _ := json.Marshal(got)
+		t.Errorf("exported criterion differs\n got: %s\nwant: %s", gj, criterion)
+	}
+
+	createEntityE2E(t, model, 1, `{"name":"Sample","amount":5}`)
+	for _, cond := range []string{simple, lifecycle} {
+		status, results := directSearch(t, model, 1, cond)
+		if status != http.StatusOK {
+			t.Fatalf("search %s: expected 200, got %d", cond, status)
+		}
+		if len(results) != 1 {
+			t.Errorf("search %s: expected 1 entity, got %d", cond, len(results))
+		}
 	}
 }

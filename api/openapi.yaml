@@ -7162,6 +7162,13 @@ paths:
                 - $ref: "#/components/schemas/GroupConditionDto"
                 - $ref: "#/components/schemas/LifecycleConditionDto"
                 - $ref: "#/components/schemas/SimpleConditionDto"
+              discriminator:
+                propertyName: type
+                mapping:
+                  array: "#/components/schemas/ArrayConditionDto"
+                  group: "#/components/schemas/GroupConditionDto"
+                  lifecycle: "#/components/schemas/LifecycleConditionDto"
+                  simple: "#/components/schemas/SimpleConditionDto"
       responses:
         "200":
           description: Async search job submitted successfully. Note that the search job
@@ -7588,6 +7595,13 @@ paths:
                 - $ref: "#/components/schemas/GroupConditionDto"
                 - $ref: "#/components/schemas/LifecycleConditionDto"
                 - $ref: "#/components/schemas/SimpleConditionDto"
+              discriminator:
+                propertyName: type
+                mapping:
+                  array: "#/components/schemas/ArrayConditionDto"
+                  group: "#/components/schemas/GroupConditionDto"
+                  lifecycle: "#/components/schemas/LifecycleConditionDto"
+                  simple: "#/components/schemas/SimpleConditionDto"
       responses:
         "200":
           description: Search executed successfully
@@ -9647,6 +9661,13 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+          discriminator:
+            propertyName: type
+            mapping:
+              array: "#/components/schemas/ArrayConditionDto"
+              group: "#/components/schemas/GroupConditionDto"
+              lifecycle: "#/components/schemas/LifecycleConditionDto"
+              simple: "#/components/schemas/SimpleConditionDto"
       required:
         - name
     FunctionConditionDto:
@@ -9699,6 +9720,14 @@ components:
                   - $ref: "#/components/schemas/FunctionConditionDto"
                   - $ref: "#/components/schemas/LifecycleConditionDto"
                   - $ref: "#/components/schemas/SimpleConditionDto"
+                discriminator:
+                  propertyName: type
+                  mapping:
+                    array: "#/components/schemas/ArrayConditionDto"
+                    function: "#/components/schemas/FunctionConditionDto"
+                    group: "#/components/schemas/CriterionGroupConditionDto"
+                    lifecycle: "#/components/schemas/LifecycleConditionDto"
+                    simple: "#/components/schemas/SimpleConditionDto"
       required:
         - conditions
         - operator
@@ -9737,6 +9766,13 @@ components:
                   - $ref: "#/components/schemas/GroupConditionDto"
                   - $ref: "#/components/schemas/LifecycleConditionDto"
                   - $ref: "#/components/schemas/SimpleConditionDto"
+                discriminator:
+                  propertyName: type
+                  mapping:
+                    array: "#/components/schemas/ArrayConditionDto"
+                    group: "#/components/schemas/GroupConditionDto"
+                    lifecycle: "#/components/schemas/LifecycleConditionDto"
+                    simple: "#/components/schemas/SimpleConditionDto"
       required:
         - conditions
         - operator
@@ -9753,12 +9789,26 @@ components:
             operatorType:
               $ref: "#/components/schemas/ConditionOperatorType"
             value:
-              $ref: "#/components/schemas/JsonNode"
+              description: >-
+                The operand: a string, number or boolean, or a `[low, high]` pair
+                for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL`
+                take no operand, so `value` may be absent or `null`. An object, or
+                any other array, is refused with 400.
+              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+              # the Go type it cannot derive.
+              x-go-type: interface{}
+              oneOf:
+                - type: "null"
+                - type: [string, number, boolean]
+                - type: array
+                  minItems: 2
+                  maxItems: 2
+                  items:
+                    type: [string, number, boolean]
       required:
         - field
         - operatorType
         - type
-        - value
     QueryConditionDto:
       type: object
       discriminator:
@@ -9815,12 +9865,26 @@ components:
             operatorType:
               $ref: "#/components/schemas/ConditionOperatorType"
             value:
-              $ref: "#/components/schemas/JsonNode"
+              description: >-
+                The operand: a string, number or boolean, or a `[low, high]` pair
+                for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL`
+                take no operand, so `value` may be absent or `null`. An object, or
+                any other array, is refused with 400.
+              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+              # the Go type it cannot derive.
+              x-go-type: interface{}
+              oneOf:
+                - type: "null"
+                - type: [string, number, boolean]
+                - type: array
+                  minItems: 2
+                  maxItems: 2
+                  items:
+                    type: [string, number, boolean]
       required:
         - jsonPath
         - operatorType
         - type
-        - value
     QueryPlanDTO:
       type: object
       properties:
@@ -10392,6 +10456,14 @@ components:
             - $ref: "#/components/schemas/FunctionConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+          discriminator:
+            propertyName: type
+            mapping:
+              array: "#/components/schemas/ArrayConditionDto"
+              function: "#/components/schemas/FunctionConditionDto"
+              group: "#/components/schemas/CriterionGroupConditionDto"
+              lifecycle: "#/components/schemas/LifecycleConditionDto"
+              simple: "#/components/schemas/SimpleConditionDto"
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -10584,6 +10656,14 @@ components:
             - $ref: "#/components/schemas/FunctionConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+          discriminator:
+            propertyName: type
+            mapping:
+              array: "#/components/schemas/ArrayConditionDto"
+              function: "#/components/schemas/FunctionConditionDto"
+              group: "#/components/schemas/CriterionGroupConditionDto"
+              lifecycle: "#/components/schemas/LifecycleConditionDto"
+              simple: "#/components/schemas/SimpleConditionDto"
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -11133,6 +11213,13 @@ components:
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"
             - $ref: "#/components/schemas/SimpleConditionDto"
+          discriminator:
+            propertyName: type
+            mapping:
+              array: "#/components/schemas/ArrayConditionDto"
+              group: "#/components/schemas/GroupConditionDto"
+              lifecycle: "#/components/schemas/LifecycleConditionDto"
+              simple: "#/components/schemas/SimpleConditionDto"
         aggregations:
           type: array
           description: Optional per-group aggregations.

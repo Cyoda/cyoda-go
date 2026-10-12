@@ -78,6 +78,16 @@ the peer builds the callout from it; a peer never evaluates a pre-check.
 - **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` `null`, Array,
   Group, Lifecycle, Simple; `null` is no pre-check. The schema expresses Rule 1
   at every depth, and the description states Rule 1 and its guard semantics.
+- **Discriminator.** Every condition `oneOf` (the criterion unions, both
+  groups' `conditions` items, the pre-check, the search request bodies and the
+  grouped-stats `condition`) maps `type` to its member: `array`, `group`,
+  `lifecycle`, `simple`, and `function` in the criterion unions. The
+  pre-check's `null` branch has no mapping.
+- **Condition `value`.** `SimpleConditionDto.value` and
+  `LifecycleConditionDto.value` admit what the server accepts: a string,
+  number or boolean, a `[low, high]` pair for `BETWEEN` and
+  `BETWEEN_INCLUSIVE`, or no value (absent or `null`) for `IS_NULL` and
+  `NOT_NULL`. `value` is not required. An object is refused.
 
 The `EntityCriteriaCalculationRequest` and `EntityCriteriaCalculationResponse`
 shapes are unchanged. One request is sent per function condition reached, with

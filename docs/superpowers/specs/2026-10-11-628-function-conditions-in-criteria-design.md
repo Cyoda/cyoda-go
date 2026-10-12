@@ -51,11 +51,18 @@ callouts are made, never the value of the criterion.
 - **`CriterionGroupConditionDto`** (new). The same shape and description as `GroupConditionDto`; its
   `conditions` items are `oneOf` Array, CriterionGroup, Function, Lifecycle, Simple. Discriminator value `group`.
 - **Workflow and transition `criterion`**: `oneOf` Array, CriterionGroup, Function, Lifecycle, Simple.
-- **`GroupConditionDto`** is unchanged: its members are local only. It stays the group of the three search request
-  bodies and of the pre-check.
+- **`GroupConditionDto`** holds local conditions only. It stays the group of the three search request bodies and of
+  the pre-check.
 - **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` `null`, Array, Group, Lifecycle, Simple; `null`
   is no pre-check. The schema therefore expresses Rule 1 at every depth. The description states Rule 1 and the guard semantics.
 - **`QueryConditionDto`** stays the base of `FunctionConditionDto`; nothing else refers to it.
+- **Discriminator.** Every condition `oneOf` (the workflow and transition `criterion`, both groups' `conditions`
+  items, the pre-check, the search request bodies and the grouped-stats `condition`) maps `type` to its member:
+  `array`, `group`, `lifecycle`, `simple`, and `function` in the criterion unions. A validator checks a condition
+  against the one schema its `type` names. The pre-check's `null` branch has no mapping.
+- **Condition `value`.** `SimpleConditionDto.value` and `LifecycleConditionDto.value` admit what the server accepts:
+  a string, number or boolean, a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`, or no value (absent or
+  `null`) for `IS_NULL` and `NOT_NULL`. `value` is not required. An object is refused.
 - **Audit `data`** (the `StateMachineAuditEvent.data` description) documents the `functions` field (section 8).
 - `go generate ./api` after the edit. No Go code uses the generated condition types.
 
