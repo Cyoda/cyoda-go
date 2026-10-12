@@ -10,7 +10,6 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
-	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -90,9 +89,9 @@ func checkRetryPolicy(policy, location string) error {
 
 // validateCalloutLimits enforces the server's bound on responseTimeoutMs for
 // every callout an incoming workflow configures: each processor, each
-// schedule function, and each top-level function criterion (workflow-level and
-// transition-level). A negative value is refused whatever the bound. Zero
-// means "use the server default" and is always accepted.
+// schedule function, and each function condition in a criterion
+// (workflow-level and transition-level). A negative value is refused whatever
+// the bound. Zero means "use the server default" and is always accepted.
 //
 // Separate from validateWorkflowStructure because the bound is a server
 // setting (CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS) handed to the Handler at
@@ -130,8 +129,9 @@ func validateCalloutLimits(workflows []spi.WorkflowDefinition, maxResponseTimeou
 	return nil
 }
 
-// checkCriterionResponseTimeout applies checkResponseTimeout to a top-level
-// function criterion; any other criterion has no callout and passes.
+// checkCriterionResponseTimeout applies checkResponseTimeout to every
+// function condition in a criterion, at any depth; a criterion without one
+// has no callout and passes.
 func checkCriterionResponseTimeout(criterion json.RawMessage, location string, maxMs int64) error {
 	trimmed := bytes.TrimSpace(criterion)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -141,19 +141,21 @@ func checkCriterionResponseTimeout(criterion json.RawMessage, location string, m
 	if err != nil {
 		return nil // validateCriterion has already refused a criterion that does not parse
 	}
-	if _, ok := cond.(*predicate.FunctionCondition); !ok {
-		return nil
-	}
-	fn, _, err := contract.ParseCriterionFunction(trimmed)
+	root, err := buildCriterionTree(cond, "")
 	if err != nil {
-		// Not this rule's to report either: validateCriterion parses the very
-		// same criteria, with the very same location strings, and the import
-		// handler runs it first — a function criterion that does not parse has
-		// already been refused before this rule is reached.
+		// Not this rule's to report: validateCriterion builds the same tree,
+		// with the same location strings, and the import handler runs it
+		// first.
 		return nil
 	}
-	return checkResponseTimeout(fn.Config.ResponseTimeoutMs, maxMs,
-		fmt.Sprintf("%s criterion function %q", location, fn.Name))
+	_, fns := collectCriterion(root)
+	for _, f := range fns {
+		if err := checkResponseTimeout(f.fn.Config.ResponseTimeoutMs, maxMs,
+			fmt.Sprintf("%s criterion function %q%s", location, f.fn.Name, atPointer(f.ptr))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // checkResponseTimeout compares in milliseconds: converting an arbitrary
@@ -296,9 +298,13 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 
 // validateCriterion rejects a criterion that is malformed in any of these
 // ways:
-//   - a function criterion whose `function` member cannot be read, or whose
-//     `retryPolicy` is outside NONE/FIXED/empty — it would fail every
-//     dispatch, or be silently ignored.
+//   - more entries than search.MaxConditionEntries, counted over the whole
+//     criterion, every pre-check included.
+//   - a function condition, at any depth, whose `function` member is missing
+//     or cannot be read, that has no name, whose `retryPolicy` is outside
+//     NONE/FIXED/empty, or whose pre-check holds a function condition; or a
+//     group around a function condition whose operator is not AND, OR or
+//     NOT-of-one. It would fail every dispatch, or be silently ignored.
 //   - a jsonPath that is not JSON Path nomenclature — a bare "amount" is not
 //     a path. Delegates to search.ValidateConditionJSONPath, the same grammar
 //     the search API boundary enforces: a criterion and a search condition are
@@ -307,9 +313,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     violation (an object operand, an array operand outside BETWEEN, or a
 //     BETWEEN without exactly two non-null bounds). Delegates to
 //     search.ValidateCriterionCondition — the same operator table
-//     search.ValidateCondition enforces, minus the
-//     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
-//     every surface that carries a condition, workflow import included").
+//     search.ValidateCondition enforces (spec §4: "on every surface that
+//     carries a condition, workflow import included").
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
 //     to search.ValidatePatterns — the kernel's own derivation, the same call
 //     the search API boundary makes — so import accepts exactly the operands
@@ -322,6 +327,11 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     search query use the identical meta-field vocabulary and evaluate
 //     through the same match.Prepare/(Prepared).Match path, so both entry
 //     points reject the same malformed conditions.
+//
+// Function conditions are accepted at any depth. The path, operator, operand
+// and pattern checks run once per local unit (buildCriterionTree): each
+// function-free subtree of the criterion and each pre-check. A refusal names
+// the unit's position in the criterion.
 //
 // Criteria are stored opaquely (json.RawMessage). Import checks everything
 // that depends only on the criterion itself: that it parses, its path
@@ -355,31 +365,44 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	if err != nil {
 		return fmt.Errorf("%s: criterion is not a valid condition: %w", location, err)
 	}
-	// A function criterion is a callout: its config is checked like a
-	// processor's. Only a top-level function criterion is ever dispatched
-	// (evaluateCriterion), so only that shape is inspected.
-	if _, ok := cond.(*predicate.FunctionCondition); ok {
-		fn, _, err := contract.ParseCriterionFunction(trimmed)
-		if err != nil {
-			return fmt.Errorf("%s: %w", location, err)
-		}
-		if err := checkRetryPolicy(fn.Config.RetryPolicy,
-			fmt.Sprintf("%s criterion function %q", location, fn.Name)); err != nil {
+	// The entry limit counts the whole criterion, every pre-check included.
+	if err := search.ValidateConditionSize(cond); err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	// Function conditions at any depth: each has a `function` object and a
+	// name, its config parses, and its pre-check holds only local
+	// conditions; a group around a function condition has a valid operator.
+	root, err := buildCriterionTree(cond, "")
+	if err != nil {
+		return fmt.Errorf("%s: %w", location, err)
+	}
+	units, fns := collectCriterion(root)
+	for _, f := range fns {
+		if err := checkRetryPolicy(f.fn.Config.RetryPolicy,
+			fmt.Sprintf("%s criterion function %q%s", location, f.fn.Name, atPointer(f.ptr))); err != nil {
 			return err
 		}
 	}
-	// Paths and lifecycle type-soundness first, then operator/operand shape,
-	// then pattern operands — a criterion naming a field that does not exist
-	// is reported as the path problem it is, not shadowed by a complaint
-	// about its operator or operand.
-	if err := walkCriterion(cond, location); err != nil {
-		return err
-	}
-	if err := search.ValidateCriterionCondition(cond); err != nil {
-		return fmt.Errorf("%s: %w", location, err)
-	}
-	if err := search.ValidatePatterns(cond); err != nil {
-		return fmt.Errorf("%s: %w", location, err)
+	// The local checks run once per local unit — each function-free subtree
+	// and each pre-check — naming the unit's position. Paths and lifecycle
+	// type-soundness first, then operator/operand shape, then pattern
+	// operands: a criterion naming a field that does not exist is reported
+	// as the path problem it is, not shadowed by a complaint about its
+	// operator or operand.
+	for _, u := range units {
+		loc := location
+		if u.ptr != "" {
+			loc += " condition at " + u.ptr
+		}
+		if err := walkCriterion(u.cond, loc); err != nil {
+			return err
+		}
+		if err := search.ValidateCriterionCondition(u.cond); err != nil {
+			return fmt.Errorf("%s: %w", loc, err)
+		}
+		if err := search.ValidatePatterns(u.cond); err != nil {
+			return fmt.Errorf("%s: %w", loc, err)
+		}
 	}
 	return nil
 }
@@ -397,10 +420,10 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 //     not apply to it.
 //
 // Pattern operands are not checked here — validateCriterion runs them over the
-// whole tree afterwards, via search.ValidatePatterns.
+// same local unit afterwards, via search.ValidatePatterns.
 //
-// FunctionCondition carries neither a path nor an operator and is silently
-// skipped — that is how a FUNCTION criterion is exempted from these checks.
+// walkCriterion runs on local units only (see buildCriterionTree); it never
+// meets a function condition.
 //
 // SimpleCondition's path check uses search.ValidateConditionJSONPath, the
 // same grammar and the same implementation the search API boundary enforces
@@ -459,8 +482,8 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
-//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, criterion
-//     function and schedule function.
+//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every function
+//     condition in a criterion and schedule function.
 //
 // Scope: called only on the **incoming** import request. Legacy stored
 // workflows are not retroactively re-checked against these rules, so an
@@ -566,8 +589,8 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-1 — Processor Name non-empty.
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
-	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, criterion
-	//     function and schedule function.
+	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every function
+	//     condition in a criterion and schedule function.
 	//   Transition.Criterion — every data-addressing jsonPath must be JSON
 	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
 	//     lifecycle/meta clause, if present, must be type-sound.

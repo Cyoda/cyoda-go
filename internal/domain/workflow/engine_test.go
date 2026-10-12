@@ -1191,7 +1191,7 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-crit", ModelVersion: "1.0"}
 
-	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "checkEligibility"})
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "checkEligibility"}})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "FuncCritWF", InitialState: "INITIAL", Active: true,
@@ -1231,7 +1231,7 @@ func TestFunctionCriterionNoExtProcError(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-no-ext", ModelVersion: "1.0"}
 
-	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "check"})
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "check"}})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "FuncNoExtWF", InitialState: "INITIAL", Active: true,
@@ -1264,7 +1264,7 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-false", ModelVersion: "1.0"}
 
-	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "deny"})
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "deny"}})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "FuncFalseWF", InitialState: "INITIAL", Active: true,
@@ -1304,7 +1304,7 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "wf-func-crit", ModelVersion: "1.0"}
 
-	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "name": "selectWF"})
+	funcCriterion, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "selectWF"}})
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "WFFuncCritWF", InitialState: "SELECTED", Active: true,
