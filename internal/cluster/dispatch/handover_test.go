@@ -764,3 +764,19 @@ func TestProvedBeforeConnecting_NothingRendersThePeerAddress(t *testing.T) {
 		t.Error("the cause was dropped instead of kept out of the response")
 	}
 }
+
+// A criterion callout handed to a peer carries the function condition's own
+// JSON — a member of a group, with its pre-check — and the peer builds the
+// callout from it alone.
+func TestToCallout_FunctionConditionFromAGroup(t *testing.T) {
+	raw := json.RawMessage(`{"type":"function","function":{"name":"credit-check","config":{"calculationNodesTags":"python"},"criterion":{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":100}}}`)
+	req := validRequest(t, "criteria")
+	req.Criterion = raw
+	call, failure := req.toCallout()
+	if failure != nil {
+		t.Fatalf("toCallout: %v", failure)
+	}
+	if call.Name != "credit-check" || call.Tags != "python" || string(call.Source.Criterion) != string(raw) {
+		t.Errorf("callout name=%q tags=%q criterion=%s", call.Name, call.Tags, call.Source.Criterion)
+	}
+}
