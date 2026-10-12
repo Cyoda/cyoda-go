@@ -42,6 +42,85 @@ type functionRecord struct {
 	reason          string // the member's reason, capped
 }
 
+// auditValue is the record's entry in an audit event's `functions` list.
+func (r functionRecord) auditValue() map[string]any {
+	v := map[string]any{"path": r.path, "name": r.name, "called": r.called}
+	if r.hasPreCheck {
+		v["preCheck"] = r.preCheck
+		v["preCheckMatched"] = r.preCheckMatched
+	}
+	if r.called {
+		v["matches"] = r.matches
+		if r.reason != "" {
+			v["reason"] = r.reason
+		}
+	}
+	return v
+}
+
+// auditFunctions is the `functions` list of an audit event: one entry per
+// function condition the evaluation reached, in evaluation order.
+func (o criterionOutcome) auditFunctions() []any {
+	list := make([]any, len(o.functions))
+	for i, r := range o.functions {
+		list[i] = r.auditValue()
+	}
+	return list
+}
+
+// functionsData is the `data` of WORKFLOW_FOUND and TRANSITION_MAKE: nil
+// unless the criterion holds a function condition.
+func (o criterionOutcome) functionsData() map[string]any {
+	if o.functions == nil {
+		return nil
+	}
+	return map[string]any{"functions": o.auditFunctions()}
+}
+
+// addFunctions adds `functions` to an event's data when the criterion holds
+// a function condition.
+func (o criterionOutcome) addFunctions(data map[string]any) {
+	if o.functions != nil {
+		data["functions"] = o.auditFunctions()
+	}
+}
+
+// notMatchedReason explains a criterion that did not match. A criterion
+// without a function condition, and a called whole-criterion function, keep
+// the member's reason or the default. Otherwise every function condition
+// reached is listed in order with what happened to it; no answer is singled
+// out as the cause, because under NOT a true answer can refuse.
+func (o criterionOutcome) notMatchedReason() string {
+	if o.functions == nil || (o.whole && o.functions[0].called) {
+		if o.reason != "" {
+			return o.reason
+		}
+		return defaultCriterionReason
+	}
+	if len(o.functions) == 0 {
+		return defaultCriterionReason
+	}
+	clauses := make([]string, 0, len(o.functions))
+	for _, r := range o.functions {
+		var b strings.Builder
+		b.WriteString(r.name)
+		b.WriteString(atPointer(r.path))
+		if !r.called {
+			b.WriteString(": pre-check did not match, not called")
+		} else {
+			fmt.Fprintf(&b, ": answered %t", r.matches)
+			if r.reason != "" {
+				b.WriteString(": ")
+				b.WriteString(r.reason)
+			}
+		}
+		clauses = append(clauses, b.String())
+	}
+	return capReason(strings.Join(clauses, "; "))
+}
+
+// eval matches the entity against the unit's prepared condition. It makes
+// no callout and adds no record.
 func (l *critLocal) eval(_ *Engine, _ *criterionContext, entity *spi.Entity, _ *[]functionRecord) (bool, error) {
 	return l.prepared.Match(entity.Data, entity.Meta), nil
 }
@@ -129,11 +208,10 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 	// condition carrying at least one data-field path (search.ConditionFieldPaths
 	// walks the WHOLE tree up front, not just as far as Prepare's own walk
 	// reaches) — a purely lifecycle criterion never touches the model store.
-	// This is deliberately EAGER rather than the previous lazily-triggered-
-	// during-Prepare load: computing the path set over the whole tree first
-	// makes the infra-failure precedence below hold regardless of which child
-	// of a group a structural fault happens to live in (see the note on
-	// loadErr below).
+	// The load is eager, before any Prepare: computing the path set over the
+	// whole tree first makes the infra-failure precedence below hold
+	// regardless of which child of a group a structural fault happens to live
+	// in (see the note on loadErr below).
 	//
 	// A load failure on a criterion that DOES reference data leaves is
 	// surfaced (fail closed): the model schema is a required input for
@@ -213,10 +291,9 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 	// either read, or on the bounded refresh ValidateKnownPaths performs —
 	// is a server-side condition and must not surface as a client error just
 	// because the same criterion also carries a malformed operator or an
-	// undeclared field. Unlike the previous lazily-triggered load, paths is
-	// now computed over the WHOLE tree before Prepare ever runs, so this
-	// precedence holds regardless of which child of a group carries the data
-	// leaf versus the structural fault.
+	// undeclared field. paths is computed over the WHOLE tree before Prepare
+	// ever runs, so this precedence holds regardless of which child of a
+	// group carries the data leaf versus the structural fault.
 	if loadErr != nil {
 		return loadErr
 	}

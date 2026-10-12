@@ -44,13 +44,12 @@ var ErrTransitionNotFound = errors.New("transition not found")
 // for the error fireTransition returns from either of its
 // criterion-not-matched branches.
 //
-// fireTransition cannot wrap with a plain %w here: attemptTransition's tests
-// assert the criterion-not-matched message byte-for-byte
-// (`transition %q criterion not matched: %s` / `transition %q criterion not
-// matched`), and %w appends the sentinel's own "criterion not matched" text,
-// which would change that message. criterionNotMatchedError instead carries
-// the exact pre-existing text in Error() while still satisfying errors.Is
-// via a custom Is method.
+// fireTransition cannot wrap with a plain %w here: the criterion-not-matched
+// message is `transition %q criterion not matched`, with `: <reason>`
+// appended when the reason is not the default, and %w appends the
+// sentinel's own "criterion not matched" text, which would change that
+// message. criterionNotMatchedError instead carries the exact text in
+// Error() while still satisfying errors.Is via a custom Is method.
 var ErrCriterionNotMatched = errors.New("criterion not matched")
 
 // criterionNotMatchedError preserves fireTransition's existing
@@ -108,8 +107,9 @@ const defaultMaxStateVisits = 10
 const maxCriterionReasonLen = 8195
 
 // defaultCriterionReason is recorded when a criterion returns false without an
-// explanatory reason (inline predicates, or a FUNCTION criterion that supplies
-// none). Keeps the audit data.reason shape stable.
+// explanatory reason: a criterion without a function condition, or a
+// whole-criterion function whose member gave no reason. Keeps the audit
+// data.reason shape stable.
 const defaultCriterionReason = "criterion did not match"
 
 // capReason truncates a compute-node-supplied criterion reason to
@@ -595,19 +595,16 @@ func (e *Engine) selectWorkflow(ctx context.Context, workflows []spi.WorkflowDef
 		if err != nil {
 			return nil, fmt.Errorf("failed to evaluate workflow criterion for %q: %w", wf.Name, err)
 		}
-		matched, reason := out.matched, out.reason
-		if matched {
+		if out.matched {
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), nil)
+				spi.SMEventWorkflowFound, fmt.Sprintf("Workflow %q matched criterion", wf.Name), out.functionsData())
 			return wf, nil
 		}
 
-		if reason == "" {
-			reason = defaultCriterionReason
-		}
+		data := map[string]any{"workflowName": wf.Name, "reason": out.notMatchedReason()}
+		out.addFunctions(data)
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name),
-			map[string]any{"workflowName": wf.Name, "reason": reason})
+			spi.SMEventWorkflowSkipped, fmt.Sprintf("Workflow %q criterion not matched", wf.Name), data)
 	}
 
 	// No imported workflow matched the entity — fall back to the embedded
@@ -799,6 +796,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	}()
 
 	// Evaluate transition criterion.
+	var criterionData map[string]any // TRANSITION_MAKE data
 	if len(transition.Criterion) > 0 && string(transition.Criterion) != "null" {
 		// ctx/txID here are already correct: they are this function's own
 		// inputs, and nothing can have segmented yet — processors (the only
@@ -809,26 +807,26 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 		if err != nil {
 			return ctx, txID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 		}
-		matched, reason := out.matched, out.reason
-		if !matched {
-			external := reason != ""
-			if reason == "" {
-				reason = defaultCriterionReason
+		if !out.matched {
+			reason := out.notMatchedReason()
+			data := map[string]any{
+				"workflowName": wf.Name,
+				"transition":   transitionName,
+				"criterion":    criterionName(transition.Criterion),
+				"reason":       reason,
 			}
+			out.addFunctions(data)
 			e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionCriterionNoMatch,
-				fmt.Sprintf("Transition %q criterion not matched", transitionName),
-				map[string]any{
-					"workflowName": wf.Name,
-					"transition":   transitionName,
-					"criterion":    criterionName(transition.Criterion),
-					"reason":       reason,
-				})
-			if external {
+				fmt.Sprintf("Transition %q criterion not matched", transitionName), data)
+			// The manual path rolls back, so this message — not the audit
+			// event — is where the caller learns why.
+			if reason != defaultCriterionReason {
 				return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched: %s", transitionName, reason)}
 			}
 			return ctx, txID, &criterionNotMatchedError{msg: fmt.Sprintf("transition %q criterion not matched", transitionName)}
 		}
+		criterionData = out.functionsData()
 	}
 
 	// Execute processors. May shift (ctx, txID) for COMMIT_BEFORE_DISPATCH.
@@ -848,7 +846,7 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	// segment is currently open.
 	e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventTransitionMade,
-		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), nil)
+		fmt.Sprintf("Transition %q: %s → %s", transitionName, entity.Meta.State, transition.Next), criterionData)
 	entity.Meta.State = transition.Next
 
 	return newCtx, newTxID, nil
@@ -921,6 +919,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 			}
 
 			// Evaluate criterion.
+			var criterionData map[string]any // TRANSITION_MAKE data
 			if len(tr.Criterion) > 0 && string(tr.Criterion) != "null" {
 				// currentTxID, not txID: after a COMMIT_BEFORE_DISPATCH segment
 				// the cascade-entry txID names a committed transaction, and
@@ -934,22 +933,20 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 				if err != nil {
 					return currentCtx, currentTxID, fmt.Errorf("failed to evaluate transition criterion: %w", err)
 				}
-				matched, reason := out.matched, out.reason
-				if !matched {
-					if reason == "" {
-						reason = defaultCriterionReason
+				if !out.matched {
+					data := map[string]any{
+						"workflowName": wf.Name,
+						"transition":   tr.Name,
+						"criterion":    criterionName(tr.Criterion),
+						"reason":       out.notMatchedReason(),
 					}
+					out.addFunctions(data)
 					e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 						spi.SMEventTransitionCriterionNoMatch,
-						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name),
-						map[string]any{
-							"workflowName": wf.Name,
-							"transition":   tr.Name,
-							"criterion":    criterionName(tr.Criterion),
-							"reason":       reason,
-						})
+						fmt.Sprintf("Automated transition %q criterion not matched", tr.Name), data)
 					continue
 				}
+				criterionData = out.functionsData()
 			}
 
 			// Execute processors. May shift (currentCtx, currentTxID) when
@@ -976,7 +973,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 			// Record transition and move state.
 			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 				spi.SMEventTransitionMade,
-				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next), nil)
+				fmt.Sprintf("Transition %q: %s → %s", tr.Name, entity.Meta.State, tr.Next), criterionData)
 			entity.Meta.State = tr.Next
 			trSpan.End()
 			fired = true

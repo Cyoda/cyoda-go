@@ -211,3 +211,48 @@ func TestEvaluateCriterion_ModelStoreFailureBeforeAnyCallout(t *testing.T) {
 		t.Errorf("%d callouts; want 0", n)
 	}
 }
+
+func TestEvaluateCriterion_WholeFunctionWithoutPreCheckLoadsNoModel(t *testing.T) {
+	base := memory.NewStoreFactory()
+	t.Cleanup(func() { base.Close() })
+	uuids := common.NewTestUUIDGenerator()
+	rec := &recordingCriteria{answers: map[string]criteriaAnswer{"a": {matches: true}}}
+	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}, uuids,
+		base.NewTransactionManager(uuids), WithExternalProcessing(rec))
+	ctx := ctxWithTenant(testTenant)
+	entity := makeEntity("e1", spi.ModelRef{EntityName: "fn-nomodel", ModelVersion: "1.0"}, map[string]any{"amount": 50})
+	out, err := engine.evaluateCriterion([]byte(evFn("a", "")), entity, &criterionContext{ctx: ctx})
+	if err != nil {
+		t.Fatalf("evaluateCriterion: %v; a criterion without a local unit must not load the model", err)
+	}
+	if !out.matched {
+		t.Error("matched = false, want the member's true")
+	}
+	if got := rec.calledNames(t); !slices.Equal(got, []string{"a"}) {
+		t.Errorf("callouts = %v, want [a]", got)
+	}
+}
+
+func TestEvaluateCriterion_ReasonOnlyForACalledWholeFunction(t *testing.T) {
+	cases := []struct {
+		name      string
+		criterion string
+		want      string
+	}{
+		{"whole function, called", evFn("a", ""), "too small"},
+		{"function in a group", evGroup("AND", evFn("a", "")), ""},
+		{"whole function, pre-check false", evFn("a", evAmountGT100), ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			engine, _, entity, ctx := evalEnv(t, map[string]criteriaAnswer{"a": {matches: false, reason: "too small"}})
+			out, err := engine.evaluateCriterion([]byte(tc.criterion), entity, &criterionContext{ctx: ctx})
+			if err != nil {
+				t.Fatalf("evaluateCriterion: %v", err)
+			}
+			if out.reason != tc.want {
+				t.Errorf("reason = %q, want %q", out.reason, tc.want)
+			}
+		})
+	}
+}

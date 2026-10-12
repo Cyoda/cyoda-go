@@ -1247,8 +1247,8 @@ func TestFunctionCriterionNoExtProcError(t *testing.T) {
 
 	entity := makeEntity("func-no-ext-1", modelRef, map[string]any{"x": 1})
 	_, err := engine.Execute(ctx, entity, "")
-	if err == nil {
-		t.Fatalf("expected error for FUNCTION criterion without extProc")
+	if err == nil || !strings.Contains(err.Error(), "no external processing service configured") {
+		t.Fatalf("err = %v, want the no-external-processing refusal", err)
 	}
 }
 
