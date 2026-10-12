@@ -60,7 +60,7 @@ func TestValidateCondition_ClearingImpliesTranslates(t *testing.T) {
 	})
 
 	t.Run("array", func(t *testing.T) {
-		cond := &predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"a", nil, "b"}}
+		cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags[*]", Values: []any{"a", nil, "b"}}
 		assertClearingImpliesTranslates(t, cond)
 	})
 

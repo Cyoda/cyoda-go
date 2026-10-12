@@ -48,7 +48,7 @@ func TestGroupedStats_PathErrorBeatsFence(t *testing.T) {
 	later := c.Add(time.Millisecond)
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:     []entity.GroupExprValidated{{IsState: true}},
-		Condition:   []byte(`{"type":"simple","jsonPath":"not a path","operatorType":"EQUALS","value":"x"}`),
+		Condition:   mustParseCond(t, []byte(`{"type":"simple","jsonPath":"not a path","operatorType":"EQUALS","value":"x"}`)),
 		PointInTime: &later,
 	}
 	_, err := svc.QueryGroupedStats(ctx, neverReadStore{}, spi.ModelRef{}, nil, req)

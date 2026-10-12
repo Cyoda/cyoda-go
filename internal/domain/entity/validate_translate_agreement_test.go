@@ -84,6 +84,6 @@ func TestDeleteAndGroupedStats_ClearingImpliesTranslates(t *testing.T) {
 	// translator's switch runs, so it is a distinct shape from the ones
 	// above rather than a rewording of them.
 	t.Run("array", func(t *testing.T) {
-		assert(t, &predicate.ArrayCondition{JsonPath: "$.tags[*]", Values: []any{"v", nil, "w"}})
+		assert(t, &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.tags[*]", Values: []any{"v", nil, "w"}})
 	})
 }

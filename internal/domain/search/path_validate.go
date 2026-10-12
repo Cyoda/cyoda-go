@@ -317,10 +317,10 @@ func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDes
 // to the FieldsMap key convention. Lifecycle, function and nil sub-conditions
 // contribute nothing. Duplicates are folded out.
 //
-// Exported so a caller outside this package can assemble a path set spanning
-// more than a condition — grouped stats also holds its groupBy paths and
-// aggregate fields to the model — and hand the whole set to
-// [ValidateKnownPaths] in one call.
+// Exported so a caller outside this package can hand a condition's paths to
+// [ValidateKnownPaths]. A request that also names paths outside its condition
+// passes them to [ValidateConditionForModel], which checks the whole set in
+// one call.
 func ConditionFieldPaths(cond predicate.Condition) []string {
 	return extractFieldPaths(cond)
 }

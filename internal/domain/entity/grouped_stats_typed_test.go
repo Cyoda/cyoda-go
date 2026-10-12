@@ -63,7 +63,7 @@ func TestQueryGroupedStats_PushdownTypeDirectedWithFields(t *testing.T) {
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	fields := map[string]schema.FieldDescriptor{
 		"$.age": {Path: "$.age", Types: []spi.DataType{spi.Integer}},
@@ -109,7 +109,7 @@ func TestQueryGroupedStats_FieldsFeedConditionToFilter(t *testing.T) {
 	}
 	req := &entity.ValidatedGroupedStatsRequest{
 		GroupBy:   []entity.GroupExprValidated{{IsState: true}},
-		Condition: []byte(cond),
+		Condition: mustParseCond(t, []byte(cond)),
 	}
 	fields := map[string]schema.FieldDescriptor{
 		"$.age": {Path: "$.age", Types: []spi.DataType{spi.Integer}},

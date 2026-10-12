@@ -3,7 +3,6 @@ package search
 import (
 	"errors"
 	"fmt"
-	"net/http"
 	"strings"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -39,8 +38,8 @@ import (
 // declared types or an operand parses into none of them
 // (errConditionTypeMismatch), or a lifecycle field is unknown
 // (errInvalidFieldPath). Operand shape/arity — an object operand
-// (never valid for any operator), null on a binary op, a range op's
-// 2-element bounds shape — is enforced separately by
+// (never valid for any operator), an array operand (valid only as a range
+// op's 2-element bounds), a range op's bounds shape — is enforced separately by
 // ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
 // this type check.
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
@@ -67,14 +66,14 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 	case *predicate.LifecycleCondition:
 		return validateLifecycleType(c)
 	case *predicate.ArrayCondition:
-		// An array clause's positional values become EQUALS leaves once
-		// desugared, each folding back to the wildcard key
-		// validateSimpleConditionType already resolves declared types
-		// through (schema.CanonicalFieldPath). Routing through the same
-		// desugar spi.ConditionToFilter uses, rather than writing a second
-		// type check here, keeps the two definitions of the clause's
-		// semantics from drifting apart.
-		return walkConditionTypes(fm, spi.DesugarCondition(c), depth+1)
+		// The clause means its desugared leaves (spi.DesugarCondition, the
+		// same rewrite spi.ConditionToFilter and match.Prepare use), so the
+		// leaves are what is type-checked.
+		d, err := spi.DesugarCondition(c)
+		if err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
+		}
+		return walkConditionTypes(fm, d, depth+1)
 	case *predicate.FunctionCondition:
 		return nil
 	default:
@@ -164,11 +163,11 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// Null operand carries no type to mismatch; arity is enforced elsewhere.
 		return nil
 	case []any:
-		// Array operand — BETWEEN's [lo, hi] bounds or a legacy positional
-		// (IN-style) set. Every non-null element must parse into a declared
-		// type; a null element is compatible with any type; an empty array has
-		// nothing to mismatch. Range-op arity (exactly two bounds) is enforced
-		// by validateBetweenArity, not here.
+		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
+		// validateOperandShape refuses an array under every other operator,
+		// and validateBetweenArity refuses a pair that is not exactly two
+		// non-null bounds, before this check runs. Every element must parse
+		// into a declared type.
 		for i, elem := range v {
 			if elem == nil {
 				continue
@@ -380,11 +379,10 @@ var errConditionTypeMismatch = fmt.Errorf("condition type mismatch")
 var errInvalidFieldPath = fmt.Errorf("invalid field path")
 
 // ErrConditionTypeMismatch and ErrInvalidFieldPath are exported aliases of
-// the sentinels above, letting other domain packages (e.g. entity's
-// grouped-stats validation, which calls ValidateConditionValueTypes(nil, ...)
-// for its own model-independent temporal/lifecycle type-soundness check)
-// classify the returned error via errors.Is without duplicating the sentinel
-// or depending on package-internal identifiers.
+// the sentinels above. No production code outside this package uses them;
+// they let tests in other domain packages (entity, workflow) assert a
+// returned error via errors.Is without depending on package-internal
+// identifiers.
 var (
 	ErrConditionTypeMismatch = errConditionTypeMismatch
 	ErrInvalidFieldPath      = errInvalidFieldPath
@@ -459,8 +457,9 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 }
 
 // operandElements normalises a condition value into its operand elements: a
-// scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, or a
-// positional set) becomes one element per member. Callers skip nil elements.
+// scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, the
+// only array operand validateOperandShape accepts) becomes one element per
+// member. Callers skip nil elements.
 func operandElements(v any) []any {
 	if arr, ok := v.([]any); ok {
 		return arr
@@ -473,11 +472,8 @@ func operandElements(v any) []any {
 // itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
 // or the operand does not fit a known field's type).
 //
-// Shared by every caller of ValidateConditionValueTypes —
-// validateConditionTypes below (SearchService), and grouped stats' handler
-// and service layers (internal/domain/entity) via ClassifyConditionTypeErrCode
-// — so the four call sites cannot drift on what code an operator-class
-// rejection answers the way they had before this function existed.
+// validateConditionSequence is its one caller, so every surface that takes a
+// condition answers an operator-class rejection with the same code.
 func classifyConditionTypeErrCode(err error) string {
 	switch {
 	case errors.Is(err, errInvalidFieldPath):
@@ -485,32 +481,4 @@ func classifyConditionTypeErrCode(err error) string {
 	default:
 		return common.ErrCodeConditionTypeMismatch
 	}
-}
-
-// ClassifyConditionTypeErrCode is the exported entry point for
-// classifyConditionTypeErrCode, for callers outside this package that
-// validate a condition via the exported ValidateConditionValueTypes —
-// currently entity.Handler's grouped-stats and conditional-delete paths,
-// which hold their own model/schema plumbing and so call
-// ValidateConditionValueTypes directly rather than through Search. Mirrors
-// the StructuralConditionErrCode/structuralConditionErrCode exported-wrapper
-// shape already used in this package (service.go).
-func ClassifyConditionTypeErrCode(err error) string {
-	return classifyConditionTypeErrCode(err)
-}
-
-// validateConditionTypes is the single boundary enforcing condition
-// type-soundness for every SearchService entry point (HTTP, gRPC, and any
-// future transport funnel through Search/SubmitAsync). It runs
-// ValidateConditionValueTypes against fields — the map validateConditionPaths
-// returned, nil for a lifecycle-only condition — and maps the returned
-// sentinel error to the appropriate 400-classified *common.AppError via
-// classifyConditionTypeErrCode. The validation call is never skipped: its
-// model-independent half refuses a string or pattern operator on a temporal
-// meta field, a condition that carries no data path at all.
-func (s *SearchService) validateConditionTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) *common.AppError {
-	if err := ValidateConditionValueTypes(fields, cond); err != nil {
-		return common.Operational(http.StatusBadRequest, classifyConditionTypeErrCode(err), err.Error())
-	}
-	return nil
 }

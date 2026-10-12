@@ -772,6 +772,81 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   pattern operator on `creationDate` or `lastUpdateTime` moves from
   `400 INVALID_CONDITION` to `400 CONDITION_TYPE_MISMATCH`.
 
+- **An `array` condition carries a required `operatorType`, applied at every
+  tested position.** `{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}`
+  means `scores[0] > 50` and `scores[2] > 70`. A clause without an operator,
+  or that tests no position (`values` missing, empty or all `null`), is `400
+  INVALID_CONDITION`. Before, a clause without an operator compared with
+  `EQUALS`, and a clause that tested no position matched every entity — a
+  conditional delete with all-`null` `values` deleted the whole model. A
+  path with a wildcard before its trailing `[*]` is `400 INVALID_FIELD_PATH`.
+  Workflow import answers `400 VALIDATION_FAILED` for each. `ArrayConditionDto`
+  in the OpenAPI spec is `{type, jsonPath, operatorType, values}`, and the
+  operator enums of the condition DTOs list only the 26 operators the server
+  accepts.
+  Migration: add `"operatorType":"EQUALS"` to existing array clauses.
+
+- **Workflow import refuses a criterion that is not a valid condition
+  (`400 VALIDATION_FAILED`).** This covers an unknown or missing `type`, a
+  member of the wrong JSON type, and a body that is not a condition. Before,
+  such a criterion was imported and then failed each time it was evaluated.
+
+- **An array operand is `400 INVALID_CONDITION` under every operator other
+  than `BETWEEN` and `BETWEEN_INCLUSIVE`,** on a `simple` or `lifecycle`
+  clause's `value` and on an `array` clause's entry, on every search surface,
+  conditional delete, grouped stats and gRPC search; workflow import answers
+  `400 VALIDATION_FAILED`. No other operator takes a set of values. Before,
+  it was accepted and the backends answered differently: on a text field
+  `NOT_EQUAL ["a","b"]` matched every entity on some backends, so a
+  conditional delete removed nearly the whole model.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` whose value is not a two-element
+  array is `400 INVALID_CONDITION` on every search surface and every clause
+  type.** Before, direct and async search and conditional delete answered
+  `400 BAD_REQUEST` for a `simple` or `lifecycle` clause, while grouped stats
+  already answered `INVALID_CONDITION`. The status stays `400`; only the
+  code changes.
+
+- **A search condition that does not parse is `400 INVALID_CONDITION` on
+  direct and async search**, as it already was on conditional delete and
+  grouped stats. This covers an unknown or missing `type`, a field of the
+  wrong JSON type, and a body that is not a condition. Before, search
+  answered `400 BAD_REQUEST`. Over gRPC nothing changes: a condition that
+  does not parse is still the transport status `InvalidArgument`.
+
+- **A `BETWEEN` or `BETWEEN_INCLUSIVE` pair must hold two non-null scalar
+  bounds. A `null`, object or array bound is `400 INVALID_CONDITION`;
+  workflow import answers `400 VALIDATION_FAILED` for it.** Before, a `null`
+  bound was accepted and the backends answered differently. An object or
+  array bound made PostgreSQL answer `500`, and inside `NOT` the in-memory
+  evaluator compared against the bound's printed form, so a conditional
+  delete removed the entities that comparison chose.
+
+- **A condition tests at most 10,000 entries; a larger one is
+  `400 INVALID_CONDITION`, and workflow import answers
+  `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
+  counts one, `null` entries included, and every other clause counts one.
+  The count is taken before the condition is expanded, on search (sync and
+  async, HTTP and gRPC), conditional delete, grouped statistics and workflow
+  import. The limit bounds the expansion: an `array` clause expands into one
+  clause per entry, and each check expands it again. It does not bound the
+  total cost of a request, just as a group of simple pattern clauses does
+  not.
+
+- **Search, conditional delete and grouped statistics check a condition in
+  one order — structure, then patterns, then the model's paths, then types
+  — so one malformed condition gets the same code on each.** A bad pattern
+  on an undeclared path is now `400 INVALID_CONDITION` on search; it was
+  `400 INVALID_FIELD_PATH`. On grouped statistics an object operand is now
+  `400 INVALID_CONDITION`; it was `400 CONDITION_TYPE_MISMATCH`. A
+  structural fault on an undeclared path, such as a missing `operatorType`,
+  is now `400 INVALID_CONDITION` there too; it was `400 INVALID_FIELD_PATH`.
+
+- **Sync and async search answer `404 MODEL_NOT_FOUND` for an unknown model,
+  before checking a condition that parses.** A malformed condition on an
+  unknown model was `400`. A body that does not parse is still
+  `400 INVALID_CONDITION`, because it is refused before the model is looked up.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
@@ -1776,6 +1851,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`cyoda help auth tokens`) resolved.
 
 ### Security
+
+- **Conditional delete (`DELETE /entity/{entityName}/{modelVersion}`) reads
+  at most 10 MiB of condition body**, as every other entity write endpoint
+  does; a larger body is `400 BAD_REQUEST` and deletes nothing. Before, the
+  body was read whole with no limit, so one request could exhaust a node's
+  memory.
 
 - Bumped the Go toolchain `go 1.26.7` → `go 1.26.9` (root, all three plugin
   modules and `go.work`) and `golang.org/x/net` `v0.58.0` → `v0.60.0` to clear

@@ -172,13 +172,15 @@ returns the rows the caller meant to exclude.
 
 ## 5. Operand rules
 
-Three operand shapes are refused, because each one otherwise fails silently:
+These operand shapes are refused with `400 INVALID_CONDITION`, because each
+one otherwise fails silently or differs between backends:
 
 | Operand | Rule |
 |---|---|
 | an object | refused — an object denotes no scalar any operator compares against |
-| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries | refused — the operator needs exactly `[lo, hi]` |
-| an uncompilable `LIKE` or `MATCHES_PATTERN` pattern | refused `400 INVALID_CONDITION` |
+| an array, under any operator other than `BETWEEN` / `BETWEEN_INCLUSIVE` | refused — no other operator takes a set of values; unrefused, one backend compares the array's text, another matches every row under `NOT_EQUAL` and none under `EQUALS` |
+| `BETWEEN` / `BETWEEN_INCLUSIVE` with other than two entries, or an entry that is `null`, an object or an array | refused — the operator needs exactly `[lo, hi]`, both non-null scalars |
+| an uncompilable `LIKE` or `MATCHES_PATTERN` pattern | refused |
 
 A `MATCHES_PATTERN` operand is checked **twice**, and both checks are required.
 
@@ -277,8 +279,9 @@ above:
   `internal/domain/search/operators_test.go` and
   `internal/domain/search/handler_unknown_operator_test.go` (an unknown operator
   answers `INVALID_CONDITION`, section 2).
-- The `array` clause's own type and operand-shape checks, section 8 of
-  `path-grammar.md` folded into this document's operator rules:
+- The `array` clause's operator and operands, checked as its positional
+  `simple` clauses (section 8 of `path-grammar.md`), so every operator rule in
+  this document applies to them:
   `internal/domain/search/array_condition_validate_test.go`.
 - An operator that applies to none of the field's declared types, section 1:
   `internal/domain/search/condition_type_operator_test.go`; on every HTTP

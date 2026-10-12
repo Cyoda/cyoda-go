@@ -58,7 +58,7 @@ func TestFindUnknownFieldPaths_PositionalSubscriptIsKnown(t *testing.T) {
 func TestFindUnknownFieldPaths_ArrayContainerIsKnown(t *testing.T) {
 	fields := subscriptSchemaFields()
 	t.Run("array condition on the container", func(t *testing.T) {
-		cond := &predicate.ArrayCondition{JsonPath: "$.arr", Values: []any{1}}
+		cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.arr", Values: []any{1}}
 		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
 			t.Errorf("FindUnknownFieldPaths($.arr) = %v, want none — the model declares $.arr[*]", unknown)
 		}

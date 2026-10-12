@@ -2,6 +2,7 @@ package match
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -930,8 +931,9 @@ func TestMatchNestedGroupAndContainingOr(t *testing.T) {
 
 func TestMatchArrayCondition(t *testing.T) {
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.tags",
-		Values:   []any{"go", nil, "python"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags",
+		Values:       []any{"go", nil, "python"},
 	}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
@@ -945,8 +947,9 @@ func TestMatchArrayCondition(t *testing.T) {
 
 func TestMatchArrayConditionMismatch(t *testing.T) {
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.tags",
-		Values:   []any{"go", nil, "java"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags",
+		Values:       []any{"go", nil, "java"},
 	}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
@@ -1074,8 +1077,9 @@ func numericScoresTypes(path string) []spi.DataType {
 func TestMatchArrayCondition_NumericInt(t *testing.T) {
 	data := []byte(`{"scores":[1,2,3]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{1, 2, 3}, // Go int
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{1, 2, 3}, // Go int
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1090,8 +1094,9 @@ func TestMatchArrayCondition_NumericInt(t *testing.T) {
 func TestMatchArrayCondition_NumericInt64(t *testing.T) {
 	data := []byte(`{"scores":[1,2,3]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{int64(1), int64(2), int64(3)},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{int64(1), int64(2), int64(3)},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1106,8 +1111,9 @@ func TestMatchArrayCondition_NumericInt64(t *testing.T) {
 func TestMatchArrayCondition_NumericFloat64(t *testing.T) {
 	data := []byte(`{"scores":[1,2,3]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{1.0, 2.0, 3.0},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{1.0, 2.0, 3.0},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1123,8 +1129,9 @@ func TestMatchArrayCondition_JSONNumber(t *testing.T) {
 	// Predicates built from XML imports deliver json.Number.
 	data := []byte(`{"scores":[1.5]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{json.Number("1.5")},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{json.Number("1.5")},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1142,8 +1149,9 @@ func TestMatchArrayCondition_TypeMismatch(t *testing.T) {
 	// equal "go".
 	data := []byte(`{"tags":["go"]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.tags",
-		Values:   []any{42},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.tags",
+		Values:       []any{42},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1162,8 +1170,9 @@ func TestMatchArrayCondition_TypeMismatch(t *testing.T) {
 func TestMatchArrayCondition_NumericFormatDivergence(t *testing.T) {
 	data := []byte(`{"scores":[1e10]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{float64(1e10)},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{float64(1e10)},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1184,8 +1193,9 @@ func TestMatchArrayCondition_NumericFormatDivergence(t *testing.T) {
 func TestMatchArrayCondition_StringOperandCoercesWhenNumericDeclared(t *testing.T) {
 	data := []byte(`{"scores":[100]}`)
 	cond := &predicate.ArrayCondition{
-		JsonPath: "$.scores",
-		Values:   []any{"100.0"},
+		OperatorType: "EQUALS",
+		JsonPath:     "$.scores",
+		Values:       []any{"100.0"},
 	}
 	prepared, err := Prepare(cond, numericScoresTypes)
 	if err != nil {
@@ -1194,5 +1204,39 @@ func TestMatchArrayCondition_StringOperandCoercesWhenNumericDeclared(t *testing.
 	got := prepared.Match(data, meta())
 	if !got {
 		t.Error("expected match: string \"100.0\" numerically equals stored 100 under declared UnboundDecimal")
+	}
+}
+
+const scoresDoc = `{"scores":[90,40,75]}`
+
+func numericScores(string) []spi.DataType { return []spi.DataType{spi.Integer} }
+
+func TestMatchArrayCondition_OperatorPerPosition(t *testing.T) {
+	cases := []struct {
+		name string
+		cond *predicate.ArrayCondition
+		want bool
+	}{
+		{"GREATER_THAN at 0 and 2", &predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "GREATER_THAN", Values: []any{50, nil, 70}}, true},
+		{"GREATER_THAN fails at 1", &predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "GREATER_THAN", Values: []any{nil, 50}}, false},
+		{"BETWEEN at 1", &predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "BETWEEN_INCLUSIVE", Values: []any{nil, []any{30, 45}}}, true},
+		{"NOT_NULL selects position 1", &predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "NOT_NULL", Values: []any{nil, true}}, true},
+		{"IS_NULL selects position 1", &predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "IS_NULL", Values: []any{nil, true}}, false},
+	}
+	for _, tc := range cases {
+		p, err := Prepare(tc.cond, numericScores)
+		if err != nil {
+			t.Fatalf("%s: Prepare: %v", tc.name, err)
+		}
+		if got := p.Match([]byte(scoresDoc), meta()); got != tc.want {
+			t.Errorf("%s: Match = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestPrepare_ArrayClauseTestingNothingIsRefused(t *testing.T) {
+	_, err := Prepare(&predicate.ArrayCondition{JsonPath: "$.scores[*]", OperatorType: "EQUALS", Values: []any{nil}}, numericScores)
+	if !errors.Is(err, spi.ErrArrayClauseTestsNothing) {
+		t.Fatalf("want ErrArrayClauseTestsNothing, got %v", err)
 	}
 }

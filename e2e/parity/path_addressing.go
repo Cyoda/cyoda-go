@@ -46,9 +46,9 @@ func RunArrayClausePositional(t *testing.T, fixture BackendFixture) {
 		condition string
 		wantCount int
 	}{
-		{"array clause position 0", `{"type":"array","jsonPath":"$.tags[*]","values":["A"]}`, 1},
-		{"array clause position 1", `{"type":"array","jsonPath":"$.tags[*]","values":[null,"B"]}`, 1},
-		{"array clause wrong value", `{"type":"array","jsonPath":"$.tags[*]","values":["Z"]}`, 0},
+		{"array clause position 0", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"EQUALS","values":["A"]}`, 1},
+		{"array clause position 1", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"EQUALS","values":[null,"B"]}`, 1},
+		{"array clause wrong value", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"EQUALS","values":["Z"]}`, 0},
 		{"positional simple", `{"type":"simple","jsonPath":"$.tags[0]","operatorType":"EQUALS","value":"A"}`, 1},
 		{"wildcard simple", `{"type":"simple","jsonPath":"$.tags[*]","operatorType":"EQUALS","value":"B"}`, 1},
 		// The case a naive "numbers are always array indexes" rewrite
@@ -103,7 +103,7 @@ func RunArrayClausePositional(t *testing.T, fixture BackendFixture) {
 	// positional elements to test, so the clause is refused rather than
 	// desugared against an out-of-range or nonexistent index.
 	status, body, err = c.SyncSearchRaw(t, modelName, modelVersion,
-		`{"type":"array","jsonPath":"$.tags","values":["A"]}`)
+		`{"type":"array","jsonPath":"$.tags","operatorType":"EQUALS","values":["A"]}`)
 	if err != nil {
 		t.Fatalf("SyncSearchRaw bare array clause: %v", err)
 	}

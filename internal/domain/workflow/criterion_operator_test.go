@@ -100,3 +100,92 @@ func TestValidateImportRequest_KnownCriterionOperatorAccepted(t *testing.T) {
 		t.Fatalf("a known operator must be accepted: %v", err)
 	}
 }
+
+func TestValidateImportRequest_RejectsUnparseableCriterion(t *testing.T) {
+	for _, c := range []string{`{"type":"bogus"}`, `[1,2]`, `{"type":"simple","jsonPath":5}`, `{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","values":"x"}`} {
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))})
+		if err == nil {
+			t.Errorf("%s: an unparseable criterion must be rejected at import", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "wf-regex") {
+			t.Errorf("%s: error must name the workflow, got: %v", c, err)
+		}
+	}
+}
+
+func TestValidateImportRequest_ArrayCriterion(t *testing.T) {
+	reject := []string{
+		`{"type":"array","jsonPath":"$.t[*]","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"FROBNICATE","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","values":[null]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","value":["a"]}`,
+		`{"type":"array","jsonPath":"$.o[*].t[*]","operatorType":"EQUALS","values":["a"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"MATCHES_PATTERN","values":["("]}`,
+	}
+	for _, c := range reject {
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))}); err == nil {
+			t.Errorf("%s: must be rejected at import", c)
+		}
+	}
+	ok := `{"type":"array","jsonPath":"$.t[*]","operatorType":"GREATER_THAN","values":[1,null,3]}`
+	if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(ok))}); err != nil {
+		t.Errorf("valid array criterion rejected: %v", err)
+	}
+}
+
+// An array operand is refused at import under every operator other than
+// BETWEEN / BETWEEN_INCLUSIVE — on a simple, a lifecycle and an array clause.
+// Imported, it would evaluate differently on each backend.
+func TestValidateImportRequest_RejectsArrayOperandOutsideBetween(t *testing.T) {
+	for _, c := range []string{
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"EQUALS","value":[1,2]}`,
+		`{"type":"lifecycle","field":"state","operatorType":"NOT_EQUAL","value":["A","B"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`,
+	} {
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))})
+		if err == nil {
+			t.Errorf("%s: an array operand outside BETWEEN must be rejected at import", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "BETWEEN") {
+			t.Errorf("%s: detail must say which operators take a pair, got: %v", c, err)
+		}
+	}
+	ok := `{"type":"array","jsonPath":"$.t[*]","operatorType":"BETWEEN","values":[[1,5]]}`
+	if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(ok))}); err != nil {
+		t.Errorf("a BETWEEN pair must stay accepted: %v", err)
+	}
+}
+
+// A null BETWEEN bound is refused at import, on a simple and an array clause.
+func TestValidateImportRequest_RejectsNullBetweenBound(t *testing.T) {
+	for _, c := range []string{
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN","value":[null,5]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"BETWEEN_INCLUSIVE","values":[[null,5]]}`,
+	} {
+		if err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))}); err == nil {
+			t.Errorf("%s: a null BETWEEN bound must be rejected at import", c)
+		}
+	}
+}
+
+// An object or array BETWEEN bound is refused at import, on a simple and an
+// array clause. Imported, it would fail or compare against the bound's
+// printed form at every evaluation.
+func TestValidateImportRequest_RejectsNonScalarBetweenBound(t *testing.T) {
+	for _, c := range []string{
+		`{"type":"simple","jsonPath":"$.amount","operatorType":"BETWEEN","value":[{"a":1},5]}`,
+		`{"type":"simple","jsonPath":"$.name","operatorType":"BETWEEN_INCLUSIVE","value":[["a"],"z"]}`,
+		`{"type":"array","jsonPath":"$.t[*]","operatorType":"BETWEEN","values":[[{"a":1},"z"]]}`,
+	} {
+		err := validateImportRequest([]spi.WorkflowDefinition{wfWithTransitionCriterion(json.RawMessage(c))})
+		if err == nil {
+			t.Errorf("%s: an object or array BETWEEN bound must be rejected at import", c)
+			continue
+		}
+		if !strings.Contains(err.Error(), "scalar") {
+			t.Errorf("%s: detail must say a bound is a scalar, got: %v", c, err)
+		}
+	}
+}

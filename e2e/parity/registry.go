@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 237 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 238 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -205,6 +205,9 @@ var allTests = []NamedTest{
 	// union rule and the presence/nullness table, which apply to the array
 	// clause's desugared form the same as to every other path.
 	{"ArrayClausePositional", RunArrayClausePositional},
+	// ArrayClauseOperator: the clause's operatorType applies at every tested
+	// position, pushed down, in memory (inside NOT) and through async search.
+	{"ArrayClauseOperator", RunArrayClauseOperator},
 	{"PathAddressingByDeclaredShape", RunPathAddressingByDeclaredShape},
 	{"PathVacuity", RunPathVacuity},
 

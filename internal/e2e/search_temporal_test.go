@@ -331,7 +331,7 @@ func TestSearchTemporal_200_OffsetLessOperand(t *testing.T) {
 
 // TestSearchTemporal_400_BetweenScalarOperand verifies a BETWEEN condition
 // whose operand is a scalar (not a 2-element array) is rejected with 400
-// BAD_REQUEST at the SearchService validation boundary (ValidateCondition ->
+// INVALID_CONDITION at the SearchService validation boundary (ValidateCondition ->
 // validateBetweenArity), rather than reaching a storage plugin. This is the
 // postgres-panic repro: before the fix, betweenValues left spi.Filter.Values
 // nil for a malformed BETWEEN and postgres's query planner panicked indexing
@@ -350,12 +350,12 @@ func TestSearchTemporal_400_BetweenScalarOperand(t *testing.T) {
 		body := readBody(t, resp)
 		t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 	}
-	commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+	commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 }
 
 // TestSearchTemporal_400_BetweenWrongArity verifies a BETWEEN condition whose
 // operand is an array with the wrong element count (1 or 3, rather than the
-// required [lo, hi] pair) is rejected with 400 BAD_REQUEST at the same
+// required [lo, hi] pair) is rejected with 400 INVALID_CONDITION at the same
 // validation boundary as the scalar-operand case above.
 func TestSearchTemporal_400_BetweenWrongArity(t *testing.T) {
 	const model = "e2e-search-temporal-400-between-arity"
@@ -380,7 +380,7 @@ func TestSearchTemporal_400_BetweenWrongArity(t *testing.T) {
 				body := readBody(t, resp)
 				t.Fatalf("expected 400, got %d; body: %s", resp.StatusCode, body)
 			}
-			commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+			commontest.ExpectErrorCode(t, resp, "INVALID_CONDITION")
 		})
 	}
 }

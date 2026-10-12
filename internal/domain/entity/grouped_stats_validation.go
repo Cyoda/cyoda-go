@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
@@ -25,9 +26,9 @@ func (e *GroupedStatsValidationError) Error() string {
 type ValidatedGroupedStatsRequest struct {
 	GroupBy      []GroupExprValidated
 	Aggregations []AggregationExprValidated
-	// Condition is the raw bytes; the service layer parses via
-	// predicate.ParseCondition.
-	Condition   []byte
+	// Condition is the parsed condition, nil when the request has none. It is
+	// parsed once, here.
+	Condition   predicate.Condition
 	PointInTime *time.Time
 	Limit       *int
 }
@@ -149,10 +150,20 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		}
 	}
 
+	var cond predicate.Condition
+	if len(r.Condition) > 0 {
+		c, err := predicate.ParseCondition(r.Condition)
+		if err != nil {
+			return nil, &GroupedStatsValidationError{
+				Code: common.ErrCodeInvalidCondition, Message: "invalid condition: " + err.Error()}
+		}
+		cond = c
+	}
+
 	return &ValidatedGroupedStatsRequest{
 		GroupBy:      groups,
 		Aggregations: aggs,
-		Condition:    []byte(r.Condition),
+		Condition:    cond,
 		PointInTime:  r.PointInTime,
 		Limit:        r.Limit,
 	}, nil

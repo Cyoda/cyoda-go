@@ -104,7 +104,11 @@ func ValidateConditionJSONPath(path string) error {
 // must address elements, not the array itself: a bare path ("$.tags")
 // addresses the container and carries no positional test, and a
 // positional-only path ("$.tags[0]") names one element rather than testing
-// by position across the whole array. Errors wrap [ErrInvalidFieldPath].
+// by position across the whole array. The path carries exactly one "[*]":
+// one clause tests the positions of one array, so a path with an earlier
+// wildcard ("$.orders[*].lines[*]") or a matrix wildcard ("$.m[*][*]") is
+// refused — index the outer array instead ("$.orders[0].lines[*]"). Errors
+// wrap [ErrInvalidFieldPath].
 //
 // This requirement is specific to the array clause: a `simple` clause's bare
 // path still legitimately addresses the container (see path_validate.go's
@@ -127,6 +131,12 @@ func ValidateArrayClauseJSONPath(path string) error {
 		return fmt.Errorf(
 			"%w: jsonPath %q must end in a trailing array wildcard \"[*]\"; "+
 				"an array clause tests elements by position and a bare path addresses the array itself",
+			errInvalidFieldPath, path)
+	}
+	if strings.Count(path, "[*]") != 1 {
+		return fmt.Errorf(
+			"%w: jsonPath %q has a wildcard before its trailing \"[*]\"; "+
+				"an array clause tests the positions of one array — index the outer array (e.g. \"$.orders[0].lines[*]\")",
 			errInvalidFieldPath, path)
 	}
 	return nil

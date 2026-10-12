@@ -153,8 +153,8 @@ func TestValidateConditionTypes_TrailingWildcardOnContainer_IsInvalidFieldPath(t
 }
 
 // With NO schema bound the check is skipped, exactly as every other
-// schema-dependent validator in the stack skips (validateConditionPaths returns
-// nil on a nil FieldsMap; validateConditionTypes returns nil on a nil node).
+// schema-dependent validator in the stack skips (the path step of ValidateConditionForModel passes
+// on a nil FieldsMap; its type step passes on a nil node).
 // This is deliberate, not an oversight: with no schema there is no authority
 // that says the element is an object, the model may legitimately hold a
 // primitive array, and a 400 here would be a false rejection of a valid query.

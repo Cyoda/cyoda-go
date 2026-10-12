@@ -139,7 +139,7 @@ func checkCriterionResponseTimeout(criterion json.RawMessage, location string, m
 	}
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
-		return nil // not this rule's to report; see validateCriterion
+		return nil // validateCriterion has already refused a criterion that does not parse
 	}
 	if _, ok := cond.(*predicate.FunctionCondition); !ok {
 		return nil
@@ -294,7 +294,7 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 	return nil
 }
 
-// validateCriterion rejects a criterion that is malformed in any of five
+// validateCriterion rejects a criterion that is malformed in any of these
 // ways:
 //   - a function criterion whose `function` member cannot be read, or whose
 //     `retryPolicy` is outside NONE/FIXED/empty — it would fail every
@@ -304,9 +304,10 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     the search API boundary enforces: a criterion and a search condition are
 //     one model syntax and must agree on which paths exist.
 //   - an operatorType outside the canonical set, or an operand shape/arity
-//     violation (an object operand, or a BETWEEN with other than two
-//     entries). Delegates to search.ValidateCriterionCondition — the same
-//     operator table search.ValidateCondition enforces, minus the
+//     violation (an object operand, an array operand outside BETWEEN, or a
+//     BETWEEN without exactly two non-null bounds). Delegates to
+//     search.ValidateCriterionCondition — the same operator table
+//     search.ValidateCondition enforces, minus the
 //     FUNCTION-clause rejection a criterion is exempt from (spec §4: "on
 //     every surface that carries a condition, workflow import included").
 //   - a MATCHES_PATTERN or LIKE operand the kernel cannot compile. Delegates
@@ -322,19 +323,14 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //     through the same match.Prepare/(Prepared).Match path, so both entry
 //     points reject the same malformed conditions.
 //
-// Criteria are stored opaquely (json.RawMessage) and previously were only
-// parsed at transition-evaluation time (engine.go's evaluateCriterion ->
-// match.Prepare, whose leaf expansion — including MATCHES_PATTERN
-// compilation — happens inside spi.ExpandLeaf), so a malformed criterion
-// imported successfully and then errored (or silently misbehaved) on every
-// subsequent evaluation of that transition. A bad path was worse still: it
-// errored nowhere and simply resolved, so the criterion worked. An unknown
-// operator is worse again: it fails closed on every subsequent evaluation
-// with no error surfaced anywhere, so the transition it guards silently
-// never fires. The last four of the five are grammar-only and belong at import,
-// which a stored workflow crosses exactly once, rather than at evaluation,
-// where the failure would land on a save (or, for the unknown-operator case,
-// never surface at all).
+// Criteria are stored opaquely (json.RawMessage). Import checks everything
+// that depends only on the criterion itself: that it parses, its path
+// grammar, its operators and operands, and its patterns. These are
+// grammar-only checks, made once at import, where a stored workflow crosses
+// the boundary exactly once; an unchecked defect would otherwise surface on
+// every evaluation of the transition it guards, or never surface at all
+// (an unknown operator fails closed and the transition silently never
+// fires).
 //
 // Import is NOT the only boundary a criterion crosses, though: whether the
 // model DECLARES a path this validator has already approved is checked
@@ -348,10 +344,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 //
 // location names the workflow/state/transition the criterion belongs to, for
 // the error message. Empty/null criteria are skipped. A criterion that does
-// not parse as a predicate.Condition at all is left alone — this validator
-// only tightens already-parseable conditions, it does not newly reject
-// shapes ParseCondition already rejects (that is out of scope for this
-// check; those criteria fail at evaluation time exactly as before).
+// not parse as a predicate.Condition at all is refused: it can never be
+// evaluated, so every save that reached its transition would fail.
 func validateCriterion(criterion json.RawMessage, location string) error {
 	trimmed := bytes.TrimSpace(criterion)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
@@ -359,7 +353,7 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	}
 	cond, err := predicate.ParseCondition(trimmed)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: criterion is not a valid condition: %w", location, err)
 	}
 	// A function criterion is a callout: its config is checked like a
 	// processor's. Only a top-level function criterion is ever dispatched

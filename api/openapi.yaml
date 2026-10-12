@@ -7111,13 +7111,6 @@ paths:
         - ISTARTS_WITH, INOT_STARTS_WITH: Case-insensitive prefix
 
         - IENDS_WITH, INOT_ENDS_WITH: Case-insensitive suffix
-
-
-        4. State Tracking
-
-        - IS_UNCHANGED: Field hasn't changed
-
-        - IS_CHANGED: Field has changed
       operationId: submitAsyncSearchJob
       parameters:
         - name: entityName
@@ -9534,86 +9527,54 @@ components:
                 the workflow/transition `criterion` union, where the same
                 grammar is enforced at workflow import and the code is
                 `VALIDATION_FAILED` instead — the import-time code every
-                other criterion rejection uses.
-              example: $.amount
+                other criterion rejection uses. An `array` clause's path
+                must end in `[*]` and contain no other `[*]`.
+              example: $.scores[*]
             operatorType:
-              type: string
-              enum:
-                - EQUALS
-                - OBJECT_EQUALS
-                - NOT_EQUAL
-                - IEQUALS
-                - INOT_EQUAL
-                - GREATER_THAN
-                - LESS_THAN
-                - GREATER_OR_EQUAL
-                - LESS_OR_EQUAL
-                - CONTAINS
-                - STARTS_WITH
-                - ENDS_WITH
-                - ICONTAINS
-                - ISTARTS_WITH
-                - IENDS_WITH
-                - NOT_CONTAINS
-                - NOT_STARTS_WITH
-                - NOT_ENDS_WITH
-                - INOT_CONTAINS
-                - INOT_STARTS_WITH
-                - INOT_ENDS_WITH
-                - IBETWEEN_INCLUSIVE
-                - MATCHES_PATTERN
-                - IMATCHES_PATTERN
-                - CONTAINS_PATTERN
-                - STARTS_WITH_PATTERN
-                - ENDS_WITH_PATTERN
-                - ICONTAINS_PATTERN
-                - ISTARTS_WITH_PATTERN
-                - IENDS_WITH_PATTERN
-                - REGEXP
-                - IREGEXP
-                - IS_NULL
-                - NOT_NULL
-                - IN_SET
-                - NOT_IN_SET
-                - EQUALS_FIELD
-                - NOT_EQUAL_FIELD
-                - IEQUALS_FIELD
-                - INOT_EQUAL_FIELD
-                - GREATER_THAN_FIELD
-                - LESS_THAN_FIELD
-                - GREATER_OR_EQUAL_FIELD
-                - LESS_OR_EQUAL_FIELD
-                - CONTAINS_FIELD
-                - STARTS_WITH_FIELD
-                - ENDS_WITH_FIELD
-                - ICONTAINS_FIELD
-                - ISTARTS_WITH_FIELD
-                - IENDS_WITH_FIELD
-                - NOT_CONTAINS_FIELD
-                - NOT_STARTS_WITH_FIELD
-                - NOT_ENDS_WITH_FIELD
-                - INOT_CONTAINS_FIELD
-                - INOT_STARTS_WITH_FIELD
-                - INOT_ENDS_WITH_FIELD
-                - AND
-                - NOT
-                - OR
-                - BETWEEN
-                - BETWEEN_INCLUSIVE
-                - EQUAL_BY_ATTRIBUTES
-                - INSTANCE_OF
-                - LIKE
-                - IS_UNCHANGED
-                - IS_CHANGED
-            value:
+              $ref: "#/components/schemas/ConditionOperatorType"
+            values:
               type: array
+              minItems: 1
+              maxItems: 10000
+              description: >-
+                One entry per array position, from index 0. `operatorType`
+                is applied at every position whose entry is not `null`; a
+                `null` entry tests nothing at that position. An entry is a
+                scalar, or a `[low, high]` pair for `BETWEEN` and
+                `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null
+                entry only selects the position. At least one entry must be
+                non-null; a clause that tests no position is refused with
+                400 `INVALID_CONDITION`. A whole condition may test at most
+                10,000 entries: each entry here counts one, `null` entries
+                included, and every other clause counts one; a larger
+                condition is refused with 400 `INVALID_CONDITION`.
               items:
-                type: string
+                # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+                # the Go type it cannot derive.
+                x-go-type: interface{}
+                oneOf:
+                  - type: "null"
+                  - type: string
+                  - type: number
+                  - type: boolean
+                  - type: array
+                    minItems: 2
+                    maxItems: 2
+                    items:
+                      oneOf:
+                        - type: string
+                        - type: number
+                        - type: boolean
       required:
         - jsonPath
         - operatorType
         - type
-        - value
+        - values
+      example:
+        type: array
+        jsonPath: $.scores[*]
+        operatorType: GREATER_THAN
+        values: [50, null, 70]
     ExternalizedFunctionConfigDto:
       type: object
       properties:
@@ -9731,74 +9692,7 @@ components:
             field:
               type: string
             operatorType:
-              type: string
-              enum:
-                - EQUALS
-                - OBJECT_EQUALS
-                - NOT_EQUAL
-                - IEQUALS
-                - INOT_EQUAL
-                - GREATER_THAN
-                - LESS_THAN
-                - GREATER_OR_EQUAL
-                - LESS_OR_EQUAL
-                - CONTAINS
-                - STARTS_WITH
-                - ENDS_WITH
-                - ICONTAINS
-                - ISTARTS_WITH
-                - IENDS_WITH
-                - NOT_CONTAINS
-                - NOT_STARTS_WITH
-                - NOT_ENDS_WITH
-                - INOT_CONTAINS
-                - INOT_STARTS_WITH
-                - INOT_ENDS_WITH
-                - IBETWEEN_INCLUSIVE
-                - MATCHES_PATTERN
-                - IMATCHES_PATTERN
-                - CONTAINS_PATTERN
-                - STARTS_WITH_PATTERN
-                - ENDS_WITH_PATTERN
-                - ICONTAINS_PATTERN
-                - ISTARTS_WITH_PATTERN
-                - IENDS_WITH_PATTERN
-                - REGEXP
-                - IREGEXP
-                - IS_NULL
-                - NOT_NULL
-                - IN_SET
-                - NOT_IN_SET
-                - EQUALS_FIELD
-                - NOT_EQUAL_FIELD
-                - IEQUALS_FIELD
-                - INOT_EQUAL_FIELD
-                - GREATER_THAN_FIELD
-                - LESS_THAN_FIELD
-                - GREATER_OR_EQUAL_FIELD
-                - LESS_OR_EQUAL_FIELD
-                - CONTAINS_FIELD
-                - STARTS_WITH_FIELD
-                - ENDS_WITH_FIELD
-                - ICONTAINS_FIELD
-                - ISTARTS_WITH_FIELD
-                - IENDS_WITH_FIELD
-                - NOT_CONTAINS_FIELD
-                - NOT_STARTS_WITH_FIELD
-                - NOT_ENDS_WITH_FIELD
-                - INOT_CONTAINS_FIELD
-                - INOT_STARTS_WITH_FIELD
-                - INOT_ENDS_WITH_FIELD
-                - AND
-                - NOT
-                - OR
-                - BETWEEN
-                - BETWEEN_INCLUSIVE
-                - EQUAL_BY_ATTRIBUTES
-                - INSTANCE_OF
-                - LIKE
-                - IS_UNCHANGED
-                - IS_CHANGED
+              $ref: "#/components/schemas/ConditionOperatorType"
             value:
               $ref: "#/components/schemas/JsonNode"
       required:
@@ -9860,74 +9754,7 @@ components:
                 other criterion rejection uses.
               example: $.amount
             operatorType:
-              type: string
-              enum:
-                - EQUALS
-                - OBJECT_EQUALS
-                - NOT_EQUAL
-                - IEQUALS
-                - INOT_EQUAL
-                - GREATER_THAN
-                - LESS_THAN
-                - GREATER_OR_EQUAL
-                - LESS_OR_EQUAL
-                - CONTAINS
-                - STARTS_WITH
-                - ENDS_WITH
-                - ICONTAINS
-                - ISTARTS_WITH
-                - IENDS_WITH
-                - NOT_CONTAINS
-                - NOT_STARTS_WITH
-                - NOT_ENDS_WITH
-                - INOT_CONTAINS
-                - INOT_STARTS_WITH
-                - INOT_ENDS_WITH
-                - IBETWEEN_INCLUSIVE
-                - MATCHES_PATTERN
-                - IMATCHES_PATTERN
-                - CONTAINS_PATTERN
-                - STARTS_WITH_PATTERN
-                - ENDS_WITH_PATTERN
-                - ICONTAINS_PATTERN
-                - ISTARTS_WITH_PATTERN
-                - IENDS_WITH_PATTERN
-                - REGEXP
-                - IREGEXP
-                - IS_NULL
-                - NOT_NULL
-                - IN_SET
-                - NOT_IN_SET
-                - EQUALS_FIELD
-                - NOT_EQUAL_FIELD
-                - IEQUALS_FIELD
-                - INOT_EQUAL_FIELD
-                - GREATER_THAN_FIELD
-                - LESS_THAN_FIELD
-                - GREATER_OR_EQUAL_FIELD
-                - LESS_OR_EQUAL_FIELD
-                - CONTAINS_FIELD
-                - STARTS_WITH_FIELD
-                - ENDS_WITH_FIELD
-                - ICONTAINS_FIELD
-                - ISTARTS_WITH_FIELD
-                - IENDS_WITH_FIELD
-                - NOT_CONTAINS_FIELD
-                - NOT_STARTS_WITH_FIELD
-                - NOT_ENDS_WITH_FIELD
-                - INOT_CONTAINS_FIELD
-                - INOT_STARTS_WITH_FIELD
-                - INOT_ENDS_WITH_FIELD
-                - AND
-                - NOT
-                - OR
-                - BETWEEN
-                - BETWEEN_INCLUSIVE
-                - EQUAL_BY_ATTRIBUTES
-                - INSTANCE_OF
-                - LIKE
-                - IS_UNCHANGED
-                - IS_CHANGED
+              $ref: "#/components/schemas/ConditionOperatorType"
             value:
               $ref: "#/components/schemas/JsonNode"
       required:
@@ -11287,7 +11114,10 @@ components:
           example: $.country
         value:
           description: Observed value for this dimension, or null.
-          nullable: true
+          type: [string, number, boolean, "null"]
+          # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
+          # Go type it cannot derive.
+          x-go-type: interface{}
           example: SE
       required:
         - path
@@ -11318,8 +11148,10 @@ components:
             (when the aggregation has no eligible inputs). Absent when
             the request specified no aggregations.
           additionalProperties:
-            type: number
-            nullable: true
+            type: [number, "null"]
+            # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
+            # Go type it cannot derive.
+            x-go-type: "*float32"
       required:
         - count
         - groupKey
@@ -11710,8 +11542,10 @@ components:
                 - SCHEDULED_TRANSITION_CANCEL
                 - SCHEDULED_TRANSITION_FAIL
             data:
-              type: object
-              nullable: true
+              type: [object, "null"]
+              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
+              # the Go type it cannot derive.
+              x-go-type: map[string]interface{}
               description: >
                 Optional event-specific payload. Present for some event types
                 (e.g. STATE_MACHINE_FINISH includes {"success": true},
@@ -12140,6 +11974,19 @@ components:
           type: object
           additionalProperties:
             type: string
+    ConditionOperatorType:
+      type: string
+      description: >-
+        A leaf condition's operator. This is the set the server accepts on a
+        `simple`, `lifecycle` and `array` clause; any other name is refused
+        with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each
+        operator's meaning and the field types it applies to.
+      enum: [BETWEEN, BETWEEN_INCLUSIVE, CONTAINS, ENDS_WITH, EQUALS,
+        GREATER_OR_EQUAL, GREATER_THAN, ICONTAINS, IENDS_WITH, IEQUALS,
+        INOT_CONTAINS, INOT_ENDS_WITH, INOT_EQUAL, INOT_STARTS_WITH,
+        ISTARTS_WITH, IS_NULL, LESS_OR_EQUAL, LESS_THAN, LIKE,
+        MATCHES_PATTERN, NOT_CONTAINS, NOT_ENDS_WITH, NOT_EQUAL, NOT_NULL,
+        NOT_STARTS_WITH, STARTS_WITH]
     AbstractConditionDto:
       type: object
       discriminator:

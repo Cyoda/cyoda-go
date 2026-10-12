@@ -57,8 +57,8 @@ func TestSearch_AsyncSubmit_UnknownOperator_Returns400_InvalidCondition(t *testi
 }
 
 // TestDeleteEntitiesConditional_UnknownOperator_Returns400_InvalidCondition
-// covers the conditional-delete surface, which shares the same
-// search.ValidateCondition boundary via search.StructuralConditionErrCode.
+// covers the conditional-delete surface, which runs the same shared
+// sequence as search, search.ValidateConditionForModel.
 func TestDeleteEntitiesConditional_UnknownOperator_Returns400_InvalidCondition(t *testing.T) {
 	const model = "e2e-delete-unknown-operator"
 	setupSearchModel(t, model)

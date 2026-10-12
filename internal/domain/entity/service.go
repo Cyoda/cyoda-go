@@ -1038,8 +1038,8 @@ func mintDeleteTicket(entityID string, err error) string {
 // It used to carry a prepared residual for an untranslatable condition,
 // re-applied per streamed entity over a zero-value filter — a whole-model
 // scan plus an in-process match, the shape search deleted. planDeleteSelection
-// runs the same four checks search does (ValidateCondition, ValidatePatterns,
-// ValidateKnownPaths, the type check) before translating, and clearing them
+// runs the same sequence search does (search.ValidateConditionForModel:
+// structure, patterns, paths, types) before translating, and clearing it
 // implies translating, so the residual had no reachable input:
 // TestDeleteAndGroupedStats_ClearingImpliesTranslates is the check that keeps
 // that true. Delete now refuses a translation failure exactly as search does.
@@ -1050,86 +1050,38 @@ type deleteSelectionPlan struct {
 // planDeleteSelection validates cond and resolves how DeleteEntitiesConditional
 // / deleteBatched select matching entities. Delete reuses the search
 // condition primitive so no special engine rights are claimed (design
-// §6.1), but — now that selection streams via the delete path's own
-// Iterate drain rather than through SearchService.Search — the
-// validation Search enforces along the way (structural condition shape,
-// regex compilability, unknown data-field paths, type soundness) has to be
-// replicated here instead of arriving as a side effect of that call. Same
-// checks, same error codes, via the same exported search.* helpers
-// GroupedStatsService already established this pattern with
-// (grouped_stats_service.go). A nil cond selects everything (zero-value
-// plan, no validation to do).
+// §6.1). Selection streams via the delete path's own Iterate drain rather
+// than through SearchService.Search, so it runs the validation sequence
+// Search runs — search.ValidateConditionForModel, shared with search and
+// grouped stats — itself. A nil cond selects everything (zero-value plan,
+// no validation to do).
 func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelStore, ref spi.ModelRef, cond predicate.Condition) (deleteSelectionPlan, error) {
 	if cond == nil {
 		return deleteSelectionPlan{}, nil
 	}
 
-	// Structural condition validation (canonical operator set, BETWEEN
-	// arity) — mirrors SearchService.Search's single boundary via the same
-	// exported search.ValidateCondition call grouped-stats reuses. Returning
-	// a *common.AppError directly — classified via the same exported
-	// search.StructuralConditionErrCode Search itself uses — instead of
-	// wrapping under entity.ErrInvalidCondition preserves the field-path vs
-	// condition-shape distinction: DeleteEntitiesConditional/deleteBatched's
-	// errors.As(&appErr) picks this up and returns it unchanged, the same
-	// path a Search-forwarded error already took. An unknown or missing
-	// operatorType and an operand-shape violation both classify as
-	// INVALID_CONDITION (operator-semantics.md §4) — they no longer split
-	// across two codes the way an earlier version of this comment described.
-	if cErr := search.ValidateCondition(cond); cErr != nil {
-		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest,
-			search.StructuralConditionErrCode(cErr), cErr.Error())
-	}
-
-	// Reject a MATCHES_PATTERN or LIKE operand the kernel cannot compile,
-	// before any selection runs — mirrors SearchService.Search's
-	// ValidatePatterns call. match.Prepare's own expandNamed also rejects an
-	// uncompilable pattern now (prepared.go, match.ErrUnevaluableLeaf) rather than
-	// silently degrading to a non-match, so leaving this validation out
-	// would no longer risk a false "deleted nothing" success — but it would
-	// still surface as a generic internal error instead of a clean 400
-	// INVALID_CONDITION naming the offending leaf. Runs after the structural
-	// check, as it does on the search path: the pattern error names the leaf
-	// by the jsonPath the caller wrote, and that string should have cleared
-	// the path grammar first.
-	if rErr := search.ValidatePatterns(cond); rErr != nil {
-		return deleteSelectionPlan{}, common.Operational(http.StatusBadRequest, common.ErrCodeInvalidCondition,
-			rErr.Error())
-	}
-
-	fields, ffErr := search.LoadFieldsMap(ctx, modelStore, ref)
-	if ffErr != nil {
-		return deleteSelectionPlan{}, fmt.Errorf("failed to load model field types: %w", ffErr)
-	}
-
-	// Unknown data-field paths (TestDeleteEntities_UnknownFieldPath, error
-	// matrix row deleteEntities/INVALID_FIELD_PATH). Shared with
-	// /search/direct and grouped stats through search.ValidateKnownPaths, so
-	// the three endpoints cannot drift on what counts as a known path — this
-	// block was previously a hand-copied twin of validateConditionPaths and
-	// had already drifted once, guarding itself on `fields != nil` and so
-	// accepting any path at all against a model declaring no fields.
-	//
-	// The bounded single refresh lives in the shared helper: it is the
-	// correctness half, not the optimisation, because on a cluster node A can
-	// extend a model with a new field before node B's cached descriptor sees
-	// the schema-change event. Search's negative cache stays Search's own — a
-	// hot-path concern this lower-volume endpoint does not need.
-	fields, pathErr := search.ValidateKnownPaths(ctx, modelStore, ref, search.ConditionFieldPaths(cond), fields)
-	if pathErr != nil {
-		return deleteSelectionPlan{}, pathErr
-	}
-
-	// Condition type-soundness against the fields the paths were just
-	// validated against — mirrors SearchService.Search's
-	// validateConditionTypes boundary.
-	if tErr := deleteConditionTypeCheck(fields, cond); tErr != nil {
-		return deleteSelectionPlan{}, tErr
+	// The one condition-validation sequence search runs (structure, patterns,
+	// the model's paths, the model's types — see
+	// search.ValidateConditionForModel). Its errors are *common.AppError with
+	// the code each surface shares, or an infrastructure error; both pass
+	// through DeleteEntitiesConditional/deleteBatched unchanged. A cluster
+	// node whose cached schema lacks a peer-added field is refreshed once on
+	// a path miss inside it.
+	fields, vErr := search.ValidateConditionForModel(ctx, modelStore, ref, cond, nil,
+		func() (map[string]schema.FieldDescriptor, error) {
+			f, err := search.LoadFieldsMap(ctx, modelStore, ref)
+			if err != nil {
+				return nil, fmt.Errorf("failed to load model field types: %w", err)
+			}
+			return f, nil
+		})
+	if vErr != nil {
+		return deleteSelectionPlan{}, vErr
 	}
 
 	// One path, as on search: the condition either pushes down or the request
 	// is refused. A translation failure is unreachable from input that
-	// cleared the four checks above — they are the same calls search runs,
+	// cleared the checks above — they are the same sequence search runs,
 	// and TestDeleteAndGroupedStats_ClearingImpliesTranslates checks the
 	// pairing holds — so refusing costs no valid delete.
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1142,22 +1094,6 @@ func (h *Handler) planDeleteSelection(ctx context.Context, modelStore spi.ModelS
 			"condition cannot be translated to a backend predicate")
 	}
 	return deleteSelectionPlan{filter: filter}, nil
-}
-
-// deleteConditionTypeCheck runs condition type-soundness for
-// planDeleteSelection against fields — the map search.ValidateKnownPaths
-// returned, refreshed once on a miss — the same check search and the
-// workflow engine run. The call is never skipped: its model-independent half
-// refuses a string or pattern operator on a temporal meta field
-// (creationDate/lastUpdateTime), a condition that carries no data path at
-// all. Left unrejected, a NOT wrapping that leaf selects every entity the
-// leaf does not match: on conditional delete, a mass delete.
-func deleteConditionTypeCheck(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
-	if tErr := search.ValidateConditionValueTypes(fields, cond); tErr != nil {
-		code := search.ClassifyConditionTypeErrCode(tErr)
-		return common.Operational(http.StatusBadRequest, code, tErr.Error())
-	}
-	return nil
 }
 
 // drainDeleteSelection opens an Iterate iterator scoped to ctx (pass a
@@ -1236,6 +1172,13 @@ func selectDeleteIDs(ctx context.Context, entityStore spi.EntityStore, ref spi.M
 	}
 	return ids, nil
 }
+
+// ErrInvalidCondition wraps a predicate.ParseCondition failure on the
+// conditional-delete path. The HTTP handler maps it (via errors.Is) to 400
+// INVALID_CONDITION. The sentinel is needed because the predicate package
+// returns plain fmt.Errorf values, so the handler has no other typed signal
+// to tell a malformed condition (client fault) from a storage error.
+var ErrInvalidCondition = errors.New("invalid condition")
 
 // DeleteEntitiesConditional deletes entities of a model. An empty condBody
 // selects every entity. A present condBody is parsed and only matching

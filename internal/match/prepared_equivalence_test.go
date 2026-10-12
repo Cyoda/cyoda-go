@@ -121,7 +121,9 @@ var genEqDocs = []string{
 func genArrayValues(r *rand.Rand) []any {
 	switch r.Intn(4) {
 	case 0:
-		return []any{nil, nil, nil}
+		// Never all-null: a clause with no non-nil value tests nothing and
+		// is refused.
+		return []any{nil, nil, genValues[r.Intn(len(genValues))]}
 	case 1:
 		return []any{genValues[r.Intn(len(genValues))], nil}
 	case 2:
@@ -156,8 +158,9 @@ func genValidCondition(r *rand.Rand, depth int) predicate.Condition {
 			}
 		case 1:
 			return &predicate.ArrayCondition{
-				JsonPath: "$.tags",
-				Values:   genArrayValues(r),
+				OperatorType: "EQUALS",
+				JsonPath:     "$.tags",
+				Values:       genArrayValues(r),
 			}
 		default:
 			return &predicate.SimpleCondition{

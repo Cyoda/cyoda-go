@@ -22,17 +22,28 @@ import (
 // leaf selects every entity the leaf does not match — on conditional delete,
 // a mass delete.
 
+// noPathCondition runs the shared validation for a condition that names no
+// data path: no model is consulted, so neither the store nor the loader is
+// ever called.
+func noPathCondition(cond predicate.Condition) error {
+	_, err := search.ValidateConditionForModel(context.Background(), nil, spi.ModelRef{}, cond, nil,
+		func() (map[string]schema.FieldDescriptor, error) {
+			return nil, errors.New("loader must not be called for a condition with no data path")
+		})
+	return err
+}
+
 func notCreationDateContains2024() *predicate.GroupCondition {
 	return &predicate.GroupCondition{Operator: "NOT", Conditions: []predicate.Condition{
 		&predicate.LifecycleCondition{Field: "creationDate", OperatorType: "CONTAINS", Value: "2024"},
 	}}
 }
 
-// TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoFields_Refused:
+// TestDeleteConditionValidation_NotWrappedTemporalTextOperator_NoDataPath_Refused:
 // a lifecycle-only condition carries no data path, so no fields map exists
 // for it — and NOT(creationDate CONTAINS "2024") must still be refused.
-func TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoFields_Refused(t *testing.T) {
-	err := deleteConditionTypeCheck(nil, notCreationDateContains2024())
+func TestDeleteConditionValidation_NotWrappedTemporalTextOperator_NoDataPath_Refused(t *testing.T) {
+	err := noPathCondition(notCreationDateContains2024())
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) {
 		t.Fatalf("got err %T (%v), want a *common.AppError refusal", err, err)
@@ -42,14 +53,14 @@ func TestDeleteConditionTypeCheck_NotWrappedTemporalTextOperator_NoFields_Refuse
 	}
 }
 
-// TestDeleteConditionTypeCheck_RefusalMeansNothingIsSelected demonstrates
+// TestDeleteConditionValidation_TemporalTextRefusal_PreventsMassDelete demonstrates
 // the consequence the refusal prevents: match.Prepare, reached unvalidated
 // with the same condition, matches every entity — none of them holds a
 // creationDate the inner leaf could match, and NOT selects them all.
-func TestDeleteConditionTypeCheck_RefusalMeansNothingIsSelected(t *testing.T) {
+func TestDeleteConditionValidation_TemporalTextRefusal_PreventsMassDelete(t *testing.T) {
 	cond := notCreationDateContains2024()
-	if err := deleteConditionTypeCheck(nil, cond); err == nil {
-		t.Fatal("expected deleteConditionTypeCheck to refuse this condition")
+	if err := noPathCondition(cond); err == nil {
+		t.Fatal("expected the shared condition validation to refuse this condition")
 	}
 
 	prepared, err := match.Prepare(cond, nil)
@@ -72,12 +83,12 @@ func TestDeleteConditionTypeCheck_RefusalMeansNothingIsSelected(t *testing.T) {
 	}
 }
 
-// TestDeleteConditionTypeCheck_LifecycleOnly_Accepted: a valid lifecycle-only
+// TestDeleteConditionValidation_LifecycleOnly_NoDataPath_Accepted: a valid lifecycle-only
 // condition passes with no fields map.
-func TestDeleteConditionTypeCheck_LifecycleOnly_Accepted(t *testing.T) {
+func TestDeleteConditionValidation_LifecycleOnly_NoDataPath_Accepted(t *testing.T) {
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"}
-	if err := deleteConditionTypeCheck(nil, cond); err != nil {
-		t.Fatalf("deleteConditionTypeCheck rejected a valid lifecycle-only condition: %v", err)
+	if err := noPathCondition(cond); err != nil {
+		t.Fatalf("the shared condition validation rejected a valid lifecycle-only condition: %v", err)
 	}
 }
 

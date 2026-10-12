@@ -11,8 +11,8 @@ import (
 // arrayClauseCriterionWorkflow builds a workflow whose CREATED state has one
 // automated transition to ADVANCED, gated by an ArrayCondition on jsonPath.
 // Mirrors dataCriterionWorkflow (workflow_criterion_path_key_test.go) but for
-// the "array" clause shape, which carries "values" instead of "operatorType"
-// and "value".
+// the "array" clause shape, which carries "values" (one operand per position)
+// plus one "operatorType" instead of a single "value".
 func arrayClauseCriterionWorkflow(wfName, jsonPath string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
@@ -21,7 +21,7 @@ func arrayClauseCriterionWorkflow(wfName, jsonPath string) string {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "advance", "next": "ADVANCED", "manual": false,
-					"criterion": {"type":"array","jsonPath":%q,"values":["A"]}}]},
+					"criterion": {"type":"array","jsonPath":%q,"operatorType":"EQUALS","values":["A"]}}]},
 				"ADVANCED": {}
 			}
 		}]
@@ -86,4 +86,67 @@ func TestCriterionArrayClause_TrailingWildcardImportsAndFires(t *testing.T) {
 	if state := getEntityState(t, entityID); state != "ADVANCED" {
 		t.Errorf(`array-clause criterion on "$.tags[*]" values=["A"] with tags=["A","B"]: expected ADVANCED, got %q`, state)
 	}
+}
+
+func TestCriterionArrayClause_OperatorDecidesTheTransition(t *testing.T) {
+	const model = "e2e-crit-array-op"
+	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"crit-array-op-wf","initialState":"NONE","active":true,
+		"states":{"NONE":{"transitions":[{"name":"init","next":"CREATED","manual":false}]},
+		"CREATED":{"transitions":[{"name":"advance","next":"ADVANCED","manual":false,
+			"criterion":{"type":"array","jsonPath":"$.scores[*]","operatorType":"GREATER_THAN","values":[50,null,70]}}]},
+		"ADVANCED":{}}}]}`
+	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3]}`, wf)
+	if s := getEntityState(t, createEntityE2E(t, model, 1, `{"name":"A","scores":[90,40,75]}`)); s != "ADVANCED" {
+		t.Errorf("A satisfies the criterion: want ADVANCED, got %q", s)
+	}
+	if s := getEntityState(t, createEntityE2E(t, model, 1, `{"name":"B","scores":[10,95,60]}`)); s != "CREATED" {
+		t.Errorf("B does not: want CREATED, got %q", s)
+	}
+}
+
+func TestCriterionArrayClause_RefusedAtImport(t *testing.T) {
+	const model = "e2e-crit-array-refuse"
+	importModelSampleE2E(t, model, 1, `{"name":"S","scores":[1]}`)
+	lockModelE2E(t, model, 1)
+	for _, crit := range []string{
+		`{"type":"array","jsonPath":"$.scores[*]","values":[50]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`,
+		`{"type":"array","jsonPath":"$.o[*].scores[*]","operatorType":"EQUALS","values":[1]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"FROBNICATE","values":[50]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[{"a":1}]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[5]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":"x"}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[[null,5]]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"BETWEEN","values":[[{"a":1},5]]}`,
+		`{"type":"simple","jsonPath":"$.scores[0]","operatorType":"BETWEEN_INCLUSIVE","value":[[1],5]}`,
+		`{"type":"array","jsonPath":"$.scores[*]","operatorType":"NOT_EQUAL","values":[[1,2]]}`,
+		`{"type":"bogus"}`,
+	} {
+		wf := fmt.Sprintf(`{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"w","initialState":"NONE","active":true,
+			"states":{"NONE":{"transitions":[{"name":"go","next":"DONE","manual":false,"criterion":%s}]},"DONE":{}}}]}`, crit)
+		resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/model/%s/1/workflow/import", model), wf)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400, got %d: %s", crit, resp.StatusCode, readBody(t, resp))
+		}
+		commontest.ExpectErrorCode(t, resp, "VALIDATION_FAILED")
+		resp.Body.Close()
+	}
+}
+
+// Import checks a criterion's grammar, not the model's types: an operator that
+// does not fit the element's declared type imports, and the save that
+// evaluates it fails with 400 WORKFLOW_FAILED.
+func TestCriterionArrayClause_TypeMismatchFailsTheSave(t *testing.T) {
+	const model = "e2e-crit-array-type-mismatch"
+	wf := `{"importMode":"REPLACE","workflows":[{"version":"1.1","name":"crit-array-type-wf","initialState":"NONE","active":true,
+		"states":{"NONE":{"transitions":[{"name":"init","next":"CREATED","manual":false,
+			"criterion":{"type":"array","jsonPath":"$.scores[*]","operatorType":"CONTAINS","values":["9"]}}]},
+		"CREATED":{}}}]}`
+	setupModelSampleWithWorkflow(t, model, `{"name":"S","scores":[1,2,3]}`, wf)
+	resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), `{"name":"A","scores":[90,40,75]}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", resp.StatusCode, readBody(t, resp))
+	}
+	commontest.ExpectErrorCode(t, resp, "WORKFLOW_FAILED")
+	resp.Body.Close()
 }

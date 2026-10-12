@@ -493,3 +493,33 @@ func TestGroupedStatsHandler_SchemaRefreshFailure_Returns5xxNot400(t *testing.T)
 		t.Errorf("errorCode=%s, must NOT be INVALID_FIELD_PATH — that is the genuine-unknown-path classification", got)
 	}
 }
+
+// The condition is validated by the one sequence every surface shares, so a
+// fault the service layer used to catch on its own is answered here.
+func TestGroupedStatsHandler_ConditionFaults_ClassifiedLikeSearch(t *testing.T) {
+	for _, tc := range []struct{ name, cond, code string }{
+		{"malformed regex", `{"type":"simple","jsonPath":"$.color","operatorType":"MATCHES_PATTERN","value":"["}`, "INVALID_CONDITION"},
+		{"string operator on a temporal meta field", `{"type":"lifecycle","field":"creationDate","operatorType":"CONTAINS","value":"2021"}`, "CONDITION_TYPE_MISMATCH"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeIterable{entities: []*spi.Entity{{Meta: spi.EntityMeta{State: "available"}, Data: []byte(`{"color":"red"}`)}}}
+			fields := map[string]schema.FieldDescriptor{"$.color": {Types: []spi.DataType{spi.String}}}
+			resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+				return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, fields, nil, true, nil
+			}
+			h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
+			req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query",
+				strings.NewReader(`{"groupBy":["state"],"condition":`+tc.cond+`}`))
+			req.SetPathValue("entityName", "X")
+			req.SetPathValue("modelVersion", "1")
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400 (body: %s)", rec.Code, rec.Body.String())
+			}
+			if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != tc.code {
+				t.Fatalf("errorCode=%s, want %s (body: %s)", got, tc.code, rec.Body.String())
+			}
+		})
+	}
+}

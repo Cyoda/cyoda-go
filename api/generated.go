@@ -49,216 +49,6 @@ func (e AggregateOp) Valid() bool {
 	}
 }
 
-// Defines values for ArrayConditionDtoOperatorType.
-const (
-	ArrayConditionDtoOperatorTypeAND                 ArrayConditionDtoOperatorType = "AND"
-	ArrayConditionDtoOperatorTypeBETWEEN             ArrayConditionDtoOperatorType = "BETWEEN"
-	ArrayConditionDtoOperatorTypeBETWEENINCLUSIVE    ArrayConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	ArrayConditionDtoOperatorTypeCONTAINS            ArrayConditionDtoOperatorType = "CONTAINS"
-	ArrayConditionDtoOperatorTypeCONTAINSFIELD       ArrayConditionDtoOperatorType = "CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeCONTAINSPATTERN     ArrayConditionDtoOperatorType = "CONTAINS_PATTERN"
-	ArrayConditionDtoOperatorTypeENDSWITH            ArrayConditionDtoOperatorType = "ENDS_WITH"
-	ArrayConditionDtoOperatorTypeENDSWITHFIELD       ArrayConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeENDSWITHPATTERN     ArrayConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeEQUALBYATTRIBUTES   ArrayConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	ArrayConditionDtoOperatorTypeEQUALS              ArrayConditionDtoOperatorType = "EQUALS"
-	ArrayConditionDtoOperatorTypeEQUALSFIELD         ArrayConditionDtoOperatorType = "EQUALS_FIELD"
-	ArrayConditionDtoOperatorTypeGREATEROREQUAL      ArrayConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	ArrayConditionDtoOperatorTypeGREATEROREQUALFIELD ArrayConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeGREATERTHAN         ArrayConditionDtoOperatorType = "GREATER_THAN"
-	ArrayConditionDtoOperatorTypeGREATERTHANFIELD    ArrayConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	ArrayConditionDtoOperatorTypeIBETWEENINCLUSIVE   ArrayConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	ArrayConditionDtoOperatorTypeICONTAINS           ArrayConditionDtoOperatorType = "ICONTAINS"
-	ArrayConditionDtoOperatorTypeICONTAINSFIELD      ArrayConditionDtoOperatorType = "ICONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeICONTAINSPATTERN    ArrayConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	ArrayConditionDtoOperatorTypeIENDSWITH           ArrayConditionDtoOperatorType = "IENDS_WITH"
-	ArrayConditionDtoOperatorTypeIENDSWITHFIELD      ArrayConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeIENDSWITHPATTERN    ArrayConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeIEQUALS             ArrayConditionDtoOperatorType = "IEQUALS"
-	ArrayConditionDtoOperatorTypeIEQUALSFIELD        ArrayConditionDtoOperatorType = "IEQUALS_FIELD"
-	ArrayConditionDtoOperatorTypeIMATCHESPATTERN     ArrayConditionDtoOperatorType = "IMATCHES_PATTERN"
-	ArrayConditionDtoOperatorTypeINOTCONTAINS        ArrayConditionDtoOperatorType = "INOT_CONTAINS"
-	ArrayConditionDtoOperatorTypeINOTCONTAINSFIELD   ArrayConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeINOTENDSWITH        ArrayConditionDtoOperatorType = "INOT_ENDS_WITH"
-	ArrayConditionDtoOperatorTypeINOTENDSWITHFIELD   ArrayConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeINOTEQUAL           ArrayConditionDtoOperatorType = "INOT_EQUAL"
-	ArrayConditionDtoOperatorTypeINOTEQUALFIELD      ArrayConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeINOTSTARTSWITH      ArrayConditionDtoOperatorType = "INOT_STARTS_WITH"
-	ArrayConditionDtoOperatorTypeINOTSTARTSWITHFIELD ArrayConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeINSET               ArrayConditionDtoOperatorType = "IN_SET"
-	ArrayConditionDtoOperatorTypeINSTANCEOF          ArrayConditionDtoOperatorType = "INSTANCE_OF"
-	ArrayConditionDtoOperatorTypeIREGEXP             ArrayConditionDtoOperatorType = "IREGEXP"
-	ArrayConditionDtoOperatorTypeISCHANGED           ArrayConditionDtoOperatorType = "IS_CHANGED"
-	ArrayConditionDtoOperatorTypeISNULL              ArrayConditionDtoOperatorType = "IS_NULL"
-	ArrayConditionDtoOperatorTypeISTARTSWITH         ArrayConditionDtoOperatorType = "ISTARTS_WITH"
-	ArrayConditionDtoOperatorTypeISTARTSWITHFIELD    ArrayConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeISTARTSWITHPATTERN  ArrayConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	ArrayConditionDtoOperatorTypeISUNCHANGED         ArrayConditionDtoOperatorType = "IS_UNCHANGED"
-	ArrayConditionDtoOperatorTypeLESSOREQUAL         ArrayConditionDtoOperatorType = "LESS_OR_EQUAL"
-	ArrayConditionDtoOperatorTypeLESSOREQUALFIELD    ArrayConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeLESSTHAN            ArrayConditionDtoOperatorType = "LESS_THAN"
-	ArrayConditionDtoOperatorTypeLESSTHANFIELD       ArrayConditionDtoOperatorType = "LESS_THAN_FIELD"
-	ArrayConditionDtoOperatorTypeLIKE                ArrayConditionDtoOperatorType = "LIKE"
-	ArrayConditionDtoOperatorTypeMATCHESPATTERN      ArrayConditionDtoOperatorType = "MATCHES_PATTERN"
-	ArrayConditionDtoOperatorTypeNOT                 ArrayConditionDtoOperatorType = "NOT"
-	ArrayConditionDtoOperatorTypeNOTCONTAINS         ArrayConditionDtoOperatorType = "NOT_CONTAINS"
-	ArrayConditionDtoOperatorTypeNOTCONTAINSFIELD    ArrayConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	ArrayConditionDtoOperatorTypeNOTENDSWITH         ArrayConditionDtoOperatorType = "NOT_ENDS_WITH"
-	ArrayConditionDtoOperatorTypeNOTENDSWITHFIELD    ArrayConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeNOTEQUAL            ArrayConditionDtoOperatorType = "NOT_EQUAL"
-	ArrayConditionDtoOperatorTypeNOTEQUALFIELD       ArrayConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	ArrayConditionDtoOperatorTypeNOTINSET            ArrayConditionDtoOperatorType = "NOT_IN_SET"
-	ArrayConditionDtoOperatorTypeNOTNULL             ArrayConditionDtoOperatorType = "NOT_NULL"
-	ArrayConditionDtoOperatorTypeNOTSTARTSWITH       ArrayConditionDtoOperatorType = "NOT_STARTS_WITH"
-	ArrayConditionDtoOperatorTypeNOTSTARTSWITHFIELD  ArrayConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeOBJECTEQUALS        ArrayConditionDtoOperatorType = "OBJECT_EQUALS"
-	ArrayConditionDtoOperatorTypeOR                  ArrayConditionDtoOperatorType = "OR"
-	ArrayConditionDtoOperatorTypeREGEXP              ArrayConditionDtoOperatorType = "REGEXP"
-	ArrayConditionDtoOperatorTypeSTARTSWITH          ArrayConditionDtoOperatorType = "STARTS_WITH"
-	ArrayConditionDtoOperatorTypeSTARTSWITHFIELD     ArrayConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	ArrayConditionDtoOperatorTypeSTARTSWITHPATTERN   ArrayConditionDtoOperatorType = "STARTS_WITH_PATTERN"
-)
-
-// Valid indicates whether the value is a known member of the ArrayConditionDtoOperatorType enum.
-func (e ArrayConditionDtoOperatorType) Valid() bool {
-	switch e {
-	case ArrayConditionDtoOperatorTypeAND:
-		return true
-	case ArrayConditionDtoOperatorTypeBETWEEN:
-		return true
-	case ArrayConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case ArrayConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeIEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeINSET:
-		return true
-	case ArrayConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case ArrayConditionDtoOperatorTypeIREGEXP:
-		return true
-	case ArrayConditionDtoOperatorTypeISCHANGED:
-		return true
-	case ArrayConditionDtoOperatorTypeISNULL:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case ArrayConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeLIKE:
-		return true
-	case ArrayConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case ArrayConditionDtoOperatorTypeNOT:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTINSET:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTNULL:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case ArrayConditionDtoOperatorTypeOR:
-		return true
-	case ArrayConditionDtoOperatorTypeREGEXP:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case ArrayConditionDtoOperatorTypeSTARTSWITHPATTERN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for AsyncSearchStatusDtoSearchJobStatus.
 const (
 	AsyncSearchStatusDtoSearchJobStatusCANCELLED  AsyncSearchStatusDtoSearchJobStatus = "CANCELLED"
@@ -331,6 +121,96 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 	case CancelAsyncSearchDtoCurrentSearchJobStatusRUNNING:
 		return true
 	case CancelAsyncSearchDtoCurrentSearchJobStatusSUCCESSFUL:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ConditionOperatorType.
+const (
+	BETWEEN          ConditionOperatorType = "BETWEEN"
+	BETWEENINCLUSIVE ConditionOperatorType = "BETWEEN_INCLUSIVE"
+	CONTAINS         ConditionOperatorType = "CONTAINS"
+	ENDSWITH         ConditionOperatorType = "ENDS_WITH"
+	EQUALS           ConditionOperatorType = "EQUALS"
+	GREATEROREQUAL   ConditionOperatorType = "GREATER_OR_EQUAL"
+	GREATERTHAN      ConditionOperatorType = "GREATER_THAN"
+	ICONTAINS        ConditionOperatorType = "ICONTAINS"
+	IENDSWITH        ConditionOperatorType = "IENDS_WITH"
+	IEQUALS          ConditionOperatorType = "IEQUALS"
+	INOTCONTAINS     ConditionOperatorType = "INOT_CONTAINS"
+	INOTENDSWITH     ConditionOperatorType = "INOT_ENDS_WITH"
+	INOTEQUAL        ConditionOperatorType = "INOT_EQUAL"
+	INOTSTARTSWITH   ConditionOperatorType = "INOT_STARTS_WITH"
+	ISNULL           ConditionOperatorType = "IS_NULL"
+	ISTARTSWITH      ConditionOperatorType = "ISTARTS_WITH"
+	LESSOREQUAL      ConditionOperatorType = "LESS_OR_EQUAL"
+	LESSTHAN         ConditionOperatorType = "LESS_THAN"
+	LIKE             ConditionOperatorType = "LIKE"
+	MATCHESPATTERN   ConditionOperatorType = "MATCHES_PATTERN"
+	NOTCONTAINS      ConditionOperatorType = "NOT_CONTAINS"
+	NOTENDSWITH      ConditionOperatorType = "NOT_ENDS_WITH"
+	NOTEQUAL         ConditionOperatorType = "NOT_EQUAL"
+	NOTNULL          ConditionOperatorType = "NOT_NULL"
+	NOTSTARTSWITH    ConditionOperatorType = "NOT_STARTS_WITH"
+	STARTSWITH       ConditionOperatorType = "STARTS_WITH"
+)
+
+// Valid indicates whether the value is a known member of the ConditionOperatorType enum.
+func (e ConditionOperatorType) Valid() bool {
+	switch e {
+	case BETWEEN:
+		return true
+	case BETWEENINCLUSIVE:
+		return true
+	case CONTAINS:
+		return true
+	case ENDSWITH:
+		return true
+	case EQUALS:
+		return true
+	case GREATEROREQUAL:
+		return true
+	case GREATERTHAN:
+		return true
+	case ICONTAINS:
+		return true
+	case IENDSWITH:
+		return true
+	case IEQUALS:
+		return true
+	case INOTCONTAINS:
+		return true
+	case INOTENDSWITH:
+		return true
+	case INOTEQUAL:
+		return true
+	case INOTSTARTSWITH:
+		return true
+	case ISNULL:
+		return true
+	case ISTARTSWITH:
+		return true
+	case LESSOREQUAL:
+		return true
+	case LESSTHAN:
+		return true
+	case LIKE:
+		return true
+	case MATCHESPATTERN:
+		return true
+	case NOTCONTAINS:
+		return true
+	case NOTENDSWITH:
+		return true
+	case NOTEQUAL:
+		return true
+	case NOTNULL:
+		return true
+	case NOTSTARTSWITH:
+		return true
+	case STARTSWITH:
 		return true
 	default:
 		return false
@@ -519,19 +399,19 @@ func (e ExternalizedProcessorDefinitionDtoType) Valid() bool {
 
 // Defines values for GroupConditionDtoOperator.
 const (
-	GroupConditionDtoOperatorAND GroupConditionDtoOperator = "AND"
-	GroupConditionDtoOperatorNOT GroupConditionDtoOperator = "NOT"
-	GroupConditionDtoOperatorOR  GroupConditionDtoOperator = "OR"
+	AND GroupConditionDtoOperator = "AND"
+	NOT GroupConditionDtoOperator = "NOT"
+	OR  GroupConditionDtoOperator = "OR"
 )
 
 // Valid indicates whether the value is a known member of the GroupConditionDtoOperator enum.
 func (e GroupConditionDtoOperator) Valid() bool {
 	switch e {
-	case GroupConditionDtoOperatorAND:
+	case AND:
 		return true
-	case GroupConditionDtoOperatorNOT:
+	case NOT:
 		return true
-	case GroupConditionDtoOperatorOR:
+	case OR:
 		return true
 	default:
 		return false
@@ -622,216 +502,6 @@ func (e JwtKeyPairResponseDtoAlgorithm) Valid() bool {
 	}
 }
 
-// Defines values for LifecycleConditionDtoOperatorType.
-const (
-	LifecycleConditionDtoOperatorTypeAND                 LifecycleConditionDtoOperatorType = "AND"
-	LifecycleConditionDtoOperatorTypeBETWEEN             LifecycleConditionDtoOperatorType = "BETWEEN"
-	LifecycleConditionDtoOperatorTypeBETWEENINCLUSIVE    LifecycleConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	LifecycleConditionDtoOperatorTypeCONTAINS            LifecycleConditionDtoOperatorType = "CONTAINS"
-	LifecycleConditionDtoOperatorTypeCONTAINSFIELD       LifecycleConditionDtoOperatorType = "CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeCONTAINSPATTERN     LifecycleConditionDtoOperatorType = "CONTAINS_PATTERN"
-	LifecycleConditionDtoOperatorTypeENDSWITH            LifecycleConditionDtoOperatorType = "ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeENDSWITHFIELD       LifecycleConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeENDSWITHPATTERN     LifecycleConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeEQUALBYATTRIBUTES   LifecycleConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	LifecycleConditionDtoOperatorTypeEQUALS              LifecycleConditionDtoOperatorType = "EQUALS"
-	LifecycleConditionDtoOperatorTypeEQUALSFIELD         LifecycleConditionDtoOperatorType = "EQUALS_FIELD"
-	LifecycleConditionDtoOperatorTypeGREATEROREQUAL      LifecycleConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	LifecycleConditionDtoOperatorTypeGREATEROREQUALFIELD LifecycleConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeGREATERTHAN         LifecycleConditionDtoOperatorType = "GREATER_THAN"
-	LifecycleConditionDtoOperatorTypeGREATERTHANFIELD    LifecycleConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	LifecycleConditionDtoOperatorTypeIBETWEENINCLUSIVE   LifecycleConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	LifecycleConditionDtoOperatorTypeICONTAINS           LifecycleConditionDtoOperatorType = "ICONTAINS"
-	LifecycleConditionDtoOperatorTypeICONTAINSFIELD      LifecycleConditionDtoOperatorType = "ICONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeICONTAINSPATTERN    LifecycleConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	LifecycleConditionDtoOperatorTypeIENDSWITH           LifecycleConditionDtoOperatorType = "IENDS_WITH"
-	LifecycleConditionDtoOperatorTypeIENDSWITHFIELD      LifecycleConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeIENDSWITHPATTERN    LifecycleConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeIEQUALS             LifecycleConditionDtoOperatorType = "IEQUALS"
-	LifecycleConditionDtoOperatorTypeIEQUALSFIELD        LifecycleConditionDtoOperatorType = "IEQUALS_FIELD"
-	LifecycleConditionDtoOperatorTypeIMATCHESPATTERN     LifecycleConditionDtoOperatorType = "IMATCHES_PATTERN"
-	LifecycleConditionDtoOperatorTypeINOTCONTAINS        LifecycleConditionDtoOperatorType = "INOT_CONTAINS"
-	LifecycleConditionDtoOperatorTypeINOTCONTAINSFIELD   LifecycleConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTENDSWITH        LifecycleConditionDtoOperatorType = "INOT_ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeINOTENDSWITHFIELD   LifecycleConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTEQUAL           LifecycleConditionDtoOperatorType = "INOT_EQUAL"
-	LifecycleConditionDtoOperatorTypeINOTEQUALFIELD      LifecycleConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeINOTSTARTSWITH      LifecycleConditionDtoOperatorType = "INOT_STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeINOTSTARTSWITHFIELD LifecycleConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeINSET               LifecycleConditionDtoOperatorType = "IN_SET"
-	LifecycleConditionDtoOperatorTypeINSTANCEOF          LifecycleConditionDtoOperatorType = "INSTANCE_OF"
-	LifecycleConditionDtoOperatorTypeIREGEXP             LifecycleConditionDtoOperatorType = "IREGEXP"
-	LifecycleConditionDtoOperatorTypeISCHANGED           LifecycleConditionDtoOperatorType = "IS_CHANGED"
-	LifecycleConditionDtoOperatorTypeISNULL              LifecycleConditionDtoOperatorType = "IS_NULL"
-	LifecycleConditionDtoOperatorTypeISTARTSWITH         LifecycleConditionDtoOperatorType = "ISTARTS_WITH"
-	LifecycleConditionDtoOperatorTypeISTARTSWITHFIELD    LifecycleConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeISTARTSWITHPATTERN  LifecycleConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	LifecycleConditionDtoOperatorTypeISUNCHANGED         LifecycleConditionDtoOperatorType = "IS_UNCHANGED"
-	LifecycleConditionDtoOperatorTypeLESSOREQUAL         LifecycleConditionDtoOperatorType = "LESS_OR_EQUAL"
-	LifecycleConditionDtoOperatorTypeLESSOREQUALFIELD    LifecycleConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeLESSTHAN            LifecycleConditionDtoOperatorType = "LESS_THAN"
-	LifecycleConditionDtoOperatorTypeLESSTHANFIELD       LifecycleConditionDtoOperatorType = "LESS_THAN_FIELD"
-	LifecycleConditionDtoOperatorTypeLIKE                LifecycleConditionDtoOperatorType = "LIKE"
-	LifecycleConditionDtoOperatorTypeMATCHESPATTERN      LifecycleConditionDtoOperatorType = "MATCHES_PATTERN"
-	LifecycleConditionDtoOperatorTypeNOT                 LifecycleConditionDtoOperatorType = "NOT"
-	LifecycleConditionDtoOperatorTypeNOTCONTAINS         LifecycleConditionDtoOperatorType = "NOT_CONTAINS"
-	LifecycleConditionDtoOperatorTypeNOTCONTAINSFIELD    LifecycleConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTENDSWITH         LifecycleConditionDtoOperatorType = "NOT_ENDS_WITH"
-	LifecycleConditionDtoOperatorTypeNOTENDSWITHFIELD    LifecycleConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTEQUAL            LifecycleConditionDtoOperatorType = "NOT_EQUAL"
-	LifecycleConditionDtoOperatorTypeNOTEQUALFIELD       LifecycleConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	LifecycleConditionDtoOperatorTypeNOTINSET            LifecycleConditionDtoOperatorType = "NOT_IN_SET"
-	LifecycleConditionDtoOperatorTypeNOTNULL             LifecycleConditionDtoOperatorType = "NOT_NULL"
-	LifecycleConditionDtoOperatorTypeNOTSTARTSWITH       LifecycleConditionDtoOperatorType = "NOT_STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeNOTSTARTSWITHFIELD  LifecycleConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeOBJECTEQUALS        LifecycleConditionDtoOperatorType = "OBJECT_EQUALS"
-	LifecycleConditionDtoOperatorTypeOR                  LifecycleConditionDtoOperatorType = "OR"
-	LifecycleConditionDtoOperatorTypeREGEXP              LifecycleConditionDtoOperatorType = "REGEXP"
-	LifecycleConditionDtoOperatorTypeSTARTSWITH          LifecycleConditionDtoOperatorType = "STARTS_WITH"
-	LifecycleConditionDtoOperatorTypeSTARTSWITHFIELD     LifecycleConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	LifecycleConditionDtoOperatorTypeSTARTSWITHPATTERN   LifecycleConditionDtoOperatorType = "STARTS_WITH_PATTERN"
-)
-
-// Valid indicates whether the value is a known member of the LifecycleConditionDtoOperatorType enum.
-func (e LifecycleConditionDtoOperatorType) Valid() bool {
-	switch e {
-	case LifecycleConditionDtoOperatorTypeAND:
-		return true
-	case LifecycleConditionDtoOperatorTypeBETWEEN:
-		return true
-	case LifecycleConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case LifecycleConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeIEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeINSET:
-		return true
-	case LifecycleConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case LifecycleConditionDtoOperatorTypeIREGEXP:
-		return true
-	case LifecycleConditionDtoOperatorTypeISCHANGED:
-		return true
-	case LifecycleConditionDtoOperatorTypeISNULL:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case LifecycleConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeLIKE:
-		return true
-	case LifecycleConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOT:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTINSET:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTNULL:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case LifecycleConditionDtoOperatorTypeOR:
-		return true
-	case LifecycleConditionDtoOperatorTypeREGEXP:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case LifecycleConditionDtoOperatorTypeSTARTSWITHPATTERN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ProcessorDefinitionDtoType.
 const (
 	ProcessorDefinitionDtoTypeExternalized ProcessorDefinitionDtoType = "externalized"
@@ -874,216 +544,6 @@ func (e ScheduleFunctionDtoRetryPolicy) Valid() bool {
 	case ScheduleFunctionDtoRetryPolicyFIXED:
 		return true
 	case ScheduleFunctionDtoRetryPolicyNONE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for SimpleConditionDtoOperatorType.
-const (
-	SimpleConditionDtoOperatorTypeAND                 SimpleConditionDtoOperatorType = "AND"
-	SimpleConditionDtoOperatorTypeBETWEEN             SimpleConditionDtoOperatorType = "BETWEEN"
-	SimpleConditionDtoOperatorTypeBETWEENINCLUSIVE    SimpleConditionDtoOperatorType = "BETWEEN_INCLUSIVE"
-	SimpleConditionDtoOperatorTypeCONTAINS            SimpleConditionDtoOperatorType = "CONTAINS"
-	SimpleConditionDtoOperatorTypeCONTAINSFIELD       SimpleConditionDtoOperatorType = "CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeCONTAINSPATTERN     SimpleConditionDtoOperatorType = "CONTAINS_PATTERN"
-	SimpleConditionDtoOperatorTypeENDSWITH            SimpleConditionDtoOperatorType = "ENDS_WITH"
-	SimpleConditionDtoOperatorTypeENDSWITHFIELD       SimpleConditionDtoOperatorType = "ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeENDSWITHPATTERN     SimpleConditionDtoOperatorType = "ENDS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeEQUALBYATTRIBUTES   SimpleConditionDtoOperatorType = "EQUAL_BY_ATTRIBUTES"
-	SimpleConditionDtoOperatorTypeEQUALS              SimpleConditionDtoOperatorType = "EQUALS"
-	SimpleConditionDtoOperatorTypeEQUALSFIELD         SimpleConditionDtoOperatorType = "EQUALS_FIELD"
-	SimpleConditionDtoOperatorTypeGREATEROREQUAL      SimpleConditionDtoOperatorType = "GREATER_OR_EQUAL"
-	SimpleConditionDtoOperatorTypeGREATEROREQUALFIELD SimpleConditionDtoOperatorType = "GREATER_OR_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeGREATERTHAN         SimpleConditionDtoOperatorType = "GREATER_THAN"
-	SimpleConditionDtoOperatorTypeGREATERTHANFIELD    SimpleConditionDtoOperatorType = "GREATER_THAN_FIELD"
-	SimpleConditionDtoOperatorTypeIBETWEENINCLUSIVE   SimpleConditionDtoOperatorType = "IBETWEEN_INCLUSIVE"
-	SimpleConditionDtoOperatorTypeICONTAINS           SimpleConditionDtoOperatorType = "ICONTAINS"
-	SimpleConditionDtoOperatorTypeICONTAINSFIELD      SimpleConditionDtoOperatorType = "ICONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeICONTAINSPATTERN    SimpleConditionDtoOperatorType = "ICONTAINS_PATTERN"
-	SimpleConditionDtoOperatorTypeIENDSWITH           SimpleConditionDtoOperatorType = "IENDS_WITH"
-	SimpleConditionDtoOperatorTypeIENDSWITHFIELD      SimpleConditionDtoOperatorType = "IENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeIENDSWITHPATTERN    SimpleConditionDtoOperatorType = "IENDS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeIEQUALS             SimpleConditionDtoOperatorType = "IEQUALS"
-	SimpleConditionDtoOperatorTypeIEQUALSFIELD        SimpleConditionDtoOperatorType = "IEQUALS_FIELD"
-	SimpleConditionDtoOperatorTypeIMATCHESPATTERN     SimpleConditionDtoOperatorType = "IMATCHES_PATTERN"
-	SimpleConditionDtoOperatorTypeINOTCONTAINS        SimpleConditionDtoOperatorType = "INOT_CONTAINS"
-	SimpleConditionDtoOperatorTypeINOTCONTAINSFIELD   SimpleConditionDtoOperatorType = "INOT_CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeINOTENDSWITH        SimpleConditionDtoOperatorType = "INOT_ENDS_WITH"
-	SimpleConditionDtoOperatorTypeINOTENDSWITHFIELD   SimpleConditionDtoOperatorType = "INOT_ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeINOTEQUAL           SimpleConditionDtoOperatorType = "INOT_EQUAL"
-	SimpleConditionDtoOperatorTypeINOTEQUALFIELD      SimpleConditionDtoOperatorType = "INOT_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeINOTSTARTSWITH      SimpleConditionDtoOperatorType = "INOT_STARTS_WITH"
-	SimpleConditionDtoOperatorTypeINOTSTARTSWITHFIELD SimpleConditionDtoOperatorType = "INOT_STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeINSET               SimpleConditionDtoOperatorType = "IN_SET"
-	SimpleConditionDtoOperatorTypeINSTANCEOF          SimpleConditionDtoOperatorType = "INSTANCE_OF"
-	SimpleConditionDtoOperatorTypeIREGEXP             SimpleConditionDtoOperatorType = "IREGEXP"
-	SimpleConditionDtoOperatorTypeISCHANGED           SimpleConditionDtoOperatorType = "IS_CHANGED"
-	SimpleConditionDtoOperatorTypeISNULL              SimpleConditionDtoOperatorType = "IS_NULL"
-	SimpleConditionDtoOperatorTypeISTARTSWITH         SimpleConditionDtoOperatorType = "ISTARTS_WITH"
-	SimpleConditionDtoOperatorTypeISTARTSWITHFIELD    SimpleConditionDtoOperatorType = "ISTARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeISTARTSWITHPATTERN  SimpleConditionDtoOperatorType = "ISTARTS_WITH_PATTERN"
-	SimpleConditionDtoOperatorTypeISUNCHANGED         SimpleConditionDtoOperatorType = "IS_UNCHANGED"
-	SimpleConditionDtoOperatorTypeLESSOREQUAL         SimpleConditionDtoOperatorType = "LESS_OR_EQUAL"
-	SimpleConditionDtoOperatorTypeLESSOREQUALFIELD    SimpleConditionDtoOperatorType = "LESS_OR_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeLESSTHAN            SimpleConditionDtoOperatorType = "LESS_THAN"
-	SimpleConditionDtoOperatorTypeLESSTHANFIELD       SimpleConditionDtoOperatorType = "LESS_THAN_FIELD"
-	SimpleConditionDtoOperatorTypeLIKE                SimpleConditionDtoOperatorType = "LIKE"
-	SimpleConditionDtoOperatorTypeMATCHESPATTERN      SimpleConditionDtoOperatorType = "MATCHES_PATTERN"
-	SimpleConditionDtoOperatorTypeNOT                 SimpleConditionDtoOperatorType = "NOT"
-	SimpleConditionDtoOperatorTypeNOTCONTAINS         SimpleConditionDtoOperatorType = "NOT_CONTAINS"
-	SimpleConditionDtoOperatorTypeNOTCONTAINSFIELD    SimpleConditionDtoOperatorType = "NOT_CONTAINS_FIELD"
-	SimpleConditionDtoOperatorTypeNOTENDSWITH         SimpleConditionDtoOperatorType = "NOT_ENDS_WITH"
-	SimpleConditionDtoOperatorTypeNOTENDSWITHFIELD    SimpleConditionDtoOperatorType = "NOT_ENDS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeNOTEQUAL            SimpleConditionDtoOperatorType = "NOT_EQUAL"
-	SimpleConditionDtoOperatorTypeNOTEQUALFIELD       SimpleConditionDtoOperatorType = "NOT_EQUAL_FIELD"
-	SimpleConditionDtoOperatorTypeNOTINSET            SimpleConditionDtoOperatorType = "NOT_IN_SET"
-	SimpleConditionDtoOperatorTypeNOTNULL             SimpleConditionDtoOperatorType = "NOT_NULL"
-	SimpleConditionDtoOperatorTypeNOTSTARTSWITH       SimpleConditionDtoOperatorType = "NOT_STARTS_WITH"
-	SimpleConditionDtoOperatorTypeNOTSTARTSWITHFIELD  SimpleConditionDtoOperatorType = "NOT_STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeOBJECTEQUALS        SimpleConditionDtoOperatorType = "OBJECT_EQUALS"
-	SimpleConditionDtoOperatorTypeOR                  SimpleConditionDtoOperatorType = "OR"
-	SimpleConditionDtoOperatorTypeREGEXP              SimpleConditionDtoOperatorType = "REGEXP"
-	SimpleConditionDtoOperatorTypeSTARTSWITH          SimpleConditionDtoOperatorType = "STARTS_WITH"
-	SimpleConditionDtoOperatorTypeSTARTSWITHFIELD     SimpleConditionDtoOperatorType = "STARTS_WITH_FIELD"
-	SimpleConditionDtoOperatorTypeSTARTSWITHPATTERN   SimpleConditionDtoOperatorType = "STARTS_WITH_PATTERN"
-)
-
-// Valid indicates whether the value is a known member of the SimpleConditionDtoOperatorType enum.
-func (e SimpleConditionDtoOperatorType) Valid() bool {
-	switch e {
-	case SimpleConditionDtoOperatorTypeAND:
-		return true
-	case SimpleConditionDtoOperatorTypeBETWEEN:
-		return true
-	case SimpleConditionDtoOperatorTypeBETWEENINCLUSIVE:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeCONTAINSPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeENDSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALBYATTRIBUTES:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeEQUALSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATEROREQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATEROREQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATERTHAN:
-		return true
-	case SimpleConditionDtoOperatorTypeGREATERTHANFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIBETWEENINCLUSIVE:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeICONTAINSPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIENDSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeIEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeIEQUALSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeIMATCHESPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTEQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTEQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeINOTSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeINSET:
-		return true
-	case SimpleConditionDtoOperatorTypeINSTANCEOF:
-		return true
-	case SimpleConditionDtoOperatorTypeIREGEXP:
-		return true
-	case SimpleConditionDtoOperatorTypeISCHANGED:
-		return true
-	case SimpleConditionDtoOperatorTypeISNULL:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeISTARTSWITHPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeISUNCHANGED:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSOREQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSOREQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSTHAN:
-		return true
-	case SimpleConditionDtoOperatorTypeLESSTHANFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeLIKE:
-		return true
-	case SimpleConditionDtoOperatorTypeMATCHESPATTERN:
-		return true
-	case SimpleConditionDtoOperatorTypeNOT:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTCONTAINS:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTCONTAINSFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTENDSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTENDSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTEQUAL:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTEQUALFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTINSET:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTNULL:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeNOTSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeOBJECTEQUALS:
-		return true
-	case SimpleConditionDtoOperatorTypeOR:
-		return true
-	case SimpleConditionDtoOperatorTypeREGEXP:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITH:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITHFIELD:
-		return true
-	case SimpleConditionDtoOperatorTypeSTARTSWITHPATTERN:
 		return true
 	default:
 		return false
@@ -1628,15 +1088,16 @@ type AggregationExpr struct {
 
 // ArrayConditionDto defines model for ArrayConditionDto.
 type ArrayConditionDto struct {
-	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
-	JsonPath     *string                        `json:"jsonPath,omitempty"`
-	OperatorType *ArrayConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                         `json:"type"`
-	Value        *[]string                      `json:"value,omitempty"`
-}
+	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses. An `array` clause's path must end in `[*]` and contain no other `[*]`.
+	JsonPath *string `json:"jsonPath,omitempty"`
 
-// ArrayConditionDtoOperatorType defines model for ArrayConditionDto.OperatorType.
-type ArrayConditionDtoOperatorType string
+	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
+	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
+	Type         string                 `json:"type"`
+
+	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
+	Values *[]interface{} `json:"values,omitempty"`
+}
 
 // AsyncSearchStatusDto defines model for AsyncSearchStatusDto.
 type AsyncSearchStatusDto struct {
@@ -1735,6 +1196,9 @@ type CancelAsyncSearchDto struct {
 
 // CancelAsyncSearchDtoCurrentSearchJobStatus defines model for CancelAsyncSearchDto.CurrentSearchJobStatus.
 type CancelAsyncSearchDtoCurrentSearchJobStatus string
+
+// ConditionOperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
+type ConditionOperatorType string
 
 // ConsistencyTimeDto defines model for ConsistencyTimeDto.
 type ConsistencyTimeDto struct {
@@ -2440,14 +1904,13 @@ type LegalEntityInfoDto struct {
 
 // LifecycleConditionDto defines model for LifecycleConditionDto.
 type LifecycleConditionDto struct {
-	Field        *string                            `json:"field,omitempty"`
-	OperatorType *LifecycleConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                             `json:"type"`
-	Value        *JsonNode                          `json:"value,omitempty"`
-}
+	Field *string `json:"field,omitempty"`
 
-// LifecycleConditionDtoOperatorType defines model for LifecycleConditionDto.OperatorType.
-type LifecycleConditionDtoOperatorType string
+	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
+	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
+	Type         string                 `json:"type"`
+	Value        *JsonNode              `json:"value,omitempty"`
+}
 
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
 // Contains the IDs of deleted entities and a success flag.
@@ -2744,14 +2207,13 @@ type SetUniqueKeysRequest struct {
 // SimpleConditionDto defines model for SimpleConditionDto.
 type SimpleConditionDto struct {
 	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
-	JsonPath     *string                         `json:"jsonPath,omitempty"`
-	OperatorType *SimpleConditionDtoOperatorType `json:"operatorType,omitempty"`
-	Type         string                          `json:"type"`
-	Value        *JsonNode                       `json:"value,omitempty"`
-}
+	JsonPath *string `json:"jsonPath,omitempty"`
 
-// SimpleConditionDtoOperatorType defines model for SimpleConditionDto.OperatorType.
-type SimpleConditionDtoOperatorType string
+	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
+	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
+	Type         string                 `json:"type"`
+	Value        *JsonNode              `json:"value,omitempty"`
+}
 
 // SingleDeleteResult defines model for SingleDeleteResult.
 type SingleDeleteResult struct {

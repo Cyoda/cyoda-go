@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -157,42 +156,27 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Hold every path this request names to the model, the way /search/direct
-	// and conditional DELETE do. Grouped stats used to check none of them, so
-	// a condition, a groupBy or an aggregate naming a field the model does not
-	// declare was answered rather than refused — and the numbers came back
-	// looking like a real answer: an undeclared condition leaf annihilates to
-	// a non-match, an undeclared groupBy buckets every entity under "absent",
-	// and an undeclared SUM reports 0 as though it were the total.
+	// Hold the request to the model, the way /search/direct and conditional
+	// DELETE do. Grouped stats used to check none of it, so a condition, a
+	// groupBy or an aggregate naming a field the model does not declare was
+	// answered rather than refused — and the numbers came back looking like a
+	// real answer: an undeclared condition leaf annihilates to a non-match, an
+	// undeclared groupBy buckets every entity under "absent", and an
+	// undeclared SUM reports 0 as though it were the total.
 	//
-	// modelStore may be nil only from a test resolver that supplies none; a
-	// request that reached here in production always carries one.
-	if modelStore != nil {
-		refreshed, pErr := search.ValidateKnownPaths(
-			r.Context(), modelStore, model, requestFieldPaths(validated), fields)
-		if pErr != nil {
-			var appErr *common.AppError
-			if !errors.As(pErr, &appErr) {
-				appErr = common.Internal("field-path validation failed", pErr)
-			}
-			common.WriteError(w, r, appErr)
-			return
-		}
+	// The condition runs the one sequence every surface shares
+	// (search.ValidateConditionForModel: structure, patterns, paths, types);
+	// the groupBy and aggregate paths ride in the same path check, so one
+	// request refreshes the schema at most once.
+	refreshed, vErr := search.ValidateConditionForModel(r.Context(), modelStore, model,
+		validated.Condition, requestNonConditionPaths(validated),
+		func() (map[string]schema.FieldDescriptor, error) { return fields, nil })
+	if vErr != nil {
+		writeValidationError(w, r, vErr)
+		return
+	}
+	if refreshed != nil {
 		fields = refreshed
-
-		// Type-soundness against the fields the paths were just validated
-		// against. The service layer also calls ValidateConditionValueTypes,
-		// but with a nil map, so only its model-independent arm (meta fields,
-		// temporal operands) runs there.
-		if len(validated.Condition) > 0 {
-			if cond, pErr := predicate.ParseCondition(validated.Condition); pErr == nil {
-				if tErr := search.ValidateConditionValueTypes(fields, cond); tErr != nil {
-					code := search.ClassifyConditionTypeErrCode(tErr)
-					common.WriteError(w, r, common.Operational(http.StatusBadRequest, code, tErr.Error()))
-					return
-				}
-			}
-		}
 	}
 
 	// Dispatch to the service layer. QueryGroupedStats already classifies
@@ -213,19 +197,17 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	common.WriteJSON(w, http.StatusOK, buckets)
 }
 
-// requestFieldPaths collects every data path a grouped-stats request names —
-// the condition's leaves, the groupBy entries and the aggregate fields — as one
-// set for [search.ValidateKnownPaths].
+// requestNonConditionPaths collects the data paths a grouped-stats request
+// names outside its condition — the groupBy entries and the aggregate
+// fields — as one set. It goes as extraPaths into
+// [search.ValidateConditionForModel], which checks it together with the
+// condition's own paths in one [search.ValidateKnownPaths] call.
 //
 // The groupBy "state" entry addresses entity metadata, not a schema field, and
 // is excluded; validateGroupedStatsRequest has already marked it IsState. Both
 // remaining kinds are stored in wire form ("$.x"), which is the fields-map key
 // convention, so they need no rewriting.
-//
-// A condition that will not parse contributes nothing rather than failing here:
-// the service layer parses it too and produces the classified INVALID_CONDITION
-// this handler would otherwise pre-empt with a worse diagnostic.
-func requestFieldPaths(req *ValidatedGroupedStatsRequest) []string {
+func requestNonConditionPaths(req *ValidatedGroupedStatsRequest) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	add := func(p string) {
@@ -239,13 +221,6 @@ func requestFieldPaths(req *ValidatedGroupedStatsRequest) []string {
 		out = append(out, p)
 	}
 
-	if len(req.Condition) > 0 {
-		if cond, err := predicate.ParseCondition(req.Condition); err == nil {
-			for _, p := range search.ConditionFieldPaths(cond) {
-				add(p)
-			}
-		}
-	}
 	for _, g := range req.GroupBy {
 		if !g.IsState {
 			add(g.Path)
@@ -255,4 +230,14 @@ func requestFieldPaths(req *ValidatedGroupedStatsRequest) []string {
 		add(a.Field)
 	}
 	return out
+}
+
+// writeValidationError writes a validation failure as the AppError it is, or
+// as an internal error when it is an infrastructure failure.
+func writeValidationError(w http.ResponseWriter, r *http.Request, err error) {
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) {
+		appErr = common.Internal("field-path validation failed", err)
+	}
+	common.WriteError(w, r, appErr)
 }
