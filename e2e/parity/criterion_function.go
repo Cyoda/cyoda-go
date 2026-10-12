@@ -3,7 +3,7 @@ package parity
 import (
 	"encoding/json"
 	"net/http"
-	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,77 +83,9 @@ func (k cfCase) create(t *testing.T, body string) (uuid.UUID, string) {
 // so nothing more can arrive.
 func (k cfCase) requireCriteria(t *testing.T, want ...string) {
 	t.Helper()
-	got := CriterionRequestNames(t, k.cc)
-	if len(got) == 0 && len(want) == 0 {
-		return
-	}
-	if !reflect.DeepEqual(got, want) {
+	if got := CriterionRequestNames(t, k.cc); !slices.Equal(got, want) {
 		t.Errorf("criterion requests = %q; want %q", got, want)
 	}
-}
-
-// CriterionRequestNames returns the names of the criterion requests cc has
-// received, in arrival order.
-func CriterionRequestNames(t *testing.T, cc ComputeClient) []string {
-	t.Helper()
-	var names []string
-	for _, r := range cc.Received(t) {
-		if r.Kind == "criterion" {
-			names = append(names, r.Name)
-		}
-	}
-	return names
-}
-
-// StateMachineEventData returns the decoded data of the entity's first
-// state-machine audit event of type eventType, failing when there is none.
-func StateMachineEventData(t *testing.T, c *client.Client, id uuid.UUID, eventType string) map[string]any {
-	t.Helper()
-	resp, err := c.GetAuditEvents(t, id)
-	if err != nil {
-		t.Fatalf("GetAuditEvents: %v", err)
-	}
-	for i := range resp.Items {
-		ev := &resp.Items[i]
-		if ev.AuditEventType != "StateMachine" {
-			continue
-		}
-		sm, err := ev.AsStateMachine()
-		if err != nil {
-			t.Fatalf("decode state-machine audit event: %v", err)
-		}
-		if sm.EventType != eventType {
-			continue
-		}
-		data := map[string]any{}
-		if len(sm.Data) > 0 {
-			if err := json.Unmarshal(sm.Data, &data); err != nil {
-				t.Fatalf("decode %s data: %v (data: %s)", eventType, err, sm.Data)
-			}
-		}
-		return data
-	}
-	t.Fatalf("entity %s has no %s audit event", id, eventType)
-	return nil
-}
-
-// FunctionRecords returns the `functions` list of an audit event's data,
-// failing when there is none.
-func FunctionRecords(t *testing.T, data map[string]any) []map[string]any {
-	t.Helper()
-	raw, ok := data["functions"].([]any)
-	if !ok {
-		t.Fatalf("audit data has no functions list: %v", data)
-	}
-	out := make([]map[string]any, len(raw))
-	for i, r := range raw {
-		m, ok := r.(map[string]any)
-		if !ok {
-			t.Fatalf("functions[%d] is not an object: %v", i, r)
-		}
-		out[i] = m
-	}
-	return out
 }
 
 // cfPromoteWF is a workflow whose entity starts in CREATED and moves to
@@ -297,9 +229,16 @@ func RunCriterionFunction_ManualRefusedReason(t *testing.T, fixture BackendFixtu
 	if status != http.StatusBadRequest || !containsErrorCode(body, "WORKFLOW_FAILED") {
 		t.Fatalf("approve: got %d %s; want 400 WORKFLOW_FAILED", status, body)
 	}
-	const wantReason = "always-true at /conditions/0: answered true; always-false at /conditions/1: answered false"
-	if !strings.Contains(string(body), wantReason) {
-		t.Errorf("approve: body %s does not contain %q", body, wantReason)
+	var pd struct {
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &pd); err != nil {
+		t.Fatalf("response is not a problem document: %v (body: %s)", err, body)
+	}
+	const wantDetail = `WORKFLOW_FAILED: transition "approve" criterion not matched: ` +
+		"always-true at /conditions/0: answered true; always-false at /conditions/1: answered false"
+	if pd.Detail != wantDetail {
+		t.Errorf("approve: detail\n got %q\nwant %q", pd.Detail, wantDetail)
 	}
 	k.requireCriteria(t, "always-true", "always-false")
 	if ent, err := k.c.GetEntity(t, id); err != nil || ent.Meta.State != "CREATED" {

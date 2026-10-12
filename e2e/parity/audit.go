@@ -1,8 +1,11 @@
 package parity
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -259,4 +262,55 @@ func RunAuditCommitInstantSharedWithVersionHistory(t *testing.T, fixture Backend
 		t.Errorf("expected >= 1 StateMachine audit event for transaction %s, got %d — "+
 			"without one the instant comparison is vacuous", txID, stateMachineCount)
 	}
+}
+
+// StateMachineEventData returns the decoded data of the entity's first
+// state-machine audit event of type eventType, failing when there is none.
+func StateMachineEventData(t *testing.T, c *client.Client, id uuid.UUID, eventType string) map[string]any {
+	t.Helper()
+	resp, err := c.GetAuditEvents(t, id)
+	if err != nil {
+		t.Fatalf("GetAuditEvents: %v", err)
+	}
+	for i := range resp.Items {
+		ev := &resp.Items[i]
+		if ev.AuditEventType != "StateMachine" {
+			continue
+		}
+		sm, err := ev.AsStateMachine()
+		if err != nil {
+			t.Fatalf("decode state-machine audit event: %v", err)
+		}
+		if sm.EventType != eventType {
+			continue
+		}
+		data := map[string]any{}
+		if len(sm.Data) > 0 {
+			if err := json.Unmarshal(sm.Data, &data); err != nil {
+				t.Fatalf("decode %s data: %v (data: %s)", eventType, err, sm.Data)
+			}
+		}
+		return data
+	}
+	t.Fatalf("entity %s has no %s audit event", id, eventType)
+	return nil
+}
+
+// FunctionRecords returns the `functions` list of an audit event's data,
+// failing when there is none.
+func FunctionRecords(t *testing.T, data map[string]any) []map[string]any {
+	t.Helper()
+	raw, ok := data["functions"].([]any)
+	if !ok {
+		t.Fatalf("audit data has no functions list: %v", data)
+	}
+	out := make([]map[string]any, len(raw))
+	for i, r := range raw {
+		m, ok := r.(map[string]any)
+		if !ok {
+			t.Fatalf("functions[%d] is not an object: %v", i, r)
+		}
+		out[i] = m
+	}
+	return out
 }
