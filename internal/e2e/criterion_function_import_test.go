@@ -96,6 +96,8 @@ func TestCriterionFunctionImport_Refused(t *testing.T) {
 		{"no name", cfGroup("AND", `{"type":"function","function":{}}`), "function condition at /conditions/0 has no function name"},
 		{"bad retryPolicy at depth", cfGroup("OR", cfAmountGT100, `{"type":"function","function":{"name":"g","config":{"retryPolicy":"SOMETIMES"}}}`),
 			`criterion function "g" at /conditions/1: unknown retryPolicy "SOMETIMES"`},
+		{"negative responseTimeoutMs at depth", cfGroup("OR", cfAmountGT100, `{"type":"function","function":{"name":"g","config":{"responseTimeoutMs":-1}}}`),
+			`criterion function "g" at /conditions/1: responseTimeoutMs must not be negative (got -1)`},
 		{"engine group with unknown operator", cfGroup("XOR", cfFn("f", "")), `unknown group operator "XOR"`},
 		{"pre-check unknown lifecycle field", cfFn("f", `{"type":"lifecycle","field":"nope","operatorType":"EQUALS","value":"x"}`),
 			`condition at /function/criterion: unknown meta filter field "nope"`},
