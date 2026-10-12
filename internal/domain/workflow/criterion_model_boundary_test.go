@@ -49,7 +49,7 @@ func TestEvaluateCriterion_UndeclaredPathAbortsTheSave(t *testing.T) {
 			}
 			criterion := simpleCriterion("$.amonut", op, value)
 
-			_, _, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
+			_, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
 			if err == nil {
 				t.Fatalf("%s on undeclared path $.amonut must abort, got no error", op)
 			}
@@ -138,7 +138,7 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	entity := makeEntity("e1", ref, map[string]any{})
 	entity.Meta.State = "CREATED"
 
-	_, _, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("a text operator on the temporal meta field creationDate must be refused, not silently non-matched")
 	}
@@ -290,11 +290,11 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("a path a peer node just added must not be refused after one refresh, got: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("peer_field(10) GREATER_THAN 5 must match under the refreshed declared type")
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
@@ -333,9 +333,9 @@ func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
 	if !errors.Is(err, search.ErrConditionTypeMismatch) {
-		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", got, err)
+		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", out.matched, err)
 	}
 }
 
@@ -391,7 +391,7 @@ func TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave(t *testing
 
 	entity := makeEntity("e1", ref, map[string]any{"address": map[string]any{"street": "Main St"}})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("CONTAINS against a container path ($.address has substructure, not a scalar) must abort, got no error")
 	}
@@ -427,7 +427,7 @@ func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"name": "Alice"})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("an uncompilable LIKE pattern (trailing unpaired escape) must abort, got no error")
 	}
@@ -471,7 +471,7 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("expected an error: the refresh failed, so $.peer_field's status is unknown")
 	}

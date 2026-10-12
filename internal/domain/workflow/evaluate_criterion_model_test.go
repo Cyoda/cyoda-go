@@ -138,21 +138,21 @@ func TestEvaluateCriterion_DataFieldTypeDirectedWithRegisteredModel(t *testing.T
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
 	// age(30) > 5 → typed numeric comparison matches.
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("age(30) GREATER_THAN 5 must match under a declared-Integer field")
 	}
 
 	// age(30) > 50 → typed numeric comparison does NOT match (real evaluation,
 	// not an always-true wiring stub).
-	got, _, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 50), entity, &criterionContext{ctx: ctx})
+	out, err = engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 50), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got {
+	if out.matched {
 		t.Fatal("age(30) GREATER_THAN 50 must NOT match")
 	}
 }
@@ -174,7 +174,7 @@ func TestEvaluateCriterion_RangeBoundsInNoSingleTypeAreRefused(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "BETWEEN", []any{5.5, "2024-01-01"}), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.age", "BETWEEN", []any{5.5, "2024-01-01"}), entity, &criterionContext{ctx: ctx})
 	if !errors.Is(err, search.ErrConditionTypeMismatch) {
 		t.Fatalf("BETWEEN [5.5, \"2024-01-01\"] on [Integer, LocalDate]: want search.ErrConditionTypeMismatch, got %v", err)
 	}
@@ -198,7 +198,7 @@ func TestEvaluateCriterion_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("a genuine model-load error on a data-field criterion must fail closed (surface the error)")
 	}
@@ -233,11 +233,11 @@ func TestEvaluateCriterion_LifecycleCriterionNeedsNoModel(t *testing.T) {
 	entity := makeEntity("e1", ref, map[string]any{"age": 30})
 	entity.Meta.State = "CREATED"
 
-	got, _, err := engine.evaluateCriterion(lifecycleCriterion("state", "EQUALS", "CREATED"), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(lifecycleCriterion("state", "EQUALS", "CREATED"), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("lifecycle criterion must not touch the model store (no error expected), got: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("state EQUALS CREATED must match")
 	}
 }

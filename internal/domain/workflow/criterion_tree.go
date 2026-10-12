@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
@@ -21,6 +22,9 @@ import (
 // no function condition is one local unit. Import and the engine build the
 // same tree, so they accept and refuse the same criteria.
 type critNode interface {
+	// eval evaluates the node on entity and appends one record per function
+	// condition it reaches to rec.
+	eval(e *Engine, cc *criterionContext, entity *spi.Entity, rec *[]functionRecord) (bool, error)
 	// collect appends the node's local units and function conditions, in
 	// declaration order.
 	collect(units *[]*critLocal, fns *[]*critFunction)

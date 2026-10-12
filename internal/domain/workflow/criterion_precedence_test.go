@@ -79,7 +79,7 @@ func TestEvaluateCriterion_InfraFailureBeatsStructuralError(t *testing.T) {
 
 	e, entity, cc := newEngineWithFailingModelStore(t)
 
-	_, _, err := e.evaluateCriterion(criterion, entity, cc)
+	_, err := e.evaluateCriterion(criterion, entity, cc)
 	if err == nil {
 		t.Fatal("evaluateCriterion() = nil error, want the infra failure")
 	}
@@ -105,7 +105,7 @@ func TestEvaluateCriterion_StructuralErrorReportedWhenStoreIsHealthy(t *testing.
 
 	e, entity, cc := newEngineWithHealthyModelStore(t)
 
-	_, _, err := e.evaluateCriterion(criterion, entity, cc)
+	_, err := e.evaluateCriterion(criterion, entity, cc)
 	if err == nil {
 		t.Fatal("evaluateCriterion() = nil error, want the structural fault")
 	}
