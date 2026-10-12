@@ -3,10 +3,11 @@ package parity
 import "testing"
 
 var criterionFunctionScenarios = map[string]func(*testing.T, BackendFixture){
-	"CriterionFunction_GroupStopRule":       RunCriterionFunction_GroupStopRule,
-	"CriterionFunction_SelectionPreCheck":   RunCriterionFunction_SelectionPreCheck,
-	"CriterionFunction_SelectionGroup":      RunCriterionFunction_SelectionGroup,
-	"CriterionFunction_ManualRefusedReason": RunCriterionFunction_ManualRefusedReason,
+	"CriterionFunction_GroupStopRule":             RunCriterionFunction_GroupStopRule,
+	"CriterionFunction_SelectionPreCheck":         RunCriterionFunction_SelectionPreCheck,
+	"CriterionFunction_SelectionGroup":            RunCriterionFunction_SelectionGroup,
+	"CriterionFunction_ManualRefusedReason":       RunCriterionFunction_ManualRefusedReason,
+	"CriterionFunction_AuditKeepsPreCheckNumbers": RunCriterionFunction_AuditKeepsPreCheckNumbers,
 }
 
 // TestCriterionFunctionScenariosSkipWithoutCapability: on a backend whose
