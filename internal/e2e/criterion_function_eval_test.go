@@ -259,6 +259,19 @@ func TestCriterionFunction_Selection_FunctionInGroup(t *testing.T) {
 	if len(fs) != 2 || fs[0]["path"] != "/conditions/0" || fs[1]["path"] != "/conditions/1" {
 		t.Errorf("functions = %v; want paths /conditions/0 and /conditions/1", fs)
 	}
+	for i, f := range fs {
+		if f["called"] != true {
+			t.Errorf("functions[%d] = %v; want called true", i, f)
+		}
+		if f["matches"] != (i == 1) {
+			t.Errorf("functions[%d] = %v; want matches %v", i, f, i == 1)
+		}
+	}
+	for _, name := range []string{"cf-selgrp-a", "cf-selgrp-b"} {
+		if n := procSvc.CriteriaCallCount(name); n != 1 {
+			t.Errorf("%s call count = %d; want 1", name, n)
+		}
+	}
 }
 
 func TestCriterionFunction_TransitionsRead(t *testing.T) {
@@ -291,6 +304,12 @@ func TestCriterionFunction_TransitionsRead(t *testing.T) {
 	})
 	resp = doAuth(t, http.MethodGet, path, "")
 	body = readBody(t, resp)
+	if got := procSvc.CriteriaCallCount("cf-tr-tr"); got != n+2 {
+		t.Errorf("call count after failing callout = %d; want %d", got, n+2)
+	}
+	if !strings.Contains(body, "callout down") {
+		t.Errorf("detail lacks the callout's error text: %s", body)
+	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("transitions with failing function: status = %d; want 400: %s", resp.StatusCode, body)
 	}
@@ -310,6 +329,16 @@ func TestCriterionFunction_Unevaluable_NoCallout(t *testing.T) {
 		if got := problemErrorCode(body); got != "WORKFLOW_FAILED" {
 			t.Errorf("errorCode = %q; want WORKFLOW_FAILED (%s)", got, body)
 		}
+		// Only an engine that evaluates function conditions reaches the
+		// undeclared-field check; one that refuses them says "not supported".
+		if !strings.Contains(body, "unknown field path(s): $.amonut") {
+			t.Errorf("detail does not name the undeclared path: %s", body)
+		}
+		for _, bad := range []string{"not supported", "not implemented"} {
+			if strings.Contains(body, bad) {
+				t.Errorf("detail contains %q: %s", bad, body)
+			}
+		}
 	}
 	post := func(t *testing.T, model string) (int, string) {
 		t.Helper()
@@ -317,6 +346,8 @@ func TestCriterionFunction_Unevaluable_NoCallout(t *testing.T) {
 		return resp.StatusCode, readBody(t, resp)
 	}
 
+	// Behaviour guard: the member beside the function is a local leaf, which
+	// the pre-change engine also checked before refusing the group.
 	t.Run("undeclared-path-beside-function", func(t *testing.T) {
 		const model = "e2e-cfe-unev1"
 		procSvc.RegisterCriteriaReason("cf-unev1-a", cfAnswer(true, ""))
@@ -328,6 +359,7 @@ func TestCriterionFunction_Unevaluable_NoCallout(t *testing.T) {
 		}
 	})
 
+	// Behaviour guard as above for a pre-check inside a group.
 	t.Run("undeclared-path-in-precheck", func(t *testing.T) {
 		const model = "e2e-cfe-unev2"
 		procSvc.RegisterCriteriaReason("cf-unev2-a", cfAnswer(true, ""))
@@ -339,6 +371,19 @@ func TestCriterionFunction_Unevaluable_NoCallout(t *testing.T) {
 		}
 	})
 
+	// Discriminating: the pre-change engine never saw pre-checks and made the
+	// callout; the current engine refuses before any callout.
+	t.Run("undeclared-path-in-precheck-whole-criterion", func(t *testing.T) {
+		const model = "e2e-cfe-unev4"
+		procSvc.RegisterCriteriaReason("cf-unev4-a", cfAnswer(true, ""))
+		setupModelWithWorkflow(t, model, cfWorkflow("cfe-unev4", cfFn("cf-unev4-a", cfBadPathSimple)))
+		status, body := post(t, model)
+		assertWorkflowFailed(t, status, body)
+		if n := procSvc.CriteriaCallCount("cf-unev4-a"); n != 0 {
+			t.Errorf("call count = %d; want 0", n)
+		}
+	})
+
 	t.Run("manual-transition", func(t *testing.T) {
 		const model = "e2e-cfe-unev3"
 		procSvc.RegisterCriteriaReason("cf-unev3-a", cfAnswer(true, ""))
@@ -346,11 +391,12 @@ func TestCriterionFunction_Unevaluable_NoCallout(t *testing.T) {
 		id := createEntityE2E(t, model, 1, cfPayload(50))
 		resp := doAuth(t, http.MethodPut, fmt.Sprintf("/api/entity/JSON/%s/approve", id), cfPayload(50))
 		body := readBody(t, resp)
-		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("status = %d; want 400: %s", resp.StatusCode, body)
-		}
+		assertWorkflowFailed(t, resp.StatusCode, body)
 		if n := procSvc.CriteriaCallCount("cf-unev3-a"); n != 0 {
 			t.Errorf("call count = %d; want 0", n)
+		}
+		if s := getEntityState(t, id); s != "CREATED" {
+			t.Errorf("state after refusal = %q; want CREATED", s)
 		}
 	})
 }
