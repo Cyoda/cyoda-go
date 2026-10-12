@@ -217,7 +217,7 @@ func ValidateCriterionCondition(cond predicate.Condition) error {
 // the expansion, not the total cost of a request.
 func ValidateConditionSize(cond predicate.Condition) error {
 	if n := conditionEntries(cond); n > MaxConditionEntries {
-		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, every other clause one)",
+		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, a function clause one plus the entries of its pre-check, every other clause one)",
 			ErrInvalidCondition, n, MaxConditionEntries)
 	}
 	return nil

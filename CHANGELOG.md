@@ -879,6 +879,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the default `criterion did not match`. See
   `cyoda help workflows` and `docs/cloud-parity/function-conditions-in-criteria.md`.
 
+- **gRPC search with a function condition whose pre-check is malformed
+  answers with an `InvalidArgument` transport status instead of the
+  `INVALID_CONDITION` error envelope.** The pre-check is now parsed with the
+  condition, so the condition fails to parse before the function condition is
+  refused. HTTP is unchanged: `400 INVALID_CONDITION`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
@@ -1279,6 +1285,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **SQLite and PostgreSQL: a number in a state-machine audit event's `data`
+  reads back with every digit it was recorded with.** These backends read it
+  back as a 64-bit float, so a number such as `12345678901234567890` lost
+  digits; the memory backend kept it exactly.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

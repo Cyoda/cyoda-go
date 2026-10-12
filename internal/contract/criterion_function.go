@@ -25,7 +25,7 @@ type CriterionFunction struct {
 	Name   string                  `json:"name"`
 	Config CriterionFunctionConfig `json:"config"`
 	// Criterion is the pre-check as written: the `function.criterion`
-	// member. Empty when absent.
+	// member. Empty when absent; the JSON text `null` when written as null.
 	Criterion json.RawMessage `json:"criterion"`
 }
 

@@ -85,3 +85,20 @@ func TestParseCriterionFunction_CarriesThePreCheckAsWritten(t *testing.T) {
 		t.Errorf("Criterion = %s, want %s", fn.Criterion, want)
 	}
 }
+
+func TestParseCriterionFunction_PreCheckAbsentOrNull(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"absent", `{"type":"function","function":{"name":"f"}}`, ""},
+		{"null", `{"type":"function","function":{"name":"f","criterion":null}}`, "null"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fn, present, err := ParseCriterionFunction(json.RawMessage(tc.in))
+			if err != nil || !present {
+				t.Fatalf("ParseCriterionFunction: present=%t err=%v", present, err)
+			}
+			if string(fn.Criterion) != tc.want {
+				t.Errorf("Criterion = %q, want %q", fn.Criterion, tc.want)
+			}
+		})
+	}
+}
