@@ -64,16 +64,19 @@ func TestFunctionRecordAuditValue(t *testing.T) {
 	}, func(a, b any) bool { return fmt.Sprint(a) == fmt.Sprint(b) }) {
 		t.Errorf("not called: %v", got)
 	}
+	// Exact maps: no preCheck or preCheckMatched without a pre-check, and no
+	// reason unless the member gave one.
 	called := functionRecord{name: "g", called: true, matches: true}
-	got := called.auditValue()
-	if _, ok := got["preCheck"]; ok {
-		t.Error("preCheck present without a pre-check")
+	if got, want := called.auditValue(), map[string]any{
+		"path": "", "name": "g", "called": true, "matches": true,
+	}; !maps.Equal(got, want) {
+		t.Errorf("called: got %v, want %v", got, want)
 	}
-	if _, ok := got["reason"]; ok {
-		t.Error("reason present though the member gave none")
-	}
-	if got["matches"] != true || got["path"] != "" {
-		t.Errorf("called: %v", got)
+	withReason := functionRecord{path: "/conditions/2", name: "g", called: true, matches: false, reason: "no credit"}
+	if got, want := withReason.auditValue(), map[string]any{
+		"path": "/conditions/2", "name": "g", "called": true, "matches": false, "reason": "no credit",
+	}; !maps.Equal(got, want) {
+		t.Errorf("called with a reason: got %v, want %v", got, want)
 	}
 }
 

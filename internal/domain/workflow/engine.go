@@ -52,9 +52,8 @@ var ErrTransitionNotFound = errors.New("transition not found")
 // Error() while still satisfying errors.Is via a custom Is method.
 var ErrCriterionNotMatched = errors.New("criterion not matched")
 
-// criterionNotMatchedError preserves fireTransition's existing
-// criterion-not-matched error text exactly while satisfying
-// errors.Is(err, ErrCriterionNotMatched).
+// criterionNotMatchedError carries fireTransition's criterion-not-matched
+// text while satisfying errors.Is(err, ErrCriterionNotMatched).
 type criterionNotMatchedError struct {
 	msg string
 }
