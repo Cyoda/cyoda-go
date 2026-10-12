@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the eleven tightenings below
+Every payload 1.4 accepted that does not fall under the twelve tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Eleven tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Twelve tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -295,8 +295,8 @@ they are recorded here, under the rubric of §"Tightening releases":
    bound's printed form, so the criterion answered as if the author had
    written that text. Rubric point 1 applies.
 9. **A criterion that tests more than 10,000 entries is refused** (each entry
-   in an `array` clause's `values` counts one, `null` entries included, and
-   every other clause counts one). This one does reject configurations that
+   in an `array` clause's `values` counts one, `null` entries included,
+   a `function` clause counts one plus the entries of its pre-check, and every other clause counts one). This one does reject configurations that
    worked. It is taken because an `array` clause expands into one clause per
    entry, and the engine expands the criterion again each time it evaluates
    it. The limit bounds that expansion; it does not bound the total cost of
@@ -313,6 +313,12 @@ they are recorded here, under the rubric of §"Tightening releases":
 11. **A function condition without a `function` object or without a `name` is
     refused.** It imported and then failed every dispatch, so no working
     configuration is affected.
+12. **A missing or `null` operand is refused under every operator other than
+    `IS_NULL` and `NOT_NULL`**, in a `simple` or `lifecycle` clause of a
+    criterion or a pre-check. The evaluator compared the field with an empty
+    string: `EQUALS` matched `""`, and `CONTAINS` or `STARTS_WITH` matched
+    every string. Rubric point 1 applies: fail loud where the old answer was
+    wrong.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -328,8 +334,9 @@ adding `"operatorType":"EQUALS"`. Rules 6 to 8 touch only criteria whose
 operand has a shape no operator can evaluate as written, and rule 9 only a
 criterion far larger than a guard needs; each error names where the
 criterion is. Rule 10 touches only criteria whose pre-check was ignored until
-now, and rule 11 only function conditions that failed every dispatch; each
-error names the position of the condition in the criterion. All eleven rules
+now, rule 11 only function conditions that failed every dispatch, and rule 12
+only clauses without the operand their operator compares with; each error
+names the position of the condition in the criterion. All twelve rules
 apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.

@@ -157,9 +157,6 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	switch v := c.Value.(type) {
-	case nil:
-		// Null operand carries no type to mismatch; arity is enforced elsewhere.
-		return nil
 	case []any:
 		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
 		// validateOperandShape refuses an array under every other operator,

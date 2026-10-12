@@ -1294,12 +1294,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **OpenAPI: a condition's `value` is described as the server accepts it,
   and each condition union selects its member by `type`.** `value` on
   `SimpleConditionDto` and `LifecycleConditionDto` was typed as an object and
-  required. The server accepts `null`, a string, a number or a boolean, or a
+  required. The server accepts a string, a number or a boolean, or a
   `[low, high]` pair of those for `BETWEEN` and `BETWEEN_INCLUSIVE`, and
-  accepts no `value` for `IS_NULL` and `NOT_NULL`; the schema now says so. Every
-  condition `oneOf` (criteria, the pre-check, search) carries a discriminator
-  mapping `type` to its member, so a validator checks only that member. The
-  wire is unchanged.
+  accepts `null` or no `value` only for `IS_NULL` and `NOT_NULL`; the schema
+  now says so. Every condition `oneOf` (criteria, the pre-check, search)
+  carries a discriminator mapping `type` to its member, so a validator checks
+  only that member. The wire is unchanged.
+
+- **A missing or `null` operand on an operator that takes one is refused.**
+  Every operator except `IS_NULL` and `NOT_NULL` takes an operand. Without
+  one, the condition compared the field with an empty string: `EQUALS`
+  matched `""`, and `CONTAINS` or `STARTS_WITH` matched every string, so a
+  conditional delete removed every entity with a string at the path. Search,
+  async search, grouped statistics and conditional delete now answer 400
+  `INVALID_CONDITION`, over HTTP and gRPC; workflow import answers 400
+  `VALIDATION_FAILED`, for a criterion and a pre-check alike.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

@@ -368,9 +368,10 @@ func validateOperator(op string) error {
 }
 
 // validateOperandShape rejects an operand whose shape no operator can
-// evaluate. A SimpleCondition or LifecycleCondition leaf's value is a scalar
-// or a null, except under BETWEEN / BETWEEN_INCLUSIVE, where it is the
-// [low, high] pair (validateBetweenArity checks the pair itself). So:
+// evaluate. A SimpleCondition or LifecycleCondition leaf's value is a scalar,
+// except under BETWEEN / BETWEEN_INCLUSIVE, where it is the [low, high] pair
+// (validateBetweenArity checks the pair itself), and under IS_NULL /
+// NOT_NULL, which take none. So:
 //
 //   - an object (map[string]any) is refused for every operator. It denotes no
 //     value and would otherwise slip past a parse-based type check (a map
@@ -381,14 +382,24 @@ func validateOperator(op string) error {
 //     backends evaluate such an operand differently: memory compares the
 //     stringified array, sqlite matches every row on NOT_EQUAL and none on
 //     EQUALS. On a conditional delete that is the difference between
-//     deleting nothing and deleting nearly everything.
+//     deleting nothing and deleting nearly everything;
+//   - a null or missing operand (nil) is refused for every operator that
+//     takes one, which is every operator but IS_NULL and NOT_NULL. Left
+//     through, it compares as the empty string: EQUALS matches "", and
+//     CONTAINS or STARTS_WITH match every string — on a conditional delete,
+//     every entity with a string at the path.
 //
-// Both are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
+// All three are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
 // and apply whether or not the field or model is known. An array clause
 // reaches this check through its desugared positional leaves, so an entry
-// is held to the same rule as a simple clause's value.
+// is held to the same rule as a simple clause's value (a null entry yields
+// no leaf).
 func validateOperandShape(op string, value any) error {
 	switch value.(type) {
+	case nil:
+		if carriesScalarOperand(spi.MapOperator(op)) {
+			return fmt.Errorf("%w: operator %q takes an operand, and `value` is missing or null; only IS_NULL and NOT_NULL take none", ErrInvalidCondition, op)
+		}
 	case map[string]any:
 		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
 	case []any:
