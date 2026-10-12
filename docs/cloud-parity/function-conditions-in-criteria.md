@@ -86,8 +86,10 @@ the peer builds the callout from it; a peer never evaluates a pre-check.
 - **Condition `value`.** `SimpleConditionDto.value` and
   `LifecycleConditionDto.value` admit what the server accepts: a string,
   number or boolean, a `[low, high]` pair for `BETWEEN` and
-  `BETWEEN_INCLUSIVE`, or no value (absent or `null`) for `IS_NULL` and
-  `NOT_NULL`. `value` is not required. An object is refused.
+  `BETWEEN_INCLUSIVE`, or no value (absent or `null`) only for `IS_NULL` and
+  `NOT_NULL`. `value` is not required in the schema; the server refuses a
+  missing or `null` value under any other operator (400 `INVALID_CONDITION`,
+  400 `VALIDATION_FAILED` at import). An object is refused.
 
 The `EntityCriteriaCalculationRequest` and `EntityCriteriaCalculationResponse`
 shapes are unchanged. One request is sent per function condition reached, with

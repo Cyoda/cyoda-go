@@ -62,7 +62,9 @@ callouts are made, never the value of the criterion.
   against the one schema its `type` names. The pre-check's `null` branch has no mapping.
 - **Condition `value`.** `SimpleConditionDto.value` and `LifecycleConditionDto.value` admit what the server accepts:
   a string, number or boolean, a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`, or no value (absent or
-  `null`) for `IS_NULL` and `NOT_NULL`. `value` is not required. An object is refused.
+  `null`) only for `IS_NULL` and `NOT_NULL`. `value` is not required in the schema; the server refuses a missing or
+  `null` value under any other operator (400 `INVALID_CONDITION`, 400 `VALIDATION_FAILED` at import). An object is
+  refused.
 - **Audit `data`** (the `StateMachineAuditEvent.data` description) documents the `functions` field (section 8).
 - `go generate ./api` after the edit. No Go code uses the generated condition types.
 

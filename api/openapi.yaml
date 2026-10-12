@@ -9560,7 +9560,8 @@ components:
                 non-null; a clause that tests no position is refused with
                 400 `INVALID_CONDITION`. A whole condition may test at most
                 10,000 entries: each entry here counts one, `null` entries
-                included, and every other clause counts one; a larger
+                included, a function clause counts one plus the entries of its
+                pre-check, and every other clause counts one; a larger
                 condition is refused with 400 `INVALID_CONDITION`.
               items:
                 # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
@@ -9791,9 +9792,11 @@ components:
             value:
               description: >-
                 The operand: a string, number or boolean, or a `[low, high]` pair
-                for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL`
-                take no operand, so `value` may be absent or `null`. An object, or
-                any other array, is refused with 400.
+                for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and
+                `NOT_NULL` take no operand, so only for them may `value` be
+                absent or `null`; under any other operator a missing or `null`
+                value is refused with 400. An object, or any other array, is
+                refused with 400.
               # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
               # the Go type it cannot derive.
               x-go-type: interface{}
@@ -9867,9 +9870,11 @@ components:
             value:
               description: >-
                 The operand: a string, number or boolean, or a `[low, high]` pair
-                for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL`
-                take no operand, so `value` may be absent or `null`. An object, or
-                any other array, is refused with 400.
+                for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and
+                `NOT_NULL` take no operand, so only for them may `value` be
+                absent or `null`; under any other operator a missing or `null`
+                value is refused with 400. An object, or any other array, is
+                refused with 400.
               # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
               # the Go type it cannot derive.
               x-go-type: interface{}

@@ -1116,7 +1116,7 @@ type ArrayConditionDto struct {
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
 
-	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
+	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, a function clause counts one plus the entries of its pre-check, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
 	Values *[]interface{} `json:"values,omitempty"`
 }
 
@@ -1952,7 +1952,7 @@ type LifecycleConditionDto struct {
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
 
-	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL` take no operand, so `value` may be absent or `null`. An object, or any other array, is refused with 400.
+	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
 	Value *interface{} `json:"value,omitempty"`
 }
 
@@ -2257,7 +2257,7 @@ type SimpleConditionDto struct {
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
 
-	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. `IS_NULL` and `NOT_NULL` take no operand, so `value` may be absent or `null`. An object, or any other array, is refused with 400.
+	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
 	Value *interface{} `json:"value,omitempty"`
 }
 
