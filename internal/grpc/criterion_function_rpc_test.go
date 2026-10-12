@@ -313,6 +313,7 @@ func TestCriterionFunction_ManualRefused_ReportsEveryMember(t *testing.T) {
 	}
 }
 
+// Guards behaviour the old engine shared: it also checked local leaves before refusing the group.
 func TestCriterionFunction_UnevaluableInSkippedMember_Refused(t *testing.T) {
 	const modelName = "grpc-cf-unevaluable"
 	svc, wfHandler, ctx, lp := newTestEnvWithLocalCriteria(t)
@@ -364,4 +365,21 @@ func TestCriterionFunction_NoMemberInGroup_503Envelope(t *testing.T) {
 
 	typed := cfgrpcCreate(t, svc, ctx, modelName, "a")
 	assertClientErrorEnvelope(t, typed, "NO_COMPUTE_MEMBER_FOR_TAG")
+}
+
+func TestCriterionFunction_UndeclaredPathInPreCheck_RefusedBeforeCallout(t *testing.T) {
+	const modelName = "grpc-cf-precheck-undeclared"
+	svc, wfHandler, ctx, lp := newTestEnvWithLocalCriteria(t)
+	cfgrpcAnswer(lp, "a", true, "")
+	cfgrpcImport(t, svc, wfHandler, ctx, modelName,
+		cfgrpcWorkflow(cfgrpcFn("a", cfgrpcUndeclared), false))
+
+	typed := cfgrpcCreate(t, svc, ctx, modelName, "a")
+	cfgrpcAssertWorkflowFailed(t, typed)
+	if !strings.Contains(typed.Error.Message, "amonut") {
+		t.Errorf("Error.Message = %q, want it to name the undeclared path amonut", typed.Error.Message)
+	}
+	if n := lp.CriteriaCallCount("a"); n != 0 {
+		t.Errorf("a callouts = %d, want 0", n)
+	}
 }
