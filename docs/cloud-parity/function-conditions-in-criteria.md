@@ -65,9 +65,12 @@ the peer builds the callout from it; a peer never evaluates a pre-check.
 ## 3. Wire contract (OpenAPI)
 
 - **`CriterionGroupConditionDto`** is the group of a criterion. It has the
-  shape and description of `GroupConditionDto`; its `conditions` items are
-  `oneOf` Array, CriterionGroup, Function, Lifecycle, Simple. Discriminator
-  value `group`.
+  shape of `GroupConditionDto`, except that its `conditions` items are `oneOf`
+  Array, CriterionGroup, Function, Lifecycle, Simple. Its description is that
+  of `GroupConditionDto` plus one paragraph: a criterion's group may hold
+  function conditions at any depth, evaluated in declaration order with the
+  stop rule, while a search condition's group holds local conditions only.
+  Discriminator value `group`.
 - **Workflow and transition `criterion`**: `oneOf` Array, CriterionGroup,
   Function, Lifecycle, Simple.
 - **`GroupConditionDto`** holds local conditions only. It is the group of the
@@ -168,6 +171,8 @@ gRPC entity create, update and transition:**
 | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | a reached function condition has no member for its tags |
 | 503 | `DISPATCH_TIMEOUT` | a reached callout got no answer in time |
 | 503 | `COMPUTE_MEMBER_DISCONNECTED` | a reached callout's member dropped |
+| 503 | `DISPATCH_FORWARD_FAILED` | a reached callout handed over to a peer node got no readable answer from it |
+| 503 | `CALLOUT_FAILED` | more than one try of a reached callout failed; the message lists the tries |
 | 500 | — (ticket) | the model store failed while the criterion was being checked |
 
 On gRPC the envelope has `success: false`; `Error.Code` is `CLIENT_ERROR` for
@@ -189,15 +194,16 @@ Cloud's handling of function conditions in criteria differs in these ways:
   conditions included, while its import converts only `simple` and `group`
   conditions in a pre-check;
 - it accepts a function condition only as the whole criterion or as a member
-  of a top-level `AND`, which its import unwraps into separate criteria; a
-  top-level `array` or `lifecycle` criterion is refused.
+  of a top-level `AND`, which its import unwraps into separate criteria;
+- its import refuses an `array` or `lifecycle` condition at any depth of a
+  criterion, as the whole criterion and as a group member.
 
 To align, Cloud adopts sections 2, 3 and 5:
 
 - type the pre-check as local conditions only, accept every local type in it,
   and refuse a function condition in it at any depth;
 - accept function conditions at any depth in `AND`, `OR` and `NOT` groups, and
-  `array` and `lifecycle` criteria at the top level;
+  `array` and `lifecycle` conditions at any depth of a criterion;
 - evaluate group members in declaration order with the stop rule, and check the
   whole criterion, pre-checks included, before the first callout;
 - fail the operation when a pre-check cannot be evaluated or a callout fails —

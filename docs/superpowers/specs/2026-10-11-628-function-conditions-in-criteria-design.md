@@ -242,6 +242,8 @@ produce.
 | 503 | `NO_COMPUTE_MEMBER_FOR_TAG` | a reached function condition has no member for its tags |
 | 503 | `DISPATCH_TIMEOUT` | a reached callout got no answer in time |
 | 503 | `COMPUTE_MEMBER_DISCONNECTED` | a reached callout's member dropped |
+| 503 | `DISPATCH_FORWARD_FAILED` | a reached callout handed over to a peer node got no readable answer from it |
+| 503 | `CALLOUT_FAILED` | more than one try of a reached callout failed; the message lists the tries |
 | 500 | — (ticket) | model store failure during the compile phase |
 
 gRPC answers `success=false`. The envelope's `Error.Code` is `CLIENT_ERROR` for the 400 and the 503 rows (the 503s

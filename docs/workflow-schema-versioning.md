@@ -240,8 +240,8 @@ field exports without them.
 
 **Eleven tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
-meant to reject — the inputs below imported and *worked* — so they are recorded
-here, under the rubric of §"Tightening releases":
+meant to reject — the inputs below imported, and most of them *worked* — so
+they are recorded here, under the rubric of §"Tightening releases":
 
 1. **`retryPolicy` on a `function`-type criterion is validated** (`NONE`,
    `FIXED` or empty), as it has been on a processor since 1.1. Until now any

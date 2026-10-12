@@ -874,8 +874,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `<name> at <path>: answered <true|false>[: <reason>]`, joined with `; ` —
   except for a criterion that is one function condition that was called,
   which keeps the member's reason. A manual transition refused by such a
-  criterion answers `transition "<name>" criterion not matched: <that reason>`.
-  See
+  criterion answers `transition "<name>" criterion not matched: <that reason>`,
+  and the bare `transition "<name>" criterion not matched` when the reason is
+  the default `criterion did not match`. See
   `cyoda help workflows` and `docs/cloud-parity/function-conditions-in-criteria.md`.
 
 ### Added
