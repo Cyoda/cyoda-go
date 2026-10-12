@@ -971,11 +971,10 @@ func TestMatchFunctionConditionError(t *testing.T) {
 	}
 }
 
-// A FUNCTION criterion is dispatched to a compute member by the engine only
-// when it is the whole criterion; nested inside a group it reaches this
-// evaluator, which has no dispatcher and fails closed rather than silently
-// treating the branch as a non-match. The `workflows` help topic documents
-// this restriction — keep the two in step.
+// This evaluator has no dispatcher: the engine evaluates function conditions
+// itself and hands Prepare only function-free conditions. A function
+// condition that reaches it inside a group fails closed rather than being
+// read as a non-match.
 func TestMatchFunctionConditionNestedInGroupError(t *testing.T) {
 	cond := &predicate.GroupCondition{
 		Operator: "AND",

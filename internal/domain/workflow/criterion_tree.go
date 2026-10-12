@@ -77,10 +77,12 @@ func collectCriterion(root critNode) (units []*critLocal, fns []*critFunction) {
 }
 
 // buildCriterionTree splits a parsed criterion at its function conditions.
-// It refuses a function condition without a `function` object or a name,
-// a function condition in a pre-check, and a group around a function
-// condition whose operator is not AND, OR or NOT-of-one. ptr is cond's JSON
-// Pointer in the criterion ("" for the criterion itself).
+// It refuses a function condition whose `function` member does not parse
+// (a `config` that is not a valid callout config included), a function
+// condition without a `function` object or a name, a function condition in
+// a pre-check, and a group around a function condition whose operator is not
+// AND, OR or NOT-of-one. ptr is cond's JSON Pointer in the criterion ("" for
+// the criterion itself).
 func buildCriterionTree(cond predicate.Condition, ptr string) (critNode, error) {
 	if _, ok := firstFunction(cond, ptr); !ok {
 		return &critLocal{ptr: ptr, cond: cond}, nil
@@ -104,9 +106,6 @@ func buildCriterionTree(cond predicate.Condition, ptr string) (critNode, error) 
 }
 
 func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunction, error) {
-	if len(c.Raw) == 0 {
-		return nil, fmt.Errorf("function condition%s carries no JSON", atPointer(ptr))
-	}
 	fn, present, err := contract.ParseCriterionFunction(c.Raw)
 	if err != nil {
 		return nil, fmt.Errorf("function condition%s: %w", atPointer(ptr), err)

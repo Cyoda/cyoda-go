@@ -171,8 +171,6 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 		return prepareLifecycle(c)
 	case *predicate.GroupCondition:
 		return prepareGroup(c, fieldTypes)
-	case *predicate.FunctionCondition:
-		return prepNode{}, fmt.Errorf("function conditions not implemented")
 	default:
 		return prepNode{}, fmt.Errorf("unknown condition type: %T", cond)
 	}

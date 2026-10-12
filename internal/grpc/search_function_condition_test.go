@@ -11,10 +11,8 @@ import (
 )
 
 // gRPC is a separate entry point from HTTP and must reject a `function`
-// clause the same way. It previously did not: the clause reached
-// match.Prepare, and the raw error surfaced as a SERVER_ERROR envelope with a
-// ticket while the gRPC status stayed OK — a 5xx for a client-supplied
-// condition, over a transport where it is easy to miss.
+// clause the same way: as a client fault, never as a SERVER_ERROR envelope
+// behind an OK gRPC status, a 5xx over a transport where it is easy to miss.
 
 func functionConditionCE() map[string]any {
 	return map[string]any{

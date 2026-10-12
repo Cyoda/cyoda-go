@@ -12,9 +12,9 @@ import (
 )
 
 // extractFieldPaths walks a predicate.Condition tree and collects every
-// JSONPath expression that names a data field. Lifecycle, function and
-// nil sub-conditions are skipped — they do not address user-defined
-// schema paths.
+// JSONPath expression that names a data field. Lifecycle and nil
+// sub-conditions are skipped — they do not address user-defined schema
+// paths.
 //
 // Returned paths are normalised so they line up with the FieldsMap keys
 // produced by *schema.ModelNode.FieldsMap (paths begin with "$." and use
@@ -48,10 +48,8 @@ func walkConditionPaths(cond predicate.Condition, seen map[string]struct{}, out 
 		for _, child := range c.Conditions {
 			walkConditionPaths(child, seen, out)
 		}
-	case *predicate.LifecycleCondition, *predicate.FunctionCondition:
-		// Lifecycle conditions match metadata fields; function conditions
-		// are evaluated dynamically. Neither participates in schema-path
-		// validation.
+	case *predicate.LifecycleCondition:
+		// A lifecycle condition matches a metadata field, not a schema path.
 		return
 	}
 }
@@ -314,7 +312,7 @@ func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDes
 }
 
 // ConditionFieldPaths returns every data-field JSONPath cond names, normalised
-// to the FieldsMap key convention. Lifecycle, function and nil sub-conditions
+// to the FieldsMap key convention. Lifecycle and nil sub-conditions
 // contribute nothing. Duplicates are folded out.
 //
 // Exported so a caller outside this package can hand a condition's paths to

@@ -74,8 +74,6 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
 		return walkConditionTypes(fm, d, depth+1)
-	case *predicate.FunctionCondition:
-		return nil
 	default:
 		return nil
 	}
