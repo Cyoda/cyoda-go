@@ -144,7 +144,7 @@ func checkCriterionResponseTimeout(criterion json.RawMessage, location string, m
 	if _, ok := cond.(*predicate.FunctionCondition); !ok {
 		return nil
 	}
-	fn, err := contract.ParseCriterionFunction(trimmed)
+	fn, _, err := contract.ParseCriterionFunction(trimmed)
 	if err != nil {
 		// Not this rule's to report either: validateCriterion parses the very
 		// same criteria, with the very same location strings, and the import
@@ -359,7 +359,7 @@ func validateCriterion(criterion json.RawMessage, location string) error {
 	// processor's. Only a top-level function criterion is ever dispatched
 	// (evaluateCriterion), so only that shape is inspected.
 	if _, ok := cond.(*predicate.FunctionCondition); ok {
-		fn, err := contract.ParseCriterionFunction(trimmed)
+		fn, _, err := contract.ParseCriterionFunction(trimmed)
 		if err != nil {
 			return fmt.Errorf("%s: %w", location, err)
 		}

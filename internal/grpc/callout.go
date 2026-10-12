@@ -199,7 +199,7 @@ func NewProcessorCallout(tenantID spi.TenantID, entity *spi.Entity, processor sp
 // only risk a future caller reading Err instead of Message.
 func NewCriteriaCallout(tenantID spi.TenantID, entity *spi.Entity, criterion json.RawMessage, target, workflowName, transitionName, processorName, txID string) (Callout, *contract.CalloutFailure) {
 	// One parser serves import validation and dispatch alike.
-	fn, err := contract.ParseCriterionFunction(criterion)
+	fn, _, err := contract.ParseCriterionFunction(criterion)
 	if err != nil {
 		// transitionName is empty for a workflow-level criterion, so target
 		// ("WORKFLOW"/"TRANSITION"/"PROCESSOR") is what lets an operator on a
