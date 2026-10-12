@@ -93,7 +93,8 @@ type FunctionCondition struct {
 
 - `contract.ParseCriterionFunction(raw)` stays the one typed view of a function condition's `function` member,
   used by import, by the engine and by callout construction. It additionally reports whether the `function`
-  member is present and not `null`.
+  member is present and not `null`. It also carries the pre-check as written (`Criterion json.RawMessage`), and the
+  audit's `preCheck` field is decoded from it.
 - Each function condition is dispatched with its own `FunctionCondition.Raw`. A `FunctionCondition` whose `Raw` is
   empty fails the evaluation (it cannot come from the parser).
 
@@ -110,12 +111,15 @@ position of the condition (JSON Pointer into the criterion, e.g. `/conditions/1/
 | I4 | Its `responseTimeoutMs` is not negative and not above `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (existing, now at every depth — `validateCalloutLimits` walks the whole criterion). | every function condition |
 | I5 | A pre-check contains no function condition, at any depth (Rule 1). | every pre-check |
 | I6 | Local checks: path grammar, array-clause path shape, lifecycle type soundness, operator and operand shape, `BETWEEN` arity and bounds, group operator and `NOT` arity, patterns. | every local condition, pre-checks included |
-| I7 | Depth: the whole criterion, pre-checks included, is within `MaxConditionDepth`. | criterion |
+| I7 | Depth: the whole criterion, pre-checks included, is within the parser's depth limit (50). The SPI parser parses a pre-check one level below its function condition. | criterion |
 | I8 | Entries: the whole criterion, pre-checks included, tests at most `MaxConditionEntries` (10,000). A function condition counts 1 plus its pre-check's entries. | criterion |
 
-The search walkers in `internal/domain/search` that the criterion validators reuse (`conditionEntries`,
-`validateCriterionConditionAtDepth`, `extractFieldPaths`, the pattern and value-type validators) enter
-`FunctionCondition.PreCheck`. The search entry points refuse a function condition before any of them walks it.
+The local checks (I6) run once per **local unit**: each maximal function-free subtree of the criterion, and each
+pre-check. The message names the unit's position. Import and the engine's compile phase (section 7) split the
+criterion into the same units with one function. The search walkers therefore never meet a function condition from a
+criterion, and they do not enter a pre-check. The one exception is `conditionEntries`: it counts a function condition
+as 1 plus its pre-check's entries, so that I8 counts the whole criterion. The search entry points refuse a function
+condition before any other walker reaches it.
 
 `docs/workflow-schema-versioning.md`, 1.5 entry: no version bump (1.5 is unreleased).
 
@@ -191,8 +195,8 @@ A function condition the stop rule skipped has no entry.
 - `TRANSITION_MAKE`, on every path (manual, cascade, scheduled), when the transition's criterion contains a
   function condition.
 
-`WORKFLOW_FOUND` and `TRANSITION_MAKE` gain a `data` object only in that case; the other `data` members of all four
-events keep their current meaning.
+`WORKFLOW_FOUND` and `TRANSITION_MAKE` gain a `data` object only in that case, and that object holds only
+`functions`. The other `data` members of all four events keep their current meaning.
 
 **`reason`** (on `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION`):
 
@@ -207,8 +211,9 @@ Every callout made is listed with its answer. No attempt is made to say which an
 `NOT` a true answer can refuse the transition, and the list with the criterion is what lets a reader see that.
 
 **Manual transition refused by its criterion** (`400 WORKFLOW_FAILED`): `transition "<name>" criterion not
-matched`, followed by `: <reason>` whenever the criterion contains a function condition (the reason built above),
-and bare otherwise — a criterion without a function condition is unchanged. The manual path rolls back, so its
+matched`, followed by `: <reason>` (the reason built above) when that reason is not the default
+`criterion did not match`, and bare otherwise. So a criterion without a function condition, and a whole-criterion
+function whose member gave no reason, keep today's message. The manual path rolls back, so its
 audit event is not durable; the message is the guaranteed surface (`docs/cloud-parity/criterion-stoppage-reason.md`).
 
 Row 8 (#625) types the state-machine event `data`; its subtypes include `functions`.
@@ -239,7 +244,10 @@ produce.
 | 503 | `COMPUTE_MEMBER_DISCONNECTED` | a reached callout's member dropped |
 | 500 | — (ticket) | model store failure during the compile phase |
 
-gRPC carries the same codes in `Error.Code` with `Success=false`.
+gRPC answers `success=false`. The envelope's `Error.Code` is `CLIENT_ERROR` for the 400 and the 503 rows (the 503s
+are operational errors with a domain code) and `SERVER_ERROR` for the 500. `Error.Message` carries the domain code
+(`internal/grpc/workflow_selection_test.go`, `assertClientErrorEnvelope` in
+`internal/grpc/scheduled_function_rpc_test.go`).
 
 **Scheduled firing** (no endpoint): false → Declined (`SCHEDULED_TRANSITION_*` as today); callout or criterion
 failure → retried by the scheduler's failure path.
@@ -275,6 +283,7 @@ Layers: **U** unit (`internal/domain/workflow`, `internal/contract`, `internal/d
 | No dispatcher configured, function anywhere → error before any callout | ✓ | | | | |
 | Hand-over: a peer receives the function condition's own JSON | ✓ | | | | ✓ |
 | Search: function in a group still `400 INVALID_CONDITION` | ✓ (existing) | ✓ (existing) | ✓ (existing) | | |
+| Search: function whose pre-check is malformed → HTTP `400 INVALID_CONDITION`; gRPC status `InvalidArgument` (the parser now reads the pre-check) | | ✓ | ✓ | | |
 | SPI parser: raw copy, pre-check parsed, depth through pre-check, marshal | ✓ | | | | |
 
 The concurrency rule does not apply: nothing here is a race.
