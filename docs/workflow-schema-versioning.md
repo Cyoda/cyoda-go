@@ -215,7 +215,8 @@ Before merging a schema bump:
 
 ### 1.5 — v0.9.0 contract (current)
 
-Additive MINOR — two new optional fields:
+Additive MINOR — two new optional fields, and function conditions inside
+groups:
 
 - **`idempotent` on `ExternalizedProcessorConfigDto`** (a processor's
   `config`). Boolean, default `false`, omitted on export when false. The
@@ -223,8 +224,13 @@ Additive MINOR — two new optional fields:
   member after one that received the work went silent.
 - **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
   `NONE` / `FIXED` selector a processor and a criterion function already carry.
+- **Function conditions inside `AND`, `OR` and `NOT` groups**, at any depth of
+  a workflow or transition criterion, are accepted and evaluated in declaration
+  order, each group stopping as soon as its value is known. They imported
+  before and failed every evaluation, so no working configuration changes
+  meaning.
 
-Every payload 1.4 accepted that does not fall under the nine tightenings below
+Every payload 1.4 accepted that does not fall under the eleven tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -232,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Nine tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Eleven tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported and *worked* — so they are recorded
 here, under the rubric of §"Tightening releases":
@@ -296,6 +302,17 @@ here, under the rubric of §"Tightening releases":
    it. The limit bounds that expansion; it does not bound the total cost of
    a criterion. The limit is fixed, not a server setting, and the error names
    the limit and the count.
+10. **A function condition's pre-check (`function.criterion`) is evaluated**,
+    and a pre-check that holds a function condition, at any depth, or that
+    breaks a check or limit the rest of the criterion is held to (path
+    grammar, operator and operand shape, patterns, the entry and depth limits
+    counted through it), is refused. Rubric point 1 applies: the pre-check was
+    silently ignored, so a function was called whatever its pre-check said.
+    When a pre-check does not match, the function condition is now false and
+    the function is not called.
+11. **A function condition without a `function` object or without a `name` is
+    refused.** It imported and then failed every dispatch, so no working
+    configuration is affected.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -310,7 +327,10 @@ where the criterion is. An `array` criterion without an operator is fixed by
 adding `"operatorType":"EQUALS"`. Rules 6 to 8 touch only criteria whose
 operand has a shape no operator can evaluate as written, and rule 9 only a
 criterion far larger than a guard needs; each error names where the
-criterion is. All nine rules apply to an import under
+criterion is. Rule 10 touches only criteria whose pre-check was ignored until
+now, and rule 11 only function conditions that failed every dispatch; each
+error names the position of the condition in the criterion. All eleven rules
+apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 

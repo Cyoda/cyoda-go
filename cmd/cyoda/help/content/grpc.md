@@ -340,7 +340,7 @@ Returned data is subject to the same checks as an HTTP client write: it must be 
 
 **Criteria dispatch (server → client):**
 
-Server sends `EntityCriteriaCalculationRequest` when a workflow transition evaluates a `function`-type criterion:
+Server sends one `EntityCriteriaCalculationRequest` for each function condition that a criterion's evaluation reaches — in workflow selection (`target` `WORKFLOW`) and in a transition (`target` `TRANSITION`) — and none for a function condition whose pre-check did not match, or that evaluation did not reach (see `cyoda help workflows`, *Function conditions*):
 
 ```json
 {
@@ -400,7 +400,12 @@ guaranteed, backend-independent delivery for a manual rejection), and the
 `data.reason` — durable there only for the automated-cascade and
 workflow-selection paths, since a manual rejection rolls its transaction back.
 An omitted `reason` defaults to `"criterion did not match"` in the audit and
-is left out of the 400 detail (bare `criterion not matched`).
+is left out of the 400 detail (bare `criterion not matched`). This is the rule
+for a function condition that is the whole criterion. When a function condition
+sits in a group, or has a pre-check that did not match, the reason in both places
+lists every function condition the evaluation reached and what happened to it:
+not called, or its answer with the member's `reason` (see `cyoda help workflows`,
+*Function conditions*).
 
 **Function callout wire shape:**
 

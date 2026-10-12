@@ -847,6 +847,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   unknown model was `400`. A body that does not parse is still
   `400 INVALID_CONDITION`, because it is refused before the model is looked up.
 
+- **A function condition's pre-check (`function.criterion`) is evaluated
+  before the function is called. When it does not match, the function is not
+  called and the function condition is false.** Before, the pre-check was
+  ignored and the function was always called. A pre-check holds only local
+  conditions (`simple`, `lifecycle`, `array`, and `group` of those): workflow
+  import refuses, with `400 VALIDATION_FAILED`, a pre-check that holds a
+  function condition at any depth, and a pre-check that breaks a check the
+  rest of the criterion is held to (path grammar, operator and operand shape,
+  patterns); the entry limit (10,000) and the depth limit (50) count through
+  every pre-check. The message names the position of the condition as a JSON
+  Pointer into the criterion, such as `/conditions/1/function/criterion`.
+
+- **Workflow import refuses a function condition without a `function` object
+  or without a `function.name` (`400 VALIDATION_FAILED`), at any depth of a
+  criterion.** Before, it imported and then failed every dispatch.
+
+- **The state-machine audit `data` gains `functions` when a criterion holds a
+  function condition.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION`
+  add it to the `data` they carry; `WORKFLOW_FOUND` and `TRANSITION_MAKE`,
+  whose `data` was `null`, carry `{"functions": [...]}`. Each entry is one
+  function condition the evaluation reached, in order: `path`, `name`,
+  `called`, and when present `preCheck`, `preCheckMatched`, `matches` and
+  `reason`. `data.reason` then lists every entry —
+  `<name> at <path>: pre-check did not match, not called` or
+  `<name> at <path>: answered <true|false>[: <reason>]`, joined with `; ` —
+  except for a criterion that is one function condition that was called,
+  which keeps the member's reason. A manual transition refused by such a
+  criterion answers `transition "<name>" criterion not matched: <that reason>`.
+  See
+  `cyoda help workflows` and `docs/cloud-parity/function-conditions-in-criteria.md`.
+
 ### Added
 
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
@@ -1066,6 +1097,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `.../workflow/{transactionId}/finished` alike. Until now two entity
   change events of one transaction were identical on the wire and could not
   be told apart. See `cyoda help audit`.
+
+- **Function conditions in criteria groups.** A workflow or transition
+  criterion can hold function conditions at any depth: as members of `AND`,
+  `OR` and `NOT` groups, nested to any depth, as well as the whole criterion.
+  Group members are evaluated in declaration order, and a group stops as soon
+  as its value is known — `AND` at the first false member, `OR` at the first
+  true one — so a function condition that evaluation does not reach makes no
+  callout. The whole criterion, every pre-check included, is checked against
+  the model before the first callout, and a failed callout fails the
+  operation. Before, a function condition inside a group imported and then
+  failed every evaluation. The OpenAPI document adds
+  `CriterionGroupConditionDto` for the group of a criterion. See
+  `cyoda help workflows` (*Function conditions*).
 
 ### Changed
 

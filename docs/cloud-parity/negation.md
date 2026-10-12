@@ -125,10 +125,12 @@ the list itself with the bare path `$.a`, which separates the three states.
 
 ## 6. `FUNCTION` under `NOT`
 
-Unchanged: the workflow engine dispatches a `function` clause only at a
-criterion's top level, so one nested inside any group — `NOT` included —
-fails the evaluation (`function-condition-search-rejection.md`). Search
-rejects `function` outright on every surface, at any depth.
+In a workflow or transition criterion a `function` condition may be the one
+member of a `NOT`, at any depth. `NOT` inverts its answer, so a compute member
+answering `true` can refuse a transition; the audit lists every function
+condition reached with its answer for that reason
+(`function-conditions-in-criteria.md`). Search rejects `function` outright on
+every surface, at any depth (`function-condition-search-rejection.md`).
 
 ## 7. Errors
 

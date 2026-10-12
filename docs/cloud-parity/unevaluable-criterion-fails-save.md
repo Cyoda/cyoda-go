@@ -64,6 +64,14 @@ current model, not of the specific entity being tested against it — so the
 same eager, whole-tree check applies uniformly, not only to the leaf a given
 entity happens to reach.
 
+**Function conditions.** The whole tree includes the pre-check of every function
+condition in the criterion, and every member that the stop rule would skip
+(`function-conditions-in-criteria.md`). The check runs before the first callout:
+a criterion with an unevaluable leaf anywhere — in a pre-check, or in a member
+after a function condition — fails with `400 WORKFLOW_FAILED` and makes no
+callout. A pre-check that cannot be evaluated is never read as "pre-check did
+not match".
+
 The model-membership check applies one bounded schema refresh before it
 refuses, so a field a peer node has just declared is not falsely refused by a
 node holding an older cached schema (`path-grammar.md` § 6).
