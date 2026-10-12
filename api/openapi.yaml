@@ -9636,9 +9636,13 @@ components:
             those); a `function` condition anywhere in it is refused at import
             with 400 VALIDATION_FAILED. When the pre-check does not match, the
             function condition is false and the function is not called; when it
-            matches, or is absent, the function is called and its answer is the
-            function condition's value.
+            matches, or is absent or `null`, the function is called and its
+            answer is the function condition's value.
+          # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
+          # Go type it cannot derive.
+          x-go-type: interface{}
           oneOf:
+            - type: "null"
             - $ref: "#/components/schemas/ArrayConditionDto"
             - $ref: "#/components/schemas/GroupConditionDto"
             - $ref: "#/components/schemas/LifecycleConditionDto"

@@ -197,8 +197,10 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 		walk(name, ref)
 	}
 
-	// The three nullable values the spec documents still admit null.
+	// The nullable values the spec documents still admit null.
 	nullable := map[string]*openapi3.Schema{
+		"ExternalizedFunctionDto.criterion": doc.Components.Schemas["ExternalizedFunctionDto"].Value.
+			Properties["criterion"].Value,
 		"GroupKeyEntry.value": doc.Components.Schemas["GroupKeyEntry"].Value.Properties["value"].Value,
 		"GroupedStatsBucket.aggregations{}": doc.Components.Schemas["GroupedStatsBucket"].Value.
 			Properties["aggregations"].Value.AdditionalProperties.Schema.Value,
@@ -208,8 +210,8 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 			nullable["StateMachineAuditEventDto.data"] = p.Value
 		}
 	}
-	if len(nullable) != 3 {
-		t.Fatalf("expected three nullable values, found %v", nullable)
+	if len(nullable) != 4 {
+		t.Fatalf("expected four nullable values, found %v", nullable)
 	}
 	for where, s := range nullable {
 		for mode, opts := range schemaValidators {

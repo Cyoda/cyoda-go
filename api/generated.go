@@ -1657,23 +1657,12 @@ type ExternalizedFunctionDto struct {
 	// those); a `function` condition anywhere in it is refused at import
 	// with 400 VALIDATION_FAILED. When the pre-check does not match, the
 	// function condition is false and the function is not called; when it
-	// matches, or is absent, the function is called and its answer is the
-	// function condition's value.
-	Criterion *ExternalizedFunctionDto_Criterion `json:"criterion,omitempty"`
+	// matches, or is absent or `null`, the function is called and its
+	// answer is the function condition's value.
+	Criterion *interface{} `json:"criterion,omitempty"`
 
 	// Name Name of the function that returns boolean
 	Name string `json:"name"`
-}
-
-// ExternalizedFunctionDto_Criterion Optional pre-check, evaluated before the function is called. It holds
-// only local conditions (`simple`, `lifecycle`, `array`, and `group` of
-// those); a `function` condition anywhere in it is refused at import
-// with 400 VALIDATION_FAILED. When the pre-check does not match, the
-// function condition is false and the function is not called; when it
-// matches, or is absent, the function is called and its answer is the
-// function condition's value.
-type ExternalizedFunctionDto_Criterion struct {
-	union json.RawMessage
 }
 
 // ExternalizedProcessorConfigDto defines model for ExternalizedProcessorConfigDto.
@@ -4063,120 +4052,6 @@ func (t EntityAuditEventsResponseDto_Items_Item) MarshalJSON() ([]byte, error) {
 }
 
 func (t *EntityAuditEventsResponseDto_Items_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the ExternalizedFunctionDto_Criterion as a ArrayConditionDto
-func (t ExternalizedFunctionDto_Criterion) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the ExternalizedFunctionDto_Criterion as the provided ArrayConditionDto
-func (t *ExternalizedFunctionDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the ExternalizedFunctionDto_Criterion, using the provided ArrayConditionDto
-func (t *ExternalizedFunctionDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the ExternalizedFunctionDto_Criterion as a GroupConditionDto
-func (t ExternalizedFunctionDto_Criterion) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the ExternalizedFunctionDto_Criterion as the provided GroupConditionDto
-func (t *ExternalizedFunctionDto_Criterion) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the ExternalizedFunctionDto_Criterion, using the provided GroupConditionDto
-func (t *ExternalizedFunctionDto_Criterion) MergeGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the ExternalizedFunctionDto_Criterion as a LifecycleConditionDto
-func (t ExternalizedFunctionDto_Criterion) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the ExternalizedFunctionDto_Criterion as the provided LifecycleConditionDto
-func (t *ExternalizedFunctionDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the ExternalizedFunctionDto_Criterion, using the provided LifecycleConditionDto
-func (t *ExternalizedFunctionDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the ExternalizedFunctionDto_Criterion as a SimpleConditionDto
-func (t ExternalizedFunctionDto_Criterion) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the ExternalizedFunctionDto_Criterion as the provided SimpleConditionDto
-func (t *ExternalizedFunctionDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the ExternalizedFunctionDto_Criterion, using the provided SimpleConditionDto
-func (t *ExternalizedFunctionDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t ExternalizedFunctionDto_Criterion) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *ExternalizedFunctionDto_Criterion) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }

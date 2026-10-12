@@ -53,8 +53,8 @@ callouts are made, never the value of the criterion.
 - **Workflow and transition `criterion`**: `oneOf` Array, CriterionGroup, Function, Lifecycle, Simple.
 - **`GroupConditionDto`** is unchanged: its members are local only. It stays the group of the three search request
   bodies and of the pre-check.
-- **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` Array, Group, Lifecycle, Simple. The schema
-  therefore expresses Rule 1 at every depth. The description states Rule 1 and the guard semantics.
+- **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` `null`, Array, Group, Lifecycle, Simple; `null`
+  is no pre-check. The schema therefore expresses Rule 1 at every depth. The description states Rule 1 and the guard semantics.
 - **`QueryConditionDto`** stays the base of `FunctionConditionDto`; nothing else refers to it.
 - **Audit `data`** (the `StateMachineAuditEvent.data` description) documents the `functions` field (section 8).
 - `go generate ./api` after the edit. No Go code uses the generated condition types.

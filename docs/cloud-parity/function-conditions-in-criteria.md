@@ -75,9 +75,9 @@ the peer builds the callout from it; a peer never evaluates a pre-check.
   Function, Lifecycle, Simple.
 - **`GroupConditionDto`** holds local conditions only. It is the group of the
   three search request bodies and of the pre-check.
-- **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` Array, Group,
-  Lifecycle, Simple. The schema expresses Rule 1 at every depth, and the
-  description states Rule 1 and its guard semantics.
+- **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` `null`, Array,
+  Group, Lifecycle, Simple; `null` is no pre-check. The schema expresses Rule 1
+  at every depth, and the description states Rule 1 and its guard semantics.
 
 The `EntityCriteriaCalculationRequest` and `EntityCriteriaCalculationResponse`
 shapes are unchanged. One request is sent per function condition reached, with

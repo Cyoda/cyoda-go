@@ -134,8 +134,22 @@ func TestCriterionFunctionImport_Refused(t *testing.T) {
 }
 
 func TestCriterionFunctionImport_ExportRoundTrip(t *testing.T) {
-	const model = "e2e-cfi-export"
-	criterion := cfGroup("AND", cfAmountGT10, cfGroup("NOT", cfFn("cf-exp-a", cfStateIsCreated)), cfFn("cf-exp-b", ""))
+	cfAssertExportRoundTrip(t, "e2e-cfi-export",
+		cfGroup("AND", cfAmountGT10, cfGroup("NOT", cfFn("cf-exp-a", cfStateIsCreated)), cfFn("cf-exp-b", "")))
+}
+
+// A `null` pre-check means no pre-check. Export returns it as imported, and
+// the export response conforms to the OpenAPI schema (the e2e response
+// validator checks every response).
+func TestCriterionFunctionImport_ExportRoundTripNullPreCheck(t *testing.T) {
+	cfAssertExportRoundTrip(t, "e2e-cfi-export-null", cfFn("cf-exp-null", "null"))
+}
+
+// cfAssertExportRoundTrip imports a workflow whose CREATED→PROMOTED
+// transition has the given criterion, exports it, and asserts the exported
+// criterion equals the imported one as decoded JSON.
+func cfAssertExportRoundTrip(t *testing.T, model, criterion string) {
+	t.Helper()
 	status, body := cfImportInto(t, model, cfWorkflow("cfi-export", criterion))
 	if status != http.StatusOK {
 		t.Fatalf("import: expected 200, got %d: %s", status, body)
