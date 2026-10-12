@@ -1033,9 +1033,6 @@ func (e *Engine) evaluateCriterion(criterion []byte, entity *spi.Entity, cc *cri
 	if out.matched, err = root.eval(e, cc, entity, &out.functions); err != nil {
 		return criterionOutcome{}, err
 	}
-	if out.whole && out.functions[0].called {
-		out.reason = out.functions[0].reason
-	}
 	return out, nil
 }
 

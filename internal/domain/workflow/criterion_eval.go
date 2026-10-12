@@ -20,9 +20,6 @@ import (
 // criterionOutcome is the result of evaluating one criterion.
 type criterionOutcome struct {
 	matched bool
-	// reason is the compute member's reason when the criterion is one
-	// function condition and it was called; "" otherwise.
-	reason string
 	// functions holds one record per function condition the evaluation
 	// reached, in evaluation order. nil when the criterion holds none.
 	functions []functionRecord
@@ -91,9 +88,12 @@ func (o criterionOutcome) addFunctions(data map[string]any) {
 // reached is listed in order with what happened to it; no answer is singled
 // out as the cause, because under NOT a true answer can refuse.
 func (o criterionOutcome) notMatchedReason() string {
-	if o.functions == nil || (o.whole && o.functions[0].called) {
-		if o.reason != "" {
-			return o.reason
+	if o.functions == nil {
+		return defaultCriterionReason
+	}
+	if o.whole && o.functions[0].called {
+		if r := o.functions[0].reason; r != "" {
+			return r
 		}
 		return defaultCriterionReason
 	}

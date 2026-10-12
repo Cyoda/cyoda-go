@@ -240,8 +240,8 @@ func TestEvaluateCriterion_ReasonOnlyForACalledWholeFunction(t *testing.T) {
 		want      string
 	}{
 		{"whole function, called", evFn("a", ""), "too small"},
-		{"function in a group", evGroup("AND", evFn("a", "")), ""},
-		{"whole function, pre-check false", evFn("a", evAmountGT100), ""},
+		{"function in a group", evGroup("AND", evFn("a", "")), "a at /conditions/0: answered false: too small"},
+		{"whole function, pre-check false", evFn("a", evAmountGT100), "a: pre-check did not match, not called"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,8 +250,11 @@ func TestEvaluateCriterion_ReasonOnlyForACalledWholeFunction(t *testing.T) {
 			if err != nil {
 				t.Fatalf("evaluateCriterion: %v", err)
 			}
-			if out.reason != tc.want {
-				t.Errorf("reason = %q, want %q", out.reason, tc.want)
+			if out.matched {
+				t.Fatal("matched = true, want false")
+			}
+			if got := out.notMatchedReason(); got != tc.want {
+				t.Errorf("notMatchedReason = %q, want %q", got, tc.want)
 			}
 		})
 	}

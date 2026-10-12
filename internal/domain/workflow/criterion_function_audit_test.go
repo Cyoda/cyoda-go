@@ -23,7 +23,7 @@ func TestNotMatchedReason(t *testing.T) {
 		want string
 	}{
 		{"no function", criterionOutcome{}, "criterion did not match"},
-		{"whole function, member reason", criterionOutcome{whole: true, reason: "too small",
+		{"whole function, member reason", criterionOutcome{whole: true,
 			functions: []functionRecord{{name: "f", called: true, reason: "too small"}}}, "too small"},
 		{"whole function, no reason", criterionOutcome{whole: true,
 			functions: []functionRecord{{name: "f", called: true}}}, "criterion did not match"},
