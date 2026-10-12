@@ -482,8 +482,8 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
-//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every function
-//     condition in a criterion and schedule function.
+//   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
+//     schedule function, and every function condition in a criterion.
 //
 // Scope: called only on the **incoming** import request. Legacy stored
 // workflows are not retroactively re-checked against these rules, so an
@@ -589,8 +589,8 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   L-1 — Processor Name non-empty.
 	//   L-2 — Processor Name length cap.
 	//   H4  — ExecutionMode ∈ {SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, ""}.
-	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every function
-	//     condition in a criterion and schedule function.
+	//   M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
+	//     schedule function, and every function condition in a criterion.
 	//   Transition.Criterion — every data-addressing jsonPath must be JSON
 	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
 	//     lifecycle/meta clause, if present, must be type-sound.

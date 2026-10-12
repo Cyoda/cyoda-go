@@ -73,6 +73,16 @@ func TestImport_FunctionConditionsRefused(t *testing.T) {
 		{"bad retryPolicy at depth", impGroup("OR", impLocal, `{"type":"function","function":{"name":"g","config":{"retryPolicy":"SOMETIMES"}}}`),
 			`criterion function "g" at /conditions/1: unknown retryPolicy "SOMETIMES"`},
 		{"engine group with unknown operator", impGroup("XOR", impFn), `unknown group operator "XOR"`},
+		{"pre-check unknown lifecycle field", impFnWith("f", `{"type":"lifecycle","field":"nope","operatorType":"EQUALS","value":"x"}`),
+			`condition at /function/criterion: unknown meta filter field "nope"`},
+		{"pre-check array clause without [*]", impFnWith("f", `{"type":"array","jsonPath":"$.tags","operatorType":"EQUALS","values":["a"]}`),
+			`condition at /function/criterion: invalid field path: jsonPath "$.tags" must end in a trailing array wildcard`},
+		{"pre-check group with unknown operator", impGroup("OR", impLocal, impFnWith("f", impGroup("XOR", impLocal))),
+			`condition at /conditions/1/function/criterion: invalid condition: unknown group operator "XOR"`},
+		{"pre-check NOT with two members", impFnWith("f", impGroup("NOT", impLocal, impLifePre)),
+			"condition at /function/criterion: invalid condition: NOT requires exactly one condition, got 2"},
+		{"config not an object at depth", impGroup("OR", impLocal, `{"type":"function","function":{"name":"g","config":"x"}}`),
+			"function condition at /conditions/1: failed to parse criterion function"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -98,6 +108,18 @@ func TestImport_LimitsCountThroughPreChecks(t *testing.T) {
 	}
 	if err := validateImportRequest(fnImportWF(impFnWith("f", deep))); err == nil || !strings.Contains(err.Error(), "maximum depth") {
 		t.Fatalf("depth: err = %v, want the parser's depth refusal", err)
+	}
+}
+
+// Import counts the criterion before any other check, so an oversized
+// criterion is refused for its size even when an entry would also be refused
+// for its shape (an object).
+func TestImport_SizeCheckedFirst(t *testing.T) {
+	values := make([]any, search.MaxConditionEntries+1)
+	values[1] = map[string]any{"a": 1}
+	c, _ := json.Marshal(map[string]any{"type": "array", "jsonPath": "$.t[*]", "operatorType": "EQUALS", "values": values})
+	if err := validateImportRequest(fnImportWF(string(c))); err == nil || !strings.Contains(err.Error(), "the limit is 10000") {
+		t.Fatalf("err = %v, want the entry-limit refusal", err)
 	}
 }
 

@@ -47,8 +47,8 @@ const MaxConditionDepth = spi.MaxConditionDepth
 // An array clause expands into one simple clause per tested entry, and each
 // check on the way to a store (structure, patterns, types, translation, the
 // prepared matcher) expands it again. The limit bounds that expansion: the
-// count is taken first, in ValidateCondition and ValidateCriterionCondition,
-// so no expansion runs on a condition over the limit. It does not bound the
+// count is taken first, in ValidateCondition and in workflow import's
+// criterion check, so no expansion runs on a condition over the limit. It does not bound the
 // total cost of a request, just as a group of simple pattern clauses does
 // not.
 const MaxConditionEntries = 10_000
@@ -180,13 +180,17 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 }
 
-// ValidateCriterionCondition performs the operator, operand-shape and
-// BETWEEN-arity checks ValidateCondition performs on a search condition —
-// WITHOUT the FunctionCondition rejection, because a criterion legitimately
-// carries a FUNCTION clause: the workflow engine dispatches it to a compute
-// member at evaluation time rather than evaluating it as a search
-// predicate (see the FunctionCondition arm of validateConditionAtDepth for
-// why search itself must reject it).
+// ValidateCriterionCondition checks one local unit of a workflow criterion: a
+// function-free subtree of the criterion, or a pre-check. It receives no
+// function condition: workflow import splits the criterion at its function
+// conditions first, and checks each function condition itself. It does not
+// count entries either: import counts the whole criterion, pre-checks
+// included, with ValidateConditionSize before it splits it.
+//
+// It performs the operator, operand-shape, BETWEEN-arity and group-operator
+// checks ValidateCondition performs on a search condition, and differs from
+// ValidateCondition only in not checking the search path grammar (see
+// below).
 //
 // Shares canonicalOperators/validateOperator/validateOperandShape/
 // validateBetweenArity with ValidateCondition — one operator table for both
@@ -203,17 +207,14 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // check), because a criterion accepts a path shape (the wildcard subscript)
 // a search condition's scalar surfaces do not — see path-grammar.md §7.
 func ValidateCriterionCondition(cond predicate.Condition) error {
-	if err := ValidateConditionSize(cond); err != nil {
-		return err
-	}
 	return validateCriterionConditionAtDepth(cond, 0)
 }
 
 // ValidateConditionSize refuses a condition that tests more than
 // MaxConditionEntries entries. It counts without expanding anything, so it is
-// the first check ValidateCondition and ValidateCriterionCondition run. It
-// bounds the expansion, not the total cost of a request. Workflow import
-// counts the whole criterion, pre-checks included, with it.
+// the first check ValidateCondition runs, and the first check workflow import
+// runs on a criterion, which it counts whole, pre-checks included. It bounds
+// the expansion, not the total cost of a request.
 func ValidateConditionSize(cond predicate.Condition) error {
 	if n := conditionEntries(cond); n > MaxConditionEntries {
 		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, every other clause one)",
@@ -292,11 +293,6 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 				return err
 			}
 		}
-		return nil
-	case *predicate.FunctionCondition:
-		// A criterion legitimately carries a FUNCTION clause — nothing to
-		// check here; this is the one arm that differs from
-		// validateConditionAtDepth.
 		return nil
 	default:
 		return nil

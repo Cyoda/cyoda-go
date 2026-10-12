@@ -60,8 +60,8 @@ func TestValidateCondition_SizeLimit(t *testing.T) {
 		}
 		over := tc.build(MaxConditionEntries + 1)
 		for name, err := range map[string]error{
-			"ValidateCondition":          ValidateCondition(over),
-			"ValidateCriterionCondition": ValidateCriterionCondition(over),
+			"ValidateCondition":     ValidateCondition(over),
+			"ValidateConditionSize": ValidateConditionSize(over),
 		} {
 			if !errors.Is(err, ErrInvalidCondition) {
 				t.Errorf("%s over the limit: %s: want ErrInvalidCondition, got %v", tc.name, name, err)
@@ -80,13 +80,18 @@ func TestValidateCondition_SizeLimit(t *testing.T) {
 func TestValidateCondition_SizeLimit_CheckedFirst(t *testing.T) {
 	c := arrayClauseOfSize(MaxConditionEntries + 1)
 	c.Values[1] = map[string]any{"a": 1}
-	for name, err := range map[string]error{
-		"ValidateCondition":          ValidateCondition(c),
-		"ValidateCriterionCondition": ValidateCriterionCondition(c),
-	} {
-		if err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxConditionEntries)) {
-			t.Errorf("%s: want the size refusal, got %v", name, err)
-		}
+	if err := ValidateCondition(c); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxConditionEntries)) {
+		t.Errorf("ValidateCondition: want the size refusal, got %v", err)
+	}
+}
+
+// ValidateCriterionCondition checks one local unit of a criterion. It does
+// not count entries: workflow import counts the whole criterion, pre-checks
+// included, with ValidateConditionSize before it splits the criterion into
+// units, and a unit's own count would miss the rest of the criterion.
+func TestValidateCriterionCondition_DoesNotCountEntries(t *testing.T) {
+	if err := ValidateCriterionCondition(groupOfSimpleLeaves(MaxConditionEntries + 1)); err != nil {
+		t.Errorf("ValidateCriterionCondition: want no size refusal on a unit, got %v", err)
 	}
 }
 
