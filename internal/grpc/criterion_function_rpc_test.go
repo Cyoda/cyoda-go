@@ -231,6 +231,7 @@ func TestCriterionFunction_Cascade_PreCheck(t *testing.T) {
 		wantCalls int
 	}{
 		{"pre-check false stays at source, no callout", "b", "READY", 0},
+		// Control for the false case: the same workflow does advance and call out.
 		{"pre-check true advances, one callout", "a", "APPROVED", 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -265,7 +266,9 @@ func TestCriterionFunction_Cascade_Groups(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			svc, wfHandler, ctx, lp := newTestEnvWithLocalCriteria(t)
 			cfgrpcAnswer(lp, "a", tc.a, "")
-			cfgrpcAnswer(lp, "b", tc.b, "")
+			if strings.Contains(tc.criterion, `"name":"b"`) {
+				cfgrpcAnswer(lp, "b", tc.b, "")
+			}
 			cfgrpcImport(t, svc, wfHandler, ctx, "grpc-cf-cascade-grp", cfgrpcWorkflow(tc.criterion, false))
 			id := cfgrpcEntityID(t, cfgrpcCreate(t, svc, ctx, "grpc-cf-cascade-grp", "a"))
 			if got := cfgrpcState(t, svc, ctx, id); got != tc.wantState {
@@ -319,7 +322,11 @@ func TestCriterionFunction_UnevaluableInSkippedMember_Refused(t *testing.T) {
 	cfgrpcImport(t, svc, wfHandler, ctx, modelName,
 		cfgrpcWorkflow(cfgrpcGroup("OR", cfgrpcFn("a", ""), cfgrpcUndeclared), false))
 
-	cfgrpcAssertWorkflowFailed(t, cfgrpcCreate(t, svc, ctx, modelName, "a"))
+	typed := cfgrpcCreate(t, svc, ctx, modelName, "a")
+	cfgrpcAssertWorkflowFailed(t, typed)
+	if !strings.Contains(typed.Error.Message, "amonut") {
+		t.Errorf("Error.Message = %q, want it to name the undeclared path amonut", typed.Error.Message)
+	}
 	if n := lp.CriteriaCallCount("a"); n != 0 {
 		t.Errorf("a callouts = %d, want 0", n)
 	}
@@ -335,7 +342,17 @@ func TestCriterionFunction_CalloutFailure_InGroup(t *testing.T) {
 	cfgrpcImport(t, svc, wfHandler, ctx, modelName,
 		cfgrpcWorkflow(cfgrpcGroup("OR", cfgrpcFn("a", ""), cfgrpcFn("b", "")), false))
 
-	cfgrpcAssertWorkflowFailed(t, cfgrpcCreate(t, svc, ctx, modelName, "a"))
+	typed := cfgrpcCreate(t, svc, ctx, modelName, "a")
+	cfgrpcAssertWorkflowFailed(t, typed)
+	// The OR reached the failing member: a answered false, then b was called.
+	for _, name := range []string{"a", "b"} {
+		if n := lp.CriteriaCallCount(name); n != 1 {
+			t.Errorf("%s callouts = %d, want 1", name, n)
+		}
+	}
+	if !strings.Contains(typed.Error.Message, "b down") {
+		t.Errorf("Error.Message = %q, want it to carry the member's error text", typed.Error.Message)
+	}
 }
 
 func TestCriterionFunction_NoMemberInGroup_503Envelope(t *testing.T) {
