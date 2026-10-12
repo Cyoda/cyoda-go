@@ -1,6 +1,7 @@
 package search
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -86,5 +87,30 @@ func TestValidateCondition_SizeLimit_CheckedFirst(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxConditionEntries)) {
 			t.Errorf("%s: want the size refusal, got %v", name, err)
 		}
+	}
+}
+
+func TestConditionEntries_CountsThePreCheck(t *testing.T) {
+	cond, err := predicate.ParseCondition([]byte(`{"type":"group","operator":"AND","conditions":[
+		{"type":"simple","jsonPath":"$.a","operatorType":"EQUALS","value":1},
+		{"type":"function","function":{"name":"f","criterion":{"type":"array","jsonPath":"$.t[*]","operatorType":"EQUALS","values":[1,null,3]}}}]}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := conditionEntries(cond); got != 1+1+3 {
+		t.Errorf("conditionEntries = %d, want 5 (simple 1, function 1, its array pre-check 3)", got)
+	}
+}
+
+func TestValidateConditionSize_RefusesAnOversizedPreCheck(t *testing.T) {
+	values := make([]any, MaxConditionEntries)
+	pre, _ := json.Marshal(map[string]any{"type": "array", "jsonPath": "$.t[*]", "operatorType": "EQUALS", "values": values})
+	cond, err := predicate.ParseCondition([]byte(`{"type":"function","function":{"name":"f","criterion":` + string(pre) + `}}`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	err = ValidateConditionSize(cond)
+	if !errors.Is(err, ErrInvalidCondition) {
+		t.Fatalf("err = %v, want ErrInvalidCondition (10,001 entries)", err)
 	}
 }

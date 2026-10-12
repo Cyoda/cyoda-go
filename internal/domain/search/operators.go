@@ -39,10 +39,10 @@ var ErrInvalidCondition = errors.New("invalid condition")
 const MaxConditionDepth = spi.MaxConditionDepth
 
 // MaxConditionEntries caps the number of entries one condition tests,
-// counted before the condition is expanded. A simple, lifecycle or function
-// clause counts one; an array clause counts one per entry in `values`, null
-// entries included, because each is allocated whether or not it tests a
-// position.
+// counted before the condition is expanded. A simple or lifecycle clause counts
+// one; a function clause counts one plus the entries of its pre-check; an
+// array clause counts one per entry in `values`, null entries included,
+// because each is allocated whether or not it tests a position.
 //
 // An array clause expands into one simple clause per tested entry, and each
 // check on the way to a store (structure, patterns, types, translation, the
@@ -93,7 +93,7 @@ var canonicalOperators = func() map[string]struct{} {
 // the structural classifier in [ValidateConditionForModel], which maps it to
 // INVALID_FIELD_PATH rather than the coarser INVALID_CONDITION/BAD_REQUEST.
 func ValidateCondition(cond predicate.Condition) error {
-	if err := validateConditionSize(cond); err != nil {
+	if err := ValidateConditionSize(cond); err != nil {
 		return err
 	}
 	return validateConditionAtDepth(cond, 0)
@@ -152,11 +152,11 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		// class. Case-sensitive: the predicate parser and match.Prepare both
 		// require uppercase, so lowercase "or"/"not" is rejected too rather
 		// than preserved to match the pushdown translator's looser check.
-		// validateGroupOperator also enforces NOT's arity-exactly-one
+		// ValidateGroupOperator also enforces NOT's arity-exactly-one
 		// contract — see its doc for why zero or two-or-more is rejected the
 		// same way, rather than left for match.Prepare/groupToFilter to
 		// stumble on downstream.
-		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+		if err := ValidateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
 			return err
 		}
 		for _, child := range c.Conditions {
@@ -203,17 +203,18 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // check), because a criterion accepts a path shape (the wildcard subscript)
 // a search condition's scalar surfaces do not — see path-grammar.md §7.
 func ValidateCriterionCondition(cond predicate.Condition) error {
-	if err := validateConditionSize(cond); err != nil {
+	if err := ValidateConditionSize(cond); err != nil {
 		return err
 	}
 	return validateCriterionConditionAtDepth(cond, 0)
 }
 
-// validateConditionSize refuses a condition that tests more than
+// ValidateConditionSize refuses a condition that tests more than
 // MaxConditionEntries entries. It counts without expanding anything, so it is
 // the first check ValidateCondition and ValidateCriterionCondition run. It
-// bounds the expansion, not the total cost of a request.
-func validateConditionSize(cond predicate.Condition) error {
+// bounds the expansion, not the total cost of a request. Workflow import
+// counts the whole criterion, pre-checks included, with it.
+func ValidateConditionSize(cond predicate.Condition) error {
 	if n := conditionEntries(cond); n > MaxConditionEntries {
 		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, every other clause one)",
 			ErrInvalidCondition, n, MaxConditionEntries)
@@ -237,6 +238,10 @@ func conditionEntries(cond predicate.Condition) int {
 		return n
 	case *predicate.ArrayCondition:
 		return len(c.Values)
+	case *predicate.FunctionCondition:
+		// The function condition is one entry; its pre-check is evaluated
+		// with it, so its entries count toward the same limit.
+		return 1 + conditionEntries(c.PreCheck)
 	default:
 		return 1
 	}
@@ -275,11 +280,11 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		}
 		return validateCriterionConditionAtDepth(d, depth+1)
 	case *predicate.GroupCondition:
-		// Shares validateGroupOperator with validateConditionAtDepth's own
+		// Shares ValidateGroupOperator with validateConditionAtDepth's own
 		// GroupCondition arm — see that arm's doc for the operator-name and
 		// NOT-arity rationale. Both surfaces must accept and reject the same
 		// group shapes identically.
-		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+		if err := ValidateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
 			return err
 		}
 		for _, child := range c.Conditions {
@@ -315,7 +320,7 @@ func desugarArrayClause(c *predicate.ArrayCondition) (predicate.Condition, error
 	return d, nil
 }
 
-// validateGroupOperator rejects a GroupCondition.Operator outside the closed
+// ValidateGroupOperator rejects a GroupCondition.Operator outside the closed
 // AND/OR/NOT set and, for NOT, enforces its arity-exactly-one contract.
 // Shared by validateConditionAtDepth (ValidateCondition's search-condition
 // walk) and validateCriterionConditionAtDepth (ValidateCriterionCondition's
@@ -335,7 +340,9 @@ func desugarArrayClause(c *predicate.ArrayCondition) (predicate.Condition, error
 // an unclassified failure would surface as a 500 on client-supplied input
 // exactly like the bare group-operator mismatch this function's caller
 // already closes.
-func validateGroupOperator(operator string, n int) error {
+//
+// The workflow engine checks a group that holds a function condition with it.
+func ValidateGroupOperator(operator string, n int) error {
 	switch operator {
 	case "AND", "OR":
 		return nil
