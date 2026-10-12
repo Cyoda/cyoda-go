@@ -43,6 +43,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/driver"
 	"github.com/cyoda-platform/cyoda-go/e2e/externalapi/errorcontract"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
@@ -408,30 +410,24 @@ func RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest(t *testing.T, fixt
 
 // RunExternalAPI_09_12_ExternalizedCriterionSkipsCall — dictionary 09/12.
 //
-// A workflow where the auto-transition CREATED→PROCESSED is guarded by an
-// externalized `always-false` criterion. Because the criterion does not
-// match, the transition does not fire and the entity stays at CREATED.
+// Mirrors Cyoda Cloud's
+// ExternalizedGrpcProcessorIT.testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched:
+// the automated transition CREATED→PROCESSED is guarded by a function
+// criterion whose pre-check ($.flag == true) is evaluated before the callout.
 //
-// Schema notes:
-//   - The criterion uses cyoda-go's accepted shape:
-//     {"type":"function","function":{"name":"always-false"}}.
-//     This routes to the external calc member (see engine.go evaluateCriterion).
-//   - The "external_calls_count == 0" assertion in the dictionary is internal
-//     bookkeeping; cyoda-go does not expose a per-tenant call counter through
-//     the HTTP API. We assert the observable equivalent: the entity stays
-//     in the initial state, proving the externalized step did not fire (or
-//     fired and returned false — both observable as "transition not taken").
+//   - flag false: the pre-check does not match, the criterion is false and no
+//     criterion request is made; the entity stays at CREATED.
+//   - flag true: the pre-check matches, exactly one criterion request is made,
+//     the member answers true and the entity reaches PROCESSED. The
+//     TRANSITION_MAKE audit event records the callout.
 //
-// Note: the criterion always-false runs externally (it IS dispatched), then
-// returns false; the dictionary's tighter assertion that the call is
-// *suppressed entirely* by an upstream simple criterion in an AND group is
-// not observable through HTTP. We accept the looser shape: transition not
-// taken. The dictionary remains semantically satisfied (the externalized
-// criterion's outcome — false — does block the transition, just as the
-// dictionary expects).
+// The criterion requests are counted at a compute client started for this
+// scenario on a tag of its own, under a fresh tenant.
 func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
-	tenant := fixture.ComputeTenant(t)
+	tenant := fixture.NewTenant(t)
+	const tag = "ext-0912"
+	cc := parity.StartComputeClientOrSkip(t, fixture, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}})
 	c := parityclient.NewClient(fixture.BaseURL(), tenant.Token)
 
 	const modelName = "extCritSkip"
@@ -439,27 +435,54 @@ func RunExternalAPI_09_12_ExternalizedCriterionSkipsCall(t *testing.T, fixture p
 	wf := `{
 		"importMode": "REPLACE",
 		"workflows": [{
-			"version": "1.1", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
+			"version": "1.5", "name": "ext-crit-skip-wf", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"criterion": {"type": "function", "function": {"name": "always-false"}}
+					"criterion": {"type":"function","function":{"name":"always-true","config":{"calculationNodesTags":"` + tag + `"},"criterion":{"type":"simple","jsonPath":"$.flag","operatorType":"EQUALS","value":true}}}
 				}]},
 				"PROCESSED": {}
 			}
 		}]
 	}`
-	setupExternalModel(t, c, modelName, modelVersion, `{"k":1}`, wf)
+	setupExternalModel(t, c, modelName, modelVersion, `{"k":1,"flag":false}`, wf)
 
-	id, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
-	if err != nil {
-		t.Fatalf("CreateEntity: %v", err)
+	create := func(body string) uuid.UUID {
+		t.Helper()
+		id, err := c.CreateEntity(t, modelName, modelVersion, body)
+		if err != nil {
+			t.Fatalf("CreateEntity %s: %v", body, err)
+		}
+		return id
 	}
-	got, err := c.GetEntity(t, id)
-	if err != nil {
-		t.Fatalf("GetEntity: %v", err)
+	requireState := func(id uuid.UUID, want string) {
+		t.Helper()
+		got, err := c.GetEntity(t, id)
+		if err != nil {
+			t.Fatalf("GetEntity: %v", err)
+		}
+		if got.Meta.State != want {
+			t.Errorf("09/12: state = %q; want %q", got.Meta.State, want)
+		}
 	}
-	if got.Meta.State != "CREATED" {
-		t.Errorf("09/12: expected entity at CREATED (criterion=always-false → transition not taken), got %s", got.Meta.State)
+
+	notMatched := create(`{"k":1,"flag":false}`)
+	requireState(notMatched, "CREATED")
+	if got := parity.CriterionRequestNames(t, cc); len(got) != 0 {
+		t.Errorf("09/12: flag false: criterion requests = %q; want none (the pre-check did not match)", got)
+	}
+	const wantReason = "always-true: pre-check did not match, not called"
+	if got := parity.StateMachineEventData(t, c, notMatched, "TRANSITION_NOT_MATCH_CRITERION")["reason"]; got != wantReason {
+		t.Errorf("09/12: TRANSITION_NOT_MATCH_CRITERION reason = %v; want %q", got, wantReason)
+	}
+
+	matched := create(`{"k":1,"flag":true}`)
+	requireState(matched, "PROCESSED")
+	if got := parity.CriterionRequestNames(t, cc); len(got) != 1 || got[0] != "always-true" {
+		t.Errorf("09/12: flag true: criterion requests = %q; want exactly [always-true]", got)
+	}
+	fns := parity.FunctionRecords(t, parity.StateMachineEventData(t, c, matched, "TRANSITION_MAKE"))
+	if len(fns) != 1 || fns[0]["called"] != true {
+		t.Errorf("09/12: TRANSITION_MAKE functions = %v; want one entry with called true", fns)
 	}
 }
 
