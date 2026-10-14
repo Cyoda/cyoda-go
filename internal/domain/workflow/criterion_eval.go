@@ -298,22 +298,16 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 		return loadErr
 	}
 
-	// Model-boundary validation, in the same order the search HTTP boundary
-	// enforces it (path existence, then pattern compilability, then declared
-	// type/operator soundness):
+	// Model-boundary validation: the checks that depend on the model, in the
+	// order the search boundary runs them (path existence, then declared
+	// type/operator soundness). The model-independent checks — operator,
+	// operand shape and pattern compilability — ran on every unit at import
+	// (validateCriterion), the only path that stores a workflow; an
+	// uncompilable pattern is also refused by match.Prepare below, which asks
+	// spi.ValidateLeafPattern for every LIKE / MATCHES_PATTERN leaf.
 	//
 	//  1. ValidateKnownPaths (above) — the field itself must be declared.
-	//  2. ValidatePatterns — a MATCHES_PATTERN/LIKE operand the kernel cannot
-	//     compile is rejected regardless of whether the field is typed; a
-	//     workflow stored before pattern validation existed is never
-	//     re-validated at import, so this must run at evaluation. Not
-	//     redundant with match.Prepare below: for the string-operator family
-	//     (LIKE/MATCHES_PATTERN included), the SPI kernel's ExpandLeaf
-	//     deliberately SWALLOWS a pattern-compile failure into a leaf that
-	//     never matches (its own doc comment: "Callers wanting a rejection
-	//     ask ValidateLeafPattern FIRST") — so Prepare alone would silently
-	//     never-match rather than abort.
-	//  3. ValidateConditionValueTypes — ALWAYS called, with fields nil when
+	//  2. ValidateConditionValueTypes — ALWAYS called, with fields nil when
 	//     the condition carries no data path. This is deliberate: gating the
 	//     CALL (rather than just the model READ, which is correctly gated
 	//     above on len(paths)>0) would leave validateLifecycleType unreached,
@@ -354,11 +348,6 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 			return errors.New(strings.TrimPrefix(appErr.Message, appErr.Code+": "))
 		}
 		return errors.New(pathErr.Error())
-	}
-	for _, u := range units {
-		if err := search.ValidatePatterns(u.cond); err != nil {
-			return err
-		}
 	}
 	for _, u := range units {
 		if err := search.ValidateConditionValueTypes(fields, u.cond); err != nil {

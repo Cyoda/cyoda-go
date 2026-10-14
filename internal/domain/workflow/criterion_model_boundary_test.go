@@ -397,28 +397,18 @@ func TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave(t *testing
 	}
 }
 
-// TestEvaluateCriterion_UncompilablePatternAbortsTheSave covers the
-// search.ValidatePatterns matrix row: a stored criterion carrying an
-// operand the pattern kernel cannot compile (a LIKE glob with a trailing
-// unpaired escape) must abort, not silently evaluate to a permanent
-// non-match.
-//
-// match.Prepare ALSO rejects this specific case today — internal/match's
-// expandNamed re-validates a LIKE/MATCHES_PATTERN operand via
-// spi.ValidateLeafPattern after calling spi.ExpandLeaf, closing the exact
-// swallow ExpandLeaf's own doc comment describes ("Callers wanting a
-// rejection ask ValidateLeafPattern FIRST") — a fail-open fix that landed
-// ahead of this task. So `err == nil` alone would NOT distinguish the two
-// checks: deleting search.ValidatePatterns' call site still leaves an
-// error, from match.Prepare's own errUnevaluableLeaf path (verified: see
-// task 7 fix-round-1 report). The distinguishing assertion is the
-// classification: search.ValidatePatterns' error names the jsonPath and is
-// a PLAIN error (never wraps match.ErrUnevaluableLeaf) — that is precisely
-// the "only the diagnostic changes" the reviewer described, and pinning it
-// is what the spec's coverage-matrix row requires regardless of whether a
-// deeper layer is also, today, defense-in-depth. The field is declared and
-// correctly typed so the OTHER two checks (ValidateKnownPaths,
-// ValidateConditionValueTypes) have nothing to say about this criterion.
+// TestEvaluateCriterion_UncompilablePatternAbortsTheSave: a criterion carrying
+// an operand the pattern kernel cannot compile (a LIKE glob with a trailing
+// unpaired escape) aborts the evaluation, never a permanent non-match.
+// Import refuses such a criterion first, in every position
+// (TestValidateWorkflowStructure_RejectsMalformedLike* in
+// criterion_pattern_test.go; a pre-check in TestImport_FunctionConditionsRefused),
+// and the engine's compile phase refuses it again: match.Prepare asks
+// spi.ValidateLeafPattern for every LIKE / MATCHES_PATTERN leaf and fails the
+// leaf as match.ErrUnevaluableLeaf. This feeds evaluateCriterion directly, as
+// no import would let it, to pin that refusal. The field is declared and
+// correctly typed, so the model-boundary checks (ValidateKnownPaths,
+// ValidateConditionValueTypes) have nothing to say about it.
 func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -428,15 +418,8 @@ func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 	entity := makeEntity("e1", ref, map[string]any{"name": "Alice"})
 
 	_, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
-	if err == nil {
-		t.Fatal("an uncompilable LIKE pattern (trailing unpaired escape) must abort, got no error")
-	}
-	if errors.Is(err, match.ErrUnevaluableLeaf) {
-		t.Fatalf("expected search.ValidatePatterns' own classification (plain error naming the jsonPath), "+
-			"got match.Prepare's errUnevaluableLeaf instead — search.ValidatePatterns' call site was skipped: %v", err)
-	}
-	if !strings.Contains(err.Error(), "$.name") {
-		t.Errorf("expected search.ValidatePatterns' error to name the jsonPath, got: %v", err)
+	if !errors.Is(err, match.ErrUnevaluableLeaf) {
+		t.Fatalf("an uncompilable LIKE pattern (trailing unpaired escape) must abort as match.ErrUnevaluableLeaf, got %v", err)
 	}
 }
 

@@ -152,9 +152,12 @@ func TestEvaluateCriterion_DispatchesTheFunctionConditionsOwnJSON(t *testing.T) 
 
 func TestEvaluateCriterion_CompilePhaseFailsBeforeAnyCallout(t *testing.T) {
 	undeclared := `{"type":"simple","jsonPath":"$.amonut","operatorType":"GREATER_THAN","value":1}`
+	// A trailing unpaired escape: a LIKE pattern that does not compile.
+	uncompilable := `{"type":"lifecycle","field":"state","operatorType":"LIKE","value":"a\\"}`
 	for name, c := range map[string]string{
 		"undeclared path in a member the stop rule skips": evGroup("OR", evFn("a", ""), undeclared),
 		"undeclared path in a pre-check":                  evGroup("AND", evFn("a", ""), evFn("b", undeclared)),
+		"uncompilable pattern in a pre-check":             evGroup("AND", evFn("a", ""), evFn("b", uncompilable)),
 		"engine group with two NOT members":               evGroup("AND", evFn("a", ""), evGroup("NOT", evFn("b", ""), evAmountGT10)),
 		"function without a name":                         evGroup("AND", evFn("a", ""), `{"type":"function","function":{}}`),
 	} {
