@@ -344,7 +344,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator or value does not fit the field's declared types (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -583,7 +583,7 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
 - `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
-- `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator or value does not fit the field's declared types (propagated from search validator)
+- `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
 - `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.

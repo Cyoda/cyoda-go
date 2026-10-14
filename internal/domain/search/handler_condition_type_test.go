@@ -8,8 +8,9 @@ import (
 )
 
 // TestSearch_ConditionTypeMismatch_Rejects verifies that a search condition
-// whose value type does not match the field's locked DataType is rejected
-// with HTTP 400 and error code CONDITION_TYPE_MISMATCH.
+// whose comparison operand parses into none of the declared types its
+// operator applies to is rejected with HTTP 400 and error code
+// CONDITION_TYPE_MISMATCH.
 //
 // Regression for the 14/06 parity finding: cyoda-go previously accepted
 // string values against DOUBLE fields and silently returned empty results.

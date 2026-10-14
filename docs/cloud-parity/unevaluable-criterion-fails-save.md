@@ -54,8 +54,9 @@ criterion on such a field is supported once the field is declared.
 A criterion that cannot be evaluated must never be read as "condition not
 met". If any operator anywhere in the condition tree is unrecognised, names a
 field the model does not declare, or is otherwise structurally unevaluable
-(an operand fitting no declared type, an uncompilable pattern), the
-transition attempt must fail loudly and roll back, regardless of whether the
+(a comparison or range operand fitting none of the declared types its
+operator applies to, an uncompilable pattern), the transition attempt must
+fail loudly and roll back, regardless of whether the
 entity's own data would have short-circuited past that leaf under a lazy
 walk. Evaluability is a property of the criterion's shape checked against the
 current model, not of the specific entity being tested against it — so the

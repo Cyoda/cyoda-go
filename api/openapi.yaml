@@ -1462,9 +1462,11 @@ paths:
             outside the JSONPath grammar (`INVALID_GROUP_BY_PATH` /
             `INVALID_AGGREGATION_FIELD` — most often a missing `$.` leader),
             a `condition` `jsonPath` outside that grammar
-            (`INVALID_FIELD_PATH`), a `condition` operator or value that does
-            not fit the field's declared types (`CONDITION_TYPE_MISMATCH`), or an
-            otherwise invalid Condition DSL predicate (`INVALID_CONDITION`).
+            (`INVALID_FIELD_PATH`), a `condition` operator that applies to
+            none of the field's declared types or a comparison or range operand
+            that parses into none of the types the operator applies to
+            (`CONDITION_TYPE_MISMATCH`), or an otherwise invalid Condition DSL
+            predicate (`INVALID_CONDITION`).
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -2328,9 +2330,11 @@ paths:
           description: >-
             Invalid request. Returned for a malformed condition body
             (`INVALID_CONDITION`), a condition path the model does not declare
-            (`INVALID_FIELD_PATH`), a condition operator or value that does not
-            fit the field's declared types (`CONDITION_TYPE_MISMATCH`), or an
-            invalid model name (e.g., name too long).
+            (`INVALID_FIELD_PATH`), a condition operator that applies to none
+            of the field's declared types or a comparison or range operand that
+            parses into none of the types the operator applies to
+            (`CONDITION_TYPE_MISMATCH`), or an invalid model name (e.g., name
+            too long).
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:

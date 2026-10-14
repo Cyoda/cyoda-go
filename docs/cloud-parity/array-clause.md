@@ -23,9 +23,10 @@ cyoda-go defines the array clause's wire shape; Cyoda Cloud aligns to it.
   `BETWEEN` or `BETWEEN_INCLUSIVE` entry that is not a pair of two non-null
   scalar bounds, a condition that tests more than 10,000 entries (each entry
   in `values` counts one, `null` entries included) — `400 INVALID_CONDITION`; a path that does not end in
-  `[*]` or has an earlier `[*]` — `400 INVALID_FIELD_PATH`; an operator or
-  entry that does not fit the element's declared type — `400
-  CONDITION_TYPE_MISMATCH`. On workflow
+  `[*]` or has an earlier `[*]` — `400 INVALID_FIELD_PATH`; an operator
+  that applies to none of the element's declared types, or an entry under a
+  comparison or range operator that parses into none of the types the
+  operator applies to — `400 CONDITION_TYPE_MISMATCH`. On workflow
   import every refusal that needs no model is `400 VALIDATION_FAILED`; the
   type check runs when the criterion is evaluated.
 - Accepted on every surface that takes a condition: direct and async search,

@@ -497,7 +497,7 @@ the path the request actually sent.
 | Code | Meaning | Surfaces |
 |---|---|---|
 | `INVALID_FIELD_PATH` | the path is outside the grammar, or the model does not declare it, or it is a container compared to a scalar | search condition, conditional delete, grouped-stats condition |
-| `CONDITION_TYPE_MISMATCH` | the path is known; the operand does not fit its declared type | the same |
+| `CONDITION_TYPE_MISMATCH` | the path is known; the operator applies to none of its declared types, or a comparison or range operand parses into none of the types the operator applies to | the same |
 | `INVALID_GROUP_BY_PATH` | a `groupBy` entry is outside the grammar | grouped stats |
 | `INVALID_AGGREGATION_FIELD` | an aggregation `field` is outside the grammar | grouped stats |
 | `VALIDATION_FAILED` | a criterion path is outside the grammar | workflow import |

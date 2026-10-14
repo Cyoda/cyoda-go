@@ -35,7 +35,9 @@ const (
 	// field). Equivalent to Cloud's
 	// FoundIncompatibleTypeWithEntityModelException. Distinct from
 	// ErrCodeConditionTypeMismatch which is the search-side equivalent
-	// for a condition's literal-vs-field mismatch.
+	// for a condition whose operator applies to none of the field's
+	// declared types, or whose comparison or range operand parses into none
+	// of the types the operator applies to.
 	ErrCodeIncompatibleType     = "INCOMPATIBLE_TYPE"
 	ErrCodeInvalidChangeLevel   = "INVALID_CHANGE_LEVEL"
 	ErrCodeInvalidFieldPath     = "INVALID_FIELD_PATH"
@@ -129,9 +131,12 @@ const (
 	ErrCodeSearchJobAlreadyTerminal = "SEARCH_JOB_ALREADY_TERMINAL"
 	ErrCodeSearchShardTimeout       = "SEARCH_SHARD_TIMEOUT"
 	ErrCodeSearchResultLimit        = "SEARCH_RESULT_LIMIT"
-	// ErrCodeConditionTypeMismatch is returned when a simple condition's value
-	// type does not match the field's locked DataType (e.g. "abc" against a
-	// DOUBLE field). Equivalent to Cloud's InvalidTypesInClientConditionException.
+	// ErrCodeConditionTypeMismatch is returned when a simple condition's
+	// operator applies to none of the field's declared DataTypes, or a
+	// comparison or range operand parses into none of the types the operator
+	// applies to (e.g. EQUALS "abc" against a DOUBLE field). A string or
+	// pattern operand is not parsed against the field's types. Equivalent to
+	// Cloud's InvalidTypesInClientConditionException for the operand case.
 	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 	// ErrCodeInvalidCondition is returned when a request body condition
 	// (AbstractConditionDto) cannot be parsed. Non-retryable: the client

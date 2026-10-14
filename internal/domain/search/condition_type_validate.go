@@ -19,10 +19,13 @@ import (
 //     ordering or range operator an ordered one. CONTAINS on a numeric field
 //     or GREATER_THAN on a boolean can never match, so it is refused rather
 //     than answered with an empty result.
-//   - a comparison or range operand must PARSE into at least one declared
-//     type — the same type-directed parse the leaf-comparison kernel
-//     (spi.ExpandLeaf) performs at evaluation time. A numeric-looking string
-//     on an [INTEGER, STRING] field parses and is accepted.
+//   - a comparison or range operand must PARSE into at least one of the
+//     declared types the operator applies to — the same type-directed parse
+//     the leaf-comparison kernel (spi.ExpandLeaf) performs at evaluation
+//     time; a range's two bounds must parse into one such type. A
+//     numeric-looking string on an [INTEGER, STRING] field parses and is
+//     accepted. A string or pattern operand is not parsed against the
+//     field's types.
 //
 // fields is the model's FieldsMap, a lookup from JSONPath (e.g. "$.price") to
 // a FieldDescriptor carrying the declared DataType(s). Pass the map the
@@ -156,7 +159,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	// Only the comparison/range family constrains the operand's type. String
-	// operators and the null-presence tests parse any operand.
+	// and pattern operators and the null-presence tests take any operand.
 	if !isParseConstrainedOp(op) {
 		return nil
 	}
@@ -166,7 +169,8 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
 		// validateOperand refuses an array under every other operator, and a
 		// pair that is not exactly two non-null scalar bounds, before this
-		// check runs. Every element must parse into a declared type.
+		// check runs. Every element must parse into a type the operator
+		// applies to, and the two bounds into one such type.
 		for i, elem := range v {
 			if !operandParsesDeclared(applicable, elem) {
 				return fmt.Errorf("value[%d] %s parses into none of field %q's types %v that operator %q applies to: %w",
@@ -187,8 +191,8 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 }
 
-// isParseConstrainedOp reports whether op's operand must parse into a declared
-// type for the condition to be valid. Only the six comparison operators and the
+// isParseConstrainedOp reports whether op's operand must parse into one of the
+// declared types op applies to for the condition to be valid. Only the six comparison operators and the
 // two range operators are constrained; string operators (CONTAINS, LIKE, the
 // case-insensitive/negated variants, ...) and the null-presence tests (IS_NULL,
 // NOT_NULL) carry no operand-parse constraint — mirroring the kernel,
@@ -463,8 +467,8 @@ func operandElements(v any) []any {
 
 // classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
 // its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
-// itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
-// or the operand does not fit a known field's type).
+// itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator,
+// or a comparison or range operand, does not fit a known field's types).
 //
 // validateConditionSequence is its one caller, so every surface that takes a
 // condition answers an operator-class rejection with the same code.

@@ -80,8 +80,8 @@ func allPushedExact(f spi.Filter) bool {
 // are silently lost. Mirrors the guard in the postgres plugin.
 //
 // The error return is spi.Prepare's: a leaf the kernel genuinely cannot
-// evaluate (an operand fitting no declared type, a pattern that will not
-// compile, ...) makes the whole filter unplannable, wrapping
+// evaluate (a comparison or range operand fitting no declared type, a
+// pattern that will not compile, ...) makes the whole filter unplannable, wrapping
 // spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
 // plan that matches nothing.
 func planFor(filter spi.Filter) (sqlPlan, error) {

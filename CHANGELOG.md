@@ -754,10 +754,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, `IEQUALS`, the `NOT_*` and `INOT_*`
   forms, …) needs a text field (`STRING` or `CHARACTER`); an ordering operator
   needs a number, text or a date/time; a range operator a number, `STRING` or
-  a date/time, with both bounds in the same one. A comparison operand must
-  fit a type the operator applies to. Before, on a number or a boolean such a
-  condition was evaluated: a positive operator answered an empty result, and
-  a negated one matched every entity holding a value there — on conditional
+  a date/time, with both bounds in the same one. A comparison or range
+  operand must fit a type the operator applies to. Before, on a number or a
+  boolean such a condition was evaluated: a positive operator answered an
+  empty result, and a negated one matched every entity holding a value
+  there — on conditional
   delete, `NOT_CONTAINS` on a numeric field deleted them all. **A string
   operator on a date, time or UUID field used to match its stored text**
   (`STARTS_WITH "2024"` on a date); it is now refused, because those values
