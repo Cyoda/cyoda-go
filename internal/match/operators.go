@@ -1,8 +1,6 @@
 package match
 
 import (
-	"strings"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
@@ -77,27 +75,4 @@ func operandsToStrings(vs []any) []string {
 		out[i] = spi.OperandString(v)
 	}
 	return out
-}
-
-// betweenBounds extracts the two BETWEEN bounds as kernel operand strings.
-// The canonical (and only validation-accepted) shape is a two-element []any;
-// a legacy "lo,hi" comma string is also tolerated for in-process callers that
-// bypass validation. Any other shape yields nil, which the kernel's
-// expandBetween rejects into a per-entity non-match.
-func betweenBounds(expected any) []string {
-	switch v := expected.(type) {
-	case []any:
-		if len(v) != 2 {
-			return nil
-		}
-		return operandsToStrings(v)
-	case string:
-		parts := strings.SplitN(v, ",", 2)
-		if len(parts) != 2 {
-			return nil
-		}
-		return []string{strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])}
-	default:
-		return nil
-	}
 }

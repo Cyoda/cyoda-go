@@ -178,17 +178,28 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 
 // expandNamed maps an operator NAME to its kernel op and expands the operand.
 // A name with no kernel op is a structural fault (ErrUnsupportedOperator);
-// anything else the kernel rejects is an expansion failure the caller
-// (leafNode) turns into a Prepare error (ErrUnevaluableLeaf) — an unevaluable
-// leaf is a structural fault too, not a leaf that silently never matches.
+// an operand spi.ValidateOperand refuses, and anything else the kernel
+// rejects, is an expansion failure the caller (leafNode) turns into a Prepare
+// error (ErrUnevaluableLeaf) — an unevaluable leaf is a structural fault too,
+// not a leaf that silently never matches.
+//
+// The operand is checked before it is stringified. spi.ExpandLeaf takes
+// strings, in which a missing operand reads as "" (EQUALS would match the
+// empty string, CONTAINS every string) and an object or array as its printed
+// form, so it cannot refuse them itself; a direct caller owns the check, as
+// spi.Prepare does for a Filter.
 func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.Expansion, error) {
 	op, ok := opNameToFilterOp(operatorType)
 	if !ok {
 		return spi.Expansion{}, fmt.Errorf("%w: %s", ErrUnsupportedOperator, operatorType)
 	}
+	if err := spi.ValidateOperand(op, value); err != nil {
+		return spi.Expansion{}, fmt.Errorf("operator %s: %w", operatorType, err)
+	}
 	var values []string
 	if op == spi.FilterBetween || op == spi.FilterBetweenInclusive {
-		values = betweenBounds(value)
+		// spi.ValidateOperand has accepted a []any of two scalar bounds.
+		values = operandsToStrings(value.([]any))
 	}
 	exp, err := spi.ExpandLeaf(op, spi.OperandString(value), values, declared)
 	if err != nil {
@@ -234,10 +245,10 @@ func leafNode(kind prepKind, operatorType string, value any, declared []spi.Data
 		if errors.Is(err, ErrUnsupportedOperator) {
 			return prepNode{}, err
 		}
-		// An operand that parses into no declared type, or a malformed range
-		// arity, cannot be evaluated: the swallowed expansion error the
-		// per-row evaluator used to absorb into a silent non-match, made an
-		// explicit Prepare failure instead.
+		// An operand of a shape no operator can use, or one that parses into
+		// no declared type, cannot be evaluated: the swallowed expansion error
+		// the per-row evaluator used to absorb into a silent non-match, made
+		// an explicit Prepare failure instead.
 		return prepNode{}, fmt.Errorf("%w: %v", ErrUnevaluableLeaf, err)
 	}
 	return prepNode{kind: kind, exp: exp}, nil

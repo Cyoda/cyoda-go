@@ -533,8 +533,8 @@ func TestMatchSimpleLikeFalse(t *testing.T) {
 
 // --- 11. BETWEEN ---
 
-func TestMatchSimpleBetweenString(t *testing.T) {
-	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: "25,35"}
+func TestMatchSimpleBetweenStringBounds(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: []any{"25", "35"}}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
 		t.Fatal(err)
@@ -558,7 +558,7 @@ func TestMatchSimpleBetweenSlice(t *testing.T) {
 }
 
 func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
-	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: "30,30"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: []any{float64(30), float64(30)}}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
 		t.Fatal(err)

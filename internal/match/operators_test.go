@@ -31,26 +31,6 @@ func TestOperandString(t *testing.T) {
 	}
 }
 
-// --- betweenBounds ---
-
-func TestBetweenBounds(t *testing.T) {
-	if got := betweenBounds([]any{float64(25), float64(35)}); len(got) != 2 || got[0] != "25" || got[1] != "35" {
-		t.Errorf("[]any bounds: got %v", got)
-	}
-	if got := betweenBounds("25,35"); len(got) != 2 || got[0] != "25" || got[1] != "35" {
-		t.Errorf("comma-string bounds: got %v", got)
-	}
-	if got := betweenBounds([]any{float64(1)}); got != nil {
-		t.Errorf("1-element []any must yield nil, got %v", got)
-	}
-	if got := betweenBounds("only-one"); got != nil {
-		t.Errorf("comma-less string must yield nil, got %v", got)
-	}
-	if got := betweenBounds(42); got != nil {
-		t.Errorf("unsupported type must yield nil, got %v", got)
-	}
-}
-
 // --- opNameToFilterOp ---
 
 func TestOpNameToFilterOp(t *testing.T) {
