@@ -16,7 +16,8 @@ import (
 //
 //   - the operator must apply to at least one declared type
 //     (applicableTypes): a string or pattern operator needs a text type, an
-//     ordering or range operator an ordered one. CONTAINS on a numeric field
+//     ordering operator an ordered one, and a range operator a numeric,
+//     STRING or temporal one. CONTAINS on a numeric field
 //     or GREATER_THAN on a boolean can never match, so it is refused rather
 //     than answered with an empty result.
 //   - a comparison or range operand must PARSE into at least one of the
