@@ -787,29 +787,21 @@ func leafToSQL(f spi.Filter, counter *int) (string, []any) {
 		// hood), so the text branch needs COLLATE "C" for the same reason
 		// orderingOp does: byte order, matching the kernel's strings.Compare and
 		// orderByFieldExpr's ORDER BY collation (searcher.go).
-		if len(f.Values) >= 2 {
-			numeric := isNumericValue(f.Values[0]) && isNumericValue(f.Values[1])
-			col := orderExpr(f, numeric)
-			p1 := nextPlaceholder(counter)
-			p2 := nextPlaceholder(counter)
-			if numeric {
-				return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s::float8 AND %s::float8)",
-					col, col, p1, p2), []any{numericArg(f.Values[0]), numericArg(f.Values[1])}
-			}
-			return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" BETWEEN %s AND %s)",
-				col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
+		//
+		// f.Values holds exactly two scalar bounds: this function only runs on
+		// the pushed half planQuery's dissect produces, and planQuery calls
+		// spi.Prepare on the WHOLE filter first, which refuses a range leaf
+		// whose Values is not such a pair (spi.ValidateOperand).
+		numeric := isNumericValue(f.Values[0]) && isNumericValue(f.Values[1])
+		col := orderExpr(f, numeric)
+		p1 := nextPlaceholder(counter)
+		p2 := nextPlaceholder(counter)
+		if numeric {
+			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN %s::float8 AND %s::float8)",
+				col, col, p1, p2), []any{numericArg(f.Values[0]), numericArg(f.Values[1])}
 		}
-		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
-		// function only runs on the pushed half planQuery's dissect produces,
-		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
-		// now errors on a range leaf without exactly 2 bounds
-		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
-		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
-		// the same shape even earlier, at the request boundary. The "false"
-		// this arm returns can no longer be produced by any live caller; it
-		// stays as the closed-fail default rather than a panic, in case that
-		// ever changes.
-		return "false", nil
+		return fmt.Sprintf("(%s IS NOT NULL AND (%s) COLLATE \"C\" BETWEEN %s AND %s)",
+			col, col, p1, p2), []any{textArg(f.Values[0]), textArg(f.Values[1])}
 	}
 	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
 	// pushes a branch op into it). FilterNot is the first branch op whose
@@ -848,15 +840,7 @@ func temporalLeafToSQL(f spi.Filter, counter *int) (string, []any) {
 	col := temporalEpochMillisExpr(f.Source, f.Path, fieldExpr(f))
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
-		if len(f.Values) < 2 {
-			// Malformed BETWEEN (not exactly 2 operands) fails closed —
-			// exclude every row, matching memory's
-			// spi.Prepare/PreparedFilter.Match semantics, and never index
-			// f.Values out of range. Validation
-			// upstream (search.validateBetweenArity) rejects this shape
-			// before it ever reaches a plugin; this is defense-in-depth only.
-			return "false", nil
-		}
+		// f.Values holds exactly two scalar bounds, as in leafToSQL's arm.
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
 		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))
 		p1 := nextPlaceholder(counter)
