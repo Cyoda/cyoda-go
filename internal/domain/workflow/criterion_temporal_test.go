@@ -9,7 +9,7 @@ import (
 // (a non-offset-RFC3339 operand on creationDate/lastUpdateTime; unknown meta
 // field paths). These conditions previously imported successfully and only
 // failed — or silently misbehaved — at transition-evaluation time
-// (engine.go's match.Prepare -> prepareLifecycle path). This closes that
+// (criterion_eval.go's prepareLocalUnits -> match.Prepare -> prepareLifecycle path). This closes that
 // fail-open gap by delegating to the shared search.ValidateLifecycleCondition
 // at import time, the same validator the search API boundary already uses.
 

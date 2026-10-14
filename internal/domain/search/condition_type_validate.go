@@ -45,8 +45,8 @@ import (
 //
 // Precondition: cond has already passed ValidateCondition or
 // ValidateCriterionCondition. This function relies on that check and does
-// not repeat it; a range operand that is not two non-null scalar bounds is a
-// caller bug and panics.
+// not repeat it; on a condition that has not passed it, the result is
+// undefined (it may panic, or accept a malformed operand).
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
 	return walkConditionTypes(fields, cond, 0)
 }

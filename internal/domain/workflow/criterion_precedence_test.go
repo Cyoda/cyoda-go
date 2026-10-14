@@ -12,7 +12,7 @@ import (
 
 // newEngineWithFailingModelStore builds an engine on the standard
 // setupEngine fixture, but wraps the factory so ModelStore(ctx) fails — the
-// branch at engine.go that sets loadErr. It returns an entity whose model
+// branch in criterion_eval.go (prepareLocalUnits) that sets loadErr. It returns an entity whose model
 // declares $.age as an Integer (irrelevant here since the store never comes
 // up, but keeps the fixture parallel to the healthy variant).
 func newEngineWithFailingModelStore(t *testing.T) (*Engine, *spi.Entity, *criterionContext) {
