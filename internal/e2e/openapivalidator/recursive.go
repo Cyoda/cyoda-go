@@ -26,6 +26,17 @@ import (
 // whatever the value. A value reached through a recursive schema — a group
 // condition inside a group condition — is therefore never checked.
 //
+// For an OpenAPI 3.1 document, ValidateResponse passes EnableJSONSchema2020,
+// so VisitJSON (schema.go:2002-2009) first tries the JSON Schema 2020-12
+// validator. That validator compiles the schema alone, as the resource
+// https://example.com/schema.json, where no "#/components/..." reference
+// resolves; compilation fails and kin falls back to visitJSON
+// (openapi3/schema_jsonschema_validator.go:290-295). Every recursive schema
+// holds a $ref, so it always reaches visitJSON and its skip. A kin release
+// that resolves those references would check the nested values itself; the
+// walk would then repeat kin's rows, which
+// TestValidator_RecursiveSchema_DeepMismatchReported (exactly one row) shows.
+//
 // checkRecursive walks the decoded body alongside the response schema and
 // keeps the same stack of schemas that kin keeps. Where the walk enters a
 // schema that is already on the stack at an outer JSON pointer — where kin
