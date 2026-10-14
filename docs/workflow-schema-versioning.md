@@ -130,9 +130,9 @@ This is the same "bug-fixing a validator that was already supposed to reject
 something" case as the unrecognised-operator entry directly above it, reached
 through a different check: a criterion on a field the model does not declare
 never worked as a correct guard either, so no *working* config is newly
-rejected. Import-time acceptance is unchanged — import still checks
-only path grammar, operator names, lifecycle type-soundness and pattern
-operands at import, not model membership, so a criterion naming a field the
+rejected. Import-time acceptance is unchanged — import checks path
+grammar, operator names, operand shape, lifecycle type-soundness and pattern
+operands, not model membership, so a criterion naming a field the
 model has not yet declared still imports byte-identically; the field's
 declaration is a modelling step, not an import-validation one. No
 `CurrentSchemaVersion` or `SupportedSchemaRanges` change.

@@ -119,8 +119,8 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
 // skips it — and the validation call still runs with a nil fields map, so
 // search.ValidateConditionValueTypes's lifecycle branch
-// (validateLifecycleType) refuses it at evaluation as import does
-// (criterion_temporal_test.go) for a criterion stored without that check.
+// (validateLifecycleType) makes at evaluation the same check import makes
+// (criterion_temporal_test.go).
 // The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
