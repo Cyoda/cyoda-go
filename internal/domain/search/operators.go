@@ -11,10 +11,11 @@ import (
 )
 
 // ErrInvalidCondition is the sentinel for a condition that fails structural
-// (shape) validation: an unknown or missing operatorType, an operand that is
-// an object/map, an array operand under an operator other than BETWEEN /
-// BETWEEN_INCLUSIVE, a BETWEEN operand that is not a two-element pair of
-// non-null scalar bounds, an unknown group operator or a NOT group without
+// (shape) validation: an unknown or missing operatorType, a missing or null
+// operand under an operator that takes one, an operand that is an object/map,
+// an array operand under an operator other than BETWEEN / BETWEEN_INCLUSIVE,
+// any other operand that is not a scalar, a BETWEEN operand that is not a
+// two-element pair of non-null scalar bounds, an unknown group operator or a NOT group without
 // exactly one child, and an array clause that is malformed or tests nothing.
 // An object denotes no scalar value any operator could evaluate, so it is
 // rejected as INVALID_CONDITION (spec §6/§8: a shape/arity error, not a type
@@ -114,18 +115,12 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// The clause as a whole: its path names the elements of one array.
 		if err := ValidateArrayClauseJSONPath(c.JsonPath); err != nil {
@@ -192,8 +187,8 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // ValidateCondition only in not checking the search path grammar (see
 // below).
 //
-// Shares canonicalOperators/validateOperator/validateOperandShape/
-// validateBetweenArity with ValidateCondition — one operator table for both
+// Shares canonicalOperators/validateOperator/validateOperand with
+// ValidateCondition — one operator table for both
 // entry points, per operator-semantics.md §4: "An operator name outside
 // this set is 400 INVALID_CONDITION, on every surface that carries a
 // condition, workflow import included." structuralConditionErrCode
@@ -260,18 +255,12 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// Held to the rules of its desugared leaves; the path shape is checked
 		// by the caller (workflow's walkCriterion) before this runs.
@@ -367,85 +356,49 @@ func validateOperator(op string) error {
 	return nil
 }
 
-// validateOperandShape rejects an operand whose shape no operator can
-// evaluate. A SimpleCondition or LifecycleCondition leaf's value is a scalar,
-// except under BETWEEN / BETWEEN_INCLUSIVE, where it is the [low, high] pair
-// (validateBetweenArity checks the pair itself), and under IS_NULL /
-// NOT_NULL, which take none. So:
+// validateOperand refuses a leaf operand no operator can evaluate, by the one
+// rule for operand shape, spi.ValidateOperand: a SimpleCondition or
+// LifecycleCondition leaf's value is a scalar, except under BETWEEN /
+// BETWEEN_INCLUSIVE, where it is the [low, high] pair of scalar bounds, and
+// under IS_NULL / NOT_NULL, which take none. Each refusal maps to the
+// INVALID_CONDITION wording this boundary has always given; see
+// spi.ValidateOperand for why each shape is refused.
 //
-//   - an object (map[string]any) is refused for every operator. It denotes no
-//     value and would otherwise slip past a parse-based type check (a map
-//     stringifies via fmt.Sprint into text that can "parse" as a STRING
-//     field's operand);
-//   - an array ([]any) is refused for every operator other than BETWEEN /
-//     BETWEEN_INCLUSIVE. No other operator takes a set of values, and the
-//     backends evaluate such an operand differently: memory compares the
-//     stringified array, sqlite matches every row on NOT_EQUAL and none on
-//     EQUALS. On a conditional delete that is the difference between
-//     deleting nothing and deleting nearly everything;
-//   - a null or missing operand (nil) is refused for every operator that
-//     takes one, which is every operator but IS_NULL and NOT_NULL. Left
-//     through, it compares as the empty string: EQUALS matches "", and
-//     CONTAINS or STARTS_WITH match every string — on a conditional delete,
-//     every entity with a string at the path.
+// These are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
+// and apply whether or not the field or model is known. It is the one
+// validation boundary every transport (HTTP, gRPC) and workflow import
+// funnels through, ahead of spi.ConditionToFilter and both evaluators, which
+// apply the same rule. An array clause reaches this check through its
+// desugared positional leaves, so an entry is held to the same rule as a
+// simple clause's value (a null entry yields no leaf).
 //
-// All three are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
-// and apply whether or not the field or model is known. An array clause
-// reaches this check through its desugared positional leaves, so an entry
-// is held to the same rule as a simple clause's value (a null entry yields
-// no leaf).
-func validateOperandShape(op string, value any) error {
-	switch value.(type) {
-	case nil:
-		if carriesScalarOperand(spi.MapOperator(op)) {
-			return fmt.Errorf("%w: operator %q takes an operand, and `value` is missing or null; only IS_NULL and NOT_NULL take none", ErrInvalidCondition, op)
-		}
-	case map[string]any:
-		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
-	case []any:
-		if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
-			return fmt.Errorf("%w: operator %q takes a single value, not an array; only BETWEEN and BETWEEN_INCLUSIVE take a [low, high] pair", ErrInvalidCondition, op)
-		}
-	}
-	return nil
-}
-
-// validateBetweenArity enforces that a BETWEEN / BETWEEN_INCLUSIVE
-// condition's value is exactly a 2-element array (the [lo, hi] bounds pair)
-// whose bounds are both non-null scalars.
-// Model-independent and shared by SimpleCondition (data leaves) and
-// LifecycleCondition (meta leaves, including temporal fields) — the same
-// malformed-arity bug affects both.
-//
-// A scalar, a 1- or 3-element array, or a null bound is refused here because
-// betweenValues (filter_translate.go) accepts only a 2-element []any and
-// otherwise leaves spi.Filter.Values nil, and the storage plugins do not
-// agree on what a nil-Values BETWEEN filter means. An object or array bound
-// is refused because it denotes no value a range can compare against:
-// PostgreSQL fails on it, and the in-memory evaluator compares against its
-// printed form, which on a conditional delete chooses the rows deleted. This
-// is the one validation boundary every transport (HTTP, gRPC) and workflow
-// import funnels through, so the malformed condition never reaches them.
-func validateBetweenArity(op string, value any) error {
-	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
+// op has passed validateOperator, so spi.MapOperator names a leaf operator.
+func validateOperand(op string, value any) error {
+	err := spi.ValidateOperand(spi.MapOperator(op), value)
+	switch {
+	case err == nil:
 		return nil
-	}
-	vals, ok := value.([]any)
-	if !ok {
+	case errors.Is(err, spi.ErrOperandMissing):
+		return fmt.Errorf("%w: operator %q takes an operand, and `value` is missing or null; only IS_NULL and NOT_NULL take none", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrOperandObject):
+		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
+	case errors.Is(err, spi.ErrOperandArray):
+		return fmt.Errorf("%w: operator %q takes a single value, not an array; only BETWEEN and BETWEEN_INCLUSIVE take a [low, high] pair", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrBetweenNotArray):
 		return fmt.Errorf("%w: operator %q requires exactly two operands, got %T", ErrInvalidCondition, op, value)
+	case errors.Is(err, spi.ErrBetweenCount):
+		// ErrBetweenCount is returned only for a []any operand.
+		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(value.([]any)))
+	case errors.Is(err, spi.ErrBetweenNullBound):
+		return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrBetweenNonScalarBound):
+		return fmt.Errorf("%w: operator %q bounds must be scalars, not objects or arrays", ErrInvalidCondition, op)
+	default:
+		// spi.ErrOperandNotScalar, the one refusal left: a Go value JSON
+		// decoding never produces. Every refusal wraps spi.ErrInvalidOperand,
+		// so a sentinel the SPI adds later also lands here, as a 400.
+		return fmt.Errorf("%w: condition value is not a scalar", ErrInvalidCondition)
 	}
-	if len(vals) != 2 {
-		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(vals))
-	}
-	for _, b := range vals {
-		switch b.(type) {
-		case nil:
-			return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
-		case map[string]any, []any:
-			return fmt.Errorf("%w: operator %q bounds must be scalars, not objects or arrays", ErrInvalidCondition, op)
-		}
-	}
-	return nil
 }
 
 // canonicalOperatorList returns a deterministic comma-separated list of

@@ -37,11 +37,11 @@ import (
 // Returns a non-nil error only when an operator does not apply to the field's
 // declared types or an operand parses into none of them
 // (errConditionTypeMismatch), or a lifecycle field is unknown
-// (errInvalidFieldPath). Operand shape/arity — an object operand
-// (never valid for any operator), an array operand (valid only as a range
-// op's 2-element bounds), a range op's bounds shape — is enforced separately by
-// ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
-// this type check.
+// (errInvalidFieldPath). Operand shape — a missing operand, an object
+// operand (never valid for any operator), an array operand (valid only as a
+// range op's 2-element bounds), a range op's bounds shape — is enforced
+// separately by ValidateCondition/validateOperand, upstream of this type
+// check.
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
 	return walkConditionTypes(fields, cond, 0)
 }
@@ -138,7 +138,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	// An object operand is rejected upstream, at the model-independent shape
-	// layer (validateOperandShape in operators.go, wired into ValidateCondition
+	// layer (validateOperand in operators.go, wired into ValidateCondition
 	// — the single boundary every transport funnels through before this
 	// type check runs) as INVALID_CONDITION, not here: it is a shape/arity
 	// error (spec §6/§8), not a field-type mismatch.
@@ -159,10 +159,9 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	switch v := c.Value.(type) {
 	case []any:
 		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
-		// validateOperandShape refuses an array under every other operator,
-		// and validateBetweenArity refuses a pair that is not exactly two
-		// non-null bounds, before this check runs. Every element must parse
-		// into a declared type.
+		// validateOperand refuses an array under every other operator, and a
+		// pair that is not exactly two non-null scalar bounds, before this
+		// check runs. Every element must parse into a declared type.
 		for i, elem := range v {
 			if !operandParsesDeclared(applicable, elem) {
 				return fmt.Errorf("value[%d] %s parses into none of field %q's types %v that operator %q applies to: %w",
@@ -450,7 +449,7 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 
 // operandElements normalises a condition value into its operand elements: a
 // scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, the
-// only array operand validateOperandShape accepts) becomes one element per
+// only array operand validateOperand accepts) becomes one element per
 // member. Callers skip nil elements.
 func operandElements(v any) []any {
 	if arr, ok := v.([]any); ok {
