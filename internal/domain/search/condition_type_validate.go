@@ -324,16 +324,14 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 // into one declared type family together, by asking the kernel's own range
 // expansion (spi.ExpandLeaf). Each bound parsing into some declared type is
 // not enough: [5.5, "2024-01-01"] on an [INTEGER, LOCAL_DATE] field has no
-// family holding both, so no range exists to evaluate. Anything other than a
-// range operator with exactly two non-null bounds is left to the arity and
-// per-element checks.
+// family holding both, so no range exists to evaluate.
+//
+// op is BETWEEN or BETWEEN_INCLUSIVE and bounds is exactly two non-null scalar
+// bounds: the caller passes an array operand, and validateOperand
+// (ValidateCondition on every search surface, ValidateCriterionCondition at
+// workflow import) has refused every other array operand before the type
+// check runs.
 func rangeBoundsParseTogether(op spi.FilterOp, declared []schema.DataType, bounds []any) bool {
-	if op != spi.FilterBetween && op != spi.FilterBetweenInclusive {
-		return true
-	}
-	if len(bounds) != 2 || bounds[0] == nil || bounds[1] == nil {
-		return true
-	}
 	values := []string{spi.OperandString(bounds[0]), spi.OperandString(bounds[1])}
 	_, err := spi.ExpandLeaf(op, "", values, declared)
 	return err == nil
