@@ -838,7 +838,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and `Prepare`, for every backend, with errors that wrap
   `ErrInvalidOperand` ([spi#69](https://github.com/Cyoda/cyoda-go-spi/pull/69)).
   A `Filter` whose range pair is only in `Value`, or a binary leaf with a
-  nil `Value`, no longer prepares. cyoda-go's own checks now call this
+  nil `Value`, no longer prepares. A plugin author who builds a `Filter` in
+  Go must also keep each operand, and each range bound, in the scalar set
+  (string, bool, `json.Number`, the integer and float types): `Prepare` and
+  `ConditionToFilter` refuse any other Go value, such as a `time.Time`, a
+  `uuid.UUID` or a pointer, with `ErrOperandNotScalar` (a bound with
+  `ErrBetweenNonScalarBound`). cyoda-go's own checks now call this
   rule, so it is defined once; the input cyoda-go accepts is unchanged. See
   `COMPATIBILITY.md`.
 
