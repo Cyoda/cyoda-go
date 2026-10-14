@@ -35,8 +35,8 @@ import (
 // constraint.
 //
 // Returns a non-nil error only when an operator does not apply to the field's
-// declared types or an operand parses into none of them
-// (errConditionTypeMismatch), or a lifecycle field is unknown
+// declared types or a comparison or range operand parses into none of the
+// types the operator applies to (errConditionTypeMismatch), or a lifecycle field is unknown
 // (errInvalidFieldPath). Operand shape — a missing operand, an object
 // operand (never valid for any operator), an array operand (valid only as a
 // range op's 2-element bounds), a range op's bounds shape — is enforced

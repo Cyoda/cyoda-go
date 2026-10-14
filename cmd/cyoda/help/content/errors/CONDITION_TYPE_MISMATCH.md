@@ -13,7 +13,7 @@ see_also:
 
 ## NAME
 
-CONDITION_TYPE_MISMATCH — a search condition's operand parses into none of the field's declared DataTypes, or its operator applies to none of them.
+CONDITION_TYPE_MISMATCH — a search condition's operator applies to none of the field's declared DataTypes, or a comparison or range operand parses into none of the types the operator applies to.
 
 ## SYNOPSIS
 

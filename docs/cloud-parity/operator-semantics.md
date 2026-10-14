@@ -23,8 +23,8 @@ numerically stored value, and a numeric operand never matches a stored string.
 Numbers compare through arbitrary-precision integer and decimal types, not
 `float64`. Comparison is correct beyond 2^53.
 
-An operand that fits no declared type of a known field is `400
-CONDITION_TYPE_MISMATCH`.
+A comparison or range operand that fits none of the declared types of a known
+field that the operator applies to is `400 CONDITION_TYPE_MISMATCH`.
 
 **An operator must apply to at least one declared type**, or the condition is
 `400 CONDITION_TYPE_MISMATCH` too:
