@@ -198,10 +198,11 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		Body:    io.NopCloser(bytes.NewReader(body)),
 		Options: v.opts,
 	}
-	if err := openapi3filter.ValidateResponse(ctx, input); err != nil {
-		mismatches = v.toMismatches(err, opId, req, resp.StatusCode)
+	kinErr := openapi3filter.ValidateResponse(ctx, input)
+	if kinErr != nil {
+		mismatches = v.toMismatches(kinErr, opId, req, resp.StatusCode)
 	}
-	if err := v.checkRecursive(route, req, resp.StatusCode, resp.Header, body); err != nil {
+	if err := v.checkRecursive(route, req, resp.StatusCode, resp.Header, body, kinErr); err != nil {
 		mismatches = append(mismatches, v.toMismatches(err, opId, req, resp.StatusCode)...)
 	}
 	return mismatches

@@ -157,8 +157,38 @@ func TestValidator_RecursiveSchema_ValidDeepBodyPasses(t *testing.T) {
 	}
 }
 
-// A mismatch kin already reports (no recursive re-entry on its path) is
-// reported once. The re-entry case of the same rule is
+// One defect gives one row. A union whose discriminator does not resolve (here
+// the member has no "type") fails in kin's own visit, and the walk then checks
+// the same union at the same pointer with the same result. The walk's row
+// repeats kin's and is dropped.
+func TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce(t *testing.T) {
+	body := `{"type":"group","conditions":[{"value":1}]}`
+	mismatches := validateRecursiveFixture(t, "/group", body)
+	if len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+	if want := `input does not contain the discriminator property "type"`; !strings.Contains(mismatches[0].Reason, want) {
+		t.Errorf("mismatch reason = %s, want it to contain %s", mismatches[0].Reason, want)
+	}
+
+	// The same at the root: the response schema is the union itself, so kin
+	// and the walk both report at the empty pointer.
+	rootPath := "paths:\n  /condition:\n    get:\n      operationId: getCondition\n      responses:\n        \"200\":\n          description: ok\n          content:\n            application/json:\n              schema:\n                $ref: '#/components/schemas/Condition'\n"
+	yaml := strings.Replace(recursiveFixtureYAML, "paths:\n", rootPath, 1)
+	if yaml == recursiveFixtureYAML {
+		t.Fatal("fixture paths block not found")
+	}
+	root := validateBody(t, newSpecValidator(t, yaml), "/condition", `{"value":1}`)
+	if len(root) != 1 {
+		t.Fatalf("root union: expected exactly 1 mismatch, got %d: %+v", len(root), root)
+	}
+}
+
+// One defect gives one row: a mismatch kin already reports (no recursive
+// re-entry on its path) is not reported again by the walk. The walk adds a row
+// only where its pointer and reason differ from every row kin gave; see
+// TestValidator_RecursiveSchema_UnresolvedDiscriminatorReportedOnce for a case
+// where both check the same union. The same-pointer re-entry case is
 // TestValidator_RecursiveSchema_SamePointerReentryReportedOnce.
 func TestValidator_RecursiveSchema_DepthOneMismatchReportedOnce(t *testing.T) {
 	body := `{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}`

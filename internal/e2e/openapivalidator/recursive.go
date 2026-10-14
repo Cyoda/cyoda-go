@@ -3,6 +3,7 @@ package openapivalidator
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"mime"
@@ -37,9 +38,15 @@ import (
 // The walk enters only schemas from which a schema cycle is reachable
 // (v.recursive); below any other schema no re-entry can happen. Each mismatch
 // reads `recursive schema at "<pointer>": <kin error>`; the paths in the kin
-// error are relative to that pointer. The result is nil or an
-// openapi3.MultiError.
-func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, status int, header http.Header, body []byte) error {
+// error are relative to that pointer.
+//
+// One defect gives one row. reported is the error kin's own ValidateResponse
+// returned for the same body (nil if none). A walk mismatch whose absolute
+// JSON pointer and reason equal those of a row in reported is dropped: it is
+// kin's row again. This happens where the walk checks a union kin also
+// checked, such as a union whose discriminator does not resolve. The result
+// is nil or an openapi3.MultiError.
+func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, status int, header http.Header, body []byte, reported error) error {
 	schema := responseSchema(route, v.opts, req, status, header)
 	if schema == nil || !v.recursive[schema] {
 		return nil
@@ -56,10 +63,61 @@ func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, stat
 		checked:   map[reentry]bool{},
 	}
 	w.walk(schema, value, "", map[*openapi3.Schema]string{})
-	if len(w.errs) == 0 {
+
+	seen := map[mismatchKey]bool{}
+	if reported != nil {
+		for _, e := range schemaErrors(reported) {
+			if k, ok := keyOf("", e); ok {
+				seen[k] = true
+			}
+		}
+	}
+	var errs openapi3.MultiError
+	for _, m := range w.errs {
+		if k, ok := keyOf(m.pointer, m.err); ok && seen[k] {
+			continue
+		}
+		errs = append(errs, m)
+	}
+	if len(errs) == 0 {
 		return nil
 	}
-	return w.errs
+	return errs
+}
+
+// recursiveMismatch is one error a fresh check of the walk gave, for the
+// value at pointer. Its text is `recursive schema at "<pointer>": <err>`.
+type recursiveMismatch struct {
+	pointer string
+	err     error
+}
+
+func (m recursiveMismatch) Error() string {
+	return fmt.Sprintf("recursive schema at %q: %v", m.pointer, m.err)
+}
+
+func (m recursiveMismatch) Unwrap() error { return m.err }
+
+// mismatchKey identifies a schema defect: the absolute JSON pointer of the
+// value and kin's reason.
+type mismatchKey struct {
+	pointer string
+	reason  string
+}
+
+// keyOf returns the key of err, a kin error for the value at prefix, or false
+// when err carries no *openapi3.SchemaError. The SchemaError's own path is
+// relative to prefix.
+func keyOf(prefix string, err error) (mismatchKey, bool) {
+	var se *openapi3.SchemaError
+	if !errors.As(err, &se) {
+		return mismatchKey{}, false
+	}
+	p := prefix
+	for _, token := range se.JSONPointer() {
+		p += "/" + pointerEscaper.Replace(token)
+	}
+	return mismatchKey{pointer: p, reason: se.Reason}, true
 }
 
 // responseSchema returns the JSON body schema that openapi3filter.ValidateResponse
@@ -189,7 +247,7 @@ type recursiveWalk struct {
 	recursive map[*openapi3.Schema]bool
 	opts      []openapi3.SchemaValidationOption
 	checked   map[reentry]bool // makes each fresh validation run once
-	errs      openapi3.MultiError
+	errs      []recursiveMismatch
 }
 
 // walk visits value with schema s, as kin's visitJSON does. stack maps each
@@ -257,7 +315,7 @@ func (w *recursiveWalk) check(s *openapi3.Schema, value any, pointer string) {
 	w.checked[key] = true
 	if err := s.VisitJSON(value, w.opts...); err != nil {
 		for _, e := range schemaErrors(err) {
-			w.errs = append(w.errs, fmt.Errorf("recursive schema at %q: %w", pointer, e))
+			w.errs = append(w.errs, recursiveMismatch{pointer: pointer, err: e})
 		}
 	}
 }
