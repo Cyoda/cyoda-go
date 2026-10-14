@@ -42,6 +42,11 @@ import (
 // range op's 2-element bounds), a range op's bounds shape — is enforced
 // separately by ValidateCondition/validateOperand, upstream of this type
 // check.
+//
+// Precondition: cond has already passed ValidateCondition or
+// ValidateCriterionCondition. This function relies on that check and does
+// not repeat it; a range operand that is not two non-null scalar bounds is a
+// caller bug and panics.
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
 	return walkConditionTypes(fields, cond, 0)
 }
