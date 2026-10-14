@@ -832,6 +832,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `STARTS_WITH` matched every string, so a conditional delete removed every
   entity with a string at the path.
 
+- **SPI: one operand rule, `ValidateOperand`, refused by the SPI itself.**
+  `cyoda-go-spi` now refuses a missing operand, an object, an array outside
+  a range and a range that is not two scalar bounds in `ConditionToFilter`
+  and `Prepare`, for every backend, with errors that wrap
+  `ErrInvalidOperand` ([spi#69](https://github.com/Cyoda/cyoda-go-spi/pull/69)).
+  A `Filter` whose range pair is only in `Value`, or a binary leaf with a
+  nil `Value`, no longer prepares. cyoda-go's own checks now call this
+  rule, so it is defined once; the input cyoda-go accepts is unchanged. See
+  `COMPATIBILITY.md`.
+
 - **A condition tests at most 10,000 entries; a larger one is
   `400 INVALID_CONDITION`, and workflow import answers
   `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
