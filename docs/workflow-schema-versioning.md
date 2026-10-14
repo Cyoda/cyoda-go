@@ -97,7 +97,7 @@ criterion carries a malformed bracket path imported successfully before
 this change and is rejected by the same v0.8.4 binary now, regardless of
 which schema version it declares.
 
-### Unrecognised-operator criteria rejected at evaluation, not import (v0.8.4)
+### Unrecognised-operator criteria fail the save at evaluation (v0.8.4)
 
 A workflow-level or transition-level criterion carrying an operator name the
 evaluator does not recognise (e.g. `FROBNICATE`) now fails the transition
@@ -111,11 +111,11 @@ supposed to reject something" case, same as the v0.8.3 malformed-regex entry
 above: a criterion nobody can evaluate never worked as a correct guard, so no
 *working* config is newly rejected — only which entities surface the failure
 changes (all of them, now, instead of only the ones that reached the bad
-leaf), and evaluation-time failure replaces a silent no-op. Import-time
-acceptance is unchanged: `WorkflowConfigurationDto` still validates only
-`MATCHES_PATTERN` regex syntax, not operator names, so the same workflow
-imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
-change.
+leaf), and evaluation-time failure replaces a silent no-op. The same release
+also refuses an unrecognised operator at import (the one-path-grammar change,
+which validates every criterion against the search operator table), so this
+entry covers a criterion that reached the store without that check. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change.
 
 ### Undeclared-field criteria rejected at evaluation, not import (v0.8.4)
 
@@ -130,7 +130,7 @@ This is the same "bug-fixing a validator that was already supposed to reject
 something" case as the unrecognised-operator entry directly above it, reached
 through a different check: a criterion on a field the model does not declare
 never worked as a correct guard either, so no *working* config is newly
-rejected. Import-time acceptance is unchanged — `walkCriterion` still checks
+rejected. Import-time acceptance is unchanged — import still checks
 only path grammar, operator names, lifecycle type-soundness and pattern
 operands at import, not model membership, so a criterion naming a field the
 model has not yet declared still imports byte-identically; the field's

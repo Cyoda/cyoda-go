@@ -117,12 +117,11 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // whole-block gate on the model read would miss: `creationDate CONTAINS
 // "2024"` carries NO data path at all (a LifecycleCondition contributes
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
-// skips it — but the VALIDATION CALL must still run with a nil fields map,
-// because search.ValidateConditionValueTypes's lifecycle branch
-// (validateLifecycleType) is the one check that refuses a text operator on a
-// temporal meta field. Without it, this criterion reaches match.Prepare
-// unvalidated, and a NOT node over it would select every entity the leaf
-// does not match. The model store is made to error so a
+// skips it — and the validation call still runs with a nil fields map, so
+// search.ValidateConditionValueTypes's lifecycle branch
+// (validateLifecycleType) refuses it at evaluation as import does
+// (criterion_temporal_test.go) for a criterion stored without that check.
+// The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
 func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) {

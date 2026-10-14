@@ -20,8 +20,9 @@ imports cleanly even though the model declares `amount`, not `amonut`.
 
 The criterion evaluator checks the whole condition tree against the current
 model before it evaluates any leaf against data. If any leaf names a field the
-model does not declare, or carries an operand that fits none of the field's
-declared types, the save that triggered evaluation fails with
+model does not declare, applies an operator that none of the field's declared
+types supports (such as `CONTAINS` on a number), or carries an operand that
+fits none of the field's declared types, the save that triggered evaluation fails with
 **400 `WORKFLOW_FAILED`** and the transaction is rolled back — no entity
 write, no state transition, no partial effect. This holds for an entity
 outside `SHIPPED` too, which a lazy, short-circuiting walk would never take

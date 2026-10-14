@@ -307,16 +307,12 @@ func (e *Engine) prepareLocalUnits(ctx context.Context, entity *spi.Entity, unit
 	// spi.ValidateLeafPattern for every LIKE / MATCHES_PATTERN leaf.
 	//
 	//  1. ValidateKnownPaths (above) — the field itself must be declared.
-	//  2. ValidateConditionValueTypes — ALWAYS called, with fields nil when
-	//     the condition carries no data path. This is deliberate: gating the
-	//     CALL (rather than just the model READ, which is correctly gated
-	//     above on len(paths)>0) would leave validateLifecycleType unreached,
-	//     and that is the one check that refuses a text/pattern operator on
-	//     a temporal meta field (e.g. `creationDate CONTAINS "2024"`, which
-	//     carries no data path at all). Without it, such a criterion would
-	//     reach match.Prepare, which tests the instant's RFC3339 text — and
-	//     a NOT node would select every entity whose text does not match.
-	//     Nor is it redundant with Prepare for a data leaf: Prepare evaluates
+	//  2. ValidateConditionValueTypes — called on every unit, with fields nil
+	//     when the condition carries no data path (the model READ above is
+	//     gated on len(paths)>0; the call is not). It is the model-dependent
+	//     type check for data leaves; a lifecycle leaf, which import has
+	//     already checked for type-soundness, passes the same check again.
+	//     It is not redundant with Prepare for a data leaf: Prepare evaluates
 	//     a string operator on a numeric field by polarity, so only this
 	//     check refuses an operator the field's type cannot satisfy. And a
 	//     KNOWN CONTAINER path (declared, but only via a nested leaf beneath
