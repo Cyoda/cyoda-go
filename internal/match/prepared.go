@@ -176,8 +176,10 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 	}
 }
 
-// expandNamed maps an operator NAME to its kernel op and expands the operand.
-// A name with no kernel op is a structural fault (ErrUnsupportedOperator);
+// expandNamed maps an operator NAME to its kernel op through the SPI's one
+// operator table (spi.LookupOperator) and expands the operand. A name with no
+// kernel op — IS_CHANGED, IS_UNCHANGED or any unknown name — is a structural
+// fault (ErrUnsupportedOperator);
 // an operand spi.ValidateOperand refuses, and anything else the kernel
 // rejects, is an expansion failure the caller (leafNode) turns into a Prepare
 // error (ErrUnevaluableLeaf) — an unevaluable leaf is a structural fault too,
@@ -189,7 +191,7 @@ func prepareDesugared(cond predicate.Condition, fieldTypes FieldTypes) (prepNode
 // form, so it cannot refuse them itself; a direct caller owns the check, as
 // spi.Prepare does for a Filter.
 func expandNamed(operatorType string, value any, declared []spi.DataType) (spi.Expansion, error) {
-	op, ok := opNameToFilterOp(operatorType)
+	op, ok := spi.LookupOperator(operatorType)
 	if !ok {
 		return spi.Expansion{}, fmt.Errorf("%w: %s", ErrUnsupportedOperator, operatorType)
 	}

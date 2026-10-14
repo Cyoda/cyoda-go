@@ -31,41 +31,6 @@ func TestOperandString(t *testing.T) {
 	}
 }
 
-// --- opNameToFilterOp ---
-
-func TestOpNameToFilterOp(t *testing.T) {
-	if op, ok := opNameToFilterOp("EQUALS"); !ok || op != spi.FilterEq {
-		t.Errorf("EQUALS → %v,%v", op, ok)
-	}
-	if op, ok := opNameToFilterOp("BETWEEN_INCLUSIVE"); !ok || op != spi.FilterBetweenInclusive {
-		t.Errorf("BETWEEN_INCLUSIVE → %v,%v", op, ok)
-	}
-	if op, ok := opNameToFilterOp("MATCHES_PATTERN"); !ok || op != spi.FilterMatchesRegex {
-		t.Errorf("MATCHES_PATTERN → %v,%v", op, ok)
-	}
-	// Dropped operators are not mapped (expandNamed turns these into errors).
-	for _, name := range []string{"IS_CHANGED", "IS_UNCHANGED", "TOTALLY_UNKNOWN"} {
-		if _, ok := opNameToFilterOp(name); ok {
-			t.Errorf("%s must not map to a FilterOp", name)
-		}
-	}
-	// Case-sensitive negatives route directly to their kernel FilterOp — the
-	// kernel handles null-uniform negation itself, no local special-casing.
-	negatives := []struct {
-		name string
-		want spi.FilterOp
-	}{
-		{"NOT_CONTAINS", spi.FilterNotContains},
-		{"NOT_STARTS_WITH", spi.FilterNotStartsWith},
-		{"NOT_ENDS_WITH", spi.FilterNotEndsWith},
-	}
-	for _, tc := range negatives {
-		if op, ok := opNameToFilterOp(tc.name); !ok || op != tc.want {
-			t.Errorf("%s → %v,%v, want %v,true", tc.name, op, ok, tc.want)
-		}
-	}
-}
-
 // --- kernel routing, exercised through Prepare/(Prepared).Match ---
 
 // viaSimpleCondition is the black-box replacement for calling the deleted
