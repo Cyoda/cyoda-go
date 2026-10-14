@@ -243,8 +243,25 @@ func TestValidator_RecursiveSchema_UnionWithoutDiscriminatorFailsClosed(t *testi
 	// "matches more than one oneOf schemas", because it accepts the group
 	// member unseen.
 	body := `{"type":"group","conditions":[{"type":"simple","value":"not-an-integer"}]}`
-	if mismatches := validateBody(t, newSpecValidator(t, yaml), "/group", body); len(mismatches) == 0 {
-		t.Fatal("expected a mismatch for the invalid simple condition, got none")
+	mismatches := validateBody(t, newSpecValidator(t, yaml), "/group", body)
+	// The union at the re-entered pointer is checked afresh, and it fails
+	// because every member rejects the value: one row per member, in the
+	// union's member order — the simple member on its value, the group
+	// member on its type.
+	want := []string{
+		`recursive schema at "/conditions/0": Error at "/value": value must be an integer`,
+		`recursive schema at "/conditions/0": Error at "/type": value is not one of the allowed values ["group"]`,
+	}
+	if len(mismatches) != len(want) {
+		t.Fatalf("expected %d mismatches, one per union member, got %d: %+v", len(want), len(mismatches), mismatches)
+	}
+	for i, m := range mismatches {
+		if m.Operation != "getGroup" || m.Status != 200 {
+			t.Errorf("mismatch %d identity = (%q, %d), want (getGroup, 200)", i, m.Operation, m.Status)
+		}
+		if !strings.HasPrefix(m.Reason, want[i]) {
+			t.Errorf("mismatch %d reason = %s\nwant prefix %s", i, m.Reason, want[i])
+		}
 	}
 }
 
