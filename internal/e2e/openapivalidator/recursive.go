@@ -27,14 +27,21 @@ import (
 //
 // checkRecursive walks the decoded body alongside the response schema and
 // keeps the same stack of schemas that kin keeps. Where the walk enters a
-// schema that is already on the stack — where kin stops — it validates that
-// sub-value with a fresh VisitJSON, and so a new visited set. It then
-// continues into the sub-value with a stack that holds only that schema,
-// which is the stack of the fresh visit. Each mismatch is wrapped with the
-// JSON pointer of the sub-value. The result is nil or an openapi3.MultiError.
-func checkRecursive(route *routers.Route, opts *openapi3filter.Options, req *http.Request, status int, header http.Header, body []byte) error {
-	schema := responseSchema(route, req, status, header)
-	if schema == nil {
+// schema that is already on the stack at an outer JSON pointer — where kin
+// stops — it validates that sub-value with a fresh VisitJSON, and so a new
+// visited set. It then continues into the sub-value with a stack that holds
+// only that schema, which is the stack of the fresh visit. A re-entry at the
+// same pointer is skipped, as kin skips it: the outer visit of that schema
+// checks the same value.
+//
+// The walk enters only schemas from which a schema cycle is reachable
+// (v.recursive); below any other schema no re-entry can happen. Each mismatch
+// reads `recursive schema at "<pointer>": <kin error>`; the paths in the kin
+// error are relative to that pointer. The result is nil or an
+// openapi3.MultiError.
+func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, status int, header http.Header, body []byte) error {
+	schema := responseSchema(route, v.opts, req, status, header)
+	if schema == nil || !v.recursive[schema] {
 		return nil
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
@@ -44,10 +51,11 @@ func checkRecursive(route *routers.Route, opts *openapi3filter.Options, req *htt
 		return nil // kin reports the undecodable body
 	}
 	w := &recursiveWalk{
-		opts:    schemaOptions(opts, route.Spec),
-		checked: map[reentry]bool{},
+		recursive: v.recursive,
+		opts:      schemaOptions(v.opts, route.Spec),
+		checked:   map[reentry]bool{},
 	}
-	w.walk(schema, value, "", map[*openapi3.Schema]bool{})
+	w.walk(schema, value, "", map[*openapi3.Schema]string{})
 	if len(w.errs) == 0 {
 		return nil
 	}
@@ -57,8 +65,8 @@ func checkRecursive(route *routers.Route, opts *openapi3filter.Options, req *htt
 // responseSchema returns the JSON body schema that openapi3filter.ValidateResponse
 // validates for this response, or nil when it validates no JSON body
 // (kin-openapi v0.149.0 openapi3filter/validate_response.go:22-120).
-func responseSchema(route *routers.Route, req *http.Request, status int, header http.Header) *openapi3.Schema {
-	if req.Method == http.MethodHead {
+func responseSchema(route *routers.Route, opts *openapi3filter.Options, req *http.Request, status int, header http.Header) *openapi3.Schema {
+	if req.Method == http.MethodHead || opts.ExcludeResponseBody {
 		return nil
 	}
 	switch status {
@@ -90,7 +98,7 @@ func responseSchema(route *routers.Route, req *http.Request, status int, header 
 
 // schemaOptions returns the options openapi3filter.ValidateResponse passes to
 // VisitJSON for a response body (kin-openapi v0.149.0
-// openapi3filter/validate_response.go:63-78 and :147). The unexported custom
+// openapi3filter/validate_response.go:63-78 and :154). The unexported custom
 // error-message option is not reproducible; the Validator does not set it.
 func schemaOptions(o *openapi3filter.Options, doc *openapi3.T) []openapi3.SchemaValidationOption {
 	var opts []openapi3.SchemaValidationOption
@@ -107,6 +115,70 @@ func schemaOptions(o *openapi3filter.Options, doc *openapi3.T) []openapi3.Schema
 	return append(opts, openapi3.VisitAsResponse())
 }
 
+// recursiveSchemas returns the schemas of doc's responses from which a schema
+// cycle is reachable through the edges kin's visitJSON follows: allOf, oneOf,
+// anyOf, prefixItems, items, properties and additionalProperties.
+func recursiveSchemas(doc *openapi3.T) map[*openapi3.Schema]bool {
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := map[*openapi3.Schema]int{}
+	recursive := map[*openapi3.Schema]bool{}
+	var visit func(s *openapi3.Schema) bool
+	visit = func(s *openapi3.Schema) bool {
+		if s == nil {
+			return false
+		}
+		switch state[s] {
+		case visiting:
+			return true // a cycle back to a schema on the DFS path
+		case done:
+			return recursive[s]
+		}
+		state[s] = visiting
+		found := false
+		for _, child := range subschemas(s) {
+			found = visit(child.Value) || found // finish every child
+		}
+		state[s] = done
+		if found {
+			recursive[s] = true
+		}
+		return found
+	}
+	for _, item := range doc.Paths.Map() {
+		for _, op := range item.Operations() {
+			for _, resp := range op.Responses.Map() {
+				if resp.Value == nil {
+					continue
+				}
+				for _, media := range resp.Value.Content {
+					if media.Schema != nil {
+						visit(media.Schema.Value)
+					}
+				}
+			}
+		}
+	}
+	return recursive
+}
+
+// subschemas returns the schemas kin's visitJSON descends into from s.
+func subschemas(s *openapi3.Schema) openapi3.SchemaRefs {
+	subs := slices.Concat(s.AllOf, s.OneOf, s.AnyOf, s.PrefixItems)
+	if s.Items != nil {
+		subs = append(subs, s.Items)
+	}
+	for _, name := range slices.Sorted(maps.Keys(s.Properties)) {
+		subs = append(subs, s.Properties[name])
+	}
+	if s.AdditionalProperties.Schema != nil {
+		subs = append(subs, s.AdditionalProperties.Schema)
+	}
+	return subs
+}
+
 // reentry identifies one fresh validation: a schema at a JSON pointer.
 type reentry struct {
 	schema  *openapi3.Schema
@@ -114,40 +186,35 @@ type reentry struct {
 }
 
 type recursiveWalk struct {
-	opts    []openapi3.SchemaValidationOption
-	checked map[reentry]bool // makes each re-entry validate once, and the walk finite
-	errs    openapi3.MultiError
+	recursive map[*openapi3.Schema]bool
+	opts      []openapi3.SchemaValidationOption
+	checked   map[reentry]bool // makes each fresh validation run once
+	errs      openapi3.MultiError
 }
 
-// walk visits value with schema s, as kin's visitJSON does, with stack the
-// set of schemas kin's visit has entered at this point.
-func (w *recursiveWalk) walk(s *openapi3.Schema, value any, pointer string, stack map[*openapi3.Schema]bool) {
-	if s == nil {
+// walk visits value with schema s, as kin's visitJSON does. stack maps each
+// schema kin's visit has entered at this point to the pointer it entered it at.
+func (w *recursiveWalk) walk(s *openapi3.Schema, value any, pointer string, stack map[*openapi3.Schema]string) {
+	if s == nil || !w.recursive[s] {
 		return
 	}
-	if stack[s] {
-		key := reentry{s, pointer}
-		if w.checked[key] {
-			return
+	if at, ok := stack[s]; ok {
+		if at == pointer {
+			return // the outer visit of s checks this same value
 		}
-		w.checked[key] = true
-		if err := s.VisitJSON(value, w.opts...); err != nil {
-			for _, e := range schemaErrors(err) {
-				w.errs = append(w.errs, fmt.Errorf("response body at %q: %w", pointer, e))
-			}
-		}
-		stack = map[*openapi3.Schema]bool{}
+		w.check(s, value, pointer)
+		stack = map[*openapi3.Schema]string{}
 	}
-	stack[s] = true
+	stack[s] = pointer
 	defer delete(stack, s)
 
 	for _, ref := range s.AllOf {
 		w.walk(ref.Value, value, pointer, stack)
 	}
-	for _, ref := range w.candidates(s, s.OneOf, value) {
+	for _, ref := range w.oneOfMembers(s, value, pointer) {
 		w.walk(ref.Value, value, pointer, stack)
 	}
-	for _, ref := range w.candidates(s, s.AnyOf, value) {
+	if ref := w.anyOfMember(s, value, pointer); ref != nil {
 		w.walk(ref.Value, value, pointer, stack)
 	}
 
@@ -180,21 +247,78 @@ func (w *recursiveWalk) walk(s *openapi3.Schema, value any, pointer string, stac
 	}
 }
 
-// candidates returns the oneOf/anyOf members the walk follows: with a
-// discriminator mapping that names the value's discriminator, only the mapped
-// member, as kin does (openapi3/schema.go:2234-2272, :2298); otherwise every
-// member. Of more than one candidate, only those the value validates against
-// are followed.
-func (w *recursiveWalk) candidates(s *openapi3.Schema, members openapi3.SchemaRefs, value any) openapi3.SchemaRefs {
-	if mapped := mappedRef(s, value); mapped != "" {
-		members = slices.DeleteFunc(slices.Clone(members), func(m *openapi3.SchemaRef) bool { return m.Ref != mapped })
+// check validates value against s with a fresh VisitJSON, once per schema and
+// pointer, and records each error.
+func (w *recursiveWalk) check(s *openapi3.Schema, value any, pointer string) {
+	key := reentry{s, pointer}
+	if w.checked[key] {
+		return
 	}
-	if len(members) <= 1 {
+	w.checked[key] = true
+	if err := s.VisitJSON(value, w.opts...); err != nil {
+		for _, e := range schemaErrors(err) {
+			w.errs = append(w.errs, fmt.Errorf("recursive schema at %q: %w", pointer, e))
+		}
+	}
+}
+
+// oneOfMembers returns the oneOf members the walk follows: every candidate
+// (see candidates) that the value validates against.
+func (w *recursiveWalk) oneOfMembers(s *openapi3.Schema, value any, pointer string) openapi3.SchemaRefs {
+	members, decided := w.candidates(s, s.OneOf, value)
+	if decided {
 		return members
 	}
-	return slices.DeleteFunc(slices.Clone(members), func(m *openapi3.SchemaRef) bool {
-		return m.Value == nil || m.Value.VisitJSON(value, w.opts...) != nil
-	})
+	members = slices.DeleteFunc(members, func(m *openapi3.SchemaRef) bool { return !w.accepts(m, value) })
+	if len(members) == 0 {
+		w.check(s, value, pointer) // no member accepts the value: the union fails
+	}
+	return members
+}
+
+// anyOfMember returns the anyOf member the walk follows: the first candidate
+// (see candidates) that the value validates against, as kin stops at the
+// first member that accepts (openapi3/schema.go:2365-2384).
+func (w *recursiveWalk) anyOfMember(s *openapi3.Schema, value any, pointer string) *openapi3.SchemaRef {
+	members, decided := w.candidates(s, s.AnyOf, value)
+	if decided {
+		if len(members) == 0 {
+			return nil
+		}
+		return members[0]
+	}
+	for _, m := range members {
+		if w.accepts(m, value) {
+			return m
+		}
+	}
+	w.check(s, value, pointer) // no member accepts the value: the union fails
+	return nil
+}
+
+// candidates returns the union members kin considers: with a discriminator
+// mapping that names the value's discriminator, only the mapped member
+// (openapi3/schema.go:2234-2272, and the comparison at :2294 for oneOf and
+// :2357 for anyOf); otherwise every member. decided reports that no fresh
+// check is needed: there is at most one candidate, or no candidate can reach a
+// schema cycle, so kin's own check of the members is complete.
+func (w *recursiveWalk) candidates(s *openapi3.Schema, members openapi3.SchemaRefs, value any) (_ openapi3.SchemaRefs, decided bool) {
+	members = slices.Clone(members)
+	if mapped := mappedRef(s, value); mapped != "" {
+		members = slices.DeleteFunc(members, func(m *openapi3.SchemaRef) bool { return m.Ref != mapped })
+	}
+	if len(members) <= 1 {
+		return members, true
+	}
+	if !slices.ContainsFunc(members, func(m *openapi3.SchemaRef) bool { return w.recursive[m.Value] }) {
+		return nil, true
+	}
+	return members, false
+}
+
+// accepts reports whether a fresh VisitJSON of member accepts value.
+func (w *recursiveWalk) accepts(member *openapi3.SchemaRef, value any) bool {
+	return member.Value != nil && member.Value.VisitJSON(value, w.opts...) == nil
 }
 
 // mappedRef returns the $ref the discriminator mapping names for value, or "".
