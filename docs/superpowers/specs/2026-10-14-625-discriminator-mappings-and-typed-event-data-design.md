@@ -18,8 +18,8 @@ avoided.
 - **Base** — a schema with a discriminator and a mapping. Its **members** are the schemas the mapping names; each
   includes the base with `allOf`. A **use** of the base is any `$ref` to it other than a member's `allOf` entry.
 - **Union** — a `oneOf` or `anyOf` list.
-- **Untyped schema** — a schema with no `type` keyword. In JSON Schema it accepts every value its other keywords
-  allow, `null` included.
+- **Untyped leaf** — a schema with none of `type`, `$ref`, `allOf`, `oneOf`, `anyOf`. In JSON Schema it accepts
+  every value its other keywords allow, `null` included unless its `not` excludes `null`.
 - **Client generator** — openapi-generator 7.18.0, the tool and version Cloud generates its classes with
   (`~/dev/cyoda/client/pom.xml:445-500`): `kotlin-spring` with Cloud's settings, and `java` (library `native`,
   Jackson).
@@ -65,14 +65,15 @@ requires, each measured on prototypes of this spec:
 
 - **No union of scalar types.** For a `oneOf` of scalars, or a `type` list with more than one non-null type,
   `kotlin-spring` generates a class that cannot hold a scalar ("Cannot construct instance of
-  `SimpleConditionDtoAllOfValue`"). A value that may be one of several scalar types is an untyped schema whose
-  other keywords state the rule (section 3.4). A `oneOf` whose members are `{type: "null"}` and one `$ref` is
-  allowed: `kotlin-spring` reads it as a nullable reference.
-- **No inline enum on a property of a base or of a base's member.** `kotlin-spring` does not compile one: a
-  member's class names the enum as its own (`StateMachineAuditEventDto.Severity`), which does not exist. Such an
-  enum is a named schema.
-- **No `type` enum on a member.** A one-value `enum` on a member's discriminator property fails to compile
-  ("'type' hides member of supertype"). The mapping states the set of values.
+  `SimpleConditionDtoAllOfValue`"). A value that may be one of several scalar types is an untyped leaf whose
+  other keywords state the rule (section 3.4); `kotlin-spring` generates `Any?` for it, and a `type` list inside
+  its `items` or `not` generates nothing. The only `oneOf` or `anyOf` allowed is `[{type: "null"}, {$ref}]`:
+  `kotlin-spring` reads it as a nullable reference.
+- **No inline enum on a property of a base.** `kotlin-spring` does not compile one: each member's class names
+  the enum as its own (`StateMachineAuditEventDto.Severity`), which does not exist. Such an enum is a named
+  schema. An inline enum on a member's own property compiles (`EntityChangeAuditEventDto.changeType`).
+- **No member declares its base's discriminator property.** A member that declares it, for example as a
+  one-value `enum`, fails to compile ("'type' hides member of supertype"). The mapping states the set of values.
 
 ## 3. Wire contract (`api/openapi.yaml`)
 
@@ -89,8 +90,8 @@ requires, each measured on prototypes of this spec:
   - the direct and async search bodies;
   - the stats `condition`;
   - `WorkflowConfigurationDto.criterion` and `TransitionDefinitionDto.criterion`;
-  - the conditional `DELETE /entity/{entityName}/{modelVersion}` body (`:2271`, today `AbstractConditionDto`),
-    whose descriptions at `:2199` and `:2353` name `QueryConditionDto`.
+  - the conditional `DELETE /entity/{entityName}/{modelVersion}` body (`:2271`, today `AbstractConditionDto`);
+    its descriptions at `:2199` and `:2353` change to name `QueryConditionDto`.
 - The schema no longer says where `function` is valid; each description does. The server rule does not change:
   - In a search-shaped body, a `function` condition at any depth is refused with 400 `INVALID_CONDITION`
     (`internal/domain/search/operators.go:163-172`). e2e already covers direct, async, stats and conditional
@@ -99,7 +100,8 @@ requires, each measured on prototypes of this spec:
 - The function pre-check `ExternalizedFunctionDto.criterion` is `oneOf: [{type: "null"}, {$ref: QueryConditionDto}]`,
   with no discriminator and its `x-go-type` as today. A `function` anywhere in it is refused at import with
   400 `VALIDATION_FAILED`, as today; the description (`:9655-9660`) keeps saying so.
-- `GroupConditionDto.operator` becomes the named enum `GroupOperator` (Cloud's name), by Rule 5.
+- `GroupConditionDto.operator` becomes the named enum `GroupOperator`, Cloud's name. Rule 5 does not require it
+  (a member's property); it aligns the two specs.
 - `api/condition_union_test.go` and `api/condition_dto_test.go` assert the old union form. They are rewritten to
   the form above.
 
@@ -117,14 +119,14 @@ requires, each measured on prototypes of this spec:
   types (section 4) to their schemas. Every event schema includes it with `allOf`. `StateMachineFinishedDto`
   gains that `allOf`.
 - `StateMachineAuditEventDto.data` becomes `$ref: StateMachineEventDto`, and it is required. Its `x-go-type` is
-  removed. The server keeps building the response as a map (section 6). `TestSpecDeclaresNoNullableKeyword`
-  (`api/condition_dto_test.go:208-210`), which asserts that `data` accepts null, changes to assert that it does
-  not.
-- The outer `eventType` enum on `StateMachineAuditEventDto` becomes the named enum `StateMachineEventType`, by
-  Rule 5. Its description (`api/openapi.yaml:11667-11674`) stops describing TRANSITION_ABORTED's data (it names
-  `transitionName`); the data is the member schema's.
-- Every enum in the event schemas is a named schema, by Rule 5: the FAIL `reason`, `executionMode`, the
-  stop-reason `type`.
+  removed. The server keeps building the response as a map (section 6).
+- `TestSpecDeclaresNoNullableKeyword` (`api/condition_dto_test.go:200-221`) lists the values that accept `null`
+  and checks them in both kin modes. `data` leaves the list, which then has three entries. The test, and
+  `TestArrayConditionDtoValuesValidateUnderOpenAPI31` (`:136`), validate through the view of section 13.1:
+  without it, kin's default mode refuses `null` for an untyped leaf.
+- The outer `eventType` description (`api/openapi.yaml:11667-11674`) stops describing TRANSITION_ABORTED's data
+  (it names `transitionName`); the data is the member schema's.
+- No event member declares `eventType` (Rule 5); the base's `eventType` stays a plain string.
 - `TRANSITION_NOT_MATCH_CRITERION`'s `criterion` description becomes what the value is: the function's name when a
   function condition is the whole criterion, otherwise the condition's type (`simple`, `group`, …)
   (`engine.go:135-155`; `docs/cloud-parity/criterion-stoppage-reason.md:67`).
@@ -141,7 +143,7 @@ requires, each measured on prototypes of this spec:
 
 ### 3.4 Scalar values and polymorphic bodies
 
-Each of these is today a union of scalar types or inline members (Rule 5). Each becomes an untyped schema that
+Each of these is today a union of scalar types or inline members (Rule 5). Each becomes an untyped leaf that
 accepts exactly the same values:
 
 | Where | Today | Becomes |
@@ -151,23 +153,45 @@ accepts exactly the same values:
 | the entity-create body and the model-import body | `oneOf` of an object and an array of objects | `not: {type: [string, number, boolean, "null"]}`, `items: {type: object}` |
 
 `minItems`, `maxItems` and `items` apply only when the value is an array. The descriptions say in prose what
-the keywords say. `kotlin-spring` generates `Any?` for an untyped schema. The `java` generator also writes
-uncompilable Java for today's create body (`List<Map<String, Object>>.class`); the untyped form compiles.
+the keywords say. `kotlin-spring` generates `Any?` for each of these, and the round-trip of every value form
+passes in Kotlin and Java, `GroupKeyEntry.value` included. The `java` generator also writes uncompilable Java
+for today's create body (`List<Map<String, Object>>.class`); the untyped form compiles. The create and import
+body parameters are generated as `Any`/`Object`, so for them the check proves only that the code compiles.
 
 ### 3.5 Processors
 
-`TransitionDefinitionDto.processors.items` becomes a use of `ProcessorDefinitionDto` (today a `oneOf` of its one
-member, `:10446`). `ProcessorDefinitionDto.type` becomes a named enum, by Rule 5.
+- `TransitionDefinitionDto.processors.items` becomes a use of `ProcessorDefinitionDto` (today a `oneOf` of its
+  one member, `:10446`). `ProcessorDefinitionDto.type` becomes a named enum, by Rule 5.
+- Import checks `type` (Gate 6, fail closed). Today import does not constrain it (`cyoda-go-spi types.go:222-229`,
+  `internal/domain/workflow/validate.go:36-40`). Any value other than `internalized` runs as `externalized`, and
+  the value is stored and exported as given, so an export can carry a type no client can read through the base.
+  After this change:
+  - an omitted or empty `type` is stored as `externalized`, which is what the engine runs. The export therefore
+    always carries a mapped value;
+  - `internalized`, and any other value, is refused at import with 400 `VALIDATION_FAILED`.
+- The engine's refusal of `internalized` at dispatch (`engine_processors.go:137-147`) becomes unreachable and is
+  deleted, with its STATE_PROCESS_RESULT record. The tests that drive it (`engine_processors_type_test.go`,
+  `handler_type_validation_test.go`, and the internalized case of `engine_processors_audit_test.go`) are
+  rewritten to the import refusal, or deleted where that is their only subject. The schema description stops
+  describing a dispatch-time refusal.
+- This narrows what import accepts, so it is recorded in `docs/workflow-schema-versioning.md` as a tightening of
+  the 1.5 contract. It falls under rule 1 of the doc's rubric: an unknown value that was silently accepted now
+  fails loudly.
 
-### 3.6 Examples
+### 3.6 Examples and the document check
 
-kin-openapi's document validation (`doc.Validate`, which checks each example against its schema) rejects two
-examples today:
-- `TokenResponseDto`: an elided token that does not match its own pattern.
-- `GroupedStatsRequest`: `2026-01-01 12:00:00+00:00`, which is not RFC 3339 `date-time`.
+kin-openapi's document validation (`doc.Validate` with `EnableMultiError`) reports seven errors on today's spec:
+- three examples that do not match their schemas: `TokenResponseDto`, the token example on
+  `POST /tenants/{tenant}/oauth/token`, and the XML example on `PUT /entity/{format}/{entityId}/{transition}`;
+- `bearerAuth` declaring `name` (`api/openapi.yaml:12342`), which an `http` scheme does not have;
+- three path-template conflicts (`/entity/{format}` with `/entity/{entityId}`, and two more).
 
-Each example, or the schema if the server accepts that form, is corrected to agree with what the server accepts.
-An `api/` test runs `doc.Validate` on the embedded spec, so a wrong example fails the build.
+The examples and `bearerAuth` are corrected. The path conflicts are the API's real routes, and kin has no switch
+to skip that check. So the `api/` test does not call `doc.Validate`. It walks the spec and validates every
+example against its schema through the view of section 13.1. A wrong example then fails the build. The prototype
+of this spec also reported `GroupedStatsRequest`'s example `2026-01-01 12:00:00+00:00`, which is not RFC 3339
+`date-time`; the walk covers it, and the example or the schema is corrected to agree with what the server
+accepts.
 
 After the edit: `go generate ./api`, and commit the result.
 
@@ -216,13 +240,12 @@ Field rules:
 - **STATE_PROCESS_RESULT**:
   - `processorName` is the processor's workflow `name`.
   - `executionMode` is the processor's configured mode, with an empty stored mode recorded as `SYNC`: an empty
-    mode runs as `SYNC` (`internal/domain/workflow/validate.go:46-55`, `engine_processors.go:167`). This holds also
-    on the internalized-processor refusal (`engine_processors.go:137-147`), where nothing ran. The dispatch span
+    mode runs as `SYNC` (`internal/domain/workflow/validate.go:46-55`, `engine_processors.go:167`). The dispatch span
     attribute (`internal/observability/dispatch_tracing.go:155`) gets the same rule. The enum is the four modes.
   - `failReason` is present only when the member itself sent failure text: a `contract.CalloutFailure` of kind
     `MemberFailed` (found with `errors.As`) whose new field `MemberText` is non-empty (section 8.1). Every other
-    failure (the member sent no text, no member, no answer, unreadable answer, internalized processor refused,
-    savepoint failure, platform error) has no `failReason`. No platform text enters `data`: today's fixed
+    failure (the member sent no text, no member, no answer, unreadable answer, savepoint failure, platform error)
+    has no `failReason`. No platform text enters `data`: today's fixed
     sentences `"<label> returned failure"` (`internal/grpc/dispatch.go:267`) and `"peer node dispatch failed"`
     (`internal/cluster/dispatch/handover.go:27`) are never a `failReason`.
   - `success` is `false` for an `ASYNC_NEW_TX` processor that failed, as today, although the run continues.
@@ -283,7 +306,8 @@ already imports it). The two event types cyoda-go never sends get no constructor
 ### 7.2 Processor failure records
 The second STATE_PROCESS_RESULT `{success:false}` that the caller records after a failed processor pipeline
 (`engine.go:837-839`, `:965-968`) is removed. Every pipeline failure that reached a processor already has that
-processor's own record (`engine_processors.go:137-147`, `:194-211`). The checkpoint exit before dispatch
+processor's own record (`engine_processors.go:194-211`; the internalized refusal at `:137-147` is deleted,
+section 3.5). The checkpoint exit before dispatch
 (`:127`) has no processor result to report. The fence exit after dispatch (`:178`) has no per-processor record,
 and the caller's record is not written there either, because `recordEvent` returns at once under a fence
 (`engine.go:1086-1088`). The removed record's `details` embedded the wrapped error text (`"…: %v"`). That text
@@ -374,7 +398,15 @@ mean.
 | Status | Code | When |
 |---|---|---|
 | 400 | `VALIDATION_FAILED` | a `function` condition inside a function's pre-check, as today |
+| 400 | `VALIDATION_FAILED` | **new**: a processor `type` other than `externalized`, omitted or empty (`internalized` included) |
+| 200 | — | **new**: an omitted or empty processor `type` is stored, and exported, as `externalized` |
 | all others | as today | unchanged |
+
+**Entity create, update, PATCH, collection update, manual transition, scheduled firing — processors**
+
+| Status / gRPC envelope | Code | When |
+|---|---|---|
+| 400 | `WORKFLOW_FAILED` | no longer for an `internalized` processor: import refuses that workflow |
 
 **Entity create, update, PATCH, collection update, manual transition (HTTP and gRPC), scheduled firing**
 
@@ -395,23 +427,25 @@ view of section 13.1. The scenarios below also assert values.
 | Scenario | U | E | G | P | M | S | C |
 |---|---|---|---|---|---|---|---|
 | Rule 1: every discriminator is on a base; its mapping names every schema that includes the base and nothing else; no `oneOf`/`anyOf` has a discriminator; no schema includes two bases | | | | | | ✓ | |
-| Rule 5, static part: no `type` list with two non-null types; no `oneOf`/`anyOf` of inline members other than `[{type: "null"}, $ref]`; no inline enum on a property of a base or a member; no `type` property on a member | | | | | | ✓ | |
-| `doc.Validate` accepts the spec, examples included | | | | | | ✓ | |
-| Every sample validates against its schema through the validator view; every mapping entry of every base has a sample; each value form of section 3.4 has a sample (string, number, boolean, `null`, pair; object refused) | | | | | | ✓ | |
-| Kotlin and Java compile; every sample reads into the class its mapping names and writes back equal | | | | | | | ✓ |
-| Validator view: a member-field defect under a use of a base is reported; an unmapped discriminator value is reported; `null` passes an untyped value schema; an object fails it; `null` fails an untyped schema whose `not` excludes it | ✓ | | | | | | |
+| Rule 5, static part: no `type` list with two non-null types, except inside the `items` or `not` of an untyped leaf; no `oneOf`/`anyOf` other than `[{type: "null"}, {$ref}]`; no inline enum on a property of a base; no member declares its base's discriminator property | | | | | | ✓ | |
+| Every example in the spec validates against its schema through the view; `bearerAuth` has no `name` | | | | | | ✓ | |
+| Every sample marked valid validates against its schema through the view, and every sample marked invalid fails; every mapping entry of every base has a valid sample; each value form of section 3.4 has samples (string, number, boolean, `null`, pair valid; object and triple invalid) | | | | | | ✓ | |
+| Kotlin and Java compile; every valid sample reads into the class its mapping names and writes back equal | | | | | | | ✓ |
+| Validator view: a member-field defect under a use of a base is reported; an unmapped discriminator value is reported; `null` passes an untyped value leaf; an object fails it; `null` fails an untyped leaf whose `not` excludes it; `null` fails an `allOf` member (a whole condition, a whole audit event) and a replaced use (`data`) | ✓ | | | | | | |
+| Processor `type`: omitted or empty → stored and exported as `externalized`; `internalized` → 400 `VALIDATION_FAILED`; another value → 400 `VALIDATION_FAILED` | ✓ | ✓ | | | | | |
+| `go generate ./api`: no generated name still holds `AbstractConditionDto` or `CriterionGroupConditionDto`; the grep exit check of section 12 is empty | | | | | | ✓ | |
 | `data` refuses null and absence; the two never-sent event types: a literal sample validates | | | | | | ✓ | |
 | A `function` condition in each search-shaped body is refused with 400 `INVALID_CONDITION` | | ✓ (existing) | | | | | |
 | Conditional DELETE with a typed body still deletes only matches | | ✓ (existing) | | | | | |
-| Every event type cyoda-go sends: the data produced by driving the engine path validates against its schema (kin-openapi), not hand-built maps | ✓ | | | | | | |
+| Every event type cyoda-go sends: the data produced by driving the engine path validates against the member schema its `eventType` maps to, through the view (kin-openapi), not hand-built maps | ✓ | | | | | | |
 | Create → START (no `state`), WORKFLOW_FOUND `workflowName`, TRANSITION_MAKE `newState`, FINISH `stopReason` `COMPLETED_NO_AUTO_TRANSITIONS` | ✓ | ✓ | | ✓ | | | |
 | FINISH `COMPLETED_ALL_CRITERIA_REJECTED` with `rejectedTransitions` of the last pass only (an earlier state's refusal not listed) | ✓ | ✓ | | ✓ | | | |
 | Loopback with the state not in the selected workflow → FORCE_SUCCESS, FINISH `stopReason` `FORCE_SUCCESS` | ✓ | | | | | | |
 | `eventType` inside `data` equals the outer `eventType`, on search and `…/finished`; nil stored data → `{eventType}` | ✓ | ✓ | | ✓ | | | |
 | PAUSE_FOR_PROCESSING `processNames`; STATE_PROCESS_RESULT `processorName`, `executionMode`; one record per failed processor | ✓ | ✓ | | | | | |
-| Empty stored execution mode → `executionMode: SYNC`, also on the internalized refusal | ✓ | ✓ | | | | | |
+| Empty stored execution mode → `executionMode: SYNC` | ✓ | ✓ | | | | | |
 | `failReason` present: `ASYNC_NEW_TX` processor whose member answers `success:false` with a message | ✓ | ✓ | | | ✓ | | |
-| `failReason` absent: member answers `success:false` with no message (local and handed over); callout timeout; internalized processor refused | ✓ | | | | ✓ | | |
+| `failReason` absent: member answers `success:false` with no message (local and handed over); callout timeout | ✓ | | | | ✓ | | |
 | TRANSITION_ABORTED: `transition` on a manual transition; absent on a loopback | ✓ | ✓ | | | | | |
 | CANCEL `reason` (visit limit) | ✓ | | | | | | |
 | TRANSITION_NOT_FOUND `workflowName`, `transition` | ✓ | | | | | | |
@@ -486,13 +520,28 @@ of `QueryConditionDto`), `openapi-conformance.md` (Rules 1 and 5, and the client
   - an event holding U+0000 is not recorded on any backend;
   - every polymorphic type is a base with a mapping: `AbstractConditionDto` and `CriterionGroupConditionDto` are
     removed, and every condition is a `QueryConditionDto`;
-  - the scalar-value and polymorphic-body schemas of section 3.4; the named enums.
+  - the scalar-value and polymorphic-body schemas of section 3.4; the named enums;
+  - workflow import refuses a processor `type` other than `externalized` (`internalized` included) and stores an
+    omitted one as `externalized`.
 - `COMPATIBILITY.md`: the SPI pin.
 - New `docs/adr/0005-openapi-client-generation.md`, beside ADR 0003, and the `docs/adr/README.md` index. It
   records Rules 1 and 5, why each holds (the measured generator behaviour), the validator view of section 13.1,
   and the client-generation check of section 13.2.
 - `CONTRIBUTING.md`: the client-generation check, how to run it locally (`make client-probe`, which needs Java 21
   and Maven), and how to add a sample.
+- `docs/workflow-schema-versioning.md`: the processor-`type` tightening under 1.5 (section 3.5).
+- Every live mention of the removed schema names changes to `QueryConditionDto` or `GroupConditionDto`:
+  - help: `cmd/cyoda/help/content/crud.md:329`, `cmd/cyoda/help/content/errors/INVALID_CONDITION.md:15`, `:29`;
+  - docs: `docs/cloud-parity/function-condition-search-rejection.md:59`,
+    `docs/cloud-parity/function-conditions-in-criteria.md`, `docs/cloud-parity/openapi-conformance.md`,
+    `docs/analysis/openapi/README.md`;
+  - code comments: `internal/common/error_codes.go:142`, `internal/domain/workflow/validate.go:16-18`, `:29-30`
+    (the generated constant names), `internal/e2e/entity_delete_conditional_test.go:26`,
+    `internal/e2e/transaction_control_test.go:61`.
+
+  Exit check: `grep -rn "AbstractConditionDto\|CriterionGroupConditionDto" --exclude-dir=.git .` lists only
+  history: `CHANGELOG.md`, `docs/release-notes/`, `docs/superpowers/`, `.github/oasdiff-err-ignore.txt`, and
+  Cloud's copy `docs/cyoda/openapi.yml`.
 
 ## 13. Tooling and CI
 
@@ -503,7 +552,8 @@ were measured against a prototype of this spec:
 
 - It checks a value against a base's own properties only. `{"type":"simple"}`, a simple condition with wrong
   field types, and `{"type":"nosuch"}` all pass `QueryConditionDto`. It follows a mapping only on a `oneOf`.
-- It refuses `null` for an untyped schema ("Value is not nullable"), which JSON Schema accepts.
+- It refuses `null` for an untyped leaf ("Value is not nullable"), which JSON Schema accepts. It also accepts
+  `null`, before any other check, for every schema it considers nullable (`openapi3/schema.go:2021-2026`).
 
 The validator therefore validates against a view of the spec, built once when the spec is loaded. The published
 spec does not change.
@@ -511,11 +561,14 @@ spec does not change.
 1. Each use of a base is replaced by a `oneOf` of the base's mapping targets that carries the base's
    discriminator. Each member `$ref` is spelled as in the mapping, so kin and the recursive walk pick the mapped
    member (`recursive.go:374-407`). A member's `allOf` entry is left as it is.
-2. Each untyped schema is marked nullable, unless its `not` excludes `null`.
+2. Each untyped leaf is marked nullable, unless its `not` excludes `null`. No other schema is marked: a
+   member (an `allOf`), a replaced use (a `oneOf`) and any typed schema keep refusing `null`.
 
-One function builds the view. The validator and the `api/` sample test (section 13.2) both use it, so the two
-check samples and responses the same way. With the view, the five value checks of the prototype give JSON
-Schema's answers.
+One function builds the view. The validator and the `api/` tests (sections 3.3, 3.6, 13.2) all use it, so they
+check samples, examples and responses the same way. On the prototype, the view gives JSON Schema's answer in
+every case tried: `null`, a scalar and a pair are accepted as a condition `value`; an object and a triple are
+refused; `null` is refused as a whole condition, as a whole audit event, and as `data`; `null` is accepted and an
+array refused as `GroupKeyEntry.value`.
 
 ### 13.2 The client-generation check
 
@@ -527,28 +580,33 @@ shapes. It is a merge gate, like oasdiff.
     - `kotlin-spring` with Cloud's `configOptions` (`~/dev/cyoda/client/pom.xml:446-500`), models and API
       interfaces;
     - `java`, library `native`, Jackson, with `containerDefaultToNull=true`, so that an absent list stays absent.
-  - It compiles both, then runs one JUnit test per generator over every sample. The test reads the sample's value
-    as its schema's class and asserts the concrete class. It writes the value back and asserts JSON equality,
-    after it drops object members whose value is `null` on both sides: Cloud serializes `non_null`
-    (`~/dev/cyoda/backend/src/main/resources/config/local-dev/application.properties:29`), and for these
-    optional fields an explicit `null` and an absent member mean the same thing.
-- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, value}`. An `api/` spec test (S)
-  validates each value against its schema through the view of section 13.1. It also checks coverage:
+  - It compiles both, then runs one JUnit test per generator over every valid sample. The test reads the sample's
+    value as its schema's class and asserts the concrete class. It writes the value back and compares the two
+    JSON documents after it removes, from each document on its own, every object member whose value is `null`.
+    The reason: Cloud serializes `non_null`
+    (`~/dev/cyoda/backend/src/main/resources/config/local-dev/application.properties:29`), so a `null` the sample
+    holds is absent in the output, and for these fields an explicit `null` and an absent member mean the same
+    thing. `null` entries inside arrays are kept.
+- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, value}`; `valid` defaults to
+  `true`. The client test skips invalid samples. An `api/` spec test (S) validates each value against its schema
+  through the view of section 13.1: a valid sample must pass and an invalid one must fail. It also checks
+  coverage:
   - every mapping entry of every base has a sample;
   - the value forms of section 3.4 have samples;
   - the pre-check has samples present, `null` and absent;
   - the create body has samples for an object and for an array;
   - there is one audit page holding each audit member, and FINISH with a stop reason.
-- **CI**: `.github/workflows/openapi-client-generation.yml`. It runs on the same triggers as the oasdiff workflow,
-  plus `api/clientprobe/**`, on Temurin Java 21 with the Maven cache, and runs
-  `mvn -B -f api/clientprobe/pom.xml verify`. Making it a required check is a repository setting.
+- **CI**: `.github/workflows/openapi-client-generation.yml`. It runs on every pull request and on every push to
+  `main` and `release/**`, with no path filter: a required check with a path filter stays pending on a PR that
+  does not touch those paths. It uses Temurin Java 21 with the Maven cache and runs
+  `mvn -B -f api/clientprobe/pom.xml verify`. Making it a required check is a repository setting (Paul).
 - **Locally**: `make client-probe` runs the same command. It is not part of `make test`, which needs only Go
   and Docker.
 
 ### 13.3 oasdiff
 
-A prototype of this spec gives 20 ERR lines on the pinned v1.21.0. Every one is a change of form, not a value
-the server stops accepting:
+A prototype of this spec's form (sections 3.1–3.5) gives 21 ERR lines on the
+pinned v1.21.0. Every one is a change of form, not a value the server stops accepting:
 
 | Count | oasdiff id | Why no working client breaks |
 |---|---|---|
@@ -556,9 +614,11 @@ the server stops accepting:
 | 4 | `request-body-one-of-removed` | the condition members are reached through the base; the create and import bodies accept the same values |
 | 4 | `request-property-one-of-removed` | as above, for the stats `condition`, the criteria and the processors |
 | 2 + 4 | `request-body-type-changed`, `request-property-type-changed` | every member was already an object |
+| 1 | `response-property-type-changed` | `GroupKeyEntry.value`: oasdiff reads the untyped leaf as `any`; the value set is the same |
 
-The lines for the final spec go into `.github/oasdiff-err-ignore.txt` after review, with this reason. The
-response-side changes, `data` and the audit items, give no ERR.
+The prototype does not have the processor-`type` import check of section 3.5, which narrows accepted input and
+is declared under `### Breaking`. The lines for the final spec are measured again and go into
+`.github/oasdiff-err-ignore.txt` after review, with these reasons. `data` and the audit items give no ERR.
 
 ### 13.4 Others
 
