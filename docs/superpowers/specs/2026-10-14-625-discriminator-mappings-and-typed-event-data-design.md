@@ -60,8 +60,15 @@ makes this divergence easier to reach; it already exists for a criterion reason 
   (`oneOf` Array, Group, Lifecycle, Simple with the `type` mapping), as the search bodies are. Its descriptions
   stop naming `AbstractConditionDto` (`api/openapi.yaml:2199`, `:2353`). `api/condition_union_test.go:56-99`
   gains the DELETE body as a row.
-- No `enum` is added to a condition `type`. The mappings state the set; an enum on a base would reach every
-  request body that includes it.
+- Each concrete condition schema states its own `type` value as a one-value `enum`: `SimpleConditionDto`
+  `[simple]`, `LifecycleConditionDto` `[lifecycle]`, `ArrayConditionDto` `[array]`, `GroupConditionDto` and
+  `CriterionGroupConditionDto` `[group]`, `FunctionConditionDto` `[function]`. The property goes in the
+  schema's own `allOf` part, not in the base. This states in plain JSON Schema what the server already
+  enforces (the value selects the parser; any other value is refused, `cyoda-go-spi predicate/parse.go:33-45`),
+  so a validator that ignores `discriminator` still matches exactly one `oneOf` member. The bases get no
+  `enum`: a base is shared by several schemas, so its enum could only list every value, which is less exact,
+  and the pinned oasdiff reports it as 68 `request-property-became-enum` errors across five endpoints. The
+  one-value enums on the concrete schemas produce no oasdiff report.
 
 ### 3.2 Audit event base
 
@@ -318,6 +325,7 @@ scenarios below also assert values.
 | Scenario | U | E | G | P | M | S |
 |---|---|---|---|---|---|---|
 | Every discriminator has a mapping; every mapping target is a member, spelled as the `oneOf` `$ref`; every `allOf` includer of a discriminated base is in its mapping (named schemas and inline unions) | | | | | | ✓ |
+| Every concrete condition schema's `type` is a one-value `enum` equal to its key in every union mapping that names it; no condition base has a `type` enum | | | | | | ✓ |
 | `data` refuses null and absence; the two never-sent event types: a literal sample validates | | | | | | ✓ |
 | Conditional DELETE with a typed body still deletes only matches | | ✓ (existing) | | | | |
 | Every event type cyoda-go sends: the data produced by driving the engine path validates against its schema (kin-openapi), not hand-built maps | ✓ | | | | | |
