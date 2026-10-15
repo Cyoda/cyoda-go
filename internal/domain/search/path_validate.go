@@ -12,9 +12,9 @@ import (
 )
 
 // extractFieldPaths walks a predicate.Condition tree and collects every
-// JSONPath expression that names a data field. Lifecycle, function and
-// nil sub-conditions are skipped — they do not address user-defined
-// schema paths.
+// JSONPath expression that names a data field. Lifecycle and nil
+// sub-conditions are skipped — they do not address user-defined schema
+// paths.
 //
 // Returned paths are normalised so they line up with the FieldsMap keys
 // produced by *schema.ModelNode.FieldsMap (paths begin with "$." and use
@@ -48,10 +48,8 @@ func walkConditionPaths(cond predicate.Condition, seen map[string]struct{}, out 
 		for _, child := range c.Conditions {
 			walkConditionPaths(child, seen, out)
 		}
-	case *predicate.LifecycleCondition, *predicate.FunctionCondition:
-		// Lifecycle conditions match metadata fields; function conditions
-		// are evaluated dynamically. Neither participates in schema-path
-		// validation.
+	case *predicate.LifecycleCondition:
+		// A lifecycle condition matches a metadata field, not a schema path.
 		return
 	}
 }
@@ -177,23 +175,6 @@ func isSortPathKnown(p string, fields map[string]schema.FieldDescriptor) bool {
 	return false
 }
 
-// FindUnknownFieldPaths returns the data-field JSONPaths cond references
-// that are absent from fields (typically obtained via LoadFieldsMap).
-// Exported so a caller outside this package that selects entities via its
-// own Iterate drain instead of Search — currently entity.Handler's
-// delete paths, which reuse the search condition primitive per design §6.1
-// but cannot call Search's unexported validateConditionPaths directly —
-// can still reject a condition naming an unknown schema field before
-// ConditionToFilter would otherwise silently under-match it (see
-// ConditionToFilter's doc comment on why an unknown path degrades instead
-// of erroring). Mirrors validateConditionPaths' path-existence check
-// without its negative-cache/refresh-retry optimisation, which is a
-// Search-hot-path concern; a caller that also needs the refresh-retry
-// behaviour should route through Search instead.
-func FindUnknownFieldPaths(cond predicate.Condition, fields map[string]schema.FieldDescriptor) []string {
-	return findUnknownPaths(extractFieldPaths(cond), fields)
-}
-
 // LoadFieldsMap is the exported entry point that resolves a model's declared
 // field-type map (path → FieldDescriptor). In-process predicate evaluators
 // (the workflow engine's criterion matcher, the grouped-stats streaming
@@ -245,21 +226,6 @@ func loadFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) 
 // again. Same optional-interface shape as the RefreshAndGet probe below.
 type schemaNodeProvider interface {
 	SchemaNode(context.Context, spi.ModelRef) (*schema.ModelNode, error)
-}
-
-// RefreshFieldsMap is the exported entry point for refreshFieldsMap, mirroring
-// LoadFieldsMap's exported-wrapper pattern. Callers outside this package that
-// reuse the search condition primitive on their own Iterate drain
-// (currently entity.Handler's delete path) need the same bounded
-// single-refresh-then-fail behaviour validateConditionPaths gives Search,
-// rather than declaring a field unknown against a possibly-stale cached
-// descriptor — see FindUnknownFieldPaths' doc comment for why the caller
-// can't reach validateConditionPaths directly. Returns (nil, false, nil)
-// when the store has no refresh capability; the caller should then treat the
-// pre-refresh unknown-paths result as authoritative, exactly as
-// validateConditionPaths does.
-func RefreshFieldsMap(ctx context.Context, store spi.ModelStore, ref spi.ModelRef) (map[string]schema.FieldDescriptor, bool, error) {
-	return refreshFieldsMap(ctx, store, ref)
 }
 
 // refreshFieldsMap forces a cache refresh via RefreshAndGet (when the
@@ -314,7 +280,7 @@ func fieldsFromDescriptor(desc *spi.ModelDescriptor) (map[string]schema.FieldDes
 }
 
 // ConditionFieldPaths returns every data-field JSONPath cond names, normalised
-// to the FieldsMap key convention. Lifecycle, function and nil sub-conditions
+// to the FieldsMap key convention. Lifecycle and nil sub-conditions
 // contribute nothing. Duplicates are folded out.
 //
 // Exported so a caller outside this package can hand a condition's paths to
@@ -361,7 +327,7 @@ func ValidateKnownPaths(
 		return fields, nil
 	}
 
-	freshFields, refreshed, refreshErr := RefreshFieldsMap(ctx, modelStore, ref)
+	freshFields, refreshed, refreshErr := refreshFieldsMap(ctx, modelStore, ref)
 	switch {
 	case !refreshed:
 		// No cache layer to refresh — the miss is authoritative.

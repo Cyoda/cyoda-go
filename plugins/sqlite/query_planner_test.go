@@ -698,13 +698,11 @@ func TestPlanQuery_SingleChildAND(t *testing.T) {
 	}
 }
 
-// C1/M4 — a malformed (non-2-element) BETWEEN value now fails planQuery
-// outright: spi.Prepare rejects a malformed range arity with
-// ErrUnevaluableLeaf, and planQuery propagates it rather than computing a
-// fail-closed exclude predicate. Validation also rejects this upstream (see
-// internal/domain/search/operators.go validateBetweenArity), so this is
-// defense-in-depth for any Filter constructed directly (bypassing the
-// domain validator) — the request is rejected, never silently answered as
+// A malformed (non-2-element) BETWEEN value fails planQuery outright:
+// spi.Prepare refuses a range leaf whose Values is not two scalar bounds
+// (spi.ValidateOperand) with ErrUnevaluableLeaf, and planQuery propagates it
+// before any SQL is built. This is what lets leafToSQL index f.Values[0] and
+// [1] without a guard — the request is rejected, never silently answered as
 // an empty page.
 func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	f := spi.Filter{
@@ -719,38 +717,6 @@ func TestPlanQuery_BetweenInsufficientValues(t *testing.T) {
 	}
 	if !errors.Is(err, spi.ErrUnevaluableLeaf) {
 		t.Errorf("err = %v, want errors.Is(err, spi.ErrUnevaluableLeaf)", err)
-	}
-}
-
-// TestSqlitePlan_TemporalBetween_NilValues_Excludes is the C1 regression
-// test for sqlite: a CoerceTemporal BETWEEN leaf with Values=nil (the shape
-// produced by betweenValues for a malformed BETWEEN operand, before the fix
-// landed) must emit an exclude predicate — never the match-all "1=1" that
-// previously let every row through.
-func TestSqlitePlan_TemporalBetween_NilValues_Excludes(t *testing.T) {
-	f := spi.Filter{
-		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
-		Values: nil,
-	}
-	sql, args := leafToSQL(f)
-	if sql != "0" {
-		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with no values", sql)
-	}
-	if len(args) != 0 {
-		t.Errorf("args = %v, want none", args)
-	}
-}
-
-// TestSqlitePlan_TemporalBetween_OneValue_Excludes covers the 1-element-array
-// shape of the same malformed condition.
-func TestSqlitePlan_TemporalBetween_OneValue_Excludes(t *testing.T) {
-	f := spi.Filter{
-		Op: spi.FilterBetween, Source: spi.SourceMeta, Path: "creationDate", Coercion: spi.CoerceTemporal,
-		Values: []any{"2021-01-01T00:00:00Z"},
-	}
-	sql, _ := leafToSQL(f)
-	if sql != "0" {
-		t.Errorf("sql = %s, want 0 (exclude) for a malformed temporal BETWEEN with one value", sql)
 	}
 }
 

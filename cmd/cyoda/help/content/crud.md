@@ -344,7 +344,7 @@ Response: `200 OK`, `application/json`:
 }
 ```
 
-`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator or value does not fit the field's declared types (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
+`deleteResult.numberOfEntitites` is the count of entities matched by the condition (or total when no condition). `deleteResult.numberOfEntititesRemoved` is the count actually removed (may be lower if individual deletes failed). Returns `400 INVALID_CONDITION` on a malformed condition body, `400 INVALID_FIELD_PATH` for a condition path the model does not declare, and `400 CONDITION_TYPE_MISMATCH` when a condition's operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (see `predicates`), and `400 BAD_REQUEST` for a body over 10 MiB; nothing is deleted in each case.
 
 **GET /api/entity/{entityName}/{modelVersion}** — List all entities for a model (paginated)
 
@@ -401,7 +401,7 @@ The submit time a `transactionId` resolves to is the transaction's commit instan
 
 Response: `200 OK`, `application/json`, array of available transition names (as returned by the workflow engine).
 
-The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated, `503 NO_COMPUTE_MEMBER_FOR_TAG` when the cause is specifically an unavailable compute member for a `function` criterion's tags. The request fails rather than answering from a different workflow. The read records no audit events.
+The names come from the workflow the entity's criterion selects — the same definition a subsequent transition will run (see `cyoda help workflows`, *Workflow-level selection*). Because selection is evaluated here, this read makes the callouts that the workflow criteria need — one per function condition evaluation reaches — and carries the same failure modes as a write: `400 WORKFLOW_FAILED` when a criterion cannot be evaluated or a compute member answers `success: false`, and the callout's own `503` when a callout fails (`NO_COMPUTE_MEMBER_FOR_TAG` when no compute member is connected for a function condition's tags). The request fails rather than answering from a different workflow. The read records no audit events.
 
 **GET /api/platform-api/entity/fetch/transitions** — List available transitions (platform-api format)
 
@@ -583,7 +583,7 @@ Error codes (response carries RFC 9457 problem+json with `properties.errorCode` 
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
 - `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
-- `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator or value does not fit the field's declared types (propagated from search validator)
+- `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`
 - `GROUP_CARDINALITY_EXCEEDED` — `422` — result buckets would exceed `CYODA_STATS_GROUP_MAX`
 - Standard `401` (missing/invalid Bearer), `403` (authenticated but not authorized), `413` (body exceeds 10 MiB), `500` (internal/driver error with ticket UUID; full detail logged server-side) apply as elsewhere.
@@ -748,7 +748,7 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow
 - `errors.WORKFLOW_FAILED` — `400` — the workflow engine rejected the operation: a transition criterion did not match, a processor failed, the workflow selected for the entity does not declare its current state, or a workflow selection criterion could not be evaluated. Reachable on create, a named transition, a transition-less (loopback) update, and both transitions reads — selection runs on every door
-- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a `function` criterion or processor needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria
+- `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — a function condition in a criterion, or a processor, needs a compute member for its tags and none is connected. Reachable on the transitions reads too, since they evaluate workflow selection criteria and make the callouts those need
 - `errors.BAD_REQUEST` — `400` — malformed request, invalid UUID, conflicting query parameters, states filter exceeds 1000 entries
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time; `properties.consistencyTime` carries the current one
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time

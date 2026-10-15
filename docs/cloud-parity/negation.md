@@ -37,9 +37,10 @@ truth value. This requires two things of `c`:
 - Every leaf that reaches evaluation gives a correct answer for the stored
   value's type family, including when the operand cannot be satisfied by that
   family (`operator-semantics.md`).
-- A leaf that cannot be evaluated at all — an undeclared path, an operand
-  fitting no declared type, an uncompilable pattern — never reaches
-  evaluation; it is refused before any entity is read (§ 7).
+- A leaf that cannot be evaluated at all — an undeclared path, a comparison
+  or range operand fitting none of the declared types its operator applies
+  to, an uncompilable pattern — never reaches evaluation; it is refused
+  before any entity is read (§ 7).
 
 ## 3. Truth table
 
@@ -125,10 +126,12 @@ the list itself with the bare path `$.a`, which separates the three states.
 
 ## 6. `FUNCTION` under `NOT`
 
-Unchanged: the workflow engine dispatches a `function` clause only at a
-criterion's top level, so one nested inside any group — `NOT` included —
-fails the evaluation (`function-condition-search-rejection.md`). Search
-rejects `function` outright on every surface, at any depth.
+In a workflow or transition criterion a `function` condition may be the one
+member of a `NOT`, at any depth. `NOT` inverts its answer, so a compute member
+answering `true` can refuse a transition; the audit lists every function
+condition reached with its answer for that reason
+(`function-conditions-in-criteria.md`). Search rejects `function` outright on
+every surface, at any depth (`function-condition-search-rejection.md`).
 
 ## 7. Errors
 
@@ -147,7 +150,7 @@ Unchanged and inherited, listed so the table is a complete checklist:
 | Case | Code |
 |---|---|
 | path inside a `NOT` outside the grammar, or not declared by the model | `400 INVALID_FIELD_PATH` |
-| operand inside a `NOT` not fitting the field's declared type | `400 CONDITION_TYPE_MISMATCH` |
+| operator inside a `NOT` that applies to none of the field's declared types, or comparison or range operand inside a `NOT` that parses into none of the types the operator applies to | `400 CONDITION_TYPE_MISMATCH` |
 | unrecognised group operator | `400 INVALID_CONDITION` |
 | criterion naming an undeclared path, at evaluation | `400 WORKFLOW_FAILED`, rolled back — see `unevaluable-criterion-fails-save.md` |
 

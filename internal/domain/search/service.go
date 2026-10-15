@@ -1717,8 +1717,7 @@ func (s *SearchService) validateConditionPaths(ctx context.Context, modelStore s
 // need no isolation (resolveOrderBy can never reject a key
 // findUnknownPaths would also reject, and condition→sort is a strict
 // subset), so ONLY the sort surface needs its own namespace; the
-// condition surface keeps the bare, unnamespaced spelling other callers
-// (see FindUnknownFieldPaths) already reason about.
+// condition surface keeps the bare, unnamespaced path spelling.
 type pathSurface string
 
 const (

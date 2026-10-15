@@ -33,9 +33,19 @@ refusing a transition, not a diagnostic. Whatever reaches the audit trail or an
 error message is capped well above that on top of it — generously enough that
 this second cap is never what bites — which is what also bounds a reason the
 platform itself composes.
-When a criterion evaluates false without a compute-node-supplied reason
-(inline predicate criteria, or a `FUNCTION` criterion that returns none), the
-engine substitutes the inline default `"criterion did not match"`.
+The reason recorded for a criterion that evaluates false is:
+
+- for a criterion with no function condition: the inline default
+  `"criterion did not match"`;
+- for a function condition that is the whole criterion and was called: the
+  compute node's `reason`, else the inline default;
+- for any other criterion that holds a function condition: one clause per
+  function condition the evaluation reached, in evaluation order, joined with
+  `; ` — `<name> at <path>: pre-check did not match, not called`, or
+  `<name> at <path>: answered <true|false>` followed by `: <reason>` when the
+  compute node gave one. ` at <path>` is left out for a function condition that
+  is the whole criterion. With no clause, the inline default applies.
+  `function-conditions-in-criteria.md` §5 defines this.
 
 ## 2. Delivery surfaces
 
@@ -44,18 +54,21 @@ Two independent surfaces carry the reason — they are not interchangeable:
 1. **Manual-transition 400 response (primary, guaranteed).** When an explicit
    `PUT .../entity/{format}/{entityId}/{transition}` is rejected by its
    criterion, the `400 WORKFLOW_FAILED` `ProblemDetail.detail` is
-   `transition "<name>" criterion not matched: <reason>`. The inline default
-   is *not* appended — a criterion rejected with no external reason yields the
-   bare `transition "<name>" criterion not matched`. This is the only
-   delivery guaranteed for a manual rejection (see §3).
+   `transition "<name>" criterion not matched: <reason>`, with the reason of
+   §1. The inline default is *not* appended — when the reason is
+   `"criterion did not match"`, the detail is the bare
+   `transition "<name>" criterion not matched`. This is the only delivery
+   guaranteed for a manual rejection (see §3).
 
 2. **State-machine audit `data.reason` (durable, automated/skip paths only).**
    The `TRANSITION_NOT_MATCH_CRITERION` event's `data` carries
    `{workflowName, transition, criterion, reason}`; the `WORKFLOW_SKIP`
    event's `data` carries `{workflowName, reason}`. `reason` is always present
-   on both (external reason, else the inline default). `criterion` is the
-   `FUNCTION` name, or the inline condition's type (e.g. `"simple"`) for a
-   predicate criterion.
+   on both, as defined in §1. `criterion` is the function's name when a
+   function condition is the whole criterion, and the condition's type
+   (e.g. `"simple"`, `"group"`) otherwise. When the criterion holds a function
+   condition, both events also carry `functions`, the list of function
+   conditions the evaluation reached (`function-conditions-in-criteria.md` §5).
 
 ## 3. Transactional-audit invariant (no tx-semantics change)
 

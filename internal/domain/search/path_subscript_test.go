@@ -1,9 +1,14 @@
 package search_test
 
 import (
+	"context"
+	"errors"
+	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
@@ -21,12 +26,34 @@ func subscriptSchemaFields() map[string]schema.FieldDescriptor {
 	return root.FieldsMap()
 }
 
+// unknownPaths runs the field-path check every condition surface runs —
+// ConditionFieldPaths, then ValidateKnownPaths — on cond against fields. The
+// store has no refresh capability, so the first answer is final. It returns
+// nil when every path is known, and otherwise the paths the
+// INVALID_FIELD_PATH refusal names.
+func unknownPaths(t *testing.T, cond predicate.Condition, fields map[string]schema.FieldDescriptor) []string {
+	t.Helper()
+	_, err := search.ValidateKnownPaths(context.Background(), nil,
+		spi.ModelRef{EntityName: "m", ModelVersion: "1"}, search.ConditionFieldPaths(cond), fields)
+	if err == nil {
+		return nil
+	}
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeInvalidFieldPath {
+		t.Fatalf("ValidateKnownPaths: %v; want nil or INVALID_FIELD_PATH", err)
+	}
+	_, list, ok := strings.Cut(appErr.Message, "unknown field path(s): ")
+	if !ok {
+		t.Fatalf("INVALID_FIELD_PATH message names no paths: %q", appErr.Message)
+	}
+	return strings.Split(list, ", ")
+}
+
 // A positional subscript is valid JSON Path, is accepted by the boundary
-// grammar, and is documented as still-served ("$.arr[0]"). Field-existence
-// validation compared it against the FieldsMap raw, missed the wildcard key,
-// and rejected the condition 400 as naming a field the model does not declare
-// — for a field the model declares and the entity holds.
-func TestFindUnknownFieldPaths_PositionalSubscriptIsKnown(t *testing.T) {
+// grammar, and is documented as still-served ("$.arr[0]"). The field-path
+// check canonicalises it to the schema's wildcard key, so a field the model
+// declares and the entity holds is known.
+func TestKnownPaths_PositionalSubscriptIsKnown(t *testing.T) {
 	fields := subscriptSchemaFields()
 	for _, path := range []string{
 		"$.arr[0]",
@@ -37,36 +64,39 @@ func TestFindUnknownFieldPaths_PositionalSubscriptIsKnown(t *testing.T) {
 	} {
 		t.Run(path, func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "EQUALS", Value: 1}
-			if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
-				t.Errorf("FindUnknownFieldPaths(%q) = %v, want none — the model declares it", path, unknown)
+			if unknown := unknownPaths(t, cond, fields); len(unknown) != 0 {
+				t.Errorf("unknown paths for %q = %v, want none — the model declares it", path, unknown)
 			}
 		})
 	}
 }
 
-// TestFindUnknownFieldPaths_ArrayContainerIsKnown pins the ARRAY-CONTAINER
-// form: a path naming the array itself, with no subscript.
+// TestKnownPaths_ArrayContainerIsKnown pins the ARRAY-CONTAINER form: a path
+// naming the array itself, with no subscript.
 //
 // The schema records an array's element once, under the "[*]" key, and never
 // records the container as a leaf — so for `tags: ["red","blue"]` the only
-// FieldsMap entry is "$.tags[*]". The existence probe accepted a path either
-// as a leaf or as a prefix of some leaf under "p + \".\"", but never under
-// "p + \"[\"" — so "$.tags", the natural spelling for an ArrayCondition, was
-// reported unknown and answered 400 INVALID_FIELD_PATH for a field the model
-// declares. The sibling probe in condition_type_validate.go
-// (isKnownContainerPath) already tested both delimiters.
-func TestFindUnknownFieldPaths_ArrayContainerIsKnown(t *testing.T) {
+// FieldsMap entry is "$.tags[*]". The existence probe accepts a path as a
+// leaf, or as a prefix of some leaf under "p + \".\"" or "p + \"[\"", so
+// "$.tags", the natural spelling for an ArrayCondition, is known. The sibling
+// probe in condition_type_validate.go (isKnownContainerPath) tests both
+// delimiters too. The array-condition case also pins that ConditionFieldPaths
+// takes an array clause's path.
+func TestKnownPaths_ArrayContainerIsKnown(t *testing.T) {
 	fields := subscriptSchemaFields()
 	t.Run("array condition on the container", func(t *testing.T) {
 		cond := &predicate.ArrayCondition{OperatorType: "EQUALS", JsonPath: "$.arr", Values: []any{1}}
-		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
-			t.Errorf("FindUnknownFieldPaths($.arr) = %v, want none — the model declares $.arr[*]", unknown)
+		if got := search.ConditionFieldPaths(cond); len(got) != 1 || got[0] != "$.arr" {
+			t.Fatalf("ConditionFieldPaths = %v, want [$.arr]", got)
+		}
+		if unknown := unknownPaths(t, cond, fields); len(unknown) != 0 {
+			t.Errorf("unknown paths for $.arr = %v, want none — the model declares $.arr[*]", unknown)
 		}
 	})
 	t.Run("simple condition on the container", func(t *testing.T) {
 		cond := &predicate.SimpleCondition{JsonPath: "$.items", OperatorType: "NOT_NULL"}
-		if unknown := search.FindUnknownFieldPaths(cond, fields); len(unknown) != 0 {
-			t.Errorf("FindUnknownFieldPaths($.items) = %v, want none — the model declares $.items[*].name", unknown)
+		if unknown := unknownPaths(t, cond, fields); len(unknown) != 0 {
+			t.Errorf("unknown paths for $.items = %v, want none — the model declares $.items[*].name", unknown)
 		}
 	})
 }
@@ -74,7 +104,7 @@ func TestFindUnknownFieldPaths_ArrayContainerIsKnown(t *testing.T) {
 // The canonicalisation must not turn the check into a rubber stamp: a path the
 // model genuinely does not declare is still unknown, and a subscript on a
 // non-array field is still unknown.
-func TestFindUnknownFieldPaths_StillRejectsGenuinelyUnknown(t *testing.T) {
+func TestKnownPaths_StillRejectsGenuinelyUnknown(t *testing.T) {
 	fields := subscriptSchemaFields()
 	for _, path := range []string{
 		"$.nope[0]",
@@ -91,9 +121,9 @@ func TestFindUnknownFieldPaths_StillRejectsGenuinelyUnknown(t *testing.T) {
 	} {
 		t.Run(path, func(t *testing.T) {
 			cond := &predicate.SimpleCondition{JsonPath: path, OperatorType: "EQUALS", Value: 1}
-			unknown := search.FindUnknownFieldPaths(cond, fields)
+			unknown := unknownPaths(t, cond, fields)
 			if len(unknown) != 1 || unknown[0] != path {
-				t.Errorf("FindUnknownFieldPaths(%q) = %v, want [%q] — the model does not declare it", path, unknown, path)
+				t.Errorf("unknown paths for %q = %v, want [%q] — the model does not declare it", path, unknown, path)
 			}
 		})
 	}

@@ -41,7 +41,7 @@ import (
 // though — it only makes an unsupported operator harder to reach. A stored
 // workflow is never re-validated (path-grammar.md's own rationale for
 // checking a criterion only at import: "A stored workflow is not
-// re-checked"), and workflow/engine.go does not re-run the import-time
+// re-checked"), and workflow/criterion_eval.go (prepareLocalUnits) does not re-run the import-time
 // operator check on a save — match.Prepare's own refusal of an operator it
 // cannot evaluate is what fails it. A criterion
 // imported before a validation tightening, or through any future gap in the
@@ -248,7 +248,7 @@ func seedLegacyUnevaluableCriterionWorkflow(t *testing.T, entityName, wfName str
 // property TestCriterion_UnevaluableOperator_RejectedAtImport's import-time
 // rejection does NOT retire: a stored workflow is never re-validated
 // (path-grammar.md: "A stored workflow is not re-checked"), and
-// workflow/engine.go does not re-run the import-time operator check on a
+// workflow/criterion_eval.go (prepareLocalUnits) does not re-run the import-time operator check on a
 // save — match.Prepare's own refusal is what fails it. A criterion imported
 // before a validation tightening,
 // or through any future gap in the operator-name mapping, still reaches

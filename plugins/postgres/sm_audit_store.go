@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -109,9 +110,9 @@ func scanEventRows(rows pgx.Rows) ([]spi.StateMachineEvent, error) {
 		if err := rows.Scan(&eventID, &doc, &timestamp); err != nil {
 			return nil, fmt.Errorf("failed to scan row: %w", err)
 		}
-		var e spi.StateMachineEvent
-		if err := json.Unmarshal(doc, &e); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal event doc: %w", err)
+		e, err := decodeEventDoc(doc)
+		if err != nil {
+			return nil, err
 		}
 		e.TimeUUID = eventID
 		e.Timestamp = timestamp
@@ -121,4 +122,17 @@ func scanEventRows(rows pgx.Rows) ([]spi.StateMachineEvent, error) {
 		return nil, fmt.Errorf("row iteration error: %w", err)
 	}
 	return events, nil
+}
+
+// decodeEventDoc decodes a stored event document. Numbers in Data decode as
+// json.Number, so an event reads back with every digit it was recorded with,
+// as it does from the memory store.
+func decodeEventDoc(doc []byte) (spi.StateMachineEvent, error) {
+	var e spi.StateMachineEvent
+	dec := json.NewDecoder(bytes.NewReader(doc))
+	dec.UseNumber()
+	if err := dec.Decode(&e); err != nil {
+		return spi.StateMachineEvent{}, fmt.Errorf("failed to unmarshal event doc: %w", err)
+	}
+	return e, nil
 }

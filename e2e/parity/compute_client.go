@@ -262,3 +262,16 @@ func RunComputeClientBehaviours(t *testing.T, fixture BackendFixture) {
 		})
 	}
 }
+
+// CriterionRequestNames returns the names of the criterion requests cc has
+// received, in arrival order.
+func CriterionRequestNames(t *testing.T, cc ComputeClient) []string {
+	t.Helper()
+	var names []string
+	for _, r := range cc.Received(t) {
+		if r.Kind == "criterion" {
+			names = append(names, r.Name)
+		}
+	}
+	return names
+}

@@ -72,12 +72,15 @@ func RunArrayClauseOperator(t *testing.T, fixture BackendFixture) {
 	// Refused on every backend before any backend evaluates it. An array
 	// operand outside BETWEEN, and an object or array BETWEEN bound, are
 	// refused because the backends would otherwise each answer them
-	// differently.
+	// differently. A null or missing operand on an operator that takes one
+	// is refused: it would otherwise compare as the empty string.
 	for _, r := range []struct{ name, condition string }{
 		{"clause testing nothing", `{"type":"array","jsonPath":"$.scores[*]","operatorType":"EQUALS","values":[null]}`},
 		{"array entry under NOT_EQUAL", `{"type":"array","jsonPath":"$.tags[*]","operatorType":"NOT_EQUAL","values":[["a","b"]]}`},
 		{"array value under NOT_EQUAL", `{"type":"simple","jsonPath":"$.name","operatorType":"NOT_EQUAL","value":["A","B"]}`},
 		{"object BETWEEN bound", `{"type":"simple","jsonPath":"$.name","operatorType":"BETWEEN","value":[{"a":1},"z"]}`},
+		{"null operand under EQUALS", `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":null}`},
+		{"missing operand under CONTAINS", `{"type":"simple","jsonPath":"$.name","operatorType":"CONTAINS"}`},
 		{"array BETWEEN bound inside NOT", `{"type":"group","operator":"NOT","conditions":[{"type":"array","jsonPath":"$.tags[*]","operatorType":"BETWEEN","values":[[["a"],"z"]]}]}`},
 	} {
 		status, body, err := c.SyncSearchRaw(t, modelName, modelVersion, r.condition)

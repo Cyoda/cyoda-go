@@ -18,10 +18,11 @@ func typed(t ...spi.DataType) match.FieldTypes {
 	return func(string) []spi.DataType { return t }
 }
 
-// TestPrepare_StructuralErrors pins the five faults that move from per-row
-// evaluation into Prepare. Each keeps its exact message so no error mapping
-// moves — these are reported from the condition's own shape now, not from
-// which rows happen to be present.
+// TestPrepare_StructuralErrors pins the faults Prepare reports from the
+// condition's own shape, never from which rows happen to be present, each
+// with its exact message. A function condition has no evaluator here: the
+// engine evaluates only function-free conditions with Prepare, and one that
+// reaches it is an unknown condition type, refused rather than matched.
 func TestPrepare_StructuralErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -31,7 +32,7 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 		{
 			"function condition",
 			&predicate.FunctionCondition{},
-			"function conditions not implemented",
+			"unknown condition type: *predicate.FunctionCondition",
 		},
 		{
 			"function condition nested in a group",
@@ -39,7 +40,7 @@ func TestPrepare_StructuralErrors(t *testing.T) {
 				&predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "active"},
 				&predicate.FunctionCondition{},
 			}},
-			"function conditions not implemented",
+			"unknown condition type: *predicate.FunctionCondition",
 		},
 		{
 			"unknown lifecycle field",
@@ -172,21 +173,19 @@ func TestPrepare_ArrayWildcardRoutesPerRow(t *testing.T) {
 }
 
 // unknownCondition implements predicate.Condition without being one of the
-// four kinds prepare() recognises (SimpleCondition, LifecycleCondition,
-// GroupCondition, FunctionCondition) — the one structural fault
-// TestPrepare_StructuralErrors does not cover, since every real
-// predicate.Condition implementation in this repo falls into one of those
-// four. spi.DesugarCondition, which prepare() calls first, passes an
-// unrecognised type through unchanged (its own switch only rewrites
-// ArrayCondition and recurses into GroupCondition), so this reaches
-// prepare()'s default: arm exactly as if DesugarCondition were not called.
+// kinds prepare() recognises (SimpleCondition, LifecycleCondition,
+// GroupCondition, and ArrayCondition through spi.DesugarCondition) and
+// without being a predicate type at all. spi.DesugarCondition, which
+// prepare() calls first, passes an unrecognised type through unchanged (its
+// own switch only rewrites ArrayCondition and recurses into GroupCondition),
+// so this reaches prepare()'s default: arm exactly as if DesugarCondition
+// were not called.
 type unknownCondition struct{}
 
 func (unknownCondition) Type() string { return "unknown" }
 
-// TestPrepare_UnknownConditionType pins the fifth structural fault: a
-// Condition implementation outside the four kinds prepare()'s type switch
-// recognises.
+// TestPrepare_UnknownConditionType pins that a Condition implementation
+// outside the kinds prepare()'s type switch recognises fails Prepare.
 func TestPrepare_UnknownConditionType(t *testing.T) {
 	cond := unknownCondition{}
 	want := fmt.Sprintf("unknown condition type: %T", cond)

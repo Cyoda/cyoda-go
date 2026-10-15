@@ -11,10 +11,11 @@ import (
 )
 
 // ErrInvalidCondition is the sentinel for a condition that fails structural
-// (shape) validation: an unknown or missing operatorType, an operand that is
-// an object/map, an array operand under an operator other than BETWEEN /
-// BETWEEN_INCLUSIVE, a BETWEEN operand that is not a two-element pair of
-// non-null scalar bounds, an unknown group operator or a NOT group without
+// (shape) validation: an unknown or missing operatorType, a missing or null
+// operand under an operator that takes one, an operand that is an object/map,
+// an array operand under an operator other than BETWEEN / BETWEEN_INCLUSIVE,
+// any other operand that is not a scalar, a BETWEEN operand that is not a
+// two-element pair of non-null scalar bounds, an unknown group operator or a NOT group without
 // exactly one child, and an array clause that is malformed or tests nothing.
 // An object denotes no scalar value any operator could evaluate, so it is
 // rejected as INVALID_CONDITION (spec §6/§8: a shape/arity error, not a type
@@ -39,16 +40,16 @@ var ErrInvalidCondition = errors.New("invalid condition")
 const MaxConditionDepth = spi.MaxConditionDepth
 
 // MaxConditionEntries caps the number of entries one condition tests,
-// counted before the condition is expanded. A simple, lifecycle or function
-// clause counts one; an array clause counts one per entry in `values`, null
-// entries included, because each is allocated whether or not it tests a
-// position.
+// counted before the condition is expanded. A simple or lifecycle clause counts
+// one; a function clause counts one plus the entries of its pre-check; an
+// array clause counts one per entry in `values`, null entries included,
+// because each is allocated whether or not it tests a position.
 //
 // An array clause expands into one simple clause per tested entry, and each
 // check on the way to a store (structure, patterns, types, translation, the
 // prepared matcher) expands it again. The limit bounds that expansion: the
-// count is taken first, in ValidateCondition and ValidateCriterionCondition,
-// so no expansion runs on a condition over the limit. It does not bound the
+// count is taken first, in ValidateCondition and in workflow import's
+// criterion check, so no expansion runs on a condition over the limit. It does not bound the
 // total cost of a request, just as a group of simple pattern clauses does
 // not.
 const MaxConditionEntries = 10_000
@@ -93,7 +94,7 @@ var canonicalOperators = func() map[string]struct{} {
 // the structural classifier in [ValidateConditionForModel], which maps it to
 // INVALID_FIELD_PATH rather than the coarser INVALID_CONDITION/BAD_REQUEST.
 func ValidateCondition(cond predicate.Condition) error {
-	if err := validateConditionSize(cond); err != nil {
+	if err := ValidateConditionSize(cond); err != nil {
 		return err
 	}
 	return validateConditionAtDepth(cond, 0)
@@ -114,18 +115,12 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// The clause as a whole: its path names the elements of one array.
 		if err := ValidateArrayClauseJSONPath(c.JsonPath); err != nil {
@@ -152,11 +147,11 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 		// class. Case-sensitive: the predicate parser and match.Prepare both
 		// require uppercase, so lowercase "or"/"not" is rejected too rather
 		// than preserved to match the pushdown translator's looser check.
-		// validateGroupOperator also enforces NOT's arity-exactly-one
+		// ValidateGroupOperator also enforces NOT's arity-exactly-one
 		// contract — see its doc for why zero or two-or-more is rejected the
 		// same way, rather than left for match.Prepare/groupToFilter to
 		// stumble on downstream.
-		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+		if err := ValidateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
 			return err
 		}
 		for _, child := range c.Conditions {
@@ -180,16 +175,20 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 	}
 }
 
-// ValidateCriterionCondition performs the operator, operand-shape and
-// BETWEEN-arity checks ValidateCondition performs on a search condition —
-// WITHOUT the FunctionCondition rejection, because a criterion legitimately
-// carries a FUNCTION clause: the workflow engine dispatches it to a compute
-// member at evaluation time rather than evaluating it as a search
-// predicate (see the FunctionCondition arm of validateConditionAtDepth for
-// why search itself must reject it).
+// ValidateCriterionCondition checks one local unit of a workflow criterion: a
+// function-free subtree of the criterion, or a pre-check. It receives no
+// function condition: workflow import splits the criterion at its function
+// conditions first, and checks each function condition itself. It does not
+// count entries either: import counts the whole criterion, pre-checks
+// included, with ValidateConditionSize before it splits it.
 //
-// Shares canonicalOperators/validateOperator/validateOperandShape/
-// validateBetweenArity with ValidateCondition — one operator table for both
+// It performs the operator, operand-shape, BETWEEN-arity and group-operator
+// checks ValidateCondition performs on a search condition, and differs from
+// ValidateCondition only in not checking the search path grammar (see
+// below).
+//
+// Shares canonicalOperators/validateOperator/validateOperand with
+// ValidateCondition — one operator table for both
 // entry points, per operator-semantics.md §4: "An operator name outside
 // this set is 400 INVALID_CONDITION, on every surface that carries a
 // condition, workflow import included." structuralConditionErrCode
@@ -203,19 +202,17 @@ func validateConditionAtDepth(cond predicate.Condition, depth int) error {
 // check), because a criterion accepts a path shape (the wildcard subscript)
 // a search condition's scalar surfaces do not — see path-grammar.md §7.
 func ValidateCriterionCondition(cond predicate.Condition) error {
-	if err := validateConditionSize(cond); err != nil {
-		return err
-	}
 	return validateCriterionConditionAtDepth(cond, 0)
 }
 
-// validateConditionSize refuses a condition that tests more than
+// ValidateConditionSize refuses a condition that tests more than
 // MaxConditionEntries entries. It counts without expanding anything, so it is
-// the first check ValidateCondition and ValidateCriterionCondition run. It
-// bounds the expansion, not the total cost of a request.
-func validateConditionSize(cond predicate.Condition) error {
+// the first check ValidateCondition runs, and the first check workflow import
+// runs on a criterion, which it counts whole, pre-checks included. It bounds
+// the expansion, not the total cost of a request.
+func ValidateConditionSize(cond predicate.Condition) error {
 	if n := conditionEntries(cond); n > MaxConditionEntries {
-		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, every other clause one)",
+		return fmt.Errorf("%w: condition tests %d entries; the limit is %d (an array clause counts one per entry in `values`, a function clause one plus the entries of its pre-check, every other clause one)",
 			ErrInvalidCondition, n, MaxConditionEntries)
 	}
 	return nil
@@ -237,6 +234,10 @@ func conditionEntries(cond predicate.Condition) int {
 		return n
 	case *predicate.ArrayCondition:
 		return len(c.Values)
+	case *predicate.FunctionCondition:
+		// The function condition is one entry; its pre-check is evaluated
+		// with it, so its entries count toward the same limit.
+		return 1 + conditionEntries(c.PreCheck)
 	default:
 		return 1
 	}
@@ -254,18 +255,12 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.LifecycleCondition:
 		if err := validateOperator(c.OperatorType); err != nil {
 			return err
 		}
-		if err := validateOperandShape(c.OperatorType, c.Value); err != nil {
-			return err
-		}
-		return validateBetweenArity(c.OperatorType, c.Value)
+		return validateOperand(c.OperatorType, c.Value)
 	case *predicate.ArrayCondition:
 		// Held to the rules of its desugared leaves; the path shape is checked
 		// by the caller (workflow's walkCriterion) before this runs.
@@ -275,11 +270,11 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 		}
 		return validateCriterionConditionAtDepth(d, depth+1)
 	case *predicate.GroupCondition:
-		// Shares validateGroupOperator with validateConditionAtDepth's own
+		// Shares ValidateGroupOperator with validateConditionAtDepth's own
 		// GroupCondition arm — see that arm's doc for the operator-name and
 		// NOT-arity rationale. Both surfaces must accept and reject the same
 		// group shapes identically.
-		if err := validateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
+		if err := ValidateGroupOperator(c.Operator, len(c.Conditions)); err != nil {
 			return err
 		}
 		for _, child := range c.Conditions {
@@ -287,11 +282,6 @@ func validateCriterionConditionAtDepth(cond predicate.Condition, depth int) erro
 				return err
 			}
 		}
-		return nil
-	case *predicate.FunctionCondition:
-		// A criterion legitimately carries a FUNCTION clause — nothing to
-		// check here; this is the one arm that differs from
-		// validateConditionAtDepth.
 		return nil
 	default:
 		return nil
@@ -315,7 +305,7 @@ func desugarArrayClause(c *predicate.ArrayCondition) (predicate.Condition, error
 	return d, nil
 }
 
-// validateGroupOperator rejects a GroupCondition.Operator outside the closed
+// ValidateGroupOperator rejects a GroupCondition.Operator outside the closed
 // AND/OR/NOT set and, for NOT, enforces its arity-exactly-one contract.
 // Shared by validateConditionAtDepth (ValidateCondition's search-condition
 // walk) and validateCriterionConditionAtDepth (ValidateCriterionCondition's
@@ -335,7 +325,9 @@ func desugarArrayClause(c *predicate.ArrayCondition) (predicate.Condition, error
 // an unclassified failure would surface as a 500 on client-supplied input
 // exactly like the bare group-operator mismatch this function's caller
 // already closes.
-func validateGroupOperator(operator string, n int) error {
+//
+// The workflow engine checks a group that holds a function condition with it.
+func ValidateGroupOperator(operator string, n int) error {
 	switch operator {
 	case "AND", "OR":
 		return nil
@@ -364,74 +356,49 @@ func validateOperator(op string) error {
 	return nil
 }
 
-// validateOperandShape rejects an operand whose shape no operator can
-// evaluate. A SimpleCondition or LifecycleCondition leaf's value is a scalar
-// or a null, except under BETWEEN / BETWEEN_INCLUSIVE, where it is the
-// [low, high] pair (validateBetweenArity checks the pair itself). So:
+// validateOperand refuses a leaf operand no operator can evaluate, by the one
+// rule for operand shape, spi.ValidateOperand: a SimpleCondition or
+// LifecycleCondition leaf's value is a scalar, except under BETWEEN /
+// BETWEEN_INCLUSIVE, where it is the [low, high] pair of scalar bounds, and
+// under IS_NULL / NOT_NULL, which take none. Each refusal maps to the
+// INVALID_CONDITION wording this boundary has always given; see
+// spi.ValidateOperand for why each shape is refused.
 //
-//   - an object (map[string]any) is refused for every operator. It denotes no
-//     value and would otherwise slip past a parse-based type check (a map
-//     stringifies via fmt.Sprint into text that can "parse" as a STRING
-//     field's operand);
-//   - an array ([]any) is refused for every operator other than BETWEEN /
-//     BETWEEN_INCLUSIVE. No other operator takes a set of values, and the
-//     backends evaluate such an operand differently: memory compares the
-//     stringified array, sqlite matches every row on NOT_EQUAL and none on
-//     EQUALS. On a conditional delete that is the difference between
-//     deleting nothing and deleting nearly everything.
+// These are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
+// and apply whether or not the field or model is known. It is the one
+// validation boundary every transport (HTTP, gRPC) and workflow import
+// funnels through, ahead of spi.ConditionToFilter and both evaluators, which
+// apply the same rule. An array clause reaches this check through its
+// desugared positional leaves, so an entry is held to the same rule as a
+// simple clause's value (a null entry yields no leaf).
 //
-// Both are shape errors — INVALID_CONDITION, not CONDITION_TYPE_MISMATCH —
-// and apply whether or not the field or model is known. An array clause
-// reaches this check through its desugared positional leaves, so an entry
-// is held to the same rule as a simple clause's value.
-func validateOperandShape(op string, value any) error {
-	switch value.(type) {
-	case map[string]any:
-		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
-	case []any:
-		if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
-			return fmt.Errorf("%w: operator %q takes a single value, not an array; only BETWEEN and BETWEEN_INCLUSIVE take a [low, high] pair", ErrInvalidCondition, op)
-		}
-	}
-	return nil
-}
-
-// validateBetweenArity enforces that a BETWEEN / BETWEEN_INCLUSIVE
-// condition's value is exactly a 2-element array (the [lo, hi] bounds pair)
-// whose bounds are both non-null scalars.
-// Model-independent and shared by SimpleCondition (data leaves) and
-// LifecycleCondition (meta leaves, including temporal fields) — the same
-// malformed-arity bug affects both.
-//
-// A scalar, a 1- or 3-element array, or a null bound is refused here because
-// betweenValues (filter_translate.go) accepts only a 2-element []any and
-// otherwise leaves spi.Filter.Values nil, and the storage plugins do not
-// agree on what a nil-Values BETWEEN filter means. An object or array bound
-// is refused because it denotes no value a range can compare against:
-// PostgreSQL fails on it, and the in-memory evaluator compares against its
-// printed form, which on a conditional delete chooses the rows deleted. This
-// is the one validation boundary every transport (HTTP, gRPC) and workflow
-// import funnels through, so the malformed condition never reaches them.
-func validateBetweenArity(op string, value any) error {
-	if op != "BETWEEN" && op != "BETWEEN_INCLUSIVE" {
+// op has passed validateOperator, so spi.MapOperator names a leaf operator.
+func validateOperand(op string, value any) error {
+	err := spi.ValidateOperand(spi.MapOperator(op), value)
+	switch {
+	case err == nil:
 		return nil
-	}
-	vals, ok := value.([]any)
-	if !ok {
+	case errors.Is(err, spi.ErrOperandMissing):
+		return fmt.Errorf("%w: operator %q takes an operand, and `value` is missing or null; only IS_NULL and NOT_NULL take none", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrOperandObject):
+		return fmt.Errorf("condition value is an object, which is not a valid operand: %w", ErrInvalidCondition)
+	case errors.Is(err, spi.ErrOperandArray):
+		return fmt.Errorf("%w: operator %q takes a single value, not an array; only BETWEEN and BETWEEN_INCLUSIVE take a [low, high] pair", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrBetweenNotArray):
 		return fmt.Errorf("%w: operator %q requires exactly two operands, got %T", ErrInvalidCondition, op, value)
+	case errors.Is(err, spi.ErrBetweenCount):
+		// ErrBetweenCount is returned only for a []any operand.
+		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(value.([]any)))
+	case errors.Is(err, spi.ErrBetweenNullBound):
+		return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
+	case errors.Is(err, spi.ErrBetweenNonScalarBound):
+		return fmt.Errorf("%w: operator %q bounds must be scalars, not objects or arrays", ErrInvalidCondition, op)
+	default:
+		// spi.ErrOperandNotScalar, the one refusal left: a Go value JSON
+		// decoding never produces. Every refusal wraps spi.ErrInvalidOperand,
+		// so a sentinel the SPI adds later also lands here, as a 400.
+		return fmt.Errorf("%w: condition value is not a scalar", ErrInvalidCondition)
 	}
-	if len(vals) != 2 {
-		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(vals))
-	}
-	for _, b := range vals {
-		switch b.(type) {
-		case nil:
-			return fmt.Errorf("%w: operator %q bounds must not be null", ErrInvalidCondition, op)
-		case map[string]any, []any:
-			return fmt.Errorf("%w: operator %q bounds must be scalars, not objects or arrays", ErrInvalidCondition, op)
-		}
-	}
-	return nil
 }
 
 // canonicalOperatorList returns a deterministic comma-separated list of

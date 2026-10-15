@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 238 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 243 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -253,6 +253,16 @@ var allTests = []NamedTest{
 	{"CalloutMemberFailedStops", RunCalloutMemberFailedStops},
 	{"CalloutRetryPolicyNoneOneTry", RunCalloutRetryPolicyNoneOneTry},
 	{"CalloutEveryTryUsed", RunCalloutEveryTryUsed},
+
+	// Function conditions in criteria groups and the function pre-check: the
+	// stop rule, workflow selection and the manual refusal message. Each case
+	// starts its own compute client under a fresh tenant; a fixture that
+	// cannot start one skips.
+	{"CriterionFunction_GroupStopRule", RunCriterionFunction_GroupStopRule},
+	{"CriterionFunction_SelectionPreCheck", RunCriterionFunction_SelectionPreCheck},
+	{"CriterionFunction_SelectionGroup", RunCriterionFunction_SelectionGroup},
+	{"CriterionFunction_ManualRefusedReason", RunCriterionFunction_ManualRefusedReason},
+	{"CriterionFunction_AuditKeepsPreCheckNumbers", RunCriterionFunction_AuditKeepsPreCheckNumbers},
 
 	// A.1 — numeric classifier parity (HTTP round-trip)
 	{"NumericClassification18DigitDecimal", RunNumericClassification18DigitDecimal},

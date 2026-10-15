@@ -183,7 +183,7 @@ func TestValidateConditionTypes_ScalarOnUnknownPath_NotContainerRule(t *testing.
 
 // An object operand is a shape/arity error (spec §6/§8), not a field-type
 // mismatch — it is rejected upstream at the model-independent ValidateCondition
-// boundary (validateOperandShape, operators.go) as INVALID_CONDITION, before
+// boundary (validateOperand, operators.go) as INVALID_CONDITION, before
 // ValidateConditionValueTypes's parse-based type check ever runs. These tests
 // exercise that combined pipeline (ValidateCondition then
 // ValidateConditionValueTypes), matching the order every real entry point
@@ -247,25 +247,6 @@ func TestValidateCondition_ObjectValue_NonBetweenOperator_Rejects(t *testing.T) 
 	}
 	if errors.Is(err, errConditionTypeMismatch) {
 		t.Errorf("object operand on EQUALS must not be classified as errConditionTypeMismatch, got: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Null element inside array — accepted (null compatible with any type)
-// ---------------------------------------------------------------------------
-
-// TestValidateConditionTypes_ArrayWithNullElement_Accepted verifies that a nil
-// element inside an array value is accepted (null is compatible with any type).
-func TestValidateConditionTypes_ArrayWithNullElement_Accepted(t *testing.T) {
-	model := buildDoubleModel()
-	cond := &predicate.SimpleCondition{
-		JsonPath:     "$.price",
-		OperatorType: "BETWEEN",
-		Value:        []any{float64(10), nil},
-	}
-	err := ValidateConditionValueTypes(model.FieldsMap(), cond)
-	if err != nil {
-		t.Fatalf("expected no error for array with null element, got: %v", err)
 	}
 }
 

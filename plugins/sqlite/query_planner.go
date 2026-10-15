@@ -80,8 +80,8 @@ func allPushedExact(f spi.Filter) bool {
 // are silently lost. Mirrors the guard in the postgres plugin.
 //
 // The error return is spi.Prepare's: a leaf the kernel genuinely cannot
-// evaluate (an operand fitting no declared type, a pattern that will not
-// compile, ...) makes the whole filter unplannable, wrapping
+// evaluate (a comparison or range operand fitting no declared type, a
+// pattern that will not compile, ...) makes the whole filter unplannable, wrapping
 // spi.ErrUnevaluableLeaf. Callers propagate it rather than degrading to a
 // plan that matches nothing.
 func planFor(filter spi.Filter) (sqlPlan, error) {
@@ -613,18 +613,13 @@ func leafToSQL(f spi.Filter) (string, []any) {
 		// kernel between that is exact-on-value; for the exclusive kernel between
 		// (FilterBetween) the inclusive SQL is a strict superset (kernel re-check
 		// enforces the open bounds).
-		if len(f.Values) >= 2 {
-			return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
-				[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
-		}
-		// Malformed BETWEEN (not exactly 2 operands) is unreachable here: this
-		// function only runs on the pushed half planQuery's dissect produces,
-		// and planQuery calls spi.Prepare on the WHOLE filter first — Prepare
-		// now errors on a range leaf without exactly 2 bounds
-		// (ExpandLeaf/expandBetween), so a malformed BETWEEN never survives to
-		// reach dissect/leafToSQL at all. search.validateBetweenArity rejects
-		// the same shape even earlier, at the request boundary.
-		return "0", nil
+		//
+		// f.Values holds exactly two scalar bounds: this function only runs on
+		// the pushed half planQuery's dissect produces, and planQuery calls
+		// spi.Prepare on the WHOLE filter first, which refuses a range leaf
+		// whose Values is not such a pair (spi.ValidateOperand).
+		return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col),
+			[]any{comparisonBind(f, f.Values[0]), comparisonBind(f, f.Values[1])}
 	}
 	// Unreachable: leafToSQL only ever receives a genuine leaf (dissect never
 	// pushes a branch op into it). FilterNot is the first branch op whose
@@ -663,14 +658,7 @@ func temporalLeafToSQL(f spi.Filter) (string, []any) {
 	col := "(" + fieldExpr(f) + " / 1000)"
 	switch f.Op {
 	case spi.FilterBetween, spi.FilterBetweenInclusive:
-		if len(f.Values) < 2 {
-			// Malformed BETWEEN (not exactly 2 operands) is unreachable here
-			// for the same reason as leafToSQL's identical arm above:
-			// planQuery calls spi.Prepare on the whole filter before dissect
-			// ever routes a leaf to this function, and Prepare now errors on
-			// a range leaf without exactly 2 bounds regardless of Coercion.
-			return "0", nil
-		}
+		// f.Values holds exactly two scalar bounds, as in leafToSQL's arm.
 		lo, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[0]))
 		hi, _ := spi.ParseTemporalMillis(fmt.Sprint(f.Values[1]))
 		return fmt.Sprintf("(%s IS NOT NULL AND %s BETWEEN ? AND ?)", col, col), []any{lo, hi}

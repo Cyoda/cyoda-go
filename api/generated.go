@@ -217,6 +217,27 @@ func (e ConditionOperatorType) Valid() bool {
 	}
 }
 
+// Defines values for CriterionGroupConditionDtoOperator.
+const (
+	CriterionGroupConditionDtoOperatorAND CriterionGroupConditionDtoOperator = "AND"
+	CriterionGroupConditionDtoOperatorNOT CriterionGroupConditionDtoOperator = "NOT"
+	CriterionGroupConditionDtoOperatorOR  CriterionGroupConditionDtoOperator = "OR"
+)
+
+// Valid indicates whether the value is a known member of the CriterionGroupConditionDtoOperator enum.
+func (e CriterionGroupConditionDtoOperator) Valid() bool {
+	switch e {
+	case CriterionGroupConditionDtoOperatorAND:
+		return true
+	case CriterionGroupConditionDtoOperatorNOT:
+		return true
+	case CriterionGroupConditionDtoOperatorOR:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EntityChangeAuditEventDtoChangeType.
 const (
 	EntityChangeAuditEventDtoChangeTypeCREATE EntityChangeAuditEventDtoChangeType = "CREATE"
@@ -399,19 +420,19 @@ func (e ExternalizedProcessorDefinitionDtoType) Valid() bool {
 
 // Defines values for GroupConditionDtoOperator.
 const (
-	AND GroupConditionDtoOperator = "AND"
-	NOT GroupConditionDtoOperator = "NOT"
-	OR  GroupConditionDtoOperator = "OR"
+	GroupConditionDtoOperatorAND GroupConditionDtoOperator = "AND"
+	GroupConditionDtoOperatorNOT GroupConditionDtoOperator = "NOT"
+	GroupConditionDtoOperatorOR  GroupConditionDtoOperator = "OR"
 )
 
 // Valid indicates whether the value is a known member of the GroupConditionDtoOperator enum.
 func (e GroupConditionDtoOperator) Valid() bool {
 	switch e {
-	case AND:
+	case GroupConditionDtoOperatorAND:
 		return true
-	case NOT:
+	case GroupConditionDtoOperatorNOT:
 		return true
-	case OR:
+	case GroupConditionDtoOperatorOR:
 		return true
 	default:
 		return false
@@ -1095,7 +1116,7 @@ type ArrayConditionDto struct {
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
 
-	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
+	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, a function clause counts one plus the entries of its pre-check, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
 	Values *[]interface{} `json:"values,omitempty"`
 }
 
@@ -1205,6 +1226,21 @@ type ConsistencyTimeDto struct {
 	// ConsistencyTime The consistency time, at the store's full precision. Pass it unchanged as pointInTime.
 	ConsistencyTime time.Time `json:"consistencyTime"`
 }
+
+// CriterionGroupConditionDto defines model for CriterionGroupConditionDto.
+type CriterionGroupConditionDto struct {
+	Conditions *[]CriterionGroupConditionDto_Conditions_Item `json:"conditions,omitempty"`
+	Operator   *CriterionGroupConditionDtoOperator           `json:"operator,omitempty"`
+	Type       string                                        `json:"type"`
+}
+
+// CriterionGroupConditionDto_Conditions_Item defines model for CriterionGroupConditionDto.conditions.Item.
+type CriterionGroupConditionDto_Conditions_Item struct {
+	union json.RawMessage
+}
+
+// CriterionGroupConditionDtoOperator defines model for CriterionGroupConditionDto.Operator.
+type CriterionGroupConditionDtoOperator string
 
 // CursorPaginationInfoDto defines model for CursorPaginationInfoDto.
 type CursorPaginationInfoDto struct {
@@ -1616,8 +1652,14 @@ type ExternalizedFunctionConfigDtoRetryPolicy string
 type ExternalizedFunctionDto struct {
 	Config *ExternalizedFunctionConfigDto `json:"config,omitempty"`
 
-	// Criterion Optional criterion to check before calling an expensive function, used when the result can be confidently determined from entity data
-	Criterion *QueryConditionDto `json:"criterion,omitempty"`
+	// Criterion Optional pre-check, evaluated before the function is called. It holds
+	// only local conditions (`simple`, `lifecycle`, `array`, and `group` of
+	// those); a `function` condition anywhere in it is refused at import
+	// with 400 VALIDATION_FAILED. When the pre-check does not match, the
+	// function condition is false and the function is not called; when it
+	// matches, or is absent or `null`, the function is called and its
+	// answer is the function condition's value.
+	Criterion *interface{} `json:"criterion,omitempty"`
 
 	// Name Name of the function that returns boolean
 	Name string `json:"name"`
@@ -1909,7 +1951,9 @@ type LifecycleConditionDto struct {
 	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
-	Value        *JsonNode              `json:"value,omitempty"`
+
+	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
+	Value *interface{} `json:"value,omitempty"`
 }
 
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
@@ -2212,7 +2256,9 @@ type SimpleConditionDto struct {
 	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
 	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
 	Type         string                 `json:"type"`
-	Value        *JsonNode              `json:"value,omitempty"`
+
+	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
+	Value *interface{} `json:"value,omitempty"`
 }
 
 // SingleDeleteResult defines model for SingleDeleteResult.
@@ -2240,7 +2286,7 @@ type StateMachineAuditEventDto struct {
 	// ConsistencyTime Cyoda consistency time
 	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
 
-	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). TRANSITION_NOT_MATCH_CRITERION carries {workflowName, transition, criterion, reason} and WORKFLOW_SKIP carries {workflowName, reason}, where reason explains why the criterion blocked the passage. Null for most event types.
+	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). TRANSITION_NOT_MATCH_CRITERION carries {workflowName, transition, criterion, reason} and WORKFLOW_SKIP carries {workflowName, reason}, where reason explains why the criterion blocked the passage. Null for most event types. When the criterion holds a function condition, WORKFLOW_FOUND, WORKFLOW_SKIP, TRANSITION_NOT_MATCH_CRITERION and TRANSITION_MAKE carry `functions`: one entry per function condition the evaluation reached, in order, with `path` (JSON Pointer in the criterion, empty for a whole-criterion function), `name`, `called`, and when present `preCheck`, `preCheckMatched`, `matches` and `reason`.
 	Data *map[string]interface{} `json:"data,omitempty"`
 
 	// Details Details of the event
@@ -3755,6 +3801,185 @@ func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
 	return json.Marshal(object)
 }
 
+// AsArrayConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a ArrayConditionDto
+func (t CriterionGroupConditionDto_Conditions_Item) AsArrayConditionDto() (ArrayConditionDto, error) {
+	var body ArrayConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromArrayConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided ArrayConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeArrayConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided ArrayConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCriterionGroupConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a CriterionGroupConditionDto
+func (t CriterionGroupConditionDto_Conditions_Item) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
+	var body CriterionGroupConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCriterionGroupConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided CriterionGroupConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCriterionGroupConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided CriterionGroupConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsFunctionConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a FunctionConditionDto
+func (t CriterionGroupConditionDto_Conditions_Item) AsFunctionConditionDto() (FunctionConditionDto, error) {
+	var body FunctionConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromFunctionConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided FunctionConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) FromFunctionConditionDto(v FunctionConditionDto) error {
+	v.Type = "function"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeFunctionConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided FunctionConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) MergeFunctionConditionDto(v FunctionConditionDto) error {
+	v.Type = "function"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsLifecycleConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a LifecycleConditionDto
+func (t CriterionGroupConditionDto_Conditions_Item) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
+	var body LifecycleConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromLifecycleConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided LifecycleConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeLifecycleConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided LifecycleConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsSimpleConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a SimpleConditionDto
+func (t CriterionGroupConditionDto_Conditions_Item) AsSimpleConditionDto() (SimpleConditionDto, error) {
+	var body SimpleConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSimpleConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided SimpleConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSimpleConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided SimpleConditionDto
+func (t *CriterionGroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t CriterionGroupConditionDto_Conditions_Item) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t CriterionGroupConditionDto_Conditions_Item) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "function":
+		return t.AsFunctionConditionDto()
+	case "group":
+		return t.AsCriterionGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
+}
+
+func (t CriterionGroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *CriterionGroupConditionDto_Conditions_Item) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
 // AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto
 func (t EntityAuditEventsResponseDto_Items_Item) AsEntityChangeAuditEventDto() (EntityChangeAuditEventDto, error) {
 	var body EntityChangeAuditEventDto
@@ -3883,6 +4108,7 @@ func (t GroupConditionDto_Conditions_Item) AsArrayConditionDto() (ArrayCondition
 
 // FromArrayConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided ArrayConditionDto
 func (t *GroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -3890,6 +4116,7 @@ func (t *GroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditi
 
 // MergeArrayConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided ArrayConditionDto
 func (t *GroupConditionDto_Conditions_Item) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -3909,6 +4136,7 @@ func (t GroupConditionDto_Conditions_Item) AsGroupConditionDto() (GroupCondition
 
 // FromGroupConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided GroupConditionDto
 func (t *GroupConditionDto_Conditions_Item) FromGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -3916,6 +4144,7 @@ func (t *GroupConditionDto_Conditions_Item) FromGroupConditionDto(v GroupConditi
 
 // MergeGroupConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided GroupConditionDto
 func (t *GroupConditionDto_Conditions_Item) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -3935,6 +4164,7 @@ func (t GroupConditionDto_Conditions_Item) AsLifecycleConditionDto() (LifecycleC
 
 // FromLifecycleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided LifecycleConditionDto
 func (t *GroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -3942,6 +4172,7 @@ func (t *GroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v Lifecycl
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided LifecycleConditionDto
 func (t *GroupConditionDto_Conditions_Item) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -3961,6 +4192,7 @@ func (t GroupConditionDto_Conditions_Item) AsSimpleConditionDto() (SimpleConditi
 
 // FromSimpleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided SimpleConditionDto
 func (t *GroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -3968,6 +4200,7 @@ func (t *GroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleCondi
 
 // MergeSimpleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided SimpleConditionDto
 func (t *GroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -3976,6 +4209,33 @@ func (t *GroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleCond
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t GroupConditionDto_Conditions_Item) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t GroupConditionDto_Conditions_Item) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "group":
+		return t.AsGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t GroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
@@ -3997,6 +4257,7 @@ func (t GroupedStatsRequest_Condition) AsArrayConditionDto() (ArrayConditionDto,
 
 // FromArrayConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided ArrayConditionDto
 func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4004,6 +4265,7 @@ func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDt
 
 // MergeArrayConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided ArrayConditionDto
 func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4023,6 +4285,7 @@ func (t GroupedStatsRequest_Condition) AsGroupConditionDto() (GroupConditionDto,
 
 // FromGroupConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided GroupConditionDto
 func (t *GroupedStatsRequest_Condition) FromGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4030,6 +4293,7 @@ func (t *GroupedStatsRequest_Condition) FromGroupConditionDto(v GroupConditionDt
 
 // MergeGroupConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided GroupConditionDto
 func (t *GroupedStatsRequest_Condition) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4049,6 +4313,7 @@ func (t GroupedStatsRequest_Condition) AsLifecycleConditionDto() (LifecycleCondi
 
 // FromLifecycleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided LifecycleConditionDto
 func (t *GroupedStatsRequest_Condition) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4056,6 +4321,7 @@ func (t *GroupedStatsRequest_Condition) FromLifecycleConditionDto(v LifecycleCon
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided LifecycleConditionDto
 func (t *GroupedStatsRequest_Condition) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4075,6 +4341,7 @@ func (t GroupedStatsRequest_Condition) AsSimpleConditionDto() (SimpleConditionDt
 
 // FromSimpleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided SimpleConditionDto
 func (t *GroupedStatsRequest_Condition) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4082,6 +4349,7 @@ func (t *GroupedStatsRequest_Condition) FromSimpleConditionDto(v SimpleCondition
 
 // MergeSimpleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided SimpleConditionDto
 func (t *GroupedStatsRequest_Condition) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4090,6 +4358,33 @@ func (t *GroupedStatsRequest_Condition) MergeSimpleConditionDto(v SimpleConditio
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t GroupedStatsRequest_Condition) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t GroupedStatsRequest_Condition) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "group":
+		return t.AsGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t GroupedStatsRequest_Condition) MarshalJSON() ([]byte, error) {
@@ -4111,6 +4406,7 @@ func (t TransitionDefinitionDto_Criterion) AsArrayConditionDto() (ArrayCondition
 
 // FromArrayConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided ArrayConditionDto
 func (t *TransitionDefinitionDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4118,6 +4414,35 @@ func (t *TransitionDefinitionDto_Criterion) FromArrayConditionDto(v ArrayConditi
 
 // MergeArrayConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided ArrayConditionDto
 func (t *TransitionDefinitionDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCriterionGroupConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a CriterionGroupConditionDto
+func (t TransitionDefinitionDto_Criterion) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
+	var body CriterionGroupConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCriterionGroupConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided CriterionGroupConditionDto
+func (t *TransitionDefinitionDto_Criterion) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCriterionGroupConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided CriterionGroupConditionDto
+func (t *TransitionDefinitionDto_Criterion) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4137,6 +4462,7 @@ func (t TransitionDefinitionDto_Criterion) AsFunctionConditionDto() (FunctionCon
 
 // FromFunctionConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided FunctionConditionDto
 func (t *TransitionDefinitionDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
+	v.Type = "function"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4144,32 +4470,7 @@ func (t *TransitionDefinitionDto_Criterion) FromFunctionConditionDto(v FunctionC
 
 // MergeFunctionConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided FunctionConditionDto
 func (t *TransitionDefinitionDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a GroupConditionDto
-func (t TransitionDefinitionDto_Criterion) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided GroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided GroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "function"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4189,6 +4490,7 @@ func (t TransitionDefinitionDto_Criterion) AsLifecycleConditionDto() (LifecycleC
 
 // FromLifecycleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided LifecycleConditionDto
 func (t *TransitionDefinitionDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4196,6 +4498,7 @@ func (t *TransitionDefinitionDto_Criterion) FromLifecycleConditionDto(v Lifecycl
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided LifecycleConditionDto
 func (t *TransitionDefinitionDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4215,6 +4518,7 @@ func (t TransitionDefinitionDto_Criterion) AsSimpleConditionDto() (SimpleConditi
 
 // FromSimpleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided SimpleConditionDto
 func (t *TransitionDefinitionDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4222,6 +4526,7 @@ func (t *TransitionDefinitionDto_Criterion) FromSimpleConditionDto(v SimpleCondi
 
 // MergeSimpleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided SimpleConditionDto
 func (t *TransitionDefinitionDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4230,6 +4535,35 @@ func (t *TransitionDefinitionDto_Criterion) MergeSimpleConditionDto(v SimpleCond
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t TransitionDefinitionDto_Criterion) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t TransitionDefinitionDto_Criterion) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "function":
+		return t.AsFunctionConditionDto()
+	case "group":
+		return t.AsCriterionGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t TransitionDefinitionDto_Criterion) MarshalJSON() ([]byte, error) {
@@ -4287,6 +4621,7 @@ func (t WorkflowConfigurationDto_Criterion) AsArrayConditionDto() (ArrayConditio
 
 // FromArrayConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided ArrayConditionDto
 func (t *WorkflowConfigurationDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4294,6 +4629,35 @@ func (t *WorkflowConfigurationDto_Criterion) FromArrayConditionDto(v ArrayCondit
 
 // MergeArrayConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided ArrayConditionDto
 func (t *WorkflowConfigurationDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsCriterionGroupConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a CriterionGroupConditionDto
+func (t WorkflowConfigurationDto_Criterion) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
+	var body CriterionGroupConditionDto
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromCriterionGroupConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided CriterionGroupConditionDto
+func (t *WorkflowConfigurationDto_Criterion) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeCriterionGroupConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided CriterionGroupConditionDto
+func (t *WorkflowConfigurationDto_Criterion) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4313,6 +4677,7 @@ func (t WorkflowConfigurationDto_Criterion) AsFunctionConditionDto() (FunctionCo
 
 // FromFunctionConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided FunctionConditionDto
 func (t *WorkflowConfigurationDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
+	v.Type = "function"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4320,32 +4685,7 @@ func (t *WorkflowConfigurationDto_Criterion) FromFunctionConditionDto(v Function
 
 // MergeFunctionConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided FunctionConditionDto
 func (t *WorkflowConfigurationDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a GroupConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided GroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromGroupConditionDto(v GroupConditionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided GroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "function"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4365,6 +4705,7 @@ func (t WorkflowConfigurationDto_Criterion) AsLifecycleConditionDto() (Lifecycle
 
 // FromLifecycleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided LifecycleConditionDto
 func (t *WorkflowConfigurationDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4372,6 +4713,7 @@ func (t *WorkflowConfigurationDto_Criterion) FromLifecycleConditionDto(v Lifecyc
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided LifecycleConditionDto
 func (t *WorkflowConfigurationDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4391,6 +4733,7 @@ func (t WorkflowConfigurationDto_Criterion) AsSimpleConditionDto() (SimpleCondit
 
 // FromSimpleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided SimpleConditionDto
 func (t *WorkflowConfigurationDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4398,6 +4741,7 @@ func (t *WorkflowConfigurationDto_Criterion) FromSimpleConditionDto(v SimpleCond
 
 // MergeSimpleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided SimpleConditionDto
 func (t *WorkflowConfigurationDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4406,6 +4750,35 @@ func (t *WorkflowConfigurationDto_Criterion) MergeSimpleConditionDto(v SimpleCon
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t WorkflowConfigurationDto_Criterion) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t WorkflowConfigurationDto_Criterion) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "function":
+		return t.AsFunctionConditionDto()
+	case "group":
+		return t.AsCriterionGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t WorkflowConfigurationDto_Criterion) MarshalJSON() ([]byte, error) {
@@ -4551,6 +4924,7 @@ func (t SubmitAsyncSearchJobJSONBody) AsArrayConditionDto() (ArrayConditionDto, 
 
 // FromArrayConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided ArrayConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4558,6 +4932,7 @@ func (t *SubmitAsyncSearchJobJSONBody) FromArrayConditionDto(v ArrayConditionDto
 
 // MergeArrayConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided ArrayConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4577,6 +4952,7 @@ func (t SubmitAsyncSearchJobJSONBody) AsGroupConditionDto() (GroupConditionDto, 
 
 // FromGroupConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided GroupConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4584,6 +4960,7 @@ func (t *SubmitAsyncSearchJobJSONBody) FromGroupConditionDto(v GroupConditionDto
 
 // MergeGroupConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided GroupConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4603,6 +4980,7 @@ func (t SubmitAsyncSearchJobJSONBody) AsLifecycleConditionDto() (LifecycleCondit
 
 // FromLifecycleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided LifecycleConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4610,6 +4988,7 @@ func (t *SubmitAsyncSearchJobJSONBody) FromLifecycleConditionDto(v LifecycleCond
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided LifecycleConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4629,6 +5008,7 @@ func (t SubmitAsyncSearchJobJSONBody) AsSimpleConditionDto() (SimpleConditionDto
 
 // FromSimpleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided SimpleConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4636,6 +5016,7 @@ func (t *SubmitAsyncSearchJobJSONBody) FromSimpleConditionDto(v SimpleConditionD
 
 // MergeSimpleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided SimpleConditionDto
 func (t *SubmitAsyncSearchJobJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4644,6 +5025,33 @@ func (t *SubmitAsyncSearchJobJSONBody) MergeSimpleConditionDto(v SimpleCondition
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t SubmitAsyncSearchJobJSONBody) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t SubmitAsyncSearchJobJSONBody) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "group":
+		return t.AsGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t SubmitAsyncSearchJobJSONBody) MarshalJSON() ([]byte, error) {
@@ -4665,6 +5073,7 @@ func (t SearchEntitiesJSONBody) AsArrayConditionDto() (ArrayConditionDto, error)
 
 // FromArrayConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided ArrayConditionDto
 func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4672,6 +5081,7 @@ func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) erro
 
 // MergeArrayConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided ArrayConditionDto
 func (t *SearchEntitiesJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
+	v.Type = "array"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4691,6 +5101,7 @@ func (t SearchEntitiesJSONBody) AsGroupConditionDto() (GroupConditionDto, error)
 
 // FromGroupConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided GroupConditionDto
 func (t *SearchEntitiesJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4698,6 +5109,7 @@ func (t *SearchEntitiesJSONBody) FromGroupConditionDto(v GroupConditionDto) erro
 
 // MergeGroupConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided GroupConditionDto
 func (t *SearchEntitiesJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
+	v.Type = "group"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4717,6 +5129,7 @@ func (t SearchEntitiesJSONBody) AsLifecycleConditionDto() (LifecycleConditionDto
 
 // FromLifecycleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided LifecycleConditionDto
 func (t *SearchEntitiesJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4724,6 +5137,7 @@ func (t *SearchEntitiesJSONBody) FromLifecycleConditionDto(v LifecycleConditionD
 
 // MergeLifecycleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided LifecycleConditionDto
 func (t *SearchEntitiesJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
+	v.Type = "lifecycle"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4743,6 +5157,7 @@ func (t SearchEntitiesJSONBody) AsSimpleConditionDto() (SimpleConditionDto, erro
 
 // FromSimpleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided SimpleConditionDto
 func (t *SearchEntitiesJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	t.union = b
 	return err
@@ -4750,6 +5165,7 @@ func (t *SearchEntitiesJSONBody) FromSimpleConditionDto(v SimpleConditionDto) er
 
 // MergeSimpleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided SimpleConditionDto
 func (t *SearchEntitiesJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
+	v.Type = "simple"
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -4758,6 +5174,33 @@ func (t *SearchEntitiesJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) e
 	merged, err := runtime.JSONMerge(t.union, b)
 	t.union = merged
 	return err
+}
+
+func (t SearchEntitiesJSONBody) Discriminator() (string, error) {
+	var discriminator struct {
+		Discriminator string `json:"type"`
+	}
+	err := json.Unmarshal(t.union, &discriminator)
+	return discriminator.Discriminator, err
+}
+
+func (t SearchEntitiesJSONBody) ValueByDiscriminator() (interface{}, error) {
+	discriminator, err := t.Discriminator()
+	if err != nil {
+		return nil, err
+	}
+	switch discriminator {
+	case "array":
+		return t.AsArrayConditionDto()
+	case "group":
+		return t.AsGroupConditionDto()
+	case "lifecycle":
+		return t.AsLifecycleConditionDto()
+	case "simple":
+		return t.AsSimpleConditionDto()
+	default:
+		return nil, errors.New("unknown discriminator value: " + discriminator)
+	}
 }
 
 func (t SearchEntitiesJSONBody) MarshalJSON() ([]byte, error) {

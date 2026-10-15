@@ -332,7 +332,7 @@ func TestSearchTemporal_200_OffsetLessOperand(t *testing.T) {
 // TestSearchTemporal_400_BetweenScalarOperand verifies a BETWEEN condition
 // whose operand is a scalar (not a 2-element array) is rejected with 400
 // INVALID_CONDITION at the SearchService validation boundary (ValidateCondition ->
-// validateBetweenArity), rather than reaching a storage plugin. This is the
+// validateOperand), rather than reaching a storage plugin. This is the
 // postgres-panic repro: before the fix, betweenValues left spi.Filter.Values
 // nil for a malformed BETWEEN and postgres's query planner panicked indexing
 // f.Values[0] with no length guard (500), while sqlite's fallback silently

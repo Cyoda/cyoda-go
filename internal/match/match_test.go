@@ -533,8 +533,8 @@ func TestMatchSimpleLikeFalse(t *testing.T) {
 
 // --- 11. BETWEEN ---
 
-func TestMatchSimpleBetweenString(t *testing.T) {
-	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: "25,35"}
+func TestMatchSimpleBetweenStringBounds(t *testing.T) {
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN", Value: []any{"25", "35"}}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
 		t.Fatal(err)
@@ -558,7 +558,7 @@ func TestMatchSimpleBetweenSlice(t *testing.T) {
 }
 
 func TestMatchSimpleBetweenInclusiveEdge(t *testing.T) {
-	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: "30,30"}
+	cond := &predicate.SimpleCondition{JsonPath: "$.age", OperatorType: "BETWEEN_INCLUSIVE", Value: []any{float64(30), float64(30)}}
 	prepared, err := Prepare(cond, sampleTypes)
 	if err != nil {
 		t.Fatal(err)
@@ -971,11 +971,10 @@ func TestMatchFunctionConditionError(t *testing.T) {
 	}
 }
 
-// A FUNCTION criterion is dispatched to a compute member by the engine only
-// when it is the whole criterion; nested inside a group it reaches this
-// evaluator, which has no dispatcher and fails closed rather than silently
-// treating the branch as a non-match. The `workflows` help topic documents
-// this restriction — keep the two in step.
+// This evaluator has no dispatcher: the engine evaluates function conditions
+// itself and hands Prepare only function-free conditions. A function
+// condition that reaches it inside a group fails closed rather than being
+// read as a non-match.
 func TestMatchFunctionConditionNestedInGroupError(t *testing.T) {
 	cond := &predicate.GroupCondition{
 		Operator: "AND",

@@ -23,8 +23,8 @@ numerically stored value, and a numeric operand never matches a stored string.
 Numbers compare through arbitrary-precision integer and decimal types, not
 `float64`. Comparison is correct beyond 2^53.
 
-An operand that fits no declared type of a known field is `400
-CONDITION_TYPE_MISMATCH`.
+A comparison or range operand that fits none of the declared types of a known
+field that the operator applies to is `400 CONDITION_TYPE_MISMATCH`.
 
 **An operator must apply to at least one declared type**, or the condition is
 `400 CONDITION_TYPE_MISMATCH` too:
@@ -99,8 +99,9 @@ what happens when a field has no declared type.
 The eight in the first group need a type slot to compare in. Two different
 things are rejected before evaluation, with two different codes, and they
 must not be conflated: an operand that parses into none of a **known**
-field's declared types is `400 CONDITION_TYPE_MISMATCH` (section 1); a field
-carrying **no declared type at all** has nothing for this check to apply to,
+field's declared types the operator applies to is `400
+CONDITION_TYPE_MISMATCH` (section 1); a field carrying **no declared type at
+all** has nothing for this check to apply to,
 so it is accepted here and instead fails at preparation with `400
 INVALID_CONDITION` (`errors.INVALID_CONDITION`), because the leaf cannot be
 evaluated against any type. The polarity rule below applies only once an
@@ -122,14 +123,16 @@ either rule.
 
 ### An unsatisfiable comparison follows operator polarity
 
-When an operand has already been accepted — it parses into at least one of
-a known field's declared types — evaluation still runs per stored-value type
-family. A family whose declared type produced no surviving sub-condition for
-that operand gives a determinate answer about the entity for that family
-(*no value of this family can satisfy this comparison*), not a failure to
-evaluate. **The answer follows the operator's polarity**: false for a
-positive operator, true for a negative one. This never applies to an operand
-that parses into none of a known field's declared types at all — that is
+When a condition has already been accepted — its operator applies to at
+least one of a known field's declared types and, for a comparison or range
+operator, its operand parses into one of the types the operator applies to —
+evaluation still runs per stored-value type family. A family whose declared
+type produced no surviving sub-condition for that operand gives a
+determinate answer about the entity for that family (*no value of this family
+can satisfy this comparison*), not a failure to evaluate. **The answer
+follows the operator's polarity**: false for a positive operator, true for a
+negative one. This never applies to a comparison or range operand that
+parses into none of the declared types the operator applies to — that is
 rejected before evaluation instead (section 1, `400
 CONDITION_TYPE_MISMATCH`). It also never applies to a field with no declared
 type at all: there is no declared-type check to run, so evaluation is

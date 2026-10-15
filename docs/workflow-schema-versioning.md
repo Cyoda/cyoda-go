@@ -97,7 +97,7 @@ criterion carries a malformed bracket path imported successfully before
 this change and is rejected by the same v0.8.4 binary now, regardless of
 which schema version it declares.
 
-### Unrecognised-operator criteria rejected at evaluation, not import (v0.8.4)
+### Unrecognised-operator criteria fail the save at evaluation (v0.8.4)
 
 A workflow-level or transition-level criterion carrying an operator name the
 evaluator does not recognise (e.g. `FROBNICATE`) now fails the transition
@@ -111,11 +111,11 @@ supposed to reject something" case, same as the v0.8.3 malformed-regex entry
 above: a criterion nobody can evaluate never worked as a correct guard, so no
 *working* config is newly rejected — only which entities surface the failure
 changes (all of them, now, instead of only the ones that reached the bad
-leaf), and evaluation-time failure replaces a silent no-op. Import-time
-acceptance is unchanged: `WorkflowConfigurationDto` still validates only
-`MATCHES_PATTERN` regex syntax, not operator names, so the same workflow
-imports byte-identically. No `CurrentSchemaVersion` or `SupportedSchemaRanges`
-change.
+leaf), and evaluation-time failure replaces a silent no-op. The same release
+also refuses an unrecognised operator at import (the one-path-grammar change,
+which validates every criterion against the search operator table), so this
+entry covers a criterion that reached the store without that check. No
+`CurrentSchemaVersion` or `SupportedSchemaRanges` change.
 
 ### Undeclared-field criteria rejected at evaluation, not import (v0.8.4)
 
@@ -130,9 +130,9 @@ This is the same "bug-fixing a validator that was already supposed to reject
 something" case as the unrecognised-operator entry directly above it, reached
 through a different check: a criterion on a field the model does not declare
 never worked as a correct guard either, so no *working* config is newly
-rejected. Import-time acceptance is unchanged — `walkCriterion` still checks
-only path grammar, operator names, lifecycle type-soundness and pattern
-operands at import, not model membership, so a criterion naming a field the
+rejected. Import-time acceptance is unchanged — import checks path
+grammar, operator names, operand shape, lifecycle type-soundness and pattern
+operands, not model membership, so a criterion naming a field the
 model has not yet declared still imports byte-identically; the field's
 declaration is a modelling step, not an import-validation one. No
 `CurrentSchemaVersion` or `SupportedSchemaRanges` change.
@@ -215,7 +215,8 @@ Before merging a schema bump:
 
 ### 1.5 — v0.9.0 contract (current)
 
-Additive MINOR — two new optional fields:
+Additive MINOR — two new optional fields, and function conditions inside
+groups:
 
 - **`idempotent` on `ExternalizedProcessorConfigDto`** (a processor's
   `config`). Boolean, default `false`, omitted on export when false. The
@@ -223,8 +224,13 @@ Additive MINOR — two new optional fields:
   member after one that received the work went silent.
 - **`retryPolicy` on `ScheduleFunctionDto`** (`schedule.function`). The same
   `NONE` / `FIXED` selector a processor and a criterion function already carry.
+- **Function conditions inside `AND`, `OR` and `NOT` groups**, at any depth of
+  a workflow or transition criterion, are accepted and evaluated in declaration
+  order, each group stopping as soon as its value is known. They imported
+  before and failed every evaluation, so no working configuration changes
+  meaning.
 
-Every payload 1.4 accepted that does not fall under the nine tightenings below
+Every payload 1.4 accepted that does not fall under the twelve tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -232,10 +238,10 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Nine tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Twelve tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
-meant to reject — the inputs below imported and *worked* — so they are recorded
-here, under the rubric of §"Tightening releases":
+meant to reject — the inputs below imported, and most of them *worked* — so
+they are recorded here, under the rubric of §"Tightening releases":
 
 1. **`retryPolicy` on a `function`-type criterion is validated** (`NONE`,
    `FIXED` or empty), as it has been on a processor since 1.1. Until now any
@@ -288,14 +294,32 @@ here, under the rubric of §"Tightening releases":
    A bound must be a non-null scalar. The evaluator compared against the
    bound's printed form, so the criterion answered as if the author had
    written that text. Rubric point 1 applies.
-9. **A criterion that tests more than 10,000 entries is refused** (each entry
-   in an `array` clause's `values` counts one, `null` entries included, and
-   every other clause counts one). This one does reject configurations that
-   worked. It is taken because an `array` clause expands into one clause per
-   entry, and the engine expands the criterion again each time it evaluates
-   it. The limit bounds that expansion; it does not bound the total cost of
-   a criterion. The limit is fixed, not a server setting, and the error names
-   the limit and the count.
+9. **A criterion that tests more than 10,000 entries is refused** (each entry in
+   an `array` clause's `values` counts one, `null` entries included, a
+   `function` clause counts one plus the entries of its pre-check, and every
+   other clause counts one). This one does reject configurations that worked. It
+   is taken because an `array` clause expands into one clause per entry, and the
+   engine expands the criterion again each time it evaluates it. The limit
+   bounds that expansion; it does not bound the total cost of a criterion. The
+   limit is fixed, not a server setting, and the error names the limit and the
+   count.
+10. **A function condition's pre-check (`function.criterion`) is evaluated**,
+    and a pre-check that holds a function condition, at any depth, or that
+    breaks a check or limit the rest of the criterion is held to (path
+    grammar, operator and operand shape, patterns, the entry and depth limits
+    counted through it), is refused. Rubric point 1 applies: the pre-check was
+    silently ignored, so a function was called whatever its pre-check said.
+    When a pre-check does not match, the function condition is now false and
+    the function is not called.
+11. **A function condition without a `function` object or without a `name` is
+    refused.** It imported and then failed every dispatch, so no working
+    configuration is affected.
+12. **A missing or `null` operand is refused under every operator other than
+    `IS_NULL` and `NOT_NULL`**, in a `simple` or `lifecycle` clause of a
+    criterion or a pre-check. The evaluator compared the field with an empty
+    string: `EQUALS` matched `""`, and `CONTAINS` or `STARTS_WITH` matched
+    every string. Rubric point 1 applies: fail loud where the old answer was
+    wrong.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -310,7 +334,11 @@ where the criterion is. An `array` criterion without an operator is fixed by
 adding `"operatorType":"EQUALS"`. Rules 6 to 8 touch only criteria whose
 operand has a shape no operator can evaluate as written, and rule 9 only a
 criterion far larger than a guard needs; each error names where the
-criterion is. All nine rules apply to an import under
+criterion is. Rule 10 touches only criteria whose pre-check was ignored until
+now, rule 11 only function conditions that failed every dispatch, and rule 12
+only clauses without the operand their operator compares with; each error
+names the position of the condition in the criterion. All twelve rules
+apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 

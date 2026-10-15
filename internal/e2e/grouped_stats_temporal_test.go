@@ -102,7 +102,7 @@ func TestGroupedStats_UnknownMetaField_Returns400(t *testing.T) {
 // condition whose value is a scalar (not the required 2-element [lo, hi]
 // array) is rejected with 400 INVALID_CONDITION — the same structural
 // arity check applies to lifecycle/temporal fields as to simple/data
-// fields (validateBetweenArity in condition_type_validate.go is shared).
+// fields (validateOperand in operators.go is shared).
 func TestGroupedStats_MalformedBetweenArity_Returns400(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")

@@ -20,22 +20,29 @@ type CriterionFunctionConfig struct {
 	Context string `json:"context"`
 }
 
-// CriterionFunction is the `function` member of a function criterion.
+// CriterionFunction is the `function` member of a function condition.
 type CriterionFunction struct {
 	Name   string                  `json:"name"`
 	Config CriterionFunctionConfig `json:"config"`
+	// Criterion is the pre-check as written: the `function.criterion`
+	// member. Empty when absent; the JSON text `null` when written as null.
+	Criterion json.RawMessage `json:"criterion"`
 }
 
-// ParseCriterionFunction decodes the `function` member of a criterion. It
-// does not check the criterion's `type`: whether a criterion is a function
-// criterion is the caller's knowledge (predicate.ParseCondition). Members it
+// ParseCriterionFunction decodes the `function` member of a function
+// condition. present reports whether that member is there and not null. It
+// does not check the condition's `type`: whether a condition is a function
+// condition is the caller's knowledge (predicate.ParseCondition). Members it
 // does not name are ignored — the criterion is client-owned JSON.
-func ParseCriterionFunction(criterion json.RawMessage) (CriterionFunction, error) {
+func ParseCriterionFunction(condition json.RawMessage) (fn CriterionFunction, present bool, err error) {
 	var envelope struct {
-		Function CriterionFunction `json:"function"`
+		Function *CriterionFunction `json:"function"`
 	}
-	if err := json.Unmarshal(criterion, &envelope); err != nil {
-		return CriterionFunction{}, fmt.Errorf("failed to parse criterion function: %w", err)
+	if err := json.Unmarshal(condition, &envelope); err != nil {
+		return CriterionFunction{}, false, fmt.Errorf("failed to parse criterion function: %w", err)
 	}
-	return envelope.Function, nil
+	if envelope.Function == nil {
+		return CriterionFunction{}, false, nil
+	}
+	return *envelope.Function, true, nil
 }

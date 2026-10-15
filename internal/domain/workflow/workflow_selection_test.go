@@ -814,7 +814,7 @@ func TestEvaluateCriterion_TypingFailureIsMarkedInfra(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "typing-infra", ModelVersion: "1.0"}
 	entity := makeEntity("typing-infra-1", ref, map[string]any{"age": 30})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.age", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("expected the model-load failure to be surfaced")
 	}

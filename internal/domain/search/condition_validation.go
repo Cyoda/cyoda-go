@@ -20,9 +20,11 @@ type FieldsLoader func() (map[string]schema.FieldDescriptor, error)
 // order is fixed: structure, then patterns, then the model's paths, then the
 // model's types. The checks that need no model come first, so a structural
 // or pattern fault is INVALID_CONDITION whatever the model declares; a path
-// the model lacks is INVALID_FIELD_PATH; an operand or operator the declared
-// types cannot take is CONDITION_TYPE_MISMATCH. The caller has already
-// resolved the model: an unknown model is a 404 before any of this runs.
+// the model lacks is INVALID_FIELD_PATH; an operator that applies to none of
+// the declared types, or a comparison or range operand that parses into none
+// of the types the operator applies to, is CONDITION_TYPE_MISMATCH. The
+// caller has already resolved the model: an unknown model is a 404 before
+// any of this runs.
 //
 // load supplies the model's fields; the path step checks the condition's
 // paths — plus extraPaths, the data paths the request names outside its

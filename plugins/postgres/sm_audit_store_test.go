@@ -1,6 +1,7 @@
 package postgres_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -205,6 +206,7 @@ func TestSMAuditStore_EventDataPreservation(t *testing.T) {
 		Data: map[string]any{
 			"stringField": "hello",
 			"numberField": float64(42),
+			"bigNumber":   json.Number("12345678901234567890"),
 			"boolField":   true,
 		},
 	}
@@ -229,8 +231,13 @@ func TestSMAuditStore_EventDataPreservation(t *testing.T) {
 	if v, ok := got.Data["stringField"].(string); !ok || v != "hello" {
 		t.Errorf("stringField: expected 'hello', got %v (%T)", got.Data["stringField"], got.Data["stringField"])
 	}
-	if v, ok := got.Data["numberField"].(float64); !ok || v != 42 {
-		t.Errorf("numberField: expected float64(42), got %v (%T)", got.Data["numberField"], got.Data["numberField"])
+	// Numbers read back as json.Number, with every digit they were recorded
+	// with, including one a float64 cannot hold.
+	if v, ok := got.Data["numberField"].(json.Number); !ok || v.String() != "42" {
+		t.Errorf("numberField: expected json.Number 42, got %v (%T)", got.Data["numberField"], got.Data["numberField"])
+	}
+	if v, ok := got.Data["bigNumber"].(json.Number); !ok || v.String() != "12345678901234567890" {
+		t.Errorf("bigNumber: expected json.Number 12345678901234567890, got %v (%T)", got.Data["bigNumber"], got.Data["bigNumber"])
 	}
 	if v, ok := got.Data["boolField"].(bool); !ok || !v {
 		t.Errorf("boolField: expected true, got %v (%T)", got.Data["boolField"], got.Data["boolField"])

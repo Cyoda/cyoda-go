@@ -133,22 +133,22 @@ Status vocabulary:
 
 ## 09-workflow-externalization.yaml
 
-The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd/compute-test-client`; the workflow externalization scenarios use it to exercise the gRPC streaming path without a separate process.
+The `parity.BackendFixture` exposes a compute-tenant matched to the running `cmd/compute-test-client`; scenarios 09/01-09/04 and 09/13-09/15 use it to exercise the gRPC streaming path. Scenarios 09/09-09/12 instead start further compute clients (`parity.StartComputeClientOrSkip`) under a fresh tenant, on a tag of their own, so that they can script a client's behaviour and count the requests each client received; a fixture that cannot start compute clients skips them.
 
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
 | ext/01-sync-processor-success | new:RunExternalAPI_09_01_SyncProcessorSuccess | tranche 3 |
 | ext/02-sync-processor-exception-rolls-back | new:RunExternalAPI_09_02_SyncProcessorExceptionRollsBack | tranche 3 — `equiv_or_better`: cyoda-go emits `WORKFLOW_FAILED` @400 (specific code, transaction cancelled, entity not persisted); dictionary's implicit 5xx is more generic |
 | ext/03-async-same-tx-exception-rolls-back | new:RunExternalAPI_09_03_AsyncSameTxExceptionRollsBack | tranche 3 — same `WORKFLOW_FAILED` @400 as 09/02 (engine treats SYNC + ASYNC_SAME_TX exceptions identically) |
-| ext/04-async-new-tx-exception-keeps-initial-save | new:RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitial | tranche 3 — cyoda-go's `ASYNC_NEW_TX` failures are non-fatal per `engine.go`; entity reaches DONE matching dictionary's "initial save survives" semantic |
+| ext/04-async-new-tx-exception-keeps-initial-save | new:RunExternalAPI_09_04_AsyncNewTxExceptionKeepsInitialSave | tranche 3 — cyoda-go's `ASYNC_NEW_TX` failures are non-fatal per `engine.go`; entity reaches PROCESSED matching dictionary's "initial save survives" semantic |
 | ext/05-sync-error-flag-rolls-back | (skipped) | pending compute-test-client error-flag processor; processorFunc signature doesn't expose ProcessorResponse warnings/errors; out of tranche-3 scope |
 | ext/06-async-same-tx-error-flag-rolls-back | (skipped) | same as 09/05 (ASYNC_SAME_TX) |
 | ext/07-async-new-tx-error-flag-keeps-initial-save | (skipped) | same as 09/05 (ASYNC_NEW_TX) |
 | ext/08-no-external-registered-fails | new:RunExternalAPI_09_08_NoExternalRegisteredFails | tranche 3 — `equiv_or_better`: cyoda-go emits `NO_COMPUTE_MEMBER_FOR_TAG` @503 retryable ("no matching calculation member"); fresh tenant has no calc member registered. Now classifies the no-member case as a transient compute-infra condition (retryable 503), not a client error — strictly stronger than the earlier `WORKFLOW_FAILED` @400 mapping, which mislabelled an unreachable/unregistered compute node as a bad request. |
-| ext/09-external-disconnect-succeeds-on-retry | (skipped) | multi-member orchestration not in tranche-3 fixture |
-| ext/10-external-timeout-failover | (skipped) | no per-call timeout config visible in cyoda-go; non-deterministic without one |
-| ext/11-processing-node-disconnects-mid-request | (skipped) | needs deterministic mid-request gRPC disconnect (fixture orchestration) |
-| ext/12-externalized-criterion-skips-call-when-not-matched | new:RunExternalAPI_09_12_ExternalizedCriterionSkipsCall | tranche 3 — uses externalized `always-false` criterion; entity stays at CREATED |
+| ext/09-external-disconnect-succeeds-on-retry | new:RunExternalAPI_09_09_ExternalDisconnectSucceedsOnRetry | two compute clients on one tag: the first drops its stream on receiving the work; the processor is declared `idempotent`, so the second client serves the same request (same request id) and the entity reaches ACTIVE |
+| ext/10-external-timeout-failover | new:RunExternalAPI_09_10_ExternalTimeoutFailover | two compute clients on one tag: the first never answers; after the idempotent processor's `responseTimeoutMs` (300) the second client serves the same request and the entity is created |
+| ext/11-processing-node-disconnects-mid-request | new:RunExternalAPI_09_11_ProcessingNodeDisconnectsMidRequest | two compute clients on one tag, the first drops its stream with the request in hand. Not `idempotent`: 503 `COMPUTE_MEMBER_DISCONNECTED` retryable, the second client is never asked, no entity is created. `idempotent`: the second client serves the same request |
+| ext/12-externalized-criterion-skips-call-when-not-matched | new:RunExternalAPI_09_12_ExternalizedCriterionSkipsCall | mirrors Cloud's `testExternalizedCriteriaConditionSkipsExternalCallWhenNotMatched`: a function criterion (`always-true`) with the pre-check `$.flag == true`, counted at a compute client started for the scenario. `flag:false`: 0 criterion requests, entity stays at CREATED. `flag:true`: exactly 1 criterion request, entity reaches PROCESSED, `TRANSITION_MAKE` records the callout |
 
 ---
 

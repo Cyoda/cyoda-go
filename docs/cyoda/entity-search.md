@@ -351,11 +351,12 @@ documents over memory/sqlite/postgres) can't literally be Cassandra type-maps:
    annihilated; 400 only when nothing parses.
 6. **Operator-vs-field-type validation, where Cloud has none** — an operator
    must apply to one of the field's declared types (a string operator needs
-   text, an ordering or range operator an ordered type) and a comparison
-   operand must parse into one of those types, or the predicate is refused
-   `400 CONDITION_TYPE_MISMATCH`; otherwise reject only on parse failure and
-   arity. Cloud builds such a predicate and fails or answers empty at
-   evaluation (§8).
+   text, an ordering operator a number, text or a date/time, a range operator
+   a number, `STRING` or a date/time) and a comparison or range operand must
+   parse into one of the declared types the operator applies to, or the
+   predicate is refused `400 CONDITION_TYPE_MISMATCH`; otherwise reject only
+   on parse failure and arity. Cloud builds such a predicate and fails or
+   answers empty at evaluation (§8).
 7. Per-operator comparison semantics per §5 (same-type; null never matches
    ordering/equality; LIKE = anchored escaped glob, case-sensitive; CONTAINS =
    substring; BETWEEN exclusive, BETWEEN_INCLUSIVE inclusive).

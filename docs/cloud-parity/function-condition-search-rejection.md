@@ -16,21 +16,26 @@ depth**, with `400 INVALID_CONDITION`, before any store access:
 - the gRPC direct-search and snapshot-search entry points, as a `success:false`
   envelope carrying the same domain code
 
-Criteria are unaffected: `engine.evaluateCriterion` still intercepts a
-whole-criterion `FunctionCondition` and dispatches it as an
-`EntityCriteriaCalculationRequest`. A `function` clause nested inside a `group`
-criterion is not dispatched and fails the evaluation — the interception only
-sees the top level.
+The parser reads a function condition's pre-check (`function.criterion`), so a
+function condition whose pre-check does not parse fails the parse of the whole
+search condition: `400 INVALID_CONDITION` on HTTP, and on gRPC the transport
+status `InvalidArgument`, as for any condition that does not parse.
+
+Criteria are unaffected: in a workflow or transition criterion a function
+condition is valid at any depth — the whole criterion, or a member of an `AND`,
+`OR` or `NOT` group — and the engine dispatches each one that evaluation
+reaches as an `EntityCriteriaCalculationRequest`
+(`function-conditions-in-criteria.md`).
 
 ## Why the split is real, not an implementation gap
 
 The `Condition` DSL is shared between search and criteria, which is why the
 shape parses in both. Everything downstream of the parse is not shared:
 
-- `predicate.FunctionCondition` carries **no fields** — `ParseCondition`
-  discards `function.name` and `function.config`. The engine only works because
-  it keeps the raw criterion bytes and re-parses them at dispatch time. A
-  search evaluator holding the parsed value has nothing to route on.
+- `predicate.FunctionCondition` carries the condition's own JSON and its
+  parsed pre-check, and nothing evaluates it but the workflow engine, which
+  dispatches that JSON to a compute member. The predicate kernel has no
+  evaluator for it.
 - The predicate kernel is a pure, synchronous, in-process function with no
   `context.Context`. A function clause is a blocking network callout. Giving a
   leaf I/O capability changes the contract of every caller.
@@ -49,8 +54,10 @@ surfaced on either poll.
 ## Contract surface
 
 - `FunctionConditionDto` is removed from the request unions of the three
-  search-shaped operations and retained in `TransitionDefinitionDto.criterion`
-  and the workflow-level `criterion`.
+  search-shaped operations and retained in `TransitionDefinitionDto.criterion`,
+  the workflow-level `criterion` and the criterion group
+  (`CriterionGroupConditionDto`). The search group (`GroupConditionDto`) and
+  the pre-check hold local conditions only.
 - `cyoda help search` catalogues `FunctionCondition` under the shared DSL and
   marks it criteria-only; `cyoda help errors INVALID_CONDITION` names the
   rejection.

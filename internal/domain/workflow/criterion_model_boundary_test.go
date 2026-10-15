@@ -49,7 +49,7 @@ func TestEvaluateCriterion_UndeclaredPathAbortsTheSave(t *testing.T) {
 			}
 			criterion := simpleCriterion("$.amonut", op, value)
 
-			_, _, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
+			_, err := engine.evaluateCriterion(criterion, entity, &criterionContext{ctx: ctx})
 			if err == nil {
 				t.Fatalf("%s on undeclared path $.amonut must abort, got no error", op)
 			}
@@ -117,12 +117,11 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 // whole-block gate on the model read would miss: `creationDate CONTAINS
 // "2024"` carries NO data path at all (a LifecycleCondition contributes
 // nothing to search.ConditionFieldPaths), so gating the model READ correctly
-// skips it — but the VALIDATION CALL must still run with a nil fields map,
-// because search.ValidateConditionValueTypes's lifecycle branch
-// (validateLifecycleType) is the one check that refuses a text operator on a
-// temporal meta field. Without it, this criterion reaches match.Prepare
-// unvalidated, and a NOT node over it would select every entity the leaf
-// does not match. The model store is made to error so a
+// skips it — and the validation call still runs with a nil fields map, so
+// search.ValidateConditionValueTypes's lifecycle branch
+// (validateLifecycleType) makes at evaluation the same check import makes
+// (criterion_temporal_test.go).
+// The model store is made to error so a
 // regression that accidentally started reading the model on this path would
 // surface as an infra error instead of the expected structural one.
 func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) {
@@ -138,7 +137,7 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	entity := makeEntity("e1", ref, map[string]any{})
 	entity.Meta.State = "CREATED"
 
-	_, _, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(lifecycleCriterion("creationDate", "CONTAINS", "2024"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("a text operator on the temporal meta field creationDate must be refused, not silently non-matched")
 	}
@@ -290,11 +289,11 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err != nil {
 		t.Fatalf("a path a peer node just added must not be refused after one refresh, got: %v", err)
 	}
-	if !got {
+	if !out.matched {
 		t.Fatal("peer_field(10) GREATER_THAN 5 must match under the refreshed declared type")
 	}
 	if rc := ms.RefreshCount(); rc != 1 {
@@ -333,9 +332,9 @@ func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	got, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
+	out, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "NOT_CONTAINS", "7"), entity, &criterionContext{ctx: ctx})
 	if !errors.Is(err, search.ErrConditionTypeMismatch) {
-		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", got, err)
+		t.Fatalf("NOT_CONTAINS on a numeric field a peer just added: want search.ErrConditionTypeMismatch, got match=%v err=%v", out.matched, err)
 	}
 }
 
@@ -391,34 +390,24 @@ func TestEvaluateCriterion_ContainerPathScalarComparisonAbortsTheSave(t *testing
 
 	entity := makeEntity("e1", ref, map[string]any{"address": map[string]any{"street": "Main St"}})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.address", "CONTAINS", "Main"), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("CONTAINS against a container path ($.address has substructure, not a scalar) must abort, got no error")
 	}
 }
 
-// TestEvaluateCriterion_UncompilablePatternAbortsTheSave covers the
-// search.ValidatePatterns matrix row: a stored criterion carrying an
-// operand the pattern kernel cannot compile (a LIKE glob with a trailing
-// unpaired escape) must abort, not silently evaluate to a permanent
-// non-match.
-//
-// match.Prepare ALSO rejects this specific case today — internal/match's
-// expandNamed re-validates a LIKE/MATCHES_PATTERN operand via
-// spi.ValidateLeafPattern after calling spi.ExpandLeaf, closing the exact
-// swallow ExpandLeaf's own doc comment describes ("Callers wanting a
-// rejection ask ValidateLeafPattern FIRST") — a fail-open fix that landed
-// ahead of this task. So `err == nil` alone would NOT distinguish the two
-// checks: deleting search.ValidatePatterns' call site still leaves an
-// error, from match.Prepare's own errUnevaluableLeaf path (verified: see
-// task 7 fix-round-1 report). The distinguishing assertion is the
-// classification: search.ValidatePatterns' error names the jsonPath and is
-// a PLAIN error (never wraps match.ErrUnevaluableLeaf) — that is precisely
-// the "only the diagnostic changes" the reviewer described, and pinning it
-// is what the spec's coverage-matrix row requires regardless of whether a
-// deeper layer is also, today, defense-in-depth. The field is declared and
-// correctly typed so the OTHER two checks (ValidateKnownPaths,
-// ValidateConditionValueTypes) have nothing to say about this criterion.
+// TestEvaluateCriterion_UncompilablePatternAbortsTheSave: a criterion carrying
+// an operand the pattern kernel cannot compile (a LIKE glob with a trailing
+// unpaired escape) aborts the evaluation, never a permanent non-match.
+// Import refuses such a criterion first, in every position
+// (TestValidateWorkflowStructure_RejectsMalformedLike* in
+// criterion_pattern_test.go; a pre-check in TestImport_FunctionConditionsRefused),
+// and the engine's compile phase refuses it again: match.Prepare asks
+// spi.ValidateLeafPattern for every LIKE / MATCHES_PATTERN leaf and fails the
+// leaf as match.ErrUnevaluableLeaf. This feeds evaluateCriterion directly, as
+// no import would let it, to pin that refusal. The field is declared and
+// correctly typed, so the model-boundary checks (ValidateKnownPaths,
+// ValidateConditionValueTypes) have nothing to say about it.
 func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -427,16 +416,9 @@ func TestEvaluateCriterion_UncompilablePatternAbortsTheSave(t *testing.T) {
 
 	entity := makeEntity("e1", ref, map[string]any{"name": "Alice"})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
-	if err == nil {
-		t.Fatal("an uncompilable LIKE pattern (trailing unpaired escape) must abort, got no error")
-	}
-	if errors.Is(err, match.ErrUnevaluableLeaf) {
-		t.Fatalf("expected search.ValidatePatterns' own classification (plain error naming the jsonPath), "+
-			"got match.Prepare's errUnevaluableLeaf instead — search.ValidatePatterns' call site was skipped: %v", err)
-	}
-	if !strings.Contains(err.Error(), "$.name") {
-		t.Errorf("expected search.ValidatePatterns' error to name the jsonPath, got: %v", err)
+	_, err := engine.evaluateCriterion(simpleCriterion("$.name", "LIKE", `a\`), entity, &criterionContext{ctx: ctx})
+	if !errors.Is(err, match.ErrUnevaluableLeaf) {
+		t.Fatalf("an uncompilable LIKE pattern (trailing unpaired escape) must abort as match.ErrUnevaluableLeaf, got %v", err)
 	}
 }
 
@@ -471,7 +453,7 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
 
-	_, _, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
+	_, err := engine.evaluateCriterion(simpleCriterion("$.peer_field", "GREATER_THAN", 5), entity, &criterionContext{ctx: ctx})
 	if err == nil {
 		t.Fatal("expected an error: the refresh failed, so $.peer_field's status is unknown")
 	}

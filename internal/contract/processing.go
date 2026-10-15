@@ -66,10 +66,12 @@ type ExternalProcessingService interface {
 	// A nil entity leaves the entity as it is in the transaction, including a
 	// write the processor made to it through a joined callback.
 	DispatchProcessor(ctx context.Context, entity *spi.Entity, processor spi.ProcessorDefinition, workflowName string, transitionName string, txID string) (*spi.Entity, error)
-	// DispatchCriteria evaluates a FUNCTION criterion on an external node.
-	// reason carries the compute node's explanation for the result (empty
-	// when none was supplied); it is only consumed on a matches=false
-	// rejection.
+	// DispatchCriteria evaluates one function condition on an external node.
+	// criterion is that function condition's own JSON
+	// ({"type":"function","function":{…}}), whatever its position in the
+	// criterion. reason carries the compute node's explanation for the
+	// result (empty when none was supplied); it is only consumed on a
+	// matches=false rejection.
 	DispatchCriteria(ctx context.Context, entity *spi.Entity, criterion json.RawMessage, target string, workflowName string, transitionName string, processorName string, txID string) (matches bool, reason string, err error)
 	// DispatchFunction sends a generic Function callout (e.g. a scheduled-
 	// transition timing computation) to an external node and returns its

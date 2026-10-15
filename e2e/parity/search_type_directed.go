@@ -32,8 +32,9 @@ import (
 // operand ("30") parses against both declared types and matches whichever
 // stored branch (int or string) actually carries that value; a non-numeric
 // operand ("hello") parses only as STRING and matches just the string
-// branch — with no 400 (CONDITION_TYPE_MISMATCH requires the operand to
-// parse into NONE of the declared types, and STRING alone is enough).
+// branch — with no 400 (EQUALS applies to every declared type, so
+// CONDITION_TYPE_MISMATCH requires the operand to parse into NONE of them,
+// and STRING alone is enough).
 //
 // This scenario originally surfaced a genuine sqlite-only pushdown
 // under-selection bug and is now the cross-backend guard for its fix. On

@@ -16,13 +16,17 @@ import (
 //
 //   - the operator must apply to at least one declared type
 //     (applicableTypes): a string or pattern operator needs a text type, an
-//     ordering or range operator an ordered one. CONTAINS on a numeric field
+//     ordering operator an ordered one, and a range operator a numeric,
+//     STRING or temporal one. CONTAINS on a numeric field
 //     or GREATER_THAN on a boolean can never match, so it is refused rather
 //     than answered with an empty result.
-//   - a comparison or range operand must PARSE into at least one declared
-//     type — the same type-directed parse the leaf-comparison kernel
-//     (spi.ExpandLeaf) performs at evaluation time. A numeric-looking string
-//     on an [INTEGER, STRING] field parses and is accepted.
+//   - a comparison or range operand must PARSE into at least one of the
+//     declared types the operator applies to — the same type-directed parse
+//     the leaf-comparison kernel (spi.ExpandLeaf) performs at evaluation
+//     time; a range's two bounds must parse into one such type. A
+//     numeric-looking string on an [INTEGER, STRING] field parses and is
+//     accepted. A string or pattern operand is not parsed against the
+//     field's types.
 //
 // fields is the model's FieldsMap, a lookup from JSONPath (e.g. "$.price") to
 // a FieldDescriptor carrying the declared DataType(s). Pass the map the
@@ -35,13 +39,18 @@ import (
 // constraint.
 //
 // Returns a non-nil error only when an operator does not apply to the field's
-// declared types or an operand parses into none of them
-// (errConditionTypeMismatch), or a lifecycle field is unknown
-// (errInvalidFieldPath). Operand shape/arity — an object operand
-// (never valid for any operator), an array operand (valid only as a range
-// op's 2-element bounds), a range op's bounds shape — is enforced separately by
-// ValidateCondition/validateOperandShape/validateBetweenArity, upstream of
-// this type check.
+// declared types or a comparison or range operand parses into none of the
+// types the operator applies to (errConditionTypeMismatch), or a lifecycle field is unknown
+// (errInvalidFieldPath). Operand shape — a missing operand, an object
+// operand (never valid for any operator), an array operand (valid only as a
+// range op's 2-element bounds), a range op's bounds shape — is enforced
+// separately by ValidateCondition/validateOperand, upstream of this type
+// check.
+//
+// Precondition: cond has already passed ValidateCondition or
+// ValidateCriterionCondition. This function relies on that check and does
+// not repeat it; on a condition that has not passed it, the result is
+// undefined (it may panic, or accept a malformed operand).
 func ValidateConditionValueTypes(fields map[string]schema.FieldDescriptor, cond predicate.Condition) error {
 	return walkConditionTypes(fields, cond, 0)
 }
@@ -74,8 +83,6 @@ func walkConditionTypes(fm map[string]schema.FieldDescriptor, cond predicate.Con
 			return fmt.Errorf("%w: %v", ErrInvalidCondition, err)
 		}
 		return walkConditionTypes(fm, d, depth+1)
-	case *predicate.FunctionCondition:
-		return nil
 	default:
 		return nil
 	}
@@ -140,7 +147,7 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	// An object operand is rejected upstream, at the model-independent shape
-	// layer (validateOperandShape in operators.go, wired into ValidateCondition
+	// layer (validateOperand in operators.go, wired into ValidateCondition
 	// — the single boundary every transport funnels through before this
 	// type check runs) as INVALID_CONDITION, not here: it is a shape/arity
 	// error (spec §6/§8), not a field-type mismatch.
@@ -153,25 +160,19 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 
 	// Only the comparison/range family constrains the operand's type. String
-	// operators and the null-presence tests parse any operand.
+	// and pattern operators and the null-presence tests take any operand.
 	if !isParseConstrainedOp(op) {
 		return nil
 	}
 
 	switch v := c.Value.(type) {
-	case nil:
-		// Null operand carries no type to mismatch; arity is enforced elsewhere.
-		return nil
 	case []any:
 		// Array operand — only BETWEEN's [lo, hi] bounds reach here:
-		// validateOperandShape refuses an array under every other operator,
-		// and validateBetweenArity refuses a pair that is not exactly two
-		// non-null bounds, before this check runs. Every element must parse
-		// into a declared type.
+		// validateOperand refuses an array under every other operator, and a
+		// pair that is not exactly two non-null scalar bounds, before this
+		// check runs. Every element must parse into a type the operator
+		// applies to, and the two bounds into one such type.
 		for i, elem := range v {
-			if elem == nil {
-				continue
-			}
 			if !operandParsesDeclared(applicable, elem) {
 				return fmt.Errorf("value[%d] %s parses into none of field %q's types %v that operator %q applies to: %w",
 					i, truncateOperand(elem), c.JsonPath, applicable, c.OperatorType, errConditionTypeMismatch)
@@ -191,8 +192,8 @@ func validateSimpleConditionType(fm map[string]schema.FieldDescriptor, c *predic
 	}
 }
 
-// isParseConstrainedOp reports whether op's operand must parse into a declared
-// type for the condition to be valid. Only the six comparison operators and the
+// isParseConstrainedOp reports whether op's operand must parse into one of the
+// declared types op applies to for the condition to be valid. Only the six comparison operators and the
 // two range operators are constrained; string operators (CONTAINS, LIKE, the
 // case-insensitive/negated variants, ...) and the null-presence tests (IS_NULL,
 // NOT_NULL) carry no operand-parse constraint — mirroring the kernel,
@@ -333,16 +334,14 @@ func isKnownContainerPath(p string, fm map[string]schema.FieldDescriptor) bool {
 // into one declared type family together, by asking the kernel's own range
 // expansion (spi.ExpandLeaf). Each bound parsing into some declared type is
 // not enough: [5.5, "2024-01-01"] on an [INTEGER, LOCAL_DATE] field has no
-// family holding both, so no range exists to evaluate. Anything other than a
-// range operator with exactly two non-null bounds is left to the arity and
-// per-element checks.
+// family holding both, so no range exists to evaluate.
+//
+// op is BETWEEN or BETWEEN_INCLUSIVE and bounds is exactly two non-null scalar
+// bounds: the caller passes an array operand, and validateOperand
+// (ValidateCondition on every search surface, ValidateCriterionCondition at
+// workflow import) has refused every other array operand before the type
+// check runs.
 func rangeBoundsParseTogether(op spi.FilterOp, declared []schema.DataType, bounds []any) bool {
-	if op != spi.FilterBetween && op != spi.FilterBetweenInclusive {
-		return true
-	}
-	if len(bounds) != 2 || bounds[0] == nil || bounds[1] == nil {
-		return true
-	}
 	values := []string{spi.OperandString(bounds[0]), spi.OperandString(bounds[1])}
 	_, err := spi.ExpandLeaf(op, "", values, declared)
 	return err == nil
@@ -458,7 +457,7 @@ func validateLifecycleType(c *predicate.LifecycleCondition) error {
 
 // operandElements normalises a condition value into its operand elements: a
 // scalar becomes a single-element slice; a []any (BETWEEN's [lo, hi] pair, the
-// only array operand validateOperandShape accepts) becomes one element per
+// only array operand validateOperand accepts) becomes one element per
 // member. Callers skip nil elements.
 func operandElements(v any) []any {
 	if arr, ok := v.([]any); ok {
@@ -469,8 +468,8 @@ func operandElements(v any) []any {
 
 // classifyConditionTypeErrCode maps a ValidateConditionValueTypes error to
 // its 400 error code: errInvalidFieldPath → INVALID_FIELD_PATH (the field
-// itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator
-// or the operand does not fit a known field's type).
+// itself is unknown), anything else → CONDITION_TYPE_MISMATCH (the operator,
+// or a comparison or range operand, does not fit a known field's types).
 //
 // validateConditionSequence is its one caller, so every surface that takes a
 // condition answers an operator-class rejection with the same code.

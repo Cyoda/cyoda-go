@@ -1,10 +1,12 @@
 package search
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
@@ -175,15 +177,14 @@ func TestValidateConditionTypes_TrailingWildcard_NoSchemaAccepts(t *testing.T) {
 // container is refused by the type pass above, with a diagnostic that says what
 // to do about it, rather than being reported as a field the model never
 // declared.
-func TestFindUnknownFieldPaths_TrailingWildcardIsKnown(t *testing.T) {
+func TestKnownPaths_TrailingWildcardIsKnown(t *testing.T) {
 	fm := buildTrailingWildcardModel().FieldsMap()
 	for _, path := range []string{"$.arr[*]", "$.mixed[*]", "$.items[*]", "$.items[*].name"} {
 		t.Run(path, func(t *testing.T) {
-			unknown := FindUnknownFieldPaths(&predicate.SimpleCondition{
-				JsonPath: path, OperatorType: "NOT_NULL",
-			}, fm)
-			if len(unknown) != 0 {
-				t.Errorf("FindUnknownFieldPaths(%q) = %v, want none", path, unknown)
+			paths := ConditionFieldPaths(&predicate.SimpleCondition{JsonPath: path, OperatorType: "NOT_NULL"})
+			if _, err := ValidateKnownPaths(context.Background(), nil,
+				spi.ModelRef{EntityName: "m", ModelVersion: "1"}, paths, fm); err != nil {
+				t.Errorf("ValidateKnownPaths(%q) = %v, want the path known", path, err)
 			}
 		})
 	}

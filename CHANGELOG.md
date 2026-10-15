@@ -754,10 +754,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, `IEQUALS`, the `NOT_*` and `INOT_*`
   forms, …) needs a text field (`STRING` or `CHARACTER`); an ordering operator
   needs a number, text or a date/time; a range operator a number, `STRING` or
-  a date/time, with both bounds in the same one. A comparison operand must
-  fit a type the operator applies to. Before, on a number or a boolean such a
-  condition was evaluated: a positive operator answered an empty result, and
-  a negated one matched every entity holding a value there — on conditional
+  a date/time, with both bounds in the same one. A comparison or range
+  operand must fit a type the operator applies to. Before, on a number or a
+  boolean such a condition was evaluated: a positive operator answered an
+  empty result, and a negated one matched every entity holding a value
+  there — on conditional
   delete, `NOT_CONTAINS` on a numeric field deleted them all. **A string
   operator on a date, time or UUID field used to match its stored text**
   (`STARTS_WITH "2024"` on a date); it is now refused, because those values
@@ -822,11 +823,37 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   evaluator compared against the bound's printed form, so a conditional
   delete removed the entities that comparison chose.
 
+- **A missing or `null` operand is `400 INVALID_CONDITION` under every
+  operator other than `IS_NULL` and `NOT_NULL`,** on a `simple` or
+  `lifecycle` clause, on every search surface, conditional delete, grouped
+  stats and gRPC search; workflow import answers `400 VALIDATION_FAILED`, for
+  a criterion and a pre-check alike. Only `IS_NULL` and `NOT_NULL` may omit
+  the operand. Before, the request answered `200` and the field was compared
+  with an empty string: `EQUALS` matched `""`, and `CONTAINS` or
+  `STARTS_WITH` matched every string, so a conditional delete removed every
+  entity with a string at the path.
+
+- **SPI: one operand rule, `ValidateOperand`, refused by the SPI itself.**
+  `cyoda-go-spi` now refuses a missing operand, an object, an array outside
+  a range and a range that is not two scalar bounds in `ConditionToFilter`
+  and `Prepare`, for every backend, with errors that wrap
+  `ErrInvalidOperand` ([spi#69](https://github.com/Cyoda/cyoda-go-spi/pull/69)).
+  A `Filter` whose range pair is only in `Value`, or a binary leaf with a
+  nil `Value`, no longer prepares. A plugin author who builds a `Filter` in
+  Go must also keep each operand, and each range bound, in the scalar set
+  (string, bool, `json.Number`, the integer and float types): `Prepare` and
+  `ConditionToFilter` refuse any other Go value, such as a `time.Time`, a
+  `uuid.UUID` or a pointer, with `ErrOperandNotScalar` (a bound with
+  `ErrBetweenNonScalarBound`). cyoda-go's own checks now call this
+  rule, so it is defined once; the input cyoda-go accepts is unchanged. See
+  `COMPATIBILITY.md`.
+
 - **A condition tests at most 10,000 entries; a larger one is
   `400 INVALID_CONDITION`, and workflow import answers
   `400 VALIDATION_FAILED`.** Each entry in an `array` clause's `values`
-  counts one, `null` entries included, and every other clause counts one.
-  The count is taken before the condition is expanded, on search (sync and
+  counts one, `null` entries included, a `function` clause counts one plus
+  the entries of its pre-check, and every other clause counts one. The count
+  is taken before the condition is expanded, on search (sync and
   async, HTTP and gRPC), conditional delete, grouped statistics and workflow
   import. The limit bounds the expansion: an `array` clause expands into one
   clause per entry, and each check expands it again. It does not bound the
@@ -846,6 +873,44 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   before checking a condition that parses.** A malformed condition on an
   unknown model was `400`. A body that does not parse is still
   `400 INVALID_CONDITION`, because it is refused before the model is looked up.
+
+- **A function condition's pre-check (`function.criterion`) is evaluated
+  before the function is called. When it does not match, the function is not
+  called and the function condition is false.** Before, the pre-check was
+  ignored and the function was always called. A pre-check holds only local
+  conditions (`simple`, `lifecycle`, `array`, and `group` of those): workflow
+  import refuses, with `400 VALIDATION_FAILED`, a pre-check that holds a
+  function condition at any depth, and a pre-check that breaks a check the
+  rest of the criterion is held to (path grammar, operator and operand shape,
+  patterns); the entry limit (10,000) and the depth limit (50) count through
+  every pre-check. The message names the position of the condition as a JSON
+  Pointer into the criterion, such as `/conditions/1/function/criterion`.
+
+- **Workflow import refuses a function condition without a `function` object
+  or without a `function.name` (`400 VALIDATION_FAILED`), at any depth of a
+  criterion.** Before, it imported and then failed every dispatch.
+
+- **The state-machine audit `data` gains `functions` when a criterion holds a
+  function condition.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION`
+  add it to the `data` they carry; `WORKFLOW_FOUND` and `TRANSITION_MAKE`,
+  whose `data` was `null`, carry `{"functions": [...]}`. Each entry is one
+  function condition the evaluation reached, in order: `path`, `name`,
+  `called`, and when present `preCheck`, `preCheckMatched`, `matches` and
+  `reason`. `data.reason` then lists every entry —
+  `<name> at <path>: pre-check did not match, not called` or
+  `<name> at <path>: answered <true|false>[: <reason>]`, joined with `; ` —
+  except for a criterion that is one function condition that was called,
+  which keeps the member's reason. A manual transition refused by such a
+  criterion answers `transition "<name>" criterion not matched: <that reason>`,
+  and the bare `transition "<name>" criterion not matched` when the reason is
+  the default `criterion did not match`. See
+  `cyoda help workflows` and `docs/cloud-parity/function-conditions-in-criteria.md`.
+
+- **gRPC search with a function condition whose pre-check is malformed
+  answers with an `InvalidArgument` transport status instead of the
+  `INVALID_CONDITION` error envelope.** The pre-check is now parsed with the
+  condition, so the condition fails to parse before the function condition is
+  refused. HTTP is unchanged: `400 INVALID_CONDITION`.
 
 ### Added
 
@@ -1067,6 +1132,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   change events of one transaction were identical on the wire and could not
   be told apart. See `cyoda help audit`.
 
+- **Function conditions in criteria groups.** A workflow or transition
+  criterion can hold function conditions at any depth: as members of `AND`,
+  `OR` and `NOT` groups, nested to any depth, as well as the whole criterion.
+  Group members are evaluated in declaration order, and a group stops as soon
+  as its value is known — `AND` at the first false member, `OR` at the first
+  true one — so a function condition that evaluation does not reach makes no
+  callout. The whole criterion, every pre-check included, is checked against
+  the model before the first callout, and a failed callout fails the
+  operation. Before, a function condition inside a group imported and then
+  failed every evaluation. The OpenAPI document adds
+  `CriterionGroupConditionDto` for the group of a criterion. See
+  `cyoda help workflows` (*Function conditions*).
+
 ### Changed
 
 - OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
@@ -1234,6 +1312,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **SQLite and PostgreSQL: a number in a state-machine audit event's `data`
+  reads back with every digit it was recorded with.** These backends read it
+  back as a 64-bit float, so a number such as `12345678901234567890` lost
+  digits; the memory backend kept it exactly.
+
+- **OpenAPI: a condition's `value` is described as the server accepts it,
+  and each condition union selects its member by `type`.** `value` on
+  `SimpleConditionDto` and `LifecycleConditionDto` was typed as an object and
+  required. The server accepts a string, a number or a boolean, or a
+  `[low, high]` pair of those for `BETWEEN` and `BETWEEN_INCLUSIVE`, and
+  accepts `null` or no `value` only for `IS_NULL` and `NOT_NULL`; the schema
+  now says so. Every condition `oneOf` (criteria, the pre-check, search)
+  carries a discriminator mapping `type` to its member, so a validator checks
+  only that member. The wire is unchanged.
 
 - **Helm chart: `CYODA_NODE_ADDR` names the HTTP port.** It named the gRPC
   port `9090`, so on more than one replica a request proxied to the node

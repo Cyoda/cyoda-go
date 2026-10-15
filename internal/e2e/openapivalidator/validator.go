@@ -39,9 +39,10 @@ import (
 // declared; full schema validation requires a proper routers.Route which the
 // fallback path cannot construct without re-entering the broken router).
 type Validator struct {
-	doc    *openapi3.T
-	router routers.Router
-	opts   *openapi3filter.Options
+	doc       *openapi3.T
+	router    routers.Router
+	opts      *openapi3filter.Options
+	recursive map[*openapi3.Schema]bool // see checkRecursive
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
@@ -60,6 +61,7 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 				return nil // skip auth checks; we validate shape only
 			},
 		},
+		recursive: recursiveSchemas(doc),
 	}, nil
 }
 
@@ -172,7 +174,18 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	}
 
 	// Read response body for validation. The middleware passed the captured
-	// bytes via resp.Body; we consume them here.
+	// bytes via resp.Body; they are buffered here because both kin and
+	// checkRecursive read them.
+	var body []byte
+	if resp.Body != nil {
+		var err error
+		body, err = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		if err != nil {
+			return v.toMismatches(fmt.Errorf("failed to read response body: %w", err), opId, req, resp.StatusCode)
+		}
+	}
 	// Options must be set on ResponseValidationInput — ValidateResponse reads
 	// input.Options (not input.RequestValidationInput.Options).
 	input := &openapi3filter.ResponseValidationInput{
@@ -182,13 +195,17 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		},
 		Status:  resp.StatusCode,
 		Header:  resp.Header,
-		Body:    resp.Body,
+		Body:    io.NopCloser(bytes.NewReader(body)),
 		Options: v.opts,
 	}
-	if err := openapi3filter.ValidateResponse(ctx, input); err != nil {
-		return v.toMismatches(err, opId, req, resp.StatusCode)
+	kinErr := openapi3filter.ValidateResponse(ctx, input)
+	if kinErr != nil {
+		mismatches = v.toMismatches(kinErr, opId, req, resp.StatusCode)
 	}
-	return nil
+	if err := v.checkRecursive(route, req, resp.StatusCode, resp.Header, body, kinErr); err != nil {
+		mismatches = append(mismatches, v.toMismatches(err, opId, req, resp.StatusCode)...)
+	}
+	return mismatches
 }
 
 // isStreaming reports whether the matched operation declares
@@ -428,25 +445,26 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 // toMismatches converts the kin-openapi error tree into one or more Mismatch
 // records. MultiError is unwrapped so each schema problem becomes its own row.
 func (v *Validator) toMismatches(err error, opId string, req *http.Request, status int) []Mismatch {
+	errs := schemaErrors(err)
+	out := make([]Mismatch, 0, len(errs))
+	for _, e := range errs {
+		out = append(out, Mismatch{
+			Operation: opId,
+			Method:    req.Method,
+			Path:      req.URL.Path,
+			Status:    status,
+			Reason:    e.Error(),
+		})
+	}
+	return out
+}
+
+// schemaErrors unwraps a kin-openapi MultiError into its errors, so each
+// schema problem becomes its own row; any other error is returned alone.
+func schemaErrors(err error) []error {
 	var multi openapi3.MultiError
 	if errors.As(err, &multi) {
-		out := make([]Mismatch, 0, len(multi))
-		for _, e := range multi {
-			out = append(out, Mismatch{
-				Operation: opId,
-				Method:    req.Method,
-				Path:      req.URL.Path,
-				Status:    status,
-				Reason:    e.Error(),
-			})
-		}
-		return out
+		return multi
 	}
-	return []Mismatch{{
-		Operation: opId,
-		Method:    req.Method,
-		Path:      req.URL.Path,
-		Status:    status,
-		Reason:    err.Error(),
-	}}
+	return []error{err}
 }

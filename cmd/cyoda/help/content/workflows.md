@@ -468,9 +468,9 @@ only when the scheduler picks up its task, never during cascade.
 
 ## CRITERIA
 
-Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` criterion is dispatched to a compute member and must be the whole criterion — one nested inside a `group` fails the evaluation. See `cyoda help search` for the per-type JSON shapes.
+Criteria on workflows and transitions use the same `Condition` DSL as search — five condition types are supported: `simple`, `lifecycle`, `group`, `array`, `function`. All but `function` are evaluated in-memory against the entity's JSON payload and lifecycle metadata; a `function` condition is a callout to a compute member, and it can be the whole criterion or a member of a `group` at any depth (see *Function conditions* below). See `cyoda help search` for the per-type JSON shapes.
 
-`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED`. See `cyoda help search` for the grammar. An `array` criterion needs `operatorType`, at least one non-null entry in `values`, and a path with no `[*]` before its trailing one; import refuses it otherwise with `400 VALIDATION_FAILED`. A criterion tests at most 10,000 entries, as a search condition does (each entry in an `array` clause's `values` counts one, every other clause one); import refuses a larger one with `400 VALIDATION_FAILED`.
+`simple` and `array` criteria address entity data fields by `jsonPath`, under the same grammar a search condition obeys — the `$.` leader is required, and a path outside it is rejected at **import** with `400 VALIDATION_FAILED` rather than at every later evaluation. Write `$.amount`, not `amount`. **Well-formed** array subscripts — the wildcard `[*]` or a non-negative index `[0]` — are valid (`$.tags[*].name`, `$.arr[0]`): criteria are evaluated in memory, which resolves them. A path ending in `[*]` addresses every element, so the criterion fires when **some** element satisfies it (`$.arr[*] GREATER_THAN 50`), and never on an empty array. Any other bracket spelling (`$.a[-1]`, `$.a[0:2]`, `$.a[?(@.x)]`, `$.a[`, `$.a[0]b`) is malformed and is rejected at import with the same `400 VALIDATION_FAILED`. See `cyoda help search` for the grammar. An `array` criterion needs `operatorType`, at least one non-null entry in `values`, and a path with no `[*]` before its trailing one; import refuses it otherwise with `400 VALIDATION_FAILED`. A criterion tests at most 10,000 entries, as a search condition does (each entry in an `array` clause's `values` counts one, a `function` clause counts one plus the entries of its pre-check, every other clause one); import refuses a larger one with `400 VALIDATION_FAILED`.
 
 **Import checks the path's grammar, not whether the model declares it.** A model may legitimately be declared after the workflow that references it, so a criterion naming a field the model does not yet declare imports cleanly. The model check happens instead when the criterion is **evaluated**: a query never executes against a field the model does not declare, so if the field is still undeclared at evaluation time, the save that triggered the evaluation is **aborted and rolled back** with `400 WORKFLOW_FAILED` — no entity write, no state transition, no partial effect. This applies to all 26 operators, not only the ones that need a declared type. A field that no entity has ever written must be declared explicitly through `POST /model/import/...`; the model does not grow from a criterion alone. See `errors.WORKFLOW_FAILED` and `docs/cloud-parity/unevaluable-criterion-fails-save.md`.
 
@@ -479,6 +479,69 @@ Criteria on workflows and transitions use the same `Condition` DSL as search —
 `lifecycle` criteria match entity metadata fields: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`. `creationDate` and `lastUpdateTime` are temporal — compared chronologically, exactly as in search.
 
 A `null` criterion on a workflow means the workflow matches any entity. A `null` criterion on a transition means the transition always fires (automated) or is always available (manual). When multiple automated transitions are eligible, the engine selects the first one by declaration order whose criterion matches. A `null` criterion matches unconditionally, so a `null`-criterion automated transition must be the last automated transition in declaration order; any automated transitions declared after a `null`-criterion transition are unreachable.
+
+### Function conditions
+
+A **function condition** is `{"type": "function", "function": {"name": …, "config": {…}, "criterion": …}}`. Evaluating it is a callout: cyoda sends one `EntityCriteriaCalculationRequest` to a compute member, and the member's `matches` answer is the condition's value (see `cyoda help grpc`). Its optional `function.criterion` is its **pre-check**. A **local condition** is a `simple`, `lifecycle` or `array` condition, or a `group` whose members are all local conditions; cyoda evaluates a local condition itself, without a callout.
+
+- **Where.** A criterion can hold function conditions at any depth: as the whole criterion, or as members of `AND`, `OR` and `NOT` groups, nested to any depth. Every function condition can carry a pre-check.
+- **The pre-check.** A pre-check holds only local conditions, of any type. A function condition anywhere in a pre-check, at any depth, is refused at import. cyoda evaluates the pre-check before the callout: when it does not match, the function condition is `false` and no callout is made; when it matches, or when there is none (`function.criterion` absent or `null`), the callout is made and the member's answer is the value.
+- **Order and the stop rule.** Group members are evaluated in declaration order, and a group stops as soon as its value is known: `AND` at the first `false` member, `OR` at the first `true` member. `NOT` has exactly one member and inverts it. A function condition that evaluation does not reach makes no callout. Criteria and functions must have no effects (see PROCESSORS), so the order and the stop rule change which callouts are made, never the value of the criterion.
+- **Everything is checked before the first callout.** Before it makes any callout, cyoda checks the whole criterion: every local condition in it and in every pre-check, against the entity's model, and every group that holds a function condition. A fault anywhere — a field the model does not declare, an operator the field's type cannot take, a pattern that does not compile — fails the operation with `400 WORKFLOW_FAILED` and no callout is made, also when the fault is in a member that evaluation would not reach. A model store that cannot be read at this point fails it with `500` and a ticket.
+- **A failed callout fails the operation.** The first failure in evaluation order decides; no further member is evaluated to find a value around it. The client gets the callout's own error — `503 NO_COMPUTE_MEMBER_FOR_TAG`, `503 DISPATCH_TIMEOUT`, `503 COMPUTE_MEMBER_DISCONNECTED`, `503 DISPATCH_FORWARD_FAILED` for a try handed over to a peer node, `503 CALLOUT_FAILED` after several failed tries, or `400 WORKFLOW_FAILED` for a member that answered `success: false` (see "The error a client sees" under PROCESSORS). On a scheduled transition a failed callout is a failure the scheduler retries, not a decline.
+- **The entry limit counts pre-checks.** A function condition counts one entry, plus the entries of its pre-check, toward the criterion's 10,000. The nesting depth limit of 50 also counts through a pre-check: a pre-check is one level below its function condition.
+
+For example, in this transition criterion `manual-override` is called only for an entity that is not `high` priority and asked for an override, and `credit-check` only when neither member before it is true:
+
+```json
+{
+  "type": "group",
+  "operator": "OR",
+  "conditions": [
+    { "type": "simple", "jsonPath": "$.priority", "operatorType": "EQUALS", "value": "high" },
+    { "type": "function",
+      "function": {
+        "name": "manual-override",
+        "config": { "calculationNodesTags": "approvals" },
+        "criterion": { "type": "simple", "jsonPath": "$.overrideRequested", "operatorType": "EQUALS", "value": true }
+      } },
+    { "type": "function",
+      "function": { "name": "credit-check", "config": { "calculationNodesTags": "credit" } } }
+  ]
+}
+```
+
+**Audit.** When a criterion holds a function condition, the state-machine audit events of its evaluation carry a `functions` list in their `data`: one entry per function condition that evaluation reached, in evaluation order. A function condition that evaluation did not reach has no entry, so the list is empty when evaluation reached none. `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION` add `functions` to the `data` they already carry. `WORKFLOW_FOUND` and `TRANSITION_MAKE` (manual, automated and scheduled) carry `data: {"functions": [...]}` only when the criterion holds a function condition; otherwise their `data` stays `null`. An entry has these fields:
+
+- `path` — always — the JSON Pointer of the function condition in the criterion (`/conditions/2`, `/conditions/0/conditions/1`); `""` for a function condition that is the whole criterion.
+- `name` — always — `function.name`.
+- `preCheck` — when it has a pre-check — the pre-check as written.
+- `preCheckMatched` — when it has a pre-check — whether the pre-check matched.
+- `called` — always — whether the callout was made.
+- `matches` — when called — the member's answer.
+- `reason` — when called and the member gave one — the member's reason.
+
+For the criterion above, on an entity with `"priority": "normal"` and `"overrideRequested": false`, `credit-check` answering `false`:
+
+```json
+{
+  "functions": [
+    { "path": "/conditions/1", "name": "manual-override",
+      "preCheck": { "type": "simple", "jsonPath": "$.overrideRequested", "operatorType": "EQUALS", "value": true },
+      "preCheckMatched": false, "called": false },
+    { "path": "/conditions/2", "name": "credit-check", "called": true, "matches": false, "reason": "score below 600" }
+  ]
+}
+```
+
+**The reason.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION` carry `data.reason`. For a criterion with no function condition it is `criterion did not match`. For a function condition that is the whole criterion and was called, it is the member's reason, or `criterion did not match` when the member gave none. Otherwise it lists every entry, in order, joined with `; ` (and is `criterion did not match` when there is none):
+
+- not called: `<name> at <path>: pre-check did not match, not called`
+- called: `<name> at <path>: answered <true|false>`, followed by `: <reason>` when the member gave one
+
+For a function condition that is the whole criterion, ` at <path>` is left out. The example above gives `manual-override at /conditions/1: pre-check did not match, not called; credit-check at /conditions/2: answered false: score below 600`. Every callout made is listed with its answer, and none is singled out as the cause: under `NOT`, a `true` answer can refuse a transition.
+
+A manual transition refused by its criterion answers `400 WORKFLOW_FAILED` with the message `transition "<name>" criterion not matched`, followed by `: <reason>` when the reason is not `criterion did not match`. The manual transition rolls back, so its audit event is not kept; the message is where the caller learns why.
 
 ### Workflow-level selection
 
@@ -539,16 +602,21 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
-- Unknown `retryPolicy` value on any processor, `function`-type criterion or `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
-- A `function`-type criterion whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
+- Unknown `retryPolicy` value on any processor, any function condition in a criterion (at any depth) or any `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
+- A function condition in a criterion, at any depth, whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
+- A function condition in a criterion without a `function` object, or without a `function.name`.
 - `startNewTxOnDispatch=true` on a processor whose `executionMode` is not `COMMIT_BEFORE_DISPATCH`.
 - Empty `workflows` array (or a missing `workflows` key) when `importMode` is `REPLACE` or `ACTIVATE`. `MERGE` with an empty array is a legitimate no-op.
 - A criterion that is not a valid condition (unknown `type`, not a JSON object, a malformed clause). It could never be evaluated.
-- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA below.
+- A criterion `jsonPath` (on a `simple` or `array` clause, at any nesting depth) that is not JSON Path — see CRITERIA above.
+- A criterion operator or operand the evaluator cannot use: an unknown or missing `operatorType`; an object operand, or an array operand under any operator other than `BETWEEN`/`BETWEEN_INCLUSIVE`; a `BETWEEN`/`BETWEEN_INCLUSIVE` value that is not a two-element array of two non-null scalar bounds; a missing or `null` operand on an operator that takes one (every operator except `IS_NULL` and `NOT_NULL`).
 - A criterion `LIKE` or `MATCHES_PATTERN` value that is not a valid pattern.
 - A criterion `lifecycle` clause naming an unknown metadata field, or comparing a temporal field (`creationDate`, `lastUpdateTime`) against a non-timestamp operand.
 - A criterion `group` clause whose `operator` is not `AND`, `OR`, or `NOT`, or whose `operator` is `NOT` with `conditions` other than exactly one entry.
-- A `responseTimeoutMs` on a processor, a `function`-type criterion or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
+- A function condition in a pre-check (`function.criterion`), at any depth. A pre-check holds only local conditions; the message names the position of the function condition in the criterion, for example `/conditions/1/function/criterion/conditions/0`.
+- A pre-check that breaks any of the criterion checks above — path grammar, `array` clause shape, `lifecycle` soundness, operator and operand shape, `BETWEEN` bounds, group operator and `NOT` arity, patterns. They apply to every pre-check as they apply to the rest of the criterion, and the message names the pre-check's position, for example `/conditions/1/function/criterion`.
+- A criterion over the entry limit (10,000) or the nesting depth limit (50), counted through every pre-check (see *Function conditions* under CRITERIA above).
+- A `responseTimeoutMs` on a processor, a function condition in a criterion (at any depth) or a `schedule.function` that is negative, or larger than the server's `CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS` (default `60000`). The bound is a server setting: a workflow exported from one deployment can be refused by another with a lower bound.
 
 The new structural rules (state graph, name uniqueness, `executionMode` enum, `retryPolicy` enum) run on the incoming request only — existing stored workflows are not retroactively re-checked against them. The cycle-detection and `startNewTxOnDispatch` coherence checks continue to run against the merged result, so a legacy stored cycle or incoherent flag still surfaces at any subsequent import.
 
