@@ -566,7 +566,10 @@ func TestOwner_CallerGoesAwayDuringATry_CtxErrMarkedClientGone(t *testing.T) {
 // the callback is replaced: CALLOUT_SUPERSEDED, not a cancelled request.
 func TestOwner_ReleasedByTheFenceDuringATry_IsCalloutSuperseded(t *testing.T) {
 	e := newEnv(t, Config{FixedNumRetries: 3})
-	e.attach(t, "m-1", tenantA, "x", nil)
+	tried := make(chan struct{})
+	e.attach(t, "m-1", tenantA, "x", func(*internalgrpc.MemberRegistry, *internalgrpc.Member, string) {
+		close(tried) // takes the work and never answers
+	})
 
 	_, endOuter := e.fence.Begin(context.Background(), "outer-callout", "tx-1", nil)
 	defer endOuter()
@@ -576,8 +579,8 @@ func TestOwner_ReleasedByTheFenceDuringATry_IsCalloutSuperseded(t *testing.T) {
 		t.Fatalf("Admit: %v", err)
 	}
 	go func() {
-		time.Sleep(20 * time.Millisecond)
-		e.fence.Advance("outer-callout", 2) // the outer cnode is replaced
+		<-tried                             // the try is in progress
+		e.fence.Advance("outer-callout", 2) // and the outer cnode is replaced
 	}()
 
 	err = e.dispatchPatientFunction(callback, "x")
