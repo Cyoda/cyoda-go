@@ -445,11 +445,17 @@ processor. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
 and its record is rolled back with the transaction — unless the processor ran in
 a callback that joined another operation's transaction, whose events commit if
 that operation commits. A `COMMIT_BEFORE_DISPATCH` processor that fails after
-its segment boundary committed leaves no record: the pipeline keeps `T_pre`'s context when the processor fails, so the
-record is written against `T_pre`, which the segment boundary has already
-committed, and the store refuses it. A `PAUSE_FOR_PROCESSING` with no matching
-`STATE_PROCESS_RESULT` therefore means either a cascade stranded between
-segments or a failed `COMMIT_BEFORE_DISPATCH` processor.
+its segment boundary committed leaves no record: the pipeline keeps `T_pre`'s
+context when the processor fails, so the record is written against `T_pre`,
+which the segment boundary has already committed, and the store refuses it.
+
+A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore means
+the operation did not complete after the segment boundary: the engine crashed
+between segments; the `COMMIT_BEFORE_DISPATCH` processor failed after the
+boundary committed; or the processor succeeded, its record went into `T_post`,
+and the operation then failed there — at a later processor, a criterion, a
+cascade limit or the final save — so `T_post` was rolled back with the record in
+it.
 
 ### Cascade-depth limits
 
