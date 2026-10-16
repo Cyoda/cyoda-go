@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
-	"time"
 )
 
 // audit_event_data_test.go — the typed `data` of state-machine audit events,
@@ -300,10 +299,11 @@ func TestAudit_ProcessorRecord_CommitBeforeDispatchFailure(t *testing.T) {
 				map[string]any{"calculationNodesTags": tag, "startNewTxOnDispatch": newTx}))
 
 			_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
-			if status == http.StatusOK {
-				t.Fatalf("create: %d %s; want the processor's failure to fail the operation", status, body)
+			assertProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+			if n := h.countEntities(t, model); n != 1 {
+				t.Fatalf("%d entities committed; want 1, committed by the segment boundary", n)
 			}
-			id := onlyEntityID(t, h, model)
+			id := h.firstEntityID(t, model)
 			requireState(t, h, id, "NONE")
 
 			events := h.GetSMAuditEvents(t, id)
@@ -320,44 +320,11 @@ func TestAudit_ProcessorRecord_CommitBeforeDispatchFailure(t *testing.T) {
 			if results[0]["transactionId"] != paused[0]["transactionId"] {
 				t.Errorf("record transactionId = %v, want the cascade's %v", results[0]["transactionId"], paused[0]["transactionId"])
 			}
-			pausedAt, resultAt := paused[0]["utcTime"].(string), results[0]["utcTime"].(string)
-			if pt, rt := mustRFC3339(t, pausedAt), mustRFC3339(t, resultAt); rt.Before(pt) {
-				t.Errorf("record at %s precedes the pause at %s", resultAt, pausedAt)
+			if pt, rt := smEventTime(t, paused[0]), smEventTime(t, results[0]); rt.Before(pt) {
+				t.Errorf("record at %s precedes the pause at %s", rt, pt)
 			}
 		})
 	}
-}
-
-// onlyEntityID returns the id of the single entity of model, version 1.
-func onlyEntityID(t *testing.T, h *callbackHarness, model string) string {
-	t.Helper()
-	resp := h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "", "")
-	body := h.readBody(t, resp)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("list %s: %d %s", model, resp.StatusCode, body)
-	}
-	var list []map[string]any
-	if err := json.Unmarshal([]byte(body), &list); err != nil {
-		t.Fatalf("decode list of %s: %v (body: %s)", model, err, body)
-	}
-	if len(list) != 1 {
-		t.Fatalf("%d entities of %s, want 1: %s", len(list), model, body)
-	}
-	meta, _ := list[0]["meta"].(map[string]any)
-	id, _ := meta["id"].(string)
-	if id == "" {
-		t.Fatalf("no entity id in %s", body)
-	}
-	return id
-}
-
-func mustRFC3339(t *testing.T, s string) time.Time {
-	t.Helper()
-	v, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t.Fatalf("utcTime %q: %v", s, err)
-	}
-	return v
 }
 
 func assertDataEventType(t *testing.T, event map[string]any) {
