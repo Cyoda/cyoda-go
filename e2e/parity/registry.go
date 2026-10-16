@@ -2,24 +2,19 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 247 (guarded by TestParityScenarioCount — bump
-// wantParityScenarioCount in registry_count_test.go when adding/removing an
-// entry, or the test fails).
-// (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
-// distributed-safety contracts + schema extensions + grouped stats +
-// unknown-model 404 contract).
-// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
-// scheduled-transition-runtime scenarios registered via parity.Register()
-// in e2e/parity/scheduledtransition/, and scheduled-transition Function
-// scenarios registered via parity.Register() in e2e/parity/scheduledfunction/
-// are additional to this count.
+// allTests holds 247 scenarios, the entries of this file. TestParityScenarioCount
+// (registry_count_test.go) checks the number: change it there and here in the
+// change that adds or removes an entry. The scenarios cover model and workflow
+// import and export, entity CRUD and paging, bi-temporal reads, audit and
+// history, tenant isolation, messaging, search (operators, paths, temporal
+// filters, sort, negation, grouped statistics), workflows with processors and
+// criteria, compute-node callbacks and callout failover, schema extensions and
+// type admission, entity PATCH, composite unique keys, attribution and
+// on-behalf-of writes, scheduled tasks, signing keys, M2M clients, trusted keys
+// and the token exchange.
 //
-// Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
-// model extension, transaction stress tests, workflow failure paths,
-// workflow loopback/cascade-depth/multi-processor, search string operators,
-// message batch delete, workflow overwrite/export-empty. These continue
-// to run as postgres-only tests and will be migrated to the parity suite
-// in a follow-up effort.
+// The scenarios that e2e/parity/externalapi, e2e/parity/scheduledtransition and
+// e2e/parity/scheduledfunction add with Register are not in that number.
 
 // NamedTest is a single parity scenario plus the name under which it
 // shows up in subtest output.
