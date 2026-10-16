@@ -57,9 +57,11 @@ func valueHoldsNUL(v any) bool {
 	return false
 }
 
-// reflectHoldsNUL descends into any slice, array, map (keys and values),
-// pointer or interface, and checks any value of string kind, named string
-// types included. Numbers, booleans and nil cannot hold U+0000.
+// reflectHoldsNUL descends into any slice, array, map (keys and values) or
+// interface, and checks any value of string kind, named string types included.
+// Numbers, booleans and nil cannot hold U+0000. Structs and pointers are not
+// walked: Data is JSON-like (maps, slices, strings, numbers, bools), and
+// following pointers would add a cycle hazard.
 func reflectHoldsNUL(rv reflect.Value) bool {
 	switch rv.Kind() {
 	case reflect.String:
@@ -76,7 +78,7 @@ func reflectHoldsNUL(rv reflect.Value) bool {
 				return true
 			}
 		}
-	case reflect.Pointer, reflect.Interface:
+	case reflect.Interface:
 		if !rv.IsNil() {
 			return reflectHoldsNUL(rv.Elem())
 		}
