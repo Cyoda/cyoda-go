@@ -935,14 +935,8 @@ func (s *Service) failWithAudit(ctx context.Context, r *liveRun, f spi.Failure) 
 		Attributed: r.task.ArmedBy,
 		Executor:   common.SystemPrincipal(),
 		Details:    fmt.Sprintf("Scheduled transition %q failed: %s", r.task.Transition, f.Reason),
-		Data: map[string]any{
-			"transition":  r.task.Transition,
-			"sourceState": r.task.SourceState,
-			"reason":      string(f.Reason),
-			"attempts":    r.task.Attempts,
-			"lostOwners":  r.task.LostOwners,
-		},
-		Timestamp: time.UnixMilli(f.AtMs),
+		Data:       workflow.ScheduledFailedData(r.task.Transition, r.task.SourceState, string(f.Reason), r.task.Attempts, r.task.LostOwners),
+		Timestamp:  time.UnixMilli(f.AtMs),
 	}); err != nil {
 		return fmt.Errorf("failed to record the scheduled task's failure: %w", err)
 	}

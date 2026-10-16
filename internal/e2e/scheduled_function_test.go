@@ -619,6 +619,8 @@ func TestScheduledFunction_PastFireAt_FiresPromptly(t *testing.T) {
 	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
 		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
 	}
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_FIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_FIRE",
+		"transition": "AutoClose", "sourceState": "Open", "workflowName": "schedfn-pastfire-wf"})
 }
 
 // TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire proves the
@@ -649,9 +651,12 @@ func TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire(t *testing.T) {
 	second := newStackOn(t, s, nil)
 
 	awaitCallbackSMEventType(t, second, entityID, "SCHEDULED_TRANSITION_EXPIRE", "Open", scheduledFireTimeout)
-	if hasSMEventType(second.GetSMAuditEvents(t, entityID), "SCHEDULED_TRANSITION_FIRE", "") {
+	events := second.GetSMAuditEvents(t, entityID)
+	if hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "") {
 		t.Error("the task fired; its deadline had passed before the first claim")
 	}
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_EXPIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_EXPIRE",
+		"transition": "AutoClose", "sourceState": "Open"})
 	if st, _ := second.GetEntityState(t, entityID); st != "Open" {
 		t.Errorf("state = %q; want Open (expired, not fired)", st)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -572,20 +573,15 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetEventsByTransaction: %v", err)
 	}
-	var sawCancel, sawArm bool
-	for _, ev := range events {
-		if ev.EventType == spi.SMEventScheduledTransitionCancelled {
-			sawCancel = true
-		}
-		if ev.EventType == spi.SMEventScheduledTransitionArmed {
-			sawArm = true
-		}
+	// The arm-time cancel names no workflow: the task was armed under an
+	// earlier state, so the current workflow is not necessarily its own.
+	cancelled := onlyEvent(t, events, spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
 	}
-	if !sawCancel {
-		t.Error("expected a SCHEDULED_TRANSITION_CANCEL audit event")
-	}
-	if !sawArm {
-		t.Error("expected a SCHEDULED_TRANSITION_ARM audit event for REVIEW's schedule")
+	armed := onlyEvent(t, events, spi.SMEventScheduledTransitionArmed)
+	if want := map[string]any{"transition": "AutoExpire", "sourceState": "REVIEW", "scheduledTime": nowMs + 5000}; !reflect.DeepEqual(armed.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_ARM data = %v, want %v", armed.Data, want)
 	}
 }
 

@@ -215,13 +215,13 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionArmed,
 			fmt.Sprintf("Scheduled transition %q armed for %dms from now", a.Transition, a.ScheduledTime-armMs),
-			map[string]any{"transition": a.Transition, "sourceState": state, "scheduledTime": a.ScheduledTime})
+			ScheduledArmedData(a.Transition, state, a.ScheduledTime))
 	}
 	for _, c := range cancelled {
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, c.SourceState,
 			spi.SMEventScheduledTransitionCancelled,
 			fmt.Sprintf("Scheduled transition %q of state %q cancelled (not armed for state %q)", c.Transition, c.SourceState, state),
-			map[string]any{"transition": c.Transition, "sourceState": c.SourceState})
+			ScheduledCancelledData(c.Transition, c.SourceState, ""))
 	}
 	// Born-expired Function results are cancelled via req.Cancel above but
 	// deliberately excluded from ReconcileForEntity's returned cancelled
@@ -232,7 +232,7 @@ func (e *Engine) reconcileScheduledTasks(ctx context.Context, entity *spi.Entity
 		e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, state,
 			spi.SMEventScheduledTransitionExpired,
 			fmt.Sprintf("Scheduled transition %q born expired (Function result already past its resolved expiry)", be.transition),
-			map[string]any{"transition": be.transition, "sourceState": state})
+			ScheduledExpiredData(be.transition, state))
 	}
 
 	return nil

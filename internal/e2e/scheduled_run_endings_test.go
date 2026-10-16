@@ -356,6 +356,9 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 			t.Fatal("the re-import removed the task; it is scheduled in W2")
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
+		// The entity's status selects W1, where Fire is manual.
+		assertSMEventData(t, h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open", "workflowName": "sr-cancel-w1"})
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
 		requireState(t, h, id, "Open")
 	})
@@ -373,6 +376,8 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 			t.Fatalf("strip the transaction id: %d rows (err %v); want exactly 1", tag.RowsAffected(), err)
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
+		assertSMEventData(t, h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open", "workflowName": "sr-notx-wf"})
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
 		requireState(t, h, id, "Open")
 	})

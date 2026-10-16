@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -118,8 +119,9 @@ func TestFireScheduled_FiresOnTime(t *testing.T) {
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected task deleted after fire")
 	}
-	if n := countAuditEvents(t, factory, ctx, "fire-e1", spi.SMEventScheduledTransitionFired); n != 1 {
-		t.Errorf("SCHEDULED_TRANSITION_FIRE events = %d, want 1", n)
+	fired := onlyEvent(t, allEvents(t, factory, ctx, "fire-e1"), spi.SMEventScheduledTransitionFired)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "FireWF"}; !reflect.DeepEqual(fired.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_FIRE data = %v, want %v", fired.Data, want)
 	}
 	// Finding #2 guard: the fired task must not also collect a spurious
 	// SCHEDULED_TRANSITION_CANCEL from reconcile treating its own
@@ -289,6 +291,11 @@ func TestFireScheduled_OrphanedTransitionCancelled(t *testing.T) {
 	}
 	if _, found := getTask(t, factory, ctx, id); found {
 		t.Error("expected orphaned task deleted")
+	}
+	// The selected workflow is known here, so the cancel names it.
+	cancelled := onlyEvent(t, allEvents(t, factory, ctx, "orphan-e1"), spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "OrphanWF"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v", cancelled.Data, want)
 	}
 }
 
@@ -1515,8 +1522,9 @@ func TestFireScheduled_UnstampedEntity_Cancelled(t *testing.T) {
 	// follows. A scheduled transition is often a time-based control, and a
 	// timer this destroys permanently must be attributable to something an
 	// operator can find after the fact; a log line on one node is not that.
-	if n := countAuditEvents(t, factory, ctx, "unstamped-e1", spi.SMEventScheduledTransitionCancelled); n != 1 {
-		t.Errorf("cancelled audit events = %d, want 1", n)
+	cancelled := onlyEvent(t, allEvents(t, factory, ctx, "unstamped-e1"), spi.SMEventScheduledTransitionCancelled)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN", "workflowName": "UnstampedWF"}; !reflect.DeepEqual(cancelled.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_CANCEL data = %v, want %v (the selected workflow is known)", cancelled.Data, want)
 	}
 	if n := tracker.openCount(); n != 0 {
 		t.Errorf("open transactions = %d, want 0", n)
