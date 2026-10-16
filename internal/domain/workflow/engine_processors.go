@@ -106,7 +106,7 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 	}
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventProcessingPaused,
-		fmt.Sprintf("Paused for processors: %v", names), nil)
+		fmt.Sprintf("Paused for processors: %v", names), processingPausedData(workflow, transition, names))
 
 	// Resolved lazily and at most once across the pipeline — see modelDescMemo.
 	desc := &modelDescMemo{}

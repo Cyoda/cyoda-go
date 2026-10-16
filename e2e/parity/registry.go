@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 243 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 246 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -93,6 +93,9 @@ var allTests = []NamedTest{
 	{"AuditCursorWalkOverTie", RunAuditCursorWalkOverTie},
 	{"AuditFinishedEventIDMatchesSearch", RunAuditFinishedEventIDMatchesSearch},
 	{"AuditFinishedEventIsLatestOfTransaction", RunAuditFinishedEventIsLatestOfTransaction},
+	{"AuditCreateEventData", RunAuditCreateEventData},
+	{"AuditFinishAllCriteriaRejected", RunAuditFinishAllCriteriaRejected},
+	{"AuditDataEventTypeMatchesOuter", RunAuditDataEventTypeMatchesOuter},
 
 	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and

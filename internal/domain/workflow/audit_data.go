@@ -99,7 +99,7 @@ func transitionNotMatchedData(workflowName, transition, criterion, reason string
 // loopback, which has no transition.
 func transitionAbortedData(transition string, expectedTxID, actualTxID string) map[string]any {
 	data := map[string]any{
-		"reason":       "ENTITY_MODIFIED",
+		"reason":       TransitionAbortedReasonEntityModified,
 		"expectedTxId": expectedTxID,
 		"actualTxId":   actualTxID,
 	}

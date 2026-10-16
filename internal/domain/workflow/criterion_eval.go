@@ -65,15 +65,6 @@ func (o criterionOutcome) auditFunctions() []any {
 	return list
 }
 
-// functionsData is the `data` of WORKFLOW_FOUND and TRANSITION_MAKE: nil
-// unless the criterion holds a function condition.
-func (o criterionOutcome) functionsData() map[string]any {
-	if o.functions == nil {
-		return nil
-	}
-	return map[string]any{"functions": o.auditFunctions()}
-}
-
 // addFunctions adds `functions` to an event's data when the criterion holds
 // a function condition.
 func (o criterionOutcome) addFunctions(data map[string]any) {

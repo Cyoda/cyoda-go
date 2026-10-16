@@ -15,10 +15,10 @@ import (
 // The event's Data payload carries:
 //
 //	{
-//	  "reason":         "ENTITY_MODIFIED",   // why the transition aborted
-//	  "transitionName": "<name>",            // the transition that aborted
-//	  "expectedTxId":   "<supplied-txid>",   // the caller's If-Match
-//	  "actualTxId":     "<entity-txid>",     // the version the request starts from
+//	  "reason":       "ENTITY_MODIFIED",   // why the transition aborted
+//	  "transition":   "<name>",            // the transition that aborted; absent on a loopback
+//	  "expectedTxId": "<supplied-txid>",   // the caller's If-Match
+//	  "actualTxId":   "<entity-txid>",     // the version the request starts from
 //	}
 //
 // This is a cyoda-go local extension to the spi.StateMachineEventType
@@ -48,19 +48,17 @@ type IfMatch struct {
 // checkIfMatch records TRANSITION_ABORTED and fails with spi.ErrConflict when
 // the caller's If-Match does not name the version the request starts from. The
 // conflict is unmarked: it is the request's own precondition, which a batching
-// caller isolates to its item.
+// caller isolates to its item. transitionName is empty on a loopback, which
+// has no transition.
 func (e *Engine) checkIfMatch(ctx context.Context, auditStore spi.StateMachineAuditStore, entity *spi.Entity, txID, transitionName string, p IfMatch) error {
 	if p.Expected == "" || p.Expected == p.Current {
 		return nil
 	}
+	details := "Loopback aborted: entity has been modified since last read"
+	if transitionName != "" {
+		details = fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName)
+	}
 	e.recordEvent(auditStore, ctx, entity.Meta.ID, txID, entity.Meta.State,
-		SMEventTransitionAborted,
-		fmt.Sprintf("Transition %q aborted: entity has been modified since last read", transitionName),
-		map[string]any{
-			"reason":         TransitionAbortedReasonEntityModified,
-			"transitionName": transitionName,
-			"expectedTxId":   p.Expected,
-			"actualTxId":     p.Current,
-		})
+		SMEventTransitionAborted, details, transitionAbortedData(transitionName, p.Expected, p.Current))
 	return fmt.Errorf("entity %s: If-Match precondition failed: %w", entity.Meta.ID, spi.ErrConflict)
 }

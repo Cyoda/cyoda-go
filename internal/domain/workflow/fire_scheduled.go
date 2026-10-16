@@ -277,7 +277,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 	g.firedTransitionDone.Store(true)
 
-	finalCtx, finalTxID, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
+	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
 		return "", err
