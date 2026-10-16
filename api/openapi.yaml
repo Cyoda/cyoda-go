@@ -1228,7 +1228,7 @@ paths:
                   count: 5
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -1323,7 +1323,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -1588,7 +1588,7 @@ paths:
                       transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
           description: Conflicting request parameters (both pointInTime and transactionId
-            provided).
+            provided) are refused with BAD_REQUEST.
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -1606,7 +1606,7 @@ paths:
                   transactionId: ffef9680-26e6-11ef-bf3f-ae468cd3ed16
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -2159,7 +2159,7 @@ paths:
                       reason: Page size is outside of the bounds [1,100]
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -2338,8 +2338,8 @@ paths:
             (`INVALID_FIELD_PATH`), a condition operator that applies to none
             of the field's declared types or a comparison or range operand that
             parses into none of the types the operator applies to
-            (`CONDITION_TYPE_MISMATCH`), or an invalid model name (e.g., name
-            too long).
+            (`CONDITION_TYPE_MISMATCH`), or, as BAD_REQUEST, an invalid model name (e.g., name
+            too long) or an invalid request parameter.
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -2366,7 +2366,7 @@ paths:
                       errorCode: INVALID_CONDITION
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -2826,7 +2826,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter."
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; WORKFLOW_FAILED: a workflow processor rejected an entity."
           content:
             application/problem+json:
               schema:
@@ -3006,14 +3006,14 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload or validation failure
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; WORKFLOW_FAILED: the workflow rejected the update"
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -3029,7 +3029,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: Precondition Failed — If-Match header does not match current version
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version"
           content:
             application/problem+json:
               schema:
@@ -3044,7 +3044,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3136,7 +3136,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: Bad request — invalid patch or validation failure
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not conform to the registered model"
           content:
             application/problem+json:
               schema:
@@ -3188,7 +3188,7 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3382,7 +3382,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3760,7 +3760,7 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value; INVALID_UNIQUE_KEY_DEFINITION: the write would give a path that a unique key names a container branch."
           content:
             application/problem+json:
               schema:
@@ -3780,6 +3780,16 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "500":
+          description: >-
+            Internal Server Error — generic message with ticketId for correlation.
+            A Function that computes the schedule of a scheduled transition
+            returned a result that is not a usable Schedule
+            (SCHEDULE_FUNCTION_INVALID_RESULT); nothing is committed.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -12469,7 +12479,7 @@ components:
             $ref: '#/components/schemas/ProblemDetail'
     NotImplemented:
       description: |
-        Not yet implemented.
+        NOT_IMPLEMENTED — not yet implemented.
         The handler exists as a placeholder but returns 501 Not Implemented;
         real implementation is tracked separately.
       content:
@@ -12479,7 +12489,8 @@ components:
     ServiceUnavailable:
       description: The request could not be served — the storage layer could not
         supply a connection within the acquire timeout, the transaction was
-        reclaimed by the idle-in-transaction ceiling, the connection was lost, or a
+        reclaimed by the idle-in-transaction ceiling, or the connection was lost (each
+        STORAGE_UNAVAILABLE), or a
         processor, criterion or function callout could not be completed
         (CALLOUT_FAILED, NO_COMPUTE_MEMBER_FOR_TAG, DISPATCH_TIMEOUT,
         COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED), or a request
