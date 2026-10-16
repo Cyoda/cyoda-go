@@ -389,12 +389,17 @@ func TestOwner_SecondCnode_TheFirstIsShutOutAndWaitedForBeforeTheNextHandOff(t *
 	})
 	second := e.attach(t, "m-2", tenantA, "x", answers("m-2"))
 
+	// The test holds the lock for as long as it takes to look; the callout's
+	// deadline — tries × answer limit — must not end it meanwhile, or the
+	// second try would rightly never start.
+	fn := functionDef("x", "")
+	fn.ResponseTimeoutMs = patientLimitMs
 	done := make(chan struct{})
 	var by string
 	var err error
 	go func() {
 		defer close(done)
-		by, err = e.dispatchFunction(userCtx(tenantA), "x", "")
+		by, err = e.dispatchFunctionDef(userCtx(tenantA), fn)
 	}()
 
 	var release func()
@@ -404,21 +409,21 @@ func TestOwner_SecondCnode_TheFirstIsShutOutAndWaitedForBeforeTheNextHandOff(t *
 		t.Fatal("m-1 was never given the work")
 	}
 
-	// The number rises before the wait: m-1's pass is refused already.
-	_, passes := first.seen()
+	// The owner's wait for m-1's request is queued on the lock.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, admitErr := e.fence.Admit(context.Background(), []fence.Pair{pairOf(t, e, passes[0])}); errors.Is(admitErr, fence.ErrSuperseded) {
-			break
-		}
+	for !e.gate.AtCapacity("tx-1", 1) {
 		if time.Now().After(deadline) {
-			t.Fatal("m-1's pass was still admitted after it was given up on")
+			t.Fatal("the owner never waited for m-1's joined request")
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(time.Millisecond)
+	}
+	// The number rose before the wait: m-1's pass is refused already.
+	_, passes := first.seen()
+	if _, admitErr := e.fence.Admit(context.Background(), []fence.Pair{pairOf(t, e, passes[0])}); !errors.Is(admitErr, fence.ErrSuperseded) {
+		t.Fatalf("Admit = %v, want m-1's pass refused once the owner waits", admitErr)
 	}
 	// And the wait comes before the next hand-off: while m-1's request holds
 	// the lock, m-2 is not given the work.
-	time.Sleep(100 * time.Millisecond)
 	if second.count() != 0 {
 		t.Fatal("m-2 was given the work while m-1's joined request was still in progress")
 	}

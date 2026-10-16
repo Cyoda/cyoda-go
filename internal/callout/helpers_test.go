@@ -211,7 +211,13 @@ func (e *env) dispatchPatientFunction(ctx context.Context, tag string) error {
 // dispatchFunction is the callout most tests make: a function is repeat-safe by
 // rule, so every kind of failure that permits another cnode can be shown on it.
 func (e *env) dispatchFunction(ctx context.Context, tag, retryPolicy string) (string, error) {
-	res, err := e.owner.DispatchFunction(ctx, testEntity(), functionDef(tag, retryPolicy), "wf1", "t1", "tx-1")
+	return e.dispatchFunctionDef(ctx, functionDef(tag, retryPolicy))
+}
+
+// dispatchFunctionDef makes the callout of fn and returns the cnode that
+// answered it.
+func (e *env) dispatchFunctionDef(ctx context.Context, fn spi.ScheduleFunction) (string, error) {
+	res, err := e.owner.DispatchFunction(ctx, testEntity(), fn, "wf1", "t1", "tx-1")
 	if err != nil {
 		return "", err
 	}
