@@ -102,13 +102,13 @@ func DrainAndExercised() ([]Mismatch, map[string]bool) {
 }
 
 // FailOnUnreported is the e2e TestMain's last step: given the exit code of
-// m.Run, it drains the mismatches no test reported and, when there are any
-// and the run otherwise passed, logs each and returns 1. A run that
-// included TestOpenAPIConformanceReport has drained them already; a
-// -run-filtered run that did not would otherwise pass over them.
+// m.Run, it drains the mismatches TestOpenAPIConformanceReport did not
+// report, logs each, and returns 1 when there are any and the run otherwise
+// passed. A run that included TestOpenAPIConformanceReport has drained them
+// already; a -run-filtered run that did not would otherwise pass over them.
 func FailOnUnreported(code int) int {
 	left := defaultCollector.drain()
-	if len(left) == 0 || code != 0 {
+	if len(left) == 0 {
 		return code
 	}
 	for _, m := range left {
@@ -117,5 +117,8 @@ func FailOnUnreported(code int) int {
 			"status", m.Status, "test", m.TestName, "reason", m.Reason)
 	}
 	slog.Error("openapi conformance: mismatches collected but not reported by TestOpenAPIConformanceReport", "count", len(left))
+	if code != 0 {
+		return code
+	}
 	return 1
 }
