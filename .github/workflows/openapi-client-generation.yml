@@ -1,6 +1,6 @@
 name: openapi-client-generation
 
-# Generates Cyoda Cloud's Kotlin client (kotlin-spring, Cloud's options) and a
+# Generates a Kotlin client (kotlin-spring, Cyoda Cloud's configOptions) and a
 # Java client from api/openapi.yaml, compiles both, and reads and writes every
 # sample in api/clientprobe/samples with each. A merge gate, like oasdiff.
 #

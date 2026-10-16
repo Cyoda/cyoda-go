@@ -44,13 +44,21 @@ Schema names differ (`QueryConditionDto` here, `QueryCondition` there), as
 they do across the two specs. A condition value, `GroupKeyEntry.value`, and the
 entity-create and model-import bodies are untyped schemas whose other keywords
 state the rule, where Cloud writes `type: any` (`openapi-common.yml:111`,
-`:200`). Both generate `Any?` in Kotlin.
+`:200`). cyoda-go's untyped schema generates `Any?` in the CI check's Kotlin
+(below); Cloud's `client/pom.xml` maps `any` and `object` to Jackson 3's
+`JsonNode`, so Cloud's `SimpleConditionDto.value` is a `JsonNode?`.
 
-cyoda-go's CI generates Cloud's `kotlin-spring` client (openapi-generator
-7.18.0, Cloud's options) and a `java` client from cyoda-go's spec on every pull
+cyoda-go's CI generates a `kotlin-spring` client (openapi-generator 7.18.0,
+Cloud's `configOptions`) and a `java` client from cyoda-go's spec on every pull
 request, compiles both, and reads and writes back a set of wire samples with
 each (`.github/workflows/openapi-client-generation.yml`). A change to
-cyoda-go's spec that Cloud's generator cannot read fails that check.
+cyoda-go's spec that Cloud's generator cannot read with those options fails that
+check. The check does not apply the rest of Cloud's generator configuration:
+the `Dto` model-name suffix, the `typeMappings` that make `object` and `any` a
+Jackson 3 `JsonNode`, and the `importMappings` and `schemaMappings` that put a
+hand-written `ProcessorDefinitionDto` and the `QueryConditionDto` generated from
+Cloud's `openapi-common.yml` in place of the classes generated from each spec
+file.
 
 ## 3. The contract grows by addition only
 

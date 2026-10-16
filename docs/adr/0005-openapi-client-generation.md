@@ -70,8 +70,8 @@ only one `kotlin-spring` reads. The bases are `QueryConditionDto`,
 on `eventType`) and `ProcessorDefinitionDto`.
 
 **Rule 5 — the client generator reads every shape.** The spec generates Kotlin
-(Cloud's settings) and Java that compile, and every sample reads into the right
-class and writes back unchanged. So:
+(with Cloud's `configOptions`) and Java that compile, and every sample reads into
+the right class and writes back unchanged. So:
 
 - no union of scalar types. A value that may be one of several scalar types is an
   untyped schema — none of `type`, `$ref`, `allOf`, `oneOf`, `anyOf` — whose
@@ -161,9 +161,9 @@ decision 4 to the forms of Rule 1; it does not change that decision.
 
 ## Consequences
 
-**Positive.** Cloud's generator, and the Java generator, read every shape the
-spec declares; a spec change that either cannot read fails cyoda-go's merge gate
-rather than Cloud's build. A new event type, audit kind or field reaches a client
+**Positive.** Cloud's generator, with Cloud's `configOptions`, and the Java
+generator read every shape the spec declares; a spec change that either cannot
+read fails cyoda-go's merge gate rather than Cloud's build. A new event type, audit kind or field reaches a client
 generated earlier without breaking it. The validator checks a member's fields
 under a use of a base and refuses an unmapped discriminator value.
 
@@ -174,6 +174,18 @@ proves only that they compile. A client must disable two Jackson settings; with
 the defaults it fails on the first addition. Growing a response `enum` is no
 longer an additive change, so a value set that may grow must be a plain string
 from the start. CI needs Java 21 and Maven for the check; `make test` does not.
+
+**The check copies Cloud's `configOptions` only.** Cloud's `client/pom.xml` also
+sets `modelNameSuffix` `Dto`, maps `object` and `any` to Jackson 3's `JsonNode`
+(`typeMappings`, with `importMappings` to `tools.jackson.databind.JsonNode`), and
+replaces some generated classes with others (`importMappings`,
+`schemaMappings`): `ProcessorDefinitionDto` is a hand-written interface that
+reads a definition with no `type` as externalized, and `QueryConditionDto` is
+the class Cloud generates once from its own `openapi-common.yml`. The check sets
+none of these, so it does not show what Cloud's mappings make of cyoda-go's
+spec: an untyped schema is `Any?` in the probe's Kotlin, where Cloud's `type:
+any` is a `JsonNode`, and the probe reads `ProcessorDefinitionDto` and
+`QueryConditionDto` into the classes it generates from cyoda-go's spec.
 
 **Neutral.** The published spec is unchanged by the validator view. Other client
 generators (TypeScript, Python, C#) are not probed.
