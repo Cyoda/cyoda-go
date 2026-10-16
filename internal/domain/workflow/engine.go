@@ -1097,6 +1097,15 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	if fence.Check(ctx) != nil {
 		return
 	}
+	// An event holding U+0000 is written on no backend: PostgreSQL refuses it
+	// in jsonb and the refused INSERT aborts the request's transaction, while
+	// memory and SQLite would store it. Refused here, logged without the text,
+	// and the operation goes on as it does when a Record fails.
+	if holdsNUL(state, details, data) {
+		slog.Warn("state-machine audit event not recorded: text holds U+0000",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType)
+		return
+	}
 	event := spi.StateMachineEvent{
 		EventType:     eventType,
 		EntityID:      entityID,

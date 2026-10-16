@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
@@ -245,5 +246,44 @@ func TestHandleCallout_RecordsCriterionAndFunction(t *testing.T) {
 	}
 	if got[0].PassPresent {
 		t.Error("a request without the pass attribute was recorded as carrying one")
+	}
+}
+
+// TestHandleCallout_CriterionReasonNUL: a criterion is answered as a refusal
+// whose reason holds U+0000; any other request is served from the catalog.
+func TestHandleCallout_CriterionReasonNUL(t *testing.T) {
+	d := newDispatcher("", nil, newCatalog(nil, nil), nil, []string{"x"}, behaviourCriterionReasonNUL, newRecorder())
+
+	ce, err := newCloudEvent(ceTypeCriteriaRequest, map[string]any{"requestId": "r-1", "entityId": "e-1", "criteriaName": "always-true"})
+	if err != nil {
+		t.Fatalf("newCloudEvent: %v", err)
+	}
+	payload, err := extractTextData(ce)
+	if err != nil {
+		t.Fatalf("extractTextData: %v", err)
+	}
+	reply, drop, err := d.handleCallout(context.Background(), ce, payload)
+	if err != nil || drop {
+		t.Fatalf("handleCallout = (%t, %v)", drop, err)
+	}
+	var body struct {
+		Success bool   `json:"success"`
+		Matches *bool  `json:"matches"`
+		Reason  string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(reply.GetTextData()), &body); err != nil {
+		t.Fatalf("reply is not JSON: %v", err)
+	}
+	if !body.Success || body.Matches == nil || *body.Matches || !strings.ContainsRune(body.Reason, 0) {
+		t.Errorf("reply = %+v; want success, matches=false, a reason holding U+0000", body)
+	}
+
+	pce, ppayload := processorRequest(t, "r-2", "noop", "pass-value", "")
+	preply, _, err := d.handleCallout(context.Background(), pce, ppayload)
+	if err != nil {
+		t.Fatalf("handleCallout processor: %v", err)
+	}
+	if b := decodeReply(t, preply); !b.Success {
+		t.Errorf("a processor request was not served from the catalog: %+v", b)
 	}
 }

@@ -20,6 +20,10 @@ const (
 	ComputeBehaviourLateCallback  = "late-callback"  // never answer; call back with the pass on Release
 	ComputeBehaviourDrop          = "drop"           // close the stream on receiving work
 	ComputeBehaviourHold          = "hold"           // take the work; answer it from the catalog on Release
+
+	// ComputeBehaviourCriterionReasonNUL answers a criterion as a refusal whose
+	// reason holds U+0000; every other request is served from the catalog.
+	ComputeBehaviourCriterionReasonNUL = "criterion-reason-nul"
 )
 
 // ComputeClientSpec describes a further compute client for one scenario.

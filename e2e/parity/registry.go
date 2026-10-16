@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 246 (guarded by TestParityScenarioCount — bump
+// Total parity scenarios: 247 (guarded by TestParityScenarioCount — bump
 // wantParityScenarioCount in registry_count_test.go when adding/removing an
 // entry, or the test fails).
 // (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
@@ -380,6 +380,10 @@ var allTests = []NamedTest{
 	// Criterion rejection reason — inline (non-FUNCTION) criterion default
 	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
 	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
+
+	// An audit event holding U+0000 is written on no backend (PostgreSQL jsonb
+	// refuses it and the refused INSERT aborts the save).
+	{"AuditNULEventNotRecorded", RunAuditNULEventNotRecorded},
 
 	// Follow-on-action attribution — the {attributed principal, executor} pair
 	// recorded on change history must be IDENTICAL on every backend. Guards the
