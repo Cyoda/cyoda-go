@@ -25,9 +25,11 @@ on:
   pull_request:
     paths:
       - "api/openapi.yaml"
-      # Re-run when the gate itself changes (e.g. an oasdiff version bump) so the
-      # premise test re-validates the pinned oasdiff's classification behaviour.
+      # Re-run when the gate itself changes (e.g. an oasdiff version bump, or the
+      # severity file) so the premise test re-validates the classification the
+      # gate rests on.
       - ".github/workflows/openapi-breaking-change.yml"
+      - ".github/oasdiff-severity-levels.txt"
       - "internal/oasdiffcheck/**"
 
 jobs:
@@ -64,7 +66,7 @@ jobs:
         # it cannot mask any other or future breaking change, and a wording change on
         # an oasdiff bump re-flags it. --severity-levels raises the removals of response
         # enum values and discriminator mapping keys, and added response enum values, to
-        # errors (ADR 0003 Rule 6). See .github/oasdiff-err-ignore.txt for rationale.
+        # errors (ADR 0005, Rule 6). See .github/oasdiff-err-ignore.txt for rationale.
         run: |
           git show origin/${{ github.base_ref }}:api/openapi.yaml > /tmp/base-openapi.yaml
           oasdiff breaking /tmp/base-openapi.yaml api/openapi.yaml --fail-on ERR \
