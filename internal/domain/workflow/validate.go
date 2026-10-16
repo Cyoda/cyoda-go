@@ -14,12 +14,12 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// Processor execution-mode tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's
-// ExternalizedProcessorDefinitionDtoExecutionMode constants). Centralised
-// here as untyped strings so engine logic, validator rules, and tests can
-// compare against a single source — the SPI's ExecutionMode field is itself
-// a plain string, so an enum type would not buy compile-time safety.
+// Processor execution-mode tokens: the executionMode enum of
+// ExternalizedProcessorDefinitionDto in api/openapi.yaml, for which
+// api/generated.go declares no constants. Centralised here as untyped strings
+// so engine logic, validator rules, and tests can compare against a single
+// source — the SPI's ExecutionMode field is itself a plain string, so an enum
+// type would not buy compile-time safety.
 const (
 	ExecutionModeSync                 = contract.ExecutionModeSync // also the mode of a processor with none configured
 	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"

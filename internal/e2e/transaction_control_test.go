@@ -58,7 +58,7 @@ import (
 
 // --- shared literals ---
 
-// txctlSimpleCond is a syntactically-valid AbstractConditionDto simple
+// txctlSimpleCond is a syntactically-valid QueryConditionDto simple
 // condition, reused wherever a handler's param-validation order requires the
 // request body to parse successfully before the transactionTimeoutMillis /
 // transactionSize / timeoutMillis check is reached (deleteEntities parses its

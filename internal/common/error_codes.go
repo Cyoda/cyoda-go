@@ -139,7 +139,7 @@ const (
 	// Cloud's InvalidTypesInClientConditionException for the operand case.
 	ErrCodeConditionTypeMismatch = "CONDITION_TYPE_MISMATCH"
 	// ErrCodeInvalidCondition is returned when a request body condition
-	// (AbstractConditionDto) cannot be parsed. Non-retryable: the client
+	// (QueryConditionDto) cannot be parsed. Non-retryable: the client
 	// must fix the malformed condition.
 	ErrCodeInvalidCondition = "INVALID_CONDITION"
 	// ErrCodeSearchTimeout is returned when the client-supplied

@@ -9,10 +9,10 @@ import (
 
 // SMEventTransitionAborted is the audit event the engine records when a
 // caller's If-Match rejects a transition it has started. It pairs the
-// STATE_MACHINE_START recorded just before it, so the audit trail holds no
-// start without a matching finish or abort.
+// STATE_MACHINE_START recorded just before it.
 //
-// The event's Data payload carries:
+// The event's Data carries (transitionAbortedData; the audit writer adds
+// eventType):
 //
 //	{
 //	  "reason":       "ENTITY_MODIFIED",   // why the transition aborted
@@ -25,8 +25,8 @@ import (
 // open-string taxonomy; the audit handler emits eventType as a raw string.
 const SMEventTransitionAborted spi.StateMachineEventType = "TRANSITION_ABORTED"
 
-// TransitionAbortedReasonEntityModified is the only reason today: a stale
-// If-Match.
+// TransitionAbortedReasonEntityModified is the one reason the engine
+// records: a stale If-Match.
 const TransitionAbortedReasonEntityModified = "ENTITY_MODIFIED"
 
 // IfMatch is a caller's If-Match precondition. It states the version the

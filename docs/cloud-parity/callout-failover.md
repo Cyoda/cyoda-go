@@ -135,6 +135,16 @@ A cut piece ends with `…`, so a reader can tell a shortened message from a sho
 one. A member may contribute at most 32 warnings to one try's response; past
 that, one warning says the rest were left out.
 
+A `success: false` answer with no message gives the client text
+`<kind> returned failure` (`processor`, `criteria` or `function`), the same
+whether the member was attached to the node running the callout or the try was
+handed over to a peer. A processor's `STATE_PROCESS_RESULT` audit event records
+the member's own message, cut as above, as `data.failReason`, and nothing else:
+the platform's own sentence for a member that sent no message, or for a
+hand-over that failed, is never a `failReason`. Every failure that is not the
+member's own answer — no member, no answer, an answer that cannot be read, a
+savepoint failure, a platform error — records no `failReason`.
+
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 
 ```

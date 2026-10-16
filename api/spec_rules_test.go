@@ -2,6 +2,9 @@ package api
 
 import (
 	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -594,5 +597,56 @@ func TestConditionsAreUsesOfTheBase(t *testing.T) {
 	}
 	if op := schema("GroupConditionDto"); prop(op, "operator").Ref != schemaRefPrefix+"GroupOperator" {
 		t.Error("GroupConditionDto.operator is not a $ref to GroupOperator")
+	}
+}
+
+// No live text names a removed condition schema: every condition is a
+// QueryConditionDto, and a group is a GroupConditionDto. The files that keep
+// history are exempt. The walk covers what the repository holds — tracked
+// files and new ones not yet added — and not what .gitignore keeps out of it
+// (build output, local scratch).
+func TestNoLiveMentionOfRemovedConditionSchemas(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("module root: %v", err)
+	}
+	cmd := exec.Command("git", "ls-files", "--cached", "--others", "--exclude-standard", "-z")
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	history := func(rel string) bool {
+		switch rel {
+		case "CHANGELOG.md", ".github/oasdiff-err-ignore.txt", "docs/cyoda/openapi.yml", "api/spec_rules_test.go":
+			return true
+		}
+		return strings.HasPrefix(rel, "docs/release-notes/") || strings.HasPrefix(rel, "docs/superpowers/")
+	}
+	files := 0
+	var offenders []string
+	for _, rel := range strings.Split(strings.TrimRight(string(out), "\x00"), "\x00") {
+		if rel == "" || history(rel) {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			if os.IsNotExist(err) { // deleted in the working tree, not yet staged
+				continue
+			}
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		files++
+		for i, line := range strings.Split(string(src), "\n") {
+			if strings.Contains(line, "AbstractConditionDto") || strings.Contains(line, "CriterionGroupConditionDto") {
+				offenders = append(offenders, rel+":"+strconv.Itoa(i+1))
+			}
+		}
+	}
+	if files == 0 {
+		t.Fatal("no file was scanned: the walk looked in the wrong place")
+	}
+	for _, o := range offenders {
+		t.Errorf("%s names a removed condition schema", o)
 	}
 }

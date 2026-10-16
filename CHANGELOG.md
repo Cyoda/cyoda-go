@@ -892,8 +892,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 - **The state-machine audit `data` gains `functions` when a criterion holds a
   function condition.** `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION`
-  add it to the `data` they carry; `WORKFLOW_FOUND` and `TRANSITION_MAKE`,
-  whose `data` was `null`, carry `{"functions": [...]}`. Each entry is one
+  add it to the `data` they carry, and so do `WORKFLOW_FOUND` and
+  `TRANSITION_MAKE` (see the typed-data entry below). Each entry is one
   function condition the evaluation reached, in order: `path`, `name`,
   `called`, and when present `preCheck`, `preCheckMatched`, `matches` and
   `reason`. `data.reason` then lists every entry —
@@ -911,6 +911,100 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `INVALID_CONDITION` error envelope.** The pre-check is now parsed with the
   condition, so the condition fails to parse before the function condition is
   refused. HTTP is unchanged: `400 INVALID_CONDITION`.
+
+- **Every state-machine audit event carries typed `data`, never `null`, with
+  the event's `eventType` inside it.** `data` is a `StateMachineEventDto`, the
+  base whose mapping names one schema per event type; its `eventType` repeats
+  the outer `eventType` and selects the schema. A field is present only when
+  the engine knows its value. New fields: `STATE_MACHINE_START` `state`
+  (absent on create); `STATE_MACHINE_FINISH` `state` and `stopReason`
+  (`{type, description, rejectedTransitions}`: `COMPLETED_NO_AUTO_TRANSITIONS`,
+  `COMPLETED_ALL_CRITERIA_REJECTED` with the refusals of the last pass, or
+  `FORCE_SUCCESS`); `CANCEL` `reason`, which moves out of `details`;
+  `WORKFLOW_FOUND` `workflowName`; `TRANSITION_MAKE` `workflowName`,
+  `transition` and `newState`; `TRANSITION_NOT_FOUND` `workflowName` and
+  `transition`; `PAUSE_FOR_PROCESSING` `workflowName`, `transition` and
+  `processNames`; `SCHEDULED_TRANSITION_FIRE` `transition`, `sourceState` and
+  `workflowName`; `SCHEDULED_TRANSITION_EXPIRE` `transition` and
+  `sourceState`; `SCHEDULED_TRANSITION_CANCEL` `transition`, `sourceState`,
+  and `workflowName` when the task is cancelled as it comes due.
+  `GET /audit/entity/{entityId}/workflow/{transactionId}/finished` returns the
+  same typed `data`, and answers `404 ENTITY_NOT_FOUND` for a scheduled fire's
+  transaction, which records no `STATE_MACHINE_FINISH`. See
+  `cyoda help audit`.
+
+- **`TRANSITION_ABORTED` names the transition in `data.transition`, not
+  `transitionName`; on a loopback the field is absent.** Before, a loopback
+  recorded the literal `"loopback"`.
+
+- **`STATE_PROCESS_RESULT` carries `processorName`, `executionMode`, `success`
+  and, when the compute member itself sent failure text, `failReason`; one
+  record per failed processor.** `stateProcessId`, `stateProcessClassName`,
+  `stateProcessType` and the schema `StateProcessIdDto` are removed, and so is
+  the `mode` field the server sent. A processor configured with no execution
+  mode is recorded as `SYNC`, the mode it runs in. A failed pipeline no longer
+  records a second `STATE_PROCESS_RESULT` `{success: false}` with the error
+  text in `details`; the failed processor's own record says
+  `Processor "<name>" failed`. `failReason` is the member's text only: the
+  platform's sentence for a member that sent none, and every other failure,
+  record no `failReason`. A `success: false` answer with no text gives the
+  client `processor returned failure` whichever node the member is connected
+  to.
+
+- **An audit event whose text holds U+0000 is not recorded, on any backend.**
+  A compute member's criterion reason or failure text, or a caller's
+  transition name, that holds U+0000 used to abort the request's transaction
+  on PostgreSQL, which refuses U+0000 in `jsonb`, while memory and SQLite
+  stored the event and the operation succeeded. The engine now refuses the
+  event before any backend sees it, logs it at WARN without the text, and the
+  operation has the outcome it has without that event.
+
+- **Every polymorphic type in the OpenAPI document is a base with a
+  discriminator mapping, and every condition is a `QueryConditionDto`.**
+  `AbstractConditionDto` and `CriterionGroupConditionDto` are removed: every
+  condition position — the search, async-search, grouped-stats and
+  conditional-delete bodies, a workflow or transition `criterion`, a group's
+  `conditions`, a function's pre-check — is a `$ref` to `QueryConditionDto`,
+  whose mapping is `array`, `function`, `group`, `lifecycle`, `simple`; one
+  `GroupConditionDto` remains. `AuditEventDto` gains the mapping
+  `EntityChange`, `StateMachine`, `System`, and the audit page's `items` are
+  uses of it. `TransitionDefinitionDto.processors` items are a `$ref` to
+  `ProcessorDefinitionDto`. A client generated from the document gets
+  different class and type names. Where a `function` condition is valid is
+  stated by each position's description and enforced by the server, as
+  before.
+
+- **Scalar values and polymorphic bodies are schemas with no `type`, and two
+  enums are named.** `SimpleConditionDto.value`, `LifecycleConditionDto.value`
+  and each entry of `ArrayConditionDto.values` accept a string, number,
+  boolean, `null` or a `[low, high]` pair of scalars, stated with `not`,
+  `minItems`, `maxItems` and `items` rather than a `oneOf`;
+  `GroupKeyEntry.value` accepts any value that is not an object or an array;
+  the entity-create and model-import bodies accept an object or an array of
+  objects. The accepted values are unchanged. `AuditEventDto.severity` is the
+  named enum `AuditEventSeverity` and `GroupConditionDto.operator` is
+  `GroupOperator`, so the generated constant names change.
+
+- **The outer `eventType` of a state-machine audit event is a plain string,
+  not an `enum`; its known values are the keys of `data`'s mapping. A client
+  reads an audit kind or an event type it does not know, if it ignores unknown
+  fields and unknown discriminator values.** An audit event of an unknown kind
+  reads as an empty entry in `items`, and an event of an unknown type reads
+  with its `eventType` and empty `data`. `data` is not in `required` so that a
+  client can do this; the server sends it on every event. For a Jackson client
+  this takes `FAIL_ON_UNKNOWN_PROPERTIES` and `FAIL_ON_INVALID_SUBTYPE`, both
+  disabled. From this release the contract grows by addition only: a field, a
+  member of a base and an event type can be added; nothing published is
+  renamed or removed; adding a value to a response `enum` is declared as a
+  breaking change. See `cyoda help openapi` and
+  `docs/adr/0005-openapi-client-generation.md`.
+
+- **Workflow import refuses a processor `type` other than `externalized`
+  (`400 VALIDATION_FAILED`), `internalized` included, and stores an omitted or
+  empty `type` as `externalized`.** Before, any value was imported and stored
+  as given; `internalized` was refused at dispatch with `400 WORKFLOW_FAILED`
+  and every other value ran as `externalized`. An export now always carries
+  `externalized`. See `docs/workflow-schema-versioning.md`.
 
 ### Added
 

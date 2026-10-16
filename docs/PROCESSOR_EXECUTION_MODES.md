@@ -408,20 +408,31 @@ starts (see above).
 
 ### Audit events
 
-For every processor the engine emits, at the cascade-entry txID for
-client-side correlation continuity:
+The engine records these events at the cascade-entry txID, for client-side
+correlation continuity:
 
-- `STATE_MACHINE_PROCESSING_PAUSED` once before the processor pipeline begins.
-- `STATE_PROCESS_RESULT` after each processor with `{success: bool, mode:
-  string}`. `success:false` is emitted even for `ASYNC_NEW_TX` failures.
+- `PAUSE_FOR_PROCESSING` once before a transition's processor pipeline begins,
+  with `{workflowName, transition, processNames}` — the processor names in
+  pipeline order.
+- `STATE_PROCESS_RESULT` once for each processor that ran, with
+  `{processorName, executionMode, success, failReason?}`. `executionMode` is
+  the processor's configured mode; a processor configured with no mode runs,
+  and is recorded, as `SYNC`. `success:false` is recorded for an
+  `ASYNC_NEW_TX` failure too, although the run continues. The record is the
+  pipeline's only record of a failed processor; its `details` reads
+  `Processor "<name>" failed`.
 - `TRANSITION_ABORTED` on `If-Match` rejection, right after
-  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transitionName,
-  expectedTxId, actualTxId}`.
+  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transition?,
+  expectedTxId, actualTxId}`; `transition` is absent on a loopback, which has
+  no transition.
 
-`STATE_PROCESS_RESULT` deliberately does **not** include the error string —
-engine-wrapped error text (e.g. raw pgx messages) could leak internals to
-same-tenant audit readers. The `success:false` flag is the audit-level
-signal; full detail is in the operator-side slog log for the request.
+`failReason` is the failure text the compute member itself sent, and nothing
+else. It is absent for every other failure: a member that answered
+`success:false` with no text, no member, no answer, an answer that could not be
+read, a savepoint failure, a platform error. Engine-wrapped error text (e.g.
+raw pgx messages) never enters the record: it could leak internals to
+same-tenant audit readers. Full detail is in the operator-side slog log for the
+request.
 
 ### Cascade-depth limits
 
@@ -430,8 +441,8 @@ signal; full detail is in the operator-side slog log for the request.
 - Static cycle detection runs at workflow import time (cycles reachable only
   via automated transitions cause `400 VALIDATION_FAILED`).
 
-A cascade that hits a limit emits `STATE_MACHINE_CANCELLED` and returns
-`WORKFLOW_FAILED`.
+A cascade that hits a limit records `CANCEL`, with the limit and the state in
+`data.reason`, and returns `WORKFLOW_FAILED`.
 
 ### Engine return value: `EngineResult`
 

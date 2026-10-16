@@ -61,14 +61,20 @@ Two independent surfaces carry the reason — they are not interchangeable:
    guaranteed for a manual rejection (see §3).
 
 2. **State-machine audit `data.reason` (durable, automated/skip paths only).**
-   The `TRANSITION_NOT_MATCH_CRITERION` event's `data` carries
-   `{workflowName, transition, criterion, reason}`; the `WORKFLOW_SKIP`
-   event's `data` carries `{workflowName, reason}`. `reason` is always present
-   on both, as defined in §1. `criterion` is the function's name when a
+   The event's `data` is typed: `StateMachineTransitionCriterionNotMatchedDto`
+   for `TRANSITION_NOT_MATCH_CRITERION`, carrying
+   `{eventType, workflowName, transition, criterion, reason}`, and
+   `StateMachineWorkflowSkippedDto` for `WORKFLOW_SKIP`, carrying
+   `{eventType, workflowName, reason}`.
+   `reason` is always present on both, as defined in §1. `criterion` is the function's name when a
    function condition is the whole criterion, and the condition's type
    (e.g. `"simple"`, `"group"`) otherwise. When the criterion holds a function
    condition, both events also carry `functions`, the list of function
    conditions the evaluation reached (`function-conditions-in-criteria.md` §5).
+   When an automated cascade settles in a state whose every automated
+   transition its criterion refused, the `STATE_MACHINE_FINISH` stop reason
+   (`COMPLETED_ALL_CRITERIA_REJECTED`) lists the same `criterion` and `reason`
+   per transition in `rejectedTransitions`.
 
 ## 3. Transactional-audit invariant (no tx-semantics change)
 

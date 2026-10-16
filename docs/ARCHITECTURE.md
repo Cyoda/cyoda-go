@@ -1751,29 +1751,31 @@ Processors are dispatched via the `ExternalProcessingService` SPI, implemented b
 
 ### 5.5 Audit Trail
 
-The engine records state machine events to `StateMachineAuditStore` throughout execution. 19 event types:
+The engine records state machine events to `StateMachineAuditStore` throughout execution. Each event carries typed `data`: one constructor per event type (`internal/domain/workflow/audit_data.go`) builds it, and the audit writer (`internal/domain/audit/events.go`) adds the event's `eventType` to a copy on output, so the inner and outer types always agree. A field is present only when the engine knows its value. The schema of each event type's data is the member of `StateMachineEventDto` its `eventType` maps to in `api/openapi.yaml`. The constants are the SPI's, except `SMEventTransitionAborted`, which `internal/domain/workflow` declares; a spec test (`api/event_schemas_test.go`) asserts that the declared constants equal the keys of `StateMachineEventDto`'s mapping.
 
-| Event Type | Constant | Meaning |
-|------------|----------|---------|
-| `STATE_MACHINE_START` | `SMEventStarted` | Engine invocation begins |
-| `STATE_MACHINE_FINISH` | `SMEventFinished` | Engine invocation completes |
-| `CANCEL` | `SMEventCancelled` | Engine cancelled |
-| `FORCE_SUCCESS` | `SMEventForcedSuccess` | Forced successful completion |
-| `WORKFLOW_FOUND` | `SMEventWorkflowFound` | Matching workflow selected |
-| `WORKFLOW_NOT_FOUND` | `SMEventWorkflowNotFound` | No workflow matches |
-| `WORKFLOW_SKIP` | `SMEventWorkflowSkipped` | Workflow criterion not matched |
-| `TRANSITION_MAKE` | `SMEventTransitionMade` | Transition fired |
-| `TRANSITION_NOT_FOUND` | `SMEventTransitionNotFound` | Named transition not in workflow |
-| `TRANSITION_NOT_MATCH_CRITERION` | `SMEventTransitionCriterionNoMatch` | Transition criterion failed |
-| `TRANSITION_ABORTED` | `SMEventTransitionAborted` | Transition abandoned after a conflict |
-| `PROCESS_NOT_MATCH_CRITERION` | `SMEventProcessCriterionNoMatch` | Processor criterion failed |
-| `PAUSE_FOR_PROCESSING` | `SMEventProcessingPaused` | Waiting for a dispatched processor |
-| `STATE_PROCESS_RESULT` | `SMEventStateProcessResult` | Processor result received |
-| `SCHEDULED_TRANSITION_ARM` | `SMEventScheduledTransitionArmed` | Scheduled transition armed on state entry |
-| `SCHEDULED_TRANSITION_FIRE` | `SMEventScheduledTransitionFired` | Scheduled transition fired at its due time |
-| `SCHEDULED_TRANSITION_EXPIRE` | `SMEventScheduledTransitionExpired` | Scheduled transition passed its expiry unfired |
-| `SCHEDULED_TRANSITION_CANCEL` | `SMEventScheduledTransitionCancelled` | Scheduled task removed without firing: the entity left the state, the selected workflow no longer schedules the transition, or the entity has no transaction id to guard the fire |
-| `SCHEDULED_TRANSITION_FAIL` | `SMEventScheduledTransitionFailed` | Scheduled task ended FAILED; kept, and never moves the entity |
+| Event Type | Constant | Meaning | Data fields (`?` = optional) |
+|------------|----------|---------|------------------------------|
+| `STATE_MACHINE_START` | `SMEventStarted` | Engine invocation begins | `state?` (absent on create) |
+| `STATE_MACHINE_FINISH` | `SMEventFinished` | Engine invocation succeeded and settled; not recorded for a run that failed | `state`, `success` (always `true`), `stopReason` |
+| `CANCEL` | `SMEventCancelled` | Cascade limit exceeded | `reason` |
+| `FORCE_SUCCESS` | `SMEventForcedSuccess` | Loopback on a state the selected workflow does not declare | — |
+| `WORKFLOW_FOUND` | `SMEventWorkflowFound` | Matching workflow selected | `workflowName`, `functions?` |
+| `WORKFLOW_NOT_FOUND` | `SMEventWorkflowNotFound` | Never recorded: an entity no criterion selects runs under the default workflow | — |
+| `WORKFLOW_SKIP` | `SMEventWorkflowSkipped` | Workflow criterion not matched | `workflowName`, `reason`, `functions?` |
+| `TRANSITION_MAKE` | `SMEventTransitionMade` | Transition fired | `workflowName`, `transition`, `newState`, `functions?` |
+| `TRANSITION_NOT_FOUND` | `SMEventTransitionNotFound` | Named transition not declared in the state, disabled, or scheduled | `workflowName`, `transition` |
+| `TRANSITION_NOT_MATCH_CRITERION` | `SMEventTransitionCriterionNoMatch` | Transition criterion failed | `workflowName`, `transition`, `criterion`, `reason`, `functions?` |
+| `TRANSITION_ABORTED` | `SMEventTransitionAborted` | Transition or loopback refused by the caller's `If-Match` | `reason`, `transition?` (absent on a loopback), `expectedTxId`, `actualTxId` |
+| `PROCESS_NOT_MATCH_CRITERION` | `SMEventProcessCriterionNoMatch` | Never recorded: a processor has no criterion | — |
+| `PAUSE_FOR_PROCESSING` | `SMEventProcessingPaused` | A transition's processor pipeline begins | `workflowName`, `transition`, `processNames` |
+| `STATE_PROCESS_RESULT` | `SMEventStateProcessResult` | One processor's outcome; the only record of a failed processor | `processorName`, `executionMode`, `success`, `failReason?` (the member's own failure text) |
+| `SCHEDULED_TRANSITION_ARM` | `SMEventScheduledTransitionArmed` | Scheduled transition armed on state entry | `transition`, `sourceState`, `scheduledTime` |
+| `SCHEDULED_TRANSITION_FIRE` | `SMEventScheduledTransitionFired` | Scheduled transition fired at its due time; a fire records no START or FINISH | `transition`, `sourceState`, `workflowName` |
+| `SCHEDULED_TRANSITION_EXPIRE` | `SMEventScheduledTransitionExpired` | Scheduled transition passed its expiry unfired | `transition`, `sourceState` |
+| `SCHEDULED_TRANSITION_CANCEL` | `SMEventScheduledTransitionCancelled` | Scheduled task removed without firing: the entity left the state, the selected workflow no longer schedules the transition, or the entity has no transaction id to guard the fire | `transition`, `sourceState`, `workflowName?` (present when cancelled as the task comes due) |
+| `SCHEDULED_TRANSITION_FAIL` | `SMEventScheduledTransitionFailed` | Scheduled task ended FAILED; kept, and never moves the entity | `transition`, `sourceState`, `reason`, `attempts`, `lostOwners` |
+
+`Engine.recordEvent` refuses an event whose text holds U+0000 (`state`, `details`, or any key or string value of `data`) before any backend sees it: PostgreSQL refuses U+0000 in `jsonb` and the refused insert would abort the request's transaction, while memory and SQLite would store the event. The refusal is logged at WARN without the text, and the operation goes on, as for any failed record.
 
 **Segment-boundary placement for `COMMIT_BEFORE_DISPATCH`** (§5.4): when the engine segments a cascade around a `COMMIT_BEFORE_DISPATCH` processor, `SMEventProcessingPaused` is recorded in `TX_pre` (and durably committed at the segment boundary, surviving an engine crash before the dispatch returns) and `SMEventStateProcessResult` is recorded in `TX_post`. **No event spans both transactions, and the mode has no event types of its own.** Audit consumers can detect a stranded mid-cascade entity by the presence of `SMEventProcessingPaused` without a matching `SMEventStateProcessResult` for the same dispatch.
 

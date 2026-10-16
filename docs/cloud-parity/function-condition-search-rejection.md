@@ -53,11 +53,14 @@ surfaced on either poll.
 
 ## Contract surface
 
-- `FunctionConditionDto` is removed from the request unions of the three
-  search-shaped operations and retained in `TransitionDefinitionDto.criterion`,
-  the workflow-level `criterion` and the criterion group
-  (`CriterionGroupConditionDto`). The search group (`GroupConditionDto`) and
-  the pre-check hold local conditions only.
+- Every condition position is a use of the base `QueryConditionDto`, whose
+  mapping includes `function` → `FunctionConditionDto`: the search-shaped
+  bodies, the grouped-stats `condition`, the conditional-delete body, the
+  workflow and transition `criterion`, a group's `conditions` and the
+  pre-check. The schema does not say where a `function` condition is valid;
+  each position's description does, and the server enforces it: refused at
+  any depth in a search-shaped body (this document), refused at import in a
+  pre-check, valid at any depth in a criterion.
 - `cyoda help search` catalogues `FunctionCondition` under the shared DSL and
   marks it criteria-only; `cyoda help errors INVALID_CONDITION` names the
   rejection.

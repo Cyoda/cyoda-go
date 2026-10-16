@@ -26,7 +26,7 @@ Every feature follows this flow:
    c. Refactor — all tests stay green
    d. Commit
 3. Run E2E tests:
-   - If Docker socket is available: run directly (`go test -timeout 30m ./internal/e2e/...` — the package takes ~10 min, which is `go test`'s default timeout), or `make test-full` for the whole suite
+   - If Docker socket is available: run directly (`go test -timeout 30m ./internal/e2e/...` — the package takes ~10 min, which is `go test`'s default timeout), or `make test-full` for the whole suite. A `-run`-filtered run reports an OpenAPI response mismatch only through `TestOpenAPIConformanceReport`, not through the test that made the request: include it in the filter (`-run 'TestFoo|TestOpenAPIConformanceReport'`)
    - If sandboxed without Docker: human operator runs E2E tests and provides feedback
 4. Code review (code-reviewer)
    -> Fix all Critical/Important findings
@@ -97,6 +97,8 @@ Every PR must pass the following gates before it can be merged:
 | `security` | `ci.yml` | `govulncheck` against the root module and each plugin submodule; `actions/dependency-review-action` on PR diffs. |
 | `Analyze Go` | `codeql.yml` | CodeQL static analysis (`security-and-quality` pack). Findings surface in the Security tab and as PR annotations. Also runs on a weekly cron. |
 | `shellcheck` | `ci.yml` | Lint for shell scripts. |
+| `oasdiff` | `openapi-breaking-change.yml` | Breaking-change gate, on a PR that touches `api/openapi.yaml` or the gate (see below). |
+| `client-probe` | `openapi-client-generation.yml` | Generates clients from `api/openapi.yaml` and round-trips the wire samples (see below). |
 
 The `security` job is blocking: any vulnerability finding in the call graph, or any new dependency at `moderate` severity or above, fails the PR. To reproduce locally:
 
@@ -121,7 +123,35 @@ The E2E conformance gate enforces both sides of this rule: an unmarked operation
 
 **Schema authoring rule (ADR 0003).** Schemas are *typed-but-open*: enumerate every property the service emits, but never set `additionalProperties: false` on an evolvable schema. Sealing an object makes every additive field addition a breaking change. This is enforced automatically by `TestSpecHasNoSealedSchemas` (`internal/oasdiffcheck`), which fails if `api/openapi.yaml` contains `additionalProperties: false`.
 
-**Breaking-change gate.** The `openapi-breaking-change` CI job (`.github/workflows/openapi-breaking-change.yml`) runs `oasdiff` on every PR that touches `api/openapi.yaml` and rejects client-breaking edits: narrowing a type, removing an operation or parameter, or adding a required request field. (`oasdiff` does not classify response-sealing as breaking — that is caught by the `additionalProperties: false` check above.)
+**Breaking-change gate.** The `openapi-breaking-change` CI job (`.github/workflows/openapi-breaking-change.yml`) runs `oasdiff` on every PR that touches `api/openapi.yaml` and rejects client-breaking edits: narrowing a type, removing an operation or parameter, or adding a required request field. (`oasdiff` does not classify response-sealing as breaking — that is caught by the `additionalProperties: false` check above.) `.github/oasdiff-severity-levels.txt` raises to errors the changes the contract forbids and `oasdiff` would otherwise pass: adding a value to a response `enum`, removing an `enum` value, deleting a discriminator mapping key, renaming a discriminator property. A deliberate, reviewed breaking change is listed, with its reason, in `.github/oasdiff-err-ignore.txt`.
+
+**Polymorphism and growth (ADR 0005).** These rules are checked by the spec tests in `api/` (`go test ./api/`), and the reasons for each are in `docs/adr/0005-openapi-client-generation.md`:
+
+- A polymorphic type is a *base*: a schema with a discriminator and a `mapping` naming every member. Each member includes the base with `allOf`; every use is a `$ref` to the base; no `oneOf`/`anyOf` has a discriminator; a schema includes at most one base.
+- No union of scalar types: a value of several scalar types is a schema with no `type`, whose other keywords state the rule. No inline `enum` on a property of a base (make it a named schema). No member declares its base's discriminator property.
+- The contract grows by addition only. A value set that may grow is a plain string, never an `enum`: a client generated from an earlier spec cannot read an `enum` value it does not list, so adding one is a breaking change. Nothing published is renamed or removed — no mapping key, `enum` value or event type; a value cyoda-go stops sending stays, and its description says it is not sent. The severity file above is why the gate refuses a removal, a renamed discriminator, or a value added to a response `enum`.
+- A use of a base in a response is never in its parent's `required`.
+
+**Client-generation check.** The `client-probe` CI job (`.github/workflows/openapi-client-generation.yml`) runs on every PR. The Maven project `api/clientprobe/` generates Cloud's `kotlin-spring` classes and a `java` client from `api/openapi.yaml` with openapi-generator 7.18.0, compiles both, and reads and writes back every sample in `api/clientprobe/samples/`. Run it locally with `make client-probe`, which needs Java 21 and Maven; it is not part of `make test`.
+
+A sample is one JSON file in `api/clientprobe/samples/`:
+
+```json
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineFinishedDto",
+  "value": { "eventType": "STATE_MACHINE_FINISH", "state": "DONE", "success": true,
+             "stopReason": { "type": "COMPLETED_NO_AUTO_TRANSITIONS", "description": "No automated transition from state \"DONE\"" } }
+}
+```
+
+- `schema` — the component schema the value is read as; `class` — the concrete class the client reads it into: the member the base's discriminator selects, or the schema itself.
+- `body` — in place of `schema`, for a request body that is not a component schema: `"<METHOD> <path>"`, with no `class`. The clients take such a body as an untyped value, so only the spec test checks it.
+- `valid` — default `true`. A valid sample must validate against its schema and round-trip through both clients; an invalid one (`false`) must fail validation and is skipped by the clients.
+- `future` — default `false`. `true` marks an audit page a later spec could send (an unknown audit kind, an unknown event type, an added field); `added` lists, as JSON pointers into `value`, exactly the members the spec does not declare.
+- A valid sample states every property that has a schema `default`: the generated classes write an absent defaulted property back as its default.
+
+`go test ./api/` validates every sample and checks coverage: every mapping entry of every base has a sample.
 
 ## Dependencies
 

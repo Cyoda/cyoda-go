@@ -12,7 +12,7 @@ see_also:
 
 ## NAME
 
-INVALID_CONDITION — a request body condition (AbstractConditionDto) was malformed, or is well-formed but carries a leaf no backend can evaluate.
+INVALID_CONDITION — a request body condition (`QueryConditionDto`) was malformed, or is well-formed but carries a leaf no backend can evaluate.
 
 ## SYNOPSIS
 
@@ -26,7 +26,7 @@ A `function` clause at any depth is also rejected here: it is a workflow/transit
 
 A **well-formed** condition also lands here when a leaf cannot be evaluated at all. The commonest cause is a comparison against a field the model declares no type for: the type check treats an undeclared field as carrying no constraint and accepts it, and the evaluator then has nothing to compare against. The response reads `condition contains a leaf the backend cannot evaluate`. This is not a parse failure — the body is syntactically correct, so re-checking the JSON will not help. Check that the `jsonPath` names a field the model actually declares, and that the model has observed data for it. A leaf whose operator applies to none of a field's declared types, or whose comparison or range operand parses into none of the types the operator applies to, is the distinct `CONDITION_TYPE_MISMATCH` instead.
 
-To resolve: correct the condition body to a valid `AbstractConditionDto` (see `cyoda help search`), or correct the `jsonPath` to a declared field.
+To resolve: correct the condition body to a valid `QueryConditionDto` (see `cyoda help search`), or correct the `jsonPath` to a declared field.
 
 ## SEE ALSO
 

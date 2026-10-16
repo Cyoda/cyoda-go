@@ -110,7 +110,11 @@ Named schemas added or refined since the initial spec import:
 - `MessageDeleteBatchResponse` — batch message delete response `{entityIds, success}`
 - `TransitionNameList` — transitions query response (array of strings)
 - `WorkflowImportSuccessDto` — workflow import 200 response `{success: bool}`
-- `AuditEvent` discriminator union — `EntityChangeAuditEvent` / `StateMachineAuditEvent`
+- `AuditEventDto` — the base of the audit events, discriminated by `auditEventType`: `EntityChangeAuditEventDto`, `StateMachineAuditEventDto`, `SystemAuditEventDto`
+- `StateMachineEventDto` — the base of a state-machine event's `data`, discriminated by `eventType`, with one member per event type (see `cyoda help audit`)
+- `QueryConditionDto` — the base of every condition, discriminated by `type`: `SimpleConditionDto`, `LifecycleConditionDto`, `ArrayConditionDto`, `GroupConditionDto`, `FunctionConditionDto`
+
+Every polymorphic type has one form: a **base** schema with a discriminator and a `mapping` that names each member, each member including the base with `allOf`, and every use of the type a `$ref` to the base. No `oneOf` or `anyOf` carries a discriminator.
 
 All paths in the spec are relative to the `servers[0].url`, which is set at runtime to `{scheme}://{host}{CYODA_CONTEXT_PATH}`. The default context path is `/api`, so `GET /entity/{entityId}` is served at `http://localhost:8080/api/entity/{entityId}`.
 
@@ -143,20 +147,39 @@ test run. For each HTTP response the in-process test server produces, the
 middleware captures the status code and body and validates them against the
 spec's declared schema for that operation.
 
-The validator operates in two modes:
+The validator runs in enforce mode. Mismatches are collected and written to
+`internal/e2e/_openapi-conformance-report.md` after the suite completes, and
+`TestOpenAPIConformanceReport`, which runs last, fails when any remain. A
+mismatch is reported through that test, not through the test that made the
+request, so a `-run`-filtered E2E run must include `TestOpenAPIConformanceReport`
+to see one.
 
-- **Record mode** (default): mismatches are collected and written to
-  `internal/e2e/_openapi-conformance-report.md` after the suite completes.
-  No tests fail due to spec drift.
-- **Enforce mode**: any mismatch immediately fails the test that triggered it,
-  and the suite-level conformance report test also fails if any mismatches
-  remain at the end.
+The validator checks responses against a view of the spec that gives JSON Schema's answers where kin-openapi, the validating library, differs: each use of a base is checked against the member its discriminator selects, and an untyped value (a condition's `value`, for example) accepts `null` unless its schema excludes it. The published spec does not change.
 
 The conformance layer also tracks which operationIds are exercised across the
-E2E suite. Operations that appear in the spec but have no E2E coverage are
-reported as "uncovered" (in enforce mode, this fails the suite unless the
-operation is listed in `knownUncoveredOps`). See ADR 0001 in
-`docs/superpowers/specs/` for the design rationale.
+E2E suite. An operation that appears in the spec with no E2E coverage fails the
+full suite unless it carries an `x-cyoda-status` marker, and a marked operation
+that answers 2xx fails it too. See ADR 0003 in `docs/adr/` for the design
+rationale.
+
+## GENERATED CLIENTS
+
+A client generated from this spec keeps working as the spec grows, if it does what the contract requires of a client.
+
+**What the contract promises.** The contract grows by addition only. A field, a member of a base and an event type can be added in a later release. Nothing published is renamed or removed: not a mapping key, not an `enum` value, not an event type. A value cyoda-go stops sending stays in the spec, and its description says it is not sent.
+
+**What a client must do.** A client generated from an earlier spec reads every later response, if:
+
+- it ignores a field it does not know;
+- it reads an object whose discriminator value it does not know as no object. An audit event of an unknown kind is an empty entry (`null`) in `items`. An event of an unknown type is read with its `eventType`, and its `data` is empty (`null`).
+
+For a Jackson client these are two settings, both disabled: `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES` and `DeserializationFeature.FAIL_ON_INVALID_SUBTYPE`. Spring Boot's mapper and the mapper of openapi-generator's `java` client already disable the first. With Jackson's defaults, one unknown field, audit kind or event type fails the read of the whole page.
+
+**Value sets that grow.** A value set that grows is a plain string, not an `enum`: every discriminator property, and the state-machine event's outer `eventType`, whose known values are the keys of the mapping of `StateMachineEventDto`. A client accepts a value of such a string that it does not know. An `enum` in a response, such as `severity` or the stop-reason `type`, is a value set that is not expected to grow. A generated client cannot read a value that a response `enum` does not list, so adding a value to a response `enum` is a breaking change, and a release that makes one declares it as breaking.
+
+**A use of a base is never required in a response.** `StateMachineAuditEventDto.data` is not in `required`, so that a client can read the event when its `data` is of an unknown type. The server sends `data` on every event.
+
+cyoda-go's CI generates clients from this spec with openapi-generator 7.18.0 — `kotlin-spring` and `java` (library `native`, Jackson) — and checks that each reads and writes back a set of wire samples, and reads responses of a later spec as described above.
 
 ## CONTEXT PATH
 

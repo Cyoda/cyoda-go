@@ -24,7 +24,8 @@ Every entity update that takes a precondition:
 2. A mismatch answers `412 ENTITY_MODIFIED`. Inside the update's
    transaction the engine records `STATE_MACHINE_START` and then
    `TRANSITION_ABORTED`
-   (`{reason: "ENTITY_MODIFIED", transitionName, expectedTxId, actualTxId}`),
+   (`{eventType, reason: "ENTITY_MODIFIED", transition, expectedTxId, actualTxId}`;
+   `transition` is absent on a loopback, which has no transition),
    and nothing else of the transition. Audit events are bound to the
    transaction, so what the audit log keeps depends on the door:
    - `PUT` and `PATCH` of one entity, and gRPC `EntityPatchRequest`: the

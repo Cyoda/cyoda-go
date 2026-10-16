@@ -12,8 +12,10 @@ import (
 )
 
 // recursiveFixtureYAML has a recursive condition schema shaped like the
-// spec's GroupConditionDto: a group's conditions are a discriminated oneOf
-// that includes the group itself. /flat has no recursion.
+// spec's GroupConditionDto as the validator's view presents it: a group's
+// conditions are a discriminated oneOf (the view's replacement of a use of
+// the base QueryConditionDto) that includes the group itself. /flat has no
+// recursion.
 const recursiveFixtureYAML = `openapi: 3.1.0
 info: { title: recursive fixture, version: "1" }
 paths:

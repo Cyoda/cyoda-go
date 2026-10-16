@@ -23,7 +23,7 @@ func TestDeleteEntities_Conditional_SubsetSurvives(t *testing.T) {
 	keepID := createEntityE2E(t, model, 1, `{"status":"keep","n":1}`)
 	dropID := createEntityE2E(t, model, 1, `{"status":"drop","n":2}`)
 
-	// Delete only status=drop. AbstractConditionDto simple-condition form.
+	// Delete only status=drop. A QueryConditionDto of type simple.
 	cond := `{"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"drop"}`
 	resp := doAuth(t, http.MethodDelete, fmt.Sprintf("/api/entity/%s/1?verbose=true", model), cond)
 	body := readBody(t, resp)

@@ -32,7 +32,7 @@ The audit API exposes a per-entity event log covering entity lifecycle changes (
 
 Order: `utcTime` newest first; then `EntityChange` before `StateMachine`; then, within a tie, `EntityChange` events by `version` descending and `StateMachine` events by `eventId` (time field, then the UUID's bytes) descending. Every event has a distinct sort key, so the order is total and reproduces on every request over the same data. For `StateMachine` events of one instant the order is fixed but not promised to be the order the events were recorded in.
 
-A third event type, `System`, is reserved for commercial backends. OSS backends never emit `System` events; the enum value is retained in the contract for wire compatibility with Cyoda Cloud.
+A third event type, `System`, is reserved for commercial backends. OSS backends never emit `System` events; `SystemAuditEventDto` stays in the contract for wire compatibility with Cyoda Cloud.
 
 ## ENDPOINTS
 
@@ -81,7 +81,15 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
       "microsTime": 1754042695000000,
       "entityId": "74807f00-ed0d-11ee-a357-ae468cd3ed16",
       "state": "APPROVED",
-      "data": {"success": true},
+      "data": {
+        "eventType": "STATE_MACHINE_FINISH",
+        "state": "APPROVED",
+        "success": true,
+        "stopReason": {
+          "type": "COMPLETED_NO_AUTO_TRANSITIONS",
+          "description": "No automated transition from state \"APPROVED\""
+        }
+      },
       "eventId": "3f9b6a10-6f5e-11f0-8f3a-0242ac110002",
       "actor": {"id": "alice", "name": "alice", "legalId": "acme", "kind": "user"},
       "executedBy": {"id": "OBOCLIENT0000001", "kind": "service"}
@@ -100,15 +108,53 @@ Response: `200 OK`, `application/json` — `EntityAuditEventsResponseDto`:
 
 **StateMachineAuditEventDto** fields (discriminated by `auditEventType: "StateMachine"`):
 
-- `eventType`: one of `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_NOT_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PROCESS_NOT_MATCH_CRITERION`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`, and for scheduled transitions `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`, `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL` (see `cyoda help scheduled-tasks`)
+- `eventType`: the type of the event. The set grows: a client accepts a value it does not know (see `cyoda help openapi`, GENERATED CLIENTS). The types cyoda-go records are `STATE_MACHINE_START`, `STATE_MACHINE_FINISH`, `CANCEL`, `FORCE_SUCCESS`, `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_MAKE`, `TRANSITION_NOT_FOUND`, `TRANSITION_NOT_MATCH_CRITERION`, `TRANSITION_ABORTED`, `PAUSE_FOR_PROCESSING`, `STATE_PROCESS_RESULT`, and for scheduled transitions `SCHEDULED_TRANSITION_ARM`, `SCHEDULED_TRANSITION_FIRE`, `SCHEDULED_TRANSITION_EXPIRE`, `SCHEDULED_TRANSITION_CANCEL`, `SCHEDULED_TRANSITION_FAIL` (see `cyoda help scheduled-tasks`). `WORKFLOW_NOT_FOUND` and `PROCESS_NOT_MATCH_CRITERION` are in the contract cyoda-go shares with Cyoda Cloud and are never recorded by cyoda-go.
 - `eventId`: a time-based UUID assigned by the server when it recorded the event. Unique per event and the same value on every read, on this endpoint and on the workflow-finished endpoint below.
 - `state`: entity state at the time of the event
-- `data`: optional event-specific payload (e.g. `{"success": true}` for `STATE_MACHINE_FINISH`; null for most event types, `TRANSITION_MAKE` included unless its criterion holds a function condition). `TRANSITION_ABORTED` carries `{reason, transitionName, expectedTxId, actualTxId}`. When the criterion evaluated holds a function condition, `WORKFLOW_FOUND`, `WORKFLOW_SKIP`, `TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` carry `functions`, one entry per function condition the evaluation reached; `WORKFLOW_FOUND` and `TRANSITION_MAKE` then carry `{"functions": [...]}` and nothing else. See `cyoda help workflows`, *Function conditions*.
-- `details`: a human-readable text. For `TRANSITION_MAKE` it reads `Transition "<name>": <from> → <to>`, and `state` is the state the transition left; the transition name appears nowhere else on the event, and entity change history (`GET /entity/{entityId}/changes`) carries no transition name at all. The text is for people, not a parsing contract.
+- `data`: the event's data, a `StateMachineEventDto`. The server sends it on every event, never `null`. Its `eventType` repeats the outer `eventType` and selects the schema of the rest of the object (see *Event data* below).
+- `details`: a human-readable text. For `TRANSITION_MAKE` it reads `Transition "<name>": <from> → <to>`. The text is for people, not a parsing contract: read the transition from `data.transition`. Entity change history (`GET /entity/{entityId}/changes`) carries no transition name at all.
 - `actor`: the attributed principal the transition ran for (see `AuditActorInfoDto.kind` below). Present when the engine recorded one.
 - `executedBy`: `{id, kind}` — the principal that actually ran the transition, independent of `actor`. Present when the engine recorded one.
 
+### Event data
+
+Each event type's `data` holds `eventType` and the fields listed here. A field marked *optional* is present only when the engine knows its value; no field is filled with a placeholder.
+
+- `STATE_MACHINE_START` — `state` (optional): the entity's state when the run started. Absent when the run creates the entity, which has no state yet.
+- `STATE_MACHINE_FINISH` — `state`: the state the run settled in; `success`: always `true` (FINISH is recorded only for a run that succeeded); `stopReason`: why the run stopped (see *Stop reason* below).
+- `CANCEL` — `reason`: the cascade limit the run exceeded (the visits of one state, or the cascade depth), and where.
+- `FORCE_SUCCESS` — no fields. A loopback ran on an entity whose state the selected workflow does not declare.
+- `WORKFLOW_FOUND` — `workflowName`; `functions` (optional).
+- `WORKFLOW_SKIP` — `workflowName`, `reason`: why the workflow's criterion did not match; `functions` (optional).
+- `TRANSITION_MAKE` — `workflowName`, `transition`, `newState`: the transition's target; `functions` (optional). The outer `state` is the state the transition left.
+- `TRANSITION_NOT_FOUND` — `workflowName`, `transition`: the transition the request named. `details` says why it cannot be made: it is not declared in the entity's state, it is disabled, or it is scheduled.
+- `TRANSITION_NOT_MATCH_CRITERION` — `workflowName`, `transition`, `criterion`: the function's name when a function condition is the whole criterion, otherwise the condition's type (`simple`, `group`, `lifecycle`, `array`); `reason`: why the criterion did not match; `functions` (optional).
+- `TRANSITION_ABORTED` — `reason`: `ENTITY_MODIFIED`; `transition` (optional): the transition that was aborted, absent on a loopback, which has no transition; `expectedTxId`: the transaction id the caller's `ifMatch` named; `actualTxId`: the transaction id of the entity version the request started from.
+- `PAUSE_FOR_PROCESSING` — `workflowName`, `transition`, `processNames`: the transition's processor names, in pipeline order.
+- `STATE_PROCESS_RESULT` — one event per processor that ran: `processorName`: the processor's `name` in the workflow; `executionMode`: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX` or `COMMIT_BEFORE_DISPATCH` (a processor configured with no mode runs, and is recorded, as `SYNC`); `success`: `false` for a failed `ASYNC_NEW_TX` processor too, although the run goes on; `failReason` (optional): the failure text the compute member sent, present only when the processor failed and the member itself sent text. A failed processor's `details` reads `Processor "<name>" failed`.
+- `SCHEDULED_TRANSITION_ARM` — `transition`, `sourceState`, `scheduledTime`: when the transition is due, in Unix milliseconds.
+- `SCHEDULED_TRANSITION_FIRE` — `transition`, `sourceState`: the state the transition fired from; `workflowName`: the workflow selected for the entity. The outer `state` is the state the run settled in.
+- `SCHEDULED_TRANSITION_EXPIRE` — `transition`, `sourceState`. When the task was first picked up after its deadline, `details` states the lateness and the timeout.
+- `SCHEDULED_TRANSITION_CANCEL` — `transition`, `sourceState`; `workflowName` (optional): present when the task is cancelled as it comes due, absent when a write cancels it.
+- `SCHEDULED_TRANSITION_FAIL` — `transition`, `sourceState`, `reason`: the scheduled task's `failureReason`, an open value set; `attempts`, `lostOwners`.
+
+`functions` is present, possibly empty, when the criterion evaluated holds a function condition: one entry per function condition the evaluation reached, in evaluation order. See `cyoda help workflows`, *Function conditions*.
+
+### Stop reason
+
+`stopReason` on `STATE_MACHINE_FINISH` is `{type, description, rejectedTransitions}`. cyoda-go sends three types:
+
+- `COMPLETED_NO_AUTO_TRANSITIONS` — the settled state has no automated transition: none that is not `disabled`, not `manual` and not scheduled. `description`: `No automated transition from state "<state>"`.
+- `COMPLETED_ALL_CRITERIA_REJECTED` — the settled state has automated transitions and every one was refused by its criterion. `description`: `Every automated transition from state "<state>" was refused by its criterion`. `rejectedTransitions` lists each refused transition, in declaration order, as `{transitionName, criterion, reason}`, with the values of its `TRANSITION_NOT_MATCH_CRITERION` event. Only the last pass counts: a refusal in a state the run then left is not listed.
+- `FORCE_SUCCESS` — a loopback on an entity whose state the selected workflow does not declare. `description`: `State "<state>" is not declared in workflow "<workflow>"`.
+
+`rejectedTransitions` is present only for `COMPLETED_ALL_CRITERIA_REJECTED`. The other types the schema lists (`PAUSED_FOR_PROCESSING`, `CANCELED`, `NO_WORKFLOW_FOUND`, `WORKFLOW_SKIPPED`, `INCOMPLETE_TRANSACTION`, `UNKNOWN`) are in the contract cyoda-go shares with Cyoda Cloud and are never sent by cyoda-go.
+
+### Recording
+
 State machine events are recorded best effort: a failure to record one is logged at WARN and does not fail the operation, so an audit trail can miss an event. Do not build an authorization check on finding one; record what a check needs in the entity itself (see `cyoda help auth integration`, *READING IDENTITY IN A COMPUTE NODE*).
+
+An event whose text holds the character U+0000 — in `state`, `details`, or any key or string value of `data`, such as a compute member's criterion reason or failure text, or a caller's transition name — is not recorded, on every storage backend. The engine logs it at WARN without the text, and the operation goes on as if the event had not been made.
 
 ### Actor and executor
 
@@ -127,7 +173,7 @@ A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entit
 
 Response: `200 OK`, `application/json` — `StateMachineAuditEventDto` (the finish event for the transaction), carrying the same `eventId` a search response returns for the same event.
 
-Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found.
+Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found. A scheduled transition's fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH` (its last event is `SCHEDULED_TRANSITION_FIRE`), so this endpoint answers `404 ENTITY_NOT_FOUND` for a fire's transaction.
 
 ## ERRORS
 
