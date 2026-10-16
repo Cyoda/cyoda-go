@@ -6,6 +6,7 @@
     "function": {
       "name": "isPriority",
       "config": {
+        "attachEntity": true,
         "calculationNodesTags": "scoring",
         "responseTimeoutMs": 5000,
         "retryPolicy": "FIXED"

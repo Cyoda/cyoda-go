@@ -353,9 +353,11 @@ func TestNeverSentEventsHaveValidSamples(t *testing.T) {
 	})
 }
 
-// data is a required member of every state-machine audit event and is never
-// null.
-func TestDataIsRequiredAndNeverNull(t *testing.T) {
+// data is never null. It is not required: Rule 6 lets a client read an event
+// of a type it does not know, and a required use of a base would refuse it.
+// That the server always sends data is asserted by the engine and e2e tests,
+// not by the schema.
+func TestDataIsNeverNull(t *testing.T) {
 	doc := viewedSpec(t)
 	event := doc.Components.Schemas["StateMachineAuditEventDto"].Value
 	sample := func(data string) string {
@@ -379,6 +381,6 @@ func TestDataIsRequiredAndNeverNull(t *testing.T) {
 	validateCases(t, doc, []validateCase{
 		{"typed data", event, sample(`{"eventType": "FORCE_SUCCESS"}`), true},
 		{"null data", event, sample(`null`), false},
-		{"absent data", event, sample(""), false},
+		{"absent data", event, sample(""), true},
 	})
 }

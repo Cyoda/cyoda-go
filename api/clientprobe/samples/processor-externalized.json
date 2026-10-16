@@ -8,7 +8,8 @@
     "startNewTxOnDispatch": true,
     "config": {
       "calculationNodesTags": "enrichment",
-      "attachEntity": true
+      "attachEntity": true,
+      "idempotent": false
     }
   }
 }

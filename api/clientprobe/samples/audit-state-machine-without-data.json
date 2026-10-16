@@ -1,6 +1,6 @@
 {
   "schema": "AuditEventDto",
-  "valid": false,
+  "class": "StateMachineAuditEventDto",
   "value": {
     "auditEventType": "StateMachine",
     "severity": "INFO",

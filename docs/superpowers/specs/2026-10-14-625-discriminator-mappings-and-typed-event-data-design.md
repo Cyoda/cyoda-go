@@ -46,7 +46,7 @@ same way. The `java` generator ignores a discriminator on a `oneOf`. All of this
 this spec.
 
 **Rule 2 — every event has typed data.** `data` is a use of the base `StateMachineEventDto`, keyed on
-`eventType`. It is never `null` and never absent. The event type is repeated inside `data`, as Cloud does: a
+`eventType`. The server sends it on every event, never `null`; the schema does not require it (Rule 6). The event type is repeated inside `data`, as Cloud does: a
 member is told apart by a property inside the object.
 
 **Rule 3 — data states only what is true.** A field is present when the engine knows its value at the point the
@@ -89,6 +89,10 @@ requires, each measured on prototypes of this spec:
   disabled. Spring Boot's mapper and the `java` generator's mapper already disable the first. Both generators
   were probed on a prototype of this spec with a future event type, a future audit kind and an added field. With
   the two settings, all three read as described. With the defaults, each one fails the whole page.
+- **A use of a base in a response is never a required property.** `kotlin-spring` makes a required property
+  non-null, so an object of an unknown member, read as empty, would fail the whole response. A spec test walks
+  every schema a response reaches and asserts that no property that is a `$ref` to a base is in its parent's
+  `required`.
 - **So a value set that grows is a plain string, never an `enum`.** Every discriminator property is a plain string,
   and its mapping lists the known values. The outer `eventType` is a plain string whose known values are the keys
   of `data`'s mapping (section 3.3). A `kotlin-spring` client cannot read a value that a required response `enum`
@@ -149,8 +153,9 @@ requires, each measured on prototypes of this spec:
 - `StateMachineEventDto` (the base) keeps its discriminator on `eventType` and gains a mapping of all 19 event
   types (section 4) to their schemas. Every event schema includes it with `allOf`. `StateMachineFinishedDto`
   gains that `allOf`.
-- `StateMachineAuditEventDto.data` becomes `$ref: StateMachineEventDto`, and it is required. Its `x-go-type` is
-  removed. The server keeps building the response as a map (section 6).
+- `StateMachineAuditEventDto.data` becomes `$ref: StateMachineEventDto`. It is not in `required`, so that a
+  client reads an event of an unknown type (Rule 6); the server always sends it (Rule 2), which the tests of
+  section 10 assert. Its `x-go-type` is removed. The server keeps building the response as a map (section 6).
 - `TestSpecDeclaresNoNullableKeyword` (`api/condition_dto_test.go:200-221`) lists the values that accept `null`
   and checks them in both kin modes. `data` leaves the list, which then has three entries. The test, and
   `TestArrayConditionDtoValuesValidateUnderOpenAPI31` (`:136`), validate through the view of section 13.1:
@@ -462,7 +467,7 @@ view of section 13.1. The scenarios below also assert values.
 |---|---|---|---|---|---|---|---|
 | Rule 1: every discriminator is on a base; its mapping names every schema that includes the base and nothing else; no `oneOf`/`anyOf` has a discriminator; no schema includes two bases | | | | | | ✓ | |
 | Rule 5, static part: no `type` list with two non-null types, except inside the `items` or `not` of an untyped leaf; no `oneOf`/`anyOf` other than `[{type: "null"}, {$ref}]`; no inline enum on a property of a base; no member declares its base's discriminator property | | | | | | ✓ | |
-| Rule 6, static part: every discriminator property is a plain string with no `enum`; the outer `eventType` has no `enum` | | | | | | ✓ | |
+| Rule 6, static part: every discriminator property is a plain string with no `enum`; the outer `eventType` has no `enum`; no use of a base in a response is a required property | | | | | | ✓ | |
 | The `spi.StateMachineEventType` constants declared in the SPI and in cyoda-go equal the keys of `StateMachineEventDto`'s mapping | | | | | | ✓ | |
 | Every example in the spec validates against its schema through the view; `bearerAuth` has no `name` | | | | | | ✓ | |
 | Every sample marked valid validates against its schema through the view, and every sample marked invalid fails; every mapping entry of every base has a valid sample; each value form of section 3.4 has samples (string, number, boolean, `null`, pair valid; object and triple invalid) | | | | | | ✓ | |
@@ -471,7 +476,7 @@ view of section 13.1. The scenarios below also assert values.
 | Validator view: a member-field defect under a use of a base is reported; an unmapped discriminator value is reported; `null` passes an untyped value leaf; an object fails it; `null` fails an untyped leaf whose `not` excludes it; `null` fails an `allOf` member (a whole condition, a whole audit event) and a replaced use (`data`) | ✓ | | | | | | |
 | Processor `type`: omitted or empty → stored and exported as `externalized`; `internalized` → 400 `VALIDATION_FAILED`; another value → 400 `VALIDATION_FAILED` | ✓ | ✓ | | | | | |
 | `go generate ./api`: no generated name still holds `AbstractConditionDto` or `CriterionGroupConditionDto`; the grep exit check of section 12 is empty | | | | | | ✓ | |
-| `data` refuses null and absence; the two never-sent event types: a literal sample validates | | | | | | ✓ | |
+| `data` refuses null; absent `data` validates (Rule 6); the two never-sent event types: a literal sample validates | | | | | | ✓ | |
 | A `function` condition in each search-shaped body is refused with 400 `INVALID_CONDITION` | | ✓ (existing) | | | | | |
 | Conditional DELETE with a typed body still deletes only matches | | ✓ (existing) | | | | | |
 | Every event type cyoda-go sends: the data produced by driving the engine path validates against the member schema its `eventType` maps to, through the view (kin-openapi), not hand-built maps | ✓ | | | | | | |
@@ -643,7 +648,9 @@ shapes. It is a merge gate, like oasdiff.
     The reason: Cloud serializes `non_null`
     (`~/dev/cyoda/backend/src/main/resources/config/local-dev/application.properties:29`), so a `null` the sample
     holds is absent in the output, and for these fields an explicit `null` and an absent member mean the same
-    thing. `null` entries inside arrays are kept.
+    thing. `null` entries inside arrays are kept. A valid sample states every property that has a schema
+    `default`, because the generated classes write an absent defaulted property back as its default; a spec
+    test checks that each one is present.
 - **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, future, value}`; `valid`
   defaults to `true` and `future` to `false`. `class` is the member the base's discriminator selects, or the
   schema itself. A request body that is not a component schema (the create and import bodies) is named by

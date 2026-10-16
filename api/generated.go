@@ -1541,7 +1541,7 @@ type StateMachineAuditEventDto struct {
 	// ConsistencyTime Cyoda consistency time
 	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
 
-	// Data The event's data. Always present, never null. Its `eventType` repeats the outer `eventType` and selects the schema: each event type's schema states its fields and when an optional field is present. A field is present only when the server knows its value. The data of an event type the client does not know is read as no object; the outer `eventType` still names it.
+	// Data The event's data. The server always sends it, never null. Its `eventType` repeats the outer `eventType` and selects the schema: each event type's schema states its fields and when an optional field is present. A field is present only when the server knows its value. It is not a required property so that a client can read an event of a type it does not know: the client reads that event's data as empty, and the outer `eventType` still names it.
 	Data *StateMachineEventDto `json:"data,omitempty"`
 
 	// Details Details of the event

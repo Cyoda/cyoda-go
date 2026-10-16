@@ -435,3 +435,85 @@ func TestSampleCoverage(t *testing.T) {
 		}
 	}
 }
+
+// A valid sample states every property that has a schema default. The
+// generated classes set an absent defaulted property to its default and write
+// it back, so a sample that leaves one out does not round-trip exactly.
+func TestSamplesStateDefaultedProperties(t *testing.T) {
+	raw, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	for _, s := range loadSamples(t) {
+		if s.Schema == "" || !s.valid() {
+			continue
+		}
+		ref := raw.Components.Schemas[s.Schema]
+		if ref == nil {
+			t.Errorf("%s: %s is not a component schema", s.file, s.Schema)
+			continue
+		}
+		for _, missing := range missingDefaults(raw, ref.Value, s.value, s.Schema) {
+			t.Errorf("%s: %s has a default and is absent", s.file, missing)
+		}
+	}
+}
+
+// missingDefaults returns the path of each defaulted property that v leaves
+// out, at any depth. An object of a base is checked against the member its
+// discriminator selects; an unknown member is not descended into.
+func missingDefaults(doc *openapi3.T, s *openapi3.Schema, v any, path string) []string {
+	if s == nil {
+		return nil
+	}
+	var out []string
+	for _, b := range append(slices.Clone(s.OneOf), s.AnyOf...) {
+		out = append(out, missingDefaults(doc, b.Value, v, path)...)
+	}
+	switch x := v.(type) {
+	case []any:
+		if s.Items != nil {
+			for i, e := range x {
+				out = append(out, missingDefaults(doc, s.Items.Value, e, fmt.Sprintf("%s[%d]", path, i))...)
+			}
+		}
+	case map[string]any:
+		if d := s.Discriminator; d != nil && len(s.OneOf) == 0 && len(s.AnyOf) == 0 {
+			key, _ := x[d.PropertyName].(string)
+			m, ok := d.Mapping[key]
+			if !ok {
+				return out
+			}
+			s = doc.Components.Schemas[strings.TrimPrefix(m.Ref, schemaRefPrefix)].Value
+		}
+		props := allProperties(s)
+		for _, name := range slices.Sorted(maps.Keys(props)) {
+			p := props[name].Value
+			if p == nil {
+				continue
+			}
+			value, present := x[name]
+			if !present {
+				if p.Default != nil {
+					out = append(out, path+"."+name)
+				}
+				continue
+			}
+			out = append(out, missingDefaults(doc, p, value, path+"."+name)...)
+		}
+	}
+	return out
+}
+
+// allProperties returns the properties a schema declares, its allOf entries
+// included.
+func allProperties(s *openapi3.Schema) map[string]*openapi3.SchemaRef {
+	out := map[string]*openapi3.SchemaRef{}
+	for _, part := range s.AllOf {
+		if part.Value != nil {
+			maps.Copy(out, allProperties(part.Value))
+		}
+	}
+	maps.Copy(out, s.Properties)
+	return out
+}

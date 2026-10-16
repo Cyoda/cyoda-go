@@ -281,6 +281,91 @@ func TestRule6_ValueSetsThatGrowAreStrings(t *testing.T) {
 	}
 }
 
+// Rule 6: a use of a base in a response is never a required property. A
+// client reads an object of a member it does not know as empty, and
+// kotlin-spring makes a required property non-null, so a required use would
+// fail the whole response.
+func TestRule6_UsesOfABaseInAResponseAreNotRequired(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	bs := bases(doc)
+	for _, name := range responseSchemas(doc) {
+		s := doc.Components.Schemas[name].Value
+		parts := []*openapi3.Schema{s}
+		for _, part := range s.AllOf {
+			if part.Ref == "" && part.Value != nil {
+				parts = append(parts, part.Value)
+			}
+		}
+		for _, part := range parts {
+			for _, prop := range part.Required {
+				p := ownProperty(s, prop)
+				if p != nil && bs[strings.TrimPrefix(p.Ref, schemaRefPrefix)] != nil {
+					t.Errorf("%s.%s: a use of a base in a response is required", name, prop)
+				}
+			}
+		}
+	}
+}
+
+// responseSchemas returns the names of the component schemas a response
+// reaches, following every $ref below the response content.
+func responseSchemas(doc *openapi3.T) []string {
+	seen := map[string]bool{}
+	var walk func(ref *openapi3.SchemaRef)
+	walk = func(ref *openapi3.SchemaRef) {
+		if ref == nil || ref.Value == nil {
+			return
+		}
+		if ref.Ref != "" {
+			name := strings.TrimPrefix(ref.Ref, schemaRefPrefix)
+			if seen[name] {
+				return
+			}
+			seen[name] = true
+		}
+		s := ref.Value
+		for _, p := range s.Properties {
+			walk(p)
+		}
+		walk(s.Items)
+		walk(s.Not)
+		walk(s.AdditionalProperties.Schema)
+		for _, group := range []openapi3.SchemaRefs{s.AllOf, s.OneOf, s.AnyOf} {
+			for _, b := range group {
+				walk(b)
+			}
+		}
+		if s.Discriminator != nil {
+			for _, m := range s.Discriminator.Mapping {
+				walk(doc.Components.Schemas[strings.TrimPrefix(m.Ref, schemaRefPrefix)])
+			}
+		}
+	}
+	content := func(c openapi3.Content) {
+		for _, mt := range c {
+			walk(mt.Schema)
+		}
+	}
+	for _, item := range doc.Paths.Map() {
+		for _, op := range item.Operations() {
+			for _, r := range op.Responses.Map() {
+				if r.Value != nil {
+					content(r.Value.Content)
+				}
+			}
+		}
+	}
+	for _, r := range doc.Components.Responses {
+		if r.Value != nil {
+			content(r.Value.Content)
+		}
+	}
+	return slices.Sorted(maps.Keys(seen))
+}
+
 // Each base maps the wire value of its discriminator to its member.
 func TestBaseMappings(t *testing.T) {
 	doc, err := GetSwagger()
