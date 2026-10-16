@@ -176,13 +176,16 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// errors ("commit-before-dispatch: commit TX_pre: <pgx-error>")
 		// would leak internals to same-tenant audit readers; the
 		// request-scoped slog log captures full error detail for operators.
-		// This is the pipeline's only record of a failed processor.
+		// No other event of the pipeline records a failed processor.
 		// Per spec §8: audit events use the cascade-entry txID for
 		// correlation continuity, even though they physically land in
-		// whichever segment's TX is current. The event still records via
-		// currentCtx so that pre-segment-boundary events (in TX_pre) write
-		// to TX_pre's buffer and post-segment-boundary events write to
-		// TX_post's buffer.
+		// whichever segment's TX is current. The event records via
+		// currentCtx: TX_pre's buffer before a segment boundary, TX_post's
+		// after a COMMIT_BEFORE_DISPATCH processor that succeeded. A
+		// COMMIT_BEFORE_DISPATCH processor that failed leaves currentCtx on
+		// TX_pre (see the mode switch above), which its boundary may already
+		// have committed; Record then refuses the event and recordEvent logs
+		// it, so such a processor leaves no record.
 		outcome := "completed"
 		if !success {
 			outcome = "failed"

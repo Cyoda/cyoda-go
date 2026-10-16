@@ -439,12 +439,17 @@ request.
 
 Audit events are written in the segment's transaction and kept only when it
 commits. A failed `ASYNC_NEW_TX` processor's record is kept when the operation
-commits. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
+commits; the operation goes on past the failure unless the savepoint cannot be
+created, undone or released, or a scheduled run refuses to dispatch the
+processor. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
 and its record is rolled back with the transaction — unless the processor ran in
 a callback that joined another operation's transaction, whose events commit if
-that operation commits. A failed `COMMIT_BEFORE_DISPATCH` processor's record is
-not kept: it is recorded against the segment committed before the dispatch, and
-the record is refused there.
+that operation commits. A `COMMIT_BEFORE_DISPATCH` processor that fails after
+its segment boundary committed leaves no record: the pipeline keeps `T_pre`'s context when the processor fails, so the
+record is written against `T_pre`, which the segment boundary has already
+committed, and the store refuses it. A `PAUSE_FOR_PROCESSING` with no matching
+`STATE_PROCESS_RESULT` therefore means either a cascade stranded between
+segments or a failed `COMMIT_BEFORE_DISPATCH` processor.
 
 ### Cascade-depth limits
 

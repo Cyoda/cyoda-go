@@ -350,8 +350,11 @@ section 3.5). The checkpoint exit before dispatch
 (`:127`) has no processor result to report. The fence exit after dispatch (`:178`) has no per-processor record,
 and the caller's record is not written there either, because `recordEvent` returns at once under a fence
 (`engine.go:1086-1088`). The removed record's `details` embedded the wrapped error text (`"…: %v"`). That text
-reaches the audit trail where the failed run's events survive: a batch-isolated item, and a joined callback,
-whose audit rows commit with the owner's transaction. Removing the record is also a Gate 3 fix.
+reaches the audit trail where the failed run's events survive: a joined callback, whose audit rows commit with
+the owner's transaction. A batch-isolated item is not such a place: a collection update isolates an item only on
+its `If-Match` conflict, which the engine raises before any processor runs, so the item keeps only
+STATE_MACHINE_START and TRANSITION_ABORTED (`internal/domain/entity/service.go:2617-2632`, `:2758-2765`).
+Removing the record is also a Gate 3 fix.
 `engine_processors_audit_test.go:69-100`, which asserts the second record, changes to assert one.
 
 ### 7.3 Unreachable code removed
@@ -501,8 +504,8 @@ view of section 13.1. The scenarios below also assert values.
 | `…/finished` returns FINISH with typed data | | ✓ | | ✓ | | | |
 
 Failure-path events (CANCEL, TRANSITION_NOT_FOUND, a failed SYNC processor) roll back with the request on the
-owner path, so their values are asserted in unit tests, and in e2e only where a path makes them durable (a
-batch-isolated item, an `ASYNC_NEW_TX` processor).
+owner path, so their values are asserted in unit tests, and in e2e only where a path makes them durable (an
+`ASYNC_NEW_TX` processor). A batch-isolated item makes only STATE_MACHINE_START and TRANSITION_ABORTED durable.
 
 Existing tests that read changed keys are updated: `engine_processors_audit_test.go:69-100` (the duplicate
 record), `engine_transition_aborted_test.go:119-130`, `criterion_function_audit_test.go:259`, `:287` (nil

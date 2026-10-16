@@ -145,11 +145,14 @@ hand-over that failed, is never a `failReason`. Every failure that is not the
 member's own answer — no member, no answer, an answer that cannot be read, a
 savepoint failure, a platform error — records no `failReason`. The record is
 written in the operation's transaction and kept only when that transaction
-commits: for a failed `ASYNC_NEW_TX` processor when the operation commits, and
-for a processor in a callback that joined another operation's transaction when
-that operation commits. Any other failed processor fails the operation, and its
-record is rolled back with it; the client's error message is then where the
-member's text reaches the caller.
+commits: for a failed `ASYNC_NEW_TX` processor the operation goes on past when
+the operation commits, and for a processor in a callback that joined another
+operation's transaction when that operation commits. A failed `SYNC` or
+`ASYNC_SAME_TX` processor fails the operation, and its record is rolled back
+with it. A `COMMIT_BEFORE_DISPATCH` processor that fails leaves no record: the
+record is written against the transaction its segment boundary already
+committed, and is refused. In these cases the client's error message is where
+the member's text reaches the caller.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 
