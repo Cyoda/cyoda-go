@@ -27,7 +27,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -275,11 +277,13 @@ func assertTransitionAbortedPaired(t *testing.T, entityID, expectedStaleTx, actu
 	if got, _ := data["actualTxId"].(string); got != actualEntityTx {
 		t.Errorf("entity %s: abort actualTxId = %q; want %q", entityID, got, actualEntityTx)
 	}
-	got, present := data["transition"]
-	switch {
-	case wantTransition == "" && present:
-		t.Errorf("entity %s: loopback abort carries transition %v; want none", entityID, got)
-	case wantTransition != "" && got != wantTransition:
+	if wantTransition == "" {
+		// A loopback has no transition: the data holds exactly these keys.
+		keys := slices.Sorted(maps.Keys(data))
+		if want := []string{"actualTxId", "eventType", "expectedTxId", "reason"}; !slices.Equal(keys, want) {
+			t.Errorf("entity %s: loopback abort data keys = %v; want %v", entityID, keys, want)
+		}
+	} else if got := data["transition"]; got != wantTransition {
 		t.Errorf("entity %s: abort transition = %v; want %q", entityID, got, wantTransition)
 	}
 }

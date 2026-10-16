@@ -332,23 +332,24 @@ func RunAuditFinishAllCriteriaRejected(t *testing.T, fixture BackendFixture) {
 	}
 	events := stateMachineEvents(t, c, id)
 
-	var refusals []map[string]any
+	// The refusals are found by transition name: events of one instant are
+	// not listed in recording order.
+	refusals := map[any]map[string]any{}
 	for _, ev := range events {
 		if ev.eventType == "TRANSITION_NOT_MATCH_CRITERION" {
-			refusals = append(refusals, ev.data)
+			refusals[ev.data["transition"]] = ev.data
 		}
 	}
-	if len(refusals) != 3 {
-		t.Fatalf("%d TRANSITION_NOT_MATCH_CRITERION events, want 3 (A once, B twice): %v", len(refusals), events)
+	if len(refusals) != 3 || refusals["a-refused"] == nil || refusals["b-first"] == nil || refusals["b-second"] == nil {
+		t.Fatalf("TRANSITION_NOT_MATCH_CRITERION events = %v, want one each for a-refused, b-first, b-second", refusals)
 	}
+	// Only B's refusals, in declaration order.
 	var rejected []any
-	for _, d := range refusals[1:] {
+	for _, name := range []string{"b-first", "b-second"} {
+		d := refusals[name]
 		rejected = append(rejected, map[string]any{
-			"transitionName": d["transition"], "criterion": d["criterion"], "reason": d["reason"],
+			"transitionName": name, "criterion": d["criterion"], "reason": d["reason"],
 		})
-	}
-	if refusals[1]["transition"] != "b-first" || refusals[2]["transition"] != "b-second" {
-		t.Fatalf("B's refusals = %v, %v; want b-first then b-second", refusals[1]["transition"], refusals[2]["transition"])
 	}
 	want := map[string]any{
 		"eventType": "STATE_MACHINE_FINISH",

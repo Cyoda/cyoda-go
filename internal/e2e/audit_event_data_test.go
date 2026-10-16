@@ -91,16 +91,22 @@ func TestAudit_FinishAllCriteriaRejected(t *testing.T) {
 	id := createEntityE2E(t, model, 1, `{"name":"A","amount":1,"status":"new"}`)
 	events := getSMAuditEvents(t, id)
 
-	// Oldest first: A's refusal, then B's two.
-	refusals := smEventsOfType(events, "TRANSITION_NOT_MATCH_CRITERION")
-	if len(refusals) != 3 {
-		t.Fatalf("%d TRANSITION_NOT_MATCH_CRITERION events, want 3: %v", len(refusals), events)
-	}
-	var wantRejected []any
-	for _, ev := range refusals[1:] {
+	// The refusals are found by transition name: events of one instant are
+	// not listed in recording order.
+	refusals := map[any]map[string]any{}
+	for _, ev := range smEventsOfType(events, "TRANSITION_NOT_MATCH_CRITERION") {
 		d, _ := ev["data"].(map[string]any)
+		refusals[d["transition"]] = d
+	}
+	if len(refusals) != 3 || refusals["a-refused"] == nil || refusals["b-first"] == nil || refusals["b-second"] == nil {
+		t.Fatalf("TRANSITION_NOT_MATCH_CRITERION events = %v, want one each for a-refused, b-first, b-second", refusals)
+	}
+	// Only B's refusals, in declaration order.
+	var wantRejected []any
+	for _, name := range []string{"b-first", "b-second"} {
+		d := refusals[name]
 		wantRejected = append(wantRejected, map[string]any{
-			"transitionName": d["transition"], "criterion": d["criterion"], "reason": d["reason"],
+			"transitionName": name, "criterion": d["criterion"], "reason": d["reason"],
 		})
 	}
 	stop, _ := onlySMData(t, events, "STATE_MACHINE_FINISH")["stopReason"].(map[string]any)
@@ -111,9 +117,6 @@ func TestAudit_FinishAllCriteriaRejected(t *testing.T) {
 	}
 	if !reflect.DeepEqual(stop, want) {
 		t.Errorf("stopReason = %v, want %v", stop, want)
-	}
-	if names := []any{wantRejected[0].(map[string]any)["transitionName"], wantRejected[1].(map[string]any)["transitionName"]}; !reflect.DeepEqual(names, []any{"b-first", "b-second"}) {
-		t.Errorf("rejectedTransitions names = %v, want b-first then b-second (A's refusal not listed)", names)
 	}
 }
 
