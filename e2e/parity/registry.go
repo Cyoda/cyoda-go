@@ -2,19 +2,22 @@ package parity
 
 import "testing"
 
-// allTests holds 247 scenarios, the entries of this file. TestParityScenarioCount
-// (registry_count_test.go) checks the number: change it there and here in the
-// change that adds or removes an entry. The scenarios cover model and workflow
-// import and export, entity CRUD and paging, bi-temporal reads, audit and
-// history, tenant isolation, messaging, search (operators, paths, temporal
-// filters, sort, negation, grouped statistics), workflows with processors and
-// criteria, compute-node callbacks and callout failover, schema extensions and
-// type admission, entity PATCH, composite unique keys, attribution and
-// on-behalf-of writes, scheduled tasks, signing keys, M2M clients, trusted keys
-// and the token exchange.
+// allTests holds 247 scenarios in this package: the entries of its literal
+// below, and those that files of this package add with Register from init()
+// (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
+// TestParityScenarioCount (registry_count_test.go) checks the number: change
+// it there and here in the change that adds or removes a scenario. The
+// scenarios cover model and workflow import and export, entity CRUD and
+// paging, bi-temporal reads, audit and history, tenant isolation, messaging,
+// search (operators, paths, temporal filters, sort, negation, grouped
+// statistics), workflows with processors and criteria, compute-node callbacks
+// and callout failover, schema extensions and type admission, entity PATCH,
+// composite unique keys, attribution and on-behalf-of writes, scheduled tasks,
+// signing keys, M2M clients, trusted keys and the token exchange.
 //
-// The scenarios that e2e/parity/externalapi, e2e/parity/scheduledtransition and
-// e2e/parity/scheduledfunction add with Register are not in that number.
+// The packages e2e/parity/externalapi, e2e/parity/scheduledtransition and
+// e2e/parity/scheduledfunction add further scenarios with Register; they are
+// not in that number.
 
 // NamedTest is a single parity scenario plus the name under which it
 // shows up in subtest output.

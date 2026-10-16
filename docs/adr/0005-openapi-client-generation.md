@@ -163,9 +163,10 @@ decision 4 to the forms of Rule 1; it does not change that decision.
 
 **Positive.** Cloud's generator, with Cloud's `configOptions`, and the Java
 generator read every shape the spec declares; a spec change that either cannot
-read fails cyoda-go's merge gate rather than Cloud's build. A new event type, audit kind or field reaches a client
-generated earlier without breaking it. The validator checks a member's fields
-under a use of a base and refuses an unmapped discriminator value.
+read fails cyoda-go's merge gate rather than Cloud's build. A new event type,
+audit kind or field reaches a client generated earlier without breaking it.
+The validator checks a member's fields under a use of a base and refuses an
+unmapped discriminator value.
 
 **Negative / cost.** Polymorphic values are declared in one, more verbose form,
 and value schemas are untyped schemas with constraints rather than unions. The

@@ -87,11 +87,11 @@ Cloud's spec must follow the same rules.
 `openapi-client-generation.yml` generates `kotlin-spring` classes, with Cloud's
 `configOptions` (not its type, import or schema mappings), and a `java` client
 (library `native`, Jackson) from `api/openapi.yaml` with openapi-generator
-7.18.0, the version Cloud uses. It
-compiles both and round-trips the wire samples in `api/clientprobe/samples/`
-through each, and reads samples of a later spec (an unknown audit kind, an
-unknown event type, an added field) as Rule 6 states. A spec change that
-Cloud's generator cannot read fails the merge gate on cyoda-go's side.
+7.18.0, the version Cloud uses. It compiles both and round-trips the wire
+samples in `api/clientprobe/samples/` through each, and reads samples of a
+later spec (an unknown audit kind, an unknown event type, an added field) as
+Rule 6 states. A spec change that Cloud's generator cannot read with those
+options fails the merge gate on cyoda-go's side.
 
 ## Complement: field-level divergence catalog
 

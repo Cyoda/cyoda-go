@@ -29,7 +29,8 @@ import kotlin.test.assertTrue
 import kotlin.test.fail
 
 // Reads and writes every sample with the classes kotlin-spring generates with
-// Cloud's options (package org.openapitools.model).
+// Cloud's configOptions only, not its type, import or schema mappings (package
+// org.openapitools.model).
 class KotlinSamplesTest {
     private val mapper: ObjectMapper = ObjectMapper().registerKotlinModule().findAndRegisterModules()
         .setSerializationInclusion(JsonInclude.Include.NON_NULL)
