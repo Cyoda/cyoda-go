@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 247 scenarios in this package: the entries of its literal
+// allTests holds 248 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -94,6 +94,9 @@ var allTests = []NamedTest{
 	{"AuditCreateEventData", RunAuditCreateEventData},
 	{"AuditFinishAllCriteriaRejected", RunAuditFinishAllCriteriaRejected},
 	{"AuditDataEventTypeMatchesOuter", RunAuditDataEventTypeMatchesOuter},
+	// A COMMIT_BEFORE_DISPATCH processor that fails after its segment boundary
+	// committed still has its result in the trail.
+	{"AuditCBDFailedProcessorRecorded", RunAuditCBDFailedProcessorRecorded},
 
 	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
