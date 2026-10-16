@@ -438,33 +438,35 @@ same-tenant audit readers. Full detail is in the operator-side slog log for the
 request.
 
 Audit events are written in the segment's transaction and kept only when it
-commits. A failed `ASYNC_NEW_TX` processor's record is kept when the operation
-commits; the operation goes on past the failure unless the savepoint cannot be
-created, undone or released, or a scheduled run refuses to dispatch the
-processor. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
+commits, except the record of a `COMMIT_BEFORE_DISPATCH` processor that fails
+after its segment boundary committed (below). A failed `ASYNC_NEW_TX`
+processor's record is kept when the operation commits; the operation goes on
+past the failure unless the savepoint cannot be created, undone or released, or
+a scheduled run refuses to dispatch the processor. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
 and its record is rolled back with the transaction — unless the processor ran in
 a callback that joined another operation's transaction, whose events commit if
 that operation commits. A `COMMIT_BEFORE_DISPATCH` processor that fails after
-its segment boundary committed leaves no record: the pipeline keeps `T_pre`'s
-context when the processor fails, so the record is written against `T_pre`,
-which the segment boundary has already committed, and the store refuses it.
+its segment boundary committed `T_pre` has its record written in a transaction
+of its own, begun with the request's tenant and principal, so the record is
+kept although the operation fails. A `COMMIT_BEFORE_DISPATCH` processor whose
+segment boundary itself failed leaves no record: the record is written in
+`T_pre`, which the failed operation does not commit.
 
 A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore has
 one of these causes:
 
-- The record was not written, and the operation went on. Recording is best
-  effort: the engine refuses an event whose text holds U+0000 — for example a
-  failed `ASYNC_NEW_TX` processor whose member's failure text holds it — and a
-  `Record` that fails is logged at WARN. In both cases the operation goes on and
-  can commit.
+- The record was not written. Recording is best effort: the engine refuses an
+  event whose text holds U+0000 — for example a failed processor whose member's
+  failure text holds it — and a `Record` that fails, or the transaction of a
+  failed `COMMIT_BEFORE_DISPATCH` processor's record that cannot be begun or
+  committed, is logged at WARN. The operation's outcome does not change.
 - The processor ran in a callback that joined another operation's transaction,
   and the fence refused the callback's chain after the dispatch, because its
   compute node was replaced or its callout ended. The chain records nothing more,
   and its `PAUSE_FOR_PROCESSING` stays in the joined transaction, which commits
   if the operation that began it commits.
 - The operation did not complete after the segment boundary: the engine crashed
-  between segments; the `COMMIT_BEFORE_DISPATCH` processor failed after the
-  boundary committed; or the processor succeeded, its record went into `T_post`,
+  between segments; or the processor succeeded, its record went into `T_post`,
   and the operation then failed there — at a later processor, a criterion, a
   cascade limit, the arming or cancelling of the settled state's scheduled
   tasks, or the final save, or because the scheduled run it belongs to was

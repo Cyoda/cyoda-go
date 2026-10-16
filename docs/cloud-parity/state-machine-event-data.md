@@ -169,6 +169,15 @@ One event per processor that ran.
   `failReason`. A callout handed over to another node gives the same
   `failReason` as a local one (`callout-failover.md`).
 
+A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
+committed fails the operation, but its event is kept: cyoda-go writes it in a
+transaction of its own, under the cascade's transaction id and the request's
+principal. When the boundary itself fails, the event is rolled back with the
+transaction the boundary did not commit. Cloud has no `COMMIT_BEFORE_DISPATCH`
+execution mode (`commit-in-joined-transaction.md`), so no Cloud change follows
+from this rule today; a Cloud that adopts the mode records such a failure the
+same way.
+
 `stateProcessId`, `stateProcessClassName` and `stateProcessType` are not in
 the contract. For an externalized processor no value of them is true:
 `stateProcessId` would be an internal cache key that no endpoint accepts, and

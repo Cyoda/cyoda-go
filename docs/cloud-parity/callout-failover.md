@@ -150,12 +150,12 @@ on past, when the operation commits; and for a processor in a callback that
 joined another operation's transaction, when that operation commits. A failed
 `SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is
 rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its
-segment boundary committed leaves no record: the record is written against that
-committed transaction, and is refused. (On a callback that joined another
+segment boundary committed has its record written in a transaction of its own,
+so it is kept although the operation fails. (On a callback that joined another
 transaction, such a processor is refused before the boundary, and its record
 stays in the joined transaction; when the boundary itself fails, the record is
-rolled back with the failed operation.) In these cases the client's error
-message is where the member's text reaches the caller.
+rolled back with the failed operation.) Whenever the record is rolled back, the
+client's error message is where the member's text reaches the caller.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 

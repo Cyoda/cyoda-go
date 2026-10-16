@@ -1410,6 +1410,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
+  committed has its `STATE_PROCESS_RESULT` in the audit trail.** The record
+  was written in the transaction the boundary had already committed, every
+  backend refused it, and the trail showed `PAUSE_FOR_PROCESSING` with nothing
+  after it, as for a cascade that stopped. The engine now writes the record in
+  a transaction of its own, with `success: false`, the member's own
+  `failReason`, the cascade's transaction id and the request's principal. The
+  operation still fails as before. A boundary that itself fails still leaves
+  no record: nothing of that segment commits. See `cyoda help audit`.
+
 - **SQLite and PostgreSQL: a number in a state-machine audit event's `data`
   reads back with every digit it was recorded with.** These backends read it
   back as a 64-bit float, so a number such as `12345678901234567890` lost
