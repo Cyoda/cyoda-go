@@ -31,6 +31,11 @@ func TestImport_ProcessorType(t *testing.T) {
 			wantDetail: []string{`processor "p"`, `unknown type "internalized"`, "allowed: externalized"}},
 		{name: "banana", typeMember: `"type": "banana",`, wantStatus: http.StatusBadRequest,
 			wantDetail: []string{`processor "p"`, `unknown type "banana"`, "allowed: externalized"}},
+		// The match is exact: no case folding, no trimming.
+		{name: "case variant", typeMember: `"type": "Externalized",`, wantStatus: http.StatusBadRequest,
+			wantDetail: []string{`processor "p"`, `unknown type "Externalized"`, "allowed: externalized"}},
+		{name: "whitespace", typeMember: `"type": " ",`, wantStatus: http.StatusBadRequest,
+			wantDetail: []string{`processor "p"`, `unknown type " "`, "allowed: externalized"}},
 	}
 
 	for _, tc := range cases {

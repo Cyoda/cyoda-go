@@ -473,6 +473,8 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
+//   - Type — a processor's Type must be exactly externalized, or empty
+//     (stored as externalized by applyProcessorTypeDefault).
 //   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
 //     schedule function, and every function condition in a criterion.
 //
