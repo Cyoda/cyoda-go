@@ -1,0 +1,8 @@
+{
+  "schema": "GroupKeyEntry",
+  "class": "GroupKeyEntry",
+  "value": {
+    "path": "$.year",
+    "value": 2026
+  }
+}

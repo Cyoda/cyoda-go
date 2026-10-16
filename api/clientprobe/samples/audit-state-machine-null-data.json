@@ -1,0 +1,17 @@
+{
+  "schema": "AuditEventDto",
+  "valid": false,
+  "value": {
+    "auditEventType": "StateMachine",
+    "severity": "INFO",
+    "utcTime": "2026-10-15T10:00:00Z",
+    "microsTime": 1760522400000001,
+    "entityId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a01",
+    "entityModel": "orders.1",
+    "transactionId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a02",
+    "eventId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a11",
+    "eventType": "STATE_MACHINE_START",
+    "details": "state machine started",
+    "data": null
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineProcessingPausedDto",
+  "value": {
+    "eventType": "PAUSE_FOR_PROCESSING",
+    "workflowName": "orders",
+    "transition": "approve",
+    "processNames": [
+      "enrich",
+      "notify"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "SimpleConditionDto",
+  "value": {
+    "type": "simple",
+    "jsonPath": "$.amount",
+    "operatorType": "GREATER_THAN",
+    "value": 12.5
+  }
+}

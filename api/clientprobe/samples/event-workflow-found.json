@@ -1,0 +1,17 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineWorkflowFoundDto",
+  "value": {
+    "eventType": "WORKFLOW_FOUND",
+    "workflowName": "orders",
+    "functions": [
+      {
+        "path": "",
+        "name": "isPriority",
+        "called": true,
+        "matches": true,
+        "reason": "score above 80"
+      }
+    ]
+  }
+}

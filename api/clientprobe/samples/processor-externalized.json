@@ -1,0 +1,14 @@
+{
+  "schema": "ProcessorDefinitionDto",
+  "class": "ExternalizedProcessorDefinitionDto",
+  "value": {
+    "type": "externalized",
+    "name": "enrich",
+    "executionMode": "COMMIT_BEFORE_DISPATCH",
+    "startNewTxOnDispatch": true,
+    "config": {
+      "calculationNodesTags": "enrichment",
+      "attachEntity": true
+    }
+  }
+}

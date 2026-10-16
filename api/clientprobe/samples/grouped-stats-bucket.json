@@ -1,0 +1,25 @@
+{
+  "schema": "GroupedStatsBucket",
+  "class": "GroupedStatsBucket",
+  "value": {
+    "groupKey": [
+      {
+        "path": "$.country",
+        "value": "SE"
+      },
+      {
+        "path": "$.region",
+        "value": null
+      },
+      {
+        "path": "$.year",
+        "value": 2026
+      }
+    ],
+    "count": 2,
+    "aggregations": {
+      "sum(amount)": 31.5,
+      "avg(score)": null
+    }
+  }
+}

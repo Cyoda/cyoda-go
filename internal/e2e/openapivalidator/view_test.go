@@ -143,6 +143,29 @@ func TestApplyView(t *testing.T) {
 		viewCheck(t, h, `{"one":null}`, false)
 		viewCheck(t, doc.Components.Schemas["A"].Value, `null`, false)
 	})
+	t.Run("component_use", func(t *testing.T) {
+		doc, _ := load(t)
+		base, err := ComponentUse(doc, "Shape")
+		if err != nil {
+			t.Fatalf("ComponentUse(Shape): %v", err)
+		}
+		if len(base.OneOf) != 3 || base.Discriminator == nil {
+			t.Fatalf("a use of the base Shape is not the oneOf of its mapping: %+v", base)
+		}
+		viewCheck(t, base, `{"kind":"a","x":1}`, true)
+		viewCheck(t, base, `{"kind":"zzz"}`, false)
+		viewCheck(t, base, `{"kind":"a","x":"no"}`, false)
+		member, err := ComponentUse(doc, "A")
+		if err != nil {
+			t.Fatalf("ComponentUse(A): %v", err)
+		}
+		if member != doc.Components.Schemas["A"].Value {
+			t.Error("a use of the member A is not A's schema")
+		}
+		if _, err := ComponentUse(doc, "Nope"); err == nil {
+			t.Error("ComponentUse(Nope): no error")
+		}
+	})
 	t.Run("member_allOf_entry_left_alone", func(t *testing.T) {
 		doc, _ := load(t)
 		if got := doc.Components.Schemas["A"].Value.AllOf[0].Ref; got != "#/components/schemas/Shape" {

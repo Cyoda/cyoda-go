@@ -616,8 +616,10 @@ spec does not change.
    tried, which is the answer it gives without the recursion.
 
 No other schema is marked: a member (an `allOf`), a replaced use (a `oneOf`) and any typed schema keep
-refusing `null`. The same kin rule means a member nested inside itself (a group in a group, a function in a
-pre-check) is not checked below the first level; the view does not change that.
+refusing `null`. The same kin rule means kin accepts any value at a position where a schema recurs: `null`, `42`
+or `"x"` in a group's `conditions`, and anything below a group in a group or a function in a pre-check. The
+validator's recursive walk (`recursive.go`) checks those values with a fresh visit, and `ValidateValue` runs
+kin and the same walk for the `api/` tests.
 
 One function builds the view. The validator and the `api/` tests (sections 3.3, 3.6, 13.2) all use it, so they
 check samples, examples and responses the same way. On the prototype, the view gives JSON Schema's answer in
@@ -642,19 +644,24 @@ shapes. It is a merge gate, like oasdiff.
     (`~/dev/cyoda/backend/src/main/resources/config/local-dev/application.properties:29`), so a `null` the sample
     holds is absent in the output, and for these fields an explicit `null` and an absent member mean the same
     thing. `null` entries inside arrays are kept.
-- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, value}`; `valid` defaults to
-  `true`. The client test skips invalid samples. A **future sample** (`future: true`) is a response that a later
+- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, future, value}`; `valid`
+  defaults to `true` and `future` to `false`. `class` is the member the base's discriminator selects, or the
+  schema itself. A request body that is not a component schema (the create and import bodies) is named by
+  `body: "<METHOD> <path>"` in place of `schema`, with no `class`: the generated clients take it as an untyped
+  value, so the client test skips it. The client test skips invalid samples. A **future sample** (`future: true`) is a response that a later
   version of the spec could send: an audit event of an unknown kind, an event of an unknown type, a known event
   with an added field. The client test reads it with the two settings of Rule 6 and asserts the result Rule 6
   states. It also reads it without them and asserts that the read fails, which proves the sample exercises the
-  case. An `api/` spec test (S) validates each value against its schema
-  through the view of section 13.1: a valid sample must pass and an invalid one must fail. It also checks
-  coverage:
+  case. An `api/` spec test (S) validates each value that is not a future sample against its schema with
+  `ValidateValue`, through the view of section 13.1: a valid sample must pass and an invalid one must fail. It
+  also checks coverage:
   - every mapping entry of every base has a sample;
   - the value forms of section 3.4 have samples;
   - the pre-check has samples present, `null` and absent;
-  - the create body has samples for an object and for an array;
-  - there is one audit page holding each audit member, and FINISH with a stop reason.
+  - the create and import bodies have samples for an object and for an array;
+  - there is one audit page holding each audit member, and FINISH with a stop reason;
+  - invalid samples hold a non-object entry in a group's `conditions`, at the top and in a nested group;
+  - the three future samples.
 - **CI**: `.github/workflows/openapi-client-generation.yml`. It runs on every pull request and on every push to
   `main` and `release/**`, with no path filter: a required check with a path filter stays pending on a PR that
   does not touch those paths. It uses Temurin Java 21 with the Maven cache and runs

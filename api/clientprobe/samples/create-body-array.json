@@ -1,0 +1,11 @@
+{
+  "body": "POST /entity/{format}/{entityName}/{modelVersion}",
+  "value": [
+    {
+      "category": "physics"
+    },
+    {
+      "category": "chemistry"
+    }
+  ]
+}

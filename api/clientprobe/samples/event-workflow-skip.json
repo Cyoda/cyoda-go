@@ -1,0 +1,23 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineWorkflowSkippedDto",
+  "value": {
+    "eventType": "WORKFLOW_SKIP",
+    "workflowName": "legacy-orders",
+    "reason": "criterion did not match",
+    "functions": [
+      {
+        "path": "/conditions/1",
+        "name": "isPriority",
+        "called": false,
+        "preCheck": {
+          "type": "simple",
+          "jsonPath": "$.amount",
+          "operatorType": "GREATER_THAN",
+          "value": 10
+        },
+        "preCheckMatched": false
+      }
+    ]
+  }
+}

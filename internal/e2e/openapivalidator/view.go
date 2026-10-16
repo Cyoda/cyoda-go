@@ -32,19 +32,8 @@ const schemaRefPrefix = "#/components/schemas/"
 // The document is changed in place; callers pass one that api.GetSwagger just
 // parsed.
 func ApplyView(doc *openapi3.T) error {
-	v := &viewBuilder{
-		doc:     doc,
-		bases:   map[string]*openapi3.Schema{},
-		visited: map[*openapi3.Schema]bool{},
-	}
+	v := newViewBuilder(doc)
 	if doc.Components != nil {
-		for name, ref := range doc.Components.Schemas {
-			s := ref.Value
-			if s != nil && s.Discriminator != nil && len(s.Discriminator.Mapping) > 0 &&
-				len(s.OneOf) == 0 && len(s.AnyOf) == 0 {
-				v.bases[schemaRefPrefix+name] = s
-			}
-		}
 		for _, name := range sortedKeys(doc.Components.Schemas) {
 			v.walk(doc.Components.Schemas[name].Value)
 		}
@@ -84,11 +73,50 @@ func ApplyView(doc *openapi3.T) error {
 	return v.err
 }
 
+// ComponentUse returns the schema that a $ref to the component schema name
+// stands for in the view: the oneOf of the mapping targets when name is a
+// base, otherwise the component's schema. doc is in the view already.
+func ComponentUse(doc *openapi3.T, name string) (*openapi3.Schema, error) {
+	var ref *openapi3.SchemaRef
+	if doc.Components != nil {
+		ref = doc.Components.Schemas[name]
+	}
+	if ref == nil || ref.Value == nil {
+		return nil, fmt.Errorf("%q is not a component schema", name)
+	}
+	v := newViewBuilder(doc)
+	if base, ok := v.bases[schemaRefPrefix+name]; ok {
+		use := v.replacement(schemaRefPrefix+name, base)
+		return use.Value, v.err
+	}
+	return ref.Value, nil
+}
+
 type viewBuilder struct {
 	doc     *openapi3.T
 	bases   map[string]*openapi3.Schema // "#/components/schemas/X" -> base schema
 	visited map[*openapi3.Schema]bool
 	err     error
+}
+
+// newViewBuilder returns a builder that knows doc's bases: the component
+// schemas with a discriminator and a mapping and no oneOf or anyOf.
+func newViewBuilder(doc *openapi3.T) *viewBuilder {
+	v := &viewBuilder{
+		doc:     doc,
+		bases:   map[string]*openapi3.Schema{},
+		visited: map[*openapi3.Schema]bool{},
+	}
+	if doc.Components != nil {
+		for name, ref := range doc.Components.Schemas {
+			s := ref.Value
+			if s != nil && s.Discriminator != nil && len(s.Discriminator.Mapping) > 0 &&
+				len(s.OneOf) == 0 && len(s.AnyOf) == 0 {
+				v.bases[schemaRefPrefix+name] = s
+			}
+		}
+	}
+	return v
 }
 
 func sortedKeys(m openapi3.Schemas) []string {
