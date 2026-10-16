@@ -10,9 +10,13 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.core.JsonPointer;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.InvalidTypeIdException;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.io.File;
@@ -73,7 +77,7 @@ public class JavaSamplesTest {
         JsonNode value = sample.path("value");
         Class<?> cls = Class.forName("org.openapitools.client.model." + sample.path("schema").asText());
         if (sample.path("future").asBoolean(false)) {
-            future(cls, value);
+            future(cls, sample);
             return;
         }
         String expected = sample.path("class").textValue();
@@ -86,33 +90,53 @@ public class JavaSamplesTest {
 
     // A future sample is an audit page that a later spec could send. Rule 6:
     // read with the two settings, an unknown audit kind is a null entry in
-    // items, an unknown event type keeps eventType and has null data, and an
-    // added field is ignored. Without them, the read fails.
-    private void future(Class<?> cls, JsonNode value) throws Exception {
+    // items, an unknown event type keeps eventType and has null data, and a
+    // known event is read with exactly the sample's added members dropped.
+    // Without the two settings, the read fails.
+    private void future(Class<?> cls, JsonNode sample) throws Exception {
         assertEquals(EntityAuditEventsResponseDto.class, cls, "a future sample is an audit page");
+        JsonNode value = sample.path("value");
+        JsonNode declared = withoutAdded(value, sample.path("added"));
         EntityAuditEventsResponseDto page = tolerant.readValue(value.toString(), EntityAuditEventsResponseDto.class);
         List<AuditEventDto> items = page.getItems();
         assertNotNull(items);
         assertEquals(value.path("items").size(), items.size(), "the number of items");
+        boolean unknownMember = false;
         for (int i = 0; i < items.size(); i++) {
             JsonNode sent = value.path("items").get(i);
             AuditEventDto item = items.get(i);
             if (!known(AuditEventDto.class, sent.path("auditEventType").asText())) {
+                unknownMember = true;
                 assertNull(item, "an audit event of an unknown kind");
             } else if (sent.path("auditEventType").asText().equals("StateMachine")
                     && !known(StateMachineEventDto.class, sent.path("data").path("eventType").asText())) {
+                unknownMember = true;
                 StateMachineAuditEventDto event = assertInstanceOf(StateMachineAuditEventDto.class, item);
                 assertEquals(sent.path("eventType").asText(), event.getEventType(), "the event type");
                 assertNull(event.getData(), "the data of an unknown event type");
             } else {
                 assertNotNull(item, "a known audit event");
-                JsonNode written = withoutNullMembers(tolerant.readTree(tolerant.writeValueAsString(item)));
-                assertTrue(subset(written, sent), "the known fields: wrote " + written + " for " + sent);
+                JsonNode written = tolerant.readTree(tolerant.writeValueAsString(item));
+                assertEquals(withoutNullMembers(declared.path("items").get(i)), withoutNullMembers(written),
+                        "the known event written back");
             }
         }
-        assertThrows(Exception.class,
-                () -> strict.readValue(value.toString(), EntityAuditEventsResponseDto.class),
+        Class<? extends MismatchedInputException> failure =
+                unknownMember ? InvalidTypeIdException.class : UnrecognizedPropertyException.class;
+        assertThrows(failure, () -> strict.readValue(value.toString(), EntityAuditEventsResponseDto.class),
                 "the read without the two settings");
+    }
+
+    // withoutAdded returns value with the members at the JSON pointers in
+    // added removed.
+    private static JsonNode withoutAdded(JsonNode value, JsonNode added) {
+        JsonNode out = value.deepCopy();
+        for (JsonNode a : added) {
+            JsonPointer ptr = JsonPointer.compile(a.asText());
+            ObjectNode parent = assertInstanceOf(ObjectNode.class, out.at(ptr.head()), "added " + a.asText() + ": no object holds it");
+            assertNotNull(parent.remove(ptr.last().getMatchingProperty()), "added " + a.asText() + ": no such member");
+        }
+        return out;
     }
 
     private static boolean known(Class<?> base, String name) {
@@ -138,29 +162,5 @@ public class JavaSamplesTest {
             return out;
         }
         return node;
-    }
-
-    // Every member of a is in b with a value that is itself a subset.
-    private static boolean subset(JsonNode a, JsonNode b) {
-        if (a instanceof ObjectNode && b instanceof ObjectNode) {
-            for (Map.Entry<String, JsonNode> e : a.properties()) {
-                if (!b.has(e.getKey()) || !subset(e.getValue(), b.get(e.getKey()))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        if (a instanceof ArrayNode && b instanceof ArrayNode) {
-            if (a.size() != b.size()) {
-                return false;
-            }
-            for (int i = 0; i < a.size(); i++) {
-                if (!subset(a.get(i), b.get(i))) {
-                    return false;
-                }
-            }
-            return true;
-        }
-        return a.equals(b);
     }
 }

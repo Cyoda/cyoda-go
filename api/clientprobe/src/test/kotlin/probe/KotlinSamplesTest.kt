@@ -2,10 +2,13 @@ package probe
 
 import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.JsonSubTypes
+import com.fasterxml.jackson.core.JsonPointer
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.databind.exc.InvalidTypeIdException
+import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.ObjectNode
 import com.fasterxml.jackson.module.kotlin.registerKotlinModule
@@ -18,7 +21,6 @@ import org.openapitools.model.EntityAuditEventsResponseDto
 import org.openapitools.model.StateMachineAuditEventDto
 import org.openapitools.model.StateMachineEventDto
 import java.io.File
-import java.util.Objects
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
@@ -70,7 +72,7 @@ class KotlinSamplesTest {
         val value = sample.path("value")
         val cls = Class.forName("org.openapitools.model." + sample.path("schema").asText())
         if (sample.path("future").asBoolean(false)) {
-            future(cls, value)
+            future(cls, sample)
             return
         }
         val expected = assertNotNull(sample.path("class").textValue(), "a valid sample names its class")
@@ -81,35 +83,56 @@ class KotlinSamplesTest {
 
     // A future sample is an audit page that a later spec could send. Rule 6:
     // read with the two settings, an unknown audit kind is a null entry in
-    // items, an unknown event type keeps eventType and has null data, and an
-    // added field is ignored. Without them, the read fails.
-    private fun future(cls: Class<*>, value: JsonNode) {
+    // items, an unknown event type keeps eventType and has null data, and a
+    // known event is read with exactly the sample's added members dropped.
+    // Without the two settings, the read fails.
+    private fun future(cls: Class<*>, sample: JsonNode) {
         assertEquals(EntityAuditEventsResponseDto::class.java, cls, "a future sample is an audit page")
+        val value = sample.path("value")
+        val declared = withoutAdded(value, sample.path("added"))
         val page = tolerant.readValue(value.toString(), EntityAuditEventsResponseDto::class.java)
         val items = assertNotNull(page.items)
         assertEquals(value.path("items").size(), items.size, "the number of items")
+        var unknownMember = false
         value.path("items").forEachIndexed { i, sent ->
             val item: AuditEventDto? = items[i]
             when {
-                !known(AuditEventDto::class.java, sent.path("auditEventType").asText()) ->
+                !known(AuditEventDto::class.java, sent.path("auditEventType").asText()) -> {
+                    unknownMember = true
                     assertNull(item, "an audit event of an unknown kind")
+                }
                 sent.path("auditEventType").asText() == "StateMachine" &&
                     !known(StateMachineEventDto::class.java, sent.path("data").path("eventType").asText()) -> {
+                    unknownMember = true
                     val event = item as? StateMachineAuditEventDto ?: fail("a state-machine event, got $item")
                     assertEquals(sent.path("eventType").asText(), event.eventType, "the event type")
-                    // The generated property is non-null; the read leaves it null.
-                    assertTrue(Objects.isNull(event.data), "the data of an unknown event type")
+                    assertNull(event.data, "the data of an unknown event type")
                 }
                 else -> {
                     assertNotNull(item, "a known audit event")
-                    val written = withoutNullMembers(tolerant.readTree(tolerant.writeValueAsString(item)))
-                    assertTrue(subset(written, sent), "the known fields: wrote $written for $sent")
+                    val written = tolerant.readTree(tolerant.writeValueAsString(item))
+                    assertEquals(withoutNullMembers(declared.path("items")[i]), withoutNullMembers(written), "the known event written back")
                 }
             }
         }
-        assertFailsWith<Exception>("the read without the two settings") {
-            strict.readValue(value.toString(), EntityAuditEventsResponseDto::class.java)
+        val read = { strict.readValue(value.toString(), EntityAuditEventsResponseDto::class.java) }
+        if (unknownMember) {
+            assertFailsWith<InvalidTypeIdException>("the read without the two settings", read)
+        } else {
+            assertFailsWith<UnrecognizedPropertyException>("the read without the two settings", read)
         }
+    }
+
+    // withoutAdded returns value with the members at the JSON pointers in
+    // added removed.
+    private fun withoutAdded(value: JsonNode, added: JsonNode): JsonNode {
+        val out = value.deepCopy<JsonNode>()
+        added.forEach {
+            val ptr = JsonPointer.compile(it.asText())
+            val parent = out.at(ptr.head()) as? ObjectNode ?: fail("added ${it.asText()}: no object holds it")
+            assertNotNull(parent.remove(ptr.last().matchingProperty), "added ${it.asText()}: no such member")
+        }
+        return out
     }
 
     private fun known(base: Class<*>, name: String): Boolean =
@@ -124,12 +147,5 @@ class KotlinSamplesTest {
         }
         is ArrayNode -> mapper.createArrayNode().also { out -> node.forEach { out.add(withoutNullMembers(it)) } }
         else -> node
-    }
-
-    // Every member of a is in b with a value that is itself a subset.
-    private fun subset(a: JsonNode, b: JsonNode): Boolean = when {
-        a is ObjectNode && b is ObjectNode -> a.properties().all { (k, v) -> b.has(k) && subset(v, b.get(k)) }
-        a is ArrayNode && b is ArrayNode -> a.size() == b.size() && (0 until a.size()).all { subset(a[it], b[it]) }
-        else -> a == b
     }
 }

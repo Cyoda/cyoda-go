@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,7 +27,8 @@ const samplesDir = "clientprobe/samples"
 // or an operation's JSON request body (body, "<METHOD> <path>"), which the
 // generated clients take as an untyped value and so have no class for.
 // valid defaults to true. A future sample is a response a later version of
-// the spec could send; it is not validated.
+// the spec could send; it is not validated, and added lists the members in
+// it that the spec does not declare.
 type sample struct {
 	file   string
 	Schema string          `json:"schema"`
@@ -34,6 +36,7 @@ type sample struct {
 	Class  string          `json:"class"`
 	Valid  *bool           `json:"valid"`
 	Future bool            `json:"future"`
+	Added  []string        `json:"added"` // a future sample's members the spec does not declare, as JSON pointers
 	Value  json.RawMessage `json:"value"`
 
 	value any // Value decoded
@@ -453,56 +456,96 @@ func TestSamplesStateDefaultedProperties(t *testing.T) {
 			t.Errorf("%s: %s is not a component schema", s.file, s.Schema)
 			continue
 		}
-		for _, missing := range missingDefaults(raw, ref.Value, s.value, s.Schema) {
-			t.Errorf("%s: %s has a default and is absent", s.file, missing)
+		walkObjects(raw, ref.Value, s.value, "", func(schema *openapi3.Schema, obj map[string]any, ptr string) {
+			props := allProperties(schema)
+			for _, name := range slices.Sorted(maps.Keys(props)) {
+				if _, present := obj[name]; !present && props[name].Value != nil && props[name].Value.Default != nil {
+					t.Errorf("%s: %s%s has a default and is absent", s.file, s.Schema, pointer(ptr, name))
+				}
+			}
+		})
+	}
+}
+
+// A future sample lists, as JSON pointers into its value, exactly the
+// members the spec does not declare: the client test asserts that a client
+// reads the value with exactly those members dropped. No other sample lists
+// added members.
+func TestFutureSamplesListTheirAddedMembers(t *testing.T) {
+	raw, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	for _, s := range loadSamples(t) {
+		if !s.Future {
+			if len(s.Added) > 0 {
+				t.Errorf("%s: only a future sample lists added members", s.file)
+			}
+			continue
+		}
+		var undeclared []string
+		walkObjects(raw, raw.Components.Schemas[s.Schema].Value, s.value, "", func(schema *openapi3.Schema, obj map[string]any, ptr string) {
+			props := allProperties(schema)
+			if len(props) == 0 {
+				return // a free-form object declares no members
+			}
+			for name := range obj {
+				if props[name] == nil {
+					undeclared = append(undeclared, pointer(ptr, name))
+				}
+			}
+		})
+		slices.Sort(undeclared)
+		if added := slices.Sorted(slices.Values(s.Added)); !slices.Equal(added, undeclared) {
+			t.Errorf("%s: added %v, but the members the spec does not declare are %v", s.file, added, undeclared)
 		}
 	}
 }
 
-// missingDefaults returns the path of each defaulted property that v leaves
-// out, at any depth. An object of a base is checked against the member its
-// discriminator selects; an unknown member is not descended into.
-func missingDefaults(doc *openapi3.T, s *openapi3.Schema, v any, path string) []string {
+// walkObjects calls visit for each object in v, at any depth, with the
+// schema that declares its members: for an object of a base, the member its
+// discriminator selects. An object of an unknown member is not visited or
+// descended into, and neither is a value no schema describes. ptr is the
+// JSON pointer of v.
+func walkObjects(doc *openapi3.T, s *openapi3.Schema, v any, ptr string, visit func(s *openapi3.Schema, obj map[string]any, ptr string)) {
 	if s == nil {
-		return nil
+		return
 	}
-	var out []string
-	for _, b := range append(slices.Clone(s.OneOf), s.AnyOf...) {
-		out = append(out, missingDefaults(doc, b.Value, v, path)...)
+	if len(s.OneOf) > 0 || len(s.AnyOf) > 0 {
+		for _, b := range append(slices.Clone(s.OneOf), s.AnyOf...) {
+			walkObjects(doc, b.Value, v, ptr, visit)
+		}
+		return
 	}
 	switch x := v.(type) {
 	case []any:
 		if s.Items != nil {
 			for i, e := range x {
-				out = append(out, missingDefaults(doc, s.Items.Value, e, fmt.Sprintf("%s[%d]", path, i))...)
+				walkObjects(doc, s.Items.Value, e, ptr+"/"+strconv.Itoa(i), visit)
 			}
 		}
 	case map[string]any:
-		if d := s.Discriminator; d != nil && len(s.OneOf) == 0 && len(s.AnyOf) == 0 {
+		if d := s.Discriminator; d != nil {
 			key, _ := x[d.PropertyName].(string)
 			m, ok := d.Mapping[key]
 			if !ok {
-				return out
+				return
 			}
 			s = doc.Components.Schemas[strings.TrimPrefix(m.Ref, schemaRefPrefix)].Value
 		}
+		visit(s, x, ptr)
 		props := allProperties(s)
 		for _, name := range slices.Sorted(maps.Keys(props)) {
-			p := props[name].Value
-			if p == nil {
-				continue
+			if value, present := x[name]; present {
+				walkObjects(doc, props[name].Value, value, pointer(ptr, name), visit)
 			}
-			value, present := x[name]
-			if !present {
-				if p.Default != nil {
-					out = append(out, path+"."+name)
-				}
-				continue
-			}
-			out = append(out, missingDefaults(doc, p, value, path+"."+name)...)
 		}
 	}
-	return out
+}
+
+// pointer appends a member name to a JSON pointer.
+func pointer(ptr, name string) string {
+	return ptr + "/" + strings.NewReplacer("~", "~0", "/", "~1").Replace(name)
 }
 
 // allProperties returns the properties a schema declares, its allOf entries

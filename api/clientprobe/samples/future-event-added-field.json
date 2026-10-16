@@ -2,6 +2,10 @@
   "schema": "EntityAuditEventsResponseDto",
   "class": "EntityAuditEventsResponseDto",
   "future": true,
+  "added": [
+    "/items/0/addedField",
+    "/items/0/data/newField"
+  ],
   "value": {
     "items": [
       {

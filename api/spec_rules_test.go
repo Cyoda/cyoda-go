@@ -290,80 +290,190 @@ func TestRule6_UsesOfABaseInAResponseAreNotRequired(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSwagger: %v", err)
 	}
-	bs := bases(doc)
-	for _, name := range responseSchemas(doc) {
-		s := doc.Components.Schemas[name].Value
-		parts := []*openapi3.Schema{s}
-		for _, part := range s.AllOf {
-			if part.Ref == "" && part.Value != nil {
-				parts = append(parts, part.Value)
-			}
-		}
-		for _, part := range parts {
-			for _, prop := range part.Required {
-				p := ownProperty(s, prop)
-				if p != nil && bs[strings.TrimPrefix(p.Ref, schemaRefPrefix)] != nil {
-					t.Errorf("%s.%s: a use of a base in a response is required", name, prop)
-				}
-			}
-		}
+	for _, where := range requiredBaseUses(doc) {
+		t.Errorf("%s: a use of a base in a response is required", where)
 	}
 }
 
-// responseSchemas returns the names of the component schemas a response
-// reaches, following every $ref below the response content.
-func responseSchemas(doc *openapi3.T) []string {
-	seen := map[string]bool{}
-	var walk func(ref *openapi3.SchemaRef)
-	walk = func(ref *openapi3.SchemaRef) {
-		if ref == nil || ref.Value == nil {
+// requiredBaseUses finds a required use of a base wherever a response
+// reaches it, and nowhere else.
+func TestRule6_RequiredBaseUsesAreFound(t *testing.T) {
+	doc, err := openapi3.NewLoader().LoadFromData([]byte(`
+openapi: 3.1.0
+info: {title: fixture, version: "1"}
+paths:
+  /pets:
+    get:
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pet, owner]
+                properties:
+                  pet: {$ref: "#/components/schemas/Pet"}
+                  owner: {$ref: "#/components/schemas/Owner"}
+                  shelters:
+                    type: array
+                    items: {$ref: "#/components/schemas/Shelter"}
+    post:
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Adoption"}
+      responses:
+        "204": {description: ok}
+components:
+  schemas:
+    Pet:
+      type: object
+      required: [kind]
+      properties:
+        kind: {type: string}
+      discriminator:
+        propertyName: kind
+        mapping:
+          cat: "#/components/schemas/Cat"
+    Cat:
+      allOf:
+        - $ref: "#/components/schemas/Pet"
+        - type: object
+          required: [toy]
+          properties:
+            toy: {$ref: "#/components/schemas/Pet"}
+    Owner:
+      type: object
+      properties:
+        pet: {$ref: "#/components/schemas/Pet"}
+        home:
+          type: object
+          required: [pet]
+          properties:
+            pet: {$ref: "#/components/schemas/Pet"}
+    Shelter:
+      allOf:
+        - type: object
+          properties:
+            pet: {$ref: "#/components/schemas/Pet"}
+      required: [pet]
+    Adoption:
+      type: object
+      required: [pet]
+      properties:
+        pet: {$ref: "#/components/schemas/Pet"}
+`))
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	want := []string{
+		"Cat.toy",                            // required in a member's allOf entry; reached through the base's mapping
+		"GET /pets 200 application/json.pet", // inline in a response
+		"Owner.home.pet",                     // inline in a component
+		"Shelter.pet",                        // required by a component, declared in its allOf
+	}
+	if got := requiredBaseUses(doc); !slices.Equal(got, want) {
+		t.Errorf("required uses %v, want %v", got, want)
+	}
+}
+
+// responseSchema is one schema a response reaches. part is true for an
+// inline allOf entry, whose required list and properties are checked with
+// the schema that holds it.
+type responseSchema struct {
+	where string
+	s     *openapi3.Schema
+	part  bool
+}
+
+// requiredBaseUses returns, for every schema a response reaches, inline ones
+// included, each property in its required list that is a $ref to a base.
+func requiredBaseUses(doc *openapi3.T) []string {
+	bs := bases(doc)
+	var out []string
+	for _, w := range responseSchemas(doc) {
+		if w.part {
+			continue
+		}
+		required := slices.Clone(w.s.Required)
+		for _, part := range w.s.AllOf {
+			if part.Ref == "" && part.Value != nil {
+				required = append(required, part.Value.Required...)
+			}
+		}
+		for _, prop := range required {
+			if p := ownProperty(w.s, prop); p != nil && bs[strings.TrimPrefix(p.Ref, schemaRefPrefix)] != nil {
+				out = append(out, w.where+"."+prop)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// responseSchemas returns every schema a response reaches, once: the inline
+// schemas below the response content, and the component schemas a $ref or a
+// discriminator mapping leads to, with the inline schemas below them.
+func responseSchemas(doc *openapi3.T) []responseSchema {
+	var out []responseSchema
+	seen := map[*openapi3.Schema]bool{}
+	var walk func(where string, ref *openapi3.SchemaRef, part bool)
+	walk = func(where string, ref *openapi3.SchemaRef, part bool) {
+		if ref == nil || ref.Value == nil || seen[ref.Value] {
 			return
 		}
 		if ref.Ref != "" {
-			name := strings.TrimPrefix(ref.Ref, schemaRefPrefix)
-			if seen[name] {
-				return
-			}
-			seen[name] = true
+			where, part = strings.TrimPrefix(ref.Ref, schemaRefPrefix), false
 		}
 		s := ref.Value
-		for _, p := range s.Properties {
-			walk(p)
+		seen[s] = true
+		out = append(out, responseSchema{where: where, s: s, part: part})
+		for _, name := range slices.Sorted(maps.Keys(s.Properties)) {
+			walk(where+"."+name, s.Properties[name], false)
 		}
-		walk(s.Items)
-		walk(s.Not)
-		walk(s.AdditionalProperties.Schema)
-		for _, group := range []openapi3.SchemaRefs{s.AllOf, s.OneOf, s.AnyOf} {
-			for _, b := range group {
-				walk(b)
+		walk(where+"[]", s.Items, false)
+		walk(where+"!", s.Not, false)
+		walk(where+"{}", s.AdditionalProperties.Schema, false)
+		for i, b := range s.AllOf {
+			walk(where+"/allOf/"+strconv.Itoa(i), b, true)
+		}
+		for i, group := range []openapi3.SchemaRefs{s.OneOf, s.AnyOf} {
+			for j, b := range group {
+				walk(where+"/"+[]string{"oneOf", "anyOf"}[i]+"/"+strconv.Itoa(j), b, false)
 			}
 		}
 		if s.Discriminator != nil {
-			for _, m := range s.Discriminator.Mapping {
-				walk(doc.Components.Schemas[strings.TrimPrefix(m.Ref, schemaRefPrefix)])
-			}
-		}
-	}
-	content := func(c openapi3.Content) {
-		for _, mt := range c {
-			walk(mt.Schema)
-		}
-	}
-	for _, item := range doc.Paths.Map() {
-		for _, op := range item.Operations() {
-			for _, r := range op.Responses.Map() {
-				if r.Value != nil {
-					content(r.Value.Content)
+			for _, key := range slices.Sorted(maps.Keys(s.Discriminator.Mapping)) {
+				m := s.Discriminator.Mapping[key]
+				if target := doc.Components.Schemas[strings.TrimPrefix(m.Ref, schemaRefPrefix)]; target != nil {
+					walk("", &openapi3.SchemaRef{Ref: m.Ref, Value: target.Value}, false)
 				}
 			}
 		}
 	}
-	for _, r := range doc.Components.Responses {
-		if r.Value != nil {
-			content(r.Value.Content)
+	content := func(where string, c openapi3.Content) {
+		for _, mt := range slices.Sorted(maps.Keys(c)) {
+			walk(where+" "+mt, c[mt].Schema, false)
 		}
 	}
-	return slices.Sorted(maps.Keys(seen))
+	for _, path := range slices.Sorted(maps.Keys(doc.Paths.Map())) {
+		ops := doc.Paths.Value(path).Operations()
+		for _, method := range slices.Sorted(maps.Keys(ops)) {
+			responses := ops[method].Responses.Map()
+			for _, code := range slices.Sorted(maps.Keys(responses)) {
+				if r := responses[code]; r.Value != nil {
+					content(method+" "+path+" "+code, r.Value.Content)
+				}
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(doc.Components.Responses)) {
+		if r := doc.Components.Responses[name]; r.Value != nil {
+			content("response "+name, r.Value.Content)
+		}
+	}
+	return out
 }
 
 // Each base maps the wire value of its discriminator to its member.

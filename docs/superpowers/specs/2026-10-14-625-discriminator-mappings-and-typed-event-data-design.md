@@ -651,16 +651,18 @@ shapes. It is a merge gate, like oasdiff.
     thing. `null` entries inside arrays are kept. A valid sample states every property that has a schema
     `default`, because the generated classes write an absent defaulted property back as its default; a spec
     test checks that each one is present.
-- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, future, value}`; `valid`
+- **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, future, added, value}`; `valid`
   defaults to `true` and `future` to `false`. `class` is the member the base's discriminator selects, or the
   schema itself. A request body that is not a component schema (the create and import bodies) is named by
   `body: "<METHOD> <path>"` in place of `schema`, with no `class`: the generated clients take it as an untyped
   value, so the client test skips it; the spec test validates it as a request. The client test skips invalid
   samples. A **future sample** (`future: true`) is a response that a later
   version of the spec could send: an audit event of an unknown kind, an event of an unknown type, a known event
-  with an added field. The client test reads it with the two settings of Rule 6 and asserts the result Rule 6
-  states. It also reads it without them and asserts that the read fails, which proves the sample exercises the
-  case. An `api/` spec test (S) validates each value that is not a future sample against its schema with
+  with an added field. Its `added` lists, as JSON pointers into its value, the members the spec does not
+  declare; a spec test asserts that the list is exact. The client test reads it with the two settings of Rule 6
+  and asserts the result Rule 6 states; for a known event, the event written back equals the sample's with
+  exactly the `added` members removed. It also reads it without the two settings and asserts that the read fails
+  with the exception of its case, which proves the sample exercises the case. An `api/` spec test (S) validates each value that is not a future sample against its schema with
   `ValidateValue`, through the view of section 13.1: a valid sample must pass and an invalid one must fail. It
   also checks coverage:
   - every mapping entry of every base has a sample;
