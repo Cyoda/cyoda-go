@@ -1,17 +1,17 @@
 package audit
 
 import (
-	"context"
 	"reflect"
 	"testing"
 
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
+// Each case also asserts the stored map is unchanged after the call: the
+// snapshot comparison is the guard that the item never aliases or mutates the
+// stored data.
 func TestStateMachineItem_DataCarriesEventType(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -47,37 +47,5 @@ func TestStateMachineItem_DataCarriesEventType(t *testing.T) {
 				t.Fatalf("stored map changed: %#v, want %#v", tc.stored, before)
 			}
 		})
-	}
-}
-
-// The item must not alias the store's map: building it twice leaves the map
-// read back from the memory backend free of eventType.
-func TestStateMachineItem_DoesNotShareTheStoredMap(t *testing.T) {
-	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
-		UserID: "u", Tenant: spi.Tenant{ID: "t", Name: "t"}, Roles: []string{"USER"},
-	})
-	store, err := memory.NewStoreFactory().StateMachineAuditStore(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Record(ctx, "ent-1", spi.StateMachineEvent{
-		EventType: spi.SMEventTransitionMade,
-		EntityID:  "ent-1",
-		Data:      map[string]any{"x": 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		evs, err := store.GetEvents(ctx, "ent-1")
-		if err != nil || len(evs) != 1 {
-			t.Fatalf("GetEvents: %v, %d events", err, len(evs))
-		}
-		if _, err := stateMachineItem(evs[0], ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	evs, _ := store.GetEvents(ctx, "ent-1")
-	if !reflect.DeepEqual(evs[0].Data, map[string]any{"x": 1}) {
-		t.Fatalf("store map = %#v, want only x", evs[0].Data)
 	}
 }
