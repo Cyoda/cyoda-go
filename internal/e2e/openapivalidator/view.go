@@ -19,8 +19,15 @@ const schemaRefPrefix = "#/components/schemas/"
 //     base's mapping targets that carries the base's discriminator. Each member
 //     $ref is spelled as in the mapping. A member's allOf entry is left alone.
 //  2. kin refuses null for an untyped leaf. Each untyped leaf is marked
-//     nullable, unless its not excludes null. No other schema is marked, so a
-//     member and a replaced use keep refusing null.
+//     nullable, unless its not excludes null.
+//  3. kin accepts any value for a schema it is already visiting higher up, so
+//     null reaching a recursive member through a nullable reference
+//     (oneOf [{type: null}, {$ref}]) matches both branches and is refused.
+//     Each union with a {type: null} branch is marked nullable, which
+//     accepts null before the branches are tried; it accepted null already.
+//
+// No other schema is marked, so a member and a replaced use keep refusing
+// null.
 //
 // The document is changed in place; callers pass one that api.GetSwagger just
 // parsed.
@@ -190,7 +197,7 @@ func (v *viewBuilder) walk(s *openapi3.Schema) {
 		s.AnyOf[i] = v.use(m)
 	}
 
-	if isUntypedLeaf(s) && !notExcludesNull(s) {
+	if isUntypedLeaf(s) && !notExcludesNull(s) || hasNullBranch(s) {
 		s.Nullable = true
 	}
 }
@@ -198,6 +205,17 @@ func (v *viewBuilder) walk(s *openapi3.Schema) {
 func isUntypedLeaf(s *openapi3.Schema) bool {
 	return (s.Type == nil || len(*s.Type) == 0) &&
 		len(s.AllOf) == 0 && len(s.OneOf) == 0 && len(s.AnyOf) == 0
+}
+
+func hasNullBranch(s *openapi3.Schema) bool {
+	for _, union := range []openapi3.SchemaRefs{s.OneOf, s.AnyOf} {
+		for _, b := range union {
+			if b != nil && b.Ref == "" && b.Value != nil && b.Value.Type != nil && b.Value.Type.Is(openapi3.TypeNull) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func notExcludesNull(s *openapi3.Schema) bool {

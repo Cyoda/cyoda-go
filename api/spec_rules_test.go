@@ -1,0 +1,396 @@
+package api
+
+import (
+	"maps"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/getkin/kin-openapi/openapi3"
+)
+
+const schemaRefPrefix = "#/components/schemas/"
+
+// specSchema is one schema of the spec as a walk reaches it.
+type specSchema struct {
+	where string
+	s     *openapi3.Schema
+	// exempt is true for a schema under the `items` or `not` of an untyped
+	// leaf, where a `type` list states a rule and generates nothing.
+	exempt bool
+}
+
+// walkSpec returns every schema of the spec once: the component schemas by
+// name, then every inline schema below them and below the operations. A $ref
+// to a component schema is not followed; the component is listed by name.
+func walkSpec(t *testing.T, doc *openapi3.T) []specSchema {
+	t.Helper()
+	var out []specSchema
+	seen := map[*openapi3.Schema]bool{}
+	var walk func(where string, ref *openapi3.SchemaRef, exempt bool)
+	walk = func(where string, ref *openapi3.SchemaRef, exempt bool) {
+		if ref == nil || ref.Value == nil || seen[ref.Value] {
+			return
+		}
+		if ref.Ref != "" && where != strings.TrimPrefix(ref.Ref, schemaRefPrefix) {
+			return
+		}
+		s := ref.Value
+		seen[s] = true
+		out = append(out, specSchema{where: where, s: s, exempt: exempt})
+		leaf := isUntypedLeaf(s)
+		for _, name := range slices.Sorted(maps.Keys(s.Properties)) {
+			walk(where+"."+name, s.Properties[name], exempt)
+		}
+		walk(where+"[]", s.Items, exempt || leaf)
+		walk(where+"!", s.Not, exempt || leaf)
+		walk(where+"{}", s.AdditionalProperties.Schema, exempt)
+		for i, group := range []openapi3.SchemaRefs{s.AllOf, s.OneOf, s.AnyOf} {
+			for j, b := range group {
+				walk(where+"/"+[]string{"allOf", "oneOf", "anyOf"}[i]+"/"+strconv.Itoa(j), b, exempt)
+			}
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(doc.Components.Schemas)) {
+		walk(name, &openapi3.SchemaRef{Ref: schemaRefPrefix + name, Value: doc.Components.Schemas[name].Value}, false)
+	}
+	content := func(where string, c openapi3.Content) {
+		for _, mt := range slices.Sorted(maps.Keys(c)) {
+			walk(where+" "+mt, c[mt].Schema, false)
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(doc.Paths.Map())) {
+		item := doc.Paths.Value(path)
+		for method, op := range item.Operations() {
+			where := method + " " + path
+			for _, p := range op.Parameters {
+				if p.Value != nil {
+					walk(where+" param "+p.Value.Name, p.Value.Schema, false)
+				}
+			}
+			if op.RequestBody != nil && op.RequestBody.Value != nil {
+				content(where+" body", op.RequestBody.Value.Content)
+			}
+			for code, r := range op.Responses.Map() {
+				if r.Value != nil {
+					content(where+" "+code, r.Value.Content)
+				}
+			}
+		}
+	}
+	for name, p := range doc.Components.Parameters {
+		if p.Value != nil {
+			walk("parameter "+name, p.Value.Schema, false)
+		}
+	}
+	for name, r := range doc.Components.Responses {
+		if r.Value != nil {
+			content("response "+name, r.Value.Content)
+		}
+	}
+	return out
+}
+
+func isUntypedLeaf(s *openapi3.Schema) bool {
+	return (s.Type == nil || len(*s.Type) == 0) && len(s.AllOf) == 0 && len(s.OneOf) == 0 && len(s.AnyOf) == 0
+}
+
+// bases returns the component schemas that carry a discriminator outside a
+// union, by name.
+func bases(doc *openapi3.T) map[string]*openapi3.Schema {
+	out := map[string]*openapi3.Schema{}
+	for name, ref := range doc.Components.Schemas {
+		s := ref.Value
+		if s.Discriminator != nil && len(s.OneOf) == 0 && len(s.AnyOf) == 0 {
+			out[name] = s
+		}
+	}
+	return out
+}
+
+// includers returns, for each base, the component schemas whose allOf
+// includes it.
+func includers(doc *openapi3.T, bs map[string]*openapi3.Schema) map[string][]string {
+	out := map[string][]string{}
+	for _, name := range slices.Sorted(maps.Keys(doc.Components.Schemas)) {
+		for _, part := range doc.Components.Schemas[name].Value.AllOf {
+			if b := strings.TrimPrefix(part.Ref, schemaRefPrefix); part.Ref != "" && bs[b] != nil {
+				out[b] = append(out[b], name)
+			}
+		}
+	}
+	return out
+}
+
+func mappingTargets(s *openapi3.Schema) []string {
+	var out []string
+	for _, m := range s.Discriminator.Mapping {
+		out = append(out, strings.TrimPrefix(m.Ref, schemaRefPrefix))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ownProperty returns the property a schema declares itself, directly or in
+// an inline allOf part, or nil.
+func ownProperty(s *openapi3.Schema, name string) *openapi3.SchemaRef {
+	if p := s.Properties[name]; p != nil {
+		return p
+	}
+	for _, part := range s.AllOf {
+		if part.Ref == "" && part.Value != nil {
+			if p := part.Value.Properties[name]; p != nil {
+				return p
+			}
+		}
+	}
+	return nil
+}
+
+// Rule 1: polymorphism has one form — a base with a discriminator and a
+// mapping, whose members include it with allOf and are exactly the mapping's
+// targets. A union never carries a discriminator, and no schema includes two
+// bases.
+func TestRule1_EveryDiscriminatorIsOnABase(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	for _, w := range walkSpec(t, doc) {
+		d := w.s.Discriminator
+		if d == nil {
+			continue
+		}
+		if len(d.Mapping) == 0 {
+			t.Errorf("%s: discriminator %q has no mapping", w.where, d.PropertyName)
+		}
+		if len(w.s.OneOf) > 0 || len(w.s.AnyOf) > 0 {
+			t.Errorf("%s: a oneOf/anyOf carries a discriminator; refer to a base with $ref", w.where)
+		}
+	}
+	bs := bases(doc)
+	inc := includers(doc, bs)
+	for _, name := range slices.Sorted(maps.Keys(bs)) {
+		if got, want := inc[name], mappingTargets(bs[name]); !slices.Equal(got, want) {
+			t.Errorf("%s: schemas that include it %v, mapping targets %v", name, got, want)
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(doc.Components.Schemas)) {
+		n := 0
+		for _, part := range doc.Components.Schemas[name].Value.AllOf {
+			if bs[strings.TrimPrefix(part.Ref, schemaRefPrefix)] != nil {
+				n++
+			}
+		}
+		if n > 1 {
+			t.Errorf("%s includes %d bases", name, n)
+		}
+	}
+}
+
+// Rule 5: the client generator reads every shape — no union of scalar types,
+// no union other than a nullable reference, no inline enum on a property of a
+// base, and no member that declares its base's discriminator property.
+func TestRule5_GeneratorReadableShapes(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	for _, w := range walkSpec(t, doc) {
+		if w.s.Type != nil && !w.exempt {
+			nonNull := 0
+			for _, ty := range *w.s.Type {
+				if ty != openapi3.TypeNull {
+					nonNull++
+				}
+			}
+			if nonNull > 1 {
+				t.Errorf("%s: type list %v holds more than one non-null type", w.where, *w.s.Type)
+			}
+		}
+		for kw, union := range map[string]openapi3.SchemaRefs{"oneOf": w.s.OneOf, "anyOf": w.s.AnyOf} {
+			if len(union) == 0 {
+				continue
+			}
+			if !isNullableRef(union) {
+				t.Errorf("%s: %s is not [{type: null}, {$ref}]", w.where, kw)
+			}
+		}
+	}
+	bs := bases(doc)
+	inc := includers(doc, bs)
+	for _, name := range slices.Sorted(maps.Keys(bs)) {
+		b := bs[name]
+		for _, prop := range slices.Sorted(maps.Keys(b.Properties)) {
+			if p := b.Properties[prop]; p.Ref == "" && len(p.Value.Enum) > 0 {
+				t.Errorf("%s.%s: inline enum on a property of a base; name it", name, prop)
+			}
+		}
+		for _, member := range inc[name] {
+			if ownProperty(doc.Components.Schemas[member].Value, b.Discriminator.PropertyName) != nil {
+				t.Errorf("%s declares %s, the discriminator of its base %s", member, b.Discriminator.PropertyName, name)
+			}
+		}
+	}
+}
+
+func isNullableRef(union openapi3.SchemaRefs) bool {
+	if len(union) != 2 {
+		return false
+	}
+	var null, ref bool
+	for _, b := range union {
+		switch {
+		case b.Ref != "":
+			ref = true
+		case b.Value != nil && b.Value.Type != nil && b.Value.Type.Is(openapi3.TypeNull):
+			null = true
+		}
+	}
+	return null && ref
+}
+
+// Rule 6: a value set that grows is a plain string. Every discriminator
+// property is one, and so is the outer state-machine eventType.
+func TestRule6_ValueSetsThatGrowAreStrings(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	bs := bases(doc)
+	for _, name := range slices.Sorted(maps.Keys(bs)) {
+		prop := bs[name].Discriminator.PropertyName
+		p := bs[name].Properties[prop]
+		if p == nil || p.Value == nil {
+			t.Errorf("%s does not declare its discriminator %s", name, prop)
+			continue
+		}
+		if p.Ref != "" || !p.Value.Type.Is(openapi3.TypeString) || len(p.Value.Enum) > 0 {
+			t.Errorf("%s.%s: a discriminator is a plain string with no enum", name, prop)
+		}
+	}
+	et := ownProperty(doc.Components.Schemas["StateMachineAuditEventDto"].Value, "eventType")
+	if et == nil || et.Value == nil {
+		t.Fatal("StateMachineAuditEventDto.eventType missing")
+	}
+	if et.Ref != "" || !et.Value.Type.Is(openapi3.TypeString) || len(et.Value.Enum) > 0 {
+		t.Error("StateMachineAuditEventDto.eventType: a plain string with no enum; its known values are data's mapping keys")
+	}
+}
+
+// Each base maps the wire value of its discriminator to its member.
+func TestBaseMappings(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	want := map[string]map[string]string{
+		"QueryConditionDto": {
+			"array":     "ArrayConditionDto",
+			"function":  "FunctionConditionDto",
+			"group":     "GroupConditionDto",
+			"lifecycle": "LifecycleConditionDto",
+			"simple":    "SimpleConditionDto",
+		},
+		"AuditEventDto": {
+			"EntityChange": "EntityChangeAuditEventDto",
+			"StateMachine": "StateMachineAuditEventDto",
+			"System":       "SystemAuditEventDto",
+		},
+		"ProcessorDefinitionDto": {
+			"externalized": "ExternalizedProcessorDefinitionDto",
+		},
+		"StateMachineEventDto": {
+			string(spi.SMEventStarted):                    "StateMachineStartedDto",
+			string(spi.SMEventFinished):                   "StateMachineFinishedDto",
+			string(spi.SMEventCancelled):                  "StateMachineCancelledDto",
+			string(spi.SMEventForcedSuccess):              "StateMachineForcedSuccessDto",
+			string(spi.SMEventWorkflowFound):              "StateMachineWorkflowFoundDto",
+			string(spi.SMEventWorkflowNotFound):           "StateMachineWorkflowNotFoundDto",
+			string(spi.SMEventWorkflowSkipped):            "StateMachineWorkflowSkippedDto",
+			string(spi.SMEventTransitionMade):             "StateMachineTransitionMadeDto",
+			string(spi.SMEventTransitionNotFound):         "StateMachineTransitionNotFoundDto",
+			string(spi.SMEventTransitionCriterionNoMatch): "StateMachineTransitionCriterionNotMatchedDto",
+			string(spi.SMEventProcessCriterionNoMatch):    "StateMachineProcessCriterionNotMatchedDto",
+			string(spi.SMEventProcessingPaused):           "StateMachineProcessingPausedDto",
+			string(spi.SMEventStateProcessResult):         "StateMachineStateProcessResultDto",
+		},
+	}
+	bs := bases(doc)
+	if got := slices.Sorted(maps.Keys(bs)); !slices.Equal(got, slices.Sorted(maps.Keys(want))) {
+		t.Errorf("bases %v, want %v", got, slices.Sorted(maps.Keys(want)))
+	}
+	for name, w := range want {
+		b := bs[name]
+		if b == nil {
+			continue
+		}
+		got := map[string]string{}
+		for k, m := range b.Discriminator.Mapping {
+			got[k] = strings.TrimPrefix(m.Ref, schemaRefPrefix)
+		}
+		if !maps.Equal(got, w) {
+			t.Errorf("%s mapping %v, want %v", name, got, w)
+		}
+	}
+}
+
+// Every condition position is a use of QueryConditionDto. Where `function`
+// is valid is said by each description and enforced by the server, not by
+// the schema.
+func TestConditionsAreUsesOfTheBase(t *testing.T) {
+	doc, err := GetSwagger()
+	if err != nil {
+		t.Fatalf("GetSwagger: %v", err)
+	}
+	const base = schemaRefPrefix + "QueryConditionDto"
+	schema := func(name string) *openapi3.Schema { return doc.Components.Schemas[name].Value }
+	body := func(method, path string) *openapi3.SchemaRef {
+		item := doc.Paths.Find(path)
+		if item == nil || item.GetOperation(method) == nil || item.GetOperation(method).RequestBody == nil {
+			t.Fatalf("%s %s has no request body", method, path)
+		}
+		return item.GetOperation(method).RequestBody.Value.Content.Get("application/json").Schema
+	}
+	prop := func(s *openapi3.Schema, name string) *openapi3.SchemaRef {
+		p := ownProperty(s, name)
+		if p == nil {
+			t.Fatalf("property %s missing", name)
+		}
+		return p
+	}
+	uses := map[string]*openapi3.SchemaRef{
+		"POST /search/direct body":       body("POST", "/search/direct/{entityName}/{modelVersion}"),
+		"POST /search/async body":        body("POST", "/search/async/{entityName}/{modelVersion}"),
+		"DELETE /entity body":            body("DELETE", "/entity/{entityName}/{modelVersion}"),
+		"GroupedStatsRequest.condition":  prop(schema("GroupedStatsRequest"), "condition"),
+		"WorkflowConfigurationDto.crit":  prop(schema("WorkflowConfigurationDto"), "criterion"),
+		"TransitionDefinitionDto.crit":   prop(schema("TransitionDefinitionDto"), "criterion"),
+		"GroupConditionDto.conditions[]": prop(schema("GroupConditionDto"), "conditions").Value.Items,
+	}
+	for where, ref := range uses {
+		if ref == nil || ref.Ref != base {
+			t.Errorf("%s is not a $ref to QueryConditionDto", where)
+		}
+	}
+	pre := prop(schema("ExternalizedFunctionDto"), "criterion").Value
+	if !isNullableRef(pre.OneOf) || pre.Discriminator != nil {
+		t.Error("ExternalizedFunctionDto.criterion is not oneOf [{type: null}, {$ref}] without a discriminator")
+	}
+	for _, b := range pre.OneOf {
+		if b.Ref != "" && b.Ref != base {
+			t.Errorf("ExternalizedFunctionDto.criterion refers to %s, want QueryConditionDto", b.Ref)
+		}
+	}
+	for _, gone := range []string{"AbstractConditionDto", "CriterionGroupConditionDto"} {
+		if doc.Components.Schemas[gone] != nil {
+			t.Errorf("%s is still declared", gone)
+		}
+	}
+	if op := schema("GroupConditionDto"); prop(op, "operator").Ref != schemaRefPrefix+"GroupOperator" {
+		t.Error("GroupConditionDto.operator is not a $ref to GroupOperator")
+	}
+}

@@ -208,35 +208,3 @@ func TestScheduledTaskDto_GeneratedTypes(t *testing.T) {
 		Pagination: CursorPaginationInfoDto{HasNext: false},
 	}
 }
-
-// TestStateMachineAuditEventType_HasScheduledTransitionFail pins the audit
-// event a FAILED scheduled task records. Every e2e test that reads it through
-// the validated audit API needs it in the enum.
-func TestStateMachineAuditEventType_HasScheduledTransitionFail(t *testing.T) {
-	doc, err := GetSwagger()
-	if err != nil {
-		t.Fatalf("GetSwagger: %v", err)
-	}
-	sm := doc.Components.Schemas["StateMachineAuditEventDto"]
-	if sm == nil || sm.Value == nil {
-		t.Fatal("StateMachineAuditEventDto is not declared")
-	}
-	var found bool
-	for _, part := range sm.Value.AllOf {
-		et := part.Value.Properties["eventType"]
-		if et == nil {
-			continue
-		}
-		for _, v := range et.Value.Enum {
-			if v == "SCHEDULED_TRANSITION_FAIL" {
-				found = true
-			}
-		}
-	}
-	if !found {
-		t.Error("StateMachineAuditEventDto.eventType does not list SCHEDULED_TRANSITION_FAIL")
-	}
-	if !SCHEDULEDTRANSITIONFAIL.Valid() {
-		t.Error("generated SCHEDULEDTRANSITIONFAIL is not Valid()")
-	}
-}

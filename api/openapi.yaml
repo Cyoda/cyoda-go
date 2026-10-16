@@ -2196,7 +2196,7 @@ paths:
       summary: Delete entities of a model and version
       description: >-
         Deletes entities for a given model name and version.
-        An optional `AbstractConditionDto` request body scopes the delete to
+        An optional `QueryConditionDto` request body scopes the delete to
         matching entities only; an empty body (or no body) deletes all entities.
         When `verbose=true` and a condition is given, the response `ids` array
         lists every deleted entity ID. For a delete-all (empty body), `ids` is
@@ -2265,10 +2265,15 @@ paths:
           example: true
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The optional condition that scopes the delete. A `function`
+          condition, at any depth, is refused here with 400
+          `INVALID_CONDITION`: it is valid only in a workflow or transition
+          `criterion`.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AbstractConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
             examples:
               Physics Nobel Prize Search:
                 summary: Find VALIDATED physics Nobel prizes with neural networks research
@@ -2350,7 +2355,7 @@ paths:
                     detail: String length of the schema name is outside of the bounds [1,1024]
                     instance: /api/entity/very-long-entity-model-name/1
                 Invalid Condition:
-                  description: Malformed AbstractConditionDto body
+                  description: Malformed QueryConditionDto body
                   value:
                     type: about:blank
                     title: Bad Request
@@ -3639,14 +3644,13 @@ paths:
               description: |
                 A single entity JSON object, or a JSON array of entity objects
                 (batch create). The model is identified by the path; the payload
-                shape is polymorphic per model, so items stay open.
-              oneOf:
-                - type: object
-                  additionalProperties: true
-                - type: array
-                  items:
-                    type: object
-                    additionalProperties: true
+                shape is polymorphic per model, so items stay open. A string,
+                number, boolean or `null` is not a body, and each entry of an
+                array is an object.
+              not:
+                type: [string, number, boolean, "null"]
+              items:
+                type: object
             examples:
               Single JSON Object example:
                 summary: Example of a single JSON Object
@@ -4589,14 +4593,13 @@ paths:
               description: |
                 One sample document (a JSON object), or a collection of sample
                 documents (a JSON array of objects) whose derived models are
-                merged. Any other body is rejected with 400 VALIDATION_FAILED.
-              oneOf:
-                - type: object
-                  additionalProperties: true
-                - type: array
-                  items:
-                    type: object
-                    additionalProperties: true
+                merged. Any other body (a string, number, boolean or `null`, or
+                an array holding anything but objects) is rejected with 400
+                VALIDATION_FAILED.
+              not:
+                type: [string, number, boolean, "null"]
+              items:
+                type: object
             examples:
               Nobel Prize Model:
                 summary: Example of a Nobel Prize entity model
@@ -7158,21 +7161,14 @@ paths:
           explode: true
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The search condition. A `function` condition, at any depth, is
+          refused here with 400 `INVALID_CONDITION`: it is valid only in a
+          workflow or transition `criterion`.
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/GroupConditionDto"
-                - $ref: "#/components/schemas/LifecycleConditionDto"
-                - $ref: "#/components/schemas/SimpleConditionDto"
-              discriminator:
-                propertyName: type
-                mapping:
-                  array: "#/components/schemas/ArrayConditionDto"
-                  group: "#/components/schemas/GroupConditionDto"
-                  lifecycle: "#/components/schemas/LifecycleConditionDto"
-                  simple: "#/components/schemas/SimpleConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
       responses:
         "200":
           description: Async search job submitted successfully. Note that the search job
@@ -7591,21 +7587,14 @@ paths:
             format: int64
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The search condition. A `function` condition, at any depth, is
+          refused here with 400 `INVALID_CONDITION`: it is valid only in a
+          workflow or transition `criterion`.
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/GroupConditionDto"
-                - $ref: "#/components/schemas/LifecycleConditionDto"
-                - $ref: "#/components/schemas/SimpleConditionDto"
-              discriminator:
-                propertyName: type
-                mapping:
-                  array: "#/components/schemas/ArrayConditionDto"
-                  group: "#/components/schemas/GroupConditionDto"
-                  lifecycle: "#/components/schemas/LifecycleConditionDto"
-                  simple: "#/components/schemas/SimpleConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
       responses:
         "200":
           description: Search executed successfully
@@ -9505,7 +9494,7 @@ components:
           $ref: "#/components/schemas/EntityMetadataDto"
     ArrayConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             jsonPath:
@@ -9541,9 +9530,9 @@ components:
                 (`$.a[0]b`, `$.a[*]..b`).
                 `INVALID_FIELD_PATH` is the code on the search-shaped
                 surfaces (search, async submit, conditional delete,
-                grouped-stats `condition`). This schema is also a member of
-                the workflow/transition `criterion` union, where the same
-                grammar is enforced at workflow import and the code is
+                grouped-stats `condition`). In a workflow/transition
+                `criterion` the same grammar is enforced at workflow import
+                and the code is
                 `VALIDATION_FAILED` instead — the import-time code every
                 other criterion rejection uses. An `array` clause's path
                 must end in `[*]` and contain no other `[*]`.
@@ -9568,22 +9557,19 @@ components:
                 pre-check, and every other clause counts one; a larger
                 condition is refused with 400 `INVALID_CONDITION`.
               items:
-                # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-                # the Go type it cannot derive.
+                description: >-
+                  `null`, a string, number or boolean, or a `[low, high]` pair
+                  of strings, numbers or booleans. An object is refused, and
+                  so is an array that is not a pair of those.
+                # oapi-codegen (v2) derives no Go type for a schema with no
+                # `type`; this names it.
                 x-go-type: interface{}
-                oneOf:
-                  - type: "null"
-                  - type: string
-                  - type: number
-                  - type: boolean
-                  - type: array
-                    minItems: 2
-                    maxItems: 2
-                    items:
-                      oneOf:
-                        - type: string
-                        - type: number
-                        - type: boolean
+                not:
+                  type: object
+                minItems: 2
+                maxItems: 2
+                items:
+                  type: [string, number, boolean]
       required:
         - jsonPath
         - operatorType
@@ -9662,17 +9648,7 @@ components:
           x-go-type: interface{}
           oneOf:
             - type: "null"
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/GroupConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              group: "#/components/schemas/GroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            - $ref: "#/components/schemas/QueryConditionDto"
       required:
         - name
     FunctionConditionDto:
@@ -9684,59 +9660,6 @@ components:
               $ref: "#/components/schemas/ExternalizedFunctionDto"
       required:
         - function
-    CriterionGroupConditionDto:
-      description: |
-        Combines conditions with a logical operator. `AND`/`OR` accept any
-        number of `conditions`, including zero (a vacuous conjunction is
-        true; a vacuous disjunction is false). `NOT` accepts **exactly one**
-        entry — `NOT(c)` is true exactly when `c` is false. A `NOT` with
-        zero, or two or more, entries is rejected: a bare list has two
-        defensible readings ("not both" vs. "neither") that disagree on the
-        same data, so a multi-condition `NOT` is written by nesting a group
-        inside it (`NOT(A AND B)`), not as a flat list under `NOT`.
-
-        Over a wildcard-addressed list, `NOT` is a universal quantifier
-        where the wrapped leaf is existential: `NOT($.tags[*] EQUALS "red")`
-        matches when no element equals `"red"`, a different question from
-        `$.tags[*] NOT_EQUAL "red"` (some element differs). `NOT` is never
-        rewritten by De Morgan into a leaf's negative twin.
-
-        A criterion's group may also hold `function` conditions, at any depth;
-        the engine evaluates the members in declaration order and stops as soon
-        as the group's value is known (`AND` at the first false member, `OR` at
-        the first true one). A search condition's group (`GroupConditionDto`)
-        holds local conditions only.
-      allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
-        - type: object
-          properties:
-            operator:
-              type: string
-              enum:
-                - AND
-                - OR
-                - NOT
-            conditions:
-              type: array
-              items:
-                oneOf:
-                  - $ref: "#/components/schemas/ArrayConditionDto"
-                  - $ref: "#/components/schemas/CriterionGroupConditionDto"
-                  - $ref: "#/components/schemas/FunctionConditionDto"
-                  - $ref: "#/components/schemas/LifecycleConditionDto"
-                  - $ref: "#/components/schemas/SimpleConditionDto"
-                discriminator:
-                  propertyName: type
-                  mapping:
-                    array: "#/components/schemas/ArrayConditionDto"
-                    function: "#/components/schemas/FunctionConditionDto"
-                    group: "#/components/schemas/CriterionGroupConditionDto"
-                    lifecycle: "#/components/schemas/LifecycleConditionDto"
-                    simple: "#/components/schemas/SimpleConditionDto"
-      required:
-        - conditions
-        - operator
-        - type
     GroupConditionDto:
       description: |
         Combines conditions with a logical operator. `AND`/`OR` accept any
@@ -9753,40 +9676,41 @@ components:
         matches when no element equals `"red"`, a different question from
         `$.tags[*] NOT_EQUAL "red"` (some element differs). `NOT` is never
         rewritten by De Morgan into a leaf's negative twin.
+
+        In a workflow or transition `criterion`, a group may also hold
+        `function` conditions, at any depth; the engine evaluates the members
+        in declaration order and stops as soon as the group's value is known
+        (`AND` at the first false member, `OR` at the first true one). In a
+        search, async search, grouped-stats or conditional-delete body, and in
+        a function's pre-check, a `function` condition at any depth is refused
+        (400 `INVALID_CONDITION` on a search-shaped body, 400
+        `VALIDATION_FAILED` at workflow import).
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             operator:
-              type: string
-              enum:
-                - AND
-                - OR
-                - NOT
+              $ref: "#/components/schemas/GroupOperator"
             conditions:
               type: array
               items:
-                oneOf:
-                  - $ref: "#/components/schemas/ArrayConditionDto"
-                  - $ref: "#/components/schemas/GroupConditionDto"
-                  - $ref: "#/components/schemas/LifecycleConditionDto"
-                  - $ref: "#/components/schemas/SimpleConditionDto"
-                discriminator:
-                  propertyName: type
-                  mapping:
-                    array: "#/components/schemas/ArrayConditionDto"
-                    group: "#/components/schemas/GroupConditionDto"
-                    lifecycle: "#/components/schemas/LifecycleConditionDto"
-                    simple: "#/components/schemas/SimpleConditionDto"
+                $ref: "#/components/schemas/QueryConditionDto"
       required:
         - conditions
         - operator
         - type
+    GroupOperator:
+      type: string
+      description: The logical operator that combines a group's conditions.
+      enum:
+        - AND
+        - OR
+        - NOT
     JsonNode:
       type: object
     LifecycleConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             field:
@@ -9801,25 +9725,36 @@ components:
                 absent or `null`; under any other operator a missing or `null`
                 value is refused with 400. An object, or any other array, is
                 refused with 400.
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
+              # oapi-codegen (v2) derives no Go type for a schema with no
+              # `type`; this names it.
               x-go-type: interface{}
-              oneOf:
-                - type: "null"
-                - type: [string, number, boolean]
-                - type: array
-                  minItems: 2
-                  maxItems: 2
-                  items:
-                    type: [string, number, boolean]
+              not:
+                type: object
+              minItems: 2
+              maxItems: 2
+              items:
+                type: [string, number, boolean]
       required:
         - field
         - operatorType
         - type
     QueryConditionDto:
       type: object
+      description: >-
+        A condition. `type` names its form; the mapping lists the known
+        forms. Every condition position (a search, async search,
+        grouped-stats or conditional-delete body, a workflow or transition
+        `criterion`, a group's `conditions`, a function's pre-check) takes any
+        of them; where a `function` condition is refused, the position's
+        description says so.
       discriminator:
         propertyName: type
+        mapping:
+          array: "#/components/schemas/ArrayConditionDto"
+          function: "#/components/schemas/FunctionConditionDto"
+          group: "#/components/schemas/GroupConditionDto"
+          lifecycle: "#/components/schemas/LifecycleConditionDto"
+          simple: "#/components/schemas/SimpleConditionDto"
       properties:
         type:
           type: string
@@ -9827,7 +9762,7 @@ components:
         - type
     SimpleConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             jsonPath:
@@ -9863,9 +9798,9 @@ components:
                 (`$.a[0]b`, `$.a[*]..b`).
                 `INVALID_FIELD_PATH` is the code on the search-shaped
                 surfaces (search, async submit, conditional delete,
-                grouped-stats `condition`). This schema is also a member of
-                the workflow/transition `criterion` union, where the same
-                grammar is enforced at workflow import and the code is
+                grouped-stats `condition`). In a workflow/transition
+                `criterion` the same grammar is enforced at workflow import
+                and the code is
                 `VALIDATION_FAILED` instead — the import-time code every
                 other criterion rejection uses.
               example: $.amount
@@ -9879,17 +9814,15 @@ components:
                 absent or `null`; under any other operator a missing or `null`
                 value is refused with 400. An object, or any other array, is
                 refused with 400.
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
+              # oapi-codegen (v2) derives no Go type for a schema with no
+              # `type`; this names it.
               x-go-type: interface{}
-              oneOf:
-                - type: "null"
-                - type: [string, number, boolean]
-                - type: array
-                  minItems: 2
-                  maxItems: 2
-                  items:
-                    type: [string, number, boolean]
+              not:
+                type: object
+              minItems: 2
+              maxItems: 2
+              items:
+                type: [string, number, boolean]
       required:
         - jsonPath
         - operatorType
@@ -10389,18 +10322,15 @@ components:
       properties:
         type:
           type: string
-          enum:
-            - externalized
           description: |
-            Processor execution-location axis. `externalized` dispatches the
-            processor via gRPC to a calculation node selected by
-            `calculationNodesTags`. Empty or omitted is treated as
-            `externalized` by the runtime. The engine reserves the value
-            `internalized` for an in-process execution location not yet
-            implemented; any payload carrying `type: "internalized"` is
-            rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-            reserved value is intentionally absent from this enum until the
-            in-process subtype lands together with its schema.
+            Processor execution-location axis; the mapping lists the known
+            values. `externalized` dispatches the processor via gRPC to a
+            calculation node selected by `calculationNodesTags`. Empty or
+            omitted is treated as `externalized` by the runtime. The engine
+            reserves the value `internalized` for an in-process execution
+            location not yet implemented; any payload carrying
+            `type: "internalized"` is rejected at engine dispatch with
+            `WORKFLOW_FAILED` (400).
         name:
           type: string
           minLength: 1
@@ -10443,8 +10373,7 @@ components:
           type: array
           description: List of processors to execute for this transition
           items:
-            oneOf:
-              - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
+            $ref: "#/components/schemas/ProcessorDefinitionDto"
         schedule:
           $ref: "#/components/schemas/TransitionScheduleDto"
           description: |
@@ -10459,20 +10388,10 @@ components:
             `cyoda help workflows` (authoring) and `cyoda help config scheduler`
             (runtime tuning).
         criterion:
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/CriterionGroupConditionDto"
-            - $ref: "#/components/schemas/FunctionConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              function: "#/components/schemas/FunctionConditionDto"
-              group: "#/components/schemas/CriterionGroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+          $ref: "#/components/schemas/QueryConditionDto"
+          description: >-
+            Optional criterion the transition requires. Any condition is
+            valid here, a `function` condition at any depth included.
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -10658,21 +10577,8 @@ components:
             embedded default workflow and emits both a body warning and
             an operator-visible `slog.Warn` line. Workflow-level criteria
             use the same Condition DSL as search and transition-level
-            criteria.
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/CriterionGroupConditionDto"
-            - $ref: "#/components/schemas/FunctionConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              function: "#/components/schemas/FunctionConditionDto"
-              group: "#/components/schemas/CriterionGroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            criteria, and a `function` condition is valid at any depth.
+          $ref: "#/components/schemas/QueryConditionDto"
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -11214,21 +11120,11 @@ components:
             type: string
             example: $.country
         condition:
+          $ref: "#/components/schemas/QueryConditionDto"
           description: >-
-            Optional Condition DSL predicate restricting the population.
-            Uses the same union shape as the async-search endpoint.
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/GroupConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              group: "#/components/schemas/GroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            Optional Condition DSL predicate restricting the population, as in
+            a search body. A `function` condition, at any depth, is refused
+            here with 400 `INVALID_CONDITION`.
         aggregations:
           type: array
           description: Optional per-group aggregations.
@@ -11268,10 +11164,13 @@ components:
           description: Group-by dimension (echoes the request entry).
           example: $.country
         value:
-          description: Observed value for this dimension, or null.
-          type: [string, number, boolean, "null"]
-          # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
-          # Go type it cannot derive.
+          description: >-
+            Observed value for this dimension: a string, number or boolean, or
+            `null`. Never an object or an array.
+          not:
+            type: [object, array]
+          # oapi-codegen (v2) derives no Go type for a schema with no `type`;
+          # this names it.
           x-go-type: interface{}
           example: SE
       required:
@@ -11388,6 +11287,10 @@ components:
       type: object
       discriminator:
         propertyName: auditEventType
+        mapping:
+          EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
+          StateMachine: "#/components/schemas/StateMachineAuditEventDto"
+          System: "#/components/schemas/SystemAuditEventDto"
       properties:
         entityId:
           type: string
@@ -11405,13 +11308,7 @@ components:
           format: uuid
           description: Transaction identifier related to this event
         severity:
-          type: string
-          description: Severity level of the event
-          enum:
-            - ERROR
-            - INFO
-            - WARN
-            - DEBUG
+          $ref: "#/components/schemas/AuditEventSeverity"
         details:
           type: string
           description: Details of the event
@@ -11436,6 +11333,14 @@ components:
         - microsTime
         - severity
         - utcTime
+    AuditEventSeverity:
+      type: string
+      description: Severity level of the event
+      enum:
+        - ERROR
+        - INFO
+        - WARN
+        - DEBUG
     CursorPaginationInfoDto:
       type: object
       properties:
@@ -11586,16 +11491,7 @@ components:
           type: array
           description: Audit events for the entity
           items:
-            oneOf:
-              - $ref: "#/components/schemas/EntityChangeAuditEventDto"
-              - $ref: "#/components/schemas/StateMachineAuditEventDto"
-              - $ref: "#/components/schemas/SystemAuditEventDto"
-            discriminator:
-              propertyName: auditEventType
-              mapping:
-                EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
-                StateMachine: "#/components/schemas/StateMachineAuditEventDto"
-                System: "#/components/schemas/SystemAuditEventDto"
+            $ref: "#/components/schemas/AuditEventDto"
       required:
         - pagination
     EntityChangeAuditEventDto:
@@ -11668,34 +11564,14 @@ components:
             eventType:
               type: string
               description: |
-                Type of the state machine event. `TRANSITION_ABORTED` is
-                a cyoda-go extension emitted as a
-                compensating event when an in-flight transition is
-                rejected by a stale `ifMatch` precondition; its `data`
-                payload carries `{reason: "ENTITY_MODIFIED",
-                transitionName, expectedTxId, actualTxId}` so consumers
-                can pair the entry-side `STATE_MACHINE_START` with a
-                terminal abort event in the audit log.
-              enum:
-                - STATE_MACHINE_START
-                - STATE_MACHINE_FINISH
-                - CANCEL
-                - FORCE_SUCCESS
-                - WORKFLOW_FOUND
-                - WORKFLOW_NOT_FOUND
-                - WORKFLOW_SKIP
-                - TRANSITION_MAKE
-                - TRANSITION_NOT_FOUND
-                - TRANSITION_NOT_MATCH_CRITERION
-                - TRANSITION_ABORTED
-                - PROCESS_NOT_MATCH_CRITERION
-                - PAUSE_FOR_PROCESSING
-                - STATE_PROCESS_RESULT
-                - SCHEDULED_TRANSITION_ARM
-                - SCHEDULED_TRANSITION_FIRE
-                - SCHEDULED_TRANSITION_EXPIRE
-                - SCHEDULED_TRANSITION_CANCEL
-                - SCHEDULED_TRANSITION_FAIL
+                Type of the state machine event. Its known values are the
+                keys of the mapping of `StateMachineEventDto`, the schema of
+                `data`. The set grows: a client accepts any other value.
+                `TRANSITION_ABORTED` is a cyoda-go extension emitted as a
+                compensating event when an in-flight transition is rejected
+                by a stale `ifMatch` precondition, so consumers can pair the
+                entry-side `STATE_MACHINE_START` with a terminal abort event
+                in the audit log.
             data:
               type: [object, "null"]
               # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
@@ -11748,22 +11624,38 @@ components:
       type: object
       discriminator:
         propertyName: eventType
+        mapping:
+          STATE_MACHINE_START: "#/components/schemas/StateMachineStartedDto"
+          STATE_MACHINE_FINISH: "#/components/schemas/StateMachineFinishedDto"
+          CANCEL: "#/components/schemas/StateMachineCancelledDto"
+          FORCE_SUCCESS: "#/components/schemas/StateMachineForcedSuccessDto"
+          WORKFLOW_FOUND: "#/components/schemas/StateMachineWorkflowFoundDto"
+          WORKFLOW_NOT_FOUND: "#/components/schemas/StateMachineWorkflowNotFoundDto"
+          WORKFLOW_SKIP: "#/components/schemas/StateMachineWorkflowSkippedDto"
+          TRANSITION_MAKE: "#/components/schemas/StateMachineTransitionMadeDto"
+          TRANSITION_NOT_FOUND: "#/components/schemas/StateMachineTransitionNotFoundDto"
+          TRANSITION_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineTransitionCriterionNotMatchedDto"
+          PROCESS_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineProcessCriterionNotMatchedDto"
+          PAUSE_FOR_PROCESSING: "#/components/schemas/StateMachineProcessingPausedDto"
+          STATE_PROCESS_RESULT: "#/components/schemas/StateMachineStateProcessResultDto"
       properties:
         eventType:
           type: string
       required:
         - eventType
     StateMachineFinishedDto:
-      type: object
-      properties:
-        state:
-          type: string
-          description: The state of the entity when the state machine flow was finished
-        success:
-          type: boolean
-          description: Whether the state machine execution was successful
-        stopReason:
-          $ref: "#/components/schemas/WorkflowStopReasonDto"
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            state:
+              type: string
+              description: The state of the entity when the state machine flow was finished
+            success:
+              type: boolean
+              description: Whether the state machine execution was successful
+            stopReason:
+              $ref: "#/components/schemas/WorkflowStopReasonDto"
       required:
         - state
         - stopReason
@@ -12149,15 +12041,6 @@ components:
         ISTARTS_WITH, IS_NULL, LESS_OR_EQUAL, LESS_THAN, LIKE,
         MATCHES_PATTERN, NOT_CONTAINS, NOT_ENDS_WITH, NOT_EQUAL, NOT_NULL,
         NOT_STARTS_WITH, STARTS_WITH]
-    AbstractConditionDto:
-      type: object
-      discriminator:
-        propertyName: type
-      properties:
-        type:
-          type: string
-      required:
-        - type
     StreamDeleteResult:
       type: object
       properties:

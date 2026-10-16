@@ -608,8 +608,16 @@ spec does not change.
 1. Each use of a base is replaced by a `oneOf` of the base's mapping targets that carries the base's
    discriminator. Each member `$ref` is spelled as in the mapping, so kin and the recursive walk pick the mapped
    member (`recursive.go:374-407`). A member's `allOf` entry is left as it is.
-2. Each untyped leaf is marked nullable, unless its `not` excludes `null`. No other schema is marked: a
-   member (an `allOf`), a replaced use (a `oneOf`) and any typed schema keep refusing `null`.
+2. Each untyped leaf is marked nullable, unless its `not` excludes `null`.
+3. Each union with a `{type: "null"}` branch is marked nullable. kin accepts any value for a schema it is
+   already visiting higher up, so `null` that reaches a recursive member through the pre-check
+   (`FunctionConditionDto` → `ExternalizedFunctionDto.criterion` → `FunctionConditionDto`) matches both
+   branches of the `oneOf` and is refused. Marked nullable, the union accepts `null` before its branches are
+   tried, which is the answer it gives without the recursion.
+
+No other schema is marked: a member (an `allOf`), a replaced use (a `oneOf`) and any typed schema keep
+refusing `null`. The same kin rule means a member nested inside itself (a group in a group, a function in a
+pre-check) is not checked below the first level; the view does not change that.
 
 One function builds the view. The validator and the `api/` tests (sections 3.3, 3.6, 13.2) all use it, so they
 check samples, examples and responses the same way. On the prototype, the view gives JSON Schema's answer in

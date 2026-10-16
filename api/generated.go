@@ -76,24 +76,24 @@ func (e AsyncSearchStatusDtoSearchJobStatus) Valid() bool {
 	}
 }
 
-// Defines values for AuditEventDtoSeverity.
+// Defines values for AuditEventSeverity.
 const (
-	AuditEventDtoSeverityDEBUG AuditEventDtoSeverity = "DEBUG"
-	AuditEventDtoSeverityERROR AuditEventDtoSeverity = "ERROR"
-	AuditEventDtoSeverityINFO  AuditEventDtoSeverity = "INFO"
-	AuditEventDtoSeverityWARN  AuditEventDtoSeverity = "WARN"
+	AuditEventSeverityDEBUG AuditEventSeverity = "DEBUG"
+	AuditEventSeverityERROR AuditEventSeverity = "ERROR"
+	AuditEventSeverityINFO  AuditEventSeverity = "INFO"
+	AuditEventSeverityWARN  AuditEventSeverity = "WARN"
 )
 
-// Valid indicates whether the value is a known member of the AuditEventDtoSeverity enum.
-func (e AuditEventDtoSeverity) Valid() bool {
+// Valid indicates whether the value is a known member of the AuditEventSeverity enum.
+func (e AuditEventSeverity) Valid() bool {
 	switch e {
-	case AuditEventDtoSeverityDEBUG:
+	case AuditEventSeverityDEBUG:
 		return true
-	case AuditEventDtoSeverityERROR:
+	case AuditEventSeverityERROR:
 		return true
-	case AuditEventDtoSeverityINFO:
+	case AuditEventSeverityINFO:
 		return true
-	case AuditEventDtoSeverityWARN:
+	case AuditEventSeverityWARN:
 		return true
 	default:
 		return false
@@ -127,177 +127,21 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 	}
 }
 
-// Defines values for ConditionOperatorType.
-const (
-	BETWEEN          ConditionOperatorType = "BETWEEN"
-	BETWEENINCLUSIVE ConditionOperatorType = "BETWEEN_INCLUSIVE"
-	CONTAINS         ConditionOperatorType = "CONTAINS"
-	ENDSWITH         ConditionOperatorType = "ENDS_WITH"
-	EQUALS           ConditionOperatorType = "EQUALS"
-	GREATEROREQUAL   ConditionOperatorType = "GREATER_OR_EQUAL"
-	GREATERTHAN      ConditionOperatorType = "GREATER_THAN"
-	ICONTAINS        ConditionOperatorType = "ICONTAINS"
-	IENDSWITH        ConditionOperatorType = "IENDS_WITH"
-	IEQUALS          ConditionOperatorType = "IEQUALS"
-	INOTCONTAINS     ConditionOperatorType = "INOT_CONTAINS"
-	INOTENDSWITH     ConditionOperatorType = "INOT_ENDS_WITH"
-	INOTEQUAL        ConditionOperatorType = "INOT_EQUAL"
-	INOTSTARTSWITH   ConditionOperatorType = "INOT_STARTS_WITH"
-	ISNULL           ConditionOperatorType = "IS_NULL"
-	ISTARTSWITH      ConditionOperatorType = "ISTARTS_WITH"
-	LESSOREQUAL      ConditionOperatorType = "LESS_OR_EQUAL"
-	LESSTHAN         ConditionOperatorType = "LESS_THAN"
-	LIKE             ConditionOperatorType = "LIKE"
-	MATCHESPATTERN   ConditionOperatorType = "MATCHES_PATTERN"
-	NOTCONTAINS      ConditionOperatorType = "NOT_CONTAINS"
-	NOTENDSWITH      ConditionOperatorType = "NOT_ENDS_WITH"
-	NOTEQUAL         ConditionOperatorType = "NOT_EQUAL"
-	NOTNULL          ConditionOperatorType = "NOT_NULL"
-	NOTSTARTSWITH    ConditionOperatorType = "NOT_STARTS_WITH"
-	STARTSWITH       ConditionOperatorType = "STARTS_WITH"
-)
-
-// Valid indicates whether the value is a known member of the ConditionOperatorType enum.
-func (e ConditionOperatorType) Valid() bool {
-	switch e {
-	case BETWEEN:
-		return true
-	case BETWEENINCLUSIVE:
-		return true
-	case CONTAINS:
-		return true
-	case ENDSWITH:
-		return true
-	case EQUALS:
-		return true
-	case GREATEROREQUAL:
-		return true
-	case GREATERTHAN:
-		return true
-	case ICONTAINS:
-		return true
-	case IENDSWITH:
-		return true
-	case IEQUALS:
-		return true
-	case INOTCONTAINS:
-		return true
-	case INOTENDSWITH:
-		return true
-	case INOTEQUAL:
-		return true
-	case INOTSTARTSWITH:
-		return true
-	case ISNULL:
-		return true
-	case ISTARTSWITH:
-		return true
-	case LESSOREQUAL:
-		return true
-	case LESSTHAN:
-		return true
-	case LIKE:
-		return true
-	case MATCHESPATTERN:
-		return true
-	case NOTCONTAINS:
-		return true
-	case NOTENDSWITH:
-		return true
-	case NOTEQUAL:
-		return true
-	case NOTNULL:
-		return true
-	case NOTSTARTSWITH:
-		return true
-	case STARTSWITH:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for CriterionGroupConditionDtoOperator.
-const (
-	CriterionGroupConditionDtoOperatorAND CriterionGroupConditionDtoOperator = "AND"
-	CriterionGroupConditionDtoOperatorNOT CriterionGroupConditionDtoOperator = "NOT"
-	CriterionGroupConditionDtoOperatorOR  CriterionGroupConditionDtoOperator = "OR"
-)
-
-// Valid indicates whether the value is a known member of the CriterionGroupConditionDtoOperator enum.
-func (e CriterionGroupConditionDtoOperator) Valid() bool {
-	switch e {
-	case CriterionGroupConditionDtoOperatorAND:
-		return true
-	case CriterionGroupConditionDtoOperatorNOT:
-		return true
-	case CriterionGroupConditionDtoOperatorOR:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for EntityChangeAuditEventDtoChangeType.
-const (
-	EntityChangeAuditEventDtoChangeTypeCREATE EntityChangeAuditEventDtoChangeType = "CREATE"
-	EntityChangeAuditEventDtoChangeTypeDELETE EntityChangeAuditEventDtoChangeType = "DELETE"
-	EntityChangeAuditEventDtoChangeTypeUPDATE EntityChangeAuditEventDtoChangeType = "UPDATE"
-)
-
-// Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoChangeType enum.
-func (e EntityChangeAuditEventDtoChangeType) Valid() bool {
-	switch e {
-	case EntityChangeAuditEventDtoChangeTypeCREATE:
-		return true
-	case EntityChangeAuditEventDtoChangeTypeDELETE:
-		return true
-	case EntityChangeAuditEventDtoChangeTypeUPDATE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for EntityChangeAuditEventDtoSeverity.
-const (
-	EntityChangeAuditEventDtoSeverityDEBUG EntityChangeAuditEventDtoSeverity = "DEBUG"
-	EntityChangeAuditEventDtoSeverityERROR EntityChangeAuditEventDtoSeverity = "ERROR"
-	EntityChangeAuditEventDtoSeverityINFO  EntityChangeAuditEventDtoSeverity = "INFO"
-	EntityChangeAuditEventDtoSeverityWARN  EntityChangeAuditEventDtoSeverity = "WARN"
-)
-
-// Valid indicates whether the value is a known member of the EntityChangeAuditEventDtoSeverity enum.
-func (e EntityChangeAuditEventDtoSeverity) Valid() bool {
-	switch e {
-	case EntityChangeAuditEventDtoSeverityDEBUG:
-		return true
-	case EntityChangeAuditEventDtoSeverityERROR:
-		return true
-	case EntityChangeAuditEventDtoSeverityINFO:
-		return true
-	case EntityChangeAuditEventDtoSeverityWARN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for EntityChangeMetaChangeType.
 const (
-	EntityChangeMetaChangeTypeCREATE EntityChangeMetaChangeType = "CREATE"
-	EntityChangeMetaChangeTypeDELETE EntityChangeMetaChangeType = "DELETE"
-	EntityChangeMetaChangeTypeUPDATE EntityChangeMetaChangeType = "UPDATE"
+	CREATE EntityChangeMetaChangeType = "CREATE"
+	DELETE EntityChangeMetaChangeType = "DELETE"
+	UPDATE EntityChangeMetaChangeType = "UPDATE"
 )
 
 // Valid indicates whether the value is a known member of the EntityChangeMetaChangeType enum.
 func (e EntityChangeMetaChangeType) Valid() bool {
 	switch e {
-	case EntityChangeMetaChangeTypeCREATE:
+	case CREATE:
 		return true
-	case EntityChangeMetaChangeTypeDELETE:
+	case DELETE:
 		return true
-	case EntityChangeMetaChangeTypeUPDATE:
+	case UPDATE:
 		return true
 	default:
 		return false
@@ -337,102 +181,6 @@ func (e ErrorResponseDtoError) Valid() bool {
 	case UnauthorizedClient:
 		return true
 	case UnsupportedGrantType:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedFunctionConfigDtoRetryPolicy.
-const (
-	ExternalizedFunctionConfigDtoRetryPolicyFIXED ExternalizedFunctionConfigDtoRetryPolicy = "FIXED"
-	ExternalizedFunctionConfigDtoRetryPolicyNONE  ExternalizedFunctionConfigDtoRetryPolicy = "NONE"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedFunctionConfigDtoRetryPolicy enum.
-func (e ExternalizedFunctionConfigDtoRetryPolicy) Valid() bool {
-	switch e {
-	case ExternalizedFunctionConfigDtoRetryPolicyFIXED:
-		return true
-	case ExternalizedFunctionConfigDtoRetryPolicyNONE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorConfigDtoRetryPolicy.
-const (
-	ExternalizedProcessorConfigDtoRetryPolicyFIXED ExternalizedProcessorConfigDtoRetryPolicy = "FIXED"
-	ExternalizedProcessorConfigDtoRetryPolicyNONE  ExternalizedProcessorConfigDtoRetryPolicy = "NONE"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorConfigDtoRetryPolicy enum.
-func (e ExternalizedProcessorConfigDtoRetryPolicy) Valid() bool {
-	switch e {
-	case ExternalizedProcessorConfigDtoRetryPolicyFIXED:
-		return true
-	case ExternalizedProcessorConfigDtoRetryPolicyNONE:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorDefinitionDtoExecutionMode.
-const (
-	ASYNCNEWTX           ExternalizedProcessorDefinitionDtoExecutionMode = "ASYNC_NEW_TX"
-	ASYNCSAMETX          ExternalizedProcessorDefinitionDtoExecutionMode = "ASYNC_SAME_TX"
-	COMMITBEFOREDISPATCH ExternalizedProcessorDefinitionDtoExecutionMode = "COMMIT_BEFORE_DISPATCH"
-	SYNC                 ExternalizedProcessorDefinitionDtoExecutionMode = "SYNC"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorDefinitionDtoExecutionMode enum.
-func (e ExternalizedProcessorDefinitionDtoExecutionMode) Valid() bool {
-	switch e {
-	case ASYNCNEWTX:
-		return true
-	case ASYNCSAMETX:
-		return true
-	case COMMITBEFOREDISPATCH:
-		return true
-	case SYNC:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for ExternalizedProcessorDefinitionDtoType.
-const (
-	ExternalizedProcessorDefinitionDtoTypeExternalized ExternalizedProcessorDefinitionDtoType = "externalized"
-)
-
-// Valid indicates whether the value is a known member of the ExternalizedProcessorDefinitionDtoType enum.
-func (e ExternalizedProcessorDefinitionDtoType) Valid() bool {
-	switch e {
-	case ExternalizedProcessorDefinitionDtoTypeExternalized:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for GroupConditionDtoOperator.
-const (
-	GroupConditionDtoOperatorAND GroupConditionDtoOperator = "AND"
-	GroupConditionDtoOperatorNOT GroupConditionDtoOperator = "NOT"
-	GroupConditionDtoOperatorOR  GroupConditionDtoOperator = "OR"
-)
-
-// Valid indicates whether the value is a known member of the GroupConditionDtoOperator enum.
-func (e GroupConditionDtoOperator) Valid() bool {
-	switch e {
-	case GroupConditionDtoOperatorAND:
-		return true
-	case GroupConditionDtoOperatorNOT:
-		return true
-	case GroupConditionDtoOperatorOR:
 		return true
 	default:
 		return false
@@ -523,21 +271,6 @@ func (e JwtKeyPairResponseDtoAlgorithm) Valid() bool {
 	}
 }
 
-// Defines values for ProcessorDefinitionDtoType.
-const (
-	ProcessorDefinitionDtoTypeExternalized ProcessorDefinitionDtoType = "externalized"
-)
-
-// Valid indicates whether the value is a known member of the ProcessorDefinitionDtoType enum.
-func (e ProcessorDefinitionDtoType) Valid() bool {
-	switch e {
-	case ProcessorDefinitionDtoTypeExternalized:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for ScheduleFunctionDtoResultKind.
 const (
 	Schedule ScheduleFunctionDtoResultKind = "Schedule"
@@ -571,99 +304,6 @@ func (e ScheduleFunctionDtoRetryPolicy) Valid() bool {
 	}
 }
 
-// Defines values for StateMachineAuditEventDtoEventType.
-const (
-	CANCEL                      StateMachineAuditEventDtoEventType = "CANCEL"
-	FORCESUCCESS                StateMachineAuditEventDtoEventType = "FORCE_SUCCESS"
-	PAUSEFORPROCESSING          StateMachineAuditEventDtoEventType = "PAUSE_FOR_PROCESSING"
-	PROCESSNOTMATCHCRITERION    StateMachineAuditEventDtoEventType = "PROCESS_NOT_MATCH_CRITERION"
-	SCHEDULEDTRANSITIONARM      StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_ARM"
-	SCHEDULEDTRANSITIONCANCEL   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_CANCEL"
-	SCHEDULEDTRANSITIONEXPIRE   StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_EXPIRE"
-	SCHEDULEDTRANSITIONFAIL     StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_FAIL"
-	SCHEDULEDTRANSITIONFIRE     StateMachineAuditEventDtoEventType = "SCHEDULED_TRANSITION_FIRE"
-	STATEMACHINEFINISH          StateMachineAuditEventDtoEventType = "STATE_MACHINE_FINISH"
-	STATEMACHINESTART           StateMachineAuditEventDtoEventType = "STATE_MACHINE_START"
-	STATEPROCESSRESULT          StateMachineAuditEventDtoEventType = "STATE_PROCESS_RESULT"
-	TRANSITIONABORTED           StateMachineAuditEventDtoEventType = "TRANSITION_ABORTED"
-	TRANSITIONMAKE              StateMachineAuditEventDtoEventType = "TRANSITION_MAKE"
-	TRANSITIONNOTFOUND          StateMachineAuditEventDtoEventType = "TRANSITION_NOT_FOUND"
-	TRANSITIONNOTMATCHCRITERION StateMachineAuditEventDtoEventType = "TRANSITION_NOT_MATCH_CRITERION"
-	WORKFLOWFOUND               StateMachineAuditEventDtoEventType = "WORKFLOW_FOUND"
-	WORKFLOWNOTFOUND            StateMachineAuditEventDtoEventType = "WORKFLOW_NOT_FOUND"
-	WORKFLOWSKIP                StateMachineAuditEventDtoEventType = "WORKFLOW_SKIP"
-)
-
-// Valid indicates whether the value is a known member of the StateMachineAuditEventDtoEventType enum.
-func (e StateMachineAuditEventDtoEventType) Valid() bool {
-	switch e {
-	case CANCEL:
-		return true
-	case FORCESUCCESS:
-		return true
-	case PAUSEFORPROCESSING:
-		return true
-	case PROCESSNOTMATCHCRITERION:
-		return true
-	case SCHEDULEDTRANSITIONARM:
-		return true
-	case SCHEDULEDTRANSITIONCANCEL:
-		return true
-	case SCHEDULEDTRANSITIONEXPIRE:
-		return true
-	case SCHEDULEDTRANSITIONFAIL:
-		return true
-	case SCHEDULEDTRANSITIONFIRE:
-		return true
-	case STATEMACHINEFINISH:
-		return true
-	case STATEMACHINESTART:
-		return true
-	case STATEPROCESSRESULT:
-		return true
-	case TRANSITIONABORTED:
-		return true
-	case TRANSITIONMAKE:
-		return true
-	case TRANSITIONNOTFOUND:
-		return true
-	case TRANSITIONNOTMATCHCRITERION:
-		return true
-	case WORKFLOWFOUND:
-		return true
-	case WORKFLOWNOTFOUND:
-		return true
-	case WORKFLOWSKIP:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for StateMachineAuditEventDtoSeverity.
-const (
-	StateMachineAuditEventDtoSeverityDEBUG StateMachineAuditEventDtoSeverity = "DEBUG"
-	StateMachineAuditEventDtoSeverityERROR StateMachineAuditEventDtoSeverity = "ERROR"
-	StateMachineAuditEventDtoSeverityINFO  StateMachineAuditEventDtoSeverity = "INFO"
-	StateMachineAuditEventDtoSeverityWARN  StateMachineAuditEventDtoSeverity = "WARN"
-)
-
-// Valid indicates whether the value is a known member of the StateMachineAuditEventDtoSeverity enum.
-func (e StateMachineAuditEventDtoSeverity) Valid() bool {
-	switch e {
-	case StateMachineAuditEventDtoSeverityDEBUG:
-		return true
-	case StateMachineAuditEventDtoSeverityERROR:
-		return true
-	case StateMachineAuditEventDtoSeverityINFO:
-		return true
-	case StateMachineAuditEventDtoSeverityWARN:
-		return true
-	default:
-		return false
-	}
-}
-
 // Defines values for SubscriptionLimitDtoTimeIntervalBound.
 const (
 	DAYS    SubscriptionLimitDtoTimeIntervalBound = "DAYS"
@@ -682,30 +322,6 @@ func (e SubscriptionLimitDtoTimeIntervalBound) Valid() bool {
 	case MINUTES:
 		return true
 	case SECONDS:
-		return true
-	default:
-		return false
-	}
-}
-
-// Defines values for SystemAuditEventDtoSeverity.
-const (
-	SystemAuditEventDtoSeverityDEBUG SystemAuditEventDtoSeverity = "DEBUG"
-	SystemAuditEventDtoSeverityERROR SystemAuditEventDtoSeverity = "ERROR"
-	SystemAuditEventDtoSeverityINFO  SystemAuditEventDtoSeverity = "INFO"
-	SystemAuditEventDtoSeverityWARN  SystemAuditEventDtoSeverity = "WARN"
-)
-
-// Valid indicates whether the value is a known member of the SystemAuditEventDtoSeverity enum.
-func (e SystemAuditEventDtoSeverity) Valid() bool {
-	switch e {
-	case SystemAuditEventDtoSeverityDEBUG:
-		return true
-	case SystemAuditEventDtoSeverityERROR:
-		return true
-	case SystemAuditEventDtoSeverityINFO:
-		return true
-	case SystemAuditEventDtoSeverityWARN:
 		return true
 	default:
 		return false
@@ -804,22 +420,22 @@ func (e SearchEntityAuditEventsParamsEventType) Valid() bool {
 
 // Defines values for SearchEntityAuditEventsParamsSeverity.
 const (
-	DEBUG SearchEntityAuditEventsParamsSeverity = "DEBUG"
-	ERROR SearchEntityAuditEventsParamsSeverity = "ERROR"
-	INFO  SearchEntityAuditEventsParamsSeverity = "INFO"
-	WARN  SearchEntityAuditEventsParamsSeverity = "WARN"
+	SearchEntityAuditEventsParamsSeverityDEBUG SearchEntityAuditEventsParamsSeverity = "DEBUG"
+	SearchEntityAuditEventsParamsSeverityERROR SearchEntityAuditEventsParamsSeverity = "ERROR"
+	SearchEntityAuditEventsParamsSeverityINFO  SearchEntityAuditEventsParamsSeverity = "INFO"
+	SearchEntityAuditEventsParamsSeverityWARN  SearchEntityAuditEventsParamsSeverity = "WARN"
 )
 
 // Valid indicates whether the value is a known member of the SearchEntityAuditEventsParamsSeverity enum.
 func (e SearchEntityAuditEventsParamsSeverity) Valid() bool {
 	switch e {
-	case DEBUG:
+	case SearchEntityAuditEventsParamsSeverityDEBUG:
 		return true
-	case ERROR:
+	case SearchEntityAuditEventsParamsSeverityERROR:
 		return true
-	case INFO:
+	case SearchEntityAuditEventsParamsSeverityINFO:
 		return true
-	case WARN:
+	case SearchEntityAuditEventsParamsSeverityWARN:
 		return true
 	default:
 		return false
@@ -1087,11 +703,6 @@ func (e GetTechnicalUserTokenFormdataBodySubjectTokenType) Valid() bool {
 	}
 }
 
-// AbstractConditionDto defines model for AbstractConditionDto.
-type AbstractConditionDto struct {
-	Type string `json:"type"`
-}
-
 // AggregateOp Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
 type AggregateOp string
 
@@ -1105,19 +716,6 @@ type AggregationExpr struct {
 
 	// Op Aggregation operator. `sum`, `avg`, `min`, `max`, and `stdev` apply to scalar numeric fields; non-numeric or missing values are skipped per spec §3 (D4 semantics — see grouped-stats design doc).
 	Op AggregateOp `json:"op"`
-}
-
-// ArrayConditionDto defines model for ArrayConditionDto.
-type ArrayConditionDto struct {
-	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses. An `array` clause's path must end in `[*]` and contain no other `[*]`.
-	JsonPath *string `json:"jsonPath,omitempty"`
-
-	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
-	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
-	Type         string                 `json:"type"`
-
-	// Values One entry per array position, from index 0. `operatorType` is applied at every position whose entry is not `null`; a `null` entry tests nothing at that position. An entry is a scalar, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. For `IS_NULL` and `NOT_NULL` a non-null entry only selects the position. At least one entry must be non-null; a clause that tests no position is refused with 400 `INVALID_CONDITION`. A whole condition may test at most 10,000 entries: each entry here counts one, `null` entries included, a function clause counts one plus the entries of its pre-check, and every other clause counts one; a larger condition is refused with 400 `INVALID_CONDITION`.
-	Values *[]interface{} `json:"values,omitempty"`
 }
 
 // AsyncSearchStatusDto defines model for AsyncSearchStatusDto.
@@ -1182,7 +780,7 @@ type AuditEventDto struct {
 	MicrosTime int64 `json:"microsTime"`
 
 	// Severity Severity level of the event
-	Severity AuditEventDtoSeverity `json:"severity"`
+	Severity AuditEventSeverity `json:"severity"`
 
 	// System Flag indicating whether this is a system-level event
 	System *bool `json:"system,omitempty"`
@@ -1194,8 +792,8 @@ type AuditEventDto struct {
 	UtcTime time.Time `json:"utcTime"`
 }
 
-// AuditEventDtoSeverity Severity level of the event
-type AuditEventDtoSeverity string
+// AuditEventSeverity Severity level of the event
+type AuditEventSeverity string
 
 // AuditPrincipalDto The principal that executed the request — that made a change or sent a message — independent of the attributed principal. Present only when one was recorded.
 type AuditPrincipalDto struct {
@@ -1218,29 +816,11 @@ type CancelAsyncSearchDto struct {
 // CancelAsyncSearchDtoCurrentSearchJobStatus defines model for CancelAsyncSearchDto.CurrentSearchJobStatus.
 type CancelAsyncSearchDtoCurrentSearchJobStatus string
 
-// ConditionOperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
-type ConditionOperatorType string
-
 // ConsistencyTimeDto defines model for ConsistencyTimeDto.
 type ConsistencyTimeDto struct {
 	// ConsistencyTime The consistency time, at the store's full precision. Pass it unchanged as pointInTime.
 	ConsistencyTime time.Time `json:"consistencyTime"`
 }
-
-// CriterionGroupConditionDto defines model for CriterionGroupConditionDto.
-type CriterionGroupConditionDto struct {
-	Conditions *[]CriterionGroupConditionDto_Conditions_Item `json:"conditions,omitempty"`
-	Operator   *CriterionGroupConditionDtoOperator           `json:"operator,omitempty"`
-	Type       string                                        `json:"type"`
-}
-
-// CriterionGroupConditionDto_Conditions_Item defines model for CriterionGroupConditionDto.conditions.Item.
-type CriterionGroupConditionDto_Conditions_Item struct {
-	union json.RawMessage
-}
-
-// CriterionGroupConditionDtoOperator defines model for CriterionGroupConditionDto.Operator.
-type CriterionGroupConditionDtoOperator string
 
 // CursorPaginationInfoDto defines model for CursorPaginationInfoDto.
 type CursorPaginationInfoDto struct {
@@ -1311,66 +891,9 @@ type EdgeMessagePayload = interface{}
 // EntityAuditEventsResponseDto defines model for EntityAuditEventsResponseDto.
 type EntityAuditEventsResponseDto struct {
 	// Items Audit events for the entity
-	Items      *[]EntityAuditEventsResponseDto_Items_Item `json:"items,omitempty"`
-	Pagination CursorPaginationInfoDto                    `json:"pagination"`
+	Items      *[]AuditEventDto        `json:"items,omitempty"`
+	Pagination CursorPaginationInfoDto `json:"pagination"`
 }
-
-// EntityAuditEventsResponseDto_Items_Item defines model for EntityAuditEventsResponseDto.items.Item.
-type EntityAuditEventsResponseDto_Items_Item struct {
-	union json.RawMessage
-}
-
-// EntityChangeAuditEventDto defines model for EntityChangeAuditEventDto.
-type EntityChangeAuditEventDto struct {
-	// Actor Actor related to this event
-	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
-	AuditEventType string             `json:"auditEventType"`
-
-	// ChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
-	ChangeType *EntityChangeAuditEventDtoChangeType `json:"changeType,omitempty"`
-
-	// Changes Changes made to the entity
-	Changes *EntityChangesDto `json:"changes,omitempty"`
-
-	// ConsistencyTime Cyoda consistency time
-	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
-
-	// Details Details of the event
-	Details *string `json:"details,omitempty"`
-
-	// EntityId Identifier of the entity related to this event
-	EntityId *openapi_types.UUID `json:"entityId,omitempty"`
-
-	// EntityModel Type of the entity related to this event (model.version)
-	EntityModel *string `json:"entityModel,omitempty"`
-
-	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
-	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
-
-	// MicrosTime time in microseconds when the event occurred
-	MicrosTime int64 `json:"microsTime"`
-
-	// Severity Severity level of the event
-	Severity EntityChangeAuditEventDtoSeverity `json:"severity"`
-
-	// System Flag indicating whether this is a system-level event
-	System *bool `json:"system,omitempty"`
-
-	// TransactionId Transaction identifier related to this event
-	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
-
-	// UtcTime UTC time when the event occurred
-	UtcTime time.Time `json:"utcTime"`
-
-	// Version The entity's version number for this change. Strictly increasing over the entity's history, across delete and recreate; (entityId, version) identifies the event.
-	Version *int64 `json:"version,omitempty"`
-}
-
-// EntityChangeAuditEventDtoChangeType Type of change that occurred (canonical wire spelling; CREATE/UPDATE/DELETE)
-type EntityChangeAuditEventDtoChangeType string
-
-// EntityChangeAuditEventDtoSeverity Severity level of the event
-type EntityChangeAuditEventDtoSeverity string
 
 // EntityChangeMeta One entry in an entity's change history. `user` is the attributed
 // actor and is always present. `attributedKind` and `executedBy` are
@@ -1395,15 +918,6 @@ type EntityChangeMeta struct {
 
 // EntityChangeMetaChangeType defines model for EntityChangeMeta.ChangeType.
 type EntityChangeMetaChangeType string
-
-// EntityChangesDto defines model for EntityChangesDto.
-type EntityChangesDto struct {
-	// After Entity after changes
-	After *JsonNode `json:"after,omitempty"`
-
-	// Before Entity before changes
-	Before *JsonNode `json:"before,omitempty"`
-}
 
 // EntityMetadata System-managed entity metadata. Mirrors the canonical
 // docs/cyoda/schema/common/EntityMetadata.json. Typed-but-open: known
@@ -1604,199 +1118,6 @@ type ErrorResponseDto struct {
 // ErrorResponseDtoError Error codes from RFC 6749 Section 5.2 (OAuth 2.0 Error Response) identifying the type of error
 type ErrorResponseDtoError string
 
-// ExternalizedFunctionConfigDto defines model for ExternalizedFunctionConfigDto.
-type ExternalizedFunctionConfigDto struct {
-	// AttachEntity Whether to attach the full entity payload to the criterion function calculation request. Defaults to true.
-	AttachEntity *bool `json:"attachEntity,omitempty"`
-
-	// CalculationNodesTags Comma-separated list of calculation node tags
-	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
-
-	// Context Pass-through string forwarded verbatim as the `parameters` JSON
-	// node of the outgoing `EntityCriteriaCalculationRequest`. The value
-	// is encoded as a JSON string (pass-as-string); the receiver gets a
-	// JSON-quoted string in `parameters`. Empty value causes the
-	// `parameters` field to be omitted entirely. Use to distinguish
-	// multiple workflow roles served by a single externalized criterion
-	// implementation without registering a separate name per role.
-	Context *string `json:"context,omitempty"`
-
-	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
-	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
-	// applies (default 30000). Must not exceed the server's
-	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
-	// rejects a larger or a negative value with HTTP 400
-	// VALIDATION_FAILED. The bound is a server setting, so a workflow
-	// exported from one deployment can be refused by another with a
-	// lower bound.
-	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
-
-	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
-	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
-	// retries after the first). The number of tries is
-	// server-configured, and is the normal number, not a hard limit.
-	// When omitted, FIXED applies. Import-time validation rejects any
-	// other value with HTTP 400 VALIDATION_FAILED.
-	RetryPolicy *ExternalizedFunctionConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
-}
-
-// ExternalizedFunctionConfigDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
-// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
-// retries after the first). The number of tries is
-// server-configured, and is the normal number, not a hard limit.
-// When omitted, FIXED applies. Import-time validation rejects any
-// other value with HTTP 400 VALIDATION_FAILED.
-type ExternalizedFunctionConfigDtoRetryPolicy string
-
-// ExternalizedFunctionDto defines model for ExternalizedFunctionDto.
-type ExternalizedFunctionDto struct {
-	Config *ExternalizedFunctionConfigDto `json:"config,omitempty"`
-
-	// Criterion Optional pre-check, evaluated before the function is called. It holds
-	// only local conditions (`simple`, `lifecycle`, `array`, and `group` of
-	// those); a `function` condition anywhere in it is refused at import
-	// with 400 VALIDATION_FAILED. When the pre-check does not match, the
-	// function condition is false and the function is not called; when it
-	// matches, or is absent or `null`, the function is called and its
-	// answer is the function condition's value.
-	Criterion *interface{} `json:"criterion,omitempty"`
-
-	// Name Name of the function that returns boolean
-	Name string `json:"name"`
-}
-
-// ExternalizedProcessorConfigDto defines model for ExternalizedProcessorConfigDto.
-type ExternalizedProcessorConfigDto struct {
-	// AsyncResult Whether to await the result asynchronously, outside of the
-	// transaction. Behavior is storage-engine-plugin dependent — not
-	// every plugin implements crossover semantics; consult the runtime
-	// plugin's documentation for the supported behavior. This backend
-	// does not implement async/crossover semantics; imports that set
-	// asyncResult=true are rejected with HTTP 400 VALIDATION_FAILED.
-	// The field is round-tripped for nil (absent) and the explicit-
-	// false case.
-	AsyncResult *bool `json:"asyncResult,omitempty"`
-
-	// AttachEntity Whether to attach the full entity payload to the processor calculation request. Defaults to true.
-	AttachEntity *bool `json:"attachEntity,omitempty"`
-
-	// CalculationNodesTags Comma-separated list of calculation node tags
-	CalculationNodesTags *string `json:"calculationNodesTags,omitempty"`
-
-	// Context Pass-through string forwarded verbatim as the `parameters` JSON
-	// node of the outgoing `EntityProcessorCalculationRequest`. The
-	// value is encoded as a JSON string (pass-as-string); the receiver
-	// gets a JSON-quoted string in `parameters`. Empty value causes the
-	// `parameters` field to be omitted entirely. Use to distinguish
-	// multiple workflow roles served by a single externalized processor
-	// implementation without registering a separate name per role.
-	Context *string `json:"context,omitempty"`
-
-	// CrossoverToAsyncMs Crossover delay to switch to asynchronous processing (ms),
-	// effective only when asyncResult is true. Behavior is
-	// storage-engine-plugin dependent — see asyncResult. This
-	// backend does not implement async/crossover semantics; imports
-	// that set any value for crossoverToAsyncMs are rejected with
-	// HTTP 400 VALIDATION_FAILED.
-	CrossoverToAsyncMs *int64 `json:"crossoverToAsyncMs,omitempty"`
-
-	// Idempotent The workflow author's declaration that running this processor
-	// again is safe — for cyoda and for every system the processor
-	// touches. When true, the work may be given to another compute
-	// member after a member that received it went silent or dropped
-	// its connection, and a scheduled transition whose run failed
-	// after this processor was sent is retried. When false (the
-	// default), a scheduled run whose processor may have reached a
-	// compute member ends FAILED with the reason
-	// UNSAFE_WORK_NOT_COMPLETED and is not run again, because a
-	// member may have acted; if the processor's callout provably
-	// never reached a compute member, the run is retried like any
-	// other failure. Criteria and functions are always treated as
-	// safe to repeat and carry no such field.
-	Idempotent *bool `json:"idempotent,omitempty"`
-
-	// ResponseTimeoutMs How long to wait for the compute member's answer, in milliseconds.
-	// When absent or 0 the server's CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
-	// applies (default 30000). Must not exceed the server's
-	// CYODA_CALLOUT_RESPONSE_TIMEOUT_MAX_MS (default 60000); import
-	// rejects a larger or a negative value with HTTP 400
-	// VALIDATION_FAILED. The bound is a server setting, so a workflow
-	// exported from one deployment can be refused by another with a
-	// lower bound.
-	ResponseTimeoutMs *int64 `json:"responseTimeoutMs,omitempty"`
-
-	// RetryPolicy Retry policy selector. NONE → one try. FIXED → the
-	// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
-	// retries after the first). The number of tries is
-	// server-configured, and is the normal number, not a hard limit.
-	// When omitted, FIXED applies. Import-time validation rejects any
-	// other value with HTTP 400 VALIDATION_FAILED.
-	RetryPolicy *ExternalizedProcessorConfigDtoRetryPolicy `json:"retryPolicy,omitempty"`
-}
-
-// ExternalizedProcessorConfigDtoRetryPolicy Retry policy selector. NONE → one try. FIXED → the
-// server-configured number of tries (CYODA_RETRY_FIXED_NUM_RETRIES
-// retries after the first). The number of tries is
-// server-configured, and is the normal number, not a hard limit.
-// When omitted, FIXED applies. Import-time validation rejects any
-// other value with HTTP 400 VALIDATION_FAILED.
-type ExternalizedProcessorConfigDtoRetryPolicy string
-
-// ExternalizedProcessorDefinitionDto defines model for ExternalizedProcessorDefinitionDto.
-type ExternalizedProcessorDefinitionDto struct {
-	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
-	Annotations *WorkflowElementAnnotations     `json:"annotations,omitempty"`
-	Config      *ExternalizedProcessorConfigDto `json:"config,omitempty"`
-
-	// ExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
-	// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
-	// the cascade transaction before dispatch and opens a new one on
-	// return; the processor's result is applied via CompareAndSave
-	// using the prior commit's transaction ID as the expected version.
-	ExecutionMode *ExternalizedProcessorDefinitionDtoExecutionMode `json:"executionMode,omitempty"`
-
-	// Name Name of the processor
-	Name string `json:"name"`
-
-	// StartNewTxOnDispatch Only meaningful when executionMode is COMMIT_BEFORE_DISPATCH. If
-	// true, a new transaction is opened before dispatching the
-	// processor so the processor can perform transactional work
-	// during its execution. Connection is held in that new
-	// transaction during dispatch. If false (default), the processor
-	// runs with no transaction context; the connection is released
-	// entirely during processor execution.
-	StartNewTxOnDispatch *bool `json:"startNewTxOnDispatch,omitempty"`
-
-	// Type Processor execution-location axis. `externalized` dispatches the
-	// processor via gRPC to a calculation node selected by
-	// `calculationNodesTags`. Empty or omitted is treated as
-	// `externalized` by the runtime. The engine reserves the value
-	// `internalized` for an in-process execution location not yet
-	// implemented; any payload carrying `type: "internalized"` is
-	// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-	// reserved value is intentionally absent from this enum until the
-	// in-process subtype lands together with its schema.
-	Type *ExternalizedProcessorDefinitionDtoType `json:"type,omitempty"`
-}
-
-// ExternalizedProcessorDefinitionDtoExecutionMode Processor execution semantics. SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX
-// run inside the cascade transaction. COMMIT_BEFORE_DISPATCH commits
-// the cascade transaction before dispatch and opens a new one on
-// return; the processor's result is applied via CompareAndSave
-// using the prior commit's transaction ID as the expected version.
-type ExternalizedProcessorDefinitionDtoExecutionMode string
-
-// ExternalizedProcessorDefinitionDtoType Processor execution-location axis. `externalized` dispatches the
-// processor via gRPC to a calculation node selected by
-// `calculationNodesTags`. Empty or omitted is treated as
-// `externalized` by the runtime. The engine reserves the value
-// `internalized` for an in-process execution location not yet
-// implemented; any payload carrying `type: "internalized"` is
-// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-// reserved value is intentionally absent from this enum until the
-// in-process subtype lands together with its schema.
-type ExternalizedProcessorDefinitionDtoType string
-
 // FieldConfigDto defines model for FieldConfigDto.
 type FieldConfigDto struct {
 	ArrayFields   *[]FieldConfigDto `json:"arrayFields,omitempty"`
@@ -1809,33 +1130,12 @@ type FieldConfigDto struct {
 	IsArray       *bool             `json:"isArray,omitempty"`
 }
 
-// FunctionConditionDto defines model for FunctionConditionDto.
-type FunctionConditionDto struct {
-	Function *ExternalizedFunctionDto `json:"function,omitempty"`
-	Type     string                   `json:"type"`
-}
-
-// GroupConditionDto defines model for GroupConditionDto.
-type GroupConditionDto struct {
-	Conditions *[]GroupConditionDto_Conditions_Item `json:"conditions,omitempty"`
-	Operator   *GroupConditionDtoOperator           `json:"operator,omitempty"`
-	Type       string                               `json:"type"`
-}
-
-// GroupConditionDto_Conditions_Item defines model for GroupConditionDto.conditions.Item.
-type GroupConditionDto_Conditions_Item struct {
-	union json.RawMessage
-}
-
-// GroupConditionDtoOperator defines model for GroupConditionDto.Operator.
-type GroupConditionDtoOperator string
-
 // GroupKeyEntry One (path, value) pair in a bucket's ordered group key. `path` echoes the corresponding `groupBy` dimension; `value` is the observed value (any JSON scalar) or `null` when the field is absent or non-scalar (D4 semantics).
 type GroupKeyEntry struct {
 	// Path Group-by dimension (echoes the request entry).
 	Path string `json:"path"`
 
-	// Value Observed value for this dimension, or null.
+	// Value Observed value for this dimension: a string, number or boolean, or `null`. Never an object or an array.
 	Value interface{} `json:"value"`
 }
 
@@ -1856,8 +1156,8 @@ type GroupedStatsRequest struct {
 	// Aggregations Optional per-group aggregations.
 	Aggregations *[]AggregationExpr `json:"aggregations,omitempty"`
 
-	// Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
-	Condition *GroupedStatsRequest_Condition `json:"condition,omitempty"`
+	// Condition Optional Condition DSL predicate restricting the population, as in a search body. A `function` condition, at any depth, is refused here with 400 `INVALID_CONDITION`.
+	Condition *QueryConditionDto `json:"condition,omitempty"`
 
 	// GroupBy Ordered list of group-by dimensions. Each entry is either the reserved token `state` (a token, not a path — no leader) or a scalar JSONPath. At least one entry is required. A JSONPath is a REQUIRED `$.` leader followed by dot-separated segments of ASCII letters, digits, `_` and `-`. Anything else — a missing leader (`country`), bracket-quoted property access (`$['country']`), array projections, recursive descent, whitespace, quotes, non-ASCII — is rejected with 400 `INVALID_GROUP_BY_PATH`. Paths are validated, never rewritten: the response `groupKey` path echoes exactly what the request sent.
 	GroupBy []string `json:"groupBy"`
@@ -1867,11 +1167,6 @@ type GroupedStatsRequest struct {
 
 	// PointInTime Optional point-in-time for the query in ISO 8601 / RFC 3339 format. Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
 	PointInTime *time.Time `json:"pointInTime,omitempty"`
-}
-
-// GroupedStatsRequest_Condition Optional Condition DSL predicate restricting the population. Uses the same union shape as the async-search endpoint.
-type GroupedStatsRequest_Condition struct {
-	union json.RawMessage
 }
 
 // InvalidateKeyRequestDto Body of the key-pair invalidate request. Trusted keys have no grace period, and their invalidate request has no body.
@@ -1900,9 +1195,6 @@ type IssueJwtKeyPairRequestDto struct {
 
 // IssueJwtKeyPairRequestDtoAlgorithm Signing algorithm. Only `RS256` is honoured in this version.
 type IssueJwtKeyPairRequestDtoAlgorithm string
-
-// JsonNode defines model for JsonNode.
-type JsonNode = map[string]interface{}
 
 // JwtKeyPairResponseDto defines model for JwtKeyPairResponseDto.
 type JwtKeyPairResponseDto struct {
@@ -1942,18 +1234,6 @@ type LegalEntityInfoDto struct {
 
 	// Name Name of the legal entity
 	Name string `json:"name"`
-}
-
-// LifecycleConditionDto defines model for LifecycleConditionDto.
-type LifecycleConditionDto struct {
-	Field *string `json:"field,omitempty"`
-
-	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
-	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
-	Type         string                 `json:"type"`
-
-	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
-	Value *interface{} `json:"value,omitempty"`
 }
 
 // MessageDeleteBatchResponse One element of the array returned by deleteMessages (batch delete).
@@ -2065,30 +1345,18 @@ type ProcessorDefinitionDto struct {
 	// Name Name of the processor
 	Name string `json:"name"`
 
-	// Type Processor execution-location axis. `externalized` dispatches the
-	// processor via gRPC to a calculation node selected by
-	// `calculationNodesTags`. Empty or omitted is treated as
-	// `externalized` by the runtime. The engine reserves the value
-	// `internalized` for an in-process execution location not yet
-	// implemented; any payload carrying `type: "internalized"` is
-	// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-	// reserved value is intentionally absent from this enum until the
-	// in-process subtype lands together with its schema.
-	Type *ProcessorDefinitionDtoType `json:"type,omitempty"`
+	// Type Processor execution-location axis; the mapping lists the known
+	// values. `externalized` dispatches the processor via gRPC to a
+	// calculation node selected by `calculationNodesTags`. Empty or
+	// omitted is treated as `externalized` by the runtime. The engine
+	// reserves the value `internalized` for an in-process execution
+	// location not yet implemented; any payload carrying
+	// `type: "internalized"` is rejected at engine dispatch with
+	// `WORKFLOW_FAILED` (400).
+	Type *string `json:"type,omitempty"`
 }
 
-// ProcessorDefinitionDtoType Processor execution-location axis. `externalized` dispatches the
-// processor via gRPC to a calculation node selected by
-// `calculationNodesTags`. Empty or omitted is treated as
-// `externalized` by the runtime. The engine reserves the value
-// `internalized` for an in-process execution location not yet
-// implemented; any payload carrying `type: "internalized"` is
-// rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-// reserved value is intentionally absent from this enum until the
-// in-process subtype lands together with its schema.
-type ProcessorDefinitionDtoType string
-
-// QueryConditionDto defines model for QueryConditionDto.
+// QueryConditionDto A condition. `type` names its form; the mapping lists the known forms. Every condition position (a search, async search, grouped-stats or conditional-delete body, a workflow or transition `criterion`, a group's `conditions`, a function's pre-check) takes any of them; where a `function` condition is refused, the position's description says so.
 type QueryConditionDto struct {
 	Type string `json:"type"`
 }
@@ -2248,19 +1516,6 @@ type SetUniqueKeysRequest struct {
 	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
 }
 
-// SimpleConditionDto defines model for SimpleConditionDto.
-type SimpleConditionDto struct {
-	// JsonPath JSON Path addressing a data field. The `$.` leader is REQUIRED: `jsonPath = "$." segment ( "." segment )*`, `segment = name subscript*`, `name = 1*( ALPHA / DIGIT / "_" / "-" )` (ASCII only), `subscript = "[" ( "*" / 1*DIGIT ) "]"`. A bare `amount` is not a path and is rejected 400 `INVALID_FIELD_PATH`, as are an empty path, an empty or trailing segment (`$..a`, `$.a.`), bracket-quoted property access (`$['x']`, `$.a["b"]` — write `$.x`), and any character outside the segment set. A WELL-FORMED subscript — the wildcard `[*]` or a non-negative index `[0]` — is valid and accepted (`$.tags[*].name`, `$.arr[0]`, `$.matrix[*][*]`); it is evaluated in memory rather than pushed into the storage query. A positional subscript resolves to that element's value; a path ending in `[*]` addresses EVERY element, so the leaf holds when SOME element satisfies it and nothing matches an empty array. A trailing `[*]` whose elements are pure objects is rejected 400 `INVALID_FIELD_PATH` under a scalar operator — navigate to the leaf (`$.items[*].sku`). Every other bracket spelling is rejected 400: unclosed or unmatched (`$.a[`, `$.a]`), no field name before it (`$.[0]`), empty (`$.a[]`), negative or signed (`$.a[-1]`), a slice (`$.a[0:2]`), a union (`$.a[0,1]`), a filter expression (`$.a[?(@.x)]`), or whitespace inside (`$.a[ 0]`). The whole path is scanned, so trailing junk after a valid subscript is rejected too (`$.a[0]b`, `$.a[*]..b`). `INVALID_FIELD_PATH` is the code on the search-shaped surfaces (search, async submit, conditional delete, grouped-stats `condition`). This schema is also a member of the workflow/transition `criterion` union, where the same grammar is enforced at workflow import and the code is `VALIDATION_FAILED` instead — the import-time code every other criterion rejection uses.
-	JsonPath *string `json:"jsonPath,omitempty"`
-
-	// OperatorType A leaf condition's operator. This is the set the server accepts on a `simple`, `lifecycle` and `array` clause; any other name is refused with 400 `INVALID_CONDITION`. See `cyoda help predicates` for each operator's meaning and the field types it applies to.
-	OperatorType *ConditionOperatorType `json:"operatorType,omitempty"`
-	Type         string                 `json:"type"`
-
-	// Value The operand: a string, number or boolean, or a `[low, high]` pair for `BETWEEN` and `BETWEEN_INCLUSIVE`. Only `IS_NULL` and `NOT_NULL` take no operand, so only for them may `value` be absent or `null`; under any other operator a missing or `null` value is refused with 400. An object, or any other array, is refused with 400.
-	Value *interface{} `json:"value,omitempty"`
-}
-
 // SingleDeleteResult defines model for SingleDeleteResult.
 type SingleDeleteResult struct {
 	Id            openapi_types.UUID `json:"id"`
@@ -2301,15 +1556,15 @@ type StateMachineAuditEventDto struct {
 	// EventId The event's identity: a time-based UUID the server assigned when it recorded the event. The same on every read.
 	EventId *openapi_types.UUID `json:"eventId,omitempty"`
 
-	// EventType Type of the state machine event. `TRANSITION_ABORTED` is
-	// a cyoda-go extension emitted as a
-	// compensating event when an in-flight transition is
-	// rejected by a stale `ifMatch` precondition; its `data`
-	// payload carries `{reason: "ENTITY_MODIFIED",
-	// transitionName, expectedTxId, actualTxId}` so consumers
-	// can pair the entry-side `STATE_MACHINE_START` with a
-	// terminal abort event in the audit log.
-	EventType *StateMachineAuditEventDtoEventType `json:"eventType,omitempty"`
+	// EventType Type of the state machine event. Its known values are the
+	// keys of the mapping of `StateMachineEventDto`, the schema of
+	// `data`. The set grows: a client accepts any other value.
+	// `TRANSITION_ABORTED` is a cyoda-go extension emitted as a
+	// compensating event when an in-flight transition is rejected
+	// by a stale `ifMatch` precondition, so consumers can pair the
+	// entry-side `STATE_MACHINE_START` with a terminal abort event
+	// in the audit log.
+	EventType *string `json:"eventType,omitempty"`
 
 	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
 	ExecutedBy *AuditPrincipalDto `json:"executedBy,omitempty"`
@@ -2318,7 +1573,7 @@ type StateMachineAuditEventDto struct {
 	MicrosTime int64 `json:"microsTime"`
 
 	// Severity Severity level of the event
-	Severity StateMachineAuditEventDtoSeverity `json:"severity"`
+	Severity AuditEventSeverity `json:"severity"`
 
 	// State State of the entity where the event occurred within the state machine
 	State *string `json:"state,omitempty"`
@@ -2332,19 +1587,6 @@ type StateMachineAuditEventDto struct {
 	// UtcTime UTC time when the event occurred
 	UtcTime time.Time `json:"utcTime"`
 }
-
-// StateMachineAuditEventDtoEventType Type of the state machine event. `TRANSITION_ABORTED` is
-// a cyoda-go extension emitted as a
-// compensating event when an in-flight transition is
-// rejected by a stale `ifMatch` precondition; its `data`
-// payload carries `{reason: "ENTITY_MODIFIED",
-// transitionName, expectedTxId, actualTxId}` so consumers
-// can pair the entry-side `STATE_MACHINE_START` with a
-// terminal abort event in the audit log.
-type StateMachineAuditEventDtoEventType string
-
-// StateMachineAuditEventDtoSeverity Severity level of the event
-type StateMachineAuditEventDtoSeverity string
 
 // StreamDataDeleteResult defines model for StreamDataDeleteResult.
 type StreamDataDeleteResult struct {
@@ -2404,61 +1646,6 @@ type SubscriptionLimitDtoTimeIntervalBound string
 type SubscriptionsResponseDto struct {
 	Subscriptions []SubscriptionDto `json:"subscriptions"`
 }
-
-// SystemAuditEventDto defines model for SystemAuditEventDto.
-type SystemAuditEventDto struct {
-	// Actor Actor related to this event
-	Actor          *AuditActorInfoDto `json:"actor,omitempty"`
-	AuditEventType string             `json:"auditEventType"`
-
-	// ConsistencyTime Cyoda consistency time
-	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
-
-	// Data Object containing specific event data with technical information
-	Data *JsonNode `json:"data,omitempty"`
-
-	// Details Details of the event
-	Details *string `json:"details,omitempty"`
-
-	// DoneTime Time when the operation completed, if applicable
-	DoneTime *time.Time `json:"doneTime,omitempty"`
-
-	// EntityId Identifier of the entity related to this event
-	EntityId *openapi_types.UUID `json:"entityId,omitempty"`
-
-	// EntityModel Type of the entity related to this event (model.version)
-	EntityModel *string `json:"entityModel,omitempty"`
-
-	// ErrorTime Time when an error occurred, if applicable
-	ErrorTime *time.Time `json:"errorTime,omitempty"`
-
-	// MicrosTime time in microseconds when the event occurred
-	MicrosTime int64 `json:"microsTime"`
-
-	// QueueName Name of the queue involved in the operation, if applicable
-	QueueName *string `json:"queueName,omitempty"`
-
-	// Severity Severity level of the event
-	Severity SystemAuditEventDtoSeverity `json:"severity"`
-
-	// ShardId Identifier of the shard involved in the operation, if applicable
-	ShardId *string `json:"shardId,omitempty"`
-
-	// Status Status of the system operation, if applicable
-	Status *string `json:"status,omitempty"`
-
-	// System Flag indicating whether this is a system-level event
-	System *bool `json:"system,omitempty"`
-
-	// TransactionId Transaction identifier related to this event
-	TransactionId *openapi_types.UUID `json:"transactionId,omitempty"`
-
-	// UtcTime UTC time when the event occurred
-	UtcTime time.Time `json:"utcTime"`
-}
-
-// SystemAuditEventDtoSeverity Severity level of the event
-type SystemAuditEventDtoSeverity string
 
 // TechnicalUserCredentialsDto defines model for TechnicalUserCredentialsDto.
 type TechnicalUserCredentialsDto struct {
@@ -2526,8 +1713,10 @@ type TokenResponseDtoTokenType string
 // TransitionDefinitionDto defines model for TransitionDefinitionDto.
 type TransitionDefinitionDto struct {
 	// Annotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
-	Annotations *WorkflowElementAnnotations        `json:"annotations,omitempty"`
-	Criterion   *TransitionDefinitionDto_Criterion `json:"criterion,omitempty"`
+	Annotations *WorkflowElementAnnotations `json:"annotations,omitempty"`
+
+	// Criterion Optional criterion the transition requires. Any condition is valid here, a `function` condition at any depth included.
+	Criterion *QueryConditionDto `json:"criterion,omitempty"`
 
 	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
 	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
@@ -2545,7 +1734,7 @@ type TransitionDefinitionDto struct {
 	Next string `json:"next"`
 
 	// Processors List of processors to execute for this transition
-	Processors *[]TransitionDefinitionDto_Processors_Item `json:"processors,omitempty"`
+	Processors *[]ProcessorDefinitionDto `json:"processors,omitempty"`
 
 	// Schedule Optional scheduling configuration. Presence marks the transition
 	// as scheduled — it fires automatically at a computed time (every
@@ -2558,16 +1747,6 @@ type TransitionDefinitionDto struct {
 	// `cyoda help workflows` (authoring) and `cyoda help config scheduler`
 	// (runtime tuning).
 	Schedule *TransitionScheduleDto `json:"schedule,omitempty"`
-}
-
-// TransitionDefinitionDto_Criterion defines model for TransitionDefinitionDto.Criterion.
-type TransitionDefinitionDto_Criterion struct {
-	union json.RawMessage
-}
-
-// TransitionDefinitionDto_Processors_Item defines model for TransitionDefinitionDto.processors.Item.
-type TransitionDefinitionDto_Processors_Item struct {
-	union json.RawMessage
 }
 
 // TransitionNameList An ordered list of workflow transition names available from the entity's current state. Each entry is the name of a configured transition (e.g. "APPROVE", "REJECT") or a virtual loopback transition name. An empty array means no transitions are available from the current state.
@@ -2702,8 +1881,8 @@ type WorkflowConfigurationDto struct {
 	// embedded default workflow and emits both a body warning and
 	// an operator-visible `slog.Warn` line. Workflow-level criteria
 	// use the same Condition DSL as search and transition-level
-	// criteria.
-	Criterion *WorkflowConfigurationDto_Criterion `json:"criterion,omitempty"`
+	// criteria, and a `function` condition is valid at any depth.
+	Criterion *QueryConditionDto `json:"criterion,omitempty"`
 
 	// CriterionAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
 	CriterionAnnotations *WorkflowElementAnnotations `json:"criterionAnnotations,omitempty"`
@@ -2731,22 +1910,6 @@ type WorkflowConfigurationDto struct {
 	// equivalent CLI `cyoda help workflows schema-version
 	// versions`).
 	Version string `json:"version"`
-}
-
-// WorkflowConfigurationDto_Criterion Optional selection criterion evaluated against the entity to
-// decide which of several workflows applies. When a model has
-// multiple workflow definitions, the engine iterates them in
-// declaration order and picks the first one whose `active` flag
-// is true AND whose `criterion` matches the entity. A `null`
-// (absent) criterion matches unconditionally. If no active
-// workflow matches — and `active=false` workflows are skipped
-// entirely during selection — the engine falls back to the
-// embedded default workflow and emits both a body warning and
-// an operator-visible `slog.Warn` line. Workflow-level criteria
-// use the same Condition DSL as search and transition-level
-// criteria.
-type WorkflowConfigurationDto_Criterion struct {
-	union json.RawMessage
 }
 
 // WorkflowElementAnnotations Client-owned metadata attached to a workflow element, stored and round-tripped verbatim and never interpreted by the engine. The engine validates only that the value is a JSON object of at most 64 KB (compacted); it does not enforce the types of the well-known keys below, which are a documented convention for renderers. Additional client keys are permitted.
@@ -3318,9 +2481,7 @@ type UpdateSingleParams struct {
 type UpdateSingleParamsFormat string
 
 // CreateJSONBody defines parameters for Create.
-type CreateJSONBody struct {
-	union json.RawMessage
-}
+type CreateJSONBody = interface{}
 
 // CreateParams defines parameters for Create.
 type CreateParams struct {
@@ -3359,12 +2520,6 @@ type CreateParams struct {
 
 // CreateParamsFormat defines parameters for Create.
 type CreateParamsFormat string
-
-// CreateJSONBody0 defines parameters for Create.
-type CreateJSONBody0 map[string]interface{}
-
-// CreateJSONBody1 defines parameters for Create.
-type CreateJSONBody1 = []map[string]interface{}
 
 // DeleteMessagesJSONBody defines parameters for DeleteMessages.
 type DeleteMessagesJSONBody = []openapi_types.UUID
@@ -3456,21 +2611,13 @@ type GetMessageParams struct {
 type ExportMetadataParamsConverter string
 
 // ImportEntityModelJSONBody defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody struct {
-	union json.RawMessage
-}
+type ImportEntityModelJSONBody = interface{}
 
 // ImportEntityModelParamsDataFormat defines parameters for ImportEntityModel.
 type ImportEntityModelParamsDataFormat string
 
 // ImportEntityModelParamsConverter defines parameters for ImportEntityModel.
 type ImportEntityModelParamsConverter string
-
-// ImportEntityModelJSONBody0 defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody0 map[string]interface{}
-
-// ImportEntityModelJSONBody1 defines parameters for ImportEntityModel.
-type ImportEntityModelJSONBody1 = []map[string]interface{}
 
 // ValidateEntityModelJSONBody defines parameters for ValidateEntityModel.
 type ValidateEntityModelJSONBody = map[string]interface{}
@@ -3519,11 +2666,6 @@ type ListScheduledTasksParams struct {
 
 // ListScheduledTasksParamsStatus defines parameters for ListScheduledTasks.
 type ListScheduledTasksParamsStatus string
-
-// SubmitAsyncSearchJobJSONBody defines parameters for SubmitAsyncSearchJob.
-type SubmitAsyncSearchJobJSONBody struct {
-	union json.RawMessage
-}
 
 // SubmitAsyncSearchJobParams defines parameters for SubmitAsyncSearchJob.
 type SubmitAsyncSearchJobParams struct {
@@ -3585,11 +2727,6 @@ type GetAsyncSearchStatusParams struct {
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
-// SearchEntitiesJSONBody defines parameters for SearchEntities.
-type SearchEntitiesJSONBody struct {
-	union json.RawMessage
-}
-
 // SearchEntitiesParams defines parameters for SearchEntities.
 type SearchEntitiesParams struct {
 	// PointInTime The point-in-time for searching the entities, in ISO 8601 format. Absent means the current committed state. Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
@@ -3647,7 +2784,7 @@ type GetTechnicalUserTokenFormdataBodySubjectTokenType string
 type QueryGroupedEntityStatisticsForModelJSONRequestBody = GroupedStatsRequest
 
 // DeleteEntitiesJSONRequestBody defines body for DeleteEntities for application/json ContentType.
-type DeleteEntitiesJSONRequestBody = AbstractConditionDto
+type DeleteEntitiesJSONRequestBody = QueryConditionDto
 
 // CreateCollectionJSONRequestBody defines body for CreateCollection for application/json ContentType.
 type CreateCollectionJSONRequestBody = CreateCollectionJSONBody
@@ -3674,7 +2811,7 @@ type PatchSingleApplicationMergePatchPlusJSONRequestBody = PatchSingleApplicatio
 type UpdateSingleJSONRequestBody = UpdateSingleJSONBody
 
 // CreateJSONRequestBody defines body for Create for application/json ContentType.
-type CreateJSONRequestBody CreateJSONBody
+type CreateJSONRequestBody = CreateJSONBody
 
 // DeleteMessagesJSONRequestBody defines body for DeleteMessages for application/json ContentType.
 type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
@@ -3683,7 +2820,7 @@ type DeleteMessagesJSONRequestBody = DeleteMessagesJSONBody
 type NewMessageJSONRequestBody = NewMessageRequest
 
 // ImportEntityModelJSONRequestBody defines body for ImportEntityModel for application/json ContentType.
-type ImportEntityModelJSONRequestBody ImportEntityModelJSONBody
+type ImportEntityModelJSONRequestBody = ImportEntityModelJSONBody
 
 // ValidateEntityModelJSONRequestBody defines body for ValidateEntityModel for application/json ContentType.
 type ValidateEntityModelJSONRequestBody = ValidateEntityModelJSONBody
@@ -3710,10 +2847,10 @@ type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
 
 // SubmitAsyncSearchJobJSONRequestBody defines body for SubmitAsyncSearchJob for application/json ContentType.
-type SubmitAsyncSearchJobJSONRequestBody SubmitAsyncSearchJobJSONBody
+type SubmitAsyncSearchJobJSONRequestBody = QueryConditionDto
 
 // SearchEntitiesJSONRequestBody defines body for SearchEntities for application/json ContentType.
-type SearchEntitiesJSONRequestBody SearchEntitiesJSONBody
+type SearchEntitiesJSONRequestBody = QueryConditionDto
 
 // GetTechnicalUserTokenFormdataRequestBody defines body for GetTechnicalUserToken for application/x-www-form-urlencoded ContentType.
 type GetTechnicalUserTokenFormdataRequestBody GetTechnicalUserTokenFormdataBody
@@ -3799,1418 +2936,6 @@ func (a WorkflowElementAnnotations) MarshalJSON() ([]byte, error) {
 		}
 	}
 	return json.Marshal(object)
-}
-
-// AsArrayConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a ArrayConditionDto
-func (t CriterionGroupConditionDto_Conditions_Item) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided ArrayConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided ArrayConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsCriterionGroupConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a CriterionGroupConditionDto
-func (t CriterionGroupConditionDto_Conditions_Item) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
-	var body CriterionGroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCriterionGroupConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided CriterionGroupConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCriterionGroupConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided CriterionGroupConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a FunctionConditionDto
-func (t CriterionGroupConditionDto_Conditions_Item) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided FunctionConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) FromFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided FunctionConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a LifecycleConditionDto
-func (t CriterionGroupConditionDto_Conditions_Item) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided LifecycleConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided LifecycleConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the CriterionGroupConditionDto_Conditions_Item as a SimpleConditionDto
-func (t CriterionGroupConditionDto_Conditions_Item) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the CriterionGroupConditionDto_Conditions_Item as the provided SimpleConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the CriterionGroupConditionDto_Conditions_Item, using the provided SimpleConditionDto
-func (t *CriterionGroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t CriterionGroupConditionDto_Conditions_Item) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t CriterionGroupConditionDto_Conditions_Item) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "function":
-		return t.AsFunctionConditionDto()
-	case "group":
-		return t.AsCriterionGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t CriterionGroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *CriterionGroupConditionDto_Conditions_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsEntityChangeAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a EntityChangeAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsEntityChangeAuditEventDto() (EntityChangeAuditEventDto, error) {
-	var body EntityChangeAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromEntityChangeAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided EntityChangeAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromEntityChangeAuditEventDto(v EntityChangeAuditEventDto) error {
-	v.AuditEventType = "EntityChange"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeEntityChangeAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided EntityChangeAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeEntityChangeAuditEventDto(v EntityChangeAuditEventDto) error {
-	v.AuditEventType = "EntityChange"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsStateMachineAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a StateMachineAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsStateMachineAuditEventDto() (StateMachineAuditEventDto, error) {
-	var body StateMachineAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromStateMachineAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided StateMachineAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromStateMachineAuditEventDto(v StateMachineAuditEventDto) error {
-	v.AuditEventType = "StateMachine"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeStateMachineAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided StateMachineAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeStateMachineAuditEventDto(v StateMachineAuditEventDto) error {
-	v.AuditEventType = "StateMachine"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSystemAuditEventDto returns the union data inside the EntityAuditEventsResponseDto_Items_Item as a SystemAuditEventDto
-func (t EntityAuditEventsResponseDto_Items_Item) AsSystemAuditEventDto() (SystemAuditEventDto, error) {
-	var body SystemAuditEventDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSystemAuditEventDto overwrites any union data inside the EntityAuditEventsResponseDto_Items_Item as the provided SystemAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) FromSystemAuditEventDto(v SystemAuditEventDto) error {
-	v.AuditEventType = "System"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSystemAuditEventDto performs a merge with any union data inside the EntityAuditEventsResponseDto_Items_Item, using the provided SystemAuditEventDto
-func (t *EntityAuditEventsResponseDto_Items_Item) MergeSystemAuditEventDto(v SystemAuditEventDto) error {
-	v.AuditEventType = "System"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"auditEventType"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "EntityChange":
-		return t.AsEntityChangeAuditEventDto()
-	case "StateMachine":
-		return t.AsStateMachineAuditEventDto()
-	case "System":
-		return t.AsSystemAuditEventDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t EntityAuditEventsResponseDto_Items_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *EntityAuditEventsResponseDto_Items_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a ArrayConditionDto
-func (t GroupConditionDto_Conditions_Item) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided ArrayConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided ArrayConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a GroupConditionDto
-func (t GroupConditionDto_Conditions_Item) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided GroupConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided GroupConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a LifecycleConditionDto
-func (t GroupConditionDto_Conditions_Item) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided LifecycleConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided LifecycleConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the GroupConditionDto_Conditions_Item as a SimpleConditionDto
-func (t GroupConditionDto_Conditions_Item) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the GroupConditionDto_Conditions_Item as the provided SimpleConditionDto
-func (t *GroupConditionDto_Conditions_Item) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the GroupConditionDto_Conditions_Item, using the provided SimpleConditionDto
-func (t *GroupConditionDto_Conditions_Item) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t GroupConditionDto_Conditions_Item) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t GroupConditionDto_Conditions_Item) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "group":
-		return t.AsGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t GroupConditionDto_Conditions_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *GroupConditionDto_Conditions_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the GroupedStatsRequest_Condition as a ArrayConditionDto
-func (t GroupedStatsRequest_Condition) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided ArrayConditionDto
-func (t *GroupedStatsRequest_Condition) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided ArrayConditionDto
-func (t *GroupedStatsRequest_Condition) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the GroupedStatsRequest_Condition as a GroupConditionDto
-func (t GroupedStatsRequest_Condition) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided GroupConditionDto
-func (t *GroupedStatsRequest_Condition) FromGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided GroupConditionDto
-func (t *GroupedStatsRequest_Condition) MergeGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a LifecycleConditionDto
-func (t GroupedStatsRequest_Condition) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided LifecycleConditionDto
-func (t *GroupedStatsRequest_Condition) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided LifecycleConditionDto
-func (t *GroupedStatsRequest_Condition) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the GroupedStatsRequest_Condition as a SimpleConditionDto
-func (t GroupedStatsRequest_Condition) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the GroupedStatsRequest_Condition as the provided SimpleConditionDto
-func (t *GroupedStatsRequest_Condition) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the GroupedStatsRequest_Condition, using the provided SimpleConditionDto
-func (t *GroupedStatsRequest_Condition) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t GroupedStatsRequest_Condition) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t GroupedStatsRequest_Condition) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "group":
-		return t.AsGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t GroupedStatsRequest_Condition) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *GroupedStatsRequest_Condition) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a ArrayConditionDto
-func (t TransitionDefinitionDto_Criterion) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided ArrayConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided ArrayConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsCriterionGroupConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a CriterionGroupConditionDto
-func (t TransitionDefinitionDto_Criterion) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
-	var body CriterionGroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCriterionGroupConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided CriterionGroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCriterionGroupConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided CriterionGroupConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a FunctionConditionDto
-func (t TransitionDefinitionDto_Criterion) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided FunctionConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided FunctionConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a LifecycleConditionDto
-func (t TransitionDefinitionDto_Criterion) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided LifecycleConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided LifecycleConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the TransitionDefinitionDto_Criterion as a SimpleConditionDto
-func (t TransitionDefinitionDto_Criterion) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the TransitionDefinitionDto_Criterion as the provided SimpleConditionDto
-func (t *TransitionDefinitionDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the TransitionDefinitionDto_Criterion, using the provided SimpleConditionDto
-func (t *TransitionDefinitionDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t TransitionDefinitionDto_Criterion) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t TransitionDefinitionDto_Criterion) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "function":
-		return t.AsFunctionConditionDto()
-	case "group":
-		return t.AsCriterionGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t TransitionDefinitionDto_Criterion) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *TransitionDefinitionDto_Criterion) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsExternalizedProcessorDefinitionDto returns the union data inside the TransitionDefinitionDto_Processors_Item as a ExternalizedProcessorDefinitionDto
-func (t TransitionDefinitionDto_Processors_Item) AsExternalizedProcessorDefinitionDto() (ExternalizedProcessorDefinitionDto, error) {
-	var body ExternalizedProcessorDefinitionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromExternalizedProcessorDefinitionDto overwrites any union data inside the TransitionDefinitionDto_Processors_Item as the provided ExternalizedProcessorDefinitionDto
-func (t *TransitionDefinitionDto_Processors_Item) FromExternalizedProcessorDefinitionDto(v ExternalizedProcessorDefinitionDto) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeExternalizedProcessorDefinitionDto performs a merge with any union data inside the TransitionDefinitionDto_Processors_Item, using the provided ExternalizedProcessorDefinitionDto
-func (t *TransitionDefinitionDto_Processors_Item) MergeExternalizedProcessorDefinitionDto(v ExternalizedProcessorDefinitionDto) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t TransitionDefinitionDto_Processors_Item) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *TransitionDefinitionDto_Processors_Item) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a ArrayConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided ArrayConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided ArrayConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsCriterionGroupConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a CriterionGroupConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsCriterionGroupConditionDto() (CriterionGroupConditionDto, error) {
-	var body CriterionGroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCriterionGroupConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided CriterionGroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCriterionGroupConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided CriterionGroupConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeCriterionGroupConditionDto(v CriterionGroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsFunctionConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a FunctionConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsFunctionConditionDto() (FunctionConditionDto, error) {
-	var body FunctionConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromFunctionConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided FunctionConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeFunctionConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided FunctionConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeFunctionConditionDto(v FunctionConditionDto) error {
-	v.Type = "function"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a LifecycleConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided LifecycleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided LifecycleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the WorkflowConfigurationDto_Criterion as a SimpleConditionDto
-func (t WorkflowConfigurationDto_Criterion) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the WorkflowConfigurationDto_Criterion as the provided SimpleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the WorkflowConfigurationDto_Criterion, using the provided SimpleConditionDto
-func (t *WorkflowConfigurationDto_Criterion) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t WorkflowConfigurationDto_Criterion) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t WorkflowConfigurationDto_Criterion) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "function":
-		return t.AsFunctionConditionDto()
-	case "group":
-		return t.AsCriterionGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t WorkflowConfigurationDto_Criterion) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *WorkflowConfigurationDto_Criterion) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsCreateJSONBody0 returns the union data inside the CreateJSONBody as a CreateJSONBody0
-func (t CreateJSONBody) AsCreateJSONBody0() (CreateJSONBody0, error) {
-	var body CreateJSONBody0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCreateJSONBody0 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody0
-func (t *CreateJSONBody) FromCreateJSONBody0(v CreateJSONBody0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCreateJSONBody0 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody0
-func (t *CreateJSONBody) MergeCreateJSONBody0(v CreateJSONBody0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsCreateJSONBody1 returns the union data inside the CreateJSONBody as a CreateJSONBody1
-func (t CreateJSONBody) AsCreateJSONBody1() (CreateJSONBody1, error) {
-	var body CreateJSONBody1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromCreateJSONBody1 overwrites any union data inside the CreateJSONBody as the provided CreateJSONBody1
-func (t *CreateJSONBody) FromCreateJSONBody1(v CreateJSONBody1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeCreateJSONBody1 performs a merge with any union data inside the CreateJSONBody, using the provided CreateJSONBody1
-func (t *CreateJSONBody) MergeCreateJSONBody1(v CreateJSONBody1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t CreateJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *CreateJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsImportEntityModelJSONBody0 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody0
-func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody0() (ImportEntityModelJSONBody0, error) {
-	var body ImportEntityModelJSONBody0
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromImportEntityModelJSONBody0 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody0
-func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeImportEntityModelJSONBody0 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody0
-func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody0(v ImportEntityModelJSONBody0) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsImportEntityModelJSONBody1 returns the union data inside the ImportEntityModelJSONBody as a ImportEntityModelJSONBody1
-func (t ImportEntityModelJSONBody) AsImportEntityModelJSONBody1() (ImportEntityModelJSONBody1, error) {
-	var body ImportEntityModelJSONBody1
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromImportEntityModelJSONBody1 overwrites any union data inside the ImportEntityModelJSONBody as the provided ImportEntityModelJSONBody1
-func (t *ImportEntityModelJSONBody) FromImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeImportEntityModelJSONBody1 performs a merge with any union data inside the ImportEntityModelJSONBody, using the provided ImportEntityModelJSONBody1
-func (t *ImportEntityModelJSONBody) MergeImportEntityModelJSONBody1(v ImportEntityModelJSONBody1) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t ImportEntityModelJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *ImportEntityModelJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a ArrayConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided ArrayConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided ArrayConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a GroupConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided GroupConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided GroupConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a LifecycleConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided LifecycleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided LifecycleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the SubmitAsyncSearchJobJSONBody as a SimpleConditionDto
-func (t SubmitAsyncSearchJobJSONBody) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the SubmitAsyncSearchJobJSONBody as the provided SimpleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the SubmitAsyncSearchJobJSONBody, using the provided SimpleConditionDto
-func (t *SubmitAsyncSearchJobJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t SubmitAsyncSearchJobJSONBody) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t SubmitAsyncSearchJobJSONBody) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "group":
-		return t.AsGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t SubmitAsyncSearchJobJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *SubmitAsyncSearchJobJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
-}
-
-// AsArrayConditionDto returns the union data inside the SearchEntitiesJSONBody as a ArrayConditionDto
-func (t SearchEntitiesJSONBody) AsArrayConditionDto() (ArrayConditionDto, error) {
-	var body ArrayConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromArrayConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided ArrayConditionDto
-func (t *SearchEntitiesJSONBody) FromArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeArrayConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided ArrayConditionDto
-func (t *SearchEntitiesJSONBody) MergeArrayConditionDto(v ArrayConditionDto) error {
-	v.Type = "array"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsGroupConditionDto returns the union data inside the SearchEntitiesJSONBody as a GroupConditionDto
-func (t SearchEntitiesJSONBody) AsGroupConditionDto() (GroupConditionDto, error) {
-	var body GroupConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromGroupConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided GroupConditionDto
-func (t *SearchEntitiesJSONBody) FromGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeGroupConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided GroupConditionDto
-func (t *SearchEntitiesJSONBody) MergeGroupConditionDto(v GroupConditionDto) error {
-	v.Type = "group"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsLifecycleConditionDto returns the union data inside the SearchEntitiesJSONBody as a LifecycleConditionDto
-func (t SearchEntitiesJSONBody) AsLifecycleConditionDto() (LifecycleConditionDto, error) {
-	var body LifecycleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromLifecycleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided LifecycleConditionDto
-func (t *SearchEntitiesJSONBody) FromLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeLifecycleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided LifecycleConditionDto
-func (t *SearchEntitiesJSONBody) MergeLifecycleConditionDto(v LifecycleConditionDto) error {
-	v.Type = "lifecycle"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-// AsSimpleConditionDto returns the union data inside the SearchEntitiesJSONBody as a SimpleConditionDto
-func (t SearchEntitiesJSONBody) AsSimpleConditionDto() (SimpleConditionDto, error) {
-	var body SimpleConditionDto
-	err := json.Unmarshal(t.union, &body)
-	return body, err
-}
-
-// FromSimpleConditionDto overwrites any union data inside the SearchEntitiesJSONBody as the provided SimpleConditionDto
-func (t *SearchEntitiesJSONBody) FromSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	t.union = b
-	return err
-}
-
-// MergeSimpleConditionDto performs a merge with any union data inside the SearchEntitiesJSONBody, using the provided SimpleConditionDto
-func (t *SearchEntitiesJSONBody) MergeSimpleConditionDto(v SimpleConditionDto) error {
-	v.Type = "simple"
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-
-	merged, err := runtime.JSONMerge(t.union, b)
-	t.union = merged
-	return err
-}
-
-func (t SearchEntitiesJSONBody) Discriminator() (string, error) {
-	var discriminator struct {
-		Discriminator string `json:"type"`
-	}
-	err := json.Unmarshal(t.union, &discriminator)
-	return discriminator.Discriminator, err
-}
-
-func (t SearchEntitiesJSONBody) ValueByDiscriminator() (interface{}, error) {
-	discriminator, err := t.Discriminator()
-	if err != nil {
-		return nil, err
-	}
-	switch discriminator {
-	case "array":
-		return t.AsArrayConditionDto()
-	case "group":
-		return t.AsGroupConditionDto()
-	case "lifecycle":
-		return t.AsLifecycleConditionDto()
-	case "simple":
-		return t.AsSimpleConditionDto()
-	default:
-		return nil, errors.New("unknown discriminator value: " + discriminator)
-	}
-}
-
-func (t SearchEntitiesJSONBody) MarshalJSON() ([]byte, error) {
-	b, err := t.union.MarshalJSON()
-	return b, err
-}
-
-func (t *SearchEntitiesJSONBody) UnmarshalJSON(b []byte) error {
-	err := t.union.UnmarshalJSON(b)
-	return err
 }
 
 // ServerInterface represents all server handlers.

@@ -52,6 +52,10 @@ components:
               type: array
               items:
                 $ref: '#/components/schemas/Shape'
+            opt:
+              oneOf:
+                - type: "null"
+                - $ref: '#/components/schemas/Shape'
     Holder:
       type: object
       properties:
@@ -116,6 +120,14 @@ func TestApplyView(t *testing.T) {
 		_, h := load(t)
 		viewCheck(t, h, `{"opt":{"kind":"a","x":"no"}}`, false)
 		viewCheck(t, h, `{"opt":null}`, true)
+	})
+	// kin-openapi accepts any value for a schema it is already visiting
+	// higher up, so null reaching a recursive member through a nullable
+	// reference matched both branches of the oneOf.
+	t.Run("null_passes_nullable_oneOf_under_a_recursive_member", func(t *testing.T) {
+		_, h := load(t)
+		viewCheck(t, h, `{"many":[{"kind":"g","opt":null}]}`, true)
+		viewCheck(t, h, `{"many":[{"kind":"g","opt":{"kind":"a","x":"no"}}]}`, false)
 	})
 	t.Run("null_passes_untyped_leaf", func(t *testing.T) {
 		_, h := load(t)

@@ -84,32 +84,25 @@ func TestArrayConditionDtoShape(t *testing.T) {
 	if !strings.Contains(values.Description, "10,000") {
 		t.Errorf("ArrayConditionDto.values description must state the 10,000-entry cap, got %q", values.Description)
 	}
+	// An entry is null, a scalar, or a [low, high] pair of scalars: an
+	// untyped leaf that refuses an object, and whose array form is a pair.
 	items := values.Items
 	if items == nil || items.Value == nil {
 		t.Fatal("ArrayConditionDto.values has no item schema")
 	}
-	var hasNull, hasPair bool
-	for _, branch := range items.Value.OneOf {
-		b := branch.Value
-		if b.Type.Is("null") {
-			hasNull = true
-		}
-		if b.Type.Is("array") {
-			max := uint64(0)
-			if b.MaxItems != nil {
-				max = *b.MaxItems
-			}
-			if b.MinItems != 2 || max != 2 {
-				t.Errorf("ArrayConditionDto.values pair branch has minItems %d, maxItems %d; want 2 and 2", b.MinItems, max)
-			}
-			hasPair = true
-		}
+	e := items.Value
+	if !isUntypedLeaf(e) {
+		t.Error("ArrayConditionDto.values items must be an untyped leaf: a union of scalar types is unreadable to the client generator")
 	}
-	if !hasNull {
-		t.Error("ArrayConditionDto.values items need an OpenAPI 3.1 `null` branch: a null entry skips its position")
+	if e.Not == nil || e.Not.Value == nil || !e.Not.Value.Type.Is("object") {
+		t.Error("ArrayConditionDto.values items must refuse an object with `not: {type: object}`")
 	}
-	if !hasPair {
-		t.Error("ArrayConditionDto.values items need a [low, high] pair branch")
+	if e.MinItems != 2 || e.MaxItems == nil || *e.MaxItems != 2 {
+		t.Errorf("ArrayConditionDto.values items: an array entry is a [low, high] pair; minItems %d, maxItems %v", e.MinItems, e.MaxItems)
+	}
+	if e.Items == nil || e.Items.Value == nil || e.Items.Value.Type == nil ||
+		!slices.Equal(e.Items.Value.Type.Slice(), []string{"string", "number", "boolean"}) {
+		t.Error("ArrayConditionDto.values items: a pair's bounds must be `type: [string, number, boolean]`")
 	}
 }
 
@@ -125,19 +118,17 @@ func arrayConditionValuesSchema(t *testing.T, doc *openapi3.T) *openapi3.Schema 
 }
 
 // The spec declares OpenAPI 3.1, where `nullable` is not a keyword: a null
-// value is admitted only by a `null` type. Each value is checked with both
-// kin-openapi validators — the default one the e2e response validator uses,
-// and the JSON Schema 2020-12 one a 3.1 consumer applies.
+// value is admitted by a `null` type or by an untyped leaf. Each value is
+// checked through the validator view with both kin-openapi validators — the
+// default one the e2e response validator uses, and the JSON Schema 2020-12
+// one a 3.1 consumer applies.
 var schemaValidators = map[string][]openapi3.SchemaValidationOption{
 	"default":             nil,
 	"json-schema-2020-12": {openapi3.EnableJSONSchema2020()},
 }
 
 func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
-	doc, err := GetSwagger()
-	if err != nil {
-		t.Fatalf("GetSwagger: %v", err)
-	}
+	doc := viewedSpec(t)
 	values := arrayConditionValuesSchema(t, doc)
 	whole := doc.Components.Schemas["ArrayConditionDto"].Value
 	for mode, opts := range schemaValidators {
@@ -197,7 +188,9 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 		walk(name, ref)
 	}
 
-	// The nullable values the spec documents still admit null.
+	// The nullable values the spec documents still admit null, as JSON
+	// Schema reads them.
+	doc = viewedSpec(t)
 	nullable := map[string]*openapi3.Schema{
 		"ExternalizedFunctionDto.criterion": doc.Components.Schemas["ExternalizedFunctionDto"].Value.
 			Properties["criterion"].Value,
