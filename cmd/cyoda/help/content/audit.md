@@ -152,9 +152,9 @@ Each event type's `data` holds `eventType` and the fields listed here. A field m
 
 ### Recording
 
-State machine events are recorded best effort: a failure to record one is logged at WARN and does not fail the operation, so an audit trail can miss an event. Do not build an authorization check on finding one; record what a check needs in the entity itself (see `cyoda help auth integration`, *READING IDENTITY IN A COMPUTE NODE*).
+State machine events are written in the transaction the engine runs in and kept only when that transaction commits. When an operation fails, the events of its uncommitted transaction are rolled back with it, a failed processor's `STATE_PROCESS_RESULT` included; a `COMMIT_BEFORE_DISPATCH` processor's segment boundary has already committed the events before it. A failed `ASYNC_NEW_TX` processor does not fail the operation, so its record is kept when the operation commits; a compute node's callback that joined another operation's transaction leaves its events in that transaction, where they commit if that operation commits. Events are recorded best effort: a failure to record one is logged at WARN and does not fail the operation, so an audit trail can miss an event. Do not build an authorization check on finding one; record what a check needs in the entity itself (see `cyoda help auth integration`, *READING IDENTITY IN A COMPUTE NODE*).
 
-An event whose text holds the character U+0000 — in `state`, `details`, or any key or string value of `data`, such as a compute member's criterion reason or failure text, or a caller's transition name — is not recorded, on every storage backend. The engine logs it at WARN without the text, and the operation goes on as if the event had not been made.
+An event the workflow engine records is not recorded when its text holds the character U+0000 — in `state`, `details`, or any key or string value of `data`, such as a compute member's criterion reason or failure text, or a caller's transition name. The refusal is the same on every storage backend: the engine logs it at WARN without the text, and the operation goes on as if the event had not been made. `SCHEDULED_TRANSITION_FAIL`, which the scheduler records, is not checked: its text is the task's transition and state names, which come from a workflow import, and fixed values.
 
 ### Actor and executor
 
@@ -173,7 +173,7 @@ A transaction can carry more than one `STATE_MACHINE_FINISH` event for the entit
 
 Response: `200 OK`, `application/json` — `StateMachineAuditEventDto` (the finish event for the transaction), carrying the same `eventId` a search response returns for the same event.
 
-Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found. A scheduled transition's fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH` (its last event is `SCHEDULED_TRANSITION_FIRE`), so this endpoint answers `404 ENTITY_NOT_FOUND` for a fire's transaction.
+Returns `404` with `ProblemDetail` (`application/problem+json`) when the entity or finished event is not found. A scheduled transition's fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH` (its last event is `SCHEDULED_TRANSITION_FIRE`), so this endpoint answers `404 ENTITY_NOT_FOUND` for a fire's transaction — unless a compute node's callback saved the entity inside that transaction, which runs its workflow and records its own pair, as described above.
 
 ## ERRORS
 

@@ -143,7 +143,13 @@ the member's own message, cut as above, as `data.failReason`, and nothing else:
 the platform's own sentence for a member that sent no message, or for a
 hand-over that failed, is never a `failReason`. Every failure that is not the
 member's own answer — no member, no answer, an answer that cannot be read, a
-savepoint failure, a platform error — records no `failReason`.
+savepoint failure, a platform error — records no `failReason`. The record is
+written in the operation's transaction and kept only when that transaction
+commits: for a failed `ASYNC_NEW_TX` processor when the operation commits, and
+for a processor in a callback that joined another operation's transaction when
+that operation commits. Any other failed processor fails the operation, and its
+record is rolled back with it; the client's error message is then where the
+member's text reaches the caller.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 

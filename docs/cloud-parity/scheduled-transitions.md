@@ -348,7 +348,9 @@ Each event's `data` carries `eventType` and these fields:
 A fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH`; its last
 event is `SCHEDULED_TRANSITION_FIRE`, so
 `GET /audit/entity/{entityId}/workflow/{transactionId}/finished` answers
-`404 ENTITY_NOT_FOUND` for a fire's transaction.
+`404 ENTITY_NOT_FOUND` for a fire's transaction, unless a processor's callback
+saved the entity inside that transaction: the save runs the entity's workflow,
+which records its own `STATE_MACHINE_START` and `STATE_MACHINE_FINISH` there.
 
 ## 14. Arm-time `function`
 

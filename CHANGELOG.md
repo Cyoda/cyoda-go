@@ -951,13 +951,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client `processor returned failure` whichever node the member is connected
   to.
 
-- **An audit event whose text holds U+0000 is not recorded, on any backend.**
-  A compute member's criterion reason or failure text, or a caller's
+- **An audit event the workflow engine records is not recorded, on any
+  backend, when its text holds U+0000.** A compute member's criterion reason
+  or failure text, or a caller's
   transition name, that holds U+0000 used to abort the request's transaction
   on PostgreSQL, which refuses U+0000 in `jsonb`, while memory and SQLite
   stored the event and the operation succeeded. The engine now refuses the
   event before any backend sees it, logs it at WARN without the text, and the
-  operation has the outcome it has without that event.
+  operation has the outcome it has without that event. The scheduler's
+  `SCHEDULED_TRANSITION_FAIL` record is not checked: it carries only the
+  task's transition and state names, from a workflow import, and fixed values.
 
 - **Every polymorphic type in the OpenAPI document is a base with a
   discriminator mapping, and every condition is a `QueryConditionDto`.**

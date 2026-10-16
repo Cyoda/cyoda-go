@@ -55,7 +55,7 @@ discriminator property.
 
 The spec follows three rules, each enforced by a spec test in `api/` and
 recorded with its reasons in ADR 0005 (`docs/adr/0005-openapi-client-generation.md`).
-Cloud's spec follows the same rules from now on.
+Cloud's spec must follow the same rules.
 
 - **Rule 1 — one form: a base.** Every polymorphic type is a base schema with a
   discriminator and a mapping that names every member; each member includes the

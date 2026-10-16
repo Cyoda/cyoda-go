@@ -307,9 +307,12 @@ the transition starts: against the entity as the request's transaction read
 it, after `STATE_MACHINE_START` and before it selects a workflow, runs a
 criterion or dispatches a processor (`checkIfMatch` in
 `internal/domain/workflow/transition_aborted.go`). A mismatch surfaces as
-`spi.ErrConflict` → `412 Precondition Failed`, an audit `TRANSITION_ABORTED`
-event is recorded with `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`,
-and `T_pre` is rolled back — no segment commits, no external dispatch fires.
+`spi.ErrConflict` → `412 Precondition Failed`: the engine records
+`TRANSITION_ABORTED` with `{reason: ENTITY_MODIFIED, transition?, expectedTxId,
+actualTxId}` in `T_pre`, and `T_pre` is rolled back — no segment commits, no
+external dispatch fires, and the event is rolled back with `T_pre`. On a
+collection update the item is isolated instead: its siblings commit, and with
+them its `STATE_MACHINE_START` and `TRANSITION_ABORTED`.
 
 A write to the entity later in the same transaction — a joined callback's, a
 segment's own — is the request's own and does not break the precondition. The
@@ -325,7 +328,7 @@ transaction when nothing segments), and the request answers a retryable
 | Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
 | CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; a single update answers `412 ENTITY_MODIFIED`, a collection update fails whole with `400 WORKFLOW_FAILED`. Not retryable as-is: the callout already fired |
-| `If-Match` mismatch when the transition starts | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event recorded |
+| `If-Match` mismatch when the transition starts | no dispatch, `412 Precondition Failed`, `T_pre` rolled back with its `TRANSITION_ABORTED` audit event; on a collection update the item is isolated instead, and the event commits with its siblings |
 | `T_pre`'s commit refused (another transaction committed a change first) | nothing committed, no dispatch, `409 CONFLICT`, retryable |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
 | Engine crash between segments | entity durable in pre-callout state; in-flight cascade is gone; client must retry the same API call to re-fire the cascade from the start |
@@ -418,9 +421,9 @@ correlation continuity:
   `{processorName, executionMode, success, failReason?}`. `executionMode` is
   the processor's configured mode; a processor configured with no mode runs,
   and is recorded, as `SYNC`. `success:false` is recorded for an
-  `ASYNC_NEW_TX` failure too, although the run continues. The record is the
-  pipeline's only record of a failed processor; its `details` reads
-  `Processor "<name>" failed`.
+  `ASYNC_NEW_TX` failure too, although the run continues. A failed
+  processor's `details` reads `Processor "<name>" failed`; no other event of
+  the pipeline records the failure.
 - `TRANSITION_ABORTED` on `If-Match` rejection, right after
   `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transition?,
   expectedTxId, actualTxId}`; `transition` is absent on a loopback, which has
@@ -433,6 +436,15 @@ read, a savepoint failure, a platform error. Engine-wrapped error text (e.g.
 raw pgx messages) never enters the record: it could leak internals to
 same-tenant audit readers. Full detail is in the operator-side slog log for the
 request.
+
+Audit events are written in the segment's transaction and kept only when it
+commits. A failed `ASYNC_NEW_TX` processor's record is kept when the operation
+commits. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
+and its record is rolled back with the transaction — unless the processor ran in
+a callback that joined another operation's transaction, whose events commit if
+that operation commits. A failed `COMMIT_BEFORE_DISPATCH` processor's record is
+not kept: it is recorded against the segment committed before the dispatch, and
+the record is refused there.
 
 ### Cascade-depth limits
 
