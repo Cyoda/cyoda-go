@@ -14,7 +14,9 @@ import (
 // for OpenAPI 3.1, and VisitAsResponse.
 //
 // The result is nil or an openapi3.MultiError that lists every defect once:
-// kin's errors, then each walk mismatch that does not repeat one of them.
+// kin's errors, then each walk mismatch that does not repeat one of them. A
+// row whose JSON pointer and reason equal those of an earlier row is dropped:
+// kin refuses a value no union member accepts once per member.
 func ValidateValue(doc *openapi3.T, schema *openapi3.Schema, value any, opts ...openapi3.SchemaValidationOption) error {
 	if len(opts) == 0 {
 		opts = schemaOptions(validatorOptions(), doc)
@@ -22,7 +24,16 @@ func ValidateValue(doc *openapi3.T, schema *openapi3.Schema, value any, opts ...
 	var errs openapi3.MultiError
 	kinErr := schema.VisitJSON(value, opts...)
 	if kinErr != nil {
-		errs = append(errs, schemaErrors(kinErr)...)
+		seen := map[mismatchKey]bool{}
+		for _, e := range schemaErrors(kinErr) {
+			if k, ok := keyOf("", e); ok {
+				if seen[k] {
+					continue
+				}
+				seen[k] = true
+			}
+			errs = append(errs, e)
+		}
 	}
 	errs = append(errs, recursiveErrors(schema, value, recursiveFrom(schema), opts, kinErr)...)
 	if len(errs) == 0 {

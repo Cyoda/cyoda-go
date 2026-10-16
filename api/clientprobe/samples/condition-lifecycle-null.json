@@ -1,0 +1,10 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "LifecycleConditionDto",
+  "value": {
+    "type": "lifecycle",
+    "field": "previousTransition",
+    "operatorType": "IS_NULL",
+    "value": null
+  }
+}

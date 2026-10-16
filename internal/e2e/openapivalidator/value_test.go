@@ -66,6 +66,19 @@ func TestValidateValue_ListsEveryDefectOnce(t *testing.T) {
 	}
 }
 
+// kin refuses a null no union member accepts once per member, with the same
+// pointer and reason; ValidateValue lists it once.
+func TestValidateValue_KinRowsListedOnce(t *testing.T) {
+	err := validateFixtureValue(t, "Condition", `null`)
+	var multi openapi3.MultiError
+	if !errors.As(err, &multi) {
+		t.Fatalf("want a MultiError, got %T: %v", err, err)
+	}
+	if len(multi) != 1 {
+		t.Fatalf("want 1 row, got %d: %v", len(multi), multi)
+	}
+}
+
 func TestValidateValue_ValidNestedValuePasses(t *testing.T) {
 	value := `{"type":"group","conditions":[
 		{"type":"simple","value":1},

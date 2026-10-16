@@ -648,7 +648,8 @@ shapes. It is a merge gate, like oasdiff.
   defaults to `true` and `future` to `false`. `class` is the member the base's discriminator selects, or the
   schema itself. A request body that is not a component schema (the create and import bodies) is named by
   `body: "<METHOD> <path>"` in place of `schema`, with no `class`: the generated clients take it as an untyped
-  value, so the client test skips it. The client test skips invalid samples. A **future sample** (`future: true`) is a response that a later
+  value, so the client test skips it; the spec test validates it as a request. The client test skips invalid
+  samples. A **future sample** (`future: true`) is a response that a later
   version of the spec could send: an audit event of an unknown kind, an event of an unknown type, a known event
   with an added field. The client test reads it with the two settings of Rule 6 and asserts the result Rule 6
   states. It also reads it without them and asserts that the read fails, which proves the sample exercises the

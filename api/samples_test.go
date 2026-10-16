@@ -99,6 +99,18 @@ func sampleSchema(doc *openapi3.T, s sample) (*openapi3.Schema, error) {
 	return nil, fmt.Errorf("names neither a schema nor a body")
 }
 
+// sampleOptions returns the kin options a sample is validated with: a
+// request body in the request direction, and every other sample with
+// ValidateValue's default, the e2e response validator's options.
+func sampleOptions(s sample) []openapi3.SchemaValidationOption {
+	if s.Body == "" {
+		return nil
+	}
+	return []openapi3.SchemaValidationOption{
+		openapi3.MultiErrors(), openapi3.EnableJSONSchema2020(), openapi3.VisitAsRequest(),
+	}
+}
+
 // A valid sample passes its schema, and the schema of its class, which is the
 // member its discriminator selects; an invalid one fails. A future sample is
 // not validated: by construction it is outside the current mapping.
@@ -123,7 +135,7 @@ func TestSamples(t *testing.T) {
 		if s.Future {
 			continue
 		}
-		err = openapivalidator.ValidateValue(doc, schema, s.value)
+		err = openapivalidator.ValidateValue(doc, schema, s.value, sampleOptions(s)...)
 		if s.valid() && err != nil {
 			t.Errorf("%s: valid sample refused: %v", s.file, err)
 		}
@@ -158,13 +170,13 @@ func TestSamples(t *testing.T) {
 
 // coverage is what the samples hold, for the checks of TestSampleCoverage.
 type coverage struct {
-	mapped    map[string]bool // "<base>/<key>" with a valid sample read through the base
-	forms     map[string]bool // "<position> <valid|invalid> <form>"
-	preChecks map[string]bool // present, null, absent
-	bodies    map[string]bool // "<body> object" and "<body> array"
-	auditPage bool            // one valid page holding every audit member and FINISH with a stop reason
-	recursive map[int]bool    // depth of a group holding a non-object entry, in an invalid sample
-	future    map[string]bool // unknown audit kind, unknown event type, added field
+	mapped    map[string]bool         // "<base>/<key>" with a valid sample read through the base
+	forms     map[string]bool         // "<position> <valid|invalid> <form>"
+	preChecks map[string]bool         // present, null, absent
+	bodies    map[string]bool         // "<body> object" and "<body> array"
+	auditPage bool                    // one valid page holding every audit member and FINISH with a stop reason
+	groups    map[string]map[int]bool // invalid sample name -> depths of its groups holding a non-object entry
+	future    map[string]bool         // unknown audit kind, unknown event type, added field
 }
 
 func (c *coverage) form(position string, valid bool, value any) {
@@ -239,7 +251,7 @@ const (
 func collectCoverage(doc *openapi3.T, samples []sample) coverage {
 	c := coverage{
 		mapped: map[string]bool{}, forms: map[string]bool{}, preChecks: map[string]bool{},
-		bodies: map[string]bool{}, recursive: map[int]bool{}, future: map[string]bool{},
+		bodies: map[string]bool{}, groups: map[string]map[int]bool{}, future: map[string]bool{},
 	}
 	auditKinds := doc.Components.Schemas["AuditEventDto"].Value.Discriminator.Mapping
 	eventTypes := doc.Components.Schemas["StateMachineEventDto"].Value.Discriminator.Mapping
@@ -299,6 +311,10 @@ func collectCoverage(doc *openapi3.T, samples []sample) coverage {
 			if v, ok := obj["value"]; ok {
 				c.form("SimpleConditionDto.value", s.valid(), v)
 			}
+		case s.Schema == "QueryConditionDto" && obj["type"] == "lifecycle":
+			if v, ok := obj["value"]; ok {
+				c.form("LifecycleConditionDto.value", s.valid(), v)
+			}
 		case s.Schema == "QueryConditionDto" && obj["type"] == "array":
 			values, _ := obj["values"].([]any)
 			for _, v := range values {
@@ -315,7 +331,9 @@ func collectCoverage(doc *openapi3.T, samples []sample) coverage {
 				c.preChecks["present"] = true
 			}
 		case s.Schema == "QueryConditionDto" && obj["type"] == "group" && !s.valid():
-			groupDepths(obj, 1, c.recursive)
+			depths := map[int]bool{}
+			groupDepths(obj, 1, depths)
+			c.groups[strings.TrimSuffix(s.file, ".json")] = depths
 		case s.Schema == "GroupKeyEntry":
 			if v, ok := obj["value"]; ok {
 				c.form("GroupKeyEntry.value", s.valid(), v)
@@ -368,8 +386,9 @@ func TestSampleCoverage(t *testing.T) {
 
 	scalarOrPair := []string{"string", "number", "boolean", "null", "pair"}
 	want := map[string][2][]string{ // position -> valid forms, invalid forms
-		"SimpleConditionDto.value":   {scalarOrPair, {"object", "triple"}},
-		"ArrayConditionDto.values[]": {scalarOrPair, {"object", "triple"}},
+		"SimpleConditionDto.value":    {scalarOrPair, {"object", "triple"}},
+		"LifecycleConditionDto.value": {scalarOrPair, {"object", "triple"}},
+		"ArrayConditionDto.values[]":  {scalarOrPair, {"object", "triple"}},
 		// Never an object or an array.
 		"GroupKeyEntry.value": {{"string", "number", "boolean", "null"}, {"object", "pair"}},
 	}
@@ -398,9 +417,16 @@ func TestSampleCoverage(t *testing.T) {
 	if !c.auditPage {
 		t.Error("no valid audit page holding every audit member and a STATE_MACHINE_FINISH with a stop reason")
 	}
-	for _, depth := range []int{1, 2} {
-		if !c.recursive[depth] {
-			t.Errorf("no invalid sample whose group at depth %d holds a non-object condition", depth)
+	// kin accepts any value where a schema recurs; these samples show that
+	// ValidateValue's walk refuses one in a group and in a group in a group.
+	for name, depth := range map[string]int{
+		"condition-group-holding-null":          1,
+		"condition-group-holding-number":        1,
+		"condition-group-holding-string":        1,
+		"condition-group-in-group-holding-null": 2,
+	} {
+		if !c.groups[name][depth] {
+			t.Errorf("no invalid sample %s.json whose group at depth %d holds a non-object condition", name, depth)
 		}
 	}
 	for _, f := range []string{"unknown audit kind", "unknown event type", "added field"} {

@@ -54,7 +54,8 @@ import (
 // One defect gives one row. reported is the error kin's own ValidateResponse
 // returned for the same body (nil if none). A walk mismatch whose absolute
 // JSON pointer and reason equal those of a row in reported, or of an earlier
-// walk mismatch, is dropped: it is the same row again. This happens where the walk checks a union kin also
+// walk mismatch, is dropped: it is the same row again. A walk mismatch
+// repeats a row of reported where the walk checks a union that kin also
 // checked, such as a union whose discriminator does not resolve. The result
 // is nil or an openapi3.MultiError.
 func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, status int, header http.Header, body []byte, reported error) error {
@@ -144,9 +145,10 @@ func keyOf(prefix string, err error) (mismatchKey, bool) {
 	return mismatchKey{pointer: p, reason: se.Reason}, true
 }
 
-// responseSchema returns the JSON body schema that openapi3filter.ValidateResponse
-// validates for this response, or nil when it validates no JSON body
-// (kin-openapi v0.149.0 openapi3filter/validate_response.go:22-120).
+// responseSchema returns the JSON body schema that
+// openapi3filter.ValidateResponse validates for this response, or nil when it
+// validates no JSON body (kin-openapi v0.149.0
+// openapi3filter/validate_response.go:22-120).
 func responseSchema(route *routers.Route, opts *openapi3filter.Options, req *http.Request, status int, header http.Header) *openapi3.Schema {
 	if req.Method == http.MethodHead || opts.ExcludeResponseBody {
 		return nil
