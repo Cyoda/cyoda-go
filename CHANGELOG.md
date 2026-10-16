@@ -1418,7 +1418,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   a transaction of its own, with `success: false`, the member's own
   `failReason`, the cascade's transaction id and the request's principal. The
   operation still fails as before. A boundary that itself fails still leaves
-  no record: nothing of that segment commits. See `cyoda help audit`.
+  no record: it is rolled back with the segment, or, when the segment's commit
+  was interrupted and its outcome is in doubt, not kept. See `cyoda help audit`.
 
 - **SQLite and PostgreSQL: a number in a state-machine audit event's `data`
   reads back with every digit it was recorded with.** These backends read it

@@ -442,15 +442,16 @@ commits, except the record of a `COMMIT_BEFORE_DISPATCH` processor that fails
 after its segment boundary committed (below). A failed `ASYNC_NEW_TX`
 processor's record is kept when the operation commits; the operation goes on
 past the failure unless the savepoint cannot be created, undone or released, or
-a scheduled run refuses to dispatch the processor. A processor failure in `SYNC` or `ASYNC_SAME_TX` fails the operation,
-and its record is rolled back with the transaction — unless the processor ran in
-a callback that joined another operation's transaction, whose events commit if
-that operation commits. A `COMMIT_BEFORE_DISPATCH` processor that fails after
-its segment boundary committed `T_pre` has its record written in a transaction
-of its own, begun with the request's tenant and principal, so the record is
-kept although the operation fails. A `COMMIT_BEFORE_DISPATCH` processor whose
-segment boundary itself failed leaves no record: the record is written in
-`T_pre`, which the failed operation does not commit.
+a scheduled run refuses to dispatch the processor. A processor failure in
+`SYNC` or `ASYNC_SAME_TX` fails the operation, and its record is rolled back
+with the transaction — unless the processor ran in a callback that joined
+another operation's transaction, whose events commit if that operation commits.
+A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
+committed `T_pre` has its record written in a transaction of its own, begun
+with the request's tenant and principal, so the record is kept although the
+operation fails. A `COMMIT_BEFORE_DISPATCH` processor whose segment boundary
+itself failed leaves no record: the record is written in `T_pre`, which the
+failed operation does not commit, or whose commit outcome is in doubt.
 
 A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore has
 one of these causes:
@@ -465,6 +466,10 @@ one of these causes:
   compute node was replaced or its callout ended. The chain records nothing more,
   and its `PAUSE_FOR_PROCESSING` stays in the joined transaction, which commits
   if the operation that began it commits.
+- The commit of `T_pre` at the segment boundary was interrupted, and its
+  outcome is in doubt. The processor was not dispatched and the client is
+  answered with a 5xx. When that commit did land, `PAUSE_FOR_PROCESSING` is
+  kept, and no record follows it.
 - The operation did not complete after the segment boundary: the engine crashed
   between segments; or the processor succeeded, its record went into `T_post`,
   and the operation then failed there — at a later processor, a criterion, a

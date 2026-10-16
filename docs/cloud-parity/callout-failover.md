@@ -154,7 +154,8 @@ segment boundary committed has its record written in a transaction of its own,
 so it is kept although the operation fails. (On a callback that joined another
 transaction, such a processor is refused before the boundary, and its record
 stays in the joined transaction; when the boundary itself fails, the record is
-rolled back with the failed operation.) Whenever the record is rolled back, the
+rolled back with the failed operation, or is not kept when the boundary's
+commit was interrupted and its outcome is in doubt.) Whenever the record is rolled back, the
 client's error message is where the member's text reaches the caller.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
