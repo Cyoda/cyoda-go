@@ -157,8 +157,10 @@ func TestCalloutFailure_CommitBeforeDispatch_FailsAndLeavesTxPreCommitted(t *tes
 			t.Run(kind+", "+name, func(t *testing.T) {
 				_, err, cnt, _, _ := calloutModeEngine(t, ExecutionModeCommitBeforeDispatch, startNewTx, k.failure)
 				k.assert(t, err)
-				if cnt.commits != 1 {
-					t.Errorf("engine commits = %d, want 1: TX_pre is committed before the callout and stays committed", cnt.commits)
+				// TX_pre, committed before the callout and staying committed,
+				// and the transaction of the processor's failed result.
+				if cnt.commits != 2 {
+					t.Errorf("engine commits = %d, want 2: TX_pre and the processor's failed result", cnt.commits)
 				}
 			})
 		}

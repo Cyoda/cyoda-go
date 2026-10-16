@@ -1924,12 +1924,13 @@ func TestAsyncNewTx_ParentRollbackDiscardsWork(t *testing.T) {
 	}
 }
 
-// TestEngine_CommitAndBeginNextSegment_FlushesAndReopens drives the
-// COMMIT_BEFORE_DISPATCH segment-boundary primitive. The helper must:
+// TestEngine_SegmentBoundary_FlushesCommitsAndReopens drives the
+// COMMIT_BEFORE_DISPATCH segment-boundary primitives of the
+// startNewTxOnDispatch=true branch, in their order. Together they must:
 //   - Flush the in-memory entity to TX_pre's buffer.
 //   - Commit TX_pre, making the entity durable across the boundary.
 //   - Begin a fresh TX_post and return its txID + ctx.
-func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
+func TestEngine_SegmentBoundary_FlushesCommitsAndReopens(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -1954,9 +1955,12 @@ func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID)
+	if err := engine.flushAndCommitSegment(txCtx, entity, txID); err != nil {
+		t.Fatalf("flushAndCommitSegment: %v", err)
+	}
+	newTxID, newCtx, err := engine.beginNextSegment(txCtx, entity, txID)
 	if err != nil {
-		t.Fatalf("commitAndBeginNextSegment: %v", err)
+		t.Fatalf("beginNextSegment: %v", err)
 	}
 	if newTxID == "" {
 		t.Fatalf("expected non-empty newTxID")

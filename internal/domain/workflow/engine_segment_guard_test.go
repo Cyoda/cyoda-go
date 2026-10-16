@@ -170,9 +170,9 @@ func (h *segmentGuardHarness) assertSegmentReleased(t *testing.T, entryTxID stri
 }
 
 // TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack is coverage row 4b.
-// Every failure return in executeCommitBeforeDispatch is `return nil, "", err`,
-// which is exactly why the guard must read dedicated locals rather than the
-// named returns.
+// Every failure return in executeCommitBeforeDispatch is
+// `return nil, "", committed, err`, which is exactly why the guard must read
+// dedicated locals rather than the named returns.
 func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 	cases := []struct {
 		name string

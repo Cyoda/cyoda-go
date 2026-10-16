@@ -87,7 +87,7 @@ func TestFlushAndCommitSegment_CommitCtxInterrupted_WrapsErrCommitInterrupted(t 
 // still live. By the time cascadeAutomated's loop reaches the next automated
 // transition, the SAME original deadline has genuinely elapsed — but the
 // cascade is now running on the post-CBD ctx (context.WithoutCancel-derived,
-// via commitAndBeginNextSegment), which carries no deadline of its own. The
+// via beginNextSegment), which carries no deadline of its own. The
 // cascade must continue to the entity's final state regardless.
 func TestCascadeAutomated_ExpiredOriginalDeadline_PostCBD_ContinuesToFinalState(t *testing.T) {
 	h := newSegmentGuardHarness(t, "memory")

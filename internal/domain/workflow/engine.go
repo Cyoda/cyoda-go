@@ -294,8 +294,9 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	// The engine owns every segment it opens after entryTxID until it hands one
 	// back on the success return. openCtx/openTxID are dedicated locals, NOT the
 	// named returns: every failure path in executeCommitBeforeDispatch is
-	// `return nil, "", err`, so a guard reading a named newTxID return would see
-	// "" on exactly the paths that need it and skip the rollback.
+	// `return nil, "", committed, err`, so a guard reading a named newTxID
+	// return would see "" on exactly the paths that need it and skip the
+	// rollback.
 	//
 	// entryTxID is resolveAuditTxID's value, which equals the handler's
 	// transaction because every handler stamps Meta.TransactionID = txID before
@@ -876,7 +877,7 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 		// Spec D9: observe cancellation/expiry between transitions, the same
 		// way an attemptTransition failure is routed, so the deferred
 		// rollback guard above still runs. Naturally inert once the cascade
-		// is running on a post-CBD ctx — commitAndBeginNextSegment derives
+		// is running on a post-CBD ctx — beginNextSegment derives
 		// that one via context.WithoutCancel, which carries no deadline of
 		// its own, so an already-elapsed ORIGINAL client deadline cannot
 		// abort a cascade continuing past a segment commit (spec D3).
@@ -1080,15 +1081,16 @@ func (e *Engine) logDefaultFallback(ctx context.Context, entity *spi.Entity, rea
 		slog.String("reason", reason))
 }
 
-// recordEvent records a single audit event.
-func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+// recordEvent records a single audit event, and reports whether the store
+// accepted it.
+func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) bool {
 	// A chain the fence refuses performs no store operation of any kind, an
 	// audit row included: on PostgreSQL it would be a statement on the
 	// operation's connection, after the owner has stopped waiting for this
 	// chain. The guard is here, and not at the error paths that record, so that
 	// no further site can appear later.
 	if fence.Check(ctx) != nil {
-		return
+		return false
 	}
 	// An event holding U+0000 is written on no backend: PostgreSQL refuses it
 	// in jsonb and the refused INSERT aborts the request's transaction, while
@@ -1097,7 +1099,7 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	if holdsNUL(state, details, data) {
 		slog.Warn("state-machine audit event not recorded: text holds U+0000",
 			"pkg", "workflow", "entityId", entityID, "eventType", eventType)
-		return
+		return false
 	}
 	event := spi.StateMachineEvent{
 		EventType:     eventType,
@@ -1124,5 +1126,56 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	if err := auditStore.Record(ctx, entityID, event); err != nil {
 		slog.Warn("state-machine audit event not recorded",
 			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return false
 	}
+	return true
+}
+
+// recordEventInOwnTx records a single audit event in a transaction of its own
+// and commits it. It is for an event of an operation that fails after part of
+// it committed: the event describes work that happened, and the transaction it
+// would otherwise land in is already committed or is about to be rolled back.
+//
+// The transaction is begun from ctx's values — the request's tenant and
+// principal, so the event is attributed as recordEvent attributes it — but not
+// from its transaction nor its cancellation: the operation is failing, and its
+// deadline may be what failed it. Best effort, as every audit write: a failure
+// is logged, and the operation's own error is unchanged.
+func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
+	// recordEvent's fence guard, taken before the Begin: a chain the fence
+	// refuses opens no transaction either.
+	if fence.Check(ctx) != nil {
+		return
+	}
+	ownTxID, ownCtx, err := e.txMgr.Begin(spi.WithTransaction(context.WithoutCancel(ctx), nil))
+	if err != nil {
+		slog.Warn("state-machine audit event not recorded: failed to begin its transaction",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		rbCtx, cancel := common.RollbackContext(ownCtx)
+		defer cancel()
+		if err := e.txMgr.Rollback(rbCtx, ownTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
+			slog.Warn("failed to roll back an audit event's transaction",
+				"pkg", "workflow", "txID", ownTxID, "err", err)
+		}
+	}()
+	// An event recordEvent refuses leaves the transaction empty; it is rolled
+	// back rather than committed.
+	if !e.recordEvent(auditStore, ownCtx, entityID, txID, state, eventType, details, data) {
+		return
+	}
+	if err := common.ShieldedCommitWithBudget(ownCtx, e.commitBudget, func(commitCtx context.Context) error {
+		return e.txMgr.Commit(commitCtx, ownTxID)
+	}); err != nil {
+		slog.Warn("state-machine audit event not recorded: failed to commit its transaction",
+			"pkg", "workflow", "entityId", entityID, "eventType", eventType, "err", err)
+		return
+	}
+	committed = true
 }
