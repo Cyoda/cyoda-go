@@ -41,6 +41,9 @@ var (
 	testApp         *app.App              // exposed for test-mode store seeding
 	e2eSignKey      *rsa.PrivateKey       // the stack's JWT signing key, for tests that mint bespoke claims
 	e2eIssuer       string                // the stack's JWT issuer, for the same
+	// conformanceValidator checks every response of every e2e test server
+	// against the spec; see validated.
+	conformanceValidator *openapivalidator.Validator
 )
 
 // readCyodaStatus returns the x-cyoda-status marker on an operation, or "".
@@ -197,11 +200,14 @@ func TestMain(m *testing.M) {
 	// from the spec against the test server's /api/entity/{id} requests and
 	// reports every operation as "no spec route matches".
 	swagger.Servers = openapi3.Servers{{URL: cfg.ContextPath}}
-	validator, err := openapivalidator.NewValidator(swagger)
+	conformanceValidator, err = openapivalidator.NewValidator(swagger)
 	if err != nil {
 		log.Fatalf("build validator: %v", err)
 	}
-	srv.Config.Handler = openapivalidator.NewMiddleware(validator)(testApp.Handler())
+	srv.Config.Handler = validated(testApp.Handler())
+	// Every request the suite sends through http.DefaultClient names its
+	// test to the validator (see openapivalidator.Transport).
+	http.DefaultClient.Transport = openapivalidator.Transport(http.DefaultTransport)
 
 	// Capture the full operationId set so the conformance test can compute
 	// the uncovered list at end-of-suite. Every published operation is
@@ -219,7 +225,16 @@ func TestMain(m *testing.M) {
 		}
 	}
 
-	os.Exit(m.Run())
+	os.Exit(openapivalidator.FailOnUnreported(m.Run()))
+}
+
+// validated puts h behind the OpenAPI conformance validator. Every e2e test
+// server that serves the API is built with it, so that every response the
+// suite receives is checked against the spec and reported by
+// TestOpenAPIConformanceReport. The server's API must be mounted under
+// "/api", the validator's server URL.
+func validated(h http.Handler) http.Handler {
+	return openapivalidator.NewMiddleware(conformanceValidator)(h)
 }
 
 func TestHealth(t *testing.T) {

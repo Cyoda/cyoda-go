@@ -73,14 +73,17 @@ func RunFilterActive() bool {
 //  2. Calls the wrapped handler.
 //  3. Synthesizes an *http.Response from the captured bytes and runs it
 //     through the validator.
-//  4. Appends mismatches to the package-level collector.
-//  5. In ModeEnforce + -run-filtered runs: also calls t.Errorf on the
-//     captured *testing.T (if any) so the requesting test fails immediately.
-//     Wrapped in defer recover() in case the test has exited (fire-and-
-//     forget pattern; captured *T may no longer be valid).
+//  4. Appends mismatches to the package-level collector, named after the
+//     requesting test (TestNameHeader; see Transport).
+//  5. In ModeEnforce + -run-filtered runs: also calls Errorf on the
+//     requesting test (if the request named one) so it fails. Wrapped in
+//     defer recover() in case the test has exited (a callback made after
+//     the test returned); the mismatch is still collected, and
+//     FailOnUnreported fails the run on it.
 func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			requester := requestingTest(r)
 			if isOperationalPath(r.URL.Path) {
 				// Operational endpoint; not in the customer API spec. Skip validation
 				// and don't record as exercised (these aren't operationIds).
@@ -107,21 +110,18 @@ func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 			}
 			mismatches := v.Validate(r.Context(), r, resp)
 			for _, m := range mismatches {
-				if t := TestTFromContext(r.Context()); t != nil {
-					m.TestName = t.Name()
-				} else {
-					m.TestName = "unknown"
+				m.TestName = "unknown"
+				if requester != nil {
+					m.TestName = requester.Name()
 				}
 				defaultCollector.append(m)
 
-				if Mode == ModeEnforce && RunFilterActive() {
+				if requester != nil && Mode == ModeEnforce && RunFilterActive() {
 					func() {
 						defer func() { _ = recover() }()
-						if t := TestTFromContext(r.Context()); t != nil {
-							t.Errorf("openapi conformance: %s %s -> %d: %s",
-								m.Method, m.Path, m.Status,
-								strings.TrimSpace(m.Reason))
-						}
+						requester.Errorf("openapi conformance: %s %s -> %d: %s",
+							m.Method, m.Path, m.Status,
+							strings.TrimSpace(m.Reason))
 					}()
 				}
 			}

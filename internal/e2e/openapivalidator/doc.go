@@ -13,8 +13,11 @@ Architecture:
   - collector.go appends mismatches to a process-level slice (mutex-guarded).
   - report.go writes the collector's contents to
     internal/e2e/_openapi-conformance-report.md after the suite ends.
-  - testname.go plumbs the current *testing.T through request context so
-    the middleware can call t.Errorf in -run-filtered enforce mode.
+  - testname.go names the requesting test to the middleware: the client's
+    Transport sends the test attached to the request context as a header,
+    so the report names the test and, in -run-filtered enforce mode, the
+    middleware fails it. FailOnUnreported (collector.go) fails a run that
+    collected mismatches no test reported.
 
 The validator checks the spec through the view of view.go (ApplyView), and
 recursive.go checks the values kin-openapi accepts unchecked where a schema

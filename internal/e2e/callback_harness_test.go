@@ -26,6 +26,7 @@ import (
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
 )
 
@@ -271,7 +272,7 @@ func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure fu
 
 	a := app.New(cfg)
 	h.app = a
-	srv.Config.Handler = a.Handler()
+	srv.Config.Handler = validated(a.Handler())
 
 	go func() { _ = a.GRPCServer().Serve(grpcLis) }()
 	t.Cleanup(func() { _ = a.Close() })
@@ -427,7 +428,7 @@ func (h *callbackHarness) DoAuth(t *testing.T, method, path, body, txToken strin
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -450,7 +451,9 @@ func (h *callbackHarness) callback(method, path, body, txToken string) (callback
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	// Named to the conformance validator as the test that built the harness:
+	// a processor's callback runs inside that test's workflow.
+	req, err := http.NewRequestWithContext(openapivalidator.WithTestT(context.Background(), h.owner), method, h.baseURL+path, r)
 	if err != nil {
 		return callbackResult{}, err
 	}
