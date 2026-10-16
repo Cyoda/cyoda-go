@@ -10,6 +10,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
@@ -20,7 +21,7 @@ import (
 // compare against a single source — the SPI's ExecutionMode field is itself
 // a plain string, so an enum type would not buy compile-time safety.
 const (
-	ExecutionModeSync                 = "SYNC"
+	ExecutionModeSync                 = contract.ExecutionModeSync // also the mode of a processor with none configured
 	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"
 	ExecutionModeAsyncNewTx           = "ASYNC_NEW_TX"
 	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"

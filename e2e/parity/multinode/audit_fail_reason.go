@@ -49,6 +49,26 @@ func RunAudit_FailReasonThroughHandOver(t *testing.T, fixture MultiNodeFixture) 
 				t.Fatalf("the failing compute client on the peer received %d requests; want 1", len(got))
 			}
 
+			resp, err := owner.GetAuditEvents(t, id)
+			if err != nil {
+				t.Fatalf("GetAuditEvents: %v", err)
+			}
+			var records int
+			for i := range resp.Items {
+				if resp.Items[i].AuditEventType != "StateMachine" {
+					continue
+				}
+				sm, err := resp.Items[i].AsStateMachine()
+				if err != nil {
+					t.Fatalf("decode state-machine audit event: %v", err)
+				}
+				if sm.EventType == "STATE_PROCESS_RESULT" {
+					records++
+				}
+			}
+			if records != 1 {
+				t.Fatalf("%d STATE_PROCESS_RESULT events; want exactly 1, the processor's own record", records)
+			}
 			data := parity.StateMachineEventData(t, owner, id, "STATE_PROCESS_RESULT")
 			if data["processorName"] != "charge" || data["executionMode"] != "ASYNC_NEW_TX" || data["success"] != false {
 				t.Errorf("STATE_PROCESS_RESULT data = %v; want charge, ASYNC_NEW_TX, success false", data)

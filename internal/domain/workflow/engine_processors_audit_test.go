@@ -91,8 +91,8 @@ func TestFailedProcessor_AuditEvents_ManualTransition(t *testing.T) {
 	}
 
 	only := stateProcessResults[0]
-	if !strings.Contains(only.Details, `Processor "failing-proc" completed`) {
-		t.Errorf("SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" completed'", only.Details)
+	if only.Details != `Processor "failing-proc" failed` {
+		t.Errorf("SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" failed'", only.Details)
 	}
 	if strings.Contains(only.Details, errProcessorRefused.Error()) {
 		t.Errorf("SMEventStateProcessResult Details = %q holds the wrapped error text", only.Details)
@@ -151,6 +151,9 @@ func TestFailedProcessor_AuditEvents_CascadedTransition(t *testing.T) {
 
 	if got, want := len(stateProcessResults), 1; got != want {
 		t.Fatalf("SMEventStateProcessResult count = %d, want %d (the processor's own record only)", got, want)
+	}
+	if got := stateProcessResults[0].Details; got != `Processor "failing-proc" failed` {
+		t.Errorf("cascade-path SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" failed'", got)
 	}
 	if strings.Contains(stateProcessResults[0].Details, errProcessorRefused.Error()) {
 		t.Errorf("cascade-path SMEventStateProcessResult Details = %q holds the wrapped error text", stateProcessResults[0].Details)

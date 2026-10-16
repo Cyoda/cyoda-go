@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -74,7 +75,7 @@ func TestProcessorRecord_Fields(t *testing.T) {
 		t.Fatalf("STATE_PROCESS_RESULT records = %d, want %d: %+v", len(records), len(want), records)
 	}
 	for i, w := range want {
-		if got := records[i].Data; fmt.Sprint(got) != fmt.Sprint(w) {
+		if got := records[i].Data; !reflect.DeepEqual(got, w) {
 			t.Errorf("record %d data = %v, want %v", i, got, w)
 		}
 	}
@@ -105,6 +106,9 @@ func TestProcessorRecord_FailReason(t *testing.T) {
 			if len(records) != 1 {
 				t.Fatalf("STATE_PROCESS_RESULT records = %d, want 1: %+v", len(records), records)
 			}
+			if success, ok := records[0].Data["success"].(bool); !ok || success {
+				t.Errorf("success = %v, want false", records[0].Data["success"])
+			}
 			got, present := records[0].Data["failReason"]
 			if tc.want == "" {
 				if present {
@@ -114,9 +118,6 @@ func TestProcessorRecord_FailReason(t *testing.T) {
 			}
 			if got != tc.want {
 				t.Errorf("failReason = %v (present=%t), want %q", got, present, tc.want)
-			}
-			if success, _ := records[0].Data["success"].(bool); success {
-				t.Error("success = true, want false")
 			}
 		})
 	}
@@ -131,18 +132,5 @@ func TestProcessorFailure_OneRecord(t *testing.T) {
 	}
 	if records[0].Data["processorName"] != "p" {
 		t.Errorf("record = %v, want processor p's own record", records[0].Data)
-	}
-}
-
-// The tracing decorator outside this package applies the same rule through
-// contract.ProcessorExecutionMode; it must give this package's SYNC.
-func TestProcessorExecutionMode_EmptyIsThisPackagesSync(t *testing.T) {
-	if got := contract.ProcessorExecutionMode(""); got != ExecutionModeSync {
-		t.Errorf("ProcessorExecutionMode(\"\") = %q, want %q", got, ExecutionModeSync)
-	}
-	for _, m := range []string{ExecutionModeSync, ExecutionModeAsyncSameTx, ExecutionModeAsyncNewTx, ExecutionModeCommitBeforeDispatch} {
-		if got := contract.ProcessorExecutionMode(m); got != m {
-			t.Errorf("ProcessorExecutionMode(%q) = %q, want it unchanged", m, got)
-		}
 	}
 }

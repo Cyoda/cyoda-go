@@ -44,15 +44,21 @@ var ErrNoMatchingMember = errors.New("no matching calculation member")
 // is a leaf package safe for both sides to import.
 var ErrAuthContextUnavailable = errors.New("auth context unavailable for dispatch")
 
-// ProcessorExecutionMode is the mode a processor with the configured
-// ExecutionMode mode runs in: mode itself, or SYNC when none is configured.
-// The workflow engine's audit record and the dispatch span both report it.
-// Here rather than beside the workflow package's mode constants because
-// internal/observability cannot import internal/domain/workflow, which
+// ExecutionModeSync is the SYNC processor execution mode, and the mode a
+// processor with none configured runs in. The workflow package's
+// ExecutionModeSync is this constant. It is here rather than beside the
+// workflow package's other mode constants because internal/observability,
+// which reports the mode too, cannot import internal/domain/workflow, which
 // imports it.
+const ExecutionModeSync = "SYNC"
+
+// ProcessorExecutionMode is the mode a processor with the configured
+// ExecutionMode mode runs in: mode itself, or ExecutionModeSync when none is
+// configured. The workflow engine's audit record and the dispatch span both
+// report it.
 func ProcessorExecutionMode(mode string) string {
 	if mode == "" {
-		return "SYNC"
+		return ExecutionModeSync
 	}
 	return mode
 }

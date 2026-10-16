@@ -183,9 +183,13 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// currentCtx so that pre-segment-boundary events (in TX_pre) write
 		// to TX_pre's buffer and post-segment-boundary events write to
 		// TX_post's buffer.
+		outcome := "completed"
+		if !success {
+			outcome = "failed"
+		}
 		e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult,
-			fmt.Sprintf("Processor %q completed", proc.Name),
+			fmt.Sprintf("Processor %q %s", proc.Name, outcome),
 			stateProcessResultData(proc.Name, proc.ExecutionMode, success, memberFailReason(procErr)))
 
 		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, and for an ASYNC_NEW_TX
