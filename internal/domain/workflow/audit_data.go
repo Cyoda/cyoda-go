@@ -21,7 +21,7 @@ type RejectedTransition struct {
 
 func (s StopReason) auditValue() map[string]any {
 	v := map[string]any{"type": s.Type, "description": s.Description}
-	if s.Rejected != nil {
+	if len(s.Rejected) > 0 {
 		list := make([]any, len(s.Rejected))
 		for i, r := range s.Rejected {
 			list[i] = map[string]any{

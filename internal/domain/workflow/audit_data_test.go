@@ -45,6 +45,7 @@ func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {
 		{"started on create", "STATE_MACHINE_START", startedData(""), nil},
 		{"finished with rejections", "STATE_MACHINE_FINISH", finishedData("NEW", stop), []string{"state", "stopReason", "success"}},
 		{"finished without rejections", "STATE_MACHINE_FINISH", finishedData("NEW", StopReason{Type: "COMPLETED_NO_AUTO_TRANSITIONS", Description: "none"}), []string{"state", "stopReason", "success"}},
+		{"finished with an empty rejection list", "STATE_MACHINE_FINISH", finishedData("NEW", StopReason{Type: "COMPLETED_NO_AUTO_TRANSITIONS", Description: "none", Rejected: []RejectedTransition{}}), []string{"state", "stopReason", "success"}},
 		{"cancelled", "CANCEL", cancelledData("by caller"), []string{"reason"}},
 		{"forced success", "FORCE_SUCCESS", forcedSuccessData(), nil},
 		{"workflow found, nil outcome", "WORKFLOW_FOUND", workflowFoundData("wf", nil), []string{"workflowName"}},
@@ -62,6 +63,7 @@ func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {
 		{"transition aborted on loopback", "TRANSITION_ABORTED", transitionAbortedData("", "tx-1", "tx-2"), []string{"actualTxId", "expectedTxId", "reason"}},
 		{"processing paused", "PAUSE_FOR_PROCESSING", processingPausedData("wf", "go", []string{"p1", "p2"}), []string{"processNames", "transition", "workflowName"}},
 		{"state process result ok", "STATE_PROCESS_RESULT", stateProcessResultData("p1", "ASYNC_NEW_TX", true, ""), []string{"executionMode", "processorName", "success"}},
+		{"state process result, empty mode is SYNC", "STATE_PROCESS_RESULT", stateProcessResultData("p1", "", true, ""), []string{"executionMode", "processorName", "success"}},
 		{"state process result failed", "STATE_PROCESS_RESULT", stateProcessResultData("p1", "SYNC", false, "bad input"), []string{"executionMode", "failReason", "processorName", "success"}},
 		{"scheduled armed", "SCHEDULED_TRANSITION_ARM", ScheduledArmedData("go", "NEW", 1760000000000), []string{"scheduledTime", "sourceState", "transition"}},
 		{"scheduled fired", "SCHEDULED_TRANSITION_FIRE", ScheduledFiredData("go", "NEW", "wf"), []string{"sourceState", "transition", "workflowName"}},
@@ -91,17 +93,20 @@ func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("keys = %v, want %v", got, want)
 			}
+			if sr, ok := wire["stopReason"].(map[string]any); ok {
+				if rt, present := sr["rejectedTransitions"]; present {
+					if l, _ := rt.([]any); len(l) == 0 {
+						t.Errorf("stopReason.rejectedTransitions is present but empty; it must be absent: %s", raw)
+					}
+				}
+			}
+			if tc.event == "STATE_PROCESS_RESULT" && wire["executionMode"] == "" {
+				t.Errorf("executionMode is empty; an empty mode is recorded as SYNC")
+			}
 			wire["eventType"] = tc.event
 			if err := schema.VisitJSON(wire); err != nil {
 				t.Errorf("%s data does not validate against its member: %v\n%s", tc.event, err, raw)
 			}
 		})
-	}
-}
-
-func TestStateProcessResultData_EmptyModeIsSync(t *testing.T) {
-	got := stateProcessResultData("p", "", true, "")
-	if got["executionMode"] != "SYNC" {
-		t.Errorf("executionMode = %v, want SYNC", got["executionMode"])
 	}
 }
