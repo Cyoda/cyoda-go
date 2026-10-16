@@ -288,7 +288,7 @@ func createWithTx(t *testing.T, h *callbackHarness, model, payload string) (id, 
 
 // putIfMatch is a client PUT carrying an If-Match precondition.
 func (h *callbackHarness) putIfMatch(path, ifMatch, body string) (callbackResult, error) {
-	req, err := http.NewRequest(http.MethodPut, h.baseURL+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(h.ownerCtx(), http.MethodPut, h.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		return callbackResult{}, err
 	}

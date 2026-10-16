@@ -57,7 +57,7 @@ func TestGated_MockIAM_All14Return501(t *testing.T) {
 	for _, op := range all14GatedOps {
 		op := op
 		t.Run(op.opID, func(t *testing.T) {
-			req, err := http.NewRequest(op.method, base+op.path, nil)
+			req, err := e2eNewRequest(t, op.method, base+op.path, nil)
 			if err != nil {
 				t.Fatalf("build request: %v", err)
 			}
@@ -78,7 +78,7 @@ func TestGated_MockIAM_All14Return501(t *testing.T) {
 func TestMockIAM_AdminLogLevelWorks(t *testing.T) {
 	base, cleanup := newMockIAMServer(t)
 	defer cleanup()
-	resp, err := http.Get(base + "/api/admin/log-level")
+	resp, err := e2eGet(t, base+"/api/admin/log-level")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +100,7 @@ func TestGated_Trusted_FeatureOff_Return404(t *testing.T) {
 	for _, op := range trustedOps {
 		op := op
 		t.Run(op.opID, func(t *testing.T) {
-			req, err := http.NewRequest(op.method, base+op.path, nil)
+			req, err := e2eNewRequest(t, op.method, base+op.path, nil)
 			if err != nil {
 				t.Fatalf("build request: %v", err)
 			}

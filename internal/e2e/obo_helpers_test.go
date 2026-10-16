@@ -189,15 +189,10 @@ func signAssertion(key *rsa.PrivateKey, kid string, claims map[string]any) strin
 	return tok
 }
 
-// exchangeRaw runs the token-exchange grant on the shared server as client
-// clientID with form. grant_type is set, and subject_token_type defaults to
-// the JWT type when form does not carry the key. It never touches
-// *testing.T, so it is safe to call from a goroutine.
-func exchangeRaw(tenant, clientID, secret string, form url.Values) (*http.Response, error) {
-	return exchangeRawTo(context.Background(), serverURL, tenant, clientID, secret, form)
-}
-
-// exchangeRawTo is exchangeRaw against the server at baseURL.
+// exchangeRawTo runs the token-exchange grant on the server at baseURL as
+// client clientID with form. grant_type is set, and subject_token_type
+// defaults to the JWT type when form does not carry the key. It never
+// touches *testing.T, so it is safe to call from a goroutine.
 func exchangeRawTo(ctx context.Context, baseURL, tenant, clientID, secret string, form url.Values) (*http.Response, error) {
 	f := url.Values{}
 	for k, v := range form {

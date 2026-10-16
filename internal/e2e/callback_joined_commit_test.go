@@ -112,7 +112,7 @@ func grpcJoinedOutcome(env txEnvelope, err error) joinedCommitOutcome {
 // joinedPatch is a joined PATCH: the callback door's merge-patch form, which
 // h.callback cannot send (it always sets application/json).
 func (h *callbackHarness) joinedPatch(entityID, ifMatch, patch, pass string) (callbackResult, error) {
-	req, err := http.NewRequest(http.MethodPatch, h.baseURL+"/api/entity/JSON/"+entityID, strings.NewReader(patch))
+	req, err := http.NewRequestWithContext(h.ownerCtx(), http.MethodPatch, h.baseURL+"/api/entity/JSON/"+entityID, strings.NewReader(patch))
 	if err != nil {
 		return callbackResult{}, err
 	}

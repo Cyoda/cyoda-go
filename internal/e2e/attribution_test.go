@@ -96,7 +96,7 @@ func (h *callbackHarness) DoAuthBearer(t *testing.T, method, path, body, txToken
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -121,7 +121,7 @@ func (h *callbackHarness) callbackBearer(method, path, body, txToken, bearer str
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := http.NewRequestWithContext(h.ownerCtx(), method, h.baseURL+path, r)
 	if err != nil {
 		return callbackResult{}, err
 	}

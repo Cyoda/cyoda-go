@@ -178,7 +178,7 @@ func txctlSetupLoopbackModel(t *testing.T, h *callbackHarness, model, procName s
 // which the shared patch() implementation's 415/428 precedence accepts.
 func txctlHarnessPatch(t *testing.T, h *callbackHarness, path, contentType, ifMatch, body string) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPatch, h.baseURL+path, strings.NewReader(body))
+	req, err := e2eNewRequest(t, http.MethodPatch, h.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new PATCH request: %v", err)
 	}

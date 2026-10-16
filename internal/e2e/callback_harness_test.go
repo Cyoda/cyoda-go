@@ -444,6 +444,14 @@ func (h *callbackHarness) DoAuth(t *testing.T, method, path, body, txToken strin
 	return resp
 }
 
+// ownerCtx is the context of a request the harness makes off the test
+// goroutine (a processor's callback): it names the test that built the
+// harness to the conformance validator, since the callback runs inside that
+// test's workflow. It never touches *testing.T.
+func (h *callbackHarness) ownerCtx() context.Context {
+	return openapivalidator.WithTestT(context.Background(), h.owner)
+}
+
 // callback is the goroutine-safe HTTP call issued from inside a processor. It
 // does not take *testing.T (it runs off the test goroutine).
 func (h *callbackHarness) callback(method, path, body, txToken string) (callbackResult, error) {
@@ -451,9 +459,7 @@ func (h *callbackHarness) callback(method, path, body, txToken string) (callback
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	// Named to the conformance validator as the test that built the harness:
-	// a processor's callback runs inside that test's workflow.
-	req, err := http.NewRequestWithContext(openapivalidator.WithTestT(context.Background(), h.owner), method, h.baseURL+path, r)
+	req, err := http.NewRequestWithContext(h.ownerCtx(), method, h.baseURL+path, r)
 	if err != nil {
 		return callbackResult{}, err
 	}

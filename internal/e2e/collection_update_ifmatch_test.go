@@ -677,13 +677,14 @@ func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T
 	var sideWriteStatus int
 	var sideWriteErr error
 	var targetID string
+	testCtx := e2eCtx(t) // the closure never touches t
 
 	procSvc.RegisterProcessor("upd-coll-cbd-post-counted", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		dispatchCount.Add(1)
 		// An ordinary committed update from somebody else, landing between
 		// TX_pre's commit and the apply-result CAS. doAuthRaw, not doAuth: this
 		// runs on the server's goroutine and must not call t.Fatalf.
-		resp, err := doAuthRaw(context.Background(), http.MethodPut,
+		resp, err := doAuthRaw(testCtx, http.MethodPut,
 			"/api/entity/JSON/"+targetID,
 			`{"name":"X_CONCURRENT","amount":7,"status":"other"}`)
 		if err != nil {

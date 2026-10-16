@@ -406,7 +406,7 @@ func TestE2E_ClientCancelledRequest_StillRollsBack(t *testing.T) {
 
 	before := idleInTransactionConns(t)
 
-	reqCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	reqCtx, cancel := context.WithTimeout(e2eCtx(t), 300*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		h.baseURL+"/api/entity/JSON/txlife-slow/1", strings.NewReader(txLifeSample))

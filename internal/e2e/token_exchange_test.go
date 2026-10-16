@@ -48,7 +48,7 @@ func exchangeAsIn(t *testing.T, tenant, clientID, secret, subject string, extra 
 	for i := 0; i+1 < len(extra); i += 2 {
 		form.Set(extra[i], extra[i+1])
 	}
-	resp, err := exchangeRaw(tenant, clientID, secret, form)
+	resp, err := exchangeRawTo(e2eCtx(t), serverURL, tenant, clientID, secret, form)
 	if err != nil {
 		t.Fatalf("exchange: %v", err)
 	}

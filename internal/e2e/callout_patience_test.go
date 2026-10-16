@@ -133,7 +133,7 @@ func TestCalloutCallerEnds(t *testing.T) {
 
 	t.Run("cancelled-during-a-wait", func(t *testing.T) {
 		model, tag := setup(t, "cancel-wait", map[string]any{})
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := context.WithTimeout(e2eCtx(t), 300*time.Millisecond)
 		defer cancel()
 		if _, err := h.joinedRequest(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), workflowSampleModel, ""); err == nil {
 			t.Fatal("the request finished; it was meant to be abandoned during the wait")
@@ -155,7 +155,7 @@ func TestCalloutCallerEnds(t *testing.T) {
 		second := h.AttachCnode(t, cnodeSpec{name: "spare-cancel", tags: []string{tag}})
 		defer second.Detach(t)
 		defer first.Detach(t)
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		ctx, cancel := context.WithTimeout(e2eCtx(t), 300*time.Millisecond)
 		defer cancel()
 		if _, err := h.joinedRequest(ctx, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), workflowSampleModel, ""); err == nil {
 			t.Fatal("the request finished; it was meant to be abandoned during the try")

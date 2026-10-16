@@ -2,7 +2,6 @@ package e2e_test
 
 import (
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -16,7 +15,7 @@ import (
 func TestMetrics_PostgresPoolSeriesAreExported(t *testing.T) {
 	srv := httptest.NewServer(observability.MetricsHandler())
 	defer srv.Close()
-	resp, err := http.Get(srv.URL)
+	resp, err := e2eGet(t, srv.URL)
 	if err != nil {
 		t.Fatal(err)
 	}

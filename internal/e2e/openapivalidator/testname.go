@@ -60,15 +60,16 @@ func (a attributingTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	return a.base.RoundTrip(req)
 }
 
-// requestingTest removes TestNameHeader from r and returns the test it
-// names, or nil when the request names none.
-func requestingTest(r *http.Request) Reporter {
+// requestingTest removes TestNameHeader from r and returns the test name it
+// carries ("" when none) and the test registered under that name (nil when
+// none is).
+func requestingTest(r *http.Request) (string, Reporter) {
 	name := r.Header.Get(TestNameHeader)
 	if name == "" {
-		return nil
+		return "", nil
 	}
 	r.Header.Del(TestNameHeader)
 	t, _ := reporters.Load(name)
 	rep, _ := t.(Reporter)
-	return rep
+	return name, rep
 }

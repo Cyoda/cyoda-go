@@ -174,6 +174,21 @@ func TestMiddleware_FilteredRunFailsTheRequestingTestOverTheWire(t *testing.T) {
 	}
 }
 
+// A request that names a test no Transport registered — in this process, no
+// test of that name sent a request — is reported under the name it carries,
+// not as "unknown".
+func TestMiddleware_UnregisteredTestNameIsKept(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/single", nil)
+	req.Header.Set(TestNameHeader, "TestNeverRegistered/sub")
+	ms := serveFixture(t, req)
+	if len(ms) == 0 {
+		t.Fatal("no mismatch was collected")
+	}
+	if ms[0].TestName != "TestNeverRegistered/sub" {
+		t.Errorf("mismatch TestName = %q, want TestNeverRegistered/sub", ms[0].TestName)
+	}
+}
+
 // A mismatch nobody reported — a filtered run that did not include the
 // conformance report test — turns a passing exit code into a failing one.
 func TestFailOnUnreported(t *testing.T) {

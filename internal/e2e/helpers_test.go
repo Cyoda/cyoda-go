@@ -69,6 +69,16 @@ func e2eCtx(t *testing.T) context.Context {
 	return openapivalidator.WithTestT(context.Background(), t)
 }
 
+// e2eGet is http.Get bound to the test's context.
+func e2eGet(t *testing.T, url string) (*http.Response, error) {
+	t.Helper()
+	req, err := e2eNewRequest(t, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return http.DefaultClient.Do(req)
+}
+
 // e2eNewRequest creates an http.Request bound to the test's context.
 func e2eNewRequest(t *testing.T, method, urlStr string, body io.Reader) (*http.Request, error) {
 	t.Helper()

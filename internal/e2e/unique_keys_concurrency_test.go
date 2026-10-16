@@ -70,6 +70,7 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 
 	// Both goroutines race to create an entity with the SAME email value.
 	const sharedEmail = "concurrent@x.com"
+	ctx := e2eCtx(t) // the goroutines never touch t
 	postURL := serverURL + fmt.Sprintf("/api/entity/JSON/%s/1", model)
 
 	type result struct {
@@ -94,7 +95,7 @@ func TestUniqueKeysConcurrency_Postgres(t *testing.T) {
 			payload := fmt.Sprintf(
 				`{"email":%q,"name":"User%d","amount":%d,"status":"draft"}`,
 				sharedEmail, i, i)
-			req, err := http.NewRequest(http.MethodPost, postURL, strings.NewReader(payload))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, postURL, strings.NewReader(payload))
 			if err != nil {
 				results[i] = result{status: -1, body: err.Error()}
 				return

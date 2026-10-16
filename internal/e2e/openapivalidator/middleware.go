@@ -11,8 +11,8 @@ import (
 // operationalPathPrefixes are paths the test server mounts but the OpenAPI
 // spec deliberately doesn't document — health checks, admin endpoints,
 // Scalar docs UI, OAuth discovery, the help index and its topics. Validation
-// is skipped for these so they
-// don't appear in the conformance report as "no spec route matches".
+// is skipped for these so they don't appear in the conformance report as "no
+// spec route matches".
 //
 // Path prefixes are matched against r.URL.Path after the test server's
 // /api context-path mount (e.g. "/api/health" matches prefix "/api/health").
@@ -130,7 +130,7 @@ func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) ht
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			requester := requestingTest(r)
+			testName, requester := requestingTest(r)
 			probe := r.Header.Get(UndeclaredRouteProbeHeader) != ""
 			r.Header.Del(UndeclaredRouteProbeHeader)
 			if isOperationalPath(r.URL.Path) || isCORSPreflight(r) {
@@ -164,8 +164,8 @@ func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) ht
 					continue
 				}
 				m.TestName = "unknown"
-				if requester != nil {
-					m.TestName = requester.Name()
+				if testName != "" {
+					m.TestName = testName
 				}
 				defaultCollector.append(m)
 

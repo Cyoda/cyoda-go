@@ -70,7 +70,7 @@ func doInfraErrRequest(t *testing.T, base, method, path, body string) (int, stri
 	} else {
 		reader = strings.NewReader("")
 	}
-	req, err := http.NewRequest(method, base+path, reader)
+	req, err := e2eNewRequest(t, method, base+path, reader)
 	if err != nil {
 		t.Fatalf("build request %s %s: %v", method, path, err)
 	}
