@@ -17,7 +17,7 @@ const (
 	ComputeBehaviourFail          = "fail"           // answer success=false, no verdict
 	ComputeBehaviourFailRetryable = "fail-retryable" // answer success=false, retryable=true
 	ComputeBehaviourFailSilent    = "fail-silent"    // answer success=false with no message and no verdict
-	ComputeBehaviourLateCallback  = "late-callback" // never answer; call back with the pass on Release
+	ComputeBehaviourLateCallback  = "late-callback"  // never answer; call back with the pass on Release
 	ComputeBehaviourDrop          = "drop"           // close the stream on receiving work
 	ComputeBehaviourHold          = "hold"           // take the work; answer it from the catalog on Release
 )

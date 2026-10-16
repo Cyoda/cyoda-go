@@ -225,9 +225,10 @@ func (r *PeerRouter) boundPeerText(resp *DispatchCalloutResponse, peer contract.
 	omitted := len(resp.Warnings) > maxPeerDiagnostics || len(resp.Errors) > maxPeerDiagnostics || len(resp.Attempts) > maxPeerDiagnostics
 	resp.Warnings = boundLines(resp.Warnings)
 	resp.Errors = boundLines(resp.Errors)
-	// The cnode's own message becomes the MemberFailed failure's, and from
-	// there the client's 400 body — the same text a local try bounds where the
-	// member speaks it (boundMemberText, internal/grpc/dispatch.go).
+	// The cnode's own message becomes the MemberFailed failure's MemberText
+	// and the client's Message, and from there the client's 400 body — the
+	// same text a local try bounds where the member speaks it
+	// (boundMemberText, internal/grpc/dispatch.go).
 	resp.MemberError = boundLine(resp.MemberError)
 	// A criterion's reason reaches the client where a transition is refused,
 	// and a function's resultKind reaches the error the engine raises for a

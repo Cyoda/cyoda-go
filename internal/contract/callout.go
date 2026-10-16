@@ -80,7 +80,8 @@ type CalloutFailure struct {
 	// Code is the error code for the client; empty for MemberFailed and for a
 	// Terminal failure that has no code of its own.
 	Code string
-	// Message is client-safe text; for MemberFailed, the cnode's own.
+	// Message is client-safe text. For MemberFailed it is the cnode's own
+	// words when it sent any (see MemberText), else a fixed sentence.
 	Message string
 	// MemberText is, for MemberFailed, the cnode's own failure text, bounded,
 	// and empty when the cnode sent none; Message then holds a fixed sentence.
