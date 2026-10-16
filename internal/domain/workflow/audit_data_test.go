@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
@@ -72,6 +73,13 @@ func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {
 		{"scheduled cancelled without workflow", "SCHEDULED_TRANSITION_CANCEL", ScheduledCancelledData("go", "NEW", ""), []string{"sourceState", "transition"}},
 		{"scheduled failed", "SCHEDULED_TRANSITION_FAIL", ScheduledFailedData("go", "NEW", "RUN_PANICKED", 3, 0), []string{"attempts", "lostOwners", "reason", "sourceState", "transition"}},
 	}
+	// The executionMode each STATE_PROCESS_RESULT row records: the mode it
+	// was given, and SYNC for an empty one.
+	wantMode := map[string]string{
+		"state process result ok":                  "ASYNC_NEW_TX",
+		"state process result, empty mode is SYNC": contract.ExecutionModeSync,
+		"state process result failed":              contract.ExecutionModeSync,
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			// What the wire carries: marshal, then unmarshal into JSON values.
@@ -100,8 +108,14 @@ func TestConstructors_ValidateAgainstTheirMember(t *testing.T) {
 					}
 				}
 			}
-			if tc.event == "STATE_PROCESS_RESULT" && wire["executionMode"] == "" {
-				t.Errorf("executionMode is empty; an empty mode is recorded as SYNC")
+			if tc.event == "STATE_PROCESS_RESULT" {
+				want, ok := wantMode[tc.name]
+				if !ok {
+					t.Fatalf("no expected executionMode for %q", tc.name)
+				}
+				if got := wire["executionMode"]; got != want {
+					t.Errorf("executionMode = %v, want %q", got, want)
+				}
 			}
 			wire["eventType"] = tc.event
 			if err := schema.VisitJSON(wire); err != nil {
