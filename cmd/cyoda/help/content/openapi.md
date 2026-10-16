@@ -149,10 +149,11 @@ spec's declared schema for that operation.
 
 The validator runs in enforce mode. Mismatches are collected and written to
 `internal/e2e/_openapi-conformance-report.md` after the suite completes, and
-`TestOpenAPIConformanceReport`, which runs last, fails when any remain. A
-mismatch is reported through that test, not through the test that made the
-request, so a `-run`-filtered E2E run must include `TestOpenAPIConformanceReport`
-to see one.
+`TestOpenAPIConformanceReport`, which runs last, fails when any remain. In a
+`-run`-filtered E2E run, a mismatch also fails the test that made the request.
+A mismatch that no test reported fails the run when `TestMain` ends: one on a
+request that named no test, one that arrived after its test returned, and any
+mismatch in a filtered run that leaves out `TestOpenAPIConformanceReport`.
 
 The validator checks responses against a view of the spec that gives JSON Schema's answers where kin-openapi, the validating library, differs: each use of a base is checked against the member its discriminator selects, and an untyped value (a condition's `value`, for example) accepts `null` unless its schema excludes it. The published spec does not change.
 

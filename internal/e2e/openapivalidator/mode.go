@@ -12,12 +12,10 @@ const (
 // Mode controls whether validation failures fail the suite.
 //
 // ModeRecord: collect mismatches, write the report file, do NOT fail.
-// ModeEnforce: same, plus fail TestOpenAPIConformanceReport (full suite).
+// ModeEnforce: same, plus fail TestOpenAPIConformanceReport when it runs.
 // In a -run-filtered run, also fail the requesting test when the request
 // named it (see Transport); FailOnUnreported fails the run on any mismatch
 // the report test did not report.
 //
-// ModeRecord was the default during the conformance work; the mode
-// flipped to ModeEnforce in Task 11.2, its final commit. See
-// docs/adr/0001-openapi-server-spec-conformance.md.
+// See docs/adr/0001-openapi-server-spec-conformance.md.
 const Mode = ModeEnforce
