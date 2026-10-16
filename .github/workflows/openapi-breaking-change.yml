@@ -62,8 +62,11 @@ jobs:
         # matched the server. oasdiff only suppresses a change whose full path+message
         # is contained in an ignore line, so each entry is surgical and fail-closed —
         # it cannot mask any other or future breaking change, and a wording change on
-        # an oasdiff bump re-flags it. See .github/oasdiff-err-ignore.txt for rationale.
+        # an oasdiff bump re-flags it. --severity-levels raises the removals of response
+        # enum values and discriminator mapping keys, and added response enum values, to
+        # errors (ADR 0003 Rule 6). See .github/oasdiff-err-ignore.txt for rationale.
         run: |
           git show origin/${{ github.base_ref }}:api/openapi.yaml > /tmp/base-openapi.yaml
           oasdiff breaking /tmp/base-openapi.yaml api/openapi.yaml --fail-on ERR \
+            --severity-levels .github/oasdiff-severity-levels.txt \
             --err-ignore .github/oasdiff-err-ignore.txt
