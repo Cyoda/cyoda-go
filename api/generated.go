@@ -1541,8 +1541,8 @@ type StateMachineAuditEventDto struct {
 	// ConsistencyTime Cyoda consistency time
 	ConsistencyTime *time.Time `json:"consistencyTime,omitempty"`
 
-	// Data Optional event-specific payload. Present for some event types (e.g. STATE_MACHINE_FINISH includes {"success": true}, STATE_PROCESS_RESULT includes {"success": false}). TRANSITION_NOT_MATCH_CRITERION carries {workflowName, transition, criterion, reason} and WORKFLOW_SKIP carries {workflowName, reason}, where reason explains why the criterion blocked the passage. Null for most event types. When the criterion holds a function condition, WORKFLOW_FOUND, WORKFLOW_SKIP, TRANSITION_NOT_MATCH_CRITERION and TRANSITION_MAKE carry `functions`: one entry per function condition the evaluation reached, in order, with `path` (JSON Pointer in the criterion, empty for a whole-criterion function), `name`, `called`, and when present `preCheck`, `preCheckMatched`, `matches` and `reason`.
-	Data *map[string]interface{} `json:"data,omitempty"`
+	// Data The event's data. Always present, never null. Its `eventType` repeats the outer `eventType` and selects the schema: each event type's schema states its fields and when an optional field is present. A field is present only when the server knows its value. The data of an event type the client does not know is read as no object; the outer `eventType` still names it.
+	Data *StateMachineEventDto `json:"data,omitempty"`
 
 	// Details Details of the event
 	Details *string `json:"details,omitempty"`
@@ -1559,11 +1559,6 @@ type StateMachineAuditEventDto struct {
 	// EventType Type of the state machine event. Its known values are the
 	// keys of the mapping of `StateMachineEventDto`, the schema of
 	// `data`. The set grows: a client accepts any other value.
-	// `TRANSITION_ABORTED` is a cyoda-go extension emitted as a
-	// compensating event when an in-flight transition is rejected
-	// by a stale `ifMatch` precondition, so consumers can pair the
-	// entry-side `STATE_MACHINE_START` with a terminal abort event
-	// in the audit log.
 	EventType *string `json:"eventType,omitempty"`
 
 	// ExecutedBy The principal that executed the request, independent of the attributed principal. Present only when one was recorded.
@@ -1586,6 +1581,11 @@ type StateMachineAuditEventDto struct {
 
 	// UtcTime UTC time when the event occurred
 	UtcTime time.Time `json:"utcTime"`
+}
+
+// StateMachineEventDto The data of a state-machine audit event. `eventType` is the event's type, the same value as the outer event's `eventType`, and selects the schema of the rest of the object.
+type StateMachineEventDto struct {
+	EventType string `json:"eventType"`
 }
 
 // StreamDataDeleteResult defines model for StreamDataDeleteResult.

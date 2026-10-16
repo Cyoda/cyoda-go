@@ -198,13 +198,8 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 		"GroupedStatsBucket.aggregations{}": doc.Components.Schemas["GroupedStatsBucket"].Value.
 			Properties["aggregations"].Value.AdditionalProperties.Schema.Value,
 	}
-	for _, part := range doc.Components.Schemas["StateMachineAuditEventDto"].Value.AllOf {
-		if p := part.Value.Properties["data"]; p != nil {
-			nullable["StateMachineAuditEventDto.data"] = p.Value
-		}
-	}
-	if len(nullable) != 4 {
-		t.Fatalf("expected four nullable values, found %v", nullable)
+	if len(nullable) != 3 {
+		t.Fatalf("expected three nullable values, found %v", nullable)
 	}
 	for where, s := range nullable {
 		for mode, opts := range schemaValidators {

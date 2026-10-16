@@ -11536,18 +11536,61 @@ components:
         after:
           $ref: "#/components/schemas/JsonNode"
           description: Entity after changes
+    CriterionFunctionResultDto:
+      type: object
+      description: >
+        One function condition a criterion evaluation reached, as an entry of
+        an event's `functions`.
+      properties:
+        path:
+          type: string
+          description: >
+            JSON Pointer of the function condition in the criterion; empty when
+            the function condition is the whole criterion.
+        name:
+          type: string
+          description: The function's name.
+        called:
+          type: boolean
+          description: Whether the function was called. It is not called when
+            its pre-check does not match.
+        preCheck:
+          $ref: "#/components/schemas/QueryConditionDto"
+          description: The function's pre-check as written. Present when the
+            function has a pre-check.
+        preCheckMatched:
+          type: boolean
+          description: Whether the pre-check matched. Present when the function
+            has a pre-check.
+        matches:
+          type: boolean
+          description: The function's answer. Present when the function was
+            called.
+        reason:
+          type: string
+          description: The reason the compute node gave with its answer.
+            Present when the function was called and the node gave a reason.
+      required:
+        - called
+        - name
+        - path
     RejectedTransitionCriterionDto:
       type: object
       properties:
         transitionName:
           type: string
-          description: The name of the transition
+          description: Name of the transition.
         criterion:
           type: string
-          description: The name of the criterion
+          description: >
+            The function's name when a function condition is the whole
+            criterion; otherwise the condition's type, as in the
+            TRANSITION_NOT_MATCH_CRITERION event of the same transition.
         reason:
           type: string
-          description: The reason why the criterion returned false
+          description: >
+            Why the criterion did not match, as in the
+            TRANSITION_NOT_MATCH_CRITERION event of the same transition.
       required:
         - criterion
         - reason
@@ -11567,32 +11610,16 @@ components:
                 Type of the state machine event. Its known values are the
                 keys of the mapping of `StateMachineEventDto`, the schema of
                 `data`. The set grows: a client accepts any other value.
-                `TRANSITION_ABORTED` is a cyoda-go extension emitted as a
-                compensating event when an in-flight transition is rejected
-                by a stale `ifMatch` precondition, so consumers can pair the
-                entry-side `STATE_MACHINE_START` with a terminal abort event
-                in the audit log.
             data:
-              type: [object, "null"]
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
-              x-go-type: map[string]interface{}
+              $ref: "#/components/schemas/StateMachineEventDto"
               description: >
-                Optional event-specific payload. Present for some event types
-                (e.g. STATE_MACHINE_FINISH includes {"success": true},
-                STATE_PROCESS_RESULT includes {"success": false}).
-                TRANSITION_NOT_MATCH_CRITERION carries
-                {workflowName, transition, criterion, reason} and WORKFLOW_SKIP
-                carries {workflowName, reason}, where reason explains why the
-                criterion blocked the passage. Null for most event types.
-                When the criterion holds a function condition, WORKFLOW_FOUND,
-                WORKFLOW_SKIP, TRANSITION_NOT_MATCH_CRITERION and
-                TRANSITION_MAKE carry `functions`: one entry per function
-                condition the evaluation reached, in order, with `path` (JSON
-                Pointer in the criterion, empty for a whole-criterion
-                function), `name`, `called`, and when present `preCheck`,
-                `preCheckMatched`, `matches` and `reason`.
-              additionalProperties: true
+                The event's data. Always present, never null. Its `eventType`
+                repeats the outer `eventType` and selects the schema: each
+                event type's schema states its fields and when an optional
+                field is present. A field is present only when the server
+                knows its value. The data of an event type the client does
+                not know is read as no object; the outer `eventType` still
+                names it.
             eventId:
               type: string
               format: uuid
@@ -11605,23 +11632,31 @@ components:
                 independent of the attributed principal. Present only when
                 one was recorded.
       required:
+        - data
         - eventId
         - eventType
         - microsTime
         - severity
         - utcTime
     StateMachineCancelledDto:
+      description: >
+        CANCEL: the run was stopped because it exceeded a cascade limit: the
+        visits of one state, or the cascade depth.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             reason:
               type: string
-              description: Reason for cancellation
+              description: The limit the run exceeded, and where.
       required:
         - reason
     StateMachineEventDto:
       type: object
+      description: >
+        The data of a state-machine audit event. `eventType` is the event's
+        type, the same value as the outer event's `eventType`, and selects
+        the schema of the rest of the object.
       discriminator:
         propertyName: eventType
         mapping:
@@ -11635,25 +11670,35 @@ components:
           TRANSITION_MAKE: "#/components/schemas/StateMachineTransitionMadeDto"
           TRANSITION_NOT_FOUND: "#/components/schemas/StateMachineTransitionNotFoundDto"
           TRANSITION_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineTransitionCriterionNotMatchedDto"
+          TRANSITION_ABORTED: "#/components/schemas/StateMachineTransitionAbortedDto"
           PROCESS_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineProcessCriterionNotMatchedDto"
           PAUSE_FOR_PROCESSING: "#/components/schemas/StateMachineProcessingPausedDto"
           STATE_PROCESS_RESULT: "#/components/schemas/StateMachineStateProcessResultDto"
+          SCHEDULED_TRANSITION_ARM: "#/components/schemas/StateMachineScheduledTransitionArmedDto"
+          SCHEDULED_TRANSITION_FIRE: "#/components/schemas/StateMachineScheduledTransitionFiredDto"
+          SCHEDULED_TRANSITION_EXPIRE: "#/components/schemas/StateMachineScheduledTransitionExpiredDto"
+          SCHEDULED_TRANSITION_CANCEL: "#/components/schemas/StateMachineScheduledTransitionCancelledDto"
+          SCHEDULED_TRANSITION_FAIL: "#/components/schemas/StateMachineScheduledTransitionFailedDto"
       properties:
         eventType:
           type: string
       required:
         - eventType
     StateMachineFinishedDto:
+      description: >
+        STATE_MACHINE_FINISH: the run succeeded and settled. cyoda-go records
+        it only for a run that succeeded. A scheduled fire records no
+        STATE_MACHINE_FINISH; its last event is SCHEDULED_TRANSITION_FIRE.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             state:
               type: string
-              description: The state of the entity when the state machine flow was finished
+              description: The state the run settled in.
             success:
               type: boolean
-              description: Whether the state machine execution was successful
+              description: Whether the run succeeded. Always `true` from cyoda-go.
             stopReason:
               $ref: "#/components/schemas/WorkflowStopReasonDto"
       required:
@@ -11661,9 +11706,17 @@ components:
         - stopReason
         - success
     StateMachineForcedSuccessDto:
+      description: >
+        FORCE_SUCCESS: a loopback ran on an entity whose state the selected
+        workflow does not declare, so there was nothing to loop back. The run
+        then finishes with the stop reason FORCE_SUCCESS.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
     StateMachineProcessCriterionNotMatchedDto:
+      description: >
+        PROCESS_NOT_MATCH_CRITERION. Never sent by cyoda-go, where a processor
+        has no criterion; kept for the contract cyoda-go shares with Cyoda
+        Cloud.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
@@ -11685,155 +11738,374 @@ components:
         - processorClassName
         - workflowName
     StateMachineProcessingPausedDto:
+      description: >
+        PAUSE_FOR_PROCESSING: the run reached the processors of a transition.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition
+              description: Name of the transition.
             processNames:
               type: array
-              description: List of process names that are paused
+              description: The transition's processor names, in pipeline order.
               items:
                 type: string
       required:
         - processNames
         - transition
         - workflowName
+    StateMachineScheduledTransitionArmedDto:
+      description: >
+        SCHEDULED_TRANSITION_ARM: a scheduled transition was armed, including
+        a re-arm by a loopback.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition fires from.
+            scheduledTime:
+              type: integer
+              format: int64
+              description: When the transition is due, in Unix milliseconds.
+      required:
+        - scheduledTime
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionCancelledDto:
+      description: >
+        SCHEDULED_TRANSITION_CANCEL: a scheduled task was removed without
+        firing, by an entity write or as the task came due.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+            workflowName:
+              type: string
+              description: >
+                The workflow selected for the entity. Present when the task is
+                cancelled as it comes due. Absent when a write cancels it: the
+                task may have been armed under another workflow.
+      required:
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionExpiredDto:
+      description: >
+        SCHEDULED_TRANSITION_EXPIRE: a scheduled task was removed without
+        firing because its deadline had passed: it was first picked up after
+        its deadline, or a schedule function returned a time already past its
+        expiry. For the first, `details` states the lateness and the timeout.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+      required:
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionFailedDto:
+      description: >
+        SCHEDULED_TRANSITION_FAIL: a scheduled task ended FAILED without
+        firing.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+            reason:
+              type: string
+              enum:
+                - UNSAFE_WORK_NOT_COMPLETED
+                - OWNER_LOST_REPEATEDLY
+                - EXPIRED_AFTER_FAILED_ATTEMPTS
+                - RUN_PANICKED
+                - STOPPED_AFTER_PARTIAL_COMMIT
+              description: >
+                Why the task failed, as the scheduled task's `failureReason`:
+                UNSAFE_WORK_NOT_COMPLETED — a processor not declared
+                `idempotent` was handed to a compute node and the run did not
+                commit, so it is not repeated;
+                OWNER_LOST_REPEATEDLY — the node running the task was lost too
+                many times;
+                EXPIRED_AFTER_FAILED_ATTEMPTS — the deadline passed after a
+                failed attempt or a lost node;
+                RUN_PANICKED — the run failed with an internal error;
+                STOPPED_AFTER_PARTIAL_COMMIT — the run committed the entity into
+                another state and then stopped.
+            attempts:
+              type: integer
+              format: int32
+              description: Failed attempts recorded since the task was last armed.
+            lostOwners:
+              type: integer
+              format: int32
+              description: Times the node running the task was lost since the
+                task was last armed.
+      required:
+        - attempts
+        - lostOwners
+        - reason
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionFiredDto:
+      description: >
+        SCHEDULED_TRANSITION_FIRE: a scheduled transition fired. It is recorded
+        beside TRANSITION_MAKE and is the fire's last event: a fire records no
+        STATE_MACHINE_START and no STATE_MACHINE_FINISH. The outer `state` is
+        the state the run settled in.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition fired from.
+            workflowName:
+              type: string
+              description: The workflow selected for the entity.
+      required:
+        - sourceState
+        - transition
+        - workflowName
     StateMachineStartedDto:
+      description: STATE_MACHINE_START. A run started.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             state:
               type: string
-              description: The state of the entity when the state machine flow was started
-      required:
-        - state
+              description: >
+                The entity's state when the run started, as the outer `state`.
+                Absent when the run creates the entity, which has no state yet.
     StateMachineStateProcessResultDto:
+      description: >
+        STATE_PROCESS_RESULT: the outcome of one processor of a transition.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
-            stateProcessId:
-              $ref: "#/components/schemas/StateProcessIdDto"
-            stateProcessClassName:
+            processorName:
               type: string
-              description: Fully qualified class name of the state process
-            stateProcessType:
+              description: The processor's `name` in the workflow.
+            executionMode:
               type: string
               enum:
-                - SUCCESS
-                - FAIL
-                - RESUBMIT
-                - UNKNOWN
+                - SYNC
+                - ASYNC_SAME_TX
+                - ASYNC_NEW_TX
+                - COMMIT_BEFORE_DISPATCH
+              description: The processor's execution mode. A processor configured
+                with no mode runs, and is recorded, as SYNC.
+            success:
+              type: boolean
+              description: >
+                Whether the processor succeeded. `false` for a failed
+                ASYNC_NEW_TX processor too, although the run continues.
             failReason:
               type: string
-              description: Reason for failure, if applicable
+              description: >
+                The failure text the compute node sent. Present only when the
+                processor failed and the node itself sent text; absent for
+                every other failure.
       required:
-        - stateProcessClassName
-        - stateProcessId
-        - stateProcessType
+        - executionMode
+        - processorName
+        - success
+    StateMachineTransitionAbortedDto:
+      description: >
+        TRANSITION_ABORTED: a cyoda-go event. A transition was refused because
+        the caller's `ifMatch` precondition did not name the entity version the
+        request started from. It ends the run that STATE_MACHINE_START opened,
+        so every start in the audit log has a terminal event.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            reason:
+              type: string
+              description: >
+                Why the transition was aborted. Known value: ENTITY_MODIFIED, the
+                entity changed since the version the caller named. The set
+                grows: a client accepts any other value.
+            transition:
+              type: string
+              description: The transition that was aborted. Absent for a
+                loopback, which has no transition.
+            expectedTxId:
+              type: string
+              description: The transaction id the caller's `ifMatch` named.
+            actualTxId:
+              type: string
+              description: The transaction id of the entity version the request
+                started from.
+      required:
+        - actualTxId
+        - expectedTxId
+        - reason
     StateMachineTransitionCriterionNotMatchedDto:
+      description: >
+        TRANSITION_NOT_MATCH_CRITERION: an automated transition was not taken
+        because its criterion did not match.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition
+              description: Name of the transition.
             criterion:
               type: string
-              description: Name of the criterion that was not matched
+              description: >
+                The function's name when a function condition is the whole
+                criterion; otherwise the condition's type (`simple`, `group`,
+                `lifecycle`, `array`).
             reason:
               type: string
-              description: Reason why the criterion was not matched
+              description: Why the criterion did not match.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the criterion holds a function
+                condition: one entry per function condition the evaluation
+                reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - criterion
+        - reason
         - transition
         - workflowName
     StateMachineTransitionMadeDto:
+      description: >
+        TRANSITION_MAKE: a transition was made. The outer `state` is the state
+        the transition left.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition that was made
+              description: Name of the transition that was made.
             newState:
               type: string
-              description: New state after the transition
+              description: The transition's target state.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the transition's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - newState
         - transition
         - workflowName
     StateMachineTransitionNotFoundDto:
+      description: >
+        TRANSITION_NOT_FOUND: the transition a request named cannot be made
+        from the entity's state: it is not declared there, it is disabled, or
+        it is scheduled. `details` says which.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition that was not found
+              description: Name of the transition the request named.
       required:
+        - transition
         - workflowName
     StateMachineWorkflowFoundDto:
+      description: >
+        WORKFLOW_FOUND: a workflow was selected for the entity.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow that was found
+              description: Name of the workflow that was selected.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the workflow's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - workflowName
     StateMachineWorkflowNotFoundDto:
+      description: >
+        WORKFLOW_NOT_FOUND. Never sent by cyoda-go, where an entity that no
+        workflow's criterion selects runs under the default workflow; kept for
+        the contract cyoda-go shares with Cyoda Cloud.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
     StateMachineWorkflowSkippedDto:
+      description: >
+        WORKFLOW_SKIP: a workflow was not selected because its criterion did
+        not match.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow that was skipped
+              description: Name of the workflow that was skipped.
             reason:
               type: string
-              description: Reason for skipping the workflow
+              description: Why the workflow's criterion did not match.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the workflow's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - reason
         - workflowName
-    StateProcessIdDto:
-      type: object
-      properties:
-        persisted:
-          type: boolean
-          description: Whether the process is persisted
-        runtimeId:
-          type: integer
-          format: int32
-          description: Runtime identifier
-        persistedId:
-          type: string
-          format: uuid
-          description: Persisted identifier, if applicable
-      required:
-        - persisted
-        - runtimeId
     SystemAuditEventDto:
       allOf:
         - $ref: "#/components/schemas/AuditEventDto"
@@ -11865,6 +12137,19 @@ components:
         - utcTime
     WorkflowStopReasonDto:
       type: object
+      description: >
+        Why a run stopped. cyoda-go records STATE_MACHINE_FINISH only for a
+        run that succeeded, so it sends three types:
+        COMPLETED_NO_AUTO_TRANSITIONS — the settled state has no automated
+        transition (none that is not disabled, not manual and not scheduled);
+        COMPLETED_ALL_CRITERIA_REJECTED — every automated transition of the
+        settled state was refused by its criterion in the last pass, listed in
+        `rejectedTransitions`;
+        FORCE_SUCCESS — a loopback on an entity whose state the selected
+        workflow does not declare.
+        PAUSED_FOR_PROCESSING, CANCELED, NO_WORKFLOW_FOUND, WORKFLOW_SKIPPED,
+        INCOMPLETE_TRANSACTION and UNKNOWN are never sent by cyoda-go; they
+        are kept for the contract cyoda-go shares with Cyoda Cloud.
       properties:
         type:
           type: string
@@ -11883,8 +12168,11 @@ components:
           description: Human-readable description of why the workflow stopped
         rejectedTransitions:
           type: array
-          description: If stopped due to criteria rejections, the transitions that were
-            rejected
+          description: >
+            Present when `type` is COMPLETED_ALL_CRITERIA_REJECTED: one entry
+            per automated transition of the settled state, in declaration
+            order. Only the last pass counts; a refusal in a state the run
+            then left is not listed.
           items:
             $ref: "#/components/schemas/RejectedTransitionCriterionDto"
       required:
