@@ -127,26 +127,6 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		if err := runCheckpoint(currentCtx, "processor "+proc.Name+" not dispatched"); err != nil {
 			return currentCtx, currentTxID, err
 		}
-		// Execution-location axis. Rejection is fatal and self-contained:
-		// emit the per-processor SMEventStateProcessResult audit row
-		// explicitly (mirroring the post-dispatch emit lower in this loop),
-		// then return. The post-dispatch abort gate keys on
-		// proc.ExecutionMode and would silently swallow the rejection if
-		// proc.ExecutionMode == ExecutionModeAsyncNewTx, so the rejection
-		// must short-circuit the loop entirely.
-		if proc.Type == ProcessorTypeInternalized {
-			auditData := map[string]any{
-				"success": false,
-				"mode":    proc.ExecutionMode,
-			}
-			e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-				spi.SMEventStateProcessResult,
-				fmt.Sprintf("Processor %q completed", proc.Name), auditData)
-			return currentCtx, currentTxID, fmt.Errorf(
-				"processor %s failed: execution type %q is not yet implemented",
-				proc.Name, proc.Type)
-		}
-
 		var success bool
 		var procErr error
 

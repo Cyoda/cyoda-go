@@ -276,7 +276,7 @@ func procCascadeWF(name, procName, execMode, cfgExtra string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
+					"processors": [{"type": "externalized", "name": %q, "executionMode": %q,
 						"config": {"attachEntity": true, "calculationNodesTags": ""%s}}]
 				}]},
 				"ACTIVE": {}

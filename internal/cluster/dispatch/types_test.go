@@ -15,7 +15,7 @@ func triesUsed(n int) *int { return &n }
 func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	entityData := json.RawMessage(`{"foo":"bar","count":42}`)
 	processor := spi.ProcessorDefinition{
-		Type: "HTTP",
+		Type: "externalized",
 		Name: "my-processor",
 		Config: spi.ProcessorConfig{
 			AttachEntity:         true,
@@ -82,8 +82,8 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	if len(got.Roles) != 2 || got.Roles[0] != "admin" || got.Roles[1] != "editor" {
 		t.Errorf("Roles = %v, want [admin editor]", got.Roles)
 	}
-	if got.Processor == nil || got.Processor.Type != "HTTP" {
-		t.Errorf("Processor.Type = %v, want HTTP", got.Processor)
+	if got.Processor == nil || got.Processor.Type != "externalized" {
+		t.Errorf("Processor.Type = %v, want externalized", got.Processor)
 	}
 	if got.Processor.Config.CalculationNodesTags != "gpu" {
 		t.Errorf("Processor.Config.CalculationNodesTags = %q, want gpu", got.Processor.Config.CalculationNodesTags)

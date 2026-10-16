@@ -432,7 +432,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "upd-coll-cbd-counted",
+					"processors": [{"type": "externalized", "name": "upd-coll-cbd-counted",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -691,7 +691,7 @@ func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "upd-coll-cbd-post-counted",
+					"processors": [{"type": "externalized", "name": "upd-coll-cbd-post-counted",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

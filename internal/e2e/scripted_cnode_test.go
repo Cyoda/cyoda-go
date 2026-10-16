@@ -213,7 +213,7 @@ func procWorkflowJSON(wfName, procName, mode string, config map[string]any) stri
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "DONE", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": procName, "executionMode": mode, "config": cfg,
+						"type": "externalized", "name": procName, "executionMode": mode, "config": cfg,
 					}},
 				}}},
 				"DONE": map[string]any{},

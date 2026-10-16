@@ -190,7 +190,7 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 func restartWorkflow(wfName, tag string, idempotent bool) string {
 	return `{"importMode":"REPLACE","workflows":[{"version":"1.5","name":"` + wfName + `","initialState":"Open","active":true,"states":{` +
 		`"Open":{"transitions":[{"name":"Fire","next":"Done","manual":false,"schedule":{"delayMs":300},"processors":[` +
-		`{"type":"calculator","name":"noop","executionMode":"SYNC","config":{"attachEntity":true,"calculationNodesTags":"` + tag +
+		`{"type":"externalized","name":"noop","executionMode":"SYNC","config":{"attachEntity":true,"calculationNodesTags":"` + tag +
 		`","retryPolicy":"NONE","responseTimeoutMs":240000,"idempotent":` + boolJSON(idempotent) + `}}]}]},"Done":{}}}]}`
 }
 

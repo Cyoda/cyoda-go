@@ -303,7 +303,7 @@ func manualProcWorkflowJSON(wfName string, cfg map[string]any) string {
 		"NONE": map[string]any{"transitions": []any{map[string]any{
 			"name": "go", "next": "DONE", "manual": true,
 			"processors": []any{map[string]any{
-				"type": "calculator", "name": "proc", "executionMode": "SYNC",
+				"type": "externalized", "name": "proc", "executionMode": "SYNC",
 				"config": mergeConfig(cfg),
 			}},
 		}}},
@@ -334,7 +334,7 @@ func readyProcWorkflowJSON(wfName string, cfg map[string]any) string {
 				"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": "ready",
 			},
 			"processors": []any{map[string]any{
-				"type": "calculator", "name": "proc", "executionMode": "SYNC",
+				"type": "externalized", "name": "proc", "executionMode": "SYNC",
 				"config": mergeConfig(cfg),
 			}},
 		}}},

@@ -26,22 +26,13 @@ const (
 	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
 )
 
-// Processor execution-location tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's ProcessorDefinitionDto
-// type constants). Centralised here as untyped strings so engine logic,
-// validator rules, and tests can compare against a single source — the
-// SPI's ProcessorDefinition.Type field is itself a plain string, so an
-// enum type would not buy compile-time safety.
-//
-// Empty value is treated as ProcessorTypeExternalized at dispatch. Any
-// value other than ProcessorTypeInternalized falls through to the
-// ExecutionMode dispatch path at engine fire time; the only Type
-// rejection performed by the engine is on the exact value
-// ProcessorTypeInternalized.
-const (
-	ProcessorTypeExternalized = "externalized"
-	ProcessorTypeInternalized = "internalized"
-)
+// ProcessorTypeExternalized is the one processor execution-location token:
+// the only value in the ProcessorDefinitionDto discriminator mapping of
+// api/openapi.yaml. Import refuses any other value and stores an omitted or
+// empty one as this value (applyProcessorTypeDefault), so every stored and
+// exported processor carries it. The SPI's ProcessorDefinition.Type field is
+// a plain string, so an enum type would not buy compile-time safety.
+const ProcessorTypeExternalized = "externalized"
 
 // validExecutionModes is the set of accepted ExecutionMode values for
 // import-time validation (audit §H4). Empty string is also accepted —
@@ -739,6 +730,10 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",
 						wf.Name, stateName, tr.Name, p.Name)
+				}
+				if p.Type != "" && p.Type != ProcessorTypeExternalized {
+					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown type %q (allowed: externalized, or empty)",
+						wf.Name, stateName, tr.Name, p.Name, p.Type)
 				}
 				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",

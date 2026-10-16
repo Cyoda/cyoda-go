@@ -212,7 +212,7 @@ func schedDoc(wfName string, states map[string]any) string {
 // sProc is one processor of a scheduler test workflow. idempotent false is
 // the unsafe processor of spec §3.
 func sProc(name, mode, tag string, idempotent bool) map[string]any {
-	return map[string]any{"type": "calculator", "name": name, "executionMode": mode,
+	return map[string]any{"type": "externalized", "name": name, "executionMode": mode,
 		"config": map[string]any{"attachEntity": true, "calculationNodesTags": tag,
 			"idempotent": idempotent, "responseTimeoutMs": 60000}}
 }

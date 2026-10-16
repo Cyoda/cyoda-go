@@ -35,7 +35,7 @@ type conflictProc struct {
 func conflictDoorWorkflow(name, tag string, procs ...conflictProc) string {
 	list := make([]string, len(procs))
 	for i, proc := range procs {
-		list[i] = fmt.Sprintf(`{"type": "calculator", "name": %q, "executionMode": %q,
+		list[i] = fmt.Sprintf(`{"type": "externalized", "name": %q, "executionMode": %q,
 			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000, "startNewTxOnDispatch": %t}}`,
 			proc.name, proc.mode, tag, proc.startNewTx)
 	}

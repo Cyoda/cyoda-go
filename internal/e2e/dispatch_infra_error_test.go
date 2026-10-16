@@ -125,7 +125,7 @@ func TestProcessorNoMember_Returns503(t *testing.T) {
 			"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "DONE", "manual": false,
-					"processors": [{"type": "calculator", "name": "noop-proc", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "noop-proc", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "no-such-tag"}}]
 				}]},
 				"DONE": {}

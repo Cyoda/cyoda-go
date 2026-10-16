@@ -153,7 +153,7 @@ func TestScheduledTaskWrites_DeleteEntity_Joined_NotRetried(t *testing.T) {
 			"version": "1.1", "name": "stw-joined-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "DONE", "manual": false,
-					"processors": [{"type": "calculator", "name": "stw-delete-target", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "stw-delete-target", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"DONE": {}
 			}

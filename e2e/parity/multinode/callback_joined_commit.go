@@ -44,7 +44,7 @@ func cbRouteCommitBeforeDispatchWorkflow(wfName string) string {
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "store", "next": "STORED", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": "noop", "executionMode": "COMMIT_BEFORE_DISPATCH",
+						"type": "externalized", "name": "noop", "executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": map[string]any{"attachEntity": true, "calculationNodesTags": "cbjc-fwdhop-no-member-serves-this"},
 					}},
 				}}},

@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the twelve tightenings below
+Every payload 1.4 accepted that does not fall under the thirteen tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Twelve tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Thirteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -320,6 +320,15 @@ they are recorded here, under the rubric of §"Tightening releases":
     string: `EQUALS` matched `""`, and `CONTAINS` or `STARTS_WITH` matched
     every string. Rubric point 1 applies: fail loud where the old answer was
     wrong.
+13. **A processor's `type` is validated** (`externalized` or empty). Until now
+    any string was accepted, stored and exported as given: `internalized`
+    imported and then failed every dispatch, and every other value ran as
+    `externalized`. An export could therefore carry a `type` that is not in
+    the published discriminator mapping, which a generated client cannot
+    read. Any value other than `externalized` is refused at import
+    (`400 VALIDATION_FAILED`), and an omitted or empty `type` is stored, and
+    exported, as `externalized` (it exported as `""` before). Rubric point 1
+    applies: fail loud where the old value was ignored or failed later.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -337,8 +346,10 @@ criterion far larger than a guard needs; each error names where the
 criterion is. Rule 10 touches only criteria whose pre-check was ignored until
 now, rule 11 only function conditions that failed every dispatch, and rule 12
 only clauses without the operand their operator compares with; each error
-names the position of the condition in the criterion. All twelve rules
-apply to an import under
+names the position of the condition in the criterion. Rule 13 touches only
+processors whose `type` was not `externalized` or empty; the error names the
+processor and the value, and the fix is to send `externalized` or omit the
+field. All thirteen rules apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 

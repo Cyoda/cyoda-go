@@ -12,7 +12,7 @@ import (
 // automated transition, or — onTransition — on a manual transition "go" out of
 // Ready, which a create reaches with no processor.
 func cbdRPCWorkflowJSON(wfName, procName string, onTransition bool) string {
-	cbd := fmt.Sprintf(`"processors": [{"type": "calculator", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
+	cbd := fmt.Sprintf(`"processors": [{"type": "externalized", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
 		"config": {"attachEntity": true, "calculationNodesTags": "no-member-needed"}}]`, procName)
 	states := fmt.Sprintf(`"Open": {"transitions": [{"name": "init", "next": "Done", "manual": false, %s}]}, "Done": {}`, cbd)
 	if onTransition {

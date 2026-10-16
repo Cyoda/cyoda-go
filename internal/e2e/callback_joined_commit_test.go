@@ -422,7 +422,7 @@ func joinedCommitOuterWorkflow(name, proc string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"ACTIVE": {}
 			}
@@ -433,7 +433,7 @@ func joinedCommitOuterWorkflow(name, proc string) string {
 // joinedCommitTargetWorkflow places a COMMIT_BEFORE_DISPATCH processor as shape
 // says.
 func joinedCommitTargetWorkflow(name, proc string, startNewTx bool, shape joinedCommitShape) string {
-	cbd := fmt.Sprintf(`"processors": [{"type": "calculator", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
+	cbd := fmt.Sprintf(`"processors": [{"type": "externalized", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
 		"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": %t}}]`, proc, startNewTx)
 	var states string
 	switch shape {

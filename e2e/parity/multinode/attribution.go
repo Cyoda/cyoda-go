@@ -319,7 +319,7 @@ func attrScheduledWorkflow() string {
 					"name": "AutoClose", "next": "Closed", "manual": false,
 					"schedule": map[string]any{"delayMs": 1500},
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": "record-authtype", "executionMode": "SYNC",
+						"type": "externalized", "name": "record-authtype", "executionMode": "SYNC",
 						"config": map[string]any{"attachEntity": true, "calculationNodesTags": computeMemberTag},
 					}},
 				}}},
@@ -355,7 +355,7 @@ func attrProcWorkflow(wfName, procName, execMode, tag, contextValue string) stri
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "ACTIVE", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": procName, "executionMode": execMode, "config": cfg,
+						"type": "externalized", "name": procName, "executionMode": execMode, "config": cfg,
 					}},
 				}}},
 				"ACTIVE": map[string]any{},

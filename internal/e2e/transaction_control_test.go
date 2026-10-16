@@ -98,7 +98,7 @@ func txctlSetupCreateStyleModel(t *testing.T, h *callbackHarness, model, procNam
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -125,7 +125,7 @@ func txctlSetupNamedTransitionModel(t *testing.T, h *callbackHarness, model, pro
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false}]},
 				"ACTIVE": {"transitions": [{"name": "promote", "next": "BLOCKED", "manual": true,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"BLOCKED": {}
@@ -157,7 +157,7 @@ func txctlSetupLoopbackModel(t *testing.T, h *callbackHarness, model, procName s
 				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false}]},
 				"ACTIVE": {"transitions": [{"name": "promote", "next": "BLOCKED", "manual": false,
 					"criterion": {"type":"simple","jsonPath":"$.status","operatorType":"EQUALS","value":"trigger"},
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"BLOCKED": {}
@@ -381,7 +381,7 @@ func TestTransactionControl_JoinedRequests400(t *testing.T) {
 			"version": "1.1", "name": "txctl-joined-primary-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "txctl-joined400", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "txctl-joined400", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -440,7 +440,7 @@ func TestTransactionControl_ChunkedCreate_PostFirstChunk408(t *testing.T) {
 			"version": "1.1", "name": "txctl-chunked-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "txctl-chunk-block", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "txctl-chunk-block", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

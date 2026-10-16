@@ -163,11 +163,9 @@ owning entity, so that a repeat after a failover leaves at most an orphan.
 
 **Processor `type` (execution-location axis):**
 
-- `"externalized"` (default when omitted) — dispatched via gRPC to a compute member selected by `config.calculationNodesTags`. This is the only execution location implemented today; all the `executionMode` semantics below apply to externalized processors.
+- `"externalized"` — dispatched via gRPC to a compute member selected by `config.calculationNodesTags`. This is the only execution location; all the `executionMode` semantics below apply to it.
 
-The engine reserves the value `"internalized"` for an in-process execution location not yet implemented. Any transition that fires a processor with `type: "internalized"` is rejected at dispatch with `WORKFLOW_FAILED` (400) and the operator-visible error `processor X failed: execution type "internalized" is not yet implemented`. The reserved value is intentionally absent from the OpenAPI enum until the subtype lands; workflow authors who include it in import payloads will not be rejected at import, but their entities cannot transit past the affected step.
-
-Any value other than `"internalized"` (including the empty string, the canonical `"externalized"`, and unknown values such as legacy `"scheduled"` or `"EXTERNAL"`) falls through to the `executionMode` dispatch path. This permissiveness will narrow in a future release; do not rely on it.
+Import accepts `"externalized"` only. An omitted or empty `type` is stored, and exported, as `"externalized"`. Any other value — `"internalized"` included — is refused at import with `VALIDATION_FAILED` (400), naming the processor and the value.
 
 **Valid `executionMode` values (exhaustive):**
 

@@ -424,7 +424,7 @@ const ukProcRewriteWorkflow = `{
 		"active": true,
 		"states": {
 			"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-				"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+				"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 					"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 			}]},
 			"CREATED": {}

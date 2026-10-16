@@ -693,7 +693,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 					"next": "S2",
 					"manual": true,
 					"processors": [{
-						"type": "EXTERNAL",
+						"type": "externalized",
 						"name": "p",
 						"executionMode": "SYNC",
 						"config": {"startNewTxOnDispatch": true}

@@ -400,7 +400,7 @@ func TestImportFullWorkflow(t *testing.T) {
 								"next": "VALIDATED",
 								"manual": false,
 								"processors": [
-									{"name": "validate-payment", "type": "FUNCTION"}
+									{"name": "validate-payment", "type": "externalized"}
 								]
 							}
 						]
@@ -426,7 +426,7 @@ func TestImportFullWorkflow(t *testing.T) {
 								"next": "PROCESSED",
 								"manual": false,
 								"processors": [
-									{"name": "execute-payment", "type": "EXTERNAL_API"}
+									{"name": "execute-payment", "type": "externalized"}
 								]
 							}
 						]

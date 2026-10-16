@@ -56,7 +56,7 @@ func RunWorkflowProcessorChainOnCreation(t *testing.T, fixture BackendFixture) {
 			"version": "1.1", "name": "proc-chain-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -184,11 +184,11 @@ func RunWorkflowMultiStateCascade(t *testing.T, fixture BackendFixture) {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "enrich", "next": "ENRICHED", "manual": false,
-					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ENRICHED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": false,
-					"processors": [{"type": "calculator", "name": "bump-amount", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "bump-amount", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}
@@ -239,7 +239,7 @@ func RunWorkflowManualTransition(t *testing.T, fixture BackendFixture) {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}

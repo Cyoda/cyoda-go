@@ -150,7 +150,7 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 //     → "type":"group","operator":"AND","conditions":[...]  — different_naming_same_level
 //   - Inner criteria: "type":"jsonpath","path","equals"
 //     → "type":"simple","jsonPath","operatorType","value"  — different_naming_same_level
-//   - Processor: bare {"name","config"} → requires "type" field — different_naming_same_level
+//   - Processor: bare {"name","config"} → accepted as sent; the omitted "type" is stored as "externalized"
 func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -163,8 +163,8 @@ func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture pa
 	// dictionary uses criterion type "jsonpath" with "path"/"equals";
 	// cyoda-go uses type "simple" with "jsonPath"/"operatorType"/"value" —
 	// different_naming_same_level.
-	// dictionary processor omits "type"; cyoda-go ProcessorDefinition.Type is required —
-	// different_naming_same_level.
+	// dictionary processor omits "type"; cyoda-go accepts that and stores the
+	// omitted type as "externalized".
 	body := `{
 		"workflows": [{
 			"name": "advanced",
@@ -184,7 +184,7 @@ func RunExternalAPI_08_03_AdvancedCriteriaAndProcessors(t *testing.T, fixture pa
 								{"type": "simple", "jsonPath": "$.value", "operatorType": "GREATER_THAN", "value": 10}
 							]
 						},
-						"processors": [{"name": "noop", "type": "FUNCTION"}]
+						"processors": [{"name": "noop"}]
 					}]
 				},
 				"done": {"transitions": []}

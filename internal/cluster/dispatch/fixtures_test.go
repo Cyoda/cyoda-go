@@ -54,7 +54,7 @@ func testEntity() *spi.Entity {
 // testProcessor builds a processor with calculationNodesTags="python".
 func testProcessor() spi.ProcessorDefinition {
 	return spi.ProcessorDefinition{
-		Type: "function",
+		Type: "externalized",
 		Name: "myProcessor",
 		Config: spi.ProcessorConfig{
 			AttachEntity:         true,

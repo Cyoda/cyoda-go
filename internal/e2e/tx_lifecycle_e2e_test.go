@@ -189,7 +189,7 @@ func txLifeSegmentWF(name, processor, criterion string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "STAGED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q,
+					"processors": [{"type": "externalized", "name": %q,
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]}]},
 				"STAGED": {"transitions": [{"name": "gate", "next": "DONE", "manual": false,
@@ -490,7 +490,7 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 			"version": "1.1", "name": "txlife-owner-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "txlife-owner-proc",
+					"processors": [{"type": "externalized", "name": "txlife-owner-proc",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"ACTIVE": {}

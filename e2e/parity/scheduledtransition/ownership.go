@@ -88,7 +88,7 @@ func ownWorkflow(wfName string, states map[string]any) string {
 
 // ownProc is one SYNC catalog processor routed to tag, with one try.
 func ownProc(name, tag string, idempotent bool) map[string]any {
-	return map[string]any{"type": "calculator", "name": name, "executionMode": "SYNC",
+	return map[string]any{"type": "externalized", "name": name, "executionMode": "SYNC",
 		"config": map[string]any{"attachEntity": true, "calculationNodesTags": tag,
 			"idempotent": idempotent, "retryPolicy": "NONE", "responseTimeoutMs": 10000}}
 }

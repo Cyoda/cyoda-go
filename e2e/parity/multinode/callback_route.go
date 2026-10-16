@@ -91,7 +91,7 @@ func cbRoutePrimaryWorkflow(wfName, procName, contextValue string) string {
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "ACTIVE", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": procName, "executionMode": "SYNC",
+						"type": "externalized", "name": procName, "executionMode": "SYNC",
 						"config": map[string]any{
 							"attachEntity":         true,
 							"calculationNodesTags": computeMemberTag,

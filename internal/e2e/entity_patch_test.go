@@ -279,7 +279,7 @@ func TestE2E_EntityPatch_MergeOrdering_WithProcessor(t *testing.T) {
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false}]},
 				"CREATED": {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s",
+					"processors": [{"type": "externalized", "name": "%s",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

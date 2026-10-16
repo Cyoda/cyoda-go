@@ -42,7 +42,7 @@ func mnProc(name, mode, tag, contextValue string, extra map[string]any) map[stri
 	for k, v := range extra {
 		cfg[k] = v
 	}
-	return map[string]any{"type": "calculator", "name": name, "executionMode": mode, "config": cfg}
+	return map[string]any{"type": "externalized", "name": name, "executionMode": mode, "config": cfg}
 }
 
 // mnWorkflow builds a NONE -> ACTIVE workflow whose automated transition runs

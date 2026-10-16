@@ -271,7 +271,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 				"version": "1.1", "name": "cbx-primary-wf", "initialState": "NONE", "active": true,
 				"states": {
 					"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-						"processors": [{"type": "calculator", "name": "cbx-hold", "executionMode": "SYNC",
+						"processors": [{"type": "externalized", "name": "cbx-hold", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 					}]},
 					"ACTIVE": {}

@@ -10325,12 +10325,10 @@ components:
           description: |
             Processor execution-location axis; the mapping lists the known
             values. `externalized` dispatches the processor via gRPC to a
-            calculation node selected by `calculationNodesTags`. Empty or
-            omitted is treated as `externalized` by the runtime. The engine
-            reserves the value `internalized` for an in-process execution
-            location not yet implemented; any payload carrying
-            `type: "internalized"` is rejected at engine dispatch with
-            `WORKFLOW_FAILED` (400).
+            calculation node selected by `calculationNodesTags`. Workflow
+            import accepts `externalized` only: an omitted or empty value is
+            stored, and exported, as `externalized`, and any other value is
+            refused with `VALIDATION_FAILED` (400).
         name:
           type: string
           minLength: 1

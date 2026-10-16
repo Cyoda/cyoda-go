@@ -17,10 +17,11 @@ package externalapi
 //
 // Schema notes (dictionary shape → cyoda-go accepted shape):
 //
-//   Processor "type":"calculator" — cyoda-go ProcessorDefinition.Type is a
-//     free-form string; the engine ignores it and dispatches by tag. The
-//     dictionary's SYNC/ASYNC_SAME_TX/ASYNC_NEW_TX is the
-//     ProcessorDefinition.ExecutionMode field directly.
+//   Processor "type":"calculator" → "type":"externalized" — import accepts
+//     only "externalized" (or an omitted type, stored as "externalized");
+//     the engine dispatches by tag. The dictionary's
+//     SYNC/ASYNC_SAME_TX/ASYNC_NEW_TX is the ProcessorDefinition.ExecutionMode
+//     field directly.
 //   Criterion: dictionary "function" criterion → cyoda-go
 //     {"type":"function","function":{"name":"<name>","config":{...}}}.
 //     This is the only criterion shape that the engine routes to the
@@ -83,7 +84,7 @@ func externalProcessorWorkflow(workflowName, procName, executionMode string) str
 			"version": "1.1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "` + executionMode + `",
+					"processors": [{"type": "externalized", "name": "` + procName + `", "executionMode": "` + executionMode + `",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"PROCESSED": {}
@@ -498,7 +499,7 @@ func externalProcessorWorkflowWithContext(workflowName, procName, contextValue s
 			"version": "1.1", "name": "` + workflowName + `", "initialState": "CREATED", "active": true,
 			"states": {
 				"CREATED": {"transitions": [{"name": "process", "next": "PROCESSED", "manual": false,
-					"processors": [{"type": "calculator", "name": "` + procName + `", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "` + procName + `", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "context": "` + contextValue + `"}}]
 				}]},
 				"PROCESSED": {}

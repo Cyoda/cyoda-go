@@ -70,7 +70,7 @@ func TestCallback_AsyncNewTx_DiscardedOnProcessorFailure(t *testing.T) {
 			"version": "1.1", "name": "anytx-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-anytx-create-then-fail",
+					"processors": [{"type": "externalized", "name": "cb-anytx-create-then-fail",
 						"executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -141,7 +141,7 @@ func TestCallback_AsyncNewTx_KeptOnSuccess(t *testing.T) {
 			"version": "1.1", "name": "anytx-ok-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-anytx-create-ok",
+					"processors": [{"type": "externalized", "name": "cb-anytx-create-ok",
 						"executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -219,7 +219,7 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 			"version": "1.1", "name": "cbd-post-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-cbd-post-proc",
+					"processors": [{"type": "externalized", "name": "cb-cbd-post-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
 				}]},
@@ -302,7 +302,7 @@ func TestCallback_CriterionAfterCBDSegment_JoinsTxPost(t *testing.T) {
 			"version": "1.1", "name": "critseg-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":    {"transitions": [{"name": "segment", "next": "WAITING", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-critseg-proc",
+					"processors": [{"type": "externalized", "name": "cb-critseg-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
 				}]},
@@ -398,7 +398,7 @@ func TestCallback_CBDDefault_RunsStandalone(t *testing.T) {
 			"version": "1.1", "name": "cbd-default-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-cbd-default-proc",
+					"processors": [{"type": "externalized", "name": "cb-cbd-default-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

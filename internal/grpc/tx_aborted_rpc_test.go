@@ -148,7 +148,7 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 		States: map[string]spi.StateDefinition{
 			"NONE": {Transitions: []spi.TransitionDefinition{{
 				Name: "init", Next: "DONE",
-				Processors: []spi.ProcessorDefinition{{Type: "calculator", Name: "loses-race", ExecutionMode: "SYNC"}},
+				Processors: []spi.ProcessorDefinition{{Type: "externalized", Name: "loses-race", ExecutionMode: "SYNC"}},
 			}}},
 			"DONE": {},
 		},

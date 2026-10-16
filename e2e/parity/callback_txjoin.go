@@ -87,13 +87,13 @@ func cbWorkflowDoc(name string, states map[string]any) string {
 	return string(b)
 }
 
-// cbProc builds one calculator-processor entry.
+// cbProc builds one externalized-processor entry.
 func cbProc(name, execMode string, ctxValue string, extraConfig map[string]any) map[string]any {
 	cfg := map[string]any{"attachEntity": true, "calculationNodesTags": "", "context": ctxValue}
 	for k, v := range extraConfig {
 		cfg[k] = v
 	}
-	return map[string]any{"type": "calculator", "name": name, "executionMode": execMode, "config": cfg}
+	return map[string]any{"type": "externalized", "name": name, "executionMode": execMode, "config": cfg}
 }
 
 // cbPrimaryProcWorkflow builds a NONE→ACTIVE auto-transition workflow whose

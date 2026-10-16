@@ -405,7 +405,7 @@ func chainWorkflowJSON(wfName string, procs ...procSpec) string {
 		for k, v := range p.config {
 			cfg[k] = v
 		}
-		list = append(list, map[string]any{"type": "calculator", "name": p.name, "executionMode": p.mode, "config": cfg})
+		list = append(list, map[string]any{"type": "externalized", "name": p.name, "executionMode": p.mode, "config": cfg})
 	}
 	return workflowDocJSON(wfName, map[string]any{
 		"NONE": map[string]any{"transitions": []any{map[string]any{

@@ -428,7 +428,7 @@ func TestClientsStore_ClientChangeNotInCallersTransaction(t *testing.T) {
 			"version": "1.1", "name": "m2m-txhold-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "m2m-hold", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "m2m-hold", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
