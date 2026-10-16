@@ -229,6 +229,14 @@ first 0x00 when it reads it (`CQLUtils.java:618-647`). A `criterion` that holds
 U+0000 therefore reads back as a different `criterion` and `reason` than were
 written.
 
+A noted divergence in the same store: `stringPairSerialize` cuts the `reason`
+to 1000 UTF-16 characters, the marker `...[TRUNCATED]` included
+(`CQLUtils.java:570`, `:652-661`). cyoda-go keeps a compute member's criterion
+reason up to 2048 characters, with `…` appended when it was cut
+(`internal/grpc/dispatch.go:441`, `MaxCriterionReasonRunes`;
+`criterion-stoppage-reason.md` §1). So a reason between those lengths reaches
+Cloud's audit trail shorter than the contract keeps it.
+
 ## 9. Processor `type` at workflow import
 
 `ProcessorDefinitionDto.type` is the base's discriminator, a plain string. Its
@@ -314,4 +322,9 @@ scheduled one
     import with `400 VALIDATION_FAILED`, `scheduled` included. A scheduled
     transition is written with `schedule` (`scheduled-transitions.md`).
 12. **No change of form.** cyoda-go now uses Cloud's form for every
-    polymorphic type (section 2). Nothing changes on Cloud's side for it.
+    polymorphic type (section 2). Nothing changes on Cloud's side for it,
+    except the processor mapping, which loses `scheduled` (item 11).
+13. **Criterion reason length (section 8).** Keep a criterion reason in the
+    audit trail up to the contract's length, 2048 characters
+    (`criterion-stoppage-reason.md` §1). Today the store cuts it to 1000
+    (`CQLUtils.java:570`).
