@@ -368,8 +368,7 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
@@ -459,8 +458,7 @@ func (e *Engine) manualTransition(ctx context.Context, entity *spi.Entity, trans
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
@@ -539,8 +537,7 @@ func (e *Engine) loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		handedOff = true
 		return &EngineResult{
 			ExecutionResult: &spi.ExecutionResult{
-				State:   entity.Meta.State,
-				Success: true,
+				State: entity.Meta.State,
 			},
 			FinalCtx:  ctx,
 			FinalTxID: txID,
@@ -567,8 +564,7 @@ func (e *Engine) loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 	handedOff = true
 	return &EngineResult{
 		ExecutionResult: &spi.ExecutionResult{
-			State:   entity.Meta.State,
-			Success: true,
+			State: entity.Meta.State,
 		},
 		FinalCtx:  currentCtx,
 		FinalTxID: currentTxID,
