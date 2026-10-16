@@ -6,7 +6,8 @@ Issue #625. Tracker #651, row 8. Base: `release/v0.9.0`. Research:
 Standing rulings that bind this spec: a contract gap is never fixed by removing API function; cyoda-go's
 event-type names are kept and Cloud renames its values; a value cyoda-go does not truly have is never sent
 (no substituted or made-up value); there are no production instances, so a breaking change is declared, not
-avoided.
+avoided; the contract grows by addition, and clients tolerate what was added after they were generated (ADR 0003
+decision 4); a published value is never renamed or removed.
 
 ## 1. Terms
 
@@ -75,6 +76,36 @@ requires, each measured on prototypes of this spec:
 - **No member declares its base's discriminator property.** A member that declares it, for example as a
   one-value `enum`, fails to compile ("'type' hides member of supertype"). The mapping states the set of values.
 
+**Rule 6 — the contract grows by addition only.** This applies ADR 0003 decision 4 to the forms of Rule 1.
+
+- **Additions are not breaking.** A field, a member of a base and an event type can be added. A client
+  generated from an earlier spec still reads every response, if it does what the contract requires of a client:
+  - it ignores a field it does not know (ADR 0003 decision 3);
+  - it reads an object whose discriminator value it does not know as no object: an audit event of an unknown
+    kind is an empty entry in `items`, and the `data` of an event of an unknown type is empty. The event type
+    itself is still readable.
+
+  For a Jackson client these are two settings: `FAIL_ON_UNKNOWN_PROPERTIES` and `FAIL_ON_INVALID_SUBTYPE`, both
+  disabled. Spring Boot's mapper and the `java` generator's mapper already disable the first. Both generators
+  were probed on a prototype of this spec with a future event type, a future audit kind and an added field. With
+  the two settings, all three read as described. With the defaults, each one fails the whole page.
+- **So a value set that grows is a plain string, never an `enum`.** Every discriminator property is a plain string,
+  and its mapping lists the known values. The outer `eventType` is a plain string whose known values are the keys
+  of `data`'s mapping (section 3.3). A `kotlin-spring` client cannot read a value that a required response `enum`
+  does not list, whatever its settings. The generated `forValue` throws; with `READ_UNKNOWN_ENUM_VALUES_AS_NULL`
+  the value becomes `null`, which the non-nullable property refuses; the generator's `enumUnknownDefaultCase`
+  option adds a case that `forValue` never returns (all measured). So adding a value to a response `enum` is a
+  breaking change, and the oasdiff gate reports it as one (section 13.3). The remaining `enum`s (severity, execution mode, the FAIL reasons, the stop
+  reason type, the operators) are value sets that this change does not expect to grow.
+- **Nothing published is renamed or removed.** This covers mapping keys, `enum` values and event types. A value
+  that cyoda-go stops sending stays, and its description says it is not sent (as for `WORKFLOW_NOT_FOUND`,
+  section 4). Stored audit events therefore always carry a value the contract lists, and no stored event is ever
+  rewritten. The oasdiff gate reports a removal (section 13.3).
+- **The server sends no event type that the mapping lacks.** A spec test collects every constant of type
+  `spi.StateMachineEventType` declared in the SPI and in cyoda-go, by parsing the Go source as the exit-check tests
+  do (`internal/fence/check_call_sites_test.go`). It asserts that this set equals the keys of
+  `StateMachineEventDto`'s mapping.
+
 ## 3. Wire contract (`api/openapi.yaml`)
 
 ### 3.1 Conditions
@@ -124,8 +155,10 @@ requires, each measured on prototypes of this spec:
   and checks them in both kin modes. `data` leaves the list, which then has three entries. The test, and
   `TestArrayConditionDtoValuesValidateUnderOpenAPI31` (`:136`), validate through the view of section 13.1:
   without it, kin's default mode refuses `null` for an untyped leaf.
-- The outer `eventType` description (`api/openapi.yaml:11667-11674`) stops describing TRANSITION_ABORTED's data
-  (it names `transitionName`); the data is the member schema's.
+- The outer `eventType` loses its `enum` and becomes a plain string (Rule 6). Its description says that its
+  known values are the keys of `data`'s mapping and that a client accepts any other value. The description
+  (`api/openapi.yaml:11667-11674`) also stops describing TRANSITION_ABORTED's data (it names `transitionName`);
+  that data is the member schema's.
 - No event member declares `eventType` (Rule 5); the base's `eventType` stays a plain string.
 - `TRANSITION_NOT_MATCH_CRITERION`'s `criterion` description becomes what the value is: the function's name when a
   function condition is the whole criterion, otherwise the condition's type (`simple`, `group`, …)
@@ -161,7 +194,8 @@ body parameters are generated as `Any`/`Object`, so for them the check proves on
 ### 3.5 Processors
 
 - `TransitionDefinitionDto.processors.items` becomes a use of `ProcessorDefinitionDto` (today a `oneOf` of its
-  one member, `:10446`). `ProcessorDefinitionDto.type` becomes a named enum, by Rule 5.
+  one member, `:10446`). `ProcessorDefinitionDto.type`, its discriminator, is a plain string; the mapping lists
+  its values (Rules 5 and 6).
 - Import checks `type` (Gate 6, fail closed). Today import does not constrain it (`cyoda-go-spi types.go:222-229`,
   `internal/domain/workflow/validate.go:36-40`). Any value other than `internalized` runs as `externalized`, and
   the value is stored and exported as given, so an export can carry a type no client can read through the base.
@@ -428,9 +462,12 @@ view of section 13.1. The scenarios below also assert values.
 |---|---|---|---|---|---|---|---|
 | Rule 1: every discriminator is on a base; its mapping names every schema that includes the base and nothing else; no `oneOf`/`anyOf` has a discriminator; no schema includes two bases | | | | | | ✓ | |
 | Rule 5, static part: no `type` list with two non-null types, except inside the `items` or `not` of an untyped leaf; no `oneOf`/`anyOf` other than `[{type: "null"}, {$ref}]`; no inline enum on a property of a base; no member declares its base's discriminator property | | | | | | ✓ | |
+| Rule 6, static part: every discriminator property is a plain string with no `enum`; the outer `eventType` has no `enum` | | | | | | ✓ | |
+| The `spi.StateMachineEventType` constants declared in the SPI and in cyoda-go equal the keys of `StateMachineEventDto`'s mapping | | | | | | ✓ | |
 | Every example in the spec validates against its schema through the view; `bearerAuth` has no `name` | | | | | | ✓ | |
 | Every sample marked valid validates against its schema through the view, and every sample marked invalid fails; every mapping entry of every base has a valid sample; each value form of section 3.4 has samples (string, number, boolean, `null`, pair valid; object and triple invalid) | | | | | | ✓ | |
 | Kotlin and Java compile; every valid sample reads into the class its mapping names and writes back equal | | | | | | | ✓ |
+| Future samples, read with the two settings of Rule 6: an audit event of an unknown kind → an empty entry; an event of an unknown type → the event, with its `eventType`, and empty `data`; an added field → ignored. Read without the two settings, each fails | | | | | | | ✓ |
 | Validator view: a member-field defect under a use of a base is reported; an unmapped discriminator value is reported; `null` passes an untyped value leaf; an object fails it; `null` fails an untyped leaf whose `not` excludes it; `null` fails an `allOf` member (a whole condition, a whole audit event) and a replaced use (`data`) | ✓ | | | | | | |
 | Processor `type`: omitted or empty → stored and exported as `externalized`; `internalized` → 400 `VALIDATION_FAILED`; another value → 400 `VALIDATION_FAILED` | ✓ | ✓ | | | | | |
 | `go generate ./api`: no generated name still holds `AbstractConditionDto` or `CriterionGroupConditionDto`; the grep exit check of section 12 is empty | | | | | | ✓ | |
@@ -477,7 +514,9 @@ The concurrency rule does not apply: nothing here is a race.
 New `docs/cloud-parity/state-machine-event-data.md` (and the `README.md` index), and a CaaS ticket (`[CaaS]`
 prefix, component CaaS). Cloud must:
 
-- rename its event-type values to cyoda-go's, in the outer enum, the union mapping and inside `data`
+- make the outer `eventType` a plain string, as cyoda-go does (Rule 6), and follow Rule 6 from then on: add,
+  never rename or remove;
+- rename its event-type values to cyoda-go's, in the outer `eventType`, the union mapping and inside `data`
   (`STARTED`→`STATE_MACHINE_START`, `FINISHED`→`STATE_MACHINE_FINISH`, `CANCELLED`→`CANCEL`,
   `FORCED_SUCCESS`→`FORCE_SUCCESS`, `WORKFLOW_SKIPPED`→`WORKFLOW_SKIP`, `TRANSITION_MADE`→`TRANSITION_MAKE`,
   `TRANSITION_CRITERION_NOT_MATCHED`→`TRANSITION_NOT_MATCH_CRITERION`,
@@ -500,7 +539,7 @@ prefix, component CaaS). Cloud must:
 Updated parity docs: `criterion-stoppage-reason.md` (`data` now typed), `entity-if-match.md:27`
 (`transitionName` → `transition`, absent on loopback), `scheduled-transitions.md` (FIRE and EXPIRE data),
 `function-conditions-in-criteria.md` (`CriterionFunctionResultDto`; the criterion and pre-check schemas are uses
-of `QueryConditionDto`), `openapi-conformance.md` (Rules 1 and 5, and the client-generation check).
+of `QueryConditionDto`), `openapi-conformance.md` (Rules 1, 5 and 6, and the client-generation check).
 
 ## 12. Documentation
 
@@ -521,14 +560,22 @@ of `QueryConditionDto`), `openapi-conformance.md` (Rules 1 and 5, and the client
   - every polymorphic type is a base with a mapping: `AbstractConditionDto` and `CriterionGroupConditionDto` are
     removed, and every condition is a `QueryConditionDto`;
   - the scalar-value and polymorphic-body schemas of section 3.4; the named enums;
+  - the outer `eventType` is a plain string (Rule 6); a client reads an unknown audit kind or event type as
+    Rule 6 states, and needs the two settings to do so;
   - workflow import refuses a processor `type` other than `externalized` (`internalized` included) and stores an
     omitted one as `externalized`.
 - `COMPATIBILITY.md`: the SPI pin.
 - New `docs/adr/0005-openapi-client-generation.md`, beside ADR 0003, and the `docs/adr/README.md` index. It
-  records Rules 1 and 5, why each holds (the measured generator behaviour), the validator view of section 13.1,
-  and the client-generation check of section 13.2.
+  records Rules 1, 5 and 6, why each holds (the measured generator behaviour), the validator view of section 13.1,
+  the client-generation check of section 13.2 and the severity file of section 13.3. It applies ADR 0003
+  decision 4 to the base form and does not change it: the "unknown/default variant" is the empty object a client
+  reads, since neither generator can declare such a variant. ADR 0003 gets a one-line pointer to ADR 0005.
+- `cmd/cyoda/help/content/openapi.md`, a new section on generated clients: what Rule 6 promises and requires (no
+  help topic states the consumer obligation of ADR 0003 decision 3 today), the two Jackson settings, and what a
+  client reads for an unknown audit kind or event type.
 - `CONTRIBUTING.md`: the client-generation check, how to run it locally (`make client-probe`, which needs Java 21
-  and Maven), and how to add a sample.
+  and Maven), and how to add a sample; Rule 6 for a contributor: a value set that grows is a plain string, nothing
+  published is renamed or removed, and the severity file is why the gate refuses either.
 - `docs/workflow-schema-versioning.md`: the processor-`type` tightening under 1.5 (section 3.5).
 - Every live mention of the removed schema names changes to `QueryConditionDto` or `GroupConditionDto`:
   - help: `cmd/cyoda/help/content/crud.md:329`, `cmd/cyoda/help/content/errors/INVALID_CONDITION.md:15`, `:29`;
@@ -588,7 +635,11 @@ shapes. It is a merge gate, like oasdiff.
     holds is absent in the output, and for these fields an explicit `null` and an absent member mean the same
     thing. `null` entries inside arrays are kept.
 - **Samples**, `api/clientprobe/samples/*.json`, each one `{schema, class, valid, value}`; `valid` defaults to
-  `true`. The client test skips invalid samples. An `api/` spec test (S) validates each value against its schema
+  `true`. The client test skips invalid samples. A **future sample** (`future: true`) is a response that a later
+  version of the spec could send: an audit event of an unknown kind, an event of an unknown type, a known event
+  with an added field. The client test reads it with the two settings of Rule 6 and asserts the result Rule 6
+  states. It also reads it without them and asserts that the read fails, which proves the sample exercises the
+  case. An `api/` spec test (S) validates each value against its schema
   through the view of section 13.1: a valid sample must pass and an invalid one must fail. It also checks
   coverage:
   - every mapping entry of every base has a sample;
@@ -605,8 +656,24 @@ shapes. It is a merge gate, like oasdiff.
 
 ### 13.3 oasdiff
 
-A prototype of this spec's form (sections 3.1–3.5) gives 21 ERR lines on the
-pinned v1.21.0. Every one is a change of form, not a value the server stops accepting:
+oasdiff v1.21.0 rates the changes Rule 6 forbids below `error`, so the gate (`--fail-on ERR`) passes them today:
+adding a value to a response `enum` is a warning, and removing a mapping key or a response `enum` value is info.
+A new file, `.github/oasdiff-severity-levels.txt`, passed with `--severity-levels`, raises these checks to
+`err`:
+
+- `response-property-enum-value-added`;
+- `response-property-enum-value-removed`, `response-mediatype-enum-value-removed`, `request-body-enum-value-removed`;
+- `response-body-discriminator-mapping-deleted`, `response-property-discriminator-mapping-deleted`,
+  `request-body-discriminator-mapping-deleted`, `request-property-discriminator-mapping-deleted`;
+- the four `…-discriminator-property-name-changed` checks.
+
+A new mapping key stays `info`: it is an addition. Measured on the prototype with the file: an added event type
+passes the gate (a new mapping key, the outer `eventType` being open); a removed event type fails it (a deleted
+mapping key); an added value of a response `enum` fails it. The `internal/oasdiffcheck` premise test
+(`oasdiff_gate_test.go`) gains these three cases.
+
+With the file, a prototype of this spec's form (sections 3.1–3.5, the outer `eventType` opened) gives 40 ERR
+lines. Every one is a change of form, not a value the server stops accepting:
 
 | Count | oasdiff id | Why no working client breaks |
 |---|---|---|
@@ -615,6 +682,7 @@ pinned v1.21.0. Every one is a change of form, not a value the server stops acce
 | 4 | `request-property-one-of-removed` | as above, for the stats `condition`, the criteria and the processors |
 | 2 + 4 | `request-body-type-changed`, `request-property-type-changed` | every member was already an object |
 | 1 | `response-property-type-changed` | `GroupKeyEntry.value`: oasdiff reads the untyped leaf as `any`; the value set is the same |
+| 19 | `response-property-enum-value-removed` | the outer `eventType` is opened (Rule 6): oasdiff reports each value of the dropped `enum` as removed, but every value is still sent and is still a key of `data`'s mapping |
 
 The prototype does not have the processor-`type` import check of section 3.5, which narrows accepted input and
 is declared under `### Breaking`. The lines for the final spec are measured again and go into
