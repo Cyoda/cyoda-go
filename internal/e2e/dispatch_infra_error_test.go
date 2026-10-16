@@ -52,7 +52,7 @@ func newDispatchInfraErrorServer(t *testing.T) (string, func()) {
 	cfg.Cluster.DispatchWaitTimeout = 200 * time.Millisecond
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(validated(a.Handler()))
+	srv := httptest.NewServer(validated(a.Handler(), outsideErrorCodeMatrix))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()

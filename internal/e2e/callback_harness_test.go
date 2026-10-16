@@ -272,7 +272,7 @@ func newCalloutHarnessWithKey(t *testing.T, rsaKey *rsa.PrivateKey, configure fu
 
 	a := app.New(cfg)
 	h.app = a
-	srv.Config.Handler = validated(a.Handler())
+	srv.Config.Handler = validated(a.Handler(), outsideErrorCodeMatrix)
 
 	go func() { _ = a.GRPCServer().Serve(grpcLis) }()
 	t.Cleanup(func() { _ = a.Close() })

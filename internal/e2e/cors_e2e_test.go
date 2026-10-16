@@ -20,7 +20,7 @@ func newCORSTestServer(t *testing.T, cors app.CORSConfig) (*httptest.Server, fun
 	cfg.Cluster.Enabled = false
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(validated(a.Handler()))
+	srv := httptest.NewServer(validated(a.Handler(), outsideErrorCodeMatrix))
 	return srv, func() {
 		srv.Close()
 		a.Shutdown()

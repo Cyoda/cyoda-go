@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/google/uuid"
 )
 
@@ -243,6 +244,8 @@ func TestToken_Method_405(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The spec declares only POST: a deliberate probe of an undeclared method.
+			openapivalidator.MarkUndeclaredRouteProbe(req)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				t.Fatal(err)

@@ -78,7 +78,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", withTenant))
 
-	srv := httptest.NewServer(validated(mux))
+	srv := httptest.NewServer(validated(mux, inErrorCodeMatrix))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

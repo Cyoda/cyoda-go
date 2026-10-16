@@ -151,7 +151,7 @@ func TestConsistencyUnavailable(t *testing.T) {
 	// is 1 s. Its handler sits behind the conformance validator.
 	t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", "1s")
 	h := newStackOn(t, s, nil)
-	srv := httptest.NewServer(validated(h.app.Handler()))
+	srv := httptest.NewServer(validated(h.app.Handler(), inErrorCodeMatrix))
 	t.Cleanup(srv.Close)
 	token := h.token(t)
 	do := func(method, path, body string) (int, string) {

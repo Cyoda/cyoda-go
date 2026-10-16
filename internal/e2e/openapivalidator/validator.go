@@ -81,12 +81,24 @@ func validatorOptions() *openapi3filter.Options {
 // returns any mismatches it finds. Returns an empty slice on success.
 //
 // Records the matched operationId in the package's exercised set, regardless
-// of whether validation passed.
+// of whether validation passed, and the response's error-code triple.
 //
 // Wraps the underlying call in a panic recovery so that bugs in kin-openapi
 // (or in our spec/wire data hitting an untested code path) surface as
 // mismatch records rather than crashing the test server's request goroutine.
-func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) (mismatches []Mismatch) {
+func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) []Mismatch {
+	return v.validate(ctx, req, resp, true)
+}
+
+// validate is Validate; recordErrorCodes says whether the response's
+// (operationId, status, errorCode) triple is recorded for the error-code
+// matrix (see OutsideErrorCodeMatrix).
+func (v *Validator) validate(ctx context.Context, req *http.Request, resp *http.Response, recordErrorCodes bool) (mismatches []Mismatch) {
+	recordErrorCode := func(opId string) {
+		if recordErrorCodes {
+			maybeRecordErrorCode(opId, resp)
+		}
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			mismatches = append(mismatches, Mismatch{
@@ -108,13 +120,13 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			// full routers.Route without re-entering the broken router).
 			defaultCollector.recordExercised(opId)
 			defaultCollector.recordStatus(opId, resp.StatusCode)
-			maybeRecordErrorCode(opId, resp)
+			recordErrorCode(opId)
 			return nil
 		}
 		// No matching route — the request hit a path the spec doesn't declare.
 		// This is a real mismatch (handler exists for an undeclared route).
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,
@@ -131,7 +143,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		if opId, op := v.fallbackFindRoute(req); op != nil {
 			defaultCollector.recordExercised(opId)
 			defaultCollector.recordStatus(opId, resp.StatusCode)
-			maybeRecordErrorCode(opId, resp)
+			recordErrorCode(opId)
 			return nil
 		}
 		// A malformed path-parameter value (e.g. a non-uuid where format: uuid
@@ -143,7 +155,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			return nil
 		}
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,
@@ -158,7 +170,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 	// Error-code coverage (Pillar A): record the (operationId, status, errorCode)
 	// triple from the ProblemDetail body. Uses the shared helper so the body is
 	// re-buffered identically whether we took the main or fallback branch.
-	maybeRecordErrorCode(opId, resp)
+	recordErrorCode(opId)
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.

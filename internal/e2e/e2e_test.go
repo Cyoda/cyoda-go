@@ -204,7 +204,7 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("build validator: %v", err)
 	}
-	srv.Config.Handler = validated(testApp.Handler())
+	srv.Config.Handler = validated(testApp.Handler(), inErrorCodeMatrix)
 	// Every request the suite sends through http.DefaultClient names its
 	// test to the validator (see openapivalidator.Transport).
 	http.DefaultClient.Transport = openapivalidator.Transport(http.DefaultTransport)
@@ -233,9 +233,30 @@ func TestMain(m *testing.M) {
 // suite receives is checked against the spec and reported by
 // TestOpenAPIConformanceReport. The server's API must be mounted under
 // "/api", the validator's server URL.
-func validated(h http.Handler) http.Handler {
-	return openapivalidator.NewMiddleware(conformanceValidator)(h)
+//
+// scope says whether the server's error responses feed EntityErrorCodeMatrix
+// (zzz_errorcode_matrix_test.go). The matrix's scope is the documented
+// entity error surface, as the TestMain server and the two bespoke mounts
+// produce it; the harness and fixture servers reach error codes (callout,
+// joined-transaction, storage) the matrix does not document, and widening
+// the matrix to them is a separate change. Their responses are still
+// shape-checked.
+func validated(h http.Handler, scope matrixScope) http.Handler {
+	var opts []openapivalidator.MiddlewareOption
+	if scope == outsideErrorCodeMatrix {
+		opts = append(opts, openapivalidator.OutsideErrorCodeMatrix())
+	}
+	return openapivalidator.NewMiddleware(conformanceValidator, opts...)(h)
 }
+
+// matrixScope is a server's place relative to EntityErrorCodeMatrix; see
+// validated.
+type matrixScope int
+
+const (
+	inErrorCodeMatrix matrixScope = iota
+	outsideErrorCodeMatrix
+)
 
 func TestHealth(t *testing.T) {
 	req, err := e2eNewRequest(t, "GET", serverURL+"/api/health", nil)

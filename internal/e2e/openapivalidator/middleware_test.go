@@ -90,6 +90,8 @@ func TestMiddleware_SkipsOperationalPaths(t *testing.T) {
 		"/api/.well-known/openid-configuration",
 		"/api/docs",
 		"/api/openapi.json",
+		"/api/help",
+		"/api/help/workflows",
 	} {
 		t.Run(path, func(t *testing.T) {
 			rec := httptest.NewRecorder()
@@ -189,5 +191,125 @@ func TestFailOnUnreported(t *testing.T) {
 	defaultCollector.append(Mismatch{Operation: "getSingle", Reason: "drift"})
 	if got := FailOnUnreported(3); got != 3 {
 		t.Errorf("FailOnUnreported(3) = %d, want the run's own code 3", got)
+	}
+}
+
+// A path that merely starts with an operational prefix's letters is not
+// operational: /api/helpers is not under /api/help.
+func TestIsOperationalPath_HelpRootNotItsLookalikes(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/api/help":           true,
+		"/api/help/":          true,
+		"/api/help/workflows": true,
+		"/api/helpers":        false,
+	} {
+		if got := isOperationalPath(p); got != want {
+			t.Errorf("isOperationalPath(%q) = %t, want %t", p, got, want)
+		}
+	}
+}
+
+// serveFixture sends req through the middleware over the fixture spec, with
+// a handler answering 204, and returns the mismatches it collected.
+func serveFixture(t *testing.T, req *http.Request, opts ...MiddlewareOption) []Mismatch {
+	t.Helper()
+	v := newFixtureValidator(t)
+	defaultCollector = newCollector()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	NewMiddleware(v, opts...)(inner).ServeHTTP(httptest.NewRecorder(), req)
+	return defaultCollector.drain()
+}
+
+// A CORS preflight is answered by the CORS layer, not by an API operation:
+// it is not validated. An OPTIONS that is not a preflight still is.
+func TestMiddleware_SkipsCORSPreflight(t *testing.T) {
+	preflight := httptest.NewRequest(http.MethodOptions, "/single", nil)
+	preflight.Header.Set("Origin", "http://localhost:3000")
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	if ms := serveFixture(t, preflight); len(ms) != 0 {
+		t.Errorf("a CORS preflight produced %d mismatches, want 0: %+v", len(ms), ms)
+	}
+
+	for name, hdr := range map[string]string{"plain": "", "Origin only": "Origin", "request method only": "Access-Control-Request-Method"} {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodOptions, "/single", nil)
+			if hdr != "" {
+				req.Header.Set(hdr, "x")
+			}
+			if ms := serveFixture(t, req); len(ms) == 0 {
+				t.Error("an OPTIONS that is not a preflight was not reported as an undeclared route")
+			}
+		})
+	}
+}
+
+// A test that probes an undeclared route on purpose marks the request; the
+// middleware removes the mark and does not report the route as undeclared.
+// The mark does not hide a declared route: its response is still validated.
+func TestMiddleware_UndeclaredRouteProbe(t *testing.T) {
+	probe := httptest.NewRequest(http.MethodDelete, "/single", nil)
+	MarkUndeclaredRouteProbe(probe)
+	if ms := serveFixture(t, probe); len(ms) != 0 {
+		t.Errorf("a marked probe of an undeclared route produced %d mismatches, want 0: %+v", len(ms), ms)
+	}
+
+	unmarked := httptest.NewRequest(http.MethodDelete, "/single", nil)
+	if ms := serveFixture(t, unmarked); len(ms) == 0 {
+		t.Error("an unmarked request to an undeclared route was not reported")
+	}
+
+	declared := httptest.NewRequest(http.MethodGet, "/single", nil)
+	MarkUndeclaredRouteProbe(declared)
+	if ms := serveFixture(t, declared); len(ms) == 0 {
+		t.Error("a marked request to a declared route was not validated (204 is not a declared status)")
+	}
+
+	var seen string
+	v := newFixtureValidator(t)
+	defaultCollector = newCollector()
+	req := httptest.NewRequest(http.MethodDelete, "/single", nil)
+	MarkUndeclaredRouteProbe(req)
+	NewMiddleware(v)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Get(UndeclaredRouteProbeHeader)
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	})).ServeHTTP(httptest.NewRecorder(), req)
+	if seen != "" {
+		t.Errorf("the application saw the probe header %q; the middleware must remove it", seen)
+	}
+}
+
+// A server outside the error-code matrix still validates and records
+// coverage, but records no (operation, status, errorCode) triple.
+func TestMiddleware_OutsideErrorCodeMatrix(t *testing.T) {
+	problem := func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/problem+json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"status":404,"properties":{"errorCode":"NOPE"}}`)
+	}
+	for name, tc := range map[string]struct {
+		opts       []MiddlewareOption
+		wantTriple bool
+	}{
+		"default":                {nil, true},
+		"OutsideErrorCodeMatrix": {[]MiddlewareOption{OutsideErrorCodeMatrix()}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := newFixtureValidator(t)
+			defaultCollector = newCollector()
+			NewMiddleware(v, tc.opts...)(http.HandlerFunc(problem)).
+				ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/single", nil))
+			got := defaultCollector.observedErrorTriples()
+			if tc.wantTriple != (len(got) == 1) {
+				t.Errorf("triples = %+v, want a triple: %t", got, tc.wantTriple)
+			}
+			if !defaultCollector.exerciseSet()["getSingle"] {
+				t.Error("getSingle was not recorded as exercised")
+			}
+			if len(defaultCollector.drain()) == 0 {
+				t.Error("the undeclared 404 was not reported: the response was not validated")
+			}
+		})
 	}
 }

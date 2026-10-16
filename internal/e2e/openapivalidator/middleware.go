@@ -10,7 +10,8 @@ import (
 
 // operationalPathPrefixes are paths the test server mounts but the OpenAPI
 // spec deliberately doesn't document — health checks, admin endpoints,
-// Scalar docs UI, OAuth discovery. Validation is skipped for these so they
+// Scalar docs UI, OAuth discovery, the help index and its topics. Validation
+// is skipped for these so they
 // don't appear in the conformance report as "no spec route matches".
 //
 // Path prefixes are matched against r.URL.Path after the test server's
@@ -27,7 +28,7 @@ var operationalPathPrefixes = []string{
 	"/api/openapi.json",
 	"/api/admin/",
 	"/api/.well-known/",
-	"/api/help/",
+	"/api/help",
 }
 
 // isOperationalPath reports whether path p is an operational/admin endpoint
@@ -67,6 +68,45 @@ func RunFilterActive() bool {
 	return f.Value.String() != ""
 }
 
+// isCORSPreflight reports whether r is a CORS preflight. The CORS layer
+// answers it; it is not a call of an API operation.
+func isCORSPreflight(r *http.Request) bool {
+	return r.Method == http.MethodOptions &&
+		r.Header.Get("Origin") != "" &&
+		r.Header.Get("Access-Control-Request-Method") != ""
+}
+
+// UndeclaredRouteProbeHeader marks a request with which a test probes, on
+// purpose, a route or method the spec does not declare (for example to
+// assert a 405). The middleware removes it before the application sees the
+// request and does not report the route as undeclared. A marked request
+// that reaches a declared route is validated as usual.
+const UndeclaredRouteProbeHeader = "X-Cyoda-E2e-Undeclared-Route-Probe"
+
+// MarkUndeclaredRouteProbe marks req as a deliberate probe of an undeclared
+// route; see UndeclaredRouteProbeHeader.
+func MarkUndeclaredRouteProbe(req *http.Request) {
+	req.Header.Set(UndeclaredRouteProbeHeader, "true")
+}
+
+// unmatchedOperation is the Operation of a mismatch whose request matched no
+// route of the spec.
+const unmatchedOperation = "<unmatched>"
+
+type middlewareConfig struct {
+	errorCodeMatrix bool
+}
+
+// MiddlewareOption configures NewMiddleware.
+type MiddlewareOption func(*middlewareConfig)
+
+// OutsideErrorCodeMatrix makes the middleware record no (operationId,
+// status, errorCode) triple for the error-code matrix. Responses are still
+// validated and operations still recorded as exercised.
+func OutsideErrorCodeMatrix() MiddlewareOption {
+	return func(c *middlewareConfig) { c.errorCodeMatrix = false }
+}
+
 // NewMiddleware returns an http.Handler middleware that:
 //
 //  1. Wraps the response writer with a teeWriter to capture status + body.
@@ -80,13 +120,23 @@ func RunFilterActive() bool {
 //     defer recover() in case the test has exited (a callback made after
 //     the test returned); the mismatch is still collected, and
 //     FailOnUnreported fails the run on it.
-func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
+//
+// Operational paths and CORS preflights are not validated. A request marked
+// with UndeclaredRouteProbeHeader is not reported for matching no route.
+func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) http.Handler {
+	cfg := middlewareConfig{errorCodeMatrix: true}
+	for _, o := range opts {
+		o(&cfg)
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			requester := requestingTest(r)
-			if isOperationalPath(r.URL.Path) {
-				// Operational endpoint; not in the customer API spec. Skip validation
-				// and don't record as exercised (these aren't operationIds).
+			probe := r.Header.Get(UndeclaredRouteProbeHeader) != ""
+			r.Header.Del(UndeclaredRouteProbeHeader)
+			if isOperationalPath(r.URL.Path) || isCORSPreflight(r) {
+				// Not an API operation: an operational endpoint outside the
+				// customer API spec, or a preflight the CORS layer answers.
+				// Skip validation and don't record as exercised.
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -108,8 +158,11 @@ func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 				Body:       io.NopCloser(bytes.NewReader(cs.captureBytes())),
 				Request:    r,
 			}
-			mismatches := v.Validate(r.Context(), r, resp)
+			mismatches := v.validate(r.Context(), r, resp, cfg.errorCodeMatrix)
 			for _, m := range mismatches {
+				if probe && m.Operation == unmatchedOperation {
+					continue
+				}
 				m.TestName = "unknown"
 				if requester != nil {
 					m.TestName = requester.Name()
