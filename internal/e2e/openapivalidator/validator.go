@@ -46,7 +46,13 @@ type Validator struct {
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
+//
+// The document is rewritten in place into the view of ApplyView; pass one
+// freshly loaded (api.GetSwagger parses a new one on every call).
 func NewValidator(doc *openapi3.T) (*Validator, error) {
+	if err := ApplyView(doc); err != nil {
+		return nil, fmt.Errorf("apply spec view: %w", err)
+	}
 	router, err := gorillamux.NewRouter(doc)
 	if err != nil {
 		return nil, fmt.Errorf("build router: %w", err)
