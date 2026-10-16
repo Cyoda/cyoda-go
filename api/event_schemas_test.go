@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
@@ -17,7 +18,10 @@ import (
 )
 
 // eventTypeConstants returns the value of every constant of type
-// StateMachineEventType declared in the files, read from the Go source.
+// StateMachineEventType declared in the files, read from the Go source: one
+// declared with the type (`X StateMachineEventType = "…"`) or as a
+// conversion (`X = spi.StateMachineEventType("…")`). A constant that names
+// another constant declares no new value and is skipped.
 func eventTypeConstants(t *testing.T, files []string) map[string]string {
 	t.Helper()
 	out := map[string]string{}
@@ -34,19 +38,31 @@ func eventTypeConstants(t *testing.T, files []string) map[string]string {
 			}
 			for _, spec := range gen.Specs {
 				vs := spec.(*ast.ValueSpec)
-				if !isEventType(vs.Type) {
-					continue
-				}
 				for i, name := range vs.Names {
-					lit, ok := vs.Values[i].(*ast.BasicLit)
-					if !ok || lit.Kind != token.STRING {
-						t.Fatalf("%s: %s is not a string literal", f, name.Name)
+					if i >= len(vs.Values) {
+						continue
 					}
-					v, err := strconv.Unquote(lit.Value)
-					if err != nil {
-						t.Fatalf("%s: %s: %v", f, name.Name, err)
+					value, typed := vs.Values[i], vs.Type != nil && isEventType(vs.Type)
+					if call, ok := value.(*ast.CallExpr); ok && isEventType(call.Fun) && len(call.Args) == 1 {
+						value, typed = call.Args[0], true
 					}
-					out[v] = filepath.Base(f) + ":" + name.Name
+					if !typed {
+						continue
+					}
+					switch v := value.(type) {
+					case *ast.Ident, *ast.SelectorExpr:
+						continue
+					case *ast.BasicLit:
+						if v.Kind == token.STRING {
+							s, err := strconv.Unquote(v.Value)
+							if err != nil {
+								t.Fatalf("%s: %s: %v", f, name.Name, err)
+							}
+							out[s] = filepath.Base(f) + ":" + name.Name
+							continue
+						}
+					}
+					t.Fatalf("%s: %s is not a string literal", f, name.Name)
 				}
 			}
 		}
@@ -64,6 +80,37 @@ func isEventType(e ast.Expr) bool {
 	return false
 }
 
+// moduleGoFiles returns every non-test .go file of the root module. The
+// plugin submodules, vendored and hidden trees are not part of it.
+func moduleGoFiles(t *testing.T) []string {
+	t.Helper()
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatalf("module root: %v", err)
+	}
+	var files []string
+	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if name := info.Name(); path != root &&
+				(strings.HasPrefix(name, ".") || name == "plugins" || name == "vendor") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasSuffix(path, ".go") && !strings.HasSuffix(path, "_test.go") {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk %s: %v", root, err)
+	}
+	return files
+}
+
 // The server sends no event type that the mapping of StateMachineEventDto
 // lacks, and the mapping lists no type that nothing declares.
 func TestEventTypeConstantsEqualTheMapping(t *testing.T) {
@@ -71,16 +118,7 @@ func TestEventTypeConstantsEqualTheMapping(t *testing.T) {
 	if err != nil {
 		t.Fatalf("go list the SPI module: %v", err)
 	}
-	files := []string{filepath.Join(strings.TrimSpace(string(out)), "types.go")}
-	workflow, err := filepath.Glob(filepath.Join("..", "internal", "domain", "workflow", "*.go"))
-	if err != nil {
-		t.Fatalf("glob: %v", err)
-	}
-	for _, f := range workflow {
-		if !strings.HasSuffix(f, "_test.go") {
-			files = append(files, f)
-		}
-	}
+	files := append([]string{filepath.Join(strings.TrimSpace(string(out)), "types.go")}, moduleGoFiles(t)...)
 	declared := eventTypeConstants(t, files)
 
 	doc, err := GetSwagger()
@@ -174,8 +212,6 @@ func TestEventSchemasMatchTheDataTable(t *testing.T) {
 		boo  = "boolean"
 		fns  = "[]$CriterionFunctionResultDto"
 		mode = "string enum SYNC,ASYNC_SAME_TX,ASYNC_NEW_TX,COMMIT_BEFORE_DISPATCH"
-		fail = "string enum UNSAFE_WORK_NOT_COMPLETED,OWNER_LOST_REPEATEDLY," +
-			"EXPIRED_AFTER_FAILED_ATTEMPTS,RUN_PANICKED,STOPPED_AFTER_PARTIAL_COMMIT"
 	)
 	R := func(shape string) eventProp { return eventProp{required: true, shape: shape} }
 	O := func(shape string) eventProp { return eventProp{shape: shape} }
@@ -220,7 +256,7 @@ func TestEventSchemasMatchTheDataTable(t *testing.T) {
 			"transition": R(str), "sourceState": R(str), "workflowName": O(str),
 		},
 		"StateMachineScheduledTransitionFailedDto": {
-			"transition": R(str), "sourceState": R(str), "reason": R(fail),
+			"transition": R(str), "sourceState": R(str), "reason": R(str),
 			"attempts": R("integer/int32"), "lostOwners": R("integer/int32"),
 		},
 		"CriterionFunctionResultDto": {

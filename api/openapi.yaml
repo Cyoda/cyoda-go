@@ -11568,7 +11568,10 @@ components:
             called.
         reason:
           type: string
-          description: The reason the compute node gave with its answer.
+          description: >
+            The reason the compute node gave with its answer, as recorded: a
+            reason longer than 2048 characters keeps its first 2048, marked
+            with "…", and the engine caps the recorded text at 8195 bytes.
             Present when the function was called and the node gave a reason.
       required:
         - called
@@ -11839,14 +11842,9 @@ components:
               description: The state the transition was armed from.
             reason:
               type: string
-              enum:
-                - UNSAFE_WORK_NOT_COMPLETED
-                - OWNER_LOST_REPEATEDLY
-                - EXPIRED_AFTER_FAILED_ATTEMPTS
-                - RUN_PANICKED
-                - STOPPED_AFTER_PARTIAL_COMMIT
               description: >
-                Why the task failed, as the scheduled task's `failureReason`:
+                Why the task failed, as the scheduled task's `failureReason`.
+                Open value set; accept values not listed here. Known values:
                 UNSAFE_WORK_NOT_COMPLETED — a processor not declared
                 `idempotent` was handed to a compute node and the run did not
                 commit, so it is not repeated;
@@ -11942,10 +11940,10 @@ components:
         - success
     StateMachineTransitionAbortedDto:
       description: >
-        TRANSITION_ABORTED: a cyoda-go event. A transition was refused because
-        the caller's `ifMatch` precondition did not name the entity version the
-        request started from. It ends the run that STATE_MACHINE_START opened,
-        so every start in the audit log has a terminal event.
+        TRANSITION_ABORTED: a cyoda-go event. A transition or loopback was
+        refused because the caller's `ifMatch` precondition did not name the
+        entity version the request started from. It pairs the
+        STATE_MACHINE_START recorded before it.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object

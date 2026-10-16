@@ -95,7 +95,7 @@ requires, each measured on prototypes of this spec:
   does not list, whatever its settings. The generated `forValue` throws; with `READ_UNKNOWN_ENUM_VALUES_AS_NULL`
   the value becomes `null`, which the non-nullable property refuses; the generator's `enumUnknownDefaultCase`
   option adds a case that `forValue` never returns (all measured). So adding a value to a response `enum` is a
-  breaking change, and the oasdiff gate reports it as one (section 13.3). The remaining `enum`s (severity, execution mode, the FAIL reasons, the stop
+  breaking change, and the oasdiff gate reports it as one (section 13.3). The remaining `enum`s (severity, execution mode, the stop
   reason type, the operators) are value sets that this change does not expect to grow.
 - **Nothing published is renamed or removed.** This covers mapping keys, `enum` values and event types. A value
   that cyoda-go stops sending stays, and its description says it is not sent (as for `WORKFLOW_NOT_FOUND`,
@@ -254,7 +254,7 @@ Each row is the schema's own properties beside the inherited `eventType`. **R** 
 | `SCHEDULED_TRANSITION_FIRE` | `…FiredDto` | `transition` R, `sourceState` R, `workflowName` R |
 | `SCHEDULED_TRANSITION_EXPIRE` | `…ExpiredDto` | `transition` R, `sourceState` R |
 | `SCHEDULED_TRANSITION_CANCEL` | `…CancelledDto` | `transition` R, `sourceState` R, `workflowName` O — present at the fire-time cancels (`fire_scheduled.go:230`, `:259`, where the selected workflow is known); absent at the arm-time reconcile (`arm.go:220`), which cancels a task armed under an earlier state, so the current workflow is not necessarily the task's |
-| `SCHEDULED_TRANSITION_FAIL` | `…FailedDto` | `transition` R, `sourceState` R, `reason` R (enum of the five FAIL reasons), `attempts` R, `lostOwners` R |
+| `SCHEDULED_TRANSITION_FAIL` | `…FailedDto` | `transition` R, `sourceState` R, `reason` R (an open string; the five FAIL reasons are its known values, as on `ScheduledTaskDto.failureReason`), `attempts` R, `lostOwners` R |
 
 `CriterionFunctionResultDto`: `path` R, `name` R, `called` R, `preCheck` O (a `QueryConditionDto`),
 `preCheckMatched` O, `matches` O, `reason` O — as the engine records them today (`criterion_eval.go:43-56`).
