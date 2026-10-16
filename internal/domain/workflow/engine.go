@@ -257,6 +257,9 @@ func (e *Engine) now() time.Time {
 // every normal return, so their guards fire only when a nil named ctx return says
 // the stack is unwinding through a panic. None of them recover: surviving a panic
 // is the request door's decision, not the engine's.
+//
+// recordEventInOwnTx releases the transaction it opens for one audit event the
+// same way, with no entry transaction to spare.
 func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string) {
 	if openTxID == "" || openTxID == entryTxID {
 		return
@@ -264,7 +267,7 @@ func (e *Engine) rollbackSegment(ctx context.Context, openTxID, entryTxID string
 	rbCtx, cancel := common.RollbackContext(ctx)
 	defer cancel()
 	if err := e.txMgr.Rollback(rbCtx, openTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
-		slog.Warn("failed to roll back engine-opened segment",
+		slog.Warn("failed to roll back an engine-opened transaction",
 			"pkg", "workflow", "txID", openTxID, "err", err)
 	}
 }
@@ -1142,11 +1145,6 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 // deadline may be what failed it. Best effort, as every audit write: a failure
 // is logged, and the operation's own error is unchanged.
 func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx context.Context, entityID, txID, state string, eventType spi.StateMachineEventType, details string, data map[string]any) {
-	// recordEvent's fence guard, taken before the Begin: a chain the fence
-	// refuses opens no transaction either.
-	if fence.Check(ctx) != nil {
-		return
-	}
 	ownTxID, ownCtx, err := e.txMgr.Begin(spi.WithTransaction(context.WithoutCancel(ctx), nil))
 	if err != nil {
 		slog.Warn("state-machine audit event not recorded: failed to begin its transaction",
@@ -1155,14 +1153,8 @@ func (e *Engine) recordEventInOwnTx(auditStore spi.StateMachineAuditStore, ctx c
 	}
 	committed := false
 	defer func() {
-		if committed {
-			return
-		}
-		rbCtx, cancel := common.RollbackContext(ownCtx)
-		defer cancel()
-		if err := e.txMgr.Rollback(rbCtx, ownTxID); err != nil && !errors.Is(err, spi.ErrTxNotFound) {
-			slog.Warn("failed to roll back an audit event's transaction",
-				"pkg", "workflow", "txID", ownTxID, "err", err)
+		if !committed {
+			e.rollbackSegment(ownCtx, ownTxID, "")
 		}
 	}()
 	// An event recordEvent refuses leaves the transaction empty; it is rolled

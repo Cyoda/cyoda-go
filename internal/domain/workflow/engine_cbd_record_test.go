@@ -8,11 +8,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
-	"github.com/cyoda-platform/cyoda-go/internal/fence"
-	"github.com/cyoda-platform/cyoda-go/internal/txgate"
-	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // cbdRecordUser is the request's principal in these tests: a user acting
@@ -285,44 +281,84 @@ func TestCBDJoinedRefusal_RecordStaysInJoinedTransaction(t *testing.T) {
 	}
 }
 
-// A chain the fence refuses performs no store operation for the durable
-// record: no transaction is begun and nothing is recorded.
-func TestRecordEventInOwnTx_SupersededChain_TouchesNoStore(t *testing.T) {
-	factory := memory.NewStoreFactory()
-	t.Cleanup(func() { factory.Close() })
-	uuids := common.NewTestUUIDGenerator()
-	cnt := &segCounter{}
-	engine := NewEngine(factory, uuids, &countingTxManager{inner: factory.NewTransactionManager(uuids), c: cnt})
-	ctx := ctxWithTenant(testTenant)
+// The record's own transaction fails to commit: it is rolled back, nothing is
+// recorded, and the operation fails with the processor's error as before.
+func TestCBDFailureAfterBoundary_OwnTransactionCommitFails(t *testing.T) {
+	for _, startNewTx := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startNewTxOnDispatch=%t", startNewTx), func(t *testing.T) {
+			h := cbdRecordHarness(t, "memory", startNewTx)
+			var entryTxID string
+			var refused []string
+			// TX_post is rolled back on this path, never committed, so the
+			// only commit besides TX_pre's is the record's own transaction.
+			h.txMgr.commit = func(ctx context.Context, txID string) error {
+				if txID == entryTxID {
+					return h.txMgr.TransactionManager.Commit(ctx, txID)
+				}
+				refused = append(refused, txID)
+				return errors.New("commit refused")
+			}
+			h.dispatchProcessor = func(context.Context, *spi.Entity, spi.ProcessorDefinition, string, string, string) (*spi.Entity, error) {
+				return nil, memberFailedWithText("card declined")
+			}
+			var entryCtx context.Context
+			entryTxID, entryCtx = h.begin(t)
 
-	f := fence.New(txgate.New())
-	_, end := f.Begin(ctx, "outer", "", nil)
-	defer end()
-	f.Advance("outer", 1)
-	admitted, err := f.Admit(ctx, []fence.Pair{{Callout: "outer", Major: 1}})
-	if err != nil {
-		t.Fatalf("Admit: %v", err)
+			_, err := h.engine.Execute(entryCtx, h.entity, "")
+			if err == nil || err.Error() != "processor charge failed: card declined" {
+				t.Fatalf("err = %v, want the processor's own failure", err)
+			}
+			if len(refused) != 1 {
+				t.Fatalf("refused commits = %v, want the record's own transaction alone", refused)
+			}
+			if !h.txMgr.sawRollbackOf(refused[0]) {
+				t.Errorf("the record's transaction %s was not rolled back", refused[0])
+			}
+			if got := eventsOfType(committedTrail(t, h), spi.SMEventStateProcessResult); len(got) != 0 {
+				t.Errorf("committed STATE_PROCESS_RESULT records = %+v, want none", got)
+			}
+		})
 	}
-	f.Advance("outer", 2)
-	if fence.Check(admitted) == nil {
-		t.Fatal("the chain is not superseded; the test proves nothing")
-	}
+}
 
-	as, err := factory.StateMachineAuditStore(ctx)
-	if err != nil {
-		t.Fatalf("StateMachineAuditStore: %v", err)
-	}
-	engine.recordEventInOwnTx(as, admitted, "e1", "tx-entry", "A", spi.SMEventStateProcessResult,
-		`Processor "charge" failed`, stateProcessResultData("charge", ExecutionModeCommitBeforeDispatch, false, "card declined"))
+// A scheduled run that refuses the dispatch after the boundary committed — its
+// unsafe mark refused — keeps the processor's record. The refusal is not the
+// member's text, so the record has no failReason.
+func TestCBDDispatchRefusedAfterBoundary_RecordKeptWithoutFailReason(t *testing.T) {
+	for _, site := range unsafeAtEverySite() {
+		if site.proc.ExecutionMode != ExecutionModeCommitBeforeDispatch {
+			continue
+		}
+		t.Run(site.name, func(t *testing.T) {
+			ext := &scriptedExtProc{}
+			env := newRunEnv(t, ext)
+			id := "refused-record-" + site.name
+			claimed := env.claimed(t, id, oneHopWF("CLOSED", []spi.ProcessorDefinition{site.proc}, nil))
+			store := &scriptedMarkStore{ScheduledTaskStore: env.sts, markErr: fmt.Errorf("fenced: %w", spi.ErrMarkedByAnotherClaim)}
 
-	if cnt.begins != 0 || cnt.commits != 0 {
-		t.Errorf("begins = %d, commits = %d, want none", cnt.begins, cnt.commits)
-	}
-	events, err := as.GetEvents(ctx, "e1")
-	if err != nil {
-		t.Fatalf("GetEvents: %v", err)
-	}
-	if len(events) != 0 {
-		t.Errorf("events = %+v, want none", events)
+			r := newTestRun(store, claimed).fire(env.engine, env.ctx, claimed)
+			if r.Outcome != OutcomeFailed {
+				t.Fatalf("report = %+v, want failed", r)
+			}
+			if n := ext.count("p1"); n != 0 {
+				t.Fatalf("p1 dispatched %d times, want 0", n)
+			}
+			as, err := env.factory.StateMachineAuditStore(env.ctx)
+			if err != nil {
+				t.Fatalf("StateMachineAuditStore: %v", err)
+			}
+			events, err := as.GetEvents(env.ctx, id)
+			if err != nil {
+				t.Fatalf("GetEvents: %v", err)
+			}
+			results := eventsOfType(events, spi.SMEventStateProcessResult)
+			if len(results) != 1 {
+				t.Fatalf("committed STATE_PROCESS_RESULT records = %d, want 1: %+v", len(results), events)
+			}
+			want := map[string]any{"processorName": "p1", "executionMode": ExecutionModeCommitBeforeDispatch, "success": false}
+			if !reflect.DeepEqual(results[0].Data, want) {
+				t.Errorf("record data = %v, want %v", results[0].Data, want)
+			}
+		})
 	}
 }
