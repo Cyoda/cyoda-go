@@ -449,13 +449,26 @@ its segment boundary committed leaves no record: the pipeline keeps `T_pre`'s
 context when the processor fails, so the record is written against `T_pre`,
 which the segment boundary has already committed, and the store refuses it.
 
-A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore means
-the operation did not complete after the segment boundary: the engine crashed
-between segments; the `COMMIT_BEFORE_DISPATCH` processor failed after the
-boundary committed; or the processor succeeded, its record went into `T_post`,
-and the operation then failed there — at a later processor, a criterion, a
-cascade limit or the final save — so `T_post` was rolled back with the record in
-it.
+A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore has
+one of these causes:
+
+- The record was not written, and the operation went on. Recording is best
+  effort: the engine refuses an event whose text holds U+0000 — for example a
+  failed `ASYNC_NEW_TX` processor whose member's failure text holds it — and a
+  `Record` that fails is logged at WARN. In both cases the operation goes on and
+  can commit.
+- The processor ran in a callback that joined another operation's transaction,
+  and the fence refused the callback's chain after the dispatch, because its
+  compute node was replaced or its callout ended. The chain records nothing more,
+  and its `PAUSE_FOR_PROCESSING` stays in the joined transaction, which commits
+  if the operation that began it commits.
+- The operation did not complete after the segment boundary: the engine crashed
+  between segments; the `COMMIT_BEFORE_DISPATCH` processor failed after the
+  boundary committed; or the processor succeeded, its record went into `T_post`,
+  and the operation then failed there — at a later processor, a criterion, a
+  cascade limit, the arming or cancelling of the settled state's scheduled
+  tasks, or the final save, or because the scheduled run it belongs to was
+  cancelled — so `T_post` was rolled back with the record in it.
 
 ### Cascade-depth limits
 

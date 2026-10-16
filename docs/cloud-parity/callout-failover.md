@@ -147,15 +147,15 @@ savepoint failure, a platform error — records no `failReason`. The record is
 written in the operation's transaction and kept only when that transaction
 commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes
 on past, when the operation commits; and for a processor in a callback that
-joined another operation's transaction, when that operation commits. A failed `SYNC` or
-`ASYNC_SAME_TX` processor fails the operation, and its record is rolled back
-with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment
-boundary committed leaves no record: the record is written against that
+joined another operation's transaction, when that operation commits. A failed
+`SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is
+rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its
+segment boundary committed leaves no record: the record is written against that
 committed transaction, and is refused. (On a callback that joined another
 transaction, such a processor is refused before the boundary, and its record
 stays in the joined transaction; when the boundary itself fails, the record is
-rolled back with the failed operation.) In these cases the client's error message is where
-the member's text reaches the caller.
+rolled back with the failed operation.) In these cases the client's error
+message is where the member's text reaches the caller.
 
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 
