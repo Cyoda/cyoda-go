@@ -4,7 +4,7 @@ go 1.26.9
 
 require (
 	github.com/charmbracelet/glamour v1.0.0
-	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261014160135-9ad0905e8e4c
+	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261016075535-166c3eb7e4f0
 	github.com/getkin/kin-openapi v0.149.0
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/google/uuid v1.6.0
