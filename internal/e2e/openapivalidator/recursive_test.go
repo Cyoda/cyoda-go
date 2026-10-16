@@ -198,6 +198,18 @@ func TestValidator_RecursiveSchema_DepthOneMismatchReportedOnce(t *testing.T) {
 	}
 }
 
+// One defect gives one row: kin refuses a null no union member accepts once
+// per member, with the same pointer and reason, and the walk keeps one.
+func TestValidator_RecursiveSchema_NullMemberReportedOnce(t *testing.T) {
+	mismatches := validateRecursiveFixture(t, "/group", `{"type":"group","conditions":[null]}`)
+	if len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+	if want := `recursive schema at "/conditions/0": Value is not nullable`; !strings.Contains(mismatches[0].Reason, want) {
+		t.Errorf("mismatch reason = %s, want it to contain %s", mismatches[0].Reason, want)
+	}
+}
+
 func TestValidator_NonRecursiveSchema_Unaffected(t *testing.T) {
 	if mismatches := validateRecursiveFixture(t, "/flat", `{"outer":{"inner":{"count":3}}}`); len(mismatches) != 0 {
 		t.Fatalf("expected no mismatch for a valid flat body, got %+v", mismatches)

@@ -58,17 +58,23 @@ func NewValidator(doc *openapi3.T) (*Validator, error) {
 		return nil, fmt.Errorf("build router: %w", err)
 	}
 	return &Validator{
-		doc:    doc,
-		router: router,
-		opts: &openapi3filter.Options{
-			IncludeResponseStatus: true,
-			MultiError:            true,
-			AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
-				return nil // skip auth checks; we validate shape only
-			},
-		},
+		doc:       doc,
+		router:    router,
+		opts:      validatorOptions(),
 		recursive: recursiveSchemas(doc),
 	}, nil
+}
+
+// validatorOptions returns the options the Validator passes to
+// openapi3filter.ValidateResponse.
+func validatorOptions() *openapi3filter.Options {
+	return &openapi3filter.Options{
+		IncludeResponseStatus: true,
+		MultiError:            true,
+		AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
+			return nil // skip auth checks; we validate shape only
+		},
+	}
 }
 
 // Validate runs the response through openapi3filter.ValidateResponse and

@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // exampleCheck is one example found in the spec and the schema it must satisfy.
@@ -151,7 +153,7 @@ func TestEveryExampleValidates(t *testing.T) {
 			continue
 		}
 		for mode, opts := range schemaValidators {
-			if err := schema.VisitJSON(v, opts...); err != nil {
+			if err := openapivalidator.ValidateValue(doc, schema, v, opts...); err != nil {
 				t.Errorf("%s: %s: example does not match its schema: %v", mode, c.where, err)
 			}
 		}

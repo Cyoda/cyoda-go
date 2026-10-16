@@ -8,6 +8,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // The operator enum each condition DTO publishes is the set the server
@@ -119,12 +121,13 @@ func arrayConditionValuesSchema(t *testing.T, doc *openapi3.T) *openapi3.Schema 
 
 // The spec declares OpenAPI 3.1, where `nullable` is not a keyword: a null
 // value is admitted by a `null` type or by an untyped leaf. Each value is
-// checked through the validator view with both kin-openapi validators — the
-// default one the e2e response validator uses, and the JSON Schema 2020-12
-// one a 3.1 consumer applies.
+// checked through the validator view with openapivalidator.ValidateValue, in
+// two kin-openapi modes: the e2e response validator's options, which try the
+// JSON Schema 2020-12 validator first (kin falls back to its own visitor for
+// a schema that holds a reference), and kin's own visitor alone.
 var schemaValidators = map[string][]openapi3.SchemaValidationOption{
-	"default":             nil,
-	"json-schema-2020-12": {openapi3.EnableJSONSchema2020()},
+	"response-validator": nil,
+	"kin-visitor":        {openapi3.MultiErrors()},
 }
 
 func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
@@ -132,13 +135,13 @@ func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
 	values := arrayConditionValuesSchema(t, doc)
 	whole := doc.Components.Schemas["ArrayConditionDto"].Value
 	for mode, opts := range schemaValidators {
-		if err := whole.VisitJSON(whole.Example, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, whole, whole.Example, opts...); err != nil {
 			t.Errorf("%s: the ArrayConditionDto example does not validate against its schema: %v", mode, err)
 		}
-		if err := values.VisitJSON([]any{50.0, nil, 70.0}, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, values, []any{50.0, nil, 70.0}, opts...); err != nil {
 			t.Errorf("%s: values [50, null, 70] refused: %v", mode, err)
 		}
-		if err := values.VisitJSON([]any{[]any{1.0, 2.0}, nil}, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, values, []any{[]any{1.0, 2.0}, nil}, opts...); err != nil {
 			t.Errorf("%s: values [[1, 2], null] refused: %v", mode, err)
 		}
 		for name, bad := range map[string][]any{
@@ -147,7 +150,7 @@ func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
 			"no entries":            {},
 			"a pair of non-scalars": {[]any{map[string]any{}, []any{}}},
 		} {
-			if err := values.VisitJSON(bad, opts...); err == nil {
+			if err := openapivalidator.ValidateValue(doc, values, bad, opts...); err == nil {
 				t.Errorf("%s: values with %s %v accepted", mode, name, bad)
 			}
 		}
@@ -203,7 +206,7 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 	}
 	for where, s := range nullable {
 		for mode, opts := range schemaValidators {
-			if err := s.VisitJSON(nil, opts...); err != nil {
+			if err := openapivalidator.ValidateValue(doc, s, nil, opts...); err != nil {
 				t.Errorf("%s: %s refuses null: %v", mode, where, err)
 			}
 		}

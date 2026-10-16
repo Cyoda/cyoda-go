@@ -33,8 +33,9 @@ func requestBodySchema(t *testing.T, doc *openapi3.T, method, path string) *open
 	return item.GetOperation(method).RequestBody.Value.Content.Get("application/json").Schema.Value
 }
 
-// validateCases checks each JSON value against s with both validators.
-func validateCases(t *testing.T, cases []validateCase) {
+// validateCases checks each JSON value against s, a schema of doc, in both
+// modes of schemaValidators.
+func validateCases(t *testing.T, doc *openapi3.T, cases []validateCase) {
 	t.Helper()
 	for _, c := range cases {
 		var v any
@@ -42,7 +43,7 @@ func validateCases(t *testing.T, cases []validateCase) {
 			t.Fatalf("%s: %v", c.name, err)
 		}
 		for mode, opts := range schemaValidators {
-			err := c.s.VisitJSON(v, opts...)
+			err := openapivalidator.ValidateValue(doc, c.s, v, opts...)
 			if c.ok && err != nil {
 				t.Errorf("%s: %s refused: %v", mode, c.name, err)
 			}
@@ -98,7 +99,7 @@ func TestConditionUnionsDiscriminateByType(t *testing.T) {
 			validateCase{where + ": function without function", s, `{"type":"function"}`, false},
 		)
 	}
-	validateCases(t, cases)
+	validateCases(t, doc, cases)
 }
 
 // Exported workflow criteria validate as the server writes them, and a
@@ -115,7 +116,7 @@ func TestCriterionShapesValidate(t *testing.T) {
 	tr := func(criterion string) string {
 		return `{"name":"p","next":"X","manual":false,"criterion":` + criterion + `}`
 	}
-	validateCases(t, []validateCase{
+	validateCases(t, doc, []validateCase{
 		{"group with a function member and no pre-check", transition, tr(`{"type":"group","operator":"AND","conditions":[
 			{"type":"simple","jsonPath":"$.amount","operatorType":"GREATER_THAN","value":10},
 			{"type":"group","operator":"NOT","conditions":[{"type":"function","function":{"name":"a","criterion":
@@ -132,6 +133,16 @@ func TestCriterionShapesValidate(t *testing.T) {
 		{"function member in a group (refused in search)", group, `{"type":"group","operator":"AND","conditions":[{"type":"function","function":{"name":"f"}}]}`, true},
 		{"unknown member in a group", group, `{"type":"group","operator":"AND","conditions":[{"type":"bogus"}]}`, false},
 		{"group with an unknown operator", group, `{"type":"group","operator":"XOR","conditions":[]}`, false},
+		// kin accepts any value where a schema recurs; ValidateValue's walk
+		// checks it.
+		{"null in a group", group, `{"type":"group","operator":"AND","conditions":[null]}`, false},
+		{"a number in a group", group, `{"type":"group","operator":"AND","conditions":[42]}`, false},
+		{"a string in a group", group, `{"type":"group","operator":"AND","conditions":["x"]}`, false},
+		{"null in a group in a group", group, `{"type":"group","operator":"AND","conditions":[
+			{"type":"group","operator":"OR","conditions":[null]}]}`, false},
+		{"null in a group criterion", transition, tr(`{"type":"group","operator":"AND","conditions":[null, 42, "x"]}`), false},
+		{"unknown type in a pre-check's group", transition, tr(`{"type":"function","function":{"name":"f","criterion":
+			{"type":"group","operator":"AND","conditions":[{"type":"group","operator":"AND","conditions":[{"type":"bogus"}]}]}}}`), false},
 		{"simple value number", simple, `{"type":"simple","jsonPath":"$.a","operatorType":"EQUALS","value":1.5}`, true},
 		{"simple value string", simple, `{"type":"simple","jsonPath":"$.a","operatorType":"EQUALS","value":"x"}`, true},
 		{"simple value boolean", simple, `{"type":"simple","jsonPath":"$.a","operatorType":"EQUALS","value":true}`, true},

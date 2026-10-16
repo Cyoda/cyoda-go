@@ -336,7 +336,7 @@ func eventDataUse(t *testing.T, doc *openapi3.T) *openapi3.Schema {
 func TestNeverSentEventsHaveValidSamples(t *testing.T) {
 	doc := viewedSpec(t)
 	data := eventDataUse(t, doc)
-	validateCases(t, []validateCase{
+	validateCases(t, doc, []validateCase{
 		{"PROCESS_NOT_MATCH_CRITERION", data, `{
 			"eventType": "PROCESS_NOT_MATCH_CRITERION",
 			"workflowName": "orders",
@@ -376,7 +376,7 @@ func TestDataIsRequiredAndNeverNull(t *testing.T) {
 		}
 		return string(b)
 	}
-	validateCases(t, []validateCase{
+	validateCases(t, doc, []validateCase{
 		{"typed data", event, sample(`{"eventType": "FORCE_SUCCESS"}`), true},
 		{"null data", event, sample(`null`), false},
 		{"absent data", event, sample(""), false},
