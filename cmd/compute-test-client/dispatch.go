@@ -311,13 +311,16 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 	case behaviourHold:
 		d.holdWork(heldWork{msg: msg, payload: payload, pass: pass})
 		return nil, false, nil
-	case behaviourFail, behaviourFailRetryable:
+	case behaviourFail, behaviourFailRetryable, behaviourFailSilent:
 		var verdict *bool
 		if d.behaviour == behaviourFailRetryable {
 			v := true
 			verdict = &v
 		}
 		msgText := "scripted failure: " + string(d.behaviour)
+		if d.behaviour == behaviourFailSilent {
+			msgText = ""
+		}
 		var reply *cepb.CloudEvent
 		var err error
 		switch kind {

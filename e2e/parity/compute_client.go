@@ -16,7 +16,8 @@ const (
 	ComputeBehaviourStall         = "stall"          // take the work, never answer
 	ComputeBehaviourFail          = "fail"           // answer success=false, no verdict
 	ComputeBehaviourFailRetryable = "fail-retryable" // answer success=false, retryable=true
-	ComputeBehaviourLateCallback  = "late-callback"  // never answer; call back with the pass on Release
+	ComputeBehaviourFailSilent    = "fail-silent"    // answer success=false with no message and no verdict
+	ComputeBehaviourLateCallback  = "late-callback" // never answer; call back with the pass on Release
 	ComputeBehaviourDrop          = "drop"           // close the stream on receiving work
 	ComputeBehaviourHold          = "hold"           // take the work; answer it from the catalog on Release
 )
@@ -206,6 +207,7 @@ func RunComputeClientBehaviours(t *testing.T, fixture BackendFixture) {
 		{ComputeBehaviourStall, 300, http.StatusServiceUnavailable, "DISPATCH_TIMEOUT"},
 		{ComputeBehaviourFail, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
 		{ComputeBehaviourFailRetryable, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
+		{ComputeBehaviourFailSilent, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
 		{ComputeBehaviourDrop, 0, http.StatusServiceUnavailable, "COMPUTE_MEMBER_DISCONNECTED"},
 		{ComputeBehaviourLateCallback, 300, http.StatusServiceUnavailable, "DISPATCH_TIMEOUT"},
 	}

@@ -542,7 +542,7 @@ func TestHandOver_ThroughTheHandler_MemberMessageAndVerdictSurvive(t *testing.T)
 	peerAuth := newAEAD(t)
 	runner := &fakeRunner{result: internalgrpc.LocalResult{
 		TriesUsed: 2,
-		Failure:   &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes},
+		Failure:   &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined", Retryable: &yes},
 		Attempts: []contract.CalloutAttempt{
 			{MemberID: "m1", Kind: contract.NoHandOff, Cause: "COMPUTE_MEMBER_DISCONNECTED: processor compute member disconnected"},
 			{MemberID: "m2", Kind: contract.MemberFailed, Cause: "card declined"},

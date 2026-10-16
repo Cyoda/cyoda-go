@@ -30,7 +30,7 @@ func TestParseTags(t *testing.T) {
 }
 
 func TestParseBehaviour(t *testing.T) {
-	for _, ok := range []string{"", "stall", "fail", "fail-retryable", "late-callback", "drop", "hold", " drop "} {
+	for _, ok := range []string{"", "stall", "fail", "fail-retryable", "fail-silent", "late-callback", "drop", "hold", " drop "} {
 		if _, err := parseBehaviour(ok); err != nil {
 			t.Errorf("parseBehaviour(%q): %v", ok, err)
 		}
@@ -87,6 +87,7 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 		{"stall", behaviourStall, false, false, false, nil, 0},
 		{"fail", behaviourFail, true, false, false, nil, 0},
 		{"fail-retryable", behaviourFailRetryable, true, false, false, &yes, 0},
+		{"fail-silent", behaviourFailSilent, true, false, false, nil, 0},
 		{"late-callback", behaviourLateCallback, false, false, false, nil, 1},
 		{"drop", behaviourDrop, false, true, false, nil, 0},
 		{"hold", behaviourHold, false, false, false, nil, 0},
@@ -115,7 +116,12 @@ func TestHandleCallout_Behaviours(t *testing.T) {
 				if body.Success != tc.wantSuccess {
 					t.Errorf("success = %t; want %t", body.Success, tc.wantSuccess)
 				}
-				if !tc.wantSuccess {
+				switch {
+				case tc.beh == behaviourFailSilent:
+					if body.Error != nil {
+						t.Errorf("error node = %+v; want none: the member sends no text", body.Error)
+					}
+				case !tc.wantSuccess:
 					assertVerdict(t, body, tc.wantVerdict)
 				}
 			}

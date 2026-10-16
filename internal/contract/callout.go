@@ -82,6 +82,10 @@ type CalloutFailure struct {
 	Code string
 	// Message is client-safe text; for MemberFailed, the cnode's own.
 	Message string
+	// MemberText is, for MemberFailed, the cnode's own failure text, bounded,
+	// and empty when the cnode sent none; Message then holds a fixed sentence.
+	// It is what the audit trail records, and nothing else may stand in for it.
+	MemberText string
 	// Retryable is the cnode's verdict (MemberFailed only); nil if it gave none.
 	Retryable *bool
 	// Attempts is every failed try of the callout. The local procedure leaves

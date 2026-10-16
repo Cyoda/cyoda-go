@@ -327,7 +327,7 @@ func refusal(failure *contract.CalloutFailure) DispatchCalloutResponse {
 func fillFailure(resp *DispatchCalloutResponse, failure *contract.CalloutFailure) {
 	resp.Outcome = failure.Kind.String()
 	if failure.Kind == contract.MemberFailed {
-		resp.MemberError = failure.Message
+		resp.MemberError = failure.MemberText
 		resp.MemberRetryable = failure.Retryable
 		return
 	}
@@ -421,11 +421,13 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 		if used == 0 {
 			return lostAnswer()
 		}
+		// The client text must not depend on which node held the member, so a
+		// member that sent none gets the sentence a local try uses.
 		msg := resp.MemberError
 		if msg == "" {
-			msg = peerFailedClientMessage
+			msg = call.Kind.String() + " returned failure"
 		}
-		ans.Failure = &contract.CalloutFailure{Kind: contract.MemberFailed, Message: msg, Retryable: resp.MemberRetryable}
+		ans.Failure = &contract.CalloutFailure{Kind: contract.MemberFailed, Message: msg, MemberText: resp.MemberError, Retryable: resp.MemberRetryable}
 	case contract.Terminal.String():
 		ans.Failure = classifiedFailure(contract.Terminal, resp, ans.Attempts)
 	default:
