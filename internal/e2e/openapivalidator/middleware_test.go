@@ -226,14 +226,14 @@ func TestIsOperationalPath_HelpRootNotItsLookalikes(t *testing.T) {
 
 // serveFixture sends req through the middleware over the fixture spec, with
 // a handler answering 204, and returns the mismatches it collected.
-func serveFixture(t *testing.T, req *http.Request, opts ...MiddlewareOption) []Mismatch {
+func serveFixture(t *testing.T, req *http.Request) []Mismatch {
 	t.Helper()
 	v := newFixtureValidator(t)
 	defaultCollector = newCollector()
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	NewMiddleware(v, opts...)(inner).ServeHTTP(httptest.NewRecorder(), req)
+	NewMiddleware(v)(inner).ServeHTTP(httptest.NewRecorder(), req)
 	return defaultCollector.drain()
 }
 
@@ -292,39 +292,5 @@ func TestMiddleware_UndeclaredRouteProbe(t *testing.T) {
 	})).ServeHTTP(httptest.NewRecorder(), req)
 	if seen != "" {
 		t.Errorf("the application saw the probe header %q; the middleware must remove it", seen)
-	}
-}
-
-// A server outside the error-code matrix still validates and records
-// coverage, but records no (operation, status, errorCode) triple.
-func TestMiddleware_OutsideErrorCodeMatrix(t *testing.T) {
-	problem := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/problem+json")
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = io.WriteString(w, `{"status":404,"properties":{"errorCode":"NOPE"}}`)
-	}
-	for name, tc := range map[string]struct {
-		opts       []MiddlewareOption
-		wantTriple bool
-	}{
-		"default":                {nil, true},
-		"OutsideErrorCodeMatrix": {[]MiddlewareOption{OutsideErrorCodeMatrix()}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			v := newFixtureValidator(t)
-			defaultCollector = newCollector()
-			NewMiddleware(v, tc.opts...)(http.HandlerFunc(problem)).
-				ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/single", nil))
-			got := defaultCollector.observedErrorTriples()
-			if tc.wantTriple != (len(got) == 1) {
-				t.Errorf("triples = %+v, want a triple: %t", got, tc.wantTriple)
-			}
-			if !defaultCollector.exerciseSet()["getSingle"] {
-				t.Error("getSingle was not recorded as exercised")
-			}
-			if len(defaultCollector.drain()) == 0 {
-				t.Error("the undeclared 404 was not reported: the response was not validated")
-			}
-		})
 	}
 }

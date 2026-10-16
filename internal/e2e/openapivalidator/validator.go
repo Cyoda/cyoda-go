@@ -86,19 +86,7 @@ func validatorOptions() *openapi3filter.Options {
 // Wraps the underlying call in a panic recovery so that bugs in kin-openapi
 // (or in our spec/wire data hitting an untested code path) surface as
 // mismatch records rather than crashing the test server's request goroutine.
-func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) []Mismatch {
-	return v.validate(ctx, req, resp, true)
-}
-
-// validate is Validate; recordErrorCodes says whether the response's
-// (operationId, status, errorCode) triple is recorded for the error-code
-// matrix (see OutsideErrorCodeMatrix).
-func (v *Validator) validate(ctx context.Context, req *http.Request, resp *http.Response, recordErrorCodes bool) (mismatches []Mismatch) {
-	recordErrorCode := func(opId string) {
-		if recordErrorCodes {
-			maybeRecordErrorCode(opId, resp)
-		}
-	}
+func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.Response) (mismatches []Mismatch) {
 	defer func() {
 		if r := recover(); r != nil {
 			mismatches = append(mismatches, Mismatch{
@@ -120,7 +108,7 @@ func (v *Validator) validate(ctx context.Context, req *http.Request, resp *http.
 			// full routers.Route without re-entering the broken router).
 			defaultCollector.recordExercised(opId)
 			defaultCollector.recordStatus(opId, resp.StatusCode)
-			recordErrorCode(opId)
+			maybeRecordErrorCode(opId, resp)
 			return nil
 		}
 		// No matching route — the request hit a path the spec doesn't declare.
@@ -143,7 +131,7 @@ func (v *Validator) validate(ctx context.Context, req *http.Request, resp *http.
 		if opId, op := v.fallbackFindRoute(req); op != nil {
 			defaultCollector.recordExercised(opId)
 			defaultCollector.recordStatus(opId, resp.StatusCode)
-			recordErrorCode(opId)
+			maybeRecordErrorCode(opId, resp)
 			return nil
 		}
 		// A malformed path-parameter value (e.g. a non-uuid where format: uuid
@@ -170,7 +158,7 @@ func (v *Validator) validate(ctx context.Context, req *http.Request, resp *http.
 	// Error-code coverage (Pillar A): record the (operationId, status, errorCode)
 	// triple from the ProblemDetail body. Uses the shared helper so the body is
 	// re-buffered identically whether we took the main or fallback branch.
-	recordErrorCode(opId)
+	maybeRecordErrorCode(opId, resp)
 
 	// Streaming check: if the matched operation declares
 	// application/x-ndjson for the actual status code, skip body validation.

@@ -63,15 +63,15 @@ func TestAnalyze(t *testing.T) {
 		allow map[site]string
 		want  []string // the construct of each violation, in order
 	}{
-		{"NewServer validated", `func f() { httptest.NewServer(validated(h, inErrorCodeMatrix)) }`, nil, nil},
+		{"NewServer validated", `func f() { httptest.NewServer(validated(h)) }`, nil, nil},
 		{"NewServer unwrapped", `func f() { httptest.NewServer(h) }`, nil, []string{"httptest.NewServer"}},
 		{"NewTLSServer unwrapped", `func f() { httptest.NewTLSServer(h) }`, nil, []string{"httptest.NewTLSServer"}},
-		{"NewUnstartedServer validated", `func f() { httptest.NewUnstartedServer(validated(h, x)) }`, nil, nil},
-		{"NewUnstartedServer(nil) then validated handler", `func f() { s := httptest.NewUnstartedServer(nil); s.Config.Handler = validated(h, x) }`, nil, nil},
+		{"NewUnstartedServer validated", `func f() { httptest.NewUnstartedServer(validated(h)) }`, nil, nil},
+		{"NewUnstartedServer(nil) then validated handler", `func f() { s := httptest.NewUnstartedServer(nil); s.Config.Handler = validated(h) }`, nil, nil},
 		{"NewUnstartedServer(nil) never given a handler", `func f() { httptest.NewUnstartedServer(nil) }`, nil, []string{"httptest.NewUnstartedServer"}},
 		{"NewUnstartedServer(nil) given an unwrapped handler", `func f() { s := httptest.NewUnstartedServer(nil); s.Config.Handler = h }`, nil, []string{".Config.Handler ="}},
 		{"NewUnstartedServer unwrapped", `func f() { httptest.NewUnstartedServer(h) }`, nil, []string{"httptest.NewUnstartedServer"}},
-		{"http.Server validated", `func f() { _ = &http.Server{Handler: validated(h, x)} }`, nil, nil},
+		{"http.Server validated", `func f() { _ = &http.Server{Handler: validated(h)} }`, nil, nil},
 		{"http.Server unwrapped", `func f() { _ = http.Server{Handler: h} }`, nil, []string{"http.Server{}"}},
 		{"http.Server without a handler", `func f() { _ = http.Server{Addr: ":0"} }`, nil, []string{"http.Server{}"}},
 		{"net.Listen", `func f() { net.Listen("tcp", "x") }`, nil, []string{"net.Listen"}},

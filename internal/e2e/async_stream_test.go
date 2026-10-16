@@ -1194,7 +1194,7 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	}
 
 	a := app.New(cfg)
-	srv.Config.Handler = validated(a.Handler(), outsideErrorCodeMatrix)
+	srv.Config.Handler = validated(a.Handler())
 
 	var once sync.Once
 	closeNow := func() { once.Do(func() { _ = a.Close() }) }

@@ -25,7 +25,7 @@ func newMockIAMServer(t *testing.T) (string, func()) {
 	cfg.IAM.TrustedKeyRegistrationEnabled = true // gate ON → nil store → 501
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(validated(a.Handler(), outsideErrorCodeMatrix))
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()
@@ -47,7 +47,7 @@ func newFeatureOffServer(t *testing.T) (string, func()) {
 	// cfg.IAM.TrustedKeyRegistrationEnabled is false in DefaultConfig — leave it.
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(validated(a.Handler(), outsideErrorCodeMatrix))
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()

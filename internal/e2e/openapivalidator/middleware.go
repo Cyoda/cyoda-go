@@ -93,20 +93,6 @@ func MarkUndeclaredRouteProbe(req *http.Request) {
 // route of the spec.
 const unmatchedOperation = "<unmatched>"
 
-type middlewareConfig struct {
-	errorCodeMatrix bool
-}
-
-// MiddlewareOption configures NewMiddleware.
-type MiddlewareOption func(*middlewareConfig)
-
-// OutsideErrorCodeMatrix makes the middleware record no (operationId,
-// status, errorCode) triple for the error-code matrix. Responses are still
-// validated and operations still recorded as exercised.
-func OutsideErrorCodeMatrix() MiddlewareOption {
-	return func(c *middlewareConfig) { c.errorCodeMatrix = false }
-}
-
 // NewMiddleware returns an http.Handler middleware that:
 //
 //  1. Wraps the response writer with a teeWriter to capture status + body.
@@ -123,11 +109,7 @@ func OutsideErrorCodeMatrix() MiddlewareOption {
 //
 // Operational paths and CORS preflights are not validated. A request marked
 // with UndeclaredRouteProbeHeader is not reported for matching no route.
-func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) http.Handler {
-	cfg := middlewareConfig{errorCodeMatrix: true}
-	for _, o := range opts {
-		o(&cfg)
-	}
+func NewMiddleware(v *Validator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			testName, requester := requestingTest(r)
@@ -158,7 +140,7 @@ func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) ht
 				Body:       io.NopCloser(bytes.NewReader(cs.captureBytes())),
 				Request:    r,
 			}
-			mismatches := v.validate(r.Context(), r, resp, cfg.errorCodeMatrix)
+			mismatches := v.Validate(r.Context(), r, resp)
 			for _, m := range mismatches {
 				if probe && m.Operation == unmatchedOperation {
 					continue
