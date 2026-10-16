@@ -188,6 +188,99 @@ func TestAudit_DataEventTypeEqualsOuter(t *testing.T) {
 	assertDataEventType(t, finished)
 }
 
+// processorRecordsByName returns the data of each STATE_PROCESS_RESULT event,
+// keyed by processorName: events of one instant are not listed in recording
+// order. It fails on a second record for one processor.
+func processorRecordsByName(t *testing.T, events []map[string]any) map[any]map[string]any {
+	t.Helper()
+	out := map[any]map[string]any{}
+	for _, ev := range smEventsOfType(events, "STATE_PROCESS_RESULT") {
+		d, _ := ev["data"].(map[string]any)
+		if _, dup := out[d["processorName"]]; dup {
+			t.Errorf("a second STATE_PROCESS_RESULT for processor %v: %v", d["processorName"], events)
+		}
+		out[d["processorName"]] = d
+	}
+	return out
+}
+
+// TestAudit_ProcessorRecord: each processor run is one STATE_PROCESS_RESULT
+// with its name and mode; failReason is the compute member's own failure text
+// and nothing else. An ASYNC_NEW_TX processor's failure does not stop the
+// run, so its record is durable.
+func TestAudit_ProcessorRecord(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	sfx := randSuffix(t)
+
+	asyncFail := func(t *testing.T, name, message string) map[string]any {
+		t.Helper()
+		model, tag := "proc-record-"+name+"-"+sfx, "proc-record-"+name+"-tag-"+sfx
+		h.AttachCnode(t, cnodeSpec{name: "proc-record-" + name, tags: []string{tag}, script: scriptAlways(answerFail(message))})
+		h.SetupModelWithWorkflow(t, model, procWorkflowJSON("proc-record-wf-"+name+"-"+sfx, "charge", "ASYNC_NEW_TX",
+			map[string]any{"calculationNodesTags": tag}))
+		id, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+		if status != http.StatusOK {
+			t.Fatalf("create behind a failing ASYNC_NEW_TX processor: %d %s; want 200, the run continues", status, body)
+		}
+		requireState(t, h, id, "DONE")
+		records := processorRecordsByName(t, h.GetSMAuditEvents(t, id))
+		if len(records) != 1 || records["charge"] == nil {
+			t.Fatalf("STATE_PROCESS_RESULT records = %v, want one for charge", records)
+		}
+		return records["charge"]
+	}
+
+	t.Run("member text is the failReason", func(t *testing.T) {
+		got := asyncFail(t, "text", "card declined")
+		want := map[string]any{"eventType": "STATE_PROCESS_RESULT", "processorName": "charge",
+			"executionMode": "ASYNC_NEW_TX", "success": false, "failReason": "card declined"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("record = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("member sent no text", func(t *testing.T) {
+		got := asyncFail(t, "notext", "")
+		want := map[string]any{"eventType": "STATE_PROCESS_RESULT", "processorName": "charge",
+			"executionMode": "ASYNC_NEW_TX", "success": false}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("record = %v, want %v (no failReason)", got, want)
+		}
+	})
+
+	t.Run("names in order, empty mode is SYNC", func(t *testing.T) {
+		model, tag := "proc-record-two-"+sfx, "proc-record-two-tag-"+sfx
+		h.AttachCnode(t, cnodeSpec{name: "proc-record-two", tags: []string{tag}})
+		unset := sProc("unset-mode", "", tag, true)
+		delete(unset, "executionMode")
+		h.SetupModelWithWorkflow(t, model, schedDoc("proc-record-two-wf-"+sfx, map[string]any{
+			"Open": map[string]any{"transitions": []any{map[string]any{"name": "Go", "next": "Done", "manual": false,
+				"processors": []any{sProc("first", "ASYNC_SAME_TX", tag, true), unset}}}},
+			"Done": map[string]any{},
+		}))
+		id := createOpen(t, h, model, workflowSampleModel)
+		requireState(t, h, id, "Done")
+
+		events := h.GetSMAuditEvents(t, id)
+		paused := onlySMData(t, events, "PAUSE_FOR_PROCESSING")
+		if got, want := paused["processNames"], []any{"first", "unset-mode"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("PAUSE_FOR_PROCESSING processNames = %v, want %v", got, want)
+		}
+		records := processorRecordsByName(t, events)
+		if len(records) != 2 {
+			t.Fatalf("STATE_PROCESS_RESULT records = %v, want two", records)
+		}
+		if got := records["first"]["executionMode"]; got != "ASYNC_SAME_TX" {
+			t.Errorf("first executionMode = %v, want ASYNC_SAME_TX", got)
+		}
+		want := map[string]any{"eventType": "STATE_PROCESS_RESULT", "processorName": "unset-mode",
+			"executionMode": "SYNC", "success": true}
+		if got := records["unset-mode"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("unset-mode record = %v, want %v", got, want)
+		}
+	})
+}
+
 func assertDataEventType(t *testing.T, event map[string]any) {
 	t.Helper()
 	data, ok := event["data"].(map[string]any)

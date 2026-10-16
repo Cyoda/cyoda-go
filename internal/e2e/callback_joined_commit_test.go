@@ -403,7 +403,7 @@ func hasRefusedProcessorResult(events []map[string]any) bool {
 			continue
 		}
 		data, _ := ev["data"].(map[string]any)
-		if mode, _ := data["mode"].(string); mode != "COMMIT_BEFORE_DISPATCH" {
+		if mode, _ := data["executionMode"].(string); mode != "COMMIT_BEFORE_DISPATCH" {
 			continue
 		}
 		if success, ok := data["success"].(bool); ok && !success {

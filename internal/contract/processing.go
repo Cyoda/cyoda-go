@@ -44,6 +44,19 @@ var ErrNoMatchingMember = errors.New("no matching calculation member")
 // is a leaf package safe for both sides to import.
 var ErrAuthContextUnavailable = errors.New("auth context unavailable for dispatch")
 
+// ProcessorExecutionMode is the mode a processor with the configured
+// ExecutionMode mode runs in: mode itself, or SYNC when none is configured.
+// The workflow engine's audit record and the dispatch span both report it.
+// Here rather than beside the workflow package's mode constants because
+// internal/observability cannot import internal/domain/workflow, which
+// imports it.
+func ProcessorExecutionMode(mode string) string {
+	if mode == "" {
+		return "SYNC"
+	}
+	return mode
+}
+
 // FunctionResult holds the outcome of a generic Function callout dispatch —
 // used, e.g., by scheduled-transition timing where a compute node computes a
 // fire time (kind "Schedule") rather than mutating entity data or evaluating

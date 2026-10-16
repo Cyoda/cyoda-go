@@ -28,9 +28,8 @@ func failingProcessorEngine(t *testing.T) (*Engine, spi.StoreFactory) {
 
 // TestFailedProcessor_AuditEvents_ManualTransition asserts the full
 // audit-event sequence for a manual-fired SYNC processor that fails:
-// 1× SMEventProcessingPaused, 2× SMEventStateProcessResult (one inside
-// executeProcessors, one in the caller-level failure emit), 0×
-// SMEventFinished.
+// 1× SMEventProcessingPaused, 1× SMEventStateProcessResult (the processor's
+// own record, without the wrapped error text), 0× SMEventFinished.
 func TestFailedProcessor_AuditEvents_ManualTransition(t *testing.T) {
 	engine, factory := failingProcessorEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -84,36 +83,25 @@ func TestFailedProcessor_AuditEvents_ManualTransition(t *testing.T) {
 	if processingPausedCount != 1 {
 		t.Errorf("SMEventProcessingPaused count = %d, want 1", processingPausedCount)
 	}
-	if got, want := len(stateProcessResults), 2; got != want {
-		t.Fatalf("SMEventStateProcessResult count = %d, want %d (one from executeProcessors, one from caller failure emit)", got, want)
+	if got, want := len(stateProcessResults), 1; got != want {
+		t.Fatalf("SMEventStateProcessResult count = %d, want %d (the processor's own record only)", got, want)
 	}
 	if stateMachineFinished != 0 {
 		t.Errorf("SMEventFinished count = %d, want 0 (cascade aborted)", stateMachineFinished)
 	}
 
-	// First emit comes from executeProcessors with mode = declared ExecutionMode.
-	first := stateProcessResults[0]
-	if !strings.Contains(first.Details, `Processor "failing-proc" completed`) {
-		t.Errorf("first SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" completed'", first.Details)
+	only := stateProcessResults[0]
+	if !strings.Contains(only.Details, `Processor "failing-proc" completed`) {
+		t.Errorf("SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" completed'", only.Details)
 	}
-	if mode, _ := first.Data["mode"].(string); mode != ExecutionModeSync {
-		t.Errorf("first SMEventStateProcessResult Data.mode = %v, want %q", first.Data["mode"], ExecutionModeSync)
+	if strings.Contains(only.Details, errProcessorRefused.Error()) {
+		t.Errorf("SMEventStateProcessResult Details = %q holds the wrapped error text", only.Details)
 	}
-	if success, _ := first.Data["success"].(bool); success {
-		t.Errorf("first SMEventStateProcessResult Data.success = true, want false")
+	if mode, _ := only.Data["executionMode"].(string); mode != ExecutionModeSync {
+		t.Errorf("SMEventStateProcessResult Data.executionMode = %v, want %q", only.Data["executionMode"], ExecutionModeSync)
 	}
-
-	// Second emit comes from the caller (attemptTransition) with the full
-	// wrapped error in Details and no mode key.
-	second := stateProcessResults[1]
-	if !strings.Contains(second.Details, `Processor failed for transition "FIRE":`) {
-		t.Errorf("second SMEventStateProcessResult Details = %q, want 'Processor failed for transition \"FIRE\":' prefix", second.Details)
-	}
-	if !strings.Contains(second.Details, errProcessorRefused.Error()) {
-		t.Errorf("second SMEventStateProcessResult Details = %q, want the processor's failure", second.Details)
-	}
-	if _, hasMode := second.Data["mode"]; hasMode {
-		t.Errorf("second SMEventStateProcessResult Data should not have a 'mode' key (caller emit does not set it); got %v", second.Data)
+	if success, _ := only.Data["success"].(bool); success {
+		t.Errorf("SMEventStateProcessResult Data.success = true, want false")
 	}
 }
 
@@ -161,17 +149,11 @@ func TestFailedProcessor_AuditEvents_CascadedTransition(t *testing.T) {
 		}
 	}
 
-	if got, want := len(stateProcessResults), 2; got != want {
-		t.Fatalf("SMEventStateProcessResult count = %d, want %d (one inside executeProcessors, one from the cascade failure emit)", got, want)
+	if got, want := len(stateProcessResults), 1; got != want {
+		t.Fatalf("SMEventStateProcessResult count = %d, want %d (the processor's own record only)", got, want)
 	}
-
-	// The second emit (from the cascade) carries the wrapped error in Details.
-	second := stateProcessResults[1]
-	if !strings.Contains(second.Details, `Processor failed for transition "AUTO":`) {
-		t.Errorf("cascade-path second emit Details = %q, want 'Processor failed for transition \"AUTO\":' prefix", second.Details)
-	}
-	if !strings.Contains(second.Details, errProcessorRefused.Error()) {
-		t.Errorf("cascade-path second emit Details = %q, want the processor's failure", second.Details)
+	if strings.Contains(stateProcessResults[0].Details, errProcessorRefused.Error()) {
+		t.Errorf("cascade-path SMEventStateProcessResult Details = %q holds the wrapped error text", stateProcessResults[0].Details)
 	}
 }
 

@@ -825,9 +825,6 @@ func (e *Engine) fireTransition(ctx context.Context, entity *spi.Entity, wf *spi
 	// segment actually open.
 	segCtx, segTxID = newCtx, newTxID
 	if err != nil {
-		e.recordEvent(auditStore, newCtx, entity.Meta.ID, txID, entity.Meta.State,
-			spi.SMEventStateProcessResult, fmt.Sprintf("Processor failed for transition %q: %v", transitionName, err),
-			map[string]any{"success": false})
 		return newCtx, newTxID, err
 	}
 
@@ -955,10 +952,6 @@ func (e *Engine) cascadeAutomated(ctx context.Context, entity *spi.Entity, wf *s
 			if err != nil {
 				trSpan.RecordError(err)
 				trSpan.End()
-				e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
-					spi.SMEventStateProcessResult,
-					fmt.Sprintf("Processor failed for transition %q: %v", tr.Name, err),
-					map[string]any{"success": false})
 				return currentCtx, currentTxID, StopReason{}, err
 			}
 

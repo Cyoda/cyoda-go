@@ -5,6 +5,8 @@ package workflow
 // `eventType` the audit writer adds. An optional property whose value the
 // engine does not know is left out.
 
+import "github.com/cyoda-platform/cyoda-go/internal/contract"
+
 // StopReason is why a run stopped, as the FINISH event's `stopReason`.
 type StopReason struct {
 	Type        string
@@ -120,12 +122,9 @@ func processingPausedData(workflowName, transition string, processNames []string
 // stateProcessResultData is STATE_PROCESS_RESULT. An empty executionMode runs
 // as SYNC and is recorded so; failReason is omitted when empty.
 func stateProcessResultData(processorName, executionMode string, success bool, failReason string) map[string]any {
-	if executionMode == "" {
-		executionMode = "SYNC"
-	}
 	data := map[string]any{
 		"processorName": processorName,
-		"executionMode": executionMode,
+		"executionMode": contract.ProcessorExecutionMode(executionMode),
 		"success":       success,
 	}
 	if failReason != "" {

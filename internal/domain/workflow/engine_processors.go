@@ -171,15 +171,12 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 				"pkg", "workflow", "processor", proc.Name, "error", procErr)
 		}
 
-		auditData := map[string]any{
-			"success": success,
-			"mode":    proc.ExecutionMode,
-		}
-		// Note: we deliberately do NOT include procErr.Error() in audit data —
-		// engine-wrapped CBD error strings ("commit-before-dispatch: commit
-		// TX_pre: <pgx-error>") would leak internals to same-tenant audit
-		// readers. The success=false flag is sufficient for clients; the
+		// The only failure text recorded is the compute member's own
+		// (memberFailReason). procErr.Error() never is: engine-wrapped
+		// errors ("commit-before-dispatch: commit TX_pre: <pgx-error>")
+		// would leak internals to same-tenant audit readers; the
 		// request-scoped slog log captures full error detail for operators.
+		// This is the pipeline's only record of a failed processor.
 		// Per spec §8: audit events use the cascade-entry txID for
 		// correlation continuity, even though they physically land in
 		// whichever segment's TX is current. The event still records via
@@ -188,7 +185,8 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		// TX_post's buffer.
 		e.recordEvent(auditStore, currentCtx, entity.Meta.ID, txID, entity.Meta.State,
 			spi.SMEventStateProcessResult,
-			fmt.Sprintf("Processor %q completed", proc.Name), auditData)
+			fmt.Sprintf("Processor %q completed", proc.Name),
+			stateProcessResultData(proc.Name, proc.ExecutionMode, success, memberFailReason(procErr)))
 
 		// For SYNC/ASYNC_SAME_TX/COMMIT_BEFORE_DISPATCH, and for an ASYNC_NEW_TX
 		// savepoint failure, failure kills the pipeline.
@@ -197,6 +195,17 @@ func (e *Engine) executeProcessors(ctx context.Context, processors []spi.Process
 		}
 	}
 	return currentCtx, currentTxID, nil
+}
+
+// memberFailReason is the failure text the compute member itself sent for a
+// processor, or "" when err carries none: a member that answered success=false
+// with no text, and every failure that is not the member's answer.
+func memberFailReason(err error) string {
+	var failure *contract.CalloutFailure
+	if errors.As(err, &failure) && failure.Kind == contract.MemberFailed {
+		return failure.MemberText
+	}
+	return ""
 }
 
 // executeSyncProcessor runs a SYNC or ASYNC_SAME_TX processor inline in the
