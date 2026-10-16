@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // audit_event_data_test.go — the typed `data` of state-machine audit events,
@@ -279,6 +280,84 @@ func TestAudit_ProcessorRecord(t *testing.T) {
 			t.Errorf("unset-mode record = %v, want %v", got, want)
 		}
 	})
+}
+
+// TestAudit_ProcessorRecord_CommitBeforeDispatchFailure: a
+// COMMIT_BEFORE_DISPATCH processor whose compute member answers failure fails
+// the operation, after its segment boundary committed the entity and the
+// events before the callout. Its result is still recorded: the trail shows
+// PAUSE_FOR_PROCESSING followed by one failed STATE_PROCESS_RESULT carrying
+// the member's text, under the cascade's transaction id.
+func TestAudit_ProcessorRecord_CommitBeforeDispatchFailure(t *testing.T) {
+	h := newCalloutHarness(t, nil)
+	sfx := randSuffix(t)
+	for _, newTx := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startNewTxOnDispatch=%t", newTx), func(t *testing.T) {
+			name := fmt.Sprintf("cbd-record-%t-%s", newTx, sfx)
+			model, tag := name, name+"-tag"
+			h.AttachCnode(t, cnodeSpec{name: name, tags: []string{tag}, script: scriptAlways(answerFail("card declined"))})
+			h.SetupModelWithWorkflow(t, model, procWorkflowJSON(name+"-wf", "charge", "COMMIT_BEFORE_DISPATCH",
+				map[string]any{"calculationNodesTags": tag, "startNewTxOnDispatch": newTx}))
+
+			_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+			if status == http.StatusOK {
+				t.Fatalf("create: %d %s; want the processor's failure to fail the operation", status, body)
+			}
+			id := onlyEntityID(t, h, model)
+			requireState(t, h, id, "NONE")
+
+			events := h.GetSMAuditEvents(t, id)
+			paused := smEventsOfType(events, "PAUSE_FOR_PROCESSING")
+			results := smEventsOfType(events, "STATE_PROCESS_RESULT")
+			if len(paused) != 1 || len(results) != 1 {
+				t.Fatalf("PAUSE_FOR_PROCESSING = %d, STATE_PROCESS_RESULT = %d, want 1 each: %v", len(paused), len(results), events)
+			}
+			want := map[string]any{"eventType": "STATE_PROCESS_RESULT", "processorName": "charge",
+				"executionMode": "COMMIT_BEFORE_DISPATCH", "success": false, "failReason": "card declined"}
+			if got := results[0]["data"]; !reflect.DeepEqual(got, want) {
+				t.Errorf("record = %v, want %v", got, want)
+			}
+			if results[0]["transactionId"] != paused[0]["transactionId"] {
+				t.Errorf("record transactionId = %v, want the cascade's %v", results[0]["transactionId"], paused[0]["transactionId"])
+			}
+			pausedAt, resultAt := paused[0]["utcTime"].(string), results[0]["utcTime"].(string)
+			if pt, rt := mustRFC3339(t, pausedAt), mustRFC3339(t, resultAt); rt.Before(pt) {
+				t.Errorf("record at %s precedes the pause at %s", resultAt, pausedAt)
+			}
+		})
+	}
+}
+
+// onlyEntityID returns the id of the single entity of model, version 1.
+func onlyEntityID(t *testing.T, h *callbackHarness, model string) string {
+	t.Helper()
+	resp := h.DoAuth(t, http.MethodGet, fmt.Sprintf("/api/entity/%s/1", model), "", "")
+	body := h.readBody(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("list %s: %d %s", model, resp.StatusCode, body)
+	}
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(body), &list); err != nil {
+		t.Fatalf("decode list of %s: %v (body: %s)", model, err, body)
+	}
+	if len(list) != 1 {
+		t.Fatalf("%d entities of %s, want 1: %s", len(list), model, body)
+	}
+	meta, _ := list[0]["meta"].(map[string]any)
+	id, _ := meta["id"].(string)
+	if id == "" {
+		t.Fatalf("no entity id in %s", body)
+	}
+	return id
+}
+
+func mustRFC3339(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		t.Fatalf("utcTime %q: %v", s, err)
+	}
+	return v
 }
 
 func assertDataEventType(t *testing.T, event map[string]any) {
