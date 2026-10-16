@@ -55,6 +55,9 @@ func TestEveryEventTypeValidatesWhenDrivenThroughTheEngine(t *testing.T) {
 	sources := []source{{factory, ctx, ids}, {failFactory, failCtx, []string{failID}}}
 
 	seen := map[string]bool{}
+	// variantsSeen records, for the event types whose data has an optional
+	// field, which of the two shapes was validated.
+	variantsSeen := map[string]bool{}
 	for _, src := range sources {
 		for _, id := range src.ids {
 			for _, item := range auditItems(t, src.factory, src.ctx, id) {
@@ -63,9 +66,18 @@ func TestEveryEventTypeValidatesWhenDrivenThroughTheEngine(t *testing.T) {
 				}
 				eventType, _ := item["eventType"].(string)
 				seen[eventType] = true
-				if _, ok := item["data"].(map[string]any); !ok {
+				data, ok := item["data"].(map[string]any)
+				if !ok {
 					t.Errorf("%s event of %s has no data object: %v", eventType, id, item)
 					continue
+				}
+				switch eventType {
+				case "STATE_PROCESS_RESULT":
+					_, has := data["failReason"]
+					variantsSeen[optionalVariant(eventType, "failReason", has)] = true
+				case "TRANSITION_ABORTED":
+					_, has := data["transition"]
+					variantsSeen[optionalVariant(eventType, "transition", has)] = true
 				}
 				if err := openapivalidator.ValidateValue(doc, auditEvent, item); err != nil {
 					raw, _ := json.Marshal(item)
@@ -87,6 +99,26 @@ func TestEveryEventTypeValidatesWhenDrivenThroughTheEngine(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Errorf("event types seen = %v\nwant the mapping less the never-sent types = %v", got, want)
 	}
+
+	for _, v := range []string{
+		optionalVariant("STATE_PROCESS_RESULT", "failReason", true),
+		optionalVariant("STATE_PROCESS_RESULT", "failReason", false),
+		optionalVariant("TRANSITION_ABORTED", "transition", true),
+		optionalVariant("TRANSITION_ABORTED", "transition", false),
+	} {
+		if !variantsSeen[v] {
+			t.Errorf("no %s event was validated", v)
+		}
+	}
+}
+
+// optionalVariant names one shape of an event whose data has an optional
+// field.
+func optionalVariant(eventType, field string, present bool) string {
+	if present {
+		return eventType + " with " + field
+	}
+	return eventType + " without " + field
 }
 
 // auditItems reads every audit event of entityID through the audit handler.
