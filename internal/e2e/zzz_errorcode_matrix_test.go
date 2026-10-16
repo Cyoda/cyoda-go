@@ -10,150 +10,11 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/errorcodematrix"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
-// codeCell is one documented (status, errorCode) combination for an operation.
-type codeCell struct {
-	Status int
-	Code   string
-}
-
-// EntityErrorCodeMatrix declares, per in-scope entity operationId, the
-// (status, errorCode) combinations the spec's per-endpoint error tables
-// promise (design §7). The suite-end checks assert bidirectional agreement
-// with what the run actually produced. Out-of-scope operationIds are absent
-// and therefore exempt — the marker-aware coverage gate governs their
-// coverage. Rows are added by later tasks as each endpoint gains codes.
-var EntityErrorCodeMatrix = map[string][]codeCell{
-	// Seeded row: getOneEntity's error surface, pinned by
-	// TestErrCodeMatrix_GetOneEntity below and existing lifecycle tests.
-	"getOneEntity": {
-		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
-		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
-		{Status: 404, Code: "ENTITY_NOT_FOUND"},
-		{Status: 400, Code: "BAD_REQUEST"}, // conflicting pointInTime+transactionId
-	},
-	"deleteEntities": {
-		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
-		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
-		{Status: 400, Code: "INVALID_CONDITION"},
-		{Status: 400, Code: "INVALID_FIELD_PATH"},      // TestDeleteEntities_UnknownFieldPath: selection-search 4xx forwarded, not buried as 500
-		{Status: 400, Code: "CONDITION_TYPE_MISMATCH"}, // TestDeleteConditional_TextOperatorOnNumericField_ConditionTypeMismatch_NothingDeleted
-		{Status: 400, Code: "BAD_REQUEST"},             // TestTransactionControl_InvalidParams400/DeleteEntities: invalid/joined transactionSize
-		{Status: 404, Code: "MODEL_NOT_FOUND"},
-		// TestDeleteEntities_Batched_NonConvergence_409: the batched delete's
-		// progress guard. Produced on that test's own mount of this endpoint
-		// (the cycle budget has to be lowered to reach it), behind the same
-		// conformance validator — so the triple is recorded here like any
-		// other.
-		{Status: 409, Code: "DELETE_NOT_CONVERGED"},
-	},
-	// Stats / list / search ops (stats-audit-search slice, §7). Three read ops
-	// have a bounded, bidirectionally-checkable error surface — only
-	// 404 MODEL_NOT_FOUND in the current suite — and are tracked as full keys:
-	//   {getAllEntities, getEntityStatisticsForModel, getEntityStatisticsByStateForModel}.
-	// Three further ops are deliberately NOT matrix keys because their full error
-	// surface is large or partially out of scope for this slice:
-	//   searchEntities: 404 MODEL_NOT_FOUND proven by TestSearchEntities_UnknownModel_404
-	//     (search_unknown_model_test.go); 400 INVALID_FIELD_PATH has 8+ sub-cases
-	//     (condition + sort variants); full surface out of scope.
-	//   submitAsyncSearchJob: 404 MODEL_NOT_FOUND proven by
-	//     TestSubmitAsyncSearchJob_UnknownModel_404; same INVALID_FIELD_PATH family;
-	//     full surface out of scope.
-	//   queryGroupedEntityStatisticsForModel: 404 MODEL_NOT_FOUND proven by
-	//     TestGroupedStats_UnknownModel_404 (grouped_stats_test.go); full surface
-	//     (MISSING_GROUP_BY, GROUP_CARDINALITY_EXCEEDED)
-	//     out of scope for this slice.
-	"getAllEntities": {
-		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
-		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
-		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetAllEntities_UnknownModel_404
-	},
-	"getEntityStatisticsForModel": {
-		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
-		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
-		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetStatisticsForModel_UnknownModel_404
-	},
-	"getEntityStatisticsByStateForModel": {
-		{Status: 503, Code: "CONSISTENCY_TIME_UNAVAILABLE"},         // TestConsistencyUnavailable: the store cannot certify the consistency time within its wait budget
-		{Status: 400, Code: "POINT_IN_TIME_AFTER_CONSISTENCY_TIME"}, // TestConsistencyFence: pointInTime later than the consistency time
-		{Status: 404, Code: "MODEL_NOT_FOUND"},                      // TestGetStatisticsByStateForModel_UnknownModel_404
-	},
-	// Entity write operations (E5). The matrix tracks the ops with a bounded,
-	// bidirectionally-checkable error surface:
-	//   {getOneEntity, deleteEntities, create, createCollection, updateSingle,
-	//    updateSingleWithLoopback, patchSingleWithLoopback}.
-	// updateCollection and patchSingle are deliberately NOT matrix keys: tracking
-	// them would force declaring their entire transition-error surface (out of
-	// scope here). Their composite-unique-key codes (updateCollection 409/422,
-	// patchSingle 409/422) are instead proven by explicit e2e assertions in
-	// unique_keys_write_variants_test.go — a one-line waiver; their full
-	// transition-error surface belongs to a follow-on.
-	// CONFLICT (409) is exempt from all rows: it is a retryable serialization
-	// abort emitted non-deterministically by any write op under concurrency and
-	// is therefore not a per-endpoint documented code (see universalCrossCuttingCodes).
-	"create": {
-		{Status: 400, Code: "BAD_REQUEST"},       // invalid payload, transactionWindow out of range
-		{Status: 400, Code: "INCOMPATIBLE_TYPE"}, // payload type mismatches the model
-		// TestEntityCreate_UnaddressableFieldName_400: a write that would extend
-		// the model with a field name the wire jsonPath grammar cannot address.
-		{Status: 400, Code: "VALIDATION_FAILED"},
-		{Status: 400, Code: "WORKFLOW_FAILED"},    // workflow processor rejected the entity
-		{Status: 403, Code: "FORBIDDEN"},          // TestRouteGuard_DataRouteRequiresM2M: the caller lacks ROLE_M2M
-		{Status: 404, Code: "MODEL_NOT_FOUND"},    // model not registered
-		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CreateDuplicate et al.
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_PartialKeyCreate, TestUniqueKeys_OverBoundNumeric
-		// TestModelKindBranch_KeyedPathCannotGainAContainer: a STRUCTURAL write
-		// that would give a keyed path a container branch.
-		{Status: 422, Code: "INVALID_UNIQUE_KEY_DEFINITION"},
-	},
-	"createCollection": {
-		{Status: 400, Code: "BAD_REQUEST"},        // invalid JSON array or parameter
-		{Status: 404, Code: "MODEL_NOT_FOUND"},    // one or more models not registered
-		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_CollectionIntraBatchDuplicate, TestUniqueKeys_MixedModelBatch
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_CollectionPartialKeyCreate
-	},
-	"updateSingleWithLoopback": {
-		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
-		{Status: 400, Code: "WORKFLOW_FAILED"},    // engine rejected the loopback — e.g. an unevaluable workflow selection criterion (TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor)
-		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
-		{Status: 412, Code: "ENTITY_MODIFIED"},    // TestIfMatch_StaleLoopbackPut412
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"}, // TestUniqueKeys_LoopbackUpdatePartialKey
-		// 409 CONFLICT is exempt (universalCrossCuttingCodes)
-	},
-	"updateSingle": {
-		{Status: 400, Code: "TRANSITION_NOT_FOUND"}, // named transition absent from the model
-		{Status: 400, Code: "WORKFLOW_FAILED"},      // workflow processor rejected the update
-		{Status: 400, Code: "BAD_REQUEST"},          // TestTransactionControl_InvalidParams400/UpdateSingle: invalid/joined transactionTimeoutMillis
-		{Status: 404, Code: "ENTITY_NOT_FOUND"},     // entity UUID not found
-		{Status: 409, Code: "UNIQUE_VIOLATION"},     // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
-		{Status: 412, Code: "ENTITY_MODIFIED"},      // If-Match mismatch
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"},   // TestUniqueKeys_TransitionUpdatePartialKey
-	},
-	"patchSingleWithLoopback": {
-		{Status: 400, Code: "BAD_REQUEST"}, // TestTransactionControl_InvalidParams400/PatchSingleWithLoopback: invalid/joined transactionTimeoutMillis
-		// TestModelKindEnforcement_PatchRejectsKindMismatch: a patch is validated
-		// strictly — it must never widen the model — so a value whose kind the
-		// field does not declare fails against the registered model.
-		{Status: 400, Code: "VALIDATION_FAILED"},
-		{Status: 409, Code: "UNIQUE_VIOLATION"},       // TestUniqueKeys_LoopbackPatchDuplicate
-		{Status: 412, Code: "ENTITY_MODIFIED"},        // If-Match transactionId no longer matches
-		{Status: 415, Code: "UNSUPPORTED_MEDIA_TYPE"}, // non-JSON format or unrecognised Content-Type
-		{Status: 422, Code: "INVALID_UNIQUE_KEY"},     // TestUniqueKeys_PatchNullsKeyField
-		{Status: 428, Code: "PRECONDITION_REQUIRED"},  // If-Match header absent
-		{Status: 501, Code: "NOT_IMPLEMENTED"},        // application/json-patch+json not yet implemented
-	},
-	// GET /scheduled-tasks. 401 and 500 are cross-cutting (below). The 503 is
-	// produced on a private torn-connection harness that is not behind the
-	// conformance validator (TestScheduledTasks_TornConnection_503), so it is
-	// not a cell here.
-	"listScheduledTasks": {
-		{Status: 400, Code: "BAD_REQUEST"}, // TestScheduledTasks_InvalidParameters_400
-	},
-}
-
-func hasTriple(observed []openapivalidator.ErrorTriple, op string, c codeCell) bool {
+func hasTriple(observed []openapivalidator.ErrorTriple, op string, c errorcodematrix.Cell) bool {
 	for _, tr := range observed {
 		if tr.Operation == op && tr.Status == c.Status && tr.ErrorCode == c.Code {
 			return true
@@ -164,7 +25,7 @@ func hasTriple(observed []openapivalidator.ErrorTriple, op string, c codeCell) b
 
 // producibleGaps returns "op status code" strings for every declared cell that
 // was never observed (fictional / unexercised documented codes).
-func producibleGaps(matrix map[string][]codeCell, observed []openapivalidator.ErrorTriple) []string {
+func producibleGaps(matrix map[string][]errorcodematrix.Cell, observed []openapivalidator.ErrorTriple) []string {
 	var gaps []string
 	for op, cells := range matrix {
 		for _, c := range cells {
@@ -212,7 +73,7 @@ var universalCrossCuttingCodes = map[string]bool{
 // whose operation is IN the matrix but whose (status, code) is undocumented.
 // Triples whose Code is in universalCrossCuttingCodes are exempt: they belong
 // to the auth middleware or the concurrency layer, not to any one endpoint.
-func declaredGaps(matrix map[string][]codeCell, observed []openapivalidator.ErrorTriple) []string {
+func declaredGaps(matrix map[string][]errorcodematrix.Cell, observed []openapivalidator.ErrorTriple) []string {
 	var gaps []string
 	for _, tr := range observed {
 		if universalCrossCuttingCodes[tr.ErrorCode] {
@@ -283,10 +144,10 @@ func TestZZZErrorCodeMatrix(t *testing.T) {
 		t.Skip("error-code matrix depends on suite ordering; skipped under -shuffle")
 	}
 	observed := openapivalidator.ObservedErrorTriples()
-	if gaps := producibleGaps(EntityErrorCodeMatrix, observed); len(gaps) > 0 {
+	if gaps := producibleGaps(errorcodematrix.EntityErrorCodeMatrix, observed); len(gaps) > 0 {
 		t.Errorf("documented error codes never produced by any E2E (fictional?): %v", gaps)
 	}
-	if gaps := declaredGaps(EntityErrorCodeMatrix, observed); len(gaps) > 0 {
-		t.Errorf("error codes produced but undocumented in EntityErrorCodeMatrix (add the cell + its §7 table entry): %v", gaps)
+	if gaps := declaredGaps(errorcodematrix.EntityErrorCodeMatrix, observed); len(gaps) > 0 {
+		t.Errorf("error codes produced but undocumented in EntityErrorCodeMatrix (add the cell to internal/e2e/errorcodematrix and name the code in the operation's response description in api/openapi.yaml): %v", gaps)
 	}
 }

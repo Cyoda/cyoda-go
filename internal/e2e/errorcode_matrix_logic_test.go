@@ -3,12 +3,13 @@ package e2e_test
 import (
 	"testing"
 
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/errorcodematrix"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 func TestProducibleGaps(t *testing.T) {
-	m := map[string][]codeCell{
-		"getOneEntity": {{404, "ENTITY_NOT_FOUND"}, {400, "BAD_REQUEST"}},
+	m := map[string][]errorcodematrix.Cell{
+		"getOneEntity": {{Status: 404, Code: "ENTITY_NOT_FOUND"}, {Status: 400, Code: "BAD_REQUEST"}},
 	}
 	observed := []openapivalidator.ErrorTriple{
 		{Operation: "getOneEntity", Status: 404, ErrorCode: "ENTITY_NOT_FOUND"},
@@ -20,8 +21,8 @@ func TestProducibleGaps(t *testing.T) {
 }
 
 func TestDeclaredGaps(t *testing.T) {
-	m := map[string][]codeCell{
-		"getOneEntity": {{404, "ENTITY_NOT_FOUND"}},
+	m := map[string][]errorcodematrix.Cell{
+		"getOneEntity": {{Status: 404, Code: "ENTITY_NOT_FOUND"}},
 	}
 	observed := []openapivalidator.ErrorTriple{
 		{Operation: "getOneEntity", Status: 404, ErrorCode: "ENTITY_NOT_FOUND"}, // declared → OK
@@ -39,8 +40,8 @@ func TestDeclaredGaps(t *testing.T) {
 // serialization abort that any write op may emit non-deterministically under
 // concurrency, so it is exempt from the per-endpoint declared check.
 func TestDeclaredGaps_ConflictExempt(t *testing.T) {
-	m := map[string][]codeCell{
-		"create": {{409, "UNIQUE_VIOLATION"}},
+	m := map[string][]errorcodematrix.Cell{
+		"create": {{Status: 409, Code: "UNIQUE_VIOLATION"}},
 	}
 	observed := []openapivalidator.ErrorTriple{
 		{Operation: "create", Status: 409, ErrorCode: "UNIQUE_VIOLATION"}, // declared → OK
