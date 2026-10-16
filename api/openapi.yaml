@@ -9920,7 +9920,7 @@ components:
         access_token:
           type: string
           description: The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
-          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbGllbnQtMSJ9.c2lnbmF0dXJl
           pattern: ^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$
         token_type:
           type: string
@@ -12508,6 +12508,5 @@ components:
       scheme: basic
     bearerAuth:
       type: http
-      name: bearerAuth
       scheme: bearer
       bearerFormat: JWT
