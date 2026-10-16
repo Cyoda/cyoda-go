@@ -10,6 +10,8 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
+type label string
+
 func TestHoldsNUL(t *testing.T) {
 	const nul = "a\x00b"
 	tests := []struct {
@@ -33,7 +35,13 @@ func TestHoldsNUL(t *testing.T) {
 		{"[]any of strings", "S", "d", map[string]any{"l": []any{"ok", nul}}, true},
 		{"[]map[string]any", "S", "d", map[string]any{"l": []map[string]any{{"k": "ok"}, {"k": nul}}}, true},
 		{"[]map[string]any key", "S", "d", map[string]any{"l": []map[string]any{{nul: "ok"}}}, true},
-		{"[]any clean", "S", "d", map[string]any{"l": []any{map[string]any{"k": "v"}, int64(3)}}, false},
+		{"named string", "S", "d", map[string]any{"k": label(nul)}, true},
+		{"[]named string", "S", "d", map[string]any{"k": []label{"ok", label(nul)}}, true},
+		{"map[string][]string", "S", "d", map[string]any{"k": map[string][]string{"x": {"ok", nul}}}, true},
+		{"map[string][]string key", "S", "d", map[string]any{"k": map[string][]string{nul: {"ok"}}}, true},
+		{"[2]string", "S", "d", map[string]any{"k": [2]string{"ok", nul}}, true},
+		{"[2]string clean", "S", "d", map[string]any{"k": [2]string{"ok", "ok"}, "n": 1.5, "z": nil}, false},
+		{"[]any clean","S", "d", map[string]any{"l": []any{map[string]any{"k": "v"}, int64(3)}}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
