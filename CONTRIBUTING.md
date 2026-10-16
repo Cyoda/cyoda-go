@@ -26,7 +26,7 @@ Every feature follows this flow:
    c. Refactor — all tests stay green
    d. Commit
 3. Run E2E tests:
-   - If Docker socket is available: run directly (`go test -timeout 30m ./internal/e2e/...` — the package takes ~10 min, which is `go test`'s default timeout), or `make test-full` for the whole suite. In a `-run`-filtered run, an OpenAPI response mismatch fails the test that made the request, and a mismatch that no test reported (a request that named no test, or a response that arrived after its test returned) fails the run when `TestMain` ends. Include `TestOpenAPIConformanceReport` in the filter (`-run 'TestFoo|TestOpenAPIConformanceReport'`) to have the report file written
+   - If Docker socket is available: run directly (`go test -timeout 30m ./internal/e2e/...` — the package takes ~10 min, which is `go test`'s default timeout), or `make test-full` for the whole suite. In a `-run`-filtered run, an OpenAPI response mismatch fails the test that made the request, and a mismatch that no test reported (a request that named no test, or a response that arrived after its test returned) fails the run: through `TestOpenAPIConformanceReport` when the filter includes it, otherwise when `TestMain` ends. Include it in the filter (`-run 'TestFoo|TestOpenAPIConformanceReport'`) to have the report file written
    - If sandboxed without Docker: human operator runs E2E tests and provides feedback
 4. Code review (code-reviewer)
    -> Fix all Critical/Important findings
@@ -132,7 +132,7 @@ The E2E conformance gate enforces both sides of this rule: an unmarked operation
 - The contract grows by addition only. A value set that may grow is a plain string, never an `enum`: a client generated from an earlier spec cannot read an `enum` value it does not list, so adding one is a breaking change. Nothing published is renamed or removed — no mapping key, `enum` value or event type; a value cyoda-go stops sending stays, and its description says it is not sent. The severity file above is why the gate refuses a removal, a renamed discriminator, or a value added to a response `enum`.
 - A use of a base in a response is never in its parent's `required`.
 
-**Client-generation check.** The `client-probe` CI job (`.github/workflows/openapi-client-generation.yml`) runs on every PR. The Maven project `api/clientprobe/` generates Cloud's `kotlin-spring` classes and a `java` client from `api/openapi.yaml` with openapi-generator 7.18.0, compiles both, and reads and writes back every sample in `api/clientprobe/samples/`. Run it locally with `make client-probe`, which needs Java 21 and Maven; it is not part of `make test`.
+**Client-generation check.** The `client-probe` CI job (`.github/workflows/openapi-client-generation.yml`) runs on every PR. The Maven project `api/clientprobe/` generates `kotlin-spring` classes, with Cloud's `configOptions` only (not its type, import or schema mappings), and a `java` client from `api/openapi.yaml` with openapi-generator 7.18.0, compiles both, and reads and writes back every sample in `api/clientprobe/samples/`. Run it locally with `make client-probe`, which needs Java 21 and Maven; it is not part of `make test`.
 
 A sample is one JSON file in `api/clientprobe/samples/`:
 

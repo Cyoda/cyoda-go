@@ -115,7 +115,7 @@ func OutsideErrorCodeMatrix() MiddlewareOption {
 //     through the validator.
 //  4. Appends mismatches to the package-level collector, named after the
 //     requesting test (TestNameHeader; see Transport).
-//  5. In ModeEnforce + -run-filtered runs: also calls Errorf on the
+//  5. In -run-filtered runs: also calls Errorf on the
 //     requesting test (if the request named one) so it fails. Wrapped in
 //     defer recover() in case the test has exited (a callback made after
 //     the test returned); the mismatch is still collected, and
@@ -169,7 +169,7 @@ func NewMiddleware(v *Validator, opts ...MiddlewareOption) func(http.Handler) ht
 				}
 				defaultCollector.append(m)
 
-				if requester != nil && Mode == ModeEnforce && RunFilterActive() {
+				if requester != nil && RunFilterActive() {
 					func() {
 						defer func() { _ = recover() }()
 						requester.Errorf("openapi conformance: %s %s -> %d: %s",

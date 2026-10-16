@@ -15,7 +15,7 @@ Architecture:
     internal/e2e/_openapi-conformance-report.md after the suite ends.
   - testname.go names the requesting test to the middleware: the client's
     Transport sends the test attached to the request context as a header,
-    so the report names the test and, in -run-filtered enforce mode, the
+    so the report names the test and, in a -run-filtered run, the
     middleware fails it. FailOnUnreported (collector.go) fails a run that
     collected mismatches no test reported.
 
@@ -31,9 +31,8 @@ validate status code and headers. Detection uses the matched operation's
 Content-Type header (header-based detection is fragile against auto-sniffed
 types and future SSE additions).
 
-Mode is a compile-time constant (mode.go) — there is intentionally no env
-var or runtime toggle. See docs/adr/0001-openapi-server-spec-conformance.md
-for why.
+A mismatch always fails the run; there is no report-only mode. See
+docs/adr/0001-openapi-server-spec-conformance.md for the validator's design.
 
 This suite is incompatible with `go test -shuffle on`. The conformance test
 detects shuffle and fails with an explanatory error.
