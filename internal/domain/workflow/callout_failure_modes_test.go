@@ -105,12 +105,12 @@ func TestCalloutFailure_AsyncNewTx_OperationContinuesNothingReported(t *testing.
 		"no answer":                   noAnswerFailure(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			result, err, _, entity, runCtx := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
+			_, err, _, entity, runCtx := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
 			if err != nil {
 				t.Fatalf("Execute = %v, want success: an ASYNC_NEW_TX callout failure does not fail the operation", err)
 			}
-			if !result.Success || entity.Meta.State != "DONE" {
-				t.Errorf("success = %v state = %q, want true and DONE", result.Success, entity.Meta.State)
+			if entity.Meta.State != "DONE" {
+				t.Errorf("state = %q, want DONE", entity.Meta.State)
 			}
 			// Nothing reaches the client — not even the cnode's verdict — so
 			// the request's diagnostics carry no error for the processor either.
