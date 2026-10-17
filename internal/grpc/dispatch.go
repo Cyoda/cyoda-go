@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -237,6 +238,14 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			slog.Error("member disconnected mid-dispatch", "pkg", "grpc", "memberId", member.ID, "label", label, "name", name, "requestId", requestID)
 			return CalloutResult{}, appFailure(contract.NoAnswer, disconnectedErr(label)), true, nil
 		}
+		// The reason and the failure text reach the state-machine audit trail,
+		// which records no event holding U+0000, and a criterion's reason is
+		// copied into later events too (FINISH's stop reason, TRANSITION_MAKE's
+		// functions). Accepting such a text would let it remove the record of a
+		// state change, so the answer is not read at all.
+		if strings.ContainsRune(resp.Reason, 0) || strings.ContainsRune(resp.Error, 0) {
+			return CalloutResult{}, memberResponseUnreadable(errMemberTextNUL, memberTextNULReason, label, name, member.ID, requestID), true, nil
+		}
 		// mapResponse reads what the answer says it did, which only an answer
 		// reporting success has said. A member reporting a failure owes no
 		// verdict, payload or result, and its answer is perfectly readable.
@@ -319,6 +328,12 @@ const unreadableAnswerMessage = "the compute member's response could not be read
 // into the envelope the schema declares, so the reason can be named without
 // matching on the wrapped decoder's text.
 var errProcessorPayload = errors.New("the processor response payload did not decode")
+
+// errMemberTextNUL marks an answer whose reason or failure text holds U+0000;
+// memberTextNULReason is the reason the client and the log are given for it.
+var errMemberTextNUL = errors.New("the member's reason or error text holds U+0000")
+
+const memberTextNULReason = "a reason or error text held U+0000"
 
 // memberResponseUnreadable is Terminal: spec §3's site table assigns
 // "response payload unmarshal" Terminal, not MemberFailed. MemberFailed means

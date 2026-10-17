@@ -8,11 +8,15 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestAudit_NULReasonNotRecorded: an automated transition refused by a
-// criterion whose member answers with a reason holding U+0000. PostgreSQL
-// refuses U+0000 in jsonb and the refused INSERT aborts the transaction, so
-// the engine refuses to record such an event on every backend: the entity is
-// saved, and the TRANSITION_NOT_MATCH_CRITERION event is not there.
+// TestAudit_NULReasonNotRecorded pins the engine's own refusal of an event
+// holding U+0000. PostgreSQL refuses U+0000 in jsonb and the refused INSERT
+// aborts the transaction, so the engine refuses to record such an event on
+// every backend: the entity is saved, and the TRANSITION_NOT_MATCH_CRITERION
+// event is not there. The criterion here is answered in process, which has no
+// compute boundary; through gRPC the same reason makes the answer unreadable
+// and the operation fails (TestDispatch_MemberTextHoldingNULIsUnreadable, and
+// the parity scenario AuditNULAnswerRefused), so in production the guard is
+// reached by a caller's text.
 func TestAudit_NULReasonNotRecorded(t *testing.T) {
 	const model = "e2e-audit-nul-reason"
 	procSvc.RegisterCriteriaReason("nul-reason",

@@ -384,7 +384,7 @@ var allTests = []NamedTest{
 
 	// An audit event holding U+0000 is written on no backend (PostgreSQL jsonb
 	// refuses it and the refused INSERT aborts the save).
-	{"AuditNULEventNotRecorded", RunAuditNULEventNotRecorded},
+	{"AuditNULAnswerRefused", RunAuditNULAnswerRefused},
 
 	// Follow-on-action attribution — the {attributed principal, executor} pair
 	// recorded on change history must be IDENTICAL on every backend. Guards the

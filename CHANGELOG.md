@@ -952,13 +952,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   to.
 
 - **An audit event the workflow engine records is not recorded, on any
-  backend, when its text holds U+0000.** A compute member's criterion reason
-  or failure text, or a caller's
-  transition name, that holds U+0000 used to abort the request's transaction
-  on PostgreSQL, which refuses U+0000 in `jsonb`, while memory and SQLite
-  stored the event and the operation succeeded. The engine now refuses the
-  event before any backend sees it, logs it at WARN without the text, and the
-  operation has the outcome it has without that event. The scheduler's
+  backend, when its text holds U+0000.** A caller's transition name that holds
+  U+0000 used to abort the request's transaction on PostgreSQL, which refuses
+  U+0000 in `jsonb`, while memory and SQLite stored the event and the operation
+  succeeded. The engine now refuses the event before any backend sees it, logs
+  it at WARN without the text, and the operation has the outcome it has without
+  that event.
+
+- **A compute member's answer whose reason or failure text holds U+0000 is
+  unreadable.** The operation fails with `400 WORKFLOW_FAILED`, not retryable,
+  on every backend; before, PostgreSQL failed it and memory and SQLite
+  committed it. A criterion's reason is copied into later audit events (FINISH's
+  stop reason, TRANSITION_MAKE's functions), so accepting such a text would
+  let one member answer take the record of a state change out of the audit
+  trail. The scheduler's
   `SCHEDULED_TRANSITION_FAIL` record is not checked: it carries only the
   task's transition and state names, from a workflow import, and fixed values.
 

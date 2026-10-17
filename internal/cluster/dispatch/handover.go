@@ -398,6 +398,12 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 			if resp.Matches == nil {
 				return lostAnswer()
 			}
+			// A genuine peer refuses a reason holding U+0000 before it relays
+			// the answer (internal/grpc/dispatch.go): the audit trail records no
+			// event holding it.
+			if strings.ContainsRune(resp.Reason, 0) {
+				return lostAnswer()
+			}
 			result.Matches = *resp.Matches
 			result.Reason = resp.Reason
 		case internalgrpc.FunctionCallout:
@@ -420,6 +426,11 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 	case contract.MemberFailed.String():
 		if used == 0 {
 			return lostAnswer()
+		}
+		// As for a criterion's reason above: a genuine peer never relays a
+		// failure text holding U+0000.
+		if strings.ContainsRune(resp.MemberError, 0) {
+			return lostAnswerAfter(used)
 		}
 		// The client text must not depend on which node held the member, so a
 		// member that sent none gets the sentence a local try uses.

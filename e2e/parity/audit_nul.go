@@ -2,9 +2,9 @@ package parity
 
 import (
 	"encoding/json"
+	"net/http"
+	"strings"
 	"testing"
-
-	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
@@ -32,42 +32,31 @@ func AuditNULWorkflow(wfName, tag string) string {
 	return string(wf)
 }
 
-// AssertNoNotMatchEvent fails the test when the entity's audit trail holds a
-// TRANSITION_NOT_MATCH_CRITERION event, and when it holds no state-machine
-// event at all (the entity's other events are recorded).
-func AssertNoNotMatchEvent(t *testing.T, c *client.Client, entityID uuid.UUID) {
+// AssertNULAnswerRefused checks the outcome of a create whose criterion member
+// answered with a reason holding U+0000: the answer is unreadable, so the create
+// fails with 400 WORKFLOW_FAILED, not retryable, naming the cause in this
+// node's own words, and no entity of the model is committed.
+func AssertNULAnswerRefused(t *testing.T, c *client.Client, model string, status int, body []byte) {
 	t.Helper()
-	auditResp, err := c.GetAuditEvents(t, entityID)
+	detail := calloutProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+	if !strings.Contains(detail, "a reason or error text held U+0000") {
+		t.Errorf("detail = %q; want it to name the U+0000", detail)
+	}
+	entities, err := c.ListEntitiesByModel(t, model, 1)
 	if err != nil {
-		t.Fatalf("GetAuditEvents: %v", err)
+		t.Fatalf("ListEntitiesByModel: %v", err)
 	}
-	var stateMachine int
-	for i := range auditResp.Items {
-		ev := &auditResp.Items[i]
-		if ev.AuditEventType != "StateMachine" {
-			continue
-		}
-		sm, err := ev.AsStateMachine()
-		if err != nil {
-			t.Fatalf("decode a state-machine audit event: %v", err)
-		}
-		stateMachine++
-		if sm.EventType == "TRANSITION_NOT_MATCH_CRITERION" {
-			t.Errorf("an event holding U+0000 was recorded: %s", sm.Data)
-		}
-	}
-	if stateMachine == 0 {
-		t.Error("no state-machine audit events at all: the entity's other events must still be recorded")
+	if len(entities) != 0 {
+		t.Errorf("%d entities committed; want none: the answer was not read and the create did not commit", len(entities))
 	}
 }
 
-// RunAuditNULEventNotRecorded verifies that an audit event holding U+0000 is
-// written on no backend. An automated transition is refused by a criterion
-// whose member answers with a reason holding U+0000: the entity is saved and
-// the TRANSITION_NOT_MATCH_CRITERION event is not recorded, identically on
-// memory, SQLite and PostgreSQL (PostgreSQL's jsonb refuses U+0000, and the
-// refused INSERT used to abort the whole save).
-func RunAuditNULEventNotRecorded(t *testing.T, fixture BackendFixture) {
+// RunAuditNULAnswerRefused verifies that a compute member's text holding U+0000
+// cannot take records out of the audit trail. The audit trail records no event
+// holding U+0000, and a criterion's reason is copied into later events (FINISH,
+// TRANSITION_MAKE), so the answer is refused as unreadable instead: the create
+// fails and commits nothing, identically on memory, SQLite and PostgreSQL.
+func RunAuditNULAnswerRefused(t *testing.T, fixture BackendFixture) {
 	requireComputeClients(t, fixture)
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
@@ -78,16 +67,9 @@ func RunAuditNULEventNotRecorded(t *testing.T, fixture BackendFixture) {
 		TenantID: tenant.ID, Tags: []string{tag}, Behaviour: ComputeBehaviourCriterionReasonNUL,
 	})
 
-	entityID, err := c.CreateEntity(t, model, 1, wfBaseSample)
+	status, body, err := c.CreateEntityRaw(t, model, 1, wfBaseSample)
 	if err != nil {
-		t.Fatalf("CreateEntity: %v", err)
+		t.Fatalf("CreateEntityRaw: %v", err)
 	}
-	got, err := c.GetEntity(t, entityID)
-	if err != nil {
-		t.Fatalf("GetEntity: %v", err)
-	}
-	if got.Meta.State != "CREATED" {
-		t.Errorf("state = %q; want CREATED (the criterion refused the transition)", got.Meta.State)
-	}
-	AssertNoNotMatchEvent(t, c, entityID)
+	AssertNULAnswerRefused(t, c, model, status, body)
 }

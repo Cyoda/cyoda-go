@@ -9,18 +9,18 @@ import (
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/client"
 )
 
-// audit_nul.go — an audit event holding U+0000 is not recorded, through a
-// hand-over. The owner has no compute node for the tag; the criterion member
-// is on the peer and answers with a reason holding U+0000. The owner records
-// the event after the hand-over, refuses it, and the entity is saved.
+// audit_nul.go — a compute member's reason holding U+0000 is refused through a
+// hand-over too. The owner has no compute node for the tag; the criterion member
+// is on the peer and answers with a reason holding U+0000. The peer refuses the
+// answer as unreadable, and the owner's create fails exactly as a local one does.
 
 func init() {
 	Register(
-		NamedTest{Name: "AuditNUL_HandOverReasonNotRecorded", Fn: RunAuditNUL_HandOverReasonNotRecorded},
+		NamedTest{Name: "AuditNUL_HandOverAnswerRefused", Fn: RunAuditNUL_HandOverAnswerRefused},
 	)
 }
 
-func RunAuditNUL_HandOverReasonNotRecorded(t *testing.T, fixture MultiNodeFixture) {
+func RunAuditNUL_HandOverAnswerRefused(t *testing.T, fixture MultiNodeFixture) {
 	urls := mnRequire(t, fixture, 2)
 	tenant := fixture.NewTenant(t)
 	owner := client.NewClient(urls[0], tenant.Token)
@@ -50,16 +50,9 @@ func RunAuditNUL_HandOverReasonNotRecorded(t *testing.T, fixture MultiNodeFixtur
 	}
 
 	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback, parity.AuditNULWorkflow("mn-nul-wf", tag))
-	id, err := owner.CreateEntity(t, model, 1, mnSample)
+	status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
 	if err != nil {
 		t.Fatalf("create through the owner: %v", err)
 	}
-	got, err := owner.GetEntity(t, id)
-	if err != nil {
-		t.Fatalf("read the entity: %v", err)
-	}
-	if got.Meta.State != "CREATED" {
-		t.Errorf("state = %q; want CREATED (the peer's criterion refused the transition)", got.Meta.State)
-	}
-	parity.AssertNoNotMatchEvent(t, owner, id)
+	parity.AssertNULAnswerRefused(t, owner, model, status, body)
 }

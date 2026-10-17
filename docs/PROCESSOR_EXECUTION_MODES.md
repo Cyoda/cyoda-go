@@ -456,11 +456,12 @@ failed operation does not commit, or whose commit outcome is in doubt.
 A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore has
 one of these causes:
 
-- The record was not written. Recording is best effort: the engine refuses an
-  event whose text holds U+0000 — for example a failed processor whose member's
-  failure text holds it — and a `Record` that fails, or the transaction of a
-  failed `COMMIT_BEFORE_DISPATCH` processor's record that cannot be begun or
-  committed, is logged at WARN. The operation's outcome does not change.
+- The record was not written. Recording is best effort: a `Record` that fails,
+  or the transaction of a failed `COMMIT_BEFORE_DISPATCH` processor's record
+  that cannot be begun or committed, is logged at WARN. The operation's outcome
+  does not change. (A member's failure text holding U+0000, which the audit
+  trail cannot record, never gets this far: the answer is refused as
+  unreadable and the operation fails.)
 - The processor ran in a callback that joined another operation's transaction,
   and the fence refused the callback's chain after the dispatch, because its
   compute node was replaced or its callout ended. The chain records nothing more,
