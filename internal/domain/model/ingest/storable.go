@@ -86,7 +86,7 @@ func unstorableErr(path, reason string) *common.AppError {
 		common.ErrCodeBadRequest,
 		// %q so a control byte in a key or value is never echoed raw into the
 		// response body.
-		fmt.Sprintf("payload field %q %s", path, reason),
+		fmt.Sprintf("field %q %s", path, reason),
 	)
 }
 
