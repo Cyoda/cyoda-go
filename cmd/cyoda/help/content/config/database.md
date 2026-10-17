@@ -80,7 +80,7 @@ from its first statement:
 
 The other three each bound one path:
 
-- `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — deadline on the wait for a free pooled connection, after which the request fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server (default: `10s`)
+- `CYODA_POSTGRES_ACQUIRE_TIMEOUT` — deadline on the wait for a free pooled connection, after which the operation fails with `503 STORAGE_UNAVAILABLE`. Applied by the pool, not the server (default: `10s`). It bounds the wait when the operation opens a transaction — every entity create, update, patch and delete, and the async-search scan and its result writes — and when the operation needs a second connection while its transaction already holds one: a point-in-time read, an async-search job record or a key-value statement issued inside a transaction. A statement issued outside a transaction is not bounded by it, so ordinary pool contention does not fail it: an entity read, list, search, statistics or change-history read, an audit read, and a model, workflow, message or key-value read or write waits until a connection is returned or the client disconnects. The statement and idle-in-transaction ceilings above, and `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` for an async-search scan, bound how long a connection is held
 - `CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT` — maximum lock wait on the migration connection. That connection disables the two ceilings above, so a long index build is not cancelled mid-flight; what stays bounded is waiting (default: `5m`)
 - `CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT` — statement ceiling applied per async search scan, which legitimately runs far longer than an interactive statement (default: `30m`; `0` disables it, leaving the scan unbounded)
 

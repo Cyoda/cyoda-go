@@ -131,13 +131,14 @@ func (hh *holdHarness) hold(t *testing.T) func() {
 	}
 }
 
-// TestE2E_SaturatedPool_HTTPReturns503 is the HTTP half: every door that needs a
-// connection fails fast with a retryable 503 STORAGE_UNAVAILABLE instead of
-// queueing behind the pool — the create (into the gated model), the collection
-// create, the three updates and the patch (against an ungated model seeded
-// before the pool was saturated). The read of one entity is not here: it takes
-// a connection straight from the pool with no acquire deadline, so on a
-// saturated pool it waits for the holder; its 503 is covered by
+// TestE2E_SaturatedPool_HTTPReturns503 is the HTTP half: every entity write door,
+// each of which opens a transaction, fails fast with a retryable 503
+// STORAGE_UNAVAILABLE instead of queueing behind the pool — the create (into the
+// gated model), the collection create, the three updates and the patch (against
+// an ungated model seeded before the pool was saturated). The read of one entity
+// is not here: a statement outside a transaction takes a connection straight
+// from the pool with no acquire deadline, by design, so on a saturated pool it
+// waits for the holder; its 503 is covered by
 // TestE2E_TornConnection_AuditAndTrustedKeys503/getOneEntity.
 func TestE2E_SaturatedPool_HTTPReturns503(t *testing.T) {
 	h := newSaturatedPoolHarness(t)
