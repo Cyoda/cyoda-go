@@ -10386,7 +10386,12 @@ components:
           description: Target state code for this transition
         manual:
           type: boolean
-          description: Whether this transition requires manual triggering
+          description: >-
+            Whether this transition requires manual triggering: `true` means a
+            client request triggers it, `false` means the engine runs it
+            automatically. Required, with no default; an import whose
+            transition omits it or sends `null` is rejected with 400
+            VALIDATION_FAILED.
         disabled:
           type: boolean
           description: Flag indicating if the transition is disabled

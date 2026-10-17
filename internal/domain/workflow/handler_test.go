@@ -1851,7 +1851,7 @@ func TestImportExport_CalloutFields_RoundTrip(t *testing.T) {
 					 "config":{"calculationNodesTags":"workers","idempotent":true,"retryPolicy":"FIXED"}},
 					{"type":"externalized","name":"plain","executionMode":"SYNC",
 					 "config":{"calculationNodesTags":"workers"}}]},
-				{"name":"later","next":"S2",
+				{"name":"later","next":"S2","manual":false,
 				 "schedule":{"function":{"name":"computeFire","resultKind":"Schedule",
 					"calculationNodesTags":"scheduler","retryPolicy":"NONE"}}}]},
 			"S2":{}}}]}`
@@ -1950,6 +1950,50 @@ func TestImport_ScheduleDelayMsBesideFunction_Rejected(t *testing.T) {
 				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
 			}
 			for _, want := range []string{"VALIDATION_FAILED", "schedule.delayMs and schedule.function are mutually exclusive", "fn-schedule-flow", "NEW", "AUTO_CLOSE"} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_TransitionManualMissingOrNull_Rejected pins the published
+// TransitionDefinitionDto contract (api/openapi.yaml): manual is required and
+// is a boolean. The SPI decodes manual into a plain bool, so an omitted or
+// null manual reads as false to the structural validator, which would make
+// the transition automatic; the import must refuse it instead.
+func TestImport_TransitionManualMissingOrNull_Rejected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		manual string
+	}{
+		{"omitted", ""},
+		{"null", `"manual": null,`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "approval-flow",
+					"initialState": "NEW",
+					"states": {
+						"NEW": {"transitions": [{` + tc.manual + `"name": "APPROVE", "next": "DONE"}]},
+						"DONE": {"transitions": []}
+					}
+				}]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			for _, want := range []string{"VALIDATION_FAILED", "manual is required", "approval-flow", "NEW", "APPROVE"} {
 				if !strings.Contains(string(b), want) {
 					t.Errorf("response must contain %q, got: %s", want, b)
 				}

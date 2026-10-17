@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the thirteen tightenings below
+Every payload 1.4 accepted that does not fall under the fourteen tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Thirteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Fourteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -329,6 +329,15 @@ they are recorded here, under the rubric of §"Tightening releases":
     (`400 VALIDATION_FAILED`), and an omitted or empty `type` is stored, and
     exported, as `externalized` (it exported as `""` before). Rubric point 1
     applies: fail loud where the old value was ignored or failed later.
+14. **A transition's `manual` is required** (`true` or `false`). The published
+    schema always listed it as required, but import read an omitted or `null`
+    `manual` as `false` and stored an automatic transition. It is refused now
+    (`400 VALIDATION_FAILED`), and it has no default: an automatic transition
+    carries more risk than a manual one, so the author states which it is.
+    This one does reject configurations that worked, so it is recorded here
+    and not as a validator bug fix. The import reads the raw request, since
+    the decoded boolean cannot tell an omitted or `null` `manual` from
+    `false`.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -349,7 +358,10 @@ only clauses without the operand their operator compares with; each error
 names the position of the condition in the criterion. Rule 13 touches only
 processors whose `type` was not `externalized` or empty; the error names the
 processor and the value, and the fix is to send `externalized` or omit the
-field. All thirteen rules apply to an import under
+field. Rule 14 touches only transitions that left `manual` out; the error
+names the workflow, state and transition, and the fix is to send
+`"manual": false` where the omission meant an automatic transition. All
+fourteen rules apply to an import under
 **any** schema version, 1.1 through 1.5 alike — they are
 validation-layer rules, not DTO-shape ones.
 
@@ -361,7 +373,8 @@ later is not clamped; its callout fails, naming the setting.
 as at 1.2, 1.3 and 1.4: nothing is retired, so every fixture stamped `"1.1"`
 through `"1.4"` stays valid exactly as imported, and only the tests that
 assert the *current* version — export stamping, the discovery endpoint, the
-dual-shape acceptance test — change.
+dual-shape acceptance test — change. The exception is rule 14: the fixtures
+that left `manual` out now send it.
 
 ### 1.4 — v0.8.4 contract
 

@@ -94,10 +94,10 @@ func RunExternalAPI_08_01_SimpleAutomatedTransition(t *testing.T, fixture parity
 }
 
 // RunExternalAPI_08_02_DefaultsAppliedAndReturned — dictionary 08/02.
-// Import a partially-specified workflow (transition omits manual/criterion);
-// export must round-trip the workflow with the transition name intact.
-// cyoda-go stores what was sent and applies active=true as the only server
-// default; omitted boolean fields default to false (Go zero value).
+// Import a partially-specified workflow (the workflow omits active, the
+// transition omits disabled and criterion); export must round-trip the
+// workflow with the transition name intact. The transition sends manual, as
+// the dictionary's does: manual is required and has no default.
 func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -105,17 +105,13 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err := d.CreateModelFromSample("wf2", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// Import a workflow that omits "manual" on the transition.
-	// dictionary uses "automated" field; cyoda-go uses "manual" (inverted) —
-	// different_naming_same_level. Omitting both → manual defaults to false
-	// (i.e., automated=true in dictionary terms).
 	body := `{
 		"workflows": [{
 			"name": "defaults",
 			"version": "1.1",
 			"initialState": "s1",
 			"states": {
-				"s1": {"transitions": [{"name": "MOVE", "next": "s2"}]},
+				"s1": {"transitions": [{"name": "MOVE", "next": "s2", "manual": true}]},
 				"s2": {"transitions": []}
 			}
 		}]

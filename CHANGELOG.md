@@ -1014,6 +1014,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and every other value ran as `externalized`. An export now always carries
   `externalized`. See `docs/workflow-schema-versioning.md`.
 
+- **Workflow import refuses a transition that omits `manual` or sends it as
+  `null` (`400 VALIDATION_FAILED`).** The OpenAPI document always listed
+  `manual` as required, but import read the omission as `false` and stored an
+  automatic transition. `manual` has no default: send `"manual": false` where
+  the omission meant an automatic transition. See
+  `docs/workflow-schema-versioning.md`.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server

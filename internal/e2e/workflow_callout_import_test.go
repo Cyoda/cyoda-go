@@ -44,7 +44,7 @@ func calloutWorkflow(name, criterion, schedule, processorConfig string) string {
 	if schedule == "" {
 		members = append(members, `"manual": true`)
 	} else {
-		members = append(members, `"schedule": `+schedule)
+		members = append(members, `"manual": false`, `"schedule": `+schedule)
 	}
 	if criterion != "" {
 		members = append(members, `"criterion": `+criterion)

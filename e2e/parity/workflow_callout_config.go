@@ -27,7 +27,7 @@ func calloutConfigWorkflow(wfName, criterion, processorConfig, schedule string) 
 	}
 	transitions := "{" + manual + "}"
 	if schedule != "" {
-		transitions += fmt.Sprintf(`, {"name": "later", "next": "DONE", "schedule": %s}`, schedule)
+		transitions += fmt.Sprintf(`, {"name": "later", "next": "DONE", "manual": false, "schedule": %s}`, schedule)
 	}
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",

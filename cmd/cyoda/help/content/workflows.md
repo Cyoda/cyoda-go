@@ -137,7 +137,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 - `name` — string — transition name; used by the client in `PUT /entity/{format}/{entityId}/{name}` and in engine cascade
 - `next` — string — target state; must exist in `states`
-- `manual` — boolean — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade
+- `manual` — boolean, required — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque

@@ -98,12 +98,14 @@ type importRequest struct {
 }
 
 // presenceProbe records which fields the request body actually sent, where
-// the strict decode into SPI types cannot tell. The SPI decodes
+// the strict decode into SPI types cannot tell. The SPI decodes manual and
 // attachEntity into plain bool fields and schedule.delayMs into a plain
 // int64, so "omitted" and "explicit zero value" collapse to the same Go
 // value. The probe is a second, non-strict decode of the same request body
 // that declares only the field paths needed to recover the distinction;
-// every other field is ignored. It serves two rules:
+// every other field is ignored. It serves three rules:
+//   - a transition's manual is required and is never null — see
+//     checkManualSent;
 //   - an omitted attachEntity defaults to true (the OpenAPI DTOs document
 //     "Defaults to true"), for schedule.function.attachEntity and each
 //     processors[].config.attachEntity — see applyAttachEntityDefaults;
@@ -114,7 +116,10 @@ type presenceProbe struct {
 		Name   string `json:"name"`
 		States map[string]struct {
 			Transitions []struct {
-				Name     string `json:"name"`
+				Name string `json:"name"`
+				// Manual is raw for the reason DelayMs is: an explicit null
+				// was sent, but it is not a boolean.
+				Manual   json.RawMessage `json:"manual"`
 				Schedule *struct {
 					// DelayMs is raw so that an explicit JSON null counts
 					// as sent: encoding/json hands null to a RawMessage
@@ -132,6 +137,27 @@ type presenceProbe struct {
 			} `json:"transitions"`
 		} `json:"states"`
 	} `json:"workflows"`
+}
+
+// checkManualSent refuses a transition that omits manual or sends it as
+// null. api/openapi.yaml's TransitionDefinitionDto requires manual and types
+// it boolean, with no default: the author states whether a transition is
+// automatic. The strict decode reads an omitted or null manual as false,
+// which would make the transition automatic; this check reads the raw
+// request instead.
+func checkManualSent(probe presenceProbe) error {
+	for _, wf := range probe.Workflows {
+		for stateName, state := range wf.States {
+			for _, tr := range state.Transitions {
+				if tr.Manual == nil || string(tr.Manual) == "null" {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: manual is required (true or false)",
+						wf.Name, stateName, tr.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // checkDelayBesideFunction refuses a schedule that sends delayMs in any
@@ -389,8 +415,12 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	applyProcessorTypeDefault(incoming)
-	// The structural validator above sees delayMs only as the SPI's int64;
-	// the raw request says whether it was sent at all beside a function.
+	// The structural validator above sees manual only as the SPI's bool and
+	// delayMs only as its int64; the raw request says whether each was sent.
+	if err := checkManualSent(probe); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
 	if err := checkDelayBesideFunction(probe); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
