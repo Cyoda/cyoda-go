@@ -12494,11 +12494,14 @@ components:
     ScheduleFunctionInvalidResult:
       description: >-
         Internal Server Error — generic message with a `ticket` for
-        correlation. A Function that computes the schedule of a scheduled
-        transition returned a result that is not a usable Schedule
-        (SCHEDULE_FUNCTION_INVALID_RESULT): the write is rolled back, unless
-        an earlier COMMIT_BEFORE_DISPATCH processor of the same request had
-        already committed. Not retryable until the Function is corrected.
+        correlation; the underlying error is logged server-side at ERROR
+        level under the same ticket. The error code is SERVER_ERROR for an
+        unexpected server error, or SCHEDULE_FUNCTION_INVALID_RESULT when a
+        Function that computes the schedule of a scheduled transition
+        returned a result that is not a usable Schedule; the write is then
+        rolled back, unless an earlier COMMIT_BEFORE_DISPATCH processor of the
+        same request had already committed, and it is not retryable until the
+        Function is corrected.
       content:
         application/problem+json:
           schema:

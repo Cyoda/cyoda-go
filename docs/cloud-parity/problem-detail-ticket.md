@@ -20,7 +20,7 @@ The cause never reaches the client.
 
 cyoda-go: the field is `ProblemDetail.Ticket` (`json:"ticket,omitempty"`) at
 `internal/common/errors.go:303`, set for an internal and a fatal error at
-`internal/common/errors.go:396` and `:414`. A recovered panic pins the id it
+`internal/common/errors.go:398` and `:418`. A recovered panic pins the id it
 logged (`internal/api/middleware/recovery.go:62`).
 
 ## Cloud today

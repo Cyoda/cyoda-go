@@ -134,7 +134,7 @@ func (hh *holdHarness) hold(t *testing.T) func() {
 // TestE2E_SaturatedPool_HTTPReturns503 is the HTTP half: every entity write door,
 // each of which opens a transaction, fails fast with a retryable 503
 // STORAGE_UNAVAILABLE instead of queueing behind the pool — the create (into the
-// gated model), the collection create, the three updates and the patch (against
+// gated model), the collection create, the two updates and the patch (against
 // an ungated model seeded before the pool was saturated). The read of one entity
 // is not here: a statement outside a transaction takes a connection straight
 // from the pool with no acquire deadline, by design, so on a saturated pool it

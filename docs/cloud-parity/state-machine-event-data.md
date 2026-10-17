@@ -174,8 +174,9 @@ committed fails the operation, but its event is kept: cyoda-go writes it in a
 transaction of its own, under the cascade's transaction id and the request's
 principal. When the boundary itself fails, the event is rolled back with the
 transaction the boundary did not commit; when the boundary's commit was
-interrupted and its outcome is in doubt, the event is not kept. Cloud has no `COMMIT_BEFORE_DISPATCH`
-execution mode (`commit-in-joined-transaction.md`), so no Cloud change follows
+interrupted and its outcome is in doubt, the event is not kept. Cloud has no
+`COMMIT_BEFORE_DISPATCH` execution mode (`commit-in-joined-transaction.md`), so
+no Cloud change follows
 from this rule today; a Cloud that adopts the mode records such a failure the
 same way.
 

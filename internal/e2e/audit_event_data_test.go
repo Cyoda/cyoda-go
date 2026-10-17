@@ -320,9 +320,11 @@ func TestAudit_ProcessorRecord_CommitBeforeDispatchFailure(t *testing.T) {
 			if results[0]["transactionId"] != paused[0]["transactionId"] {
 				t.Errorf("record transactionId = %v, want the cascade's %v", results[0]["transactionId"], paused[0]["transactionId"])
 			}
-			if pt, rt := smEventTime(t, paused[0]), smEventTime(t, results[0]); rt.Before(pt) {
-				t.Errorf("record at %s precedes the pause at %s", rt, pt)
-			}
+			// The two timestamps are not ordered here: on PostgreSQL the pause
+			// carries TX_pre's commit instant, while the record, labelled with
+			// the cascade's transaction id but written in a transaction of its
+			// own, keeps the engine's clock (plugins/postgres/transaction_manager.go,
+			// the audit-event stamp), so their order depends on the two clocks.
 		})
 	}
 }

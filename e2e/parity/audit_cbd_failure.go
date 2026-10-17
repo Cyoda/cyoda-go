@@ -87,9 +87,11 @@ func RunAuditCBDFailedProcessorRecorded(t *testing.T, fixture BackendFixture) {
 			if results[0].txID != paused[0].txID {
 				t.Errorf("record transactionId = %q; want the cascade's %q", results[0].txID, paused[0].txID)
 			}
-			if results[0].at < paused[0].at {
-				t.Errorf("record at %d µs precedes the pause at %d µs", results[0].at, paused[0].at)
-			}
+			// The two timestamps are not ordered here: on PostgreSQL the pause
+			// carries TX_pre's commit instant, while the record, labelled with
+			// the cascade's transaction id but written in a transaction of its
+			// own, keeps the engine's clock (plugins/postgres/transaction_manager.go,
+			// the audit-event stamp), so their order depends on the two clocks.
 		})
 	}
 }

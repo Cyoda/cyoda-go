@@ -23,7 +23,7 @@ func (p *plugin) ConfigVars() []spi.ConfigVar {
 		{Name: "CYODA_POSTGRES_AUTO_MIGRATE", Description: "Run embedded SQL migrations on startup", Default: "true"},
 		{Name: "CYODA_POSTGRES_STATEMENT_TIMEOUT", Description: "Maximum run time for a single SQL statement; 0 disables", Default: "5m"},
 		{Name: "CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT", Description: "Maximum time a connection may sit idle inside an open transaction; 0 disables", Default: "5m"},
-		{Name: "CYODA_POSTGRES_ACQUIRE_TIMEOUT", Description: "Maximum wait for a free pooled connection before failing with 503; 0 disables", Default: "10s"},
+		{Name: "CYODA_POSTGRES_ACQUIRE_TIMEOUT", Description: "Maximum wait for a free pooled connection before failing with 503, for an operation that opens a transaction or needs a second connection inside one; a statement outside a transaction waits instead; 0 disables", Default: "10s"},
 		{Name: "CYODA_POSTGRES_MIGRATE_LOCK_TIMEOUT", Description: "Maximum lock wait during schema migration; 0 disables", Default: "5m"},
 		{Name: "CYODA_POSTGRES_SEARCH_STATEMENT_TIMEOUT", Description: "Statement ceiling for async search scans; 0 disables", Default: "30m"},
 		{Name: "CYODA_POSTGRES_SCHEDULER_CONNS", Description: "Connections in the scheduler's own pool (claims, run bookkeeping, async-search heartbeats); at least 2. The scheduler heartbeat has one more of its own", Default: "10"},
