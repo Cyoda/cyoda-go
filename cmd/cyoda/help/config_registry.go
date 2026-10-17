@@ -37,7 +37,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_HTTP_WRITE_TIMEOUT", Topic: "server", Type: "duration", Default: "0s", Description: "Time from the end of the request headers to the end of the response. Limits handler execution, so it ships disabled; set only if you want the server to cut off long-running requests."},
 	{Name: "CYODA_HTTP_IDLE_TIMEOUT", Topic: "server", Type: "duration", Default: "2m", Description: "How long an idle keep-alive connection is held open between requests. 0 falls back to CYODA_HTTP_READ_TIMEOUT."},
 	{Name: "CYODA_CONTEXT_PATH", Topic: "server", Type: "string", Default: "/api", Description: "URL prefix for all routes."},
-	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for 5xx) or verbose (internal detail included; development only)."},
+	{Name: "CYODA_ERROR_RESPONSE_MODE", Topic: "server", Type: "string", Default: "sanitized", Description: "Error detail level: sanitized (generic message + ticket UUID for an unexpected server error) or verbose (internal detail included; development only)."},
 	{Name: "CYODA_LOG_LEVEL", Topic: "server", Type: "string", Default: "info", Description: "Log level: debug|info|warn|error."},
 	{Name: "CYODA_SUPPRESS_BANNER", Topic: "server", Type: "bool", Default: "false", Description: "Silence startup and mock-auth banners (CI/tests only)."},
 	{Name: "CYODA_STARTUP_TIMEOUT", Topic: "server", Type: "duration", Default: "30s", Description: "Deadline for plugin init, TM init, and (cluster mode) the gossip seed-join retry loop."},

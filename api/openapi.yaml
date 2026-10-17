@@ -9068,9 +9068,10 @@ components:
           type: string
           format: uuid
           description: |
-            Correlation id of a 5xx. The server logged the underlying error
-            under the same id, so quoting it lets an operator find that log
-            line. Absent on a 4xx.
+            Correlation id of an unexpected server error (500). The server
+            logged the failure under the same id, so quoting it lets an
+            operator find that log line. Absent on every other response, the
+            503s included.
           example: 5b0f1c3e-6a54-4f0e-9c6e-2f3d8a1b7c90
         properties:
           type: object

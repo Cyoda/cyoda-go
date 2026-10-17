@@ -1330,9 +1330,10 @@ type ProblemDetail struct {
 	// Status The HTTP status code
 	Status *int32 `json:"status,omitempty"`
 
-	// Ticket Correlation id of a 5xx. The server logged the underlying error
-	// under the same id, so quoting it lets an operator find that log
-	// line. Absent on a 4xx.
+	// Ticket Correlation id of an unexpected server error (500). The server
+	// logged the failure under the same id, so quoting it lets an
+	// operator find that log line. Absent on every other response, the
+	// 503s included.
 	Ticket *openapi_types.UUID `json:"ticket,omitempty"`
 
 	// Title A short, human-readable summary of the problem type

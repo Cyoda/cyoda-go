@@ -384,9 +384,11 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 			break
 		}
 		ticket := appErr.ticketOr()
-		// SECURITY NOTE: appErr.Detail may contain secrets (connection strings,
-		// credentials) once real persistence is added. Review before deploying
-		// with external datastores.
+		// Detail may hold infrastructure detail (a storage error's connection
+		// detail such as host, user and database; the driver redacts the
+		// password). It goes to the log only, and to the response only in the
+		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
+		// only; see `cyoda help config`).
 		slog.Error("internal error",
 			"ticket", ticket,
 			"message", appErr.Message,
@@ -402,9 +404,11 @@ func WriteError(w http.ResponseWriter, r *http.Request, appErr *AppError) {
 
 	case LevelFatal:
 		ticket := appErr.ticketOr()
-		// SECURITY NOTE: appErr.Detail may contain secrets (connection strings,
-		// credentials) once real persistence is added. Review before deploying
-		// with external datastores.
+		// Detail may hold infrastructure detail (a storage error's connection
+		// detail such as host, user and database; the driver redacts the
+		// password). It goes to the log only, and to the response only in the
+		// verbose error-response mode (CYODA_ERROR_RESPONSE_MODE, development
+		// only; see `cyoda help config`).
 		slog.Error("FATAL error",
 			"ticket", ticket,
 			"message", appErr.Message,
