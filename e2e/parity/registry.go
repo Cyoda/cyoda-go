@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 248 scenarios in this package: the entries of its literal
+// allTests holds 249 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -385,6 +385,9 @@ var allTests = []NamedTest{
 	// A compute member's reason holding U+0000 makes its answer unreadable: the
 	// create fails with 400 and commits nothing, on every backend.
 	{"AuditNULAnswerRefused", RunAuditNULAnswerRefused},
+	// A transition name holding U+0000 is refused with 400 before the run
+	// records anything, and the entity is unchanged, on every backend.
+	{"TransitionNameNULRefused", RunTransitionNameNULRefused},
 
 	// Follow-on-action attribution — the {attributed principal, executor} pair
 	// recorded on change history must be IDENTICAL on every backend. Guards the
