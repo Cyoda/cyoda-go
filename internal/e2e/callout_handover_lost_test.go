@@ -479,6 +479,11 @@ func TestCalloutHandOver_AnswerLost_NotRepeatSafe(t *testing.T) {
 					if n := h.countEntities(t, model); n != committed {
 						t.Errorf("%d entities after a failed SYNC write; want %d", n, committed)
 					}
+					if entityID != "" {
+						if st, code := h.GetEntityState(t, entityID); code != http.StatusOK || st != "NONE" {
+							t.Errorf("entity state = %q (http %d) after the failed transition; want its initial state NONE", st, code)
+						}
+					}
 					assertNoPeerFaults(t, peerA, peerB)
 				})
 			}

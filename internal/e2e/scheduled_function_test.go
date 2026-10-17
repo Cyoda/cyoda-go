@@ -569,6 +569,10 @@ func TestScheduledFunction_MalformedResult_Returns500(t *testing.T) {
 			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id, "application/merge-patch+json", "*", `{"amount":101}`)
 			return resp.StatusCode, h.readBody(t, resp)
 		}},
+		{"patch-transition", true, func(t *testing.T, _, id string) (int, string) {
+			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id+"/touch", "application/merge-patch+json", "*", `{"amount":102}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
 		{"update-collection", true, func(t *testing.T, _, id string) (int, string) {
 			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON", collectionUpdateItems(id, "touch", payload))
 		}},

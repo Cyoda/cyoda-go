@@ -211,7 +211,8 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 		{Status: 500, Code: "SCHEDULE_FUNCTION_INVALID_RESULT"}, // TestScheduledFunction_MalformedResult_Returns500/patch
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},                 // TestE2E_EntityPatch_MergeAndPreconditions: an unknown entity id
 	},
-	// GET /scheduled-tasks. 401 and 500 are cross-cutting (below).
+	// GET /scheduled-tasks. 401 and 500 are cross-cutting
+	// (universalCrossCuttingCodes in internal/e2e/zzz_errorcode_matrix_test.go).
 	"listScheduledTasks": {
 		{Status: 400, Code: "BAD_REQUEST"},         // TestScheduledTasks_InvalidParameters_400
 		{Status: 503, Code: "STORAGE_UNAVAILABLE"}, // TestScheduledTasks_TornConnection_503

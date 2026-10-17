@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -154,11 +155,14 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 	victim := h.seedVictim(t, "cbb-waiters-victim-"+sfx)
 	unlock := holdRowLock(t, victim)
 	defer unlock()
+	released := make(chan struct{}) // the row lock is gone
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(released) }) }
+	defer release() // a failed assertion must not strand the processor goroutine; the unlock above runs right after
 
 	holding := make(chan struct{}) // the processor started the callback that will be stuck
 	proceed := make(chan struct{}) // the stuck callback is inside PostgreSQL
 	refusedCh := make(chan callbackResult, 1)
-	released := make(chan struct{}) // the row lock is gone
 	outcome := make(chan queueOutcome, 1)
 	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
 		var out queueOutcome
@@ -224,7 +228,7 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 		t.Fatal("timeout: no callback was refused for capacity")
 	}
 	unlock()
-	close(released)
+	release()
 
 	var out queueOutcome
 	select {
