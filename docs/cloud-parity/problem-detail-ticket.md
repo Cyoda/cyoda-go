@@ -3,6 +3,8 @@
 cyoda-go is the authoritative implementation. This file is the contract Cyoda
 Cloud follows.
 
+CaaS ticket: [CP-3989](https://cyoda1.atlassian.net/browse/CP-3989) (item 12)
+
 ## Behaviour
 
 The problem document (`application/problem+json`) of an unexpected server

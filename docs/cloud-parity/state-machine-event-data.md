@@ -5,7 +5,7 @@ states what cyoda-go sends in a state-machine audit event, the one form every
 polymorphic type of the spec has, how the contract grows, and what Cloud
 changes to match.
 
-CaaS ticket: (filed after the PR opens)
+CaaS ticket: [CP-3989](https://cyoda1.atlassian.net/browse/CP-3989)
 
 Cloud references are paths in the Cloud repository (`cyoda`); a bare
 `openapi-*.yml` is under `client/src/main/resources/api/`. The state-machine
