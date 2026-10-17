@@ -1011,6 +1011,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **`ProblemDetail` declares `ticket`.** Every 5xx problem document already carried
+  it (a UUID, also written to the server log with the underlying error); the
+  schema now types it for generated clients. A 4xx carries none.
+
 - **`GET /entity/consistency-time` and gRPC `EntityConsistencyTimeGetRequest`
   return a fresh consistency time** for the caller's tenant, as
   `{"consistencyTime": "…"}`: RFC 3339 at the store's full precision, never

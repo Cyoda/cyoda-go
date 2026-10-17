@@ -2644,11 +2644,11 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -3546,8 +3546,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before commit; nothing committed.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before commit; nothing committed.
           content:
             application/problem+json:
               schema:
@@ -4108,8 +4108,8 @@ paths:
                       errorCode: BAD_REQUEST
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the message save began; nothing committed.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the message save began; nothing committed.
           content:
             application/problem+json:
               schema:
@@ -9064,6 +9064,14 @@ components:
           type: string
           format: uri
           description: A URI reference that identifies the specific occurrence of the problem
+        ticket:
+          type: string
+          format: uuid
+          description: |
+            Correlation id of a 5xx. The server logged the underlying error
+            under the same id, so quoting it lets an operator find that log
+            line. Absent on a 4xx.
+          example: 5b0f1c3e-6a54-4f0e-9c6e-2f3d8a1b7c90
         properties:
           type: object
           additionalProperties: true
