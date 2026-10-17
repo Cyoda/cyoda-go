@@ -403,6 +403,10 @@ func (e *Engine) manualTransition(ctx context.Context, entity *spi.Entity, trans
 	))
 	defer span.End()
 
+	if err := refuseNULCallerText(transitionName, ifMatch); err != nil {
+		return nil, err
+	}
+
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit store: %w", err)
@@ -489,6 +493,10 @@ func (e *Engine) loopback(ctx context.Context, entity *spi.Entity, ifMatch IfMat
 		observability.AttrEntityState.String(entity.Meta.State),
 	))
 	defer span.End()
+
+	if err := refuseNULCallerText("", ifMatch); err != nil {
+		return nil, err
+	}
 
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
@@ -1093,15 +1101,6 @@ func (e *Engine) recordEvent(auditStore spi.StateMachineAuditStore, ctx context.
 	// chain. The guard is here, and not at the error paths that record, so that
 	// no further site can appear later.
 	if fence.Check(ctx) != nil {
-		return false
-	}
-	// An event holding U+0000 is written on no backend: PostgreSQL refuses it
-	// in jsonb and the refused INSERT aborts the request's transaction, while
-	// memory and SQLite would store it. Refused here, logged without the text,
-	// and the operation goes on as it does when a Record fails.
-	if holdsNUL(state, details, data) {
-		slog.Warn("state-machine audit event not recorded: text holds U+0000",
-			"pkg", "workflow", "entityId", entityID, "eventType", eventType)
 		return false
 	}
 	event := spi.StateMachineEvent{

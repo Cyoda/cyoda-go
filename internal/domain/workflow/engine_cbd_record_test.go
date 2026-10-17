@@ -218,35 +218,6 @@ func TestCBDFailureBeforeCommit_NoRecord(t *testing.T) {
 	}
 }
 
-// An event holding U+0000 is recorded on no backend, durably or not, and the
-// transaction opened for it commits nothing.
-func TestCBDFailureAfterBoundary_RecordHoldingNUL_NotRecorded(t *testing.T) {
-	for _, startNewTx := range []bool{false, true} {
-		t.Run(fmt.Sprintf("startNewTxOnDispatch=%t", startNewTx), func(t *testing.T) {
-			h := cbdRecordHarness(t, "memory", startNewTx)
-			var commits []string
-			h.txMgr.commit = func(ctx context.Context, txID string) error {
-				commits = append(commits, txID)
-				return h.txMgr.TransactionManager.Commit(ctx, txID)
-			}
-			h.dispatchProcessor = func(context.Context, *spi.Entity, spi.ProcessorDefinition, string, string, string) (*spi.Entity, error) {
-				return nil, memberFailedWithText("card\x00declined")
-			}
-			entryTxID, entryCtx := h.begin(t)
-
-			if _, err := h.engine.Execute(entryCtx, h.entity, ""); err == nil {
-				t.Fatal("expected the processor's failure to fail the operation")
-			}
-			if got := eventsOfType(committedTrail(t, h), spi.SMEventStateProcessResult); len(got) != 0 {
-				t.Errorf("committed STATE_PROCESS_RESULT records = %+v, want none", got)
-			}
-			if len(commits) != 1 || commits[0] != entryTxID {
-				t.Errorf("commits = %v, want TX_pre's alone (%s)", commits, entryTxID)
-			}
-		})
-	}
-}
-
 // The joined-transaction refusal comes before the boundary: the record stays
 // in the joined transaction, for its owner to commit, and the refused chain
 // commits nothing of its own.

@@ -10,9 +10,8 @@ import (
 // TestWorkflowImport_UnstorableText_400: a workflow whose text holds U+0000 —
 // here a transition name — is refused at import with 400 BAD_REQUEST, as an
 // entity payload holding it is. The workflow's names reach the state-machine
-// audit trail, which records no event holding U+0000, so accepting such a
-// workflow would let every run of it commit without its WORKFLOW_FOUND,
-// TRANSITION_MAKE and PAUSE_FOR_PROCESSING records.
+// audit trail (WORKFLOW_FOUND, TRANSITION_MAKE, PAUSE_FOR_PROCESSING), which
+// cannot hold U+0000.
 func TestWorkflowImport_UnstorableText_400(t *testing.T) {
 	const model = "e2e-wf-import-unstorable"
 	wf := `{

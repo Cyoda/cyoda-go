@@ -399,8 +399,8 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 				return lostAnswer()
 			}
 			// A genuine peer refuses a reason holding U+0000 before it relays
-			// the answer (internal/grpc/dispatch.go): the audit trail records no
-			// event holding it.
+			// the answer (internal/grpc/dispatch.go): the audit trail cannot
+			// hold it.
 			if strings.ContainsRune(resp.Reason, 0) {
 				return lostAnswer()
 			}

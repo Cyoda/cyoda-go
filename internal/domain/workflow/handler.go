@@ -232,9 +232,9 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
 		return
 	}
-	// The workflow's names reach the state-machine audit trail, which records no
-	// event holding U+0000, and the stores cannot hold every such text either:
-	// refused here, as an entity payload is.
+	// The workflow's names reach the state-machine audit trail, which cannot
+	// hold U+0000 (PostgreSQL refuses it in jsonb), and the stores cannot hold
+	// every such text either: refused here, as an entity payload is.
 	if appErr := ingest.RejectUnstorable(data); appErr != nil {
 		common.WriteError(w, r, appErr)
 		return

@@ -52,15 +52,14 @@ member is told apart by a property inside the object.
 **Rule 3 — data states only what is true.** A field is present when the engine knows its value at the point the
 event is recorded, and absent otherwise. Nothing is filled with a placeholder.
 
-**Rule 4 — an audit event is written on every backend or on none.** The PostgreSQL audit row is a `jsonb`
-document written inside the request's transaction (`plugins/postgres/sm_audit_store.go:31-36`). PostgreSQL
-refuses U+0000 in `jsonb`, and the refused `INSERT` aborts the whole transaction; memory and SQLite store the same
-event. Recording is best effort by design — a failed record is logged and the operation goes on
-(`internal/domain/workflow/engine.go:1101-1115`) — so the engine refuses such an event itself, before any
-backend sees it (section 8.2). Member text never reaches the engine with U+0000 in it: the dispatch refuses an
-answer whose `reason` or `error` holds it as unreadable, because a criterion's reason is copied into later events
-of the run (FINISH's stop reason, the `functions` of TRANSITION_MAKE and WORKFLOW_FOUND), and one such text would
-otherwise remove the record of a state change. The engine's refusal covers a caller's text.
+**Rule 4 — no text an audit event carries holds U+0000.** The PostgreSQL audit row is a `jsonb` document
+written inside the request's transaction (`plugins/postgres/sm_audit_store.go:31-36`). PostgreSQL refuses U+0000
+in `jsonb`, and the refused `INSERT` aborts the whole transaction; memory and SQLite store the same event. So every
+text an event carries is refused where it enters, with nothing recorded (section 8.2): a compute answer at
+dispatch, a workflow at import, a collection-update body at its handler, and a caller's transition name or
+If-Match at the start of the run. A criterion's reason is copied into later events of the run (FINISH's stop
+reason, the `functions` of TRANSITION_MAKE and WORKFLOW_FOUND), so this is also what keeps a committed operation's
+trail complete.
 
 **Rule 5 — the client generator reads every shape.** The spec generates Kotlin (Cloud's settings) and Java that
 compile, and every sample (section 13.2) reads into the right class and writes back unchanged. What this
@@ -403,16 +402,19 @@ No test sets `defaultWorkflows` empty (the assignments at `arm_test.go:1079`, `:
   through `withAttempts`, which copies the struct (`internal/callout/coordinator.go:386-388`). So `MemberText`
   survives earlier `NoHandOff`/`NoAnswer` tries with no further change.
 
-### 8.2 The audit write (`internal/domain/workflow`)
+### 8.2 Where U+0000 is refused
 
-`Engine.recordEvent` refuses an event in which any string holds U+0000 — `State`, `Details`, and every key and
-string value in `Data` at any depth — before it calls `Record`. It logs the refusal at WARN with the entity id and
-event type, never the text, as it logs a failed `Record` today, and the operation goes on. So no backend writes
-the event, and PostgreSQL's transaction is not aborted. One helper does the walk.
+- A compute answer whose `reason` or `error` holds U+0000 is unreadable (`internal/grpc/dispatch.go`); the owner
+  does not believe a peer's relayed answer carrying one (`internal/cluster/dispatch/handover.go` `readAnswer`).
+- Workflow import and the collection update run `ingest.RejectUnstorable` on their raw bodies: `400 BAD_REQUEST`.
+- `refuseNULCallerText` (`internal/domain/workflow/caller_text.go`) refuses a transition name or an If-Match
+  value holding U+0000 at the start of `manualTransition` and `loopback`, before anything is recorded:
+  `400 BAD_REQUEST`, on every door, a joined write included.
 
-`scheduler.failWithAudit` (`internal/scheduler/service.go:925-946`) is not changed: its text is the task's
-transition and state names, from a workflow import, and fixed enum values. Workflow configuration is a reviewed
-change, not runtime input.
+The engine's audit write does not check the text again: no input reaches it with U+0000.
+
+`scheduler.failWithAudit` (`internal/scheduler/service.go:925-946`) records the task's transition and state names,
+from a workflow import, and fixed enum values.
 
 Invalid UTF-8 is not a divergence: JSON decoding and `json.Marshal` turn it into U+FFFD the same way on every
 backend. It is out of scope.
@@ -456,7 +458,7 @@ mean.
 
 | Status / gRPC envelope | Code | When |
 |---|---|---|
-| as today | as today | an event holding U+0000 (a caller's transition name or `ifMatch`) is not recorded, on every backend; the operation's outcome is the one it has without that event |
+| 400 | `BAD_REQUEST` | a transition name or an If-Match value holding U+0000, refused before the run records anything, on every door, a joined write included |
 | 400 | `WORKFLOW_FAILED`, not retryable | a compute member's answer whose `reason` or `error` holds U+0000: the answer is unreadable (Terminal, none of the member's text), wherever its failure fails the operation; a peer's relayed answer carrying such text is not believed |
 | 400 | `BAD_REQUEST` | a collection update whose body holds U+0000, an unpaired surrogate or invalid UTF-8 outside an item's payload (an `ifMatch`, a `transition`), refused whole before any item runs, since a failed item is isolated while its siblings commit |
 | 400 | `BAD_REQUEST` | a workflow import whose body holds U+0000, an unpaired surrogate or invalid UTF-8 (a workflow's names reach the audit trail), as for an entity payload |
@@ -507,8 +509,8 @@ view of section 13.1. The scenarios below also assert values.
 | An automated transition behind a criterion whose member reason holds U+0000: the create fails with 400 `WORKFLOW_FAILED`, not retryable, and commits nothing, on memory, SQLite and PostgreSQL | | ✓ | | ✓ | | | |
 | The same through a hand-over (the peer refuses the answer) | | | | | ✓ | | |
 | A peer's relayed answer whose reason or failure text holds U+0000 is not believed | ✓ | | | | | | |
-| The engine's own refusal: an event holding U+0000 is not recorded and the operation goes on (in-process dispatch) | | ✓ | | | | | |
-| The walk: U+0000 in `State`, `Details`, a nested key, a nested value → refused; none → recorded | ✓ | | | | | | |
+| A transition name or If-Match holding U+0000 → 400 `BAD_REQUEST`, no event recorded (manual transition, If-Match on a transition and on a loopback) | ✓ | ✓ | | | | | |
+| A collection update or workflow import whose body holds U+0000 → 400 `BAD_REQUEST`, nothing committed | | ✓ | | | | | |
 | `…/finished` returns FINISH with typed data | | ✓ | | ✓ | | | |
 
 Failure-path events (CANCEL, TRANSITION_NOT_FOUND, a failed SYNC processor) roll back with the request on the
@@ -549,8 +551,8 @@ prefix, component CaaS). Cloud must:
   `QueryCondition` there), as they do elsewhere. cyoda-go's scalar values are untyped schemas with constraints
   where Cloud writes `type: any` (section 3.4). The ticket says that cyoda-go's CI now generates Cloud's
   `kotlin-spring` classes from cyoda-go's spec (section 13.2);
-- Rule 4: an audit event holding U+0000 is written on no backend (check what Cloud's store does with such text
-  before filing).
+- Rule 4: text holding U+0000 is refused where it enters, so no audit event holds it (check what Cloud's store
+  does with such text before filing).
 
 Updated parity docs: `criterion-stoppage-reason.md` (`data` now typed), `entity-if-match.md:27`
 (`transitionName` → `transition`, absent on loopback), `scheduled-transitions.md` (FIRE and EXPIRE data),
@@ -567,12 +569,12 @@ of `QueryConditionDto`), `openapi-conformance.md` (Rules 1, 5 and 6, and the cli
 - The doc comment at the top of `internal/domain/workflow/transition_aborted.go` (the data example).
 - `docs/cloud-parity/callout-failover.md`: `failReason` is the member's own text only; a hand-over with no member
   text gives the same client text as a local try.
-- `cmd/cyoda/help/content/audit.md`: an event holding U+0000 is not recorded.
+- `cmd/cyoda/help/content/audit.md`: text holding U+0000 is refused where it enters.
 - `CHANGELOG.md` `### Breaking`:
   - `data` is always typed and never null, with `eventType` inside; the new data fields;
   - TRANSITION_ABORTED `transitionName` → `transition`; the STATE_PROCESS_RESULT fields; one record per failed
     processor;
-  - an event holding U+0000 is not recorded on any backend;
+  - text holding U+0000 is refused where it enters, so no audit event holds it;
   - every polymorphic type is a base with a mapping: `AbstractConditionDto` and `CriterionGroupConditionDto` are
     removed, and every condition is a `QueryConditionDto`;
   - the scalar-value and polymorphic-body schemas of section 3.4; the named enums;

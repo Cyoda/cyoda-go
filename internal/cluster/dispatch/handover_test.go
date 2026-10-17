@@ -818,7 +818,7 @@ func TestToCallout_FunctionConditionFromAGroup(t *testing.T) {
 // A genuine peer refuses a member answer whose reason or failure text holds
 // U+0000 before it relays anything (internal/grpc/dispatch.go), so such a text
 // on the wire is not a peer's honest answer and is not believed: the owner
-// would otherwise put it into the audit trail, which records no event holding
+// would otherwise put it into the audit trail, which cannot hold
 // U+0000.
 func TestReadAnswer_MemberTextHoldingNULIsNotBelieved(t *testing.T) {
 	no := false

@@ -951,37 +951,26 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   client `processor returned failure` whichever node the member is connected
   to.
 
-- **An audit event the workflow engine records is not recorded, on any
-  backend, when its text holds U+0000.** A caller's transition name that holds
-  U+0000 used to abort the request's transaction on PostgreSQL, which refuses
-  U+0000 in `jsonb`, while memory and SQLite stored the event and the operation
-  succeeded. The engine now refuses the event before any backend sees it, logs
-  it at WARN without the text, and the operation has the outcome it has without
-  that event.
+- **Text holding U+0000 never reaches a state-machine audit event.**
+  PostgreSQL refuses U+0000 in `jsonb`, so such an event used to abort the
+  operation there, while memory and SQLite stored it. Every text an event
+  carries is now refused where it enters, with nothing recorded:
+  - a compute member's answer whose reason or failure text holds it is
+    unreadable (`400 WORKFLOW_FAILED`, not retryable, where its failure fails
+    the operation), on a local try and through a hand-over;
+  - a workflow import whose body holds text no backend can store (U+0000, an
+    unpaired surrogate, invalid UTF-8) is refused with `400 BAD_REQUEST`, as an
+    entity payload is, and so is a collection update whose body holds such text
+    outside an item's payload (an `ifMatch`, a `transition`), before any item
+    runs;
+  - a transition name or an If-Match value holding U+0000 is refused with `400
+    BAD_REQUEST` before the run records anything, on every door, a joined
+    write included.
 
-- **A collection update refuses text no backend can store outside an item's
-  payload.** An `ifMatch` or `transition` holding U+0000 used to reach the
-  item's audit event, which was then not recorded, while the failed item was
-  isolated and its siblings committed. The whole body is now refused with `400
-  BAD_REQUEST` before any item runs, as an item's payload holding it is.
-
-- **Workflow import refuses text no backend can store.** A body holding
-  U+0000, an unpaired surrogate or invalid UTF-8 is refused with `400
-  BAD_REQUEST`, as an entity payload is. Such a workflow used to import; its
-  names reach the state-machine audit trail, which records no event holding
-  U+0000, so every run of it committed without its WORKFLOW_FOUND,
-  TRANSITION_MAKE and PAUSE_FOR_PROCESSING records.
-
-- **A compute member's answer whose reason or failure text holds U+0000 is
-  unreadable.** The callout fails as any unreadable answer does (`400
-  WORKFLOW_FAILED`, not retryable, where its failure fails the operation), on
-  every backend; before, PostgreSQL failed the operation and memory and SQLite
-  committed it. A criterion's reason is copied into later audit events (FINISH's
-  stop reason, TRANSITION_MAKE's functions), so accepting such a text would
-  let one member answer take the record of a state change out of the audit
-  trail. The scheduler's
-  `SCHEDULED_TRANSITION_FAIL` record is not checked: it carries only the
-  task's transition and state names, from a workflow import, and fixed values.
+  A criterion's reason is copied into later events (FINISH's stop reason,
+  TRANSITION_MAKE's functions) and a workflow's names into most events, so each
+  of these used to let one text take the record of a state change out of the
+  trail.
 
 - **Every polymorphic type in the OpenAPI document is a base with a
   discriminator mapping, and every condition is a `QueryConditionDto`.**

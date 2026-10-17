@@ -216,38 +216,39 @@ cyoda-go records `STATE_MACHINE_FINISH` only for a run that succeeded, so
 with the whole audit event, a `StateMachineAuditEventDto` whose `data` is a
 `StateMachineFinishedDto` — not the `data` alone.
 
-## 8. An event holding U+0000 is recorded on no backend
+## 8. Text holding U+0000 never reaches an event
 
-An event in which any string holds U+0000 — the outer `state`, `details`, or
-any key or string value in `data` at any depth — is not recorded, on every
-backend. The engine logs the refusal at WARN with the entity id and event type,
-never the text, and the operation goes on with the outcome it has without that
-event. Such text can reach an event from a caller (a transition name, an
-`ifMatch` value). It cannot reach one from a compute member: an answer whose
-`reason` or `error` holds U+0000 is refused as unreadable, and the callout
-fails as any unreadable answer does (`400 WORKFLOW_FAILED`, not retryable,
-where its failure fails the operation; `internal/grpc/dispatch.go`,
-`internal/cluster/dispatch/handover.go` `readAnswer`). A criterion's reason is
-copied into later events of the run (FINISH's
-`stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE and
-WORKFLOW_FOUND), so one member text holding U+0000 would otherwise remove those
-events too, and with them the record of a state change. Nor can it reach one
-from a workflow: import refuses a body holding U+0000 with `400 BAD_REQUEST`
-(`internal/domain/workflow/handler.go`), as an entity payload is refused, since
-a workflow's names reach WORKFLOW_FOUND, TRANSITION_MAKE and
-PAUSE_FOR_PROCESSING. A collection update's body holding U+0000 outside an
-item's payload (an `ifMatch`, a `transition`) is refused whole with `400
-BAD_REQUEST` (`internal/domain/entity/handler.go`), since a failed item is
-isolated while its siblings commit; elsewhere a caller's text holding U+0000
-reaches only the events of an operation that fails and rolls back.
+No text an event carries holds U+0000: each is refused where it enters, and
+nothing is recorded.
+
+- A compute member's answer whose `reason` or `error` holds U+0000 is
+  unreadable: the callout fails as any unreadable answer does (`400
+  WORKFLOW_FAILED`, not retryable, where its failure fails the operation), on a
+  local try (`internal/grpc/dispatch.go`) and when a peer's answer is relayed
+  (`internal/cluster/dispatch/handover.go` `readAnswer`).
+- A workflow import whose body holds text no storage backend can keep (U+0000,
+  an unpaired surrogate, invalid UTF-8) is refused with `400 BAD_REQUEST`
+  (`internal/domain/workflow/handler.go`), as an entity payload is, and so is
+  a collection update whose body holds such text outside an item's payload (an
+  `ifMatch`, a `transition`), before any item runs
+  (`internal/domain/entity/handler.go`).
+- A transition name or an If-Match value holding U+0000 is refused with `400
+  BAD_REQUEST` before the run records anything
+  (`internal/domain/workflow/caller_text.go`), on every door, a joined write
+  included.
+
+The other texts an event carries come from the server itself (state names from
+an imported workflow, ids it issues, fixed reasons) or are checked where they
+enter (user ids).
 
 The reason: cyoda-go's PostgreSQL audit row is a `jsonb` document written in
 the request's transaction. PostgreSQL refuses U+0000 in `jsonb`, and the
 refused `INSERT` aborts the whole transaction; memory and SQLite would store
-the event. Recording is best effort by design: a failed record is logged and
-the operation goes on. On PostgreSQL it cannot go on, because the transaction
-is already aborted. So the engine refuses the event before any backend sees
-it, and every backend gives the same result.
+the event. Refusing the text where it enters gives every backend the same
+result, and keeps a committed operation's trail complete: a criterion's reason
+is copied into later events of the run (FINISH's
+`stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE and
+WORKFLOW_FOUND), and a workflow's names into most events.
 
 What Cloud does today: Cloud records such an event, and the request succeeds.
 The state-machine store is the Cassandra table `STATE_MACHINE_EVENTS`; each
@@ -348,13 +349,12 @@ scheduled one
    (`backend/src/main/kotlin/net/cyoda/saas/controller/EntityAuditController.kt:49-56`;
    `backend/src/main/kotlin/net/cyoda/saas/audit/EntityAuditInteractor.kt:62-86`;
    `openapi-audit.yml:376`).
-10. **U+0000 (section 8).** Refuse an event in which any string holds U+0000,
-    as cyoda-go does: record nothing for it, log without the text, and do not
-    fail the operation. Cloud records such an event today. And refuse a compute
-    member's answer whose `reason` or `error` holds U+0000 as unreadable, as
-    any unreadable answer (`400 WORKFLOW_FAILED`, not retryable, where its
-    failure fails the operation), and refuse a workflow import whose body
-    holds U+0000 with `400 BAD_REQUEST`.
+10. **U+0000 (section 8).** Refuse text holding U+0000 where it enters, as
+    cyoda-go does: a compute answer whose `reason` or `error` holds it is
+    unreadable (`400 WORKFLOW_FAILED`, not retryable, where its failure fails
+    the operation); a workflow import or a collection-update body holding it,
+    and a transition name or If-Match value holding it, are `400
+    BAD_REQUEST`, with nothing recorded. Cloud records such an event today.
 11. **Processor `type` (section 9).** Store an omitted or empty `type` as
     `externalized` and export it as `externalized`; refuse any other value at
     import with `400 VALIDATION_FAILED`, `scheduled` included. A scheduled

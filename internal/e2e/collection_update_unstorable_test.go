@@ -11,9 +11,7 @@ import (
 // text no backend can store outside an item's payload — in an item's `ifMatch`
 // or `transition` — is refused with 400 BAD_REQUEST before any item runs, as a
 // workflow import or an entity payload holding it is. Those fields reach the
-// item's audit events, which record no event holding U+0000, and a failed item
-// is isolated while its siblings commit, so accepting such a body would commit
-// the batch without the failed item's record.
+// item's audit events, and the audit trail cannot hold U+0000.
 func TestUpdateCollection_UnstorableText_400(t *testing.T) {
 	for name, item := range map[string]func(id string) string{
 		"ifMatch holding U+0000": func(id string) string {
