@@ -960,8 +960,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   that event.
 
 - **A compute member's answer whose reason or failure text holds U+0000 is
-  unreadable.** The operation fails with `400 WORKFLOW_FAILED`, not retryable,
-  on every backend; before, PostgreSQL failed it and memory and SQLite
+  unreadable.** The callout fails as any unreadable answer does (`400
+  WORKFLOW_FAILED`, not retryable, where its failure fails the operation), on
+  every backend; before, PostgreSQL failed the operation and memory and SQLite
   committed it. A criterion's reason is copied into later audit events (FINISH's
   stop reason, TRANSITION_MAKE's functions), so accepting such a text would
   let one member answer take the record of a state change out of the audit

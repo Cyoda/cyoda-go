@@ -304,7 +304,7 @@ response is not read as a failure. **An `error` object on its own does not
 report one either**: `success` is what says the work failed, and `error` only
 says what went wrong once it has. A response carrying an `error` and no
 `success: false` is a success, and its message reaches nobody — not the client,
-not the warnings, not the audit trail.
+not the warnings, not the audit trail (unless it holds U+0000, below).
 
 The default belongs to an absent key alone. An explicit `"success": null` is
 not a boolean, so it is neither the default nor a flag: the answer cannot be
@@ -323,10 +323,10 @@ that one.)
 A `reason` or an `error` that holds the character U+0000 makes the answer
 unreadable too, whether it reports success or failure (`400 WORKFLOW_FAILED`,
 not retryable, the message naming the character, none of the member's text).
-Both texts reach the state-machine audit trail, which records no event holding
-U+0000, and a criterion's reason is copied into later events of the same run,
-so reading such an answer would take the record of a state change out of the
-trail.
+A criterion's reason and a failure text reach the state-machine audit trail,
+which records no event holding U+0000, and a criterion's reason is copied into
+later events of the same run, so reading such an answer would take the record
+of a state change out of the trail. The rule covers every answer alike.
 
 One rule covers every answer the server cannot read — this one, a `payload`
 that is not an object, a criterion with no `matches`: **nothing in such an

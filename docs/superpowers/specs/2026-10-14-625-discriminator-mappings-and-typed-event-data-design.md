@@ -57,8 +57,10 @@ document written inside the request's transaction (`plugins/postgres/sm_audit_st
 refuses U+0000 in `jsonb`, and the refused `INSERT` aborts the whole transaction; memory and SQLite store the same
 event. Recording is best effort by design — a failed record is logged and the operation goes on
 (`internal/domain/workflow/engine.go:1101-1115`) — so the engine refuses such an event itself, before any
-backend sees it (section 8.2). With `failReason` (section 4) member text reaches `data` on a new path, which
-makes this divergence easier to reach; it already exists for a criterion reason and a caller's transition name.
+backend sees it (section 8.2). Member text never reaches the engine with U+0000 in it: the dispatch refuses an
+answer whose `reason` or `error` holds it as unreadable, because a criterion's reason is copied into later events
+of the run (FINISH's stop reason, the `functions` of TRANSITION_MAKE and WORKFLOW_FOUND), and one such text would
+otherwise remove the record of a state change. The engine's refusal covers a caller's text.
 
 **Rule 5 — the client generator reads every shape.** The spec generates Kotlin (Cloud's settings) and Java that
 compile, and every sample (section 13.2) reads into the right class and writes back unchanged. What this
@@ -454,7 +456,8 @@ mean.
 
 | Status / gRPC envelope | Code | When |
 |---|---|---|
-| as today | as today | an event holding U+0000 (a member's reason or failure text, a caller's transition name or `ifMatch`) is not recorded, on every backend; the operation's outcome is the one it has without that event. Today the refused `INSERT` aborts the transaction on PostgreSQL, so the operation fails there and succeeds on the others |
+| as today | as today | an event holding U+0000 (a caller's transition name or `ifMatch`) is not recorded, on every backend; the operation's outcome is the one it has without that event |
+| 400 | `WORKFLOW_FAILED`, not retryable | a compute member's answer whose `reason` or `error` holds U+0000: the answer is unreadable (Terminal, none of the member's text), wherever its failure fails the operation; a peer's relayed answer carrying such text is not believed |
 
 ## 10. Coverage matrix
 
@@ -498,8 +501,11 @@ view of section 13.1. The scenarios below also assert values.
 | SCHEDULED_TRANSITION_ARM / FAIL data (existing assertions updated) | ✓ | ✓ | | ✓ | | | |
 | Member `success:false` with no text, handed over → client text `"<kind> returned failure"`, as locally; `failReason` absent | ✓ | | | | ✓ | | |
 | A `MemberFailed` try after an earlier `NoAnswer` try → `failReason` is that member's text | ✓ | | | | | | |
-| Event holding U+0000 is not recorded and the operation commits: an automated transition refused by a criterion whose member reason holds U+0000 — the entity is saved, no TRANSITION_NOT_MATCH_CRITERION event, on memory, SQLite and PostgreSQL (today PostgreSQL fails the save) | ✓ | ✓ | | ✓ | | | |
-| The same through a hand-over (the owner records) | | | | | ✓ | | |
+| A member answer whose `reason` or `error` holds U+0000 is unreadable: Terminal, the fixed message, no member text, no warnings read (criterion reason, criterion and processor failure text, an `error` on a success answer) | ✓ | | | | | | |
+| An automated transition behind a criterion whose member reason holds U+0000: the create fails with 400 `WORKFLOW_FAILED`, not retryable, and commits nothing, on memory, SQLite and PostgreSQL | | ✓ | | ✓ | | | |
+| The same through a hand-over (the peer refuses the answer) | | | | | ✓ | | |
+| A peer's relayed answer whose reason or failure text holds U+0000 is not believed | ✓ | | | | | | |
+| The engine's own refusal: an event holding U+0000 is not recorded and the operation goes on (in-process dispatch) | | ✓ | | | | | |
 | The walk: U+0000 in `State`, `Details`, a nested key, a nested value → refused; none → recorded | ✓ | | | | | | |
 | `…/finished` returns FINISH with typed data | | ✓ | | ✓ | | | |
 

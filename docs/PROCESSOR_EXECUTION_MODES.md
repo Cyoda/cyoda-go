@@ -460,8 +460,9 @@ one of these causes:
   or the transaction of a failed `COMMIT_BEFORE_DISPATCH` processor's record
   that cannot be begun or committed, is logged at WARN. The operation's outcome
   does not change. (A member's failure text holding U+0000, which the audit
-  trail cannot record, never gets this far: the answer is refused as
-  unreadable and the operation fails.)
+  trail cannot record, never reaches the record: the answer is refused as
+  unreadable, so the record carries no `failReason`, and it rolls back with
+  the operation wherever the failure fails it.)
 - The processor ran in a callback that joined another operation's transaction,
   and the fence refused the callback's chain after the dispatch, because its
   compute node was replaced or its callout ended. The chain records nothing more,

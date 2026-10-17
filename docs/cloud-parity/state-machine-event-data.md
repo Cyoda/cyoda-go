@@ -224,10 +224,10 @@ backend. The engine logs the refusal at WARN with the entity id and event type,
 never the text, and the operation goes on with the outcome it has without that
 event. Such text can reach an event from a caller (a transition name, an
 `ifMatch` value). It cannot reach one from a compute member: an answer whose
-`reason` or `error` holds U+0000 is refused as unreadable, and the operation
-fails with `400 WORKFLOW_FAILED`, not retryable
-(`internal/grpc/dispatch.go`, `internal/cluster/dispatch/handover.go`
-`readAnswer`). A criterion's reason is copied into later events of the run
+`reason` or `error` holds U+0000 is refused as unreadable, and the callout
+fails as any unreadable answer does (`400 WORKFLOW_FAILED`, not retryable,
+where its failure fails the operation; `internal/grpc/dispatch.go`,
+`internal/cluster/dispatch/handover.go` `readAnswer`). A criterion's reason is copied into later events of the run
 (FINISH's `stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE
 and WORKFLOW_FOUND), so one member text holding U+0000 would otherwise remove
 those events too, and with them the record of a state change.
@@ -342,8 +342,9 @@ scheduled one
 10. **U+0000 (section 8).** Refuse an event in which any string holds U+0000,
     as cyoda-go does: record nothing for it, log without the text, and do not
     fail the operation. Cloud records such an event today. And refuse a compute
-    member's answer whose `reason` or `error` holds U+0000 as unreadable
-    (`400 WORKFLOW_FAILED`, not retryable).
+    member's answer whose `reason` or `error` holds U+0000 as unreadable, as
+    any unreadable answer (`400 WORKFLOW_FAILED`, not retryable, where its
+    failure fails the operation).
 11. **Processor `type` (section 9).** Store an omitted or empty `type` as
     `externalized` and export it as `externalized`; refuse any other value at
     import with `400 VALIDATION_FAILED`, `scheduled` included. A scheduled

@@ -382,8 +382,8 @@ var allTests = []NamedTest{
 	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
 	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
 
-	// An audit event holding U+0000 is written on no backend (PostgreSQL jsonb
-	// refuses it and the refused INSERT aborts the save).
+	// A compute member's reason holding U+0000 makes its answer unreadable: the
+	// create fails with 400 and commits nothing, on every backend.
 	{"AuditNULAnswerRefused", RunAuditNULAnswerRefused},
 
 	// Follow-on-action attribution — the {attributed principal, executor} pair
