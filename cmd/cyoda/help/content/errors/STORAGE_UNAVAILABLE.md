@@ -22,7 +22,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `yes`.
 
 Raised in three cases, all transient:
 
-- The connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). Writes, and reads that need a second connection while your transaction already holds one (a point-in-time read or an async-search submit issued inside a transaction), fail fast here rather than queueing behind a saturated pool.
+- The connection pool could not supply a connection within `CYODA_POSTGRES_ACQUIRE_TIMEOUT` (default `10s`). This applies to an operation that opens a transaction — every entity create, update, patch and delete, and an async search's scan and result writes — and to one that needs a second connection while your transaction already holds one (a point-in-time read, or an async-search submit issued inside a transaction). Such an operation fails fast here rather than queueing behind a saturated pool. A statement issued outside a transaction — an entity read, list, search or statistics read, an audit read, a model, workflow or message read or write — is not bounded by this deadline: it waits for a free connection instead (see `cyoda help config database`).
 - An operation found its transaction already aborted because the connection sat idle inside it for longer than `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT` (default `5m`). The usual cause is a workflow processor whose `responseTimeoutMs` exceeds that ceiling.
 - The database connection went away underneath the operation — the session was terminated, or the network dropped it.
 

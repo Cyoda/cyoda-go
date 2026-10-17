@@ -304,7 +304,8 @@ response is not read as a failure. **An `error` object on its own does not
 report one either**: `success` is what says the work failed, and `error` only
 says what went wrong once it has. A response carrying an `error` and no
 `success: false` is a success, and its message reaches nobody — not the client,
-not the warnings, not the audit trail.
+not the warnings, not the audit trail. (An `error` holding U+0000 makes the
+answer unreadable instead, below.)
 
 The default belongs to an absent key alone. An explicit `"success": null` is
 not a boolean, so it is neither the default nor a flag: the answer cannot be
@@ -320,6 +321,16 @@ failure of the server. (A reply that is not JSON at all names no `requestId`,
 so nothing matches it to the callout waiting for it and the answer limit ends
 that one.)
 
+A `reason` or an `error` that holds the character U+0000 makes the answer
+unreadable too, whether it reports success or failure (`400 WORKFLOW_FAILED`,
+not retryable, the message naming the character, none of the member's text).
+A criterion's reason and a failure text reach the state-machine audit trail,
+and a criterion's reason is copied into later events of the same run.
+PostgreSQL refuses U+0000 in `jsonb`, so the operation's transaction would
+abort there, while memory and SQLite would store the text; refusing the answer
+gives every backend the same result. The rule covers every answer alike, an
+`error` on a success answer included, so a member has one rule to follow.
+
 One rule covers every answer the server cannot read — this one, a `payload`
 that is not an object, a criterion with no `matches`: **nothing in such an
 answer is read.** Not its `payload`, not its `matches`, not its `result`, and
@@ -334,7 +345,7 @@ The smallest successful answer is
 changed nothing, and the workflow should carry on. There is no shape that means
 "I did nothing and something is wrong" — that is `success: false`.
 
-When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it is in the transaction — including a write the processor made through its own joined callback (see `cyoda help workflows`) — and the transition continues.
+When `success=false`, no other member is tried. The client's operation fails with `400 WORKFLOW_FAILED` carrying `error.message`, and `error.retryable: true` is passed on as the client's `retryable: true` — it tells the client that running the whole operation again may succeed; it does not make the server try another member. (An `ASYNC_NEW_TX` processor is the exception: its failure is logged and the operation continues — unless its savepoint cannot be created, undone or released, or a scheduled run refuses to dispatch it.) The processor's `STATE_PROCESS_RESULT` audit event records `error.message`, shortened as the client's message is, as `data.failReason`. A failure with no `error.message` records no `failReason`, and the client's message is then `processor returned failure`, whichever node the member is connected to. The record is written in the operation's transaction and kept only when that transaction commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes on past, when the operation commits; and for a processor in a callback that joined another operation's transaction, when that operation commits. A failed `SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary committed has its record written in a transaction of its own, so it is kept although the operation fails. (On a callback that joined another transaction, such a processor is refused before the boundary, and its record stays in the joined transaction; when the boundary itself fails, the record is rolled back with the failed operation, or is not kept when the boundary's commit was interrupted and its outcome is in doubt.) When `payload.data` is non-null, the engine replaces the entity's data with the returned value before continuing the workflow; when `payload` is absent, or its `data` is null, the entity is left as it is in the transaction — including a write the processor made through its own joined callback (see `cyoda help workflows`) — and the transition continues.
 
 Returned data is subject to the same checks as an HTTP client write: it must be storable, and it must satisfy the model's schema. A processor may introduce a field the model does not declare only where the model's `changeLevel` would allow a client to — otherwise the transition fails with `WORKFLOW_FAILED` and rolls back. The engine holds no privilege here: whatever it stores, the API must be able to accept back.
 

@@ -18,7 +18,7 @@ import (
 
 func makeProcessorReq() dispatch.DispatchCalloutRequest {
 	processor := spi.ProcessorDefinition{
-		Type: "HTTP",
+		Type: "externalized",
 		Name: "calc",
 	}
 	return dispatch.DispatchCalloutRequest{

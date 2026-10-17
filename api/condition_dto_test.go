@@ -8,6 +8,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/getkin/kin-openapi/openapi3"
+
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // The operator enum each condition DTO publishes is the set the server
@@ -84,32 +86,25 @@ func TestArrayConditionDtoShape(t *testing.T) {
 	if !strings.Contains(values.Description, "10,000") {
 		t.Errorf("ArrayConditionDto.values description must state the 10,000-entry cap, got %q", values.Description)
 	}
+	// An entry is null, a scalar, or a [low, high] pair of scalars: an
+	// untyped leaf that refuses an object, and whose array form is a pair.
 	items := values.Items
 	if items == nil || items.Value == nil {
 		t.Fatal("ArrayConditionDto.values has no item schema")
 	}
-	var hasNull, hasPair bool
-	for _, branch := range items.Value.OneOf {
-		b := branch.Value
-		if b.Type.Is("null") {
-			hasNull = true
-		}
-		if b.Type.Is("array") {
-			max := uint64(0)
-			if b.MaxItems != nil {
-				max = *b.MaxItems
-			}
-			if b.MinItems != 2 || max != 2 {
-				t.Errorf("ArrayConditionDto.values pair branch has minItems %d, maxItems %d; want 2 and 2", b.MinItems, max)
-			}
-			hasPair = true
-		}
+	e := items.Value
+	if !isUntypedLeaf(e) {
+		t.Error("ArrayConditionDto.values items must be an untyped leaf: a union of scalar types is unreadable to the client generator")
 	}
-	if !hasNull {
-		t.Error("ArrayConditionDto.values items need an OpenAPI 3.1 `null` branch: a null entry skips its position")
+	if e.Not == nil || e.Not.Value == nil || !e.Not.Value.Type.Is("object") {
+		t.Error("ArrayConditionDto.values items must refuse an object with `not: {type: object}`")
 	}
-	if !hasPair {
-		t.Error("ArrayConditionDto.values items need a [low, high] pair branch")
+	if e.MinItems != 2 || e.MaxItems == nil || *e.MaxItems != 2 {
+		t.Errorf("ArrayConditionDto.values items: an array entry is a [low, high] pair; minItems %d, maxItems %v", e.MinItems, e.MaxItems)
+	}
+	if e.Items == nil || e.Items.Value == nil || e.Items.Value.Type == nil ||
+		!slices.Equal(e.Items.Value.Type.Slice(), []string{"string", "number", "boolean"}) {
+		t.Error("ArrayConditionDto.values items: a pair's bounds must be `type: [string, number, boolean]`")
 	}
 }
 
@@ -125,29 +120,28 @@ func arrayConditionValuesSchema(t *testing.T, doc *openapi3.T) *openapi3.Schema 
 }
 
 // The spec declares OpenAPI 3.1, where `nullable` is not a keyword: a null
-// value is admitted only by a `null` type. Each value is checked with both
-// kin-openapi validators — the default one the e2e response validator uses,
-// and the JSON Schema 2020-12 one a 3.1 consumer applies.
+// value is admitted by a `null` type or by an untyped leaf. Each value is
+// checked through the validator view with openapivalidator.ValidateValue, in
+// two kin-openapi modes: the e2e response validator's options, which try the
+// JSON Schema 2020-12 validator first (kin falls back to its own visitor for
+// a schema that holds a reference), and kin's own visitor alone.
 var schemaValidators = map[string][]openapi3.SchemaValidationOption{
-	"default":             nil,
-	"json-schema-2020-12": {openapi3.EnableJSONSchema2020()},
+	"response-validator": nil,
+	"kin-visitor":        {openapi3.MultiErrors()},
 }
 
 func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
-	doc, err := GetSwagger()
-	if err != nil {
-		t.Fatalf("GetSwagger: %v", err)
-	}
+	doc := viewedSpec(t)
 	values := arrayConditionValuesSchema(t, doc)
 	whole := doc.Components.Schemas["ArrayConditionDto"].Value
 	for mode, opts := range schemaValidators {
-		if err := whole.VisitJSON(whole.Example, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, whole, whole.Example, opts...); err != nil {
 			t.Errorf("%s: the ArrayConditionDto example does not validate against its schema: %v", mode, err)
 		}
-		if err := values.VisitJSON([]any{50.0, nil, 70.0}, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, values, []any{50.0, nil, 70.0}, opts...); err != nil {
 			t.Errorf("%s: values [50, null, 70] refused: %v", mode, err)
 		}
-		if err := values.VisitJSON([]any{[]any{1.0, 2.0}, nil}, opts...); err != nil {
+		if err := openapivalidator.ValidateValue(doc, values, []any{[]any{1.0, 2.0}, nil}, opts...); err != nil {
 			t.Errorf("%s: values [[1, 2], null] refused: %v", mode, err)
 		}
 		for name, bad := range map[string][]any{
@@ -156,7 +150,7 @@ func TestArrayConditionDtoValuesValidateUnderOpenAPI31(t *testing.T) {
 			"no entries":            {},
 			"a pair of non-scalars": {[]any{map[string]any{}, []any{}}},
 		} {
-			if err := values.VisitJSON(bad, opts...); err == nil {
+			if err := openapivalidator.ValidateValue(doc, values, bad, opts...); err == nil {
 				t.Errorf("%s: values with %s %v accepted", mode, name, bad)
 			}
 		}
@@ -197,7 +191,9 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 		walk(name, ref)
 	}
 
-	// The nullable values the spec documents still admit null.
+	// The nullable values the spec documents still admit null, as JSON
+	// Schema reads them.
+	doc = viewedSpec(t)
 	nullable := map[string]*openapi3.Schema{
 		"ExternalizedFunctionDto.criterion": doc.Components.Schemas["ExternalizedFunctionDto"].Value.
 			Properties["criterion"].Value,
@@ -205,17 +201,12 @@ func TestSpecDeclaresNoNullableKeyword(t *testing.T) {
 		"GroupedStatsBucket.aggregations{}": doc.Components.Schemas["GroupedStatsBucket"].Value.
 			Properties["aggregations"].Value.AdditionalProperties.Schema.Value,
 	}
-	for _, part := range doc.Components.Schemas["StateMachineAuditEventDto"].Value.AllOf {
-		if p := part.Value.Properties["data"]; p != nil {
-			nullable["StateMachineAuditEventDto.data"] = p.Value
-		}
-	}
-	if len(nullable) != 4 {
-		t.Fatalf("expected four nullable values, found %v", nullable)
+	if len(nullable) != 3 {
+		t.Fatalf("expected three nullable values, found %v", nullable)
 	}
 	for where, s := range nullable {
 		for mode, opts := range schemaValidators {
-			if err := s.VisitJSON(nil, opts...); err != nil {
+			if err := openapivalidator.ValidateValue(doc, s, nil, opts...); err != nil {
 				t.Errorf("%s: %s refuses null: %v", mode, where, err)
 			}
 		}

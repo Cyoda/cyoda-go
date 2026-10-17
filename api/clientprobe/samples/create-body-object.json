@@ -1,0 +1,7 @@
+{
+  "body": "POST /entity/{format}/{entityName}/{modelVersion}",
+  "value": {
+    "category": "physics",
+    "year": 1921
+  }
+}

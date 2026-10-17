@@ -496,7 +496,7 @@ func TestE2E_ReactivateTrustedKey_Happy(t *testing.T) {
 // The JWKS endpoint is mounted under the context path (/api).
 func fetchJWKSKIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	resp, err := http.Get(serverURL + "/api/.well-known/jwks.json")
+	resp, err := e2eGet(t, serverURL+"/api/.well-known/jwks.json")
 	if err != nil {
 		t.Fatalf("GET jwks.json: %v", err)
 	}

@@ -1,0 +1,10 @@
+{
+  "schema": "GroupKeyEntry",
+  "valid": false,
+  "value": {
+    "path": "$.region",
+    "value": {
+      "k": 1
+    }
+  }
+}

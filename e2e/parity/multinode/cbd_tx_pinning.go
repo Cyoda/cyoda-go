@@ -110,7 +110,7 @@ func RunWorkflowProc_CBD_TxPostPinnedToHomeNode(t *testing.T, fixture MultiNodeF
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "tag-with-foo",
+					"processors": [{"type": "externalized", "name": "tag-with-foo",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

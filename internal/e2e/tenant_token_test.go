@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // tokenAnswer is what a token request got back.
@@ -22,6 +24,12 @@ type tokenAnswer struct {
 // tokenStatus posts client_credentials to path on baseURL.
 func tokenStatus(t *testing.T, baseURL, path, user, pass string) tokenAnswer {
 	t.Helper()
+	return sendTokenRequest(t, path, newTokenRequest(t, baseURL, path, user, pass))
+}
+
+// newTokenRequest builds the client_credentials POST to path on baseURL.
+func newTokenRequest(t *testing.T, baseURL, path, user, pass string) *http.Request {
+	t.Helper()
 	req, err := http.NewRequestWithContext(e2eCtx(t), http.MethodPost, baseURL+path, strings.NewReader("grant_type=client_credentials"))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
@@ -30,6 +38,12 @@ func tokenStatus(t *testing.T, baseURL, path, user, pass string) tokenAnswer {
 	if user != "" {
 		req.SetBasicAuth(user, pass)
 	}
+	return req
+}
+
+// sendTokenRequest sends a token request and reads the answer.
+func sendTokenRequest(t *testing.T, path string, req *http.Request) tokenAnswer {
+	t.Helper()
 	start := time.Now()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -115,7 +129,10 @@ func TestTenantToken_OldPathIsGone(t *testing.T) {
 	c := decodeCredential(t, "create client", raw)
 	deleteClientAtCleanup(t, h.baseURL, c.id, func() string { return h.token(t) })
 
-	a := tokenStatus(t, h.baseURL, "/api/oauth/token", c.id, c.secret)
+	// The old path is not in the spec: a deliberate probe of an undeclared route.
+	req := newTokenRequest(t, h.baseURL, "/api/oauth/token", c.id, c.secret)
+	openapivalidator.MarkUndeclaredRouteProbe(req)
+	a := sendTokenRequest(t, "/api/oauth/token", req)
 	if a.status != http.StatusUnauthorized || strings.Contains(string(a.raw), "access_token") {
 		t.Errorf("the old token path answered %d (body withheld)", a.status)
 	}

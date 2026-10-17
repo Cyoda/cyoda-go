@@ -31,7 +31,9 @@
 package scheduledtransition
 
 import (
+	"encoding/json"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -160,6 +162,25 @@ func hasStateMachineEvent(events []client.StateMachineAuditEvent, eventType, sta
 	return false
 }
 
+// onlyEventData decodes the data of the single event of eventType.
+func onlyEventData(t *testing.T, events []client.StateMachineAuditEvent, eventType string) map[string]any {
+	t.Helper()
+	var found []client.StateMachineAuditEvent
+	for _, ev := range events {
+		if ev.EventType == eventType {
+			found = append(found, ev)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("%d %s events, want 1: %+v", len(found), eventType, events)
+	}
+	var data map[string]any
+	if err := json.Unmarshal(found[0].Data, &data); err != nil {
+		t.Fatalf("decode %s data: %v (%s)", eventType, err, found[0].Data)
+	}
+	return data
+}
+
 // awaitStateMachineEvent polls GetAuditEvents until an event matching
 // eventType (and, if state is non-empty, State too) appears, or fails the
 // test once timeout elapses.
@@ -216,6 +237,14 @@ func RunScheduledTransition_ArmsOnEntry(t *testing.T, fixture parity.BackendFixt
 	if !hasStateMachineEvent(events, eventArmed, "OPEN") {
 		t.Errorf("expected a %s audit event for state OPEN after entity creation; got events: %+v", eventArmed, events)
 	}
+	armed := onlyEventData(t, events, eventArmed)
+	if ms, ok := armed["scheduledTime"].(float64); !ok || ms <= 0 {
+		t.Errorf("%s scheduledTime = %v, want Unix milliseconds", eventArmed, armed["scheduledTime"])
+	}
+	delete(armed, "scheduledTime")
+	if want := map[string]any{"eventType": eventArmed, "transition": "AutoClose", "sourceState": "OPEN"}; !reflect.DeepEqual(armed, want) {
+		t.Errorf("%s data = %v, want %v and scheduledTime", eventArmed, armed, want)
+	}
 
 	got, err := c.GetEntity(t, entityID)
 	if err != nil {
@@ -259,6 +288,10 @@ func RunScheduledTransition_FiresOnTime(t *testing.T, fixture parity.BackendFixt
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
 		t.Errorf("expected a %s audit event with state CLOSED; got events: %+v", eventFired, events)
+	}
+	fired := onlyEventData(t, events, eventFired)
+	if want := map[string]any{"eventType": eventFired, "transition": "AutoClose", "sourceState": "OPEN", "workflowName": "fires-wf"}; !reflect.DeepEqual(fired, want) {
+		t.Errorf("%s data = %v, want %v", eventFired, fired, want)
 	}
 	if task := taskOf(t, c, entityID, "AutoClose"); task != nil {
 		t.Errorf("the fired task is still listed: %+v; a fired task is removed", *task)

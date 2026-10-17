@@ -36,8 +36,8 @@ func uncoveredOps(all []string, exercised, success2xx map[string]bool, marked ma
 }
 
 // TestOpenAPIConformanceReport runs after every other E2E test, drains the
-// validator's collector, writes the markdown report, and (in ModeEnforce)
-// fails if any mismatches were collected.
+// validator's collector, writes the markdown report, and fails if any
+// mismatches were collected.
 func TestOpenAPIConformanceReport(t *testing.T) {
 	// `-shuffle on` defeats the file-ordering trick that ensures this test
 	// runs last. Detect and bail out cleanly.
@@ -53,13 +53,8 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 
 	t.Logf("openapi conformance report: %s (%d mismatches)", reportPath, len(mismatches))
 
-	if openapivalidator.Mode != openapivalidator.ModeEnforce {
-		// Record mode: report-only.
-		return
-	}
-
 	if len(mismatches) == 0 {
-		// Enforce mode, no mismatches: also check coverage. Skip the
+		// No mismatches: also check coverage. Skip the
 		// coverage check when -run is set (single-test workflow).
 		if !openapivalidator.RunFilterActive() {
 			unmarked, stale := uncoveredOps(allOperationIds, exercised, openapivalidator.Success2xxSet(), markedOps)
@@ -73,7 +68,7 @@ func TestOpenAPIConformanceReport(t *testing.T) {
 		return
 	}
 
-	// Enforce mode, mismatches present: fail with summary of first 20.
+	// Mismatches present: fail with summary of first 20.
 	limit := len(mismatches)
 	if limit > 20 {
 		limit = 20

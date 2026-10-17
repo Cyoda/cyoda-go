@@ -80,19 +80,13 @@ func TestFunctionRecordAuditValue(t *testing.T) {
 	}
 }
 
-func TestCriterionOutcomeFunctionsData(t *testing.T) {
-	if d := (criterionOutcome{}).functionsData(); d != nil {
-		t.Errorf("no function condition: got %v, want nil", d)
-	}
+func TestCriterionOutcomeAddFunctions(t *testing.T) {
 	data := map[string]any{"reason": "r"}
 	criterionOutcome{}.addFunctions(data)
 	if _, ok := data["functions"]; ok {
 		t.Error("addFunctions added functions for a criterion without a function condition")
 	}
 	out := criterionOutcome{functions: []functionRecord{{name: "f", called: true}}}
-	if d := out.functionsData(); len(d) != 1 || len(d["functions"].([]any)) != 1 {
-		t.Errorf("functionsData = %v, want only one functions entry", d)
-	}
 	out.addFunctions(data)
 	if len(data["functions"].([]any)) != 1 || data["reason"] != "r" {
 		t.Errorf("addFunctions: %v", data)
@@ -252,12 +246,13 @@ func TestAudit_CascadeMatch_TransitionMakeCarriesFunctions(t *testing.T) {
 		t.Fatalf("TRANSITION_MAKE events for t1 and t2 not found: %v", evs)
 	}
 	want := `{"functions":[{"called":true,"matches":true,"name":"a","path":"","preCheck":` +
-		`{"jsonPath":"$.amount","operatorType":"GREATER_THAN","type":"simple","value":10},"preCheckMatched":true}]}`
+		`{"jsonPath":"$.amount","operatorType":"GREATER_THAN","type":"simple","value":10},"preCheckMatched":true}],` +
+		`"newState":"S1","transition":"t1","workflowName":"wf"}`
 	if got := jsonOf(t, withFn.Data); got != want {
 		t.Errorf("t1 data = %s, want %s", got, want)
 	}
-	if local.Data != nil {
-		t.Errorf("t2 (local criterion) data = %v, want nil", local.Data)
+	if got, want := jsonOf(t, local.Data), `{"newState":"S2","transition":"t2","workflowName":"wf"}`; got != want {
+		t.Errorf("t2 (local criterion) data = %s, want %s (no functions)", got, want)
 	}
 }
 
@@ -284,8 +279,8 @@ func TestAudit_Selection_FoundAndSkipped(t *testing.T) {
 			t.Errorf("functions = %v, want one entry not called", fns)
 		}
 		found := eventsOf(t, factory, txCtx, "e1", txID, spi.SMEventWorkflowFound)
-		if len(found) != 1 || found[0].Data != nil {
-			t.Errorf("WORKFLOW_FOUND = %v, want one event with nil data", found)
+		if len(found) != 1 || jsonOf(t, found[0].Data) != `{"workflowName":"wf-b"}` {
+			t.Errorf("WORKFLOW_FOUND = %v, want one event naming wf-b, with no functions", found)
 		}
 	})
 	t.Run("amount 150", func(t *testing.T) {

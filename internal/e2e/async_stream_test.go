@@ -1089,7 +1089,7 @@ func doAuthAgainst(t *testing.T, baseURL, token, method, path, body string) *htt
 	} else {
 		reader = strings.NewReader("")
 	}
-	req, err := http.NewRequest(method, baseURL+path, reader)
+	req, err := e2eNewRequest(t, method, baseURL+path, reader)
 	if err != nil {
 		t.Fatalf("new request %s %s: %v", method, path, err)
 	}
@@ -1194,7 +1194,7 @@ func newStandaloneApp(t *testing.T, configure func(*app.Config)) *standaloneApp 
 	}
 
 	a := app.New(cfg)
-	srv.Config.Handler = a.Handler()
+	srv.Config.Handler = validated(a.Handler())
 
 	var once sync.Once
 	closeNow := func() { once.Do(func() { _ = a.Close() }) }

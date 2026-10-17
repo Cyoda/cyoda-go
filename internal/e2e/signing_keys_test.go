@@ -94,7 +94,7 @@ func (ks *keyStack) oauthToken(t *testing.T) string {
 
 func (ks *keyStack) keyCall(t *testing.T, method, path, body string) (int, []byte) {
 	t.Helper()
-	req, _ := http.NewRequest(method, ks.baseURL+"/api"+path, strings.NewReader(body))
+	req, _ := e2eNewRequest(t, method, ks.baseURL+"/api"+path, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+ks.oauthToken(t))
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
@@ -155,7 +155,7 @@ func tokenKID(t *testing.T, tok string) string {
 // it does not.
 func (h *callbackHarness) authedStatus(t *testing.T, tok string) int {
 	t.Helper()
-	req, _ := http.NewRequest("GET", h.baseURL+"/api/account", nil)
+	req, _ := e2eNewRequest(t, "GET", h.baseURL+"/api/account", nil)
 	req.Header.Set("Authorization", "Bearer "+tok)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -167,7 +167,7 @@ func (h *callbackHarness) authedStatus(t *testing.T, tok string) int {
 
 func (h *callbackHarness) jwksKIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	resp, err := http.Get(h.baseURL + "/api/.well-known/jwks.json")
+	resp, err := e2eGet(t, h.baseURL+"/api/.well-known/jwks.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +357,7 @@ func TestSigningKeys_BrokenSignerFailsClosed(t *testing.T) {
 	}
 	assertNoLeak(t, "oauth-token", string(body), forbidden)
 
-	req, _ := http.NewRequest("GET", h2.baseURL+"/api/oauth/keys/keypair/current", nil)
+	req, _ := e2eNewRequest(t, "GET", h2.baseURL+"/api/oauth/keys/keypair/current", nil)
 	req.Header.Set("Authorization", "Bearer "+bootstrapToken(t, key))
 	resp, err = http.DefaultClient.Do(req)
 	if err != nil {

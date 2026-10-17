@@ -385,7 +385,7 @@ func TestResponseFromLocal(t *testing.T) {
 func TestResponseFromLocal_MemberFailed(t *testing.T) {
 	yes := true
 	res := internalgrpc.LocalResult{TriesUsed: 1,
-		Failure:  &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes},
+		Failure:  &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined", Retryable: &yes},
 		Attempts: []contract.CalloutAttempt{{MemberID: "m1", Kind: contract.MemberFailed, Cause: "card declined"}}}
 	r := responseFromLocal(ownerCallout(t, "processor"), res, []string{"processor p: slow"}, []string{"processor p: card declined"})
 	if r.Outcome != "member_failed" || r.MemberError != "card declined" || r.MemberRetryable == nil || !*r.MemberRetryable {
@@ -562,6 +562,40 @@ func TestReadAnswer_MemberFailed(t *testing.T) {
 	}
 	if !a.Connected || a.TriesUsed != 1 {
 		t.Errorf("%+v", a)
+	}
+}
+
+func TestReadAnswer_MemberFailed_NoText(t *testing.T) {
+	call := ownerCallout(t, "processor")
+	a := readAnswer(call, &DispatchCalloutResponse{
+		Outcome: "member_failed", TriesUsed: intPtr(1),
+		Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "processor returned failure"}},
+	}, 3)
+	if a.Failure == nil || a.Failure.MemberText != "" || a.Failure.Message != call.Kind.String()+" returned failure" {
+		t.Errorf("Failure = %+v, want no member text and the sentence a local try uses", a.Failure)
+	}
+}
+
+func TestReadAnswer_MemberFailed_Text(t *testing.T) {
+	a := readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{
+		Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: "x",
+		Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "x"}},
+	}, 3)
+	if a.Failure == nil || a.Failure.MemberText != "x" || a.Failure.Message != "x" {
+		t.Errorf("Failure = %+v, want MemberText and Message both x", a.Failure)
+	}
+}
+
+func TestFillFailure_PutsMemberTextOnTheWire(t *testing.T) {
+	var resp DispatchCalloutResponse
+	fillFailure(&resp, &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "processor returned failure"})
+	if resp.MemberError != "" {
+		t.Errorf("MemberError = %q, want empty: the fixed sentence is not the member's text", resp.MemberError)
+	}
+	resp = DispatchCalloutResponse{}
+	fillFailure(&resp, &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "boom", MemberText: "boom"})
+	if resp.MemberError != "boom" {
+		t.Errorf("MemberError = %q, want boom", resp.MemberError)
 	}
 }
 
@@ -779,4 +813,24 @@ func TestToCallout_FunctionConditionFromAGroup(t *testing.T) {
 	if call.Name != "credit-check" || call.Tags != "python" || string(call.Source.Criterion) != string(raw) {
 		t.Errorf("callout name=%q tags=%q criterion=%s", call.Name, call.Tags, call.Source.Criterion)
 	}
+}
+
+// A genuine peer refuses a member answer whose reason or failure text holds
+// U+0000 before it relays anything (internal/grpc/dispatch.go), so such a text
+// on the wire is not a peer's honest answer and is not believed: the owner
+// would otherwise put it into the audit trail, which cannot hold
+// U+0000.
+func TestReadAnswer_MemberTextHoldingNULIsNotBelieved(t *testing.T) {
+	no := false
+	t.Run("criterion reason", func(t *testing.T) {
+		assertLost(t, readAnswer(ownerCallout(t, "criteria"), &DispatchCalloutResponse{
+			Outcome: OutcomeOK, TriesUsed: intPtr(1), Matches: &no, Reason: "too\x00small",
+		}, 3))
+	})
+	t.Run("member failure text", func(t *testing.T) {
+		assertLost(t, readAnswer(ownerCallout(t, "processor"), &DispatchCalloutResponse{
+			Outcome: "member_failed", TriesUsed: intPtr(1), MemberError: "card\x00declined",
+			Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "card declined"}},
+		}, 3))
+	})
 }

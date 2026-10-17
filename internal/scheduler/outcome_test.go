@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -474,8 +475,10 @@ func TestService_FailEventCarriesTheEntityStateAndTheTaskCounters(t *testing.T) 
 	if e.State != "REVIEW" {
 		t.Errorf("event state = %q, want the entity's state REVIEW, not the source state", e.State)
 	}
-	if got := fmt.Sprint(e.Data["attempts"], "/", e.Data["lostOwners"]); got != "2/1" {
-		t.Errorf("event attempts/lostOwners = %s, want 2/1", got)
+	want := map[string]any{"transition": task.Transition, "sourceState": task.SourceState,
+		"reason": "UNSAFE_WORK_NOT_COMPLETED", "attempts": 2, "lostOwners": 1}
+	if !reflect.DeepEqual(e.Data, want) {
+		t.Errorf("event data = %v, want %v", e.Data, want)
 	}
 	// The store stamps the transaction's events with its commit instant; the
 	// time the scheduler submits does not survive.

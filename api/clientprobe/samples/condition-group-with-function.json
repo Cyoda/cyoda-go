@@ -1,0 +1,22 @@
+{
+  "schema": "QueryConditionDto",
+  "class": "GroupConditionDto",
+  "value": {
+    "type": "group",
+    "operator": "OR",
+    "conditions": [
+      {
+        "type": "function",
+        "function": {
+          "name": "isPriority"
+        }
+      },
+      {
+        "type": "simple",
+        "jsonPath": "$.amount",
+        "operatorType": "EQUALS",
+        "value": 1
+      }
+    ]
+  }
+}

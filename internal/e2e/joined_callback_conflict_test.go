@@ -35,7 +35,7 @@ type conflictProc struct {
 func conflictDoorWorkflow(name, tag string, procs ...conflictProc) string {
 	list := make([]string, len(procs))
 	for i, proc := range procs {
-		list[i] = fmt.Sprintf(`{"type": "calculator", "name": %q, "executionMode": %q,
+		list[i] = fmt.Sprintf(`{"type": "externalized", "name": %q, "executionMode": %q,
 			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000, "startNewTxOnDispatch": %t}}`,
 			proc.name, proc.mode, tag, proc.startNewTx)
 	}
@@ -288,7 +288,7 @@ func createWithTx(t *testing.T, h *callbackHarness, model, payload string) (id, 
 
 // putIfMatch is a client PUT carrying an If-Match precondition.
 func (h *callbackHarness) putIfMatch(path, ifMatch, body string) (callbackResult, error) {
-	req, err := http.NewRequest(http.MethodPut, h.baseURL+path, strings.NewReader(body))
+	req, err := http.NewRequestWithContext(h.ownerCtx(), http.MethodPut, h.baseURL+path, strings.NewReader(body))
 	if err != nil {
 		return callbackResult{}, err
 	}

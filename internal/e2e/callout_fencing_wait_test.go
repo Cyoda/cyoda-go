@@ -380,7 +380,7 @@ func TestCalloutFence_JoinedReadInProgress(t *testing.T) {
 
 			unlock := holdMessagesTableLock(t)
 
-			readCtx, abandonRead := context.WithCancel(context.Background())
+			readCtx, abandonRead := context.WithCancel(e2eCtx(t))
 			defer abandonRead()
 			dropNow := make(chan struct{})
 			dropStream := closeOnce(dropNow)

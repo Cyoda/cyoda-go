@@ -152,7 +152,7 @@ func (t *TracingExternalProcessingService) DispatchProcessor(
 	var result *spi.Entity
 	err := t.record(ctx, kindProcessor, "dispatch.processor", []attribute.KeyValue{
 		AttrProcessorName.String(processor.Name),
-		AttrProcessorMode.String(processor.ExecutionMode),
+		AttrProcessorMode.String(contract.ProcessorExecutionMode(processor.ExecutionMode)),
 		AttrProcessorTags.String(processor.Config.CalculationNodesTags),
 		AttrWorkflowName.String(workflowName),
 		AttrTransitionName.String(transitionName),

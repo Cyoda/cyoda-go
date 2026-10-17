@@ -309,19 +309,11 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// returns a nil EngineResult on every error path.
 	scope.Advance(result.FinalCtx, result.FinalTxID)
 
-	// If no workflow was found, engine returns forced success and entity state stays empty.
-	// Set a default state.
-	if entity.Meta.State == "" {
-		entity.Meta.State = "CREATED"
-	}
-
 	// The CREATE path runs the workflow engine without an explicit
 	// client-supplied transition name (Execute(..., "")). From the caller's
 	// viewpoint this is a save without a named transition — the canonical
 	// marker for that is "loopback", not the literal "workflow".
-	if result.StopReason == "" {
-		entity.Meta.TransitionForLatestSave = "loopback"
-	}
+	entity.Meta.TransitionForLatestSave = "loopback"
 
 	finalCtx, finalTxID := scope.Ctx(), scope.TxID()
 
@@ -2081,18 +2073,9 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		scope.Advance(result.FinalCtx, result.FinalTxID)
 		currentCtx, currentTxID = scope.Ctx(), scope.TxID()
 
-		// If no workflow was found, engine returns forced success and
-		// entity state stays empty — fall back to "CREATED" to match
-		// single CreateEntity.
-		if entity.Meta.State == "" {
-			entity.Meta.State = "CREATED"
-		}
-
 		// CREATE path runs without an explicit transition; canonical
 		// marker is "loopback", matching single CreateEntity.
-		if result.StopReason == "" {
-			entity.Meta.TransitionForLatestSave = "loopback"
-		}
+		entity.Meta.TransitionForLatestSave = "loopback"
 
 		// Finalize this item's Save. For the OWNER, gate each per-item Save so a
 		// callback in-flight from this item's dispatch cannot race the buffer

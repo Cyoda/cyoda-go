@@ -78,7 +78,7 @@ func (h *callbackHarness) adminTokenFor(t *testing.T, tenant, user string) strin
 func (h *callbackHarness) provisionTenant(t *testing.T, tenantID, userID string) (clientID, secret string) {
 	t.Helper()
 	seed := h.adminTokenFor(t, tenantID, userID)
-	req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/clients?withAdminRole=true", nil)
+	req, err := e2eNewRequest(t, http.MethodPost, h.baseURL+"/api/clients?withAdminRole=true", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -131,7 +131,7 @@ func (h *callbackHarness) doAuthBearer(t *testing.T, bearer, method, path, body,
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestCallbackErr_LoudFailCodes(t *testing.T) {
 				"version": "1.1", "name": "cbx-primary-wf", "initialState": "NONE", "active": true,
 				"states": {
 					"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-						"processors": [{"type": "calculator", "name": "cbx-hold", "executionMode": "SYNC",
+						"processors": [{"type": "externalized", "name": "cbx-hold", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 					}]},
 					"ACTIVE": {}

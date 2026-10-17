@@ -189,7 +189,7 @@ func txLifeSegmentWF(name, processor, criterion string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "STAGED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q,
+					"processors": [{"type": "externalized", "name": %q,
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]}]},
 				"STAGED": {"transitions": [{"name": "gate", "next": "DONE", "manual": false,
@@ -406,7 +406,7 @@ func TestE2E_ClientCancelledRequest_StillRollsBack(t *testing.T) {
 
 	before := idleInTransactionConns(t)
 
-	reqCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	reqCtx, cancel := context.WithTimeout(e2eCtx(t), 300*time.Millisecond)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost,
 		h.baseURL+"/api/entity/JSON/txlife-slow/1", strings.NewReader(txLifeSample))
@@ -490,7 +490,7 @@ func TestE2E_JoinedCallbackFailure_DoesNotRollBackOwner(t *testing.T) {
 			"version": "1.1", "name": "txlife-owner-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "txlife-owner-proc",
+					"processors": [{"type": "externalized", "name": "txlife-owner-proc",
 						"executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"ACTIVE": {}

@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/url"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // clients_tenant_scope_test.go covers caller-chosen client ids and the
@@ -173,11 +175,14 @@ func TestClients_RateLimitIsPerTenant(t *testing.T) {
 }
 
 // raceHTTP bounds every raced request so a hung node fails the test fast.
-var raceHTTP = &http.Client{Timeout: 60 * time.Second}
+// Its Transport names the requesting test to the conformance validator, as
+// http.DefaultClient's does.
+var raceHTTP = &http.Client{Timeout: 60 * time.Second, Transport: openapivalidator.Transport(http.DefaultTransport)}
 
 // raceCall runs one request from a goroutine: it never touches *testing.T.
-func raceCall(method, target, bearer string) (int, []byte, error) {
-	req, err := http.NewRequest(method, target, nil)
+// ctx is the test's (e2eCtx).
+func raceCall(ctx context.Context, method, target, bearer string) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -221,11 +226,12 @@ func TestClientsStore_ConcurrentCreatesOfOneIDOnTwoNodes(t *testing.T) {
 	}
 	a, b := twoNodes(t)
 	bearer := a.platformToken(t) // both stacks share the signing key
+	ctx := e2eCtx(t)             // the raced calls never touch t
 	for round := range 10 {
 		id := "race" + string(rune('A'+round))
 		call := func(ks *keyStack) func() (int, []byte, error) {
 			return func() (int, []byte, error) {
-				return raceCall(http.MethodPost, ks.baseURL+"/api/clients?clientId="+id, bearer)
+				return raceCall(ctx, http.MethodPost, ks.baseURL+"/api/clients?clientId="+id, bearer)
 			}
 		}
 		results := raceAll([]func() (int, []byte, error){call(a), call(b)})
@@ -262,6 +268,7 @@ func TestClientsStore_ConcurrentResetsAreConsistent(t *testing.T) {
 	}
 	a, b := twoNodes(t)
 	bearer := a.platformToken(t)
+	ctx := e2eCtx(t) // the raced calls never touch t
 	code, raw := a.postClientWithID(t, bearer, "resetme")
 	if code != http.StatusOK {
 		t.Fatalf("create: %d %s", code, withheld(code, raw))
@@ -271,7 +278,7 @@ func TestClientsStore_ConcurrentResetsAreConsistent(t *testing.T) {
 	for i := range calls {
 		ks := []*keyStack{a, b}[i%2]
 		calls[i] = func() (int, []byte, error) {
-			return raceCall(http.MethodPut, ks.baseURL+"/api/clients/resetme/secret", bearer)
+			return raceCall(ctx, http.MethodPut, ks.baseURL+"/api/clients/resetme/secret", bearer)
 		}
 	}
 	var secrets []string

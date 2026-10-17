@@ -38,7 +38,7 @@ func membershipWorkflow(wfName string) string {
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "ACTIVE", "manual": false,
 					"processors": []any{map[string]any{
-						"type": "calculator", "name": "noop", "executionMode": "SYNC",
+						"type": "externalized", "name": "noop", "executionMode": "SYNC",
 						"config": map[string]any{"calculationNodesTags": computeMemberTag},
 					}},
 				}}},

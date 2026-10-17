@@ -356,6 +356,9 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 			t.Fatal("the re-import removed the task; it is scheduled in W2")
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
+		// The entity's status selects W1, where Fire is manual.
+		assertSMEventData(t, h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open", "workflowName": "sr-cancel-w1"})
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
 		requireState(t, h, id, "Open")
 	})
@@ -373,6 +376,8 @@ func TestSchedRun_FireTimeCancel(t *testing.T) {
 			t.Fatalf("strip the transaction id: %d rows (err %v); want exactly 1", tag.RowsAffected(), err)
 		}
 		awaitCallbackSMEventType(t, h, id, "SCHEDULED_TRANSITION_CANCEL", "Open", scheduledFireTimeout)
+		assertSMEventData(t, h.GetSMAuditEvents(t, id), "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open", "workflowName": "sr-notx-wf"})
 		s.awaitTask(t, id, "Fire", scheduledFireTimeout, "removal", func(_ taskRow, ok bool) bool { return !ok })
 		requireState(t, h, id, "Open")
 	})
@@ -567,9 +572,13 @@ func TestSchedRun_FailedTaskUnderEntityWrites(t *testing.T) {
 		if _, ok := s.task(t, id, "Fire"); ok {
 			t.Error("the FAILED task outlived the state exit")
 		}
-		if !hasSMEventType(schedEvents(t, h, id), "SCHEDULED_TRANSITION_CANCEL", "Open") {
+		events := schedEvents(t, h, id)
+		if !hasSMEventType(events, "SCHEDULED_TRANSITION_CANCEL", "Open") {
 			t.Error("no SCHEDULED_TRANSITION_CANCEL for the FAILED task")
 		}
+		// An arm-time cancel does not know the selected workflow: no workflowName.
+		assertSMEventData(t, events, "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open"})
 		requireState(t, h, id, "Left")
 	})
 
@@ -605,8 +614,12 @@ func TestSchedRun_FailedTaskUnderEntityWrites(t *testing.T) {
 		if _, ok := s.task(t, id, "Fire"); ok {
 			t.Error("the write kept a task its workflow no longer schedules")
 		}
-		if !hasSMEventType(schedEvents(t, h, id), "SCHEDULED_TRANSITION_CANCEL", "Open") {
+		events := schedEvents(t, h, id)
+		if !hasSMEventType(events, "SCHEDULED_TRANSITION_CANCEL", "Open") {
 			t.Error("no SCHEDULED_TRANSITION_CANCEL for the removed task")
 		}
+		// An arm-time cancel does not know the selected workflow: no workflowName.
+		assertSMEventData(t, events, "SCHEDULED_TRANSITION_CANCEL", map[string]any{
+			"eventType": "SCHEDULED_TRANSITION_CANCEL", "transition": "Fire", "sourceState": "Open"})
 	})
 }

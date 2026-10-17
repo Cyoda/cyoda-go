@@ -155,7 +155,7 @@ func parseSearchFrame(ce *cepb.CloudEvent) (ok bool, errCode, errMsg string, err
 }
 
 // intxSearchPrimaryWF builds a REPLACE workflow whose NONE->ACTIVE transition
-// fires a single SYNC calculator processor by name.
+// fires a single SYNC externalized processor by name.
 func intxSearchPrimaryWF(wfName, procName string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
@@ -163,7 +163,7 @@ func intxSearchPrimaryWF(wfName, procName string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

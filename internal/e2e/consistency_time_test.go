@@ -51,7 +51,7 @@ func TestConsistencyTimeEndpoint_RequiresAuthentication(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
-	resp, err := http.Get(serverURL + "/api/entity/consistency-time")
+	resp, err := e2eGet(t, serverURL+"/api/entity/consistency-time")
 	if err != nil {
 		t.Fatalf("GET: %v", err)
 	}

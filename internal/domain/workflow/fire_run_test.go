@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -84,8 +85,9 @@ func TestFireScheduled_ExpiredOnFirstAttempt(t *testing.T) {
 	if got := env.state(t, "exp-e1"); got != "OPEN" {
 		t.Errorf("entity state = %q, want OPEN", got)
 	}
-	if n := countAuditEvents(t, env.factory, env.ctx, "exp-e1", spi.SMEventScheduledTransitionExpired); n != 1 {
-		t.Errorf("SCHEDULED_TRANSITION_EXPIRE events = %d, want 1", n)
+	expired := onlyEvent(t, allEvents(t, env.factory, env.ctx, "exp-e1"), spi.SMEventScheduledTransitionExpired)
+	if want := map[string]any{"transition": "AutoClose", "sourceState": "OPEN"}; !reflect.DeepEqual(expired.Data, want) {
+		t.Errorf("SCHEDULED_TRANSITION_EXPIRE data = %v, want %v", expired.Data, want)
 	}
 }
 

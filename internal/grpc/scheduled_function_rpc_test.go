@@ -421,7 +421,7 @@ func TestRPC_ProcessorNoMember_Returns503Envelope(t *testing.T) {
 			"version": "1.1", "name": "proc-nomember-wf", "initialState": "Open", "active": true,
 			"states": {
 				"Open": {"transitions": [{"name": "init", "next": "Closed", "manual": false,
-					"processors": [{"type": "calculator", "name": "tag-with-foo", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "tag-with-foo", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "no-such-tag"}}]
 				}]},
 				"Closed": {}

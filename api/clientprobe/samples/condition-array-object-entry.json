@@ -1,0 +1,14 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "array",
+    "jsonPath": "$.scores[*]",
+    "operatorType": "EQUALS",
+    "values": [
+      {
+        "k": 1
+      }
+    ]
+  }
+}

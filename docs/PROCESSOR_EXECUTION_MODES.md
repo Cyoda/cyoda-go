@@ -20,19 +20,16 @@ Companion documents:
 Workflow processors have two orthogonal configuration axes.
 
 **`type` — execution-location.** Determines where the processor runs.
-Currently only `externalized` (gRPC dispatch to a calculation node) is
-implemented. The value `internalized` is reserved for in-process
-execution; any transition firing a processor with `type: "internalized"`
-is rejected at dispatch with `WORKFLOW_FAILED` (400). Empty or omitted
-on the wire is treated as `externalized`.
+The only location is `externalized` (gRPC dispatch to a calculation
+node). Workflow import accepts `externalized` only and stores an omitted
+or empty `type` as `externalized`; any other value, `internalized`
+included, is refused at import with `VALIDATION_FAILED` (400).
 
 **`executionMode` — transactional semantics of dispatch.** Determines
 whether the dispatch is synchronous or asynchronous, and whether the
 caller's transaction stays open across the dispatch. The four values
 (`SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`) are
-the focus of this document. All `executionMode` semantics described
-below apply to `externalized` processors; the `internalized` location
-has no documented dispatch semantics yet.
+the focus of this document.
 
 ---
 
@@ -310,9 +307,12 @@ the transition starts: against the entity as the request's transaction read
 it, after `STATE_MACHINE_START` and before it selects a workflow, runs a
 criterion or dispatches a processor (`checkIfMatch` in
 `internal/domain/workflow/transition_aborted.go`). A mismatch surfaces as
-`spi.ErrConflict` → `412 Precondition Failed`, an audit `TRANSITION_ABORTED`
-event is recorded with `{reason: ENTITY_MODIFIED, expectedTxId, actualTxId}`,
-and `T_pre` is rolled back — no segment commits, no external dispatch fires.
+`spi.ErrConflict` → `412 Precondition Failed`: the engine records
+`TRANSITION_ABORTED` with `{reason: ENTITY_MODIFIED, transition?, expectedTxId,
+actualTxId}` in `T_pre`, and `T_pre` is rolled back — no segment commits, no
+external dispatch fires, and the event is rolled back with `T_pre`. On a
+collection update the item is isolated instead: its siblings commit, and with
+them its `STATE_MACHINE_START` and `TRANSITION_ABORTED`.
 
 A write to the entity later in the same transaction — a joined callback's, a
 segment's own — is the request's own and does not break the precondition. The
@@ -328,7 +328,7 @@ transaction when nothing segments), and the request answers a retryable
 | Processor's member answers `success:false` | `T_post` rolled back, entity durable in pre-callout state, `400 WORKFLOW_FAILED` with the member's message — or, with `startNewTxOnDispatch`, a retryable `409 CONFLICT` when a callback write in `T_post` had already lost a race |
 | No answer, or the member disconnects | another member is tried only if the processor is `idempotent`; otherwise `T_post` rolled back, `503` with the try's own code |
 | CAS conflict at apply-result boundary (another transaction changed the entity during the dispatch) | `T_post` rolled back, entity durable in pre-callout state; a single update answers `412 ENTITY_MODIFIED`, a collection update fails whole with `400 WORKFLOW_FAILED`. Not retryable as-is: the callout already fired |
-| `If-Match` mismatch when the transition starts | `T_pre` rolled back, no dispatch, `412 Precondition Failed`, `TRANSITION_ABORTED` audit event recorded |
+| `If-Match` mismatch when the transition starts | no dispatch, `412 Precondition Failed`, `T_pre` rolled back with its `TRANSITION_ABORTED` audit event; on a collection update the item is isolated instead, and the event commits with its siblings |
 | `T_pre`'s commit refused (another transaction committed a change first) | nothing committed, no dispatch, `409 CONFLICT`, retryable |
 | Infrastructure failure (Begin, Commit, EntityStore lookup) | wrapped with `ErrCommitBeforeDispatchInfra`, mapped to sanitized 5xx with ticket UUID — not 4xx (we don't leak driver text) |
 | Engine crash between segments | entity durable in pre-callout state; in-flight cascade is gone; client must retry the same API call to re-fire the cascade from the start |
@@ -411,20 +411,74 @@ starts (see above).
 
 ### Audit events
 
-For every processor the engine emits, at the cascade-entry txID for
-client-side correlation continuity:
+The engine records these events at the cascade-entry txID, for client-side
+correlation continuity:
 
-- `STATE_MACHINE_PROCESSING_PAUSED` once before the processor pipeline begins.
-- `STATE_PROCESS_RESULT` after each processor with `{success: bool, mode:
-  string}`. `success:false` is emitted even for `ASYNC_NEW_TX` failures.
+- `PAUSE_FOR_PROCESSING` once before a transition's processor pipeline begins,
+  with `{workflowName, transition, processNames}` — the processor names in
+  pipeline order.
+- `STATE_PROCESS_RESULT` once for each processor that ran, with
+  `{processorName, executionMode, success, failReason?}`. `executionMode` is
+  the processor's configured mode; a processor configured with no mode runs,
+  and is recorded, as `SYNC`. `success:false` is recorded for an
+  `ASYNC_NEW_TX` failure too, although the run continues. A failed
+  processor's `details` reads `Processor "<name>" failed`; no other event of
+  the pipeline records the failure.
 - `TRANSITION_ABORTED` on `If-Match` rejection, right after
-  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transitionName,
-  expectedTxId, actualTxId}`.
+  `STATE_MACHINE_START`, with `{reason: ENTITY_MODIFIED, transition?,
+  expectedTxId, actualTxId}`; `transition` is absent on a loopback, which has
+  no transition.
 
-`STATE_PROCESS_RESULT` deliberately does **not** include the error string —
-engine-wrapped error text (e.g. raw pgx messages) could leak internals to
-same-tenant audit readers. The `success:false` flag is the audit-level
-signal; full detail is in the operator-side slog log for the request.
+`failReason` is the failure text the compute member itself sent, and nothing
+else. It is absent for every other failure: a member that answered
+`success:false` with no text, no member, no answer, an answer that could not be
+read, a savepoint failure, a platform error. Engine-wrapped error text (e.g.
+raw pgx messages) never enters the record: it could leak internals to
+same-tenant audit readers. Full detail is in the operator-side slog log for the
+request.
+
+Audit events are written in the segment's transaction and kept only when it
+commits, except the record of a `COMMIT_BEFORE_DISPATCH` processor that fails
+after its segment boundary committed (below). A failed `ASYNC_NEW_TX`
+processor's record is kept when the operation commits; the operation goes on
+past the failure unless the savepoint cannot be created, undone or released, or
+a scheduled run refuses to dispatch the processor. A processor failure in
+`SYNC` or `ASYNC_SAME_TX` fails the operation, and its record is rolled back
+with the transaction — unless the processor ran in a callback that joined
+another operation's transaction, whose events commit if that operation commits.
+A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
+committed `T_pre` has its record written in a transaction of its own, begun
+with the request's tenant and principal, so the record is kept although the
+operation fails. A `COMMIT_BEFORE_DISPATCH` processor whose segment boundary
+itself failed leaves no record: the record is written in `T_pre`, which the
+failed operation does not commit, or whose commit outcome is in doubt.
+
+A `PAUSE_FOR_PROCESSING` with no matching `STATE_PROCESS_RESULT` therefore has
+one of these causes:
+
+- The record was not written. Recording is best effort: a `Record` that fails,
+  or the transaction of a failed `COMMIT_BEFORE_DISPATCH` processor's record
+  that cannot be begun or committed, is logged at WARN. The operation's outcome
+  does not change. (A member's failure text holding U+0000, which the audit
+  trail cannot hold on PostgreSQL, never reaches the record: the answer is refused as
+  unreadable, so the record carries no `failReason`: an `ASYNC_NEW_TX`
+  processor's record is kept without it, and any other mode's rolls back
+  with the operation the failure fails.)
+- The processor ran in a callback that joined another operation's transaction,
+  and the fence refused the callback's chain after the dispatch, because its
+  compute node was replaced or its callout ended. The chain records nothing more,
+  and its `PAUSE_FOR_PROCESSING` stays in the joined transaction, which commits
+  if the operation that began it commits.
+- The commit of `T_pre` at the segment boundary was interrupted, and its
+  outcome is in doubt. The processor was not dispatched and the client is
+  answered with a 5xx. When that commit did land, `PAUSE_FOR_PROCESSING` is
+  kept, and no record follows it.
+- The operation did not complete after the segment boundary: the engine crashed
+  between segments; or the processor succeeded, its record went into `T_post`,
+  and the operation then failed there — at a later processor, a criterion, a
+  cascade limit, the arming or cancelling of the settled state's scheduled
+  tasks, or the final save, or because the scheduled run it belongs to was
+  cancelled — so `T_post` was rolled back with the record in it.
 
 ### Cascade-depth limits
 
@@ -433,8 +487,8 @@ signal; full detail is in the operator-side slog log for the request.
 - Static cycle detection runs at workflow import time (cycles reachable only
   via automated transitions cause `400 VALIDATION_FAILED`).
 
-A cascade that hits a limit emits `STATE_MACHINE_CANCELLED` and returns
-`WORKFLOW_FAILED`.
+A cascade that hits a limit records `CANCEL`, with the limit and the state in
+`data.reason`, and returns `WORKFLOW_FAILED`.
 
 ### Engine return value: `EngineResult`
 

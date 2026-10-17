@@ -153,12 +153,12 @@ func RunCallout_PassFromAnotherPnode(t *testing.T, fixture MultiNodeFixture) {
 // first try (minor 1 under the next major) is admitted although minor 2 was
 // seen under the previous major.
 //
-// Two peers advertise the tag and the owner's peer order is random, so the
-// scenario drives creates until one is handed to pnode 1 first — seen from
-// pnode 1's held client receiving work — and asserts only on that one. A create
-// handed to pnode 2 first is served there at once, costs milliseconds and is
-// discarded. Ten creates all going to pnode 2 first has probability 2^-10, and
-// the scenario then fails loudly rather than passing vacuously.
+// The owner orders the peers that advertise a tag at random, and reads them
+// again before every hand-over. So the order here is fixed by when each peer
+// advertises the tag, not left to chance: when the create starts only pnode 1
+// does, so it is asked first; pnode 2's compute client attaches while pnode 1
+// holds the work, and the owner knows it before pnode 1 gives up, so pnode 2
+// is asked next.
 func RunCallout_MinorAbsorbedAcrossHandOvers(t *testing.T, fixture MultiNodeFixture) {
 	urls := mnRequire(t, fixture, 3)
 	tenant := fixture.NewTenant(t)
@@ -169,51 +169,43 @@ func RunCallout_MinorAbsorbedAcrossHandOvers(t *testing.T, fixture MultiNodeFixt
 	try1 := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: parity.ComputeBehaviourLateCallback})
 	try2 := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: parity.ComputeBehaviourLateCallback})
 	mnWarmUp(t, fixture, owner, tenant, 1, "mn-minor-w1")
-	mnWarmUp(t, fixture, owner, tenant, 2, "mn-minor-w2", tag) // the healthy one, on pnode 2
 	// Not answering IS the behaviour under test here (both tries, then the
-	// hand-over), so responseTimeoutMs stays a real dispatch timeout — just
-	// the smallest one that stays deterministic on a real cluster (the same
-	// bound calloutShortLimit uses elsewhere for a compute client that never
-	// answers).
+	// hand-over), so responseTimeoutMs stays a real dispatch timeout. Each of
+	// pnode 1's two tries is a window the scenario works in, and the limit is
+	// sized for both: the owner learns of pnode 2's compute client before
+	// pnode 1 gives up, and the second try's callback reaches the owner at
+	// both doors before the second window ends — the owner raises the major
+	// then, and from that moment refuses that callback.
 	cbRouteSetupModel(t, owner, primary, cbRouteSampleCreateSecondary, mnWorkflow("mn-minor-wf",
-		mnProc("cb-create-secondary", "SYNC", tag, cbRouteContext(secondary, "mn-minor"), map[string]any{"idempotent": true, "responseTimeoutMs": 300})))
+		mnProc("cb-create-secondary", "SYNC", tag, cbRouteContext(secondary, "mn-minor"), map[string]any{"idempotent": true, "responseTimeoutMs": 2000})))
 
-	for attempt := 1; attempt <= 10; attempt++ {
-		done := mnGoCreate(t, owner, primary, cbRouteSampleCreateSecondary)
-		exercised := false
-		for waiting := true; waiting; {
-			select {
-			case r := <-done:
-				if r.err != nil || r.status != http.StatusOK {
-					t.Fatalf("attempt %d, served by pnode 2 first: status=%d err=%v body=%s", attempt, r.status, r.err, r.body)
-				}
-				waiting = false
-			case <-time.After(50 * time.Millisecond):
-				if len(try1.Received(t)) > 0 {
-					exercised, waiting = true, false
-				}
-			}
-		}
-		if !exercised {
-			continue // pnode 2 was asked first; nothing to assert on this create
-		}
+	// Only pnode 1 advertises the tag: try (M,1) goes to try1, which holds it.
+	done := mnGoCreate(t, owner, primary, cbRouteSampleCreateSecondary)
+	requestID := parity.AwaitReceived(t, try1, 1, 15*time.Second)[0].RequestID
+	// The healthy one, on pnode 2. mnWarmUp returns once the owner knows
+	// pnode 2's list, tag included.
+	healthy := mnWarmUp(t, fixture, owner, tenant, 2, "mn-minor-w2", tag)
 
-		// pnode 1 was asked first: try (M,1) went to try1, which holds it.
-		parity.AwaitReceived(t, try2, 1, 15*time.Second) // after 300ms: try (M,2) went to try2
-		cb2 := mnLastCallback(t, try2.Release(t))
-		if cb2.HTTPStatus != http.StatusOK || (cb2.GRPCAttempted && !cb2.GRPCSuccess) {
-			t.Fatalf("the second try's callback: HTTP %d %s, gRPC success=%t; want admitted — a higher minor is absorbed",
-				cb2.HTTPStatus, cb2.HTTPErrorCode, cb2.GRPCSuccess)
-		}
-		mnAssertRefused(t, "the first try, after the second try's callback was seen", mnLastCallback(t, try1.Release(t)))
-
-		// try2 never answers; pnode 1 reports no_answer; the callout is handed
-		// over to pnode 2, whose cb-create-secondary calls back under (M+1, 1).
-		r := mnAwaitCreate(t, done, 60*time.Second)
-		if r.status != http.StatusOK {
-			t.Fatalf("create: %d %s; want 200 — the second hand-over's minor 1 must be admitted", r.status, r.body)
-		}
-		return
+	parity.AwaitReceived(t, try2, 1, 15*time.Second) // after try1's limit: try (M,2) went to try2
+	cb2 := mnLastCallback(t, try2.Release(t))
+	if cb2.HTTPStatus != http.StatusOK || (cb2.GRPCAttempted && !cb2.GRPCSuccess) {
+		t.Fatalf("the second try's callback: HTTP %d %s, gRPC success=%t %s; want admitted — a higher minor is absorbed",
+			cb2.HTTPStatus, cb2.HTTPErrorCode, cb2.GRPCSuccess, cb2.GRPCErrorMessage)
 	}
-	t.Fatal("pnode 1 was never asked first in 10 creates (probability 2^-10); the scenario asserted nothing")
+	mnAssertRefused(t, "the first try, after the second try's callback was seen", mnLastCallback(t, try1.Release(t)))
+
+	// try2 never answers; pnode 1 reports no_answer; the callout is handed
+	// over to pnode 2, whose cb-create-secondary calls back under (M+1, 1).
+	r := mnAwaitCreate(t, done, 60*time.Second)
+	if r.status != http.StatusOK {
+		t.Fatalf("create: %d %s; want 200 — the second hand-over's minor 1 must be admitted", r.status, r.body)
+	}
+	// One hand-over to each peer, in that order: pnode 1 was asked once, and
+	// pnode 2 made the try that succeeded.
+	if n1, n2 := len(try1.Received(t)), len(try2.Received(t)); n1 != 1 || n2 != 1 {
+		t.Errorf("pnode 1's compute clients received %d and %d requests; want 1 each — pnode 1 was asked more than once", n1, n2)
+	}
+	if !mnHasRequest(t, healthy, requestID) {
+		t.Errorf("pnode 2's compute client never received the callout %s; want the try that succeeded", requestID)
+	}
 }

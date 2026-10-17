@@ -27,7 +27,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -233,7 +235,7 @@ func TestUpdateCollection_IfMatch_PerItemStaleIsolated(t *testing.T) {
 
 	// Audit-trail self-consistency: failed item must have STATE_MACHINE_START
 	// paired with a TRANSITION_ABORTED carrying reason=ENTITY_MODIFIED.
-	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual, "")
 }
 
 // assertTransitionAbortedPaired verifies that the entity's audit log contains
@@ -241,8 +243,9 @@ func TestUpdateCollection_IfMatch_PerItemStaleIsolated(t *testing.T) {
 // emitted by the engine or handler when a stale ifMatch precondition aborted
 // the in-flight transition. The abort event's data must reference
 // reason=ENTITY_MODIFIED, the supplied stale txID as expectedTxId, and the
-// entity's actual row txID as actualTxId.
-func assertTransitionAbortedPaired(t *testing.T, entityID, expectedStaleTx, actualEntityTx string) {
+// entity's actual row txID as actualTxId. wantTransition is the aborted
+// transition's name, and "" for a loopback, whose abort carries no transition.
+func assertTransitionAbortedPaired(t *testing.T, entityID, expectedStaleTx, actualEntityTx, wantTransition string) {
 	t.Helper()
 	events := getSMAuditEvents(t, entityID)
 	var sawStart bool
@@ -273,6 +276,15 @@ func assertTransitionAbortedPaired(t *testing.T, entityID, expectedStaleTx, actu
 	}
 	if got, _ := data["actualTxId"].(string); got != actualEntityTx {
 		t.Errorf("entity %s: abort actualTxId = %q; want %q", entityID, got, actualEntityTx)
+	}
+	if wantTransition == "" {
+		// A loopback has no transition: the data holds exactly these keys.
+		keys := slices.Sorted(maps.Keys(data))
+		if want := []string{"actualTxId", "eventType", "expectedTxId", "reason"}; !slices.Equal(keys, want) {
+			t.Errorf("entity %s: loopback abort data keys = %v; want %v", entityID, keys, want)
+		}
+	} else if got := data["transition"]; got != wantTransition {
+		t.Errorf("entity %s: abort transition = %v; want %q", entityID, got, wantTransition)
 	}
 }
 
@@ -404,8 +416,8 @@ func TestUpdateCollection_IfMatch_AllStale(t *testing.T) {
 
 	// Audit-trail self-consistency: every failed item must have a paired
 	// STATE_MACHINE_START + TRANSITION_ABORTED sequence.
-	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
-	assertTransitionAbortedPaired(t, id2, stale, tx2Actual)
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual, "")
+	assertTransitionAbortedPaired(t, id2, stale, tx2Actual, "")
 }
 
 // --- Test 5: CBD interaction with stale ifMatch ---
@@ -432,7 +444,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "upd-coll-cbd-counted",
+					"processors": [{"type": "externalized", "name": "upd-coll-cbd-counted",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
@@ -491,7 +503,7 @@ func TestUpdateCollection_IfMatch_CBDStaleAbortsBeforeDispatch(t *testing.T) {
 	// segment-flush BEFORE the external dispatch. The TRANSITION_ABORTED event
 	// must precede any dispatch attempt and pair with the entry-side
 	// STATE_MACHINE_START.
-	assertTransitionAbortedPaired(t, id1, stale, tx1Actual)
+	assertTransitionAbortedPaired(t, id1, stale, tx1Actual, "approve")
 }
 
 // --- Test 6: non-conflict per-item failure still rolls the chunk back ---
@@ -665,13 +677,14 @@ func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T
 	var sideWriteStatus int
 	var sideWriteErr error
 	var targetID string
+	testCtx := e2eCtx(t) // the closure never touches t
 
 	procSvc.RegisterProcessor("upd-coll-cbd-post-counted", func(ctx context.Context, entity *spi.Entity, proc spi.ProcessorDefinition) (*spi.Entity, error) {
 		dispatchCount.Add(1)
 		// An ordinary committed update from somebody else, landing between
 		// TX_pre's commit and the apply-result CAS. doAuthRaw, not doAuth: this
 		// runs on the server's goroutine and must not call t.Fatalf.
-		resp, err := doAuthRaw(context.Background(), http.MethodPut,
+		resp, err := doAuthRaw(testCtx, http.MethodPut,
 			"/api/entity/JSON/"+targetID,
 			`{"name":"X_CONCURRENT","amount":7,"status":"other"}`)
 		if err != nil {
@@ -691,7 +704,7 @@ func TestUpdateCollection_IfMatch_CBDPostSegmentConflictAbortsChunk(t *testing.T
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "upd-coll-cbd-post-counted",
+					"processors": [{"type": "externalized", "name": "upd-coll-cbd-post-counted",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},

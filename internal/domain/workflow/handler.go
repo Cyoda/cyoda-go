@@ -13,6 +13,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
 
 // descLogPreviewRunes caps the per-workflow `desc` field in the audit-log
@@ -200,6 +201,28 @@ func applyAttachEntityDefaults(workflows []workflowImportDef, probe presenceProb
 	}
 }
 
+// applyProcessorTypeDefault stores an omitted or empty processor type as
+// ProcessorTypeExternalized, the location the engine runs it in, so the
+// export always carries a value of the published discriminator mapping. It
+// runs after the structural validator, which has refused every other value.
+func applyProcessorTypeDefault(workflows []spi.WorkflowDefinition) {
+	for _, wf := range workflows {
+		for _, state := range wf.States {
+			// state.Transitions and tr.Processors share their backing arrays
+			// with the stored definitions, so writes through the index reach
+			// the value the handler goes on to persist.
+			for j := range state.Transitions {
+				procs := state.Transitions[j].Processors
+				for k := range procs {
+					if procs[k].Type == "" {
+						procs[k].Type = ProcessorTypeExternalized
+					}
+				}
+			}
+		}
+	}
+}
+
 // ImportEntityModelWorkflow handles POST /model/{entityName}/{modelVersion}/workflow/import.
 func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
 	r.Body = http.MaxBytesReader(w, r.Body, 10*1024*1024)
@@ -207,6 +230,13 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
+		return
+	}
+	// The workflow's names reach the state-machine audit trail, which cannot
+	// hold U+0000 (PostgreSQL refuses it in jsonb), and the stores cannot hold
+	// every such text either: refused here, as an entity payload is.
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
+		common.WriteError(w, r, appErr)
 		return
 	}
 
@@ -358,6 +388,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
 	}
+	applyProcessorTypeDefault(incoming)
 	// The structural validator above sees delayMs only as the SPI's int64;
 	// the raw request says whether it was sent at all beside a function.
 	if err := checkDelayBesideFunction(probe); err != nil {

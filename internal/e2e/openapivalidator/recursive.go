@@ -53,8 +53,9 @@ import (
 //
 // One defect gives one row. reported is the error kin's own ValidateResponse
 // returned for the same body (nil if none). A walk mismatch whose absolute
-// JSON pointer and reason equal those of a row in reported is dropped: it is
-// kin's row again. This happens where the walk checks a union kin also
+// JSON pointer and reason equal those of a row in reported, or of an earlier
+// walk mismatch, is dropped: it is the same row again. A walk mismatch
+// repeats a row of reported where the walk checks a union that kin also
 // checked, such as a union whose discriminator does not resolve. The result
 // is nil or an openapi3.MultiError.
 func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, status int, header http.Header, body []byte, reported error) error {
@@ -68,9 +69,22 @@ func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, stat
 	if err := dec.Decode(&value); err != nil {
 		return nil // kin reports the undecodable body
 	}
+	if errs := recursiveErrors(schema, value, v.recursive, schemaOptions(v.opts, route.Spec), reported); len(errs) > 0 {
+		return errs
+	}
+	return nil
+}
+
+// recursiveErrors walks value alongside schema (see checkRecursive) and
+// returns the walk's mismatches, less each one that repeats a row of
+// reported, kin's own error for the same value, or an earlier mismatch: kin
+// gives one row per union member for a value no member accepts, all with the
+// same pointer and reason. recursive holds the schemas the walk enters; opts
+// are the options of each fresh VisitJSON.
+func recursiveErrors(schema *openapi3.Schema, value any, recursive map[*openapi3.Schema]bool, opts []openapi3.SchemaValidationOption, reported error) openapi3.MultiError {
 	w := &recursiveWalk{
-		recursive: v.recursive,
-		opts:      schemaOptions(v.opts, route.Spec),
+		recursive: recursive,
+		opts:      opts,
 		checked:   map[reentry]bool{},
 	}
 	w.walk(schema, value, "", map[*openapi3.Schema]string{})
@@ -85,13 +99,13 @@ func (v *Validator) checkRecursive(route *routers.Route, req *http.Request, stat
 	}
 	var errs openapi3.MultiError
 	for _, m := range w.errs {
-		if k, ok := keyOf(m.pointer, m.err); ok && seen[k] {
-			continue
+		if k, ok := keyOf(m.pointer, m.err); ok {
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
 		}
 		errs = append(errs, m)
-	}
-	if len(errs) == 0 {
-		return nil
 	}
 	return errs
 }
@@ -131,9 +145,10 @@ func keyOf(prefix string, err error) (mismatchKey, bool) {
 	return mismatchKey{pointer: p, reason: se.Reason}, true
 }
 
-// responseSchema returns the JSON body schema that openapi3filter.ValidateResponse
-// validates for this response, or nil when it validates no JSON body
-// (kin-openapi v0.149.0 openapi3filter/validate_response.go:22-120).
+// responseSchema returns the JSON body schema that
+// openapi3filter.ValidateResponse validates for this response, or nil when it
+// validates no JSON body (kin-openapi v0.149.0
+// openapi3filter/validate_response.go:22-120).
 func responseSchema(route *routers.Route, opts *openapi3filter.Options, req *http.Request, status int, header http.Header) *openapi3.Schema {
 	if req.Method == http.MethodHead || opts.ExcludeResponseBody {
 		return nil
@@ -185,9 +200,30 @@ func schemaOptions(o *openapi3filter.Options, doc *openapi3.T) []openapi3.Schema
 }
 
 // recursiveSchemas returns the schemas of doc's responses from which a schema
+// cycle is reachable (see recursiveFrom).
+func recursiveSchemas(doc *openapi3.T) map[*openapi3.Schema]bool {
+	var roots []*openapi3.Schema
+	for _, item := range doc.Paths.Map() {
+		for _, op := range item.Operations() {
+			for _, resp := range op.Responses.Map() {
+				if resp.Value == nil {
+					continue
+				}
+				for _, media := range resp.Value.Content {
+					if media.Schema != nil {
+						roots = append(roots, media.Schema.Value)
+					}
+				}
+			}
+		}
+	}
+	return recursiveFrom(roots...)
+}
+
+// recursiveFrom returns the schemas reachable from roots from which a schema
 // cycle is reachable through the edges kin's visitJSON follows: allOf, oneOf,
 // anyOf, prefixItems, items, properties and additionalProperties.
-func recursiveSchemas(doc *openapi3.T) map[*openapi3.Schema]bool {
+func recursiveFrom(roots ...*openapi3.Schema) map[*openapi3.Schema]bool {
 	const (
 		visiting = 1
 		done     = 2
@@ -216,19 +252,8 @@ func recursiveSchemas(doc *openapi3.T) map[*openapi3.Schema]bool {
 		}
 		return found
 	}
-	for _, item := range doc.Paths.Map() {
-		for _, op := range item.Operations() {
-			for _, resp := range op.Responses.Map() {
-				if resp.Value == nil {
-					continue
-				}
-				for _, media := range resp.Value.Content {
-					if media.Schema != nil {
-						visit(media.Schema.Value)
-					}
-				}
-			}
-		}
+	for _, root := range roots {
+		visit(root)
 	}
 	return recursive
 }

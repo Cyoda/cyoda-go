@@ -1,18 +1,36 @@
 package parity
 
-import "testing"
+import (
+	"os"
+	"regexp"
+	"strconv"
+	"testing"
+)
 
-// wantParityScenarioCount is the number of entries in allTests. The count in
-// the registry.go header comment drifted silently for many PRs because nothing
-// asserted it; this test converts that drift into a failure. Bump this constant
-// (and the header comment) in the same change that adds or removes a scenario.
-const wantParityScenarioCount = 243
+// wantParityScenarioCount is the number of entries in allTests, which the
+// registry.go header comment states too. Change both in the same change that
+// adds or removes a scenario; TestParityScenarioCount fails until they agree.
+const wantParityScenarioCount = 249
 
-// TestParityScenarioCount guards the documented scenario count against silent
-// drift.
+// headerCount finds the count in the registry.go header comment.
+var headerCount = regexp.MustCompile(`// allTests holds (\d+) scenarios`)
+
+// TestParityScenarioCount keeps allTests, wantParityScenarioCount and the
+// count in the registry.go header comment the same.
 func TestParityScenarioCount(t *testing.T) {
 	if got := len(allTests); got != wantParityScenarioCount {
 		t.Errorf("parity scenario count = %d, want %d; update wantParityScenarioCount and the registry.go header comment together", got, wantParityScenarioCount)
+	}
+	src, err := os.ReadFile("registry.go")
+	if err != nil {
+		t.Fatalf("read registry.go: %v", err)
+	}
+	m := headerCount.FindSubmatch(src)
+	if m == nil {
+		t.Fatalf("registry.go header comment does not state the count as %s", headerCount)
+	}
+	if n, _ := strconv.Atoi(string(m[1])); n != wantParityScenarioCount {
+		t.Errorf("registry.go header comment states %d scenarios, want %d", n, wantParityScenarioCount)
 	}
 }
 

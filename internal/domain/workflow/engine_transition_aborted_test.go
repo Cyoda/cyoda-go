@@ -125,8 +125,8 @@ func TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted(t *testing.T) {
 	if got, _ := abortEv.Data["actualTxId"].(string); got != seedTxID {
 		t.Errorf("abort event actualTxId = %q; want %q (entity row's current txID)", got, seedTxID)
 	}
-	if abortEv.Data["transitionName"] != "go" {
-		t.Errorf("abort event transitionName = %v; want \"go\"", abortEv.Data["transitionName"])
+	if abortEv.Data["transition"] != "go" {
+		t.Errorf("abort event transition = %v; want \"go\"", abortEv.Data["transition"])
 	}
 
 	// Audit events are bound to the transaction on every backend: once it

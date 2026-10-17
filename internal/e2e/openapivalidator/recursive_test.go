@@ -12,8 +12,10 @@ import (
 )
 
 // recursiveFixtureYAML has a recursive condition schema shaped like the
-// spec's GroupConditionDto: a group's conditions are a discriminated oneOf
-// that includes the group itself. /flat has no recursion.
+// spec's GroupConditionDto as the validator's view presents it: a group's
+// conditions are a discriminated oneOf (the view's replacement of a use of
+// the base QueryConditionDto) that includes the group itself. /flat has no
+// recursion.
 const recursiveFixtureYAML = `openapi: 3.1.0
 info: { title: recursive fixture, version: "1" }
 paths:
@@ -195,6 +197,18 @@ func TestValidator_RecursiveSchema_DepthOneMismatchReportedOnce(t *testing.T) {
 	mismatches := validateRecursiveFixture(t, "/group", body)
 	if len(mismatches) != 1 {
 		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+}
+
+// One defect gives one row: kin refuses a null no union member accepts once
+// per member, with the same pointer and reason, and the walk keeps one.
+func TestValidator_RecursiveSchema_NullMemberReportedOnce(t *testing.T) {
+	mismatches := validateRecursiveFixture(t, "/group", `{"type":"group","conditions":[null]}`)
+	if len(mismatches) != 1 {
+		t.Fatalf("expected exactly 1 mismatch, got %d: %+v", len(mismatches), mismatches)
+	}
+	if want := `recursive schema at "/conditions/0": Value is not nullable`; !strings.Contains(mismatches[0].Reason, want) {
+		t.Errorf("mismatch reason = %s, want it to contain %s", mismatches[0].Reason, want)
 	}
 }
 

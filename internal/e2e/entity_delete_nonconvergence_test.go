@@ -8,14 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/getkin/kin-openapi/openapi3"
-
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -81,17 +78,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 	mux := http.NewServeMux()
 	mux.Handle("/api/", http.StripPrefix("/api", withTenant))
 
-	swagger, err := genapi.GetSwagger()
-	if err != nil {
-		t.Fatalf("get swagger: %v", err)
-	}
-	swagger.Servers = openapi3.Servers{{URL: "/api"}}
-	validator, err := openapivalidator.NewValidator(swagger)
-	if err != nil {
-		t.Fatalf("build validator: %v", err)
-	}
-
-	srv := httptest.NewServer(openapivalidator.NewMiddleware(validator)(mux))
+	srv := httptest.NewServer(validated(mux))
 	t.Cleanup(srv.Close)
 	return srv.URL
 }

@@ -2,24 +2,22 @@ package parity
 
 import "testing"
 
-// Total parity scenarios: 243 (guarded by TestParityScenarioCount — bump
-// wantParityScenarioCount in registry_count_test.go when adding/removing an
-// entry, or the test fails).
-// (Phase 1 smoke + Phase 4a CRUD/persistence + Phase 4b workflow/compute +
-// distributed-safety contracts + schema extensions + grouped stats +
-// unknown-model 404 contract).
-// ExternalAPI scenarios registered via parity.Register() in e2e/parity/externalapi/,
-// scheduled-transition-runtime scenarios registered via parity.Register()
-// in e2e/parity/scheduledtransition/, and scheduled-transition Function
-// scenarios registered via parity.Register() in e2e/parity/scheduledfunction/
-// are additional to this count.
+// allTests holds 249 scenarios in this package: the entries of its literal
+// below, and those that files of this package add with Register from init()
+// (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
+// TestParityScenarioCount (registry_count_test.go) checks the number: change
+// it there and here in the change that adds or removes a scenario. The
+// scenarios cover model and workflow import and export, entity CRUD and
+// paging, bi-temporal reads, audit and history, tenant isolation, messaging,
+// search (operators, paths, temporal filters, sort, negation, grouped
+// statistics), workflows with processors and criteria, compute-node callbacks
+// and callout failover, schema extensions and type admission, entity PATCH,
+// composite unique keys, attribution and on-behalf-of writes, scheduled tasks,
+// signing keys, M2M clients, trusted keys and the token exchange.
 //
-// Unmigrated internal/e2e/ tests (40 remaining): entity lifecycle,
-// model extension, transaction stress tests, workflow failure paths,
-// workflow loopback/cascade-depth/multi-processor, search string operators,
-// message batch delete, workflow overwrite/export-empty. These continue
-// to run as postgres-only tests and will be migrated to the parity suite
-// in a follow-up effort.
+// The packages e2e/parity/externalapi, e2e/parity/scheduledtransition and
+// e2e/parity/scheduledfunction add further scenarios with Register; they are
+// not in that number.
 
 // NamedTest is a single parity scenario plus the name under which it
 // shows up in subtest output.
@@ -93,6 +91,12 @@ var allTests = []NamedTest{
 	{"AuditCursorWalkOverTie", RunAuditCursorWalkOverTie},
 	{"AuditFinishedEventIDMatchesSearch", RunAuditFinishedEventIDMatchesSearch},
 	{"AuditFinishedEventIsLatestOfTransaction", RunAuditFinishedEventIsLatestOfTransaction},
+	{"AuditCreateEventData", RunAuditCreateEventData},
+	{"AuditFinishAllCriteriaRejected", RunAuditFinishAllCriteriaRejected},
+	{"AuditDataEventTypeMatchesOuter", RunAuditDataEventTypeMatchesOuter},
+	// A COMMIT_BEFORE_DISPATCH processor that fails after its segment boundary
+	// committed still has its result in the trail.
+	{"AuditCBDFailedProcessorRecorded", RunAuditCBDFailedProcessorRecorded},
 
 	// History reads (task E6): getEntityChangesMetadata's
 	// newest-first/Version-DESC-tiebreak/tombstone-HasEntity contract and
@@ -377,6 +381,13 @@ var allTests = []NamedTest{
 	// Criterion rejection reason — inline (non-FUNCTION) criterion default
 	// audit reason is backend-agnostic (durable via the AUTOMATED cascade path).
 	{"CriterionReasonInlineDefault", RunCriterionReasonInlineDefault},
+
+	// A compute member's reason holding U+0000 makes its answer unreadable: the
+	// create fails with 400 and commits nothing, on every backend.
+	{"AuditNULAnswerRefused", RunAuditNULAnswerRefused},
+	// A transition name holding U+0000 is refused with 400 before the run
+	// records anything, and the entity is unchanged, on every backend.
+	{"TransitionNameNULRefused", RunTransitionNameNULRefused},
 
 	// Follow-on-action attribution — the {attributed principal, executor} pair
 	// recorded on change history must be IDENTICAL on every backend. Guards the

@@ -430,5 +430,5 @@ func rpcProcJSON(tag string, tc rpcCalloutCase) string {
 	if tc.idempotent {
 		cfg += `, "idempotent": true`
 	}
-	return fmt.Sprintf(`{"type": "calculator", "name": "proc", "executionMode": "SYNC", "config": {%s}}`, cfg)
+	return fmt.Sprintf(`{"type": "externalized", "name": "proc", "executionMode": "SYNC", "config": {%s}}`, cfg)
 }

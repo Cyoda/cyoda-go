@@ -19,7 +19,7 @@ func processorRPCWorkflowJSON(wfName, procName, tag string, responseTimeoutMs in
 			"version": "1.1", "name": %q, "initialState": "Open", "active": true,
 			"states": {
 				"Open": {"transitions": [{"name": "init", "next": "Closed", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": %d}}]
 				}]},
 				"Closed": {}

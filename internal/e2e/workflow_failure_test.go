@@ -27,7 +27,7 @@ func TestWorkflowFailure_ProcessorError(t *testing.T) {
 			"version": "1.1", "name": "fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "boom", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "boom", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -71,7 +71,7 @@ func TestWorkflowFailure_ProcessorWarnings(t *testing.T) {
 			"version": "1.1", "name": "warn-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "warn-proc", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "warn-proc", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -172,7 +172,7 @@ func TestWorkflowFailure_ProcessorContextCancelled(t *testing.T) {
 			"version": "1.1", "name": "timeout-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "ctx-cancel", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "ctx-cancel", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -207,7 +207,7 @@ func TestWorkflowFailure_ProcessorPanic(t *testing.T) {
 			"version": "1.1", "name": "panic-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "panic-proc", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "panic-proc", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -254,7 +254,7 @@ func TestWorkflowFailure_AsyncNewTxProcessorFailure(t *testing.T) {
 			"version": "1.1", "name": "async-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "async-fail", "executionMode": "ASYNC_NEW_TX",
+					"processors": [{"type": "externalized", "name": "async-fail", "executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -299,11 +299,11 @@ func TestWorkflowFailure_AsyncNewTxSuccessThenCascadeFails(t *testing.T) {
 			"version": "1.1", "name": "async-then-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "STEP1", "manual": false,
-					"processors": [{"type": "calculator", "name": "async-ok", "executionMode": "ASYNC_NEW_TX",
+					"processors": [{"type": "externalized", "name": "async-ok", "executionMode": "ASYNC_NEW_TX",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"STEP1": {"transitions": [{"name": "step2", "next": "STEP2", "manual": false,
-					"processors": [{"type": "calculator", "name": "sync-fail", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "sync-fail", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"STEP2": {}

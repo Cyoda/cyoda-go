@@ -32,7 +32,7 @@ const joinedWindowItemCount = 101
 // otherwise rests in READY.
 func joinedWindowTargetWorkflow(name, proc string) string {
 	cbd := fmt.Sprintf(`"criterion": {"type": "simple", "jsonPath": "$.status", "operatorType": "EQUALS", "value": "go"},
-		"processors": [{"type": "calculator", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
+		"processors": [{"type": "externalized", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
 			"config": {"attachEntity": true, "calculationNodesTags": ""}}]`, proc)
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",

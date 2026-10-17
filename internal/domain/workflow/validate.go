@@ -10,38 +10,30 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
 
-// Processor execution-mode tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's
-// ExternalizedProcessorDefinitionDtoExecutionMode constants). Centralised
-// here as untyped strings so engine logic, validator rules, and tests can
-// compare against a single source — the SPI's ExecutionMode field is itself
-// a plain string, so an enum type would not buy compile-time safety.
+// Processor execution-mode tokens: the executionMode enum of
+// ExternalizedProcessorDefinitionDto in api/openapi.yaml, for which
+// api/generated.go declares no constants. Centralised here as untyped strings
+// so engine logic, validator rules, and tests can compare against a single
+// source — the SPI's ExecutionMode field is itself a plain string, so an enum
+// type would not buy compile-time safety.
 const (
-	ExecutionModeSync                 = "SYNC"
+	ExecutionModeSync                 = contract.ExecutionModeSync // also the mode of a processor with none configured
 	ExecutionModeAsyncSameTx          = "ASYNC_SAME_TX"
 	ExecutionModeAsyncNewTx           = "ASYNC_NEW_TX"
 	ExecutionModeCommitBeforeDispatch = "COMMIT_BEFORE_DISPATCH"
 )
 
-// Processor execution-location tokens. Sourced from the OpenAPI enum in
-// api/openapi.yaml (mirrored in api/generated.go's ProcessorDefinitionDto
-// type constants). Centralised here as untyped strings so engine logic,
-// validator rules, and tests can compare against a single source — the
-// SPI's ProcessorDefinition.Type field is itself a plain string, so an
-// enum type would not buy compile-time safety.
-//
-// Empty value is treated as ProcessorTypeExternalized at dispatch. Any
-// value other than ProcessorTypeInternalized falls through to the
-// ExecutionMode dispatch path at engine fire time; the only Type
-// rejection performed by the engine is on the exact value
-// ProcessorTypeInternalized.
-const (
-	ProcessorTypeExternalized = "externalized"
-	ProcessorTypeInternalized = "internalized"
-)
+// ProcessorTypeExternalized is the one processor execution-location token:
+// the only value in the ProcessorDefinitionDto discriminator mapping of
+// api/openapi.yaml. Import refuses any other value and stores an omitted or
+// empty one as this value (applyProcessorTypeDefault), so every stored and
+// exported processor carries it. The SPI's ProcessorDefinition.Type field is
+// a plain string, so an enum type would not buy compile-time safety.
+const ProcessorTypeExternalized = "externalized"
 
 // validExecutionModes is the set of accepted ExecutionMode values for
 // import-time validation (audit §H4). Empty string is also accepted —
@@ -482,6 +474,8 @@ func walkCriterion(cond predicate.Condition, location string) error {
 //   - H6.e — Transition Names must be unique within a single state.
 //   - H4  — ExecutionMode must be one of SYNC, ASYNC_SAME_TX,
 //     ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty (defaults to SYNC).
+//   - Type — a processor's Type must be exactly externalized, or empty
+//     (stored as externalized by applyProcessorTypeDefault).
 //   - M1  — retryPolicy ∈ {NONE, FIXED, ""} on every processor, every
 //     schedule function, and every function condition in a criterion.
 //
@@ -739,6 +733,10 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: crossoverToAsyncMs is not supported on this backend (async/crossover semantics are not implemented)",
 						wf.Name, stateName, tr.Name, p.Name)
+				}
+				if p.Type != "" && p.Type != ProcessorTypeExternalized {
+					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown type %q (allowed: externalized, or empty)",
+						wf.Name, stateName, tr.Name, p.Name, p.Type)
 				}
 				if _, ok := validExecutionModes[p.ExecutionMode]; !ok {
 					return fmt.Errorf("workflow %q state %q transition %q processor %q: unknown executionMode %q (allowed: SYNC, ASYNC_SAME_TX, ASYNC_NEW_TX, COMMIT_BEFORE_DISPATCH, or empty)",

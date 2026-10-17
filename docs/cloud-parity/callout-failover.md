@@ -135,6 +135,29 @@ A cut piece ends with `…`, so a reader can tell a shortened message from a sho
 one. A member may contribute at most 32 warnings to one try's response; past
 that, one warning says the rest were left out.
 
+A `success: false` answer with no message gives the client text
+`<kind> returned failure` (`processor`, `criteria` or `function`), the same
+whether the member was attached to the node running the callout or the try was
+handed over to a peer. A processor's `STATE_PROCESS_RESULT` audit event records
+the member's own message, cut as above, as `data.failReason`, and nothing else:
+the platform's own sentence for a member that sent no message, or for a
+hand-over that failed, is never a `failReason`. Every failure that is not the
+member's own answer — no member, no answer, an answer that cannot be read, a
+savepoint failure, a platform error — records no `failReason`. The record is
+written in the operation's transaction and kept only when that transaction
+commits: for a failed `ASYNC_NEW_TX` processor whose failure the operation goes
+on past, when the operation commits; and for a processor in a callback that
+joined another operation's transaction, when that operation commits. A failed
+`SYNC` or `ASYNC_SAME_TX` processor fails the operation, and its record is
+rolled back with it. A `COMMIT_BEFORE_DISPATCH` processor that fails after its
+segment boundary committed has its record written in a transaction of its own,
+so it is kept although the operation fails. (On a callback that joined another
+transaction, such a processor is refused before the boundary, and its record
+stays in the joined transaction; when the boundary itself fails, the record is
+rolled back with the failed operation, or is not kept when the boundary's
+commit was interrupted and its outcome is in doubt.) Whenever the record is rolled back, the
+client's error message is where the member's text reaches the caller.
+
 `CALLOUT_FAILED` uses the shape of Cloud's exhaustion message:
 
 ```

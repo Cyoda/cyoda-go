@@ -28,6 +28,7 @@ func init() {
 		NamedTest{Name: "Callout_HandOverSucceeds", Fn: RunCallout_HandOverSucceeds},
 		NamedTest{Name: "Callout_HandOverTwoTriesInOneExchange", Fn: RunCallout_HandOverTwoTriesInOneExchange},
 		NamedTest{Name: "Callout_HandOverCarriesMessageAndVerdict", Fn: RunCallout_HandOverCarriesMessageAndVerdict},
+		NamedTest{Name: "Callout_HandOverMemberFailureWithoutText", Fn: RunCallout_HandOverMemberFailureWithoutText},
 		NamedTest{Name: "Callout_TwoTenantsShareATag", Fn: RunCallout_TwoTenantsShareATag},
 		NamedTest{Name: "Callout_HandOverNoPayloadKeepsCallbackWrite", Fn: RunCallout_HandOverNoPayloadKeepsCallbackWrite},
 	)
@@ -41,7 +42,7 @@ func mnProc(name, mode, tag, contextValue string, extra map[string]any) map[stri
 	for k, v := range extra {
 		cfg[k] = v
 	}
-	return map[string]any{"type": "calculator", "name": name, "executionMode": mode, "config": cfg}
+	return map[string]any{"type": "externalized", "name": name, "executionMode": mode, "config": cfg}
 }
 
 // mnWorkflow builds a NONE -> ACTIVE workflow whose automated transition runs
@@ -225,6 +226,36 @@ func RunCallout_HandOverCarriesMessageAndVerdict(t *testing.T, fixture MultiNode
 	}
 	if got := parity.AwaitReceived(t, failing, 1, 5*time.Second); len(got) != 1 {
 		t.Errorf("the failing compute client received %d requests; want 1 — a \"failed\" answer ends the callout", len(got))
+	}
+}
+
+// RunCallout_HandOverMemberFailureWithoutText: the compute node that fails the
+// processor is on another pnode and sends no message. The client of the owner
+// reads the same sentence a local try gives, not a placeholder of the hand-over.
+func RunCallout_HandOverMemberFailureWithoutText(t *testing.T, fixture MultiNodeFixture) {
+	urls := mnRequire(t, fixture, 2)
+	tenant := fixture.NewTenant(t)
+	owner := client.NewClient(urls[0], tenant.Token)
+	const model, tag = "mn-ho-silent", "mn-ho-silent"
+
+	failing := StartComputeClientOrSkip(t, fixture, 1, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: []string{tag}, Behaviour: parity.ComputeBehaviourFailSilent})
+	mnWarmUp(t, fixture, owner, tenant, 1, "mn-ho-silent-w")
+	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback,
+		mnWorkflow("mn-ho-silent-wf", mnProc("noop", "SYNC", tag, "", map[string]any{"idempotent": true})))
+
+	status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
+	if err != nil {
+		t.Fatalf("CreateEntityRaw: %v", err)
+	}
+	detail := AssertProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", false)
+	if want := "processor returned failure"; !strings.Contains(detail, want) {
+		t.Errorf("detail = %q; want it to contain %q", detail, want)
+	}
+	if strings.Contains(detail, "peer node dispatch failed") {
+		t.Errorf("detail = %q; the client text depends on which node held the member", detail)
+	}
+	if got := parity.AwaitReceived(t, failing, 1, 5*time.Second); len(got) != 1 {
+		t.Errorf("the failing compute client received %d requests; want 1", len(got))
 	}
 }
 

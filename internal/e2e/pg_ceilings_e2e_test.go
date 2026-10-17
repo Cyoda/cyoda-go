@@ -57,7 +57,7 @@ func pgCeilingPipelineWF(name string, procs ...string) string {
 	defs := make([]string, 0, len(procs))
 	for _, p := range procs {
 		defs = append(defs, fmt.Sprintf(
-			`{"type": "calculator", "name": %q, "executionMode": "SYNC",
+			`{"type": "externalized", "name": %q, "executionMode": "SYNC",
 			  "config": {"attachEntity": true, "calculationNodesTags": ""}}`, p))
 	}
 	return fmt.Sprintf(`{

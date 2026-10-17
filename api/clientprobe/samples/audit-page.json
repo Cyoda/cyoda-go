@@ -1,0 +1,84 @@
+{
+  "schema": "EntityAuditEventsResponseDto",
+  "class": "EntityAuditEventsResponseDto",
+  "value": {
+    "items": [
+      {
+        "auditEventType": "EntityChange",
+        "severity": "INFO",
+        "utcTime": "2026-10-15T10:00:00Z",
+        "microsTime": 1760522400000000,
+        "entityId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a01",
+        "entityModel": "orders.1",
+        "transactionId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a02",
+        "changeType": "CREATE",
+        "version": 1,
+        "changes": {
+          "after": {
+            "category": "physics"
+          }
+        },
+        "executedBy": {
+          "id": "orders-app",
+          "kind": "service"
+        },
+        "details": "entity created"
+      },
+      {
+        "auditEventType": "StateMachine",
+        "severity": "INFO",
+        "utcTime": "2026-10-15T10:00:00Z",
+        "microsTime": 1760522400000001,
+        "entityId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a01",
+        "entityModel": "orders.1",
+        "transactionId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a02",
+        "eventId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a11",
+        "eventType": "STATE_MACHINE_START",
+        "details": "state machine started",
+        "data": {
+          "eventType": "STATE_MACHINE_START"
+        }
+      },
+      {
+        "auditEventType": "StateMachine",
+        "severity": "INFO",
+        "utcTime": "2026-10-15T10:00:00Z",
+        "microsTime": 1760522400000002,
+        "entityId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a01",
+        "entityModel": "orders.1",
+        "transactionId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a02",
+        "eventId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a12",
+        "eventType": "STATE_MACHINE_FINISH",
+        "state": "DONE",
+        "details": "state machine finished",
+        "data": {
+          "eventType": "STATE_MACHINE_FINISH",
+          "state": "DONE",
+          "success": true,
+          "stopReason": {
+            "type": "COMPLETED_NO_AUTO_TRANSITIONS",
+            "description": "No automated transition from state \"DONE\""
+          }
+        }
+      },
+      {
+        "auditEventType": "System",
+        "severity": "WARN",
+        "utcTime": "2026-10-15T10:00:00Z",
+        "microsTime": 1760522400000003,
+        "entityId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a01",
+        "entityModel": "orders.1",
+        "transactionId": "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a02",
+        "status": "DONE",
+        "details": "index rebuilt",
+        "data": {
+          "shard": 3
+        }
+      }
+    ],
+    "pagination": {
+      "hasNext": true,
+      "nextCursor": "c2VxPTQ"
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineFinishedDto",
+  "value": {
+    "eventType": "STATE_MACHINE_FINISH",
+    "state": "REVIEW",
+    "success": true,
+    "stopReason": {
+      "type": "COMPLETED_ALL_CRITERIA_REJECTED",
+      "description": "Every automated transition from state \"REVIEW\" was refused by its criterion",
+      "rejectedTransitions": [
+        {
+          "transitionName": "approve",
+          "criterion": "isPriority",
+          "reason": "score below 80"
+        },
+        {
+          "transitionName": "escalate",
+          "criterion": "simple",
+          "reason": "condition did not match"
+        }
+      ]
+    }
+  }
+}

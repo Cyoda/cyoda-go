@@ -1,0 +1,11 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineStateProcessResultDto",
+  "value": {
+    "eventType": "STATE_PROCESS_RESULT",
+    "processorName": "notify",
+    "executionMode": "ASYNC_NEW_TX",
+    "success": false,
+    "failReason": "mail server refused the message"
+  }
+}

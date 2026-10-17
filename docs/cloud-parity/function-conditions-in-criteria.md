@@ -64,25 +64,21 @@ the peer builds the callout from it; a peer never evaluates a pre-check.
 
 ## 3. Wire contract (OpenAPI)
 
-- **`CriterionGroupConditionDto`** is the group of a criterion. It has the
-  shape of `GroupConditionDto`, except that its `conditions` items are `oneOf`
-  Array, CriterionGroup, Function, Lifecycle, Simple. Its description is that
-  of `GroupConditionDto` plus one paragraph: a criterion's group may hold
-  function conditions at any depth, evaluated in declaration order with the
-  stop rule, while a search condition's group holds local conditions only.
-  Discriminator value `group`.
-- **Workflow and transition `criterion`**: `oneOf` Array, CriterionGroup,
-  Function, Lifecycle, Simple.
-- **`GroupConditionDto`** holds local conditions only. It is the group of the
-  three search request bodies and of the pre-check.
-- **`ExternalizedFunctionDto.criterion`** (the pre-check): `oneOf` `null`, Array,
-  Group, Lifecycle, Simple; `null` is no pre-check. The schema expresses Rule 1
-  at every depth, and the description states Rule 1 and its guard semantics.
-- **Discriminator.** Every condition `oneOf` (the criterion unions, both
-  groups' `conditions` items, the pre-check, the search request bodies and the
-  grouped-stats `condition`) maps `type` to its member: `array`, `group`,
-  `lifecycle`, `simple`, and `function` in the criterion unions. The
-  pre-check's `null` branch has no mapping.
+- **`QueryConditionDto`** is the base of every condition: discriminator
+  `type`, a plain string, with the mapping `array`, `function`, `group`,
+  `lifecycle`, `simple`. Each member (`ArrayConditionDto`,
+  `FunctionConditionDto`, `GroupConditionDto`, `LifecycleConditionDto`,
+  `SimpleConditionDto`) includes it with `allOf`.
+- **Workflow and transition `criterion`**, and **`GroupConditionDto.conditions`
+  items**: a `$ref` to `QueryConditionDto`. There is one group schema; its
+  description says that in a criterion a group may hold function conditions
+  at any depth, evaluated in declaration order with the stop rule, and that in
+  a search-shaped body and in a pre-check a function condition is refused.
+- **`ExternalizedFunctionDto.criterion`** (the pre-check):
+  `oneOf: [{type: "null"}, {$ref: QueryConditionDto}]`, with no discriminator;
+  `null` is no pre-check. The schema does not restrict the pre-check to local
+  conditions: the description states Rule 1 and its guard semantics, and import
+  enforces it (I5).
 - **Condition `value`.** `SimpleConditionDto.value` and
   `LifecycleConditionDto.value` admit what the server accepts: a string,
   number or boolean, a `[low, high]` pair for `BETWEEN` and
@@ -132,15 +128,12 @@ function condition that evaluation did not reach has no entry.
 | `matches` | when called | the member's answer |
 | `reason` | when called and the member gave one | the member's reason, capped |
 
-The list is the `functions` member of the state-machine event's `data`:
-
-- `WORKFLOW_SKIP` and `TRANSITION_NOT_MATCH_CRITERION` add `functions` to the
-  `data` they already carry;
-- `WORKFLOW_FOUND` and `TRANSITION_MAKE` (manual, cascade and scheduled) carry
-  `data: {"functions": [...]}` only when the criterion holds a function
-  condition, and that object holds only `functions`.
-
-The other `data` members of the four events keep their meaning.
+The list is the `functions` member of the state-machine event's `data`, an
+array of `CriterionFunctionResultDto`. `WORKFLOW_FOUND`, `WORKFLOW_SKIP`,
+`TRANSITION_NOT_MATCH_CRITERION` and `TRANSITION_MAKE` (manual, cascade and
+scheduled) carry it, beside their other `data` fields, when the criterion holds
+a function condition, and leave it out otherwise. `preCheck` in an entry is a
+`QueryConditionDto`.
 
 **The reason** (`data.reason` on `WORKFLOW_SKIP` and
 `TRANSITION_NOT_MATCH_CRITERION`):
@@ -202,9 +195,7 @@ criterion failure is retried by the scheduler's failure path.
 
 Cloud's handling of function conditions in criteria differs in these ways:
 
-- its spec types the pre-check as the full condition union, function
-  conditions included, while its import converts only `simple` and `group`
-  conditions in a pre-check;
+- its import converts only `simple` and `group` conditions in a pre-check;
 - it accepts a function condition only as the whole criterion or as a member
   of a top-level `AND`, which its import unwraps into separate criteria;
 - its import refuses an `array` or `lifecycle` condition at any depth of a
@@ -212,8 +203,8 @@ Cloud's handling of function conditions in criteria differs in these ways:
 
 To align, Cloud adopts sections 2, 3 and 5:
 
-- type the pre-check as local conditions only, accept every local type in it,
-  and refuse a function condition in it at any depth;
+- accept every local type in a pre-check, and refuse a function condition in
+  it, at any depth, at import;
 - accept function conditions at any depth in `AND`, `OR` and `NOT` groups, and
   `array` and `lifecycle` conditions at any depth of a criterion;
 - evaluate group members in declaration order with the stop rule, and check the

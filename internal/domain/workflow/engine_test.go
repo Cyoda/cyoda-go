@@ -90,12 +90,9 @@ func TestSelectWorkflow(t *testing.T) {
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"amount": schema.Integer})
 
 	entity := makeEntity("e1", modelRef, map[string]any{"amount": 200})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "HIGH_INITIAL" {
 		t.Fatalf("expected state HIGH_INITIAL, got %s", entity.Meta.State)
@@ -121,12 +118,9 @@ func TestNoMatchingWorkflow_FallsBackToDefault(t *testing.T) {
 	// Entity with amount=5 won't match the HighValueWF criterion.
 	// Engine should fall back to the default workflow.
 	entity := makeEntity("e2", modelRef, map[string]any{"amount": 5})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed (should fall back to default): %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED from default workflow, got %s", entity.Meta.State)
@@ -139,12 +133,9 @@ func TestNoWorkflowDefined(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "orphan", ModelVersion: "1.0"}
 
 	entity := makeEntity("e3", modelRef, map[string]any{"name": "test"})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success with default workflow")
 	}
 	// Default workflow: NONE → (auto NEW) → CREATED
 	if entity.Meta.State != "CREATED" {
@@ -172,12 +163,9 @@ func TestAutomatedCascade(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e4", modelRef, map[string]any{"ok": true})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "APPROVED" {
 		t.Fatalf("expected state APPROVED, got %s", entity.Meta.State)
@@ -203,12 +191,9 @@ func TestCriterionBlocksTransition(t *testing.T) {
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"approved": schema.Boolean})
 
 	entity := makeEntity("e5", modelRef, map[string]any{"approved": false})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success (stable state)")
 	}
 	if entity.Meta.State != "INITIAL" {
 		t.Fatalf("expected entity to stay at INITIAL, got %s", entity.Meta.State)
@@ -239,12 +224,9 @@ func TestMultipleTransitionsFirstEligible(t *testing.T) {
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{"route": schema.String})
 
 	entity := makeEntity("e6", modelRef, map[string]any{"route": "B"})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "STATE_B" {
 		t.Fatalf("expected state STATE_B, got %s", entity.Meta.State)
@@ -268,12 +250,9 @@ func TestNamedTransition(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e7", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "GO")
+	_, err := engine.Execute(ctx, entity, "GO")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected state DONE, got %s", entity.Meta.State)
@@ -387,12 +366,9 @@ func TestManualTransition(t *testing.T) {
 	entity := makeEntity("e9", modelRef, map[string]any{"x": 1})
 	entity.Meta.State = "INITIAL"
 
-	result, err := engine.ManualTransition(ctx, entity, "SUBMIT")
+	_, err := engine.ManualTransition(ctx, entity, "SUBMIT")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	// Should have cascaded to APPROVED via automated transition.
 	if entity.Meta.State != "APPROVED" {
@@ -420,12 +396,9 @@ func TestProcessorStubSuccess(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e10", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success with processor stub")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected state DONE, got %s", entity.Meta.State)
@@ -706,12 +679,9 @@ func TestLoopback(t *testing.T) {
 	// On second pass, LOOP matches again → infinite loop risk.
 	// Instead, test with loop=false: LOOP criterion fails, EXIT taken.
 	entity := makeEntity("e12", modelRef, map[string]any{"loop": false})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected state DONE, got %s", entity.Meta.State)
@@ -763,12 +733,9 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 
 	entity := makeEntity("async-new-tx-entity-1", modelRef, map[string]any{"status": "new"})
 
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true, got false")
 	}
 	if entity.Meta.State != "PROCESSED" {
 		t.Errorf("expected state=PROCESSED, got %q", entity.Meta.State)
@@ -806,12 +773,9 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 
 	entity := makeEntity("sync-proc-entity-1", modelRef, map[string]any{"value": 42})
 
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true, got false")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
@@ -849,12 +813,9 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 
 	entity := makeEntity("async-same-tx-entity-1", modelRef, map[string]any{"ready": true})
 
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true, got false")
 	}
 	if entity.Meta.State != "COMPLETE" {
 		t.Errorf("expected state=COMPLETE, got %q", entity.Meta.State)
@@ -920,12 +881,9 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
@@ -975,12 +933,9 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	entity := makeEntity("ext-async-1", modelRef, map[string]any{"x": 1})
 	entity.Meta.TransactionID = txID
 
-	result, err := engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
@@ -1127,12 +1082,9 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("ext-mod-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 
 	// Verify entity data was updated by the processor.
@@ -1167,12 +1119,9 @@ func TestNilExtProcProcessorNoOp(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("nil-ext-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
@@ -1206,12 +1155,9 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("func-crit-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "ELIGIBLE" {
 		t.Errorf("expected state=ELIGIBLE, got %q", entity.Meta.State)
@@ -1279,16 +1225,13 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("func-false-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
 	}
 	// Entity should stay at INITIAL since criterion returned false.
 	if entity.Meta.State != "INITIAL" {
 		t.Errorf("expected state=INITIAL, got %q", entity.Meta.State)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true (stable state)")
 	}
 }
 
@@ -1316,12 +1259,9 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("wf-func-1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "SELECTED" {
 		t.Errorf("expected state=SELECTED, got %q", entity.Meta.State)
@@ -1363,12 +1303,9 @@ func TestDefaultWorkflowEntityCreateEndsInCreated(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "no-wf-model", ModelVersion: "1.0"}
 
 	entity := makeEntity("dw-1", modelRef, map[string]any{"key": "value"})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED, got %s", entity.Meta.State)
@@ -1391,12 +1328,9 @@ func TestDefaultWorkflowManualUpdateStaysCreated(t *testing.T) {
 	}
 
 	// Manual UPDATE transition.
-	result, err := engine.ManualTransition(ctx, entity, "UPDATE")
+	_, err = engine.ManualTransition(ctx, entity, "UPDATE")
 	if err != nil {
 		t.Fatalf("ManualTransition failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED after UPDATE, got %s", entity.Meta.State)
@@ -1419,12 +1353,9 @@ func TestDefaultWorkflowManualDeleteEndsInDeleted(t *testing.T) {
 	}
 
 	// Manual DELETE transition.
-	result, err := engine.ManualTransition(ctx, entity, "DELETE")
+	_, err = engine.ManualTransition(ctx, entity, "DELETE")
 	if err != nil {
 		t.Fatalf("ManualTransition failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "DELETED" {
 		t.Fatalf("expected state DELETED after DELETE, got %s", entity.Meta.State)
@@ -1449,12 +1380,9 @@ func TestCustomWorkflowTakesPrecedence(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{customWF})
 
 	entity := makeEntity("cw-1", modelRef, map[string]any{"key": "value"})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	// Custom workflow should be used, not the default.
 	if entity.Meta.State != "CUSTOM_DONE" {
@@ -1505,12 +1433,9 @@ func TestDefaultWorkflowLoopbackNoOp(t *testing.T) {
 	}
 
 	// Loopback on CREATED — should stay CREATED (no automated transitions from CREATED).
-	result, err := engine.Loopback(ctx, entity)
+	_, err = engine.Loopback(ctx, entity)
 	if err != nil {
 		t.Fatalf("Loopback failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED after loopback, got %s", entity.Meta.State)
@@ -1596,12 +1521,9 @@ func TestExecute_WrappedNotFoundFallsBackToDefault(t *testing.T) {
 	modelRef := spi.ModelRef{EntityName: "WrappedModel", ModelVersion: "1.0"}
 
 	entity := makeEntity("wrapped-1", modelRef, map[string]any{"key": "value"})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed (should fall back to default workflow): %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED from default workflow, got %s", entity.Meta.State)
@@ -1686,12 +1608,9 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 	entity := makeEntity("async-fail-1", modelRef, map[string]any{"original": true})
 	entity.Meta.TransactionID = txID
 
-	result, err := engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute should succeed despite ASYNC_NEW_TX failure, got: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected state DONE, got %s", entity.Meta.State)
@@ -1749,12 +1668,9 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 	originalBytes := make([]byte, len(entity.Data))
 	copy(originalBytes, entity.Data)
 
-	result, err := engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true")
 	}
 
 	// Verify entity data is unchanged — ASYNC_NEW_TX mutations are discarded.
@@ -1827,12 +1743,9 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("cumulative-1", modelRef, map[string]any{"base": true})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true")
 	}
 
 	// Verify all three processor keys plus the original base key are present.
@@ -2011,12 +1924,13 @@ func TestAsyncNewTx_ParentRollbackDiscardsWork(t *testing.T) {
 	}
 }
 
-// TestEngine_CommitAndBeginNextSegment_FlushesAndReopens drives the
-// COMMIT_BEFORE_DISPATCH segment-boundary primitive. The helper must:
+// TestEngine_SegmentBoundary_FlushesCommitsAndReopens drives the
+// COMMIT_BEFORE_DISPATCH segment-boundary primitives of the
+// startNewTxOnDispatch=true branch, in their order. Together they must:
 //   - Flush the in-memory entity to TX_pre's buffer.
 //   - Commit TX_pre, making the entity durable across the boundary.
 //   - Begin a fresh TX_post and return its txID + ctx.
-func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
+func TestEngine_SegmentBoundary_FlushesCommitsAndReopens(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -2041,9 +1955,12 @@ func TestEngine_CommitAndBeginNextSegment_FlushesAndReopens(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	newTxID, newCtx, err := engine.commitAndBeginNextSegment(txCtx, entity, txID)
+	if err := engine.flushAndCommitSegment(txCtx, entity, txID); err != nil {
+		t.Fatalf("flushAndCommitSegment: %v", err)
+	}
+	newTxID, newCtx, err := engine.beginNextSegment(txCtx, entity, txID)
 	if err != nil {
-		t.Fatalf("commitAndBeginNextSegment: %v", err)
+		t.Fatalf("beginNextSegment: %v", err)
 	}
 	if newTxID == "" {
 		t.Fatalf("expected non-empty newTxID")
@@ -2183,12 +2100,9 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	result, err := engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true")
 	}
 	if entity.Meta.State != "S_post" {
 		t.Fatalf("expected state=S_post, got %q", entity.Meta.State)
@@ -2667,12 +2581,9 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 		Data: []byte(`{"x":1}`),
 	}
 
-	result, err := engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success=true")
 	}
 	if entity.Meta.State != "S_post" {
 		t.Fatalf("expected state=S_post, got %q", entity.Meta.State)
@@ -3160,12 +3071,9 @@ func TestEngine_CascadeSkipsScheduled_RestsInState(t *testing.T) {
 
 	entity := makeEntity("sched-rest-e1", modelRef, map[string]any{})
 
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "S1" {
 		t.Errorf("expected entity to rest in S1 (scheduled transitions are invisible to cascade); got %q", entity.Meta.State)
@@ -3196,12 +3104,9 @@ func TestEngine_CascadeSkipsScheduled_FiresRegularSibling(t *testing.T) {
 
 	entity := makeEntity("sched-sibling-e1", modelRef, map[string]any{})
 
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed: %v", err)
-	}
-	if !result.Success {
-		t.Errorf("expected success=true")
 	}
 	if entity.Meta.State != "Sfinal" {
 		t.Errorf("expected entity to land in Sfinal via the regular sibling; got %q", entity.Meta.State)

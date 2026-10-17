@@ -946,6 +946,14 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
+	// An item's `ifMatch` and `transition` reach its audit events, which cannot
+	// hold U+0000 (PostgreSQL refuses it in jsonb): refused here, before any
+	// item runs. Each payload is still checked on its own below, since it is a
+	// JSON-encoded string whose escapes this outer check cannot see.
+	if appErr := ingest.RejectUnstorable(bodyBytes); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	// Per docs: `payload` is a JSON-encoded STRING (not a nested object).
 	// Match CreateCollection's wire contract exactly. Optional per-item

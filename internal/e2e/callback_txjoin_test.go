@@ -75,7 +75,7 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 			"version": "1.1", "name": "primary-ok-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-create-ok", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-create-ok", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -146,7 +146,7 @@ func TestCallback_SyncWrite_AtomicWithTransition(t *testing.T) {
 			"version": "1.1", "name": "primary-fail-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-create-then-fail", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-create-then-fail", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -227,7 +227,7 @@ func TestCallback_SyncRead_SeesUncommittedCascadeWrite(t *testing.T) {
 			"version": "1.1", "name": "primary-read-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-read", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-read", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

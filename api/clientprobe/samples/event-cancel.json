@@ -1,0 +1,8 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineCancelledDto",
+  "value": {
+    "eventType": "CANCEL",
+    "reason": "state \"RETRY\" was visited more than 100 times"
+  }
+}

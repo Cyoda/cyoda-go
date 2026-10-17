@@ -52,9 +52,9 @@ Every error response from the Cyoda REST API carries a structured `errorCode` in
 
 The `retryable` property is present and `true` only when the operation is safe to retry as-is (e.g., transient cluster conditions). When absent or `false`, the request or system state must change before retrying. For a failed processor, criterion or function callout, `retryable: true` speaks for Cyoda's own state only — see `errors.DISPATCH_TIMEOUT`.
 
-5xx responses include a `ticket` UUID for server-side log correlation. Share this value when reporting issues.
+A `500` from an unexpected server error includes a `ticket` UUID for server-side log correlation; other 5xx responses, such as `503`, carry none. Share this value when reporting issues.
 
-`CYODA_ERROR_RESPONSE_MODE` controls 5xx detail level. `sanitized` (default): generic message plus `ticket` UUID. `verbose`: internal error detail included in the response body; intended for development environments only.
+`CYODA_ERROR_RESPONSE_MODE` controls the detail level of an unexpected server error. `sanitized` (default): generic message plus `ticket` UUID. `verbose`: internal error detail included in the response body; intended for development environments only.
 
 ## ERROR CODE INDEX
 

@@ -19,9 +19,9 @@
 //
 // Two optional variables let a fixture start further clients for one
 // scenario: CYODA_TEST_COMPUTE_TAGS (comma-separated join tags) and
-// CYODA_TEST_COMPUTE_BEHAVIOUR (stall, fail, fail-retryable, late-callback,
-// drop, hold). Unset, the client joins as `compute-test-client` and serves its
-// catalog.
+// CYODA_TEST_COMPUTE_BEHAVIOUR (stall, fail, fail-retryable, fail-silent,
+// late-callback, drop, hold, criterion-reason-nul; see behaviour.go). Unset,
+// the client joins as `compute-test-client` and serves its catalog.
 package main
 
 import (

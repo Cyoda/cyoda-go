@@ -178,7 +178,7 @@ func mnWorkflow(wfName string, states map[string]any) string {
 // mnProc is one catalog processor routed to tag with one try and the given
 // answer limit.
 func mnProc(name, mode, tag string, idempotent bool, answerLimitMs int) map[string]any {
-	return map[string]any{"type": "calculator", "name": name, "executionMode": mode,
+	return map[string]any{"type": "externalized", "name": name, "executionMode": mode,
 		"config": map[string]any{"attachEntity": true, "calculationNodesTags": tag, "idempotent": idempotent,
 			"retryPolicy": "NONE", "responseTimeoutMs": answerLimitMs}}
 }

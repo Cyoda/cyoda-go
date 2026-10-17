@@ -92,7 +92,7 @@ func TestSecretCheckBound_NoFreeSlot_503(t *testing.T) {
 	deleteClientAtCleanup(t, h.baseURL, cred.id, func() string { return h.token(t) })
 
 	flood := &tokenFlood{firstBusy: make(chan struct{})}
-	ctx, stop := context.WithCancel(context.Background())
+	ctx, stop := context.WithCancel(e2eCtx(t))
 	var wg sync.WaitGroup
 	form := url.Values{"grant_type": {"client_credentials"}}
 	for i := range secretFloodWorkers {

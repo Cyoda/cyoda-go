@@ -20,7 +20,7 @@ func newCORSTestServer(t *testing.T, cors app.CORSConfig) (*httptest.Server, fun
 	cfg.Cluster.Enabled = false
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(a.Handler())
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv, func() {
 		srv.Close()
 		a.Shutdown()
@@ -62,7 +62,7 @@ func TestCORS_E2E_PreflightAcrossGroups_LoopbackMode(t *testing.T) {
 
 	for _, r := range representativeRoutes {
 		t.Run(r.name, func(t *testing.T) {
-			req, _ := http.NewRequest(http.MethodOptions, srv.URL+r.path, nil)
+			req, _ := e2eNewRequest(t, http.MethodOptions, srv.URL+r.path, nil)
 			req.Header.Set("Origin", "http://localhost:3000")
 			req.Header.Set("Access-Control-Request-Method", r.method)
 			resp, err := http.DefaultClient.Do(req)
@@ -100,7 +100,7 @@ func TestCORS_E2E_LoopbackRejectsRemoteOrigin(t *testing.T) {
 
 	// Actual (non-preflight) GET against /api/help — unauthenticated,
 	// easy to assert headers on.
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/help", nil)
+	req, _ := e2eNewRequest(t, http.MethodGet, srv.URL+"/api/help", nil)
 	req.Header.Set("Origin", "https://evil.example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -125,7 +125,7 @@ func TestCORS_E2E_AllowlistMode(t *testing.T) {
 	defer cleanup()
 
 	t.Run("allowed origin", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/help", nil)
+		req, _ := e2eNewRequest(t, http.MethodGet, srv.URL+"/api/help", nil)
 		req.Header.Set("Origin", "https://admin.example.com")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -138,7 +138,7 @@ func TestCORS_E2E_AllowlistMode(t *testing.T) {
 	})
 
 	t.Run("loopback not auto-allowed", func(t *testing.T) {
-		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/help", nil)
+		req, _ := e2eNewRequest(t, http.MethodGet, srv.URL+"/api/help", nil)
 		req.Header.Set("Origin", "http://localhost:3000")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -158,7 +158,7 @@ func TestCORS_E2E_WildcardMode(t *testing.T) {
 	})
 	defer cleanup()
 
-	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/help", nil)
+	req, _ := e2eNewRequest(t, http.MethodGet, srv.URL+"/api/help", nil)
 	req.Header.Set("Origin", "https://anything.example")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -177,7 +177,7 @@ func TestCORS_E2E_DisabledNoHeaders(t *testing.T) {
 
 	// Preflight against /api/help — would 204 if CORS were installed,
 	// must NOT 204 when disabled (no preflight short-circuit).
-	req, _ := http.NewRequest(http.MethodOptions, srv.URL+"/api/help", nil)
+	req, _ := e2eNewRequest(t, http.MethodOptions, srv.URL+"/api/help", nil)
 	req.Header.Set("Origin", "http://localhost:3000")
 	req.Header.Set("Access-Control-Request-Method", "GET")
 	resp, err := http.DefaultClient.Do(req)

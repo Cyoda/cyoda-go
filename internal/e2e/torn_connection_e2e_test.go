@@ -268,7 +268,8 @@ func TestE2E_TornConnection_AsyncSearchLookups503(t *testing.T) {
 }
 
 // TestE2E_TornConnection_AuditAndTrustedKeys503 covers the other three:
-// getStateMachineFinishedEvent and the trusted-key mutations. Their stores are
+// getStateMachineFinishedEvent and the trusted-key mutations — and the read of
+// one entity, whose 503 the saturated-pool test cannot reach. Their stores are
 // built on the context-resolving querier, so they reach the classifier already.
 func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	h := newTornHarness(t)
@@ -292,6 +293,11 @@ func TestE2E_TornConnection_AuditAndTrustedKeys503(t *testing.T) {
 	auditCall := h.get(fmt.Sprintf("/api/audit/entity/%s/workflow/%s/finished", entityID, txID))
 	t.Run("finishedEvent", func(t *testing.T) {
 		probeTorn(t, h, auditCall, auditCall)
+	})
+
+	t.Run("getOneEntity", func(t *testing.T) {
+		getCall := h.get("/api/entity/" + entityID)
+		probeTorn(t, h, getCall, getCall)
 	})
 
 	const kid = "torn-trusted-key"

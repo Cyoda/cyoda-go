@@ -170,9 +170,9 @@ func (h *segmentGuardHarness) assertSegmentReleased(t *testing.T, entryTxID stri
 }
 
 // TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack is coverage row 4b.
-// Every failure return in executeCommitBeforeDispatch is `return nil, "", err`,
-// which is exactly why the guard must read dedicated locals rather than the
-// named returns.
+// Every failure return in executeCommitBeforeDispatch is
+// `return nil, "", committed, err`, which is exactly why the guard must read
+// dedicated locals rather than the named returns.
 func TestExecuteCommitBeforeDispatch_EveryFailurePathRollsBack(t *testing.T) {
 	cases := []struct {
 		name string
@@ -359,6 +359,12 @@ type segmentGuardHarness struct {
 	// panicOnAuditEvent, when set, makes the audit store panic on that event
 	// type — the cheapest way to blow up in a specific engine frame.
 	panicOnAuditEvent spi.StateMachineEventType
+
+	// failAuditEvent, when set, makes the audit store refuse that event type
+	// with an error; refusedAuditTxIDs records the transaction each refused
+	// Record ran in.
+	failAuditEvent    spi.StateMachineEventType
+	refusedAuditTxIDs []string
 }
 
 // segmentGuardProc is the harness's contract.ExternalProcessingService stub.
@@ -418,6 +424,12 @@ type hookedAuditStore struct {
 func (s *hookedAuditStore) Record(ctx context.Context, entityID string, event spi.StateMachineEvent) error {
 	if s.h.panicOnAuditEvent != "" && event.EventType == s.h.panicOnAuditEvent {
 		panic("audit store panicked on " + string(event.EventType))
+	}
+	if s.h.failAuditEvent != "" && event.EventType == s.h.failAuditEvent {
+		if tx := spi.GetTransaction(ctx); tx != nil {
+			s.h.refusedAuditTxIDs = append(s.h.refusedAuditTxIDs, tx.ID)
+		}
+		return errors.New("audit store refused " + string(event.EventType))
 	}
 	return s.StateMachineAuditStore.Record(ctx, entityID, event)
 }

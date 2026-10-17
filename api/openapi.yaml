@@ -1228,7 +1228,7 @@ paths:
                   count: 5
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -1323,7 +1323,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -1588,7 +1588,7 @@ paths:
                       transactionId: 9f1b0c2d-1111-2222-3333-444455556666
         "400":
           description: Conflicting request parameters (both pointInTime and transactionId
-            provided).
+            provided) are refused with BAD_REQUEST.
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -1606,7 +1606,7 @@ paths:
                   transactionId: ffef9680-26e6-11ef-bf3f-ae468cd3ed16
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -2159,7 +2159,7 @@ paths:
                       reason: Page size is outside of the bounds [1,100]
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -2196,7 +2196,7 @@ paths:
       summary: Delete entities of a model and version
       description: >-
         Deletes entities for a given model name and version.
-        An optional `AbstractConditionDto` request body scopes the delete to
+        An optional `QueryConditionDto` request body scopes the delete to
         matching entities only; an empty body (or no body) deletes all entities.
         When `verbose=true` and a condition is given, the response `ids` array
         lists every deleted entity ID. For a delete-all (empty body), `ids` is
@@ -2265,10 +2265,15 @@ paths:
           example: true
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The optional condition that scopes the delete. A `function`
+          condition, at any depth, is refused here with 400
+          `INVALID_CONDITION`: it is valid only in a workflow or transition
+          `criterion`.
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AbstractConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
             examples:
               Physics Nobel Prize Search:
                 summary: Find VALIDATED physics Nobel prizes with neural networks research
@@ -2333,8 +2338,8 @@ paths:
             (`INVALID_FIELD_PATH`), a condition operator that applies to none
             of the field's declared types or a comparison or range operand that
             parses into none of the types the operator applies to
-            (`CONDITION_TYPE_MISMATCH`), or an invalid model name (e.g., name
-            too long).
+            (`CONDITION_TYPE_MISMATCH`), or, as BAD_REQUEST, an unreadable body or an
+            invalid request parameter.
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -2350,7 +2355,7 @@ paths:
                     detail: String length of the schema name is outside of the bounds [1,1024]
                     instance: /api/entity/very-long-entity-model-name/1
                 Invalid Condition:
-                  description: Malformed AbstractConditionDto body
+                  description: Malformed QueryConditionDto body
                   value:
                     type: about:blank
                     title: Bad Request
@@ -2361,7 +2366,7 @@ paths:
                       errorCode: INVALID_CONDITION
         "404":
           description: >-
-            Entity model not found. A request carrying an `X-Tx-Token` is also answered 404
+            Entity model not found (MODEL_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404
             when the transaction the token names is no longer open, with
             `properties.errorCode` TRANSACTION_NOT_FOUND.
           content:
@@ -2607,7 +2612,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, collection too large, or unsupported format
+          description: Bad request — invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition` (BAD_REQUEST, nothing committed)
           content:
             application/problem+json:
               schema:
@@ -2639,11 +2644,11 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -2654,6 +2659,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -2821,7 +2828,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter."
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; WORKFLOW_FAILED: a workflow processor rejected an entity."
           content:
             application/problem+json:
               schema:
@@ -2854,11 +2861,11 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -2869,6 +2876,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
@@ -3001,14 +3010,14 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload or validation failure
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; WORKFLOW_FAILED: the workflow rejected the update"
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -3024,7 +3033,7 @@ paths:
         "410":
           $ref: '#/components/responses/TransactionGone'
         "412":
-          description: Precondition Failed — If-Match header does not match current version
+          description: "Precondition Failed — ENTITY_MODIFIED: If-Match header does not match current version"
           content:
             application/problem+json:
               schema:
@@ -3039,7 +3048,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3051,6 +3060,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3131,14 +3142,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: Bad request — invalid patch or validation failure
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not conform to the registered model; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -3183,7 +3194,7 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3195,6 +3206,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
@@ -3377,7 +3390,7 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied transactionTimeoutMillis
             elapsed before commit; nothing committed.
           content:
             application/problem+json:
@@ -3389,6 +3402,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3531,8 +3546,8 @@ paths:
           $ref: '#/components/responses/NotImplemented'
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before commit; nothing committed.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before commit; nothing committed.
           content:
             application/problem+json:
               schema:
@@ -3543,6 +3558,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
@@ -3639,14 +3656,13 @@ paths:
               description: |
                 A single entity JSON object, or a JSON array of entity objects
                 (batch create). The model is identified by the path; the payload
-                shape is polymorphic per model, so items stay open.
-              oneOf:
-                - type: object
-                  additionalProperties: true
-                - type: array
-                  items:
-                    type: object
-                    additionalProperties: true
+                shape is polymorphic per model, so items stay open. A string,
+                number, boolean or `null` is not a body, and each entry of an
+                array is an object.
+              not:
+                type: [string, number, boolean, "null"]
+              items:
+                type: object
             examples:
               Single JSON Object example:
                 summary: Example of a single JSON Object
@@ -3756,18 +3772,18 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value; INVALID_UNIQUE_KEY_DEFINITION: the write would give a keyed field (a path a unique key names) a container branch."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -3776,6 +3792,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -4090,8 +4108,8 @@ paths:
                       errorCode: BAD_REQUEST
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the message save began; nothing committed.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the message save began; nothing committed.
           content:
             application/problem+json:
               schema:
@@ -4589,14 +4607,13 @@ paths:
               description: |
                 One sample document (a JSON object), or a collection of sample
                 documents (a JSON array of objects) whose derived models are
-                merged. Any other body is rejected with 400 VALIDATION_FAILED.
-              oneOf:
-                - type: object
-                  additionalProperties: true
-                - type: array
-                  items:
-                    type: object
-                    additionalProperties: true
+                merged. Any other body (a string, number, boolean or `null`, or
+                an array holding anything but objects) is rejected with 400
+                VALIDATION_FAILED.
+              not:
+                type: [string, number, boolean, "null"]
+              items:
+                type: object
             examples:
               Nobel Prize Model:
                 summary: Example of a Nobel Prize entity model
@@ -5447,7 +5464,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed JSON or unknown importMode; VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          description: "Bad request — BAD_REQUEST: malformed JSON, unknown importMode, or text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8); VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -7158,21 +7175,14 @@ paths:
           explode: true
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The search condition. A `function` condition, at any depth, is
+          refused here with 400 `INVALID_CONDITION`: it is valid only in a
+          workflow or transition `criterion`.
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/GroupConditionDto"
-                - $ref: "#/components/schemas/LifecycleConditionDto"
-                - $ref: "#/components/schemas/SimpleConditionDto"
-              discriminator:
-                propertyName: type
-                mapping:
-                  array: "#/components/schemas/ArrayConditionDto"
-                  group: "#/components/schemas/GroupConditionDto"
-                  lifecycle: "#/components/schemas/LifecycleConditionDto"
-                  simple: "#/components/schemas/SimpleConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
       responses:
         "200":
           description: Async search job submitted successfully. Note that the search job
@@ -7591,21 +7601,14 @@ paths:
             format: int64
         - $ref: '#/components/parameters/TxToken'
       requestBody:
+        description: >-
+          The search condition. A `function` condition, at any depth, is
+          refused here with 400 `INVALID_CONDITION`: it is valid only in a
+          workflow or transition `criterion`.
         content:
           application/json:
             schema:
-              oneOf:
-                - $ref: "#/components/schemas/ArrayConditionDto"
-                - $ref: "#/components/schemas/GroupConditionDto"
-                - $ref: "#/components/schemas/LifecycleConditionDto"
-                - $ref: "#/components/schemas/SimpleConditionDto"
-              discriminator:
-                propertyName: type
-                mapping:
-                  array: "#/components/schemas/ArrayConditionDto"
-                  group: "#/components/schemas/GroupConditionDto"
-                  lifecycle: "#/components/schemas/LifecycleConditionDto"
-                  simple: "#/components/schemas/SimpleConditionDto"
+              $ref: "#/components/schemas/QueryConditionDto"
       responses:
         "200":
           description: Search executed successfully
@@ -9061,6 +9064,15 @@ components:
           type: string
           format: uri
           description: A URI reference that identifies the specific occurrence of the problem
+        ticket:
+          type: string
+          format: uuid
+          description: |
+            Correlation id of an unexpected server error (500). The server
+            logged the failure under the same id, so quoting it lets an
+            operator find that log line. Absent on every other response, the
+            503s included.
+          example: 5b0f1c3e-6a54-4f0e-9c6e-2f3d8a1b7c90
         properties:
           type: object
           additionalProperties: true
@@ -9505,7 +9517,7 @@ components:
           $ref: "#/components/schemas/EntityMetadataDto"
     ArrayConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             jsonPath:
@@ -9541,9 +9553,9 @@ components:
                 (`$.a[0]b`, `$.a[*]..b`).
                 `INVALID_FIELD_PATH` is the code on the search-shaped
                 surfaces (search, async submit, conditional delete,
-                grouped-stats `condition`). This schema is also a member of
-                the workflow/transition `criterion` union, where the same
-                grammar is enforced at workflow import and the code is
+                grouped-stats `condition`). In a workflow/transition
+                `criterion` the same grammar is enforced at workflow import
+                and the code is
                 `VALIDATION_FAILED` instead — the import-time code every
                 other criterion rejection uses. An `array` clause's path
                 must end in `[*]` and contain no other `[*]`.
@@ -9568,22 +9580,19 @@ components:
                 pre-check, and every other clause counts one; a larger
                 condition is refused with 400 `INVALID_CONDITION`.
               items:
-                # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-                # the Go type it cannot derive.
+                description: >-
+                  `null`, a string, number or boolean, or a `[low, high]` pair
+                  of strings, numbers or booleans. An object is refused, and
+                  so is an array that is not a pair of those.
+                # oapi-codegen (v2) derives no Go type for a schema with no
+                # `type`; this names it.
                 x-go-type: interface{}
-                oneOf:
-                  - type: "null"
-                  - type: string
-                  - type: number
-                  - type: boolean
-                  - type: array
-                    minItems: 2
-                    maxItems: 2
-                    items:
-                      oneOf:
-                        - type: string
-                        - type: number
-                        - type: boolean
+                not:
+                  type: object
+                minItems: 2
+                maxItems: 2
+                items:
+                  type: [string, number, boolean]
       required:
         - jsonPath
         - operatorType
@@ -9662,17 +9671,7 @@ components:
           x-go-type: interface{}
           oneOf:
             - type: "null"
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/GroupConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              group: "#/components/schemas/GroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            - $ref: "#/components/schemas/QueryConditionDto"
       required:
         - name
     FunctionConditionDto:
@@ -9684,59 +9683,6 @@ components:
               $ref: "#/components/schemas/ExternalizedFunctionDto"
       required:
         - function
-    CriterionGroupConditionDto:
-      description: |
-        Combines conditions with a logical operator. `AND`/`OR` accept any
-        number of `conditions`, including zero (a vacuous conjunction is
-        true; a vacuous disjunction is false). `NOT` accepts **exactly one**
-        entry — `NOT(c)` is true exactly when `c` is false. A `NOT` with
-        zero, or two or more, entries is rejected: a bare list has two
-        defensible readings ("not both" vs. "neither") that disagree on the
-        same data, so a multi-condition `NOT` is written by nesting a group
-        inside it (`NOT(A AND B)`), not as a flat list under `NOT`.
-
-        Over a wildcard-addressed list, `NOT` is a universal quantifier
-        where the wrapped leaf is existential: `NOT($.tags[*] EQUALS "red")`
-        matches when no element equals `"red"`, a different question from
-        `$.tags[*] NOT_EQUAL "red"` (some element differs). `NOT` is never
-        rewritten by De Morgan into a leaf's negative twin.
-
-        A criterion's group may also hold `function` conditions, at any depth;
-        the engine evaluates the members in declaration order and stops as soon
-        as the group's value is known (`AND` at the first false member, `OR` at
-        the first true one). A search condition's group (`GroupConditionDto`)
-        holds local conditions only.
-      allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
-        - type: object
-          properties:
-            operator:
-              type: string
-              enum:
-                - AND
-                - OR
-                - NOT
-            conditions:
-              type: array
-              items:
-                oneOf:
-                  - $ref: "#/components/schemas/ArrayConditionDto"
-                  - $ref: "#/components/schemas/CriterionGroupConditionDto"
-                  - $ref: "#/components/schemas/FunctionConditionDto"
-                  - $ref: "#/components/schemas/LifecycleConditionDto"
-                  - $ref: "#/components/schemas/SimpleConditionDto"
-                discriminator:
-                  propertyName: type
-                  mapping:
-                    array: "#/components/schemas/ArrayConditionDto"
-                    function: "#/components/schemas/FunctionConditionDto"
-                    group: "#/components/schemas/CriterionGroupConditionDto"
-                    lifecycle: "#/components/schemas/LifecycleConditionDto"
-                    simple: "#/components/schemas/SimpleConditionDto"
-      required:
-        - conditions
-        - operator
-        - type
     GroupConditionDto:
       description: |
         Combines conditions with a logical operator. `AND`/`OR` accept any
@@ -9753,40 +9699,41 @@ components:
         matches when no element equals `"red"`, a different question from
         `$.tags[*] NOT_EQUAL "red"` (some element differs). `NOT` is never
         rewritten by De Morgan into a leaf's negative twin.
+
+        In a workflow or transition `criterion`, a group may also hold
+        `function` conditions, at any depth; the engine evaluates the members
+        in declaration order and stops as soon as the group's value is known
+        (`AND` at the first false member, `OR` at the first true one). In a
+        search, async search, grouped-stats or conditional-delete body, and in
+        a function's pre-check, a `function` condition at any depth is refused
+        (400 `INVALID_CONDITION` on a search-shaped body, 400
+        `VALIDATION_FAILED` at workflow import).
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             operator:
-              type: string
-              enum:
-                - AND
-                - OR
-                - NOT
+              $ref: "#/components/schemas/GroupOperator"
             conditions:
               type: array
               items:
-                oneOf:
-                  - $ref: "#/components/schemas/ArrayConditionDto"
-                  - $ref: "#/components/schemas/GroupConditionDto"
-                  - $ref: "#/components/schemas/LifecycleConditionDto"
-                  - $ref: "#/components/schemas/SimpleConditionDto"
-                discriminator:
-                  propertyName: type
-                  mapping:
-                    array: "#/components/schemas/ArrayConditionDto"
-                    group: "#/components/schemas/GroupConditionDto"
-                    lifecycle: "#/components/schemas/LifecycleConditionDto"
-                    simple: "#/components/schemas/SimpleConditionDto"
+                $ref: "#/components/schemas/QueryConditionDto"
       required:
         - conditions
         - operator
         - type
+    GroupOperator:
+      type: string
+      description: The logical operator that combines a group's conditions.
+      enum:
+        - AND
+        - OR
+        - NOT
     JsonNode:
       type: object
     LifecycleConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             field:
@@ -9801,25 +9748,36 @@ components:
                 absent or `null`; under any other operator a missing or `null`
                 value is refused with 400. An object, or any other array, is
                 refused with 400.
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
+              # oapi-codegen (v2) derives no Go type for a schema with no
+              # `type`; this names it.
               x-go-type: interface{}
-              oneOf:
-                - type: "null"
-                - type: [string, number, boolean]
-                - type: array
-                  minItems: 2
-                  maxItems: 2
-                  items:
-                    type: [string, number, boolean]
+              not:
+                type: object
+              minItems: 2
+              maxItems: 2
+              items:
+                type: [string, number, boolean]
       required:
         - field
         - operatorType
         - type
     QueryConditionDto:
       type: object
+      description: >-
+        A condition. `type` names its form; the mapping lists the known
+        forms. Every condition position (a search, async search,
+        grouped-stats or conditional-delete body, a workflow or transition
+        `criterion`, a group's `conditions`, a function's pre-check) takes any
+        of them; where a `function` condition is refused, the position's
+        description says so.
       discriminator:
         propertyName: type
+        mapping:
+          array: "#/components/schemas/ArrayConditionDto"
+          function: "#/components/schemas/FunctionConditionDto"
+          group: "#/components/schemas/GroupConditionDto"
+          lifecycle: "#/components/schemas/LifecycleConditionDto"
+          simple: "#/components/schemas/SimpleConditionDto"
       properties:
         type:
           type: string
@@ -9827,7 +9785,7 @@ components:
         - type
     SimpleConditionDto:
       allOf:
-        - $ref: "#/components/schemas/AbstractConditionDto"
+        - $ref: "#/components/schemas/QueryConditionDto"
         - type: object
           properties:
             jsonPath:
@@ -9863,9 +9821,9 @@ components:
                 (`$.a[0]b`, `$.a[*]..b`).
                 `INVALID_FIELD_PATH` is the code on the search-shaped
                 surfaces (search, async submit, conditional delete,
-                grouped-stats `condition`). This schema is also a member of
-                the workflow/transition `criterion` union, where the same
-                grammar is enforced at workflow import and the code is
+                grouped-stats `condition`). In a workflow/transition
+                `criterion` the same grammar is enforced at workflow import
+                and the code is
                 `VALIDATION_FAILED` instead — the import-time code every
                 other criterion rejection uses.
               example: $.amount
@@ -9879,17 +9837,15 @@ components:
                 absent or `null`; under any other operator a missing or `null`
                 value is refused with 400. An object, or any other array, is
                 refused with 400.
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
+              # oapi-codegen (v2) derives no Go type for a schema with no
+              # `type`; this names it.
               x-go-type: interface{}
-              oneOf:
-                - type: "null"
-                - type: [string, number, boolean]
-                - type: array
-                  minItems: 2
-                  maxItems: 2
-                  items:
-                    type: [string, number, boolean]
+              not:
+                type: object
+              minItems: 2
+              maxItems: 2
+              items:
+                type: [string, number, boolean]
       required:
         - jsonPath
         - operatorType
@@ -9987,7 +9943,7 @@ components:
         access_token:
           type: string
           description: The JWT access token for API authentication, signed RS256 by one of cyoda's key pairs
-          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
+          example: eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJjbGllbnQtMSJ9.c2lnbmF0dXJl
           pattern: ^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$
         token_type:
           type: string
@@ -10389,18 +10345,13 @@ components:
       properties:
         type:
           type: string
-          enum:
-            - externalized
           description: |
-            Processor execution-location axis. `externalized` dispatches the
-            processor via gRPC to a calculation node selected by
-            `calculationNodesTags`. Empty or omitted is treated as
-            `externalized` by the runtime. The engine reserves the value
-            `internalized` for an in-process execution location not yet
-            implemented; any payload carrying `type: "internalized"` is
-            rejected at engine dispatch with `WORKFLOW_FAILED` (400). The
-            reserved value is intentionally absent from this enum until the
-            in-process subtype lands together with its schema.
+            Processor execution-location axis; the mapping lists the known
+            values. `externalized` dispatches the processor via gRPC to a
+            calculation node selected by `calculationNodesTags`. Workflow
+            import accepts `externalized` only: an omitted or empty value is
+            stored, and exported, as `externalized`, and any other value is
+            refused with `VALIDATION_FAILED` (400).
         name:
           type: string
           minLength: 1
@@ -10443,8 +10394,7 @@ components:
           type: array
           description: List of processors to execute for this transition
           items:
-            oneOf:
-              - $ref: "#/components/schemas/ExternalizedProcessorDefinitionDto"
+            $ref: "#/components/schemas/ProcessorDefinitionDto"
         schedule:
           $ref: "#/components/schemas/TransitionScheduleDto"
           description: |
@@ -10459,20 +10409,10 @@ components:
             `cyoda help workflows` (authoring) and `cyoda help config scheduler`
             (runtime tuning).
         criterion:
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/CriterionGroupConditionDto"
-            - $ref: "#/components/schemas/FunctionConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              function: "#/components/schemas/FunctionConditionDto"
-              group: "#/components/schemas/CriterionGroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+          $ref: "#/components/schemas/QueryConditionDto"
+          description: >-
+            Optional criterion the transition requires. Any condition is
+            valid here, a `function` condition at any depth included.
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -10658,21 +10598,8 @@ components:
             embedded default workflow and emits both a body warning and
             an operator-visible `slog.Warn` line. Workflow-level criteria
             use the same Condition DSL as search and transition-level
-            criteria.
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/CriterionGroupConditionDto"
-            - $ref: "#/components/schemas/FunctionConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              function: "#/components/schemas/FunctionConditionDto"
-              group: "#/components/schemas/CriterionGroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            criteria, and a `function` condition is valid at any depth.
+          $ref: "#/components/schemas/QueryConditionDto"
         criterionAnnotations:
           $ref: "#/components/schemas/WorkflowElementAnnotations"
         annotations:
@@ -11214,21 +11141,11 @@ components:
             type: string
             example: $.country
         condition:
+          $ref: "#/components/schemas/QueryConditionDto"
           description: >-
-            Optional Condition DSL predicate restricting the population.
-            Uses the same union shape as the async-search endpoint.
-          oneOf:
-            - $ref: "#/components/schemas/ArrayConditionDto"
-            - $ref: "#/components/schemas/GroupConditionDto"
-            - $ref: "#/components/schemas/LifecycleConditionDto"
-            - $ref: "#/components/schemas/SimpleConditionDto"
-          discriminator:
-            propertyName: type
-            mapping:
-              array: "#/components/schemas/ArrayConditionDto"
-              group: "#/components/schemas/GroupConditionDto"
-              lifecycle: "#/components/schemas/LifecycleConditionDto"
-              simple: "#/components/schemas/SimpleConditionDto"
+            Optional Condition DSL predicate restricting the population, as in
+            a search body. A `function` condition, at any depth, is refused
+            here with 400 `INVALID_CONDITION`.
         aggregations:
           type: array
           description: Optional per-group aggregations.
@@ -11268,10 +11185,13 @@ components:
           description: Group-by dimension (echoes the request entry).
           example: $.country
         value:
-          description: Observed value for this dimension, or null.
-          type: [string, number, boolean, "null"]
-          # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names the
-          # Go type it cannot derive.
+          description: >-
+            Observed value for this dimension: a string, number or boolean, or
+            `null`. Never an object or an array.
+          not:
+            type: [object, array]
+          # oapi-codegen (v2) derives no Go type for a schema with no `type`;
+          # this names it.
           x-go-type: interface{}
           example: SE
       required:
@@ -11388,6 +11308,10 @@ components:
       type: object
       discriminator:
         propertyName: auditEventType
+        mapping:
+          EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
+          StateMachine: "#/components/schemas/StateMachineAuditEventDto"
+          System: "#/components/schemas/SystemAuditEventDto"
       properties:
         entityId:
           type: string
@@ -11405,13 +11329,7 @@ components:
           format: uuid
           description: Transaction identifier related to this event
         severity:
-          type: string
-          description: Severity level of the event
-          enum:
-            - ERROR
-            - INFO
-            - WARN
-            - DEBUG
+          $ref: "#/components/schemas/AuditEventSeverity"
         details:
           type: string
           description: Details of the event
@@ -11436,6 +11354,14 @@ components:
         - microsTime
         - severity
         - utcTime
+    AuditEventSeverity:
+      type: string
+      description: Severity level of the event
+      enum:
+        - ERROR
+        - INFO
+        - WARN
+        - DEBUG
     CursorPaginationInfoDto:
       type: object
       properties:
@@ -11586,16 +11512,7 @@ components:
           type: array
           description: Audit events for the entity
           items:
-            oneOf:
-              - $ref: "#/components/schemas/EntityChangeAuditEventDto"
-              - $ref: "#/components/schemas/StateMachineAuditEventDto"
-              - $ref: "#/components/schemas/SystemAuditEventDto"
-            discriminator:
-              propertyName: auditEventType
-              mapping:
-                EntityChange: "#/components/schemas/EntityChangeAuditEventDto"
-                StateMachine: "#/components/schemas/StateMachineAuditEventDto"
-                System: "#/components/schemas/SystemAuditEventDto"
+            $ref: "#/components/schemas/AuditEventDto"
       required:
         - pagination
     EntityChangeAuditEventDto:
@@ -11640,18 +11557,64 @@ components:
         after:
           $ref: "#/components/schemas/JsonNode"
           description: Entity after changes
+    CriterionFunctionResultDto:
+      type: object
+      description: >
+        One function condition a criterion evaluation reached, as an entry of
+        an event's `functions`.
+      properties:
+        path:
+          type: string
+          description: >
+            JSON Pointer of the function condition in the criterion; empty when
+            the function condition is the whole criterion.
+        name:
+          type: string
+          description: The function's name.
+        called:
+          type: boolean
+          description: Whether the function was called. It is not called when
+            its pre-check does not match.
+        preCheck:
+          $ref: "#/components/schemas/QueryConditionDto"
+          description: The function's pre-check as written. Present when the
+            function has a pre-check.
+        preCheckMatched:
+          type: boolean
+          description: Whether the pre-check matched. Present when the function
+            has a pre-check.
+        matches:
+          type: boolean
+          description: The function's answer. Present when the function was
+            called.
+        reason:
+          type: string
+          description: >
+            The reason the compute node gave with its answer, as recorded: a
+            reason longer than 2048 characters keeps its first 2048, marked
+            with "…", and the engine caps the recorded text at 8195 bytes.
+            Present when the function was called and the node gave a reason.
+      required:
+        - called
+        - name
+        - path
     RejectedTransitionCriterionDto:
       type: object
       properties:
         transitionName:
           type: string
-          description: The name of the transition
+          description: Name of the transition.
         criterion:
           type: string
-          description: The name of the criterion
+          description: >
+            The function's name when a function condition is the whole
+            criterion; otherwise the condition's type, as in the
+            TRANSITION_NOT_MATCH_CRITERION event of the same transition.
         reason:
           type: string
-          description: The reason why the criterion returned false
+          description: >
+            Why the criterion did not match, as in the
+            TRANSITION_NOT_MATCH_CRITERION event of the same transition.
       required:
         - criterion
         - reason
@@ -11668,55 +11631,20 @@ components:
             eventType:
               type: string
               description: |
-                Type of the state machine event. `TRANSITION_ABORTED` is
-                a cyoda-go extension emitted as a
-                compensating event when an in-flight transition is
-                rejected by a stale `ifMatch` precondition; its `data`
-                payload carries `{reason: "ENTITY_MODIFIED",
-                transitionName, expectedTxId, actualTxId}` so consumers
-                can pair the entry-side `STATE_MACHINE_START` with a
-                terminal abort event in the audit log.
-              enum:
-                - STATE_MACHINE_START
-                - STATE_MACHINE_FINISH
-                - CANCEL
-                - FORCE_SUCCESS
-                - WORKFLOW_FOUND
-                - WORKFLOW_NOT_FOUND
-                - WORKFLOW_SKIP
-                - TRANSITION_MAKE
-                - TRANSITION_NOT_FOUND
-                - TRANSITION_NOT_MATCH_CRITERION
-                - TRANSITION_ABORTED
-                - PROCESS_NOT_MATCH_CRITERION
-                - PAUSE_FOR_PROCESSING
-                - STATE_PROCESS_RESULT
-                - SCHEDULED_TRANSITION_ARM
-                - SCHEDULED_TRANSITION_FIRE
-                - SCHEDULED_TRANSITION_EXPIRE
-                - SCHEDULED_TRANSITION_CANCEL
-                - SCHEDULED_TRANSITION_FAIL
+                Type of the state machine event. Its known values are the
+                keys of the mapping of `StateMachineEventDto`, the schema of
+                `data`. The set grows: a client accepts any other value.
             data:
-              type: [object, "null"]
-              # oapi-codegen (v2) has no OpenAPI 3.1 `null` type; this names
-              # the Go type it cannot derive.
-              x-go-type: map[string]interface{}
+              $ref: "#/components/schemas/StateMachineEventDto"
               description: >
-                Optional event-specific payload. Present for some event types
-                (e.g. STATE_MACHINE_FINISH includes {"success": true},
-                STATE_PROCESS_RESULT includes {"success": false}).
-                TRANSITION_NOT_MATCH_CRITERION carries
-                {workflowName, transition, criterion, reason} and WORKFLOW_SKIP
-                carries {workflowName, reason}, where reason explains why the
-                criterion blocked the passage. Null for most event types.
-                When the criterion holds a function condition, WORKFLOW_FOUND,
-                WORKFLOW_SKIP, TRANSITION_NOT_MATCH_CRITERION and
-                TRANSITION_MAKE carry `functions`: one entry per function
-                condition the evaluation reached, in order, with `path` (JSON
-                Pointer in the criterion, empty for a whole-criterion
-                function), `name`, `called`, and when present `preCheck`,
-                `preCheckMatched`, `matches` and `reason`.
-              additionalProperties: true
+                The event's data. The server always sends it, never null. Its
+                `eventType` repeats the outer `eventType` and selects the
+                schema: each event type's schema states its fields and when an
+                optional field is present. A field is present only when the
+                server knows its value. It is not a required property so that
+                a client can read an event of a type it does not know: the
+                client reads that event's data as empty, and the outer
+                `eventType` still names it.
             eventId:
               type: string
               format: uuid
@@ -11735,43 +11663,84 @@ components:
         - severity
         - utcTime
     StateMachineCancelledDto:
+      description: >
+        CANCEL: the run was stopped because it exceeded a cascade limit: the
+        visits of one state, or the cascade depth.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             reason:
               type: string
-              description: Reason for cancellation
+              description: The limit the run exceeded, and where.
       required:
         - reason
     StateMachineEventDto:
       type: object
+      description: >
+        The data of a state-machine audit event. `eventType` is the event's
+        type, the same value as the outer event's `eventType`, and selects
+        the schema of the rest of the object.
       discriminator:
         propertyName: eventType
+        mapping:
+          STATE_MACHINE_START: "#/components/schemas/StateMachineStartedDto"
+          STATE_MACHINE_FINISH: "#/components/schemas/StateMachineFinishedDto"
+          CANCEL: "#/components/schemas/StateMachineCancelledDto"
+          FORCE_SUCCESS: "#/components/schemas/StateMachineForcedSuccessDto"
+          WORKFLOW_FOUND: "#/components/schemas/StateMachineWorkflowFoundDto"
+          WORKFLOW_NOT_FOUND: "#/components/schemas/StateMachineWorkflowNotFoundDto"
+          WORKFLOW_SKIP: "#/components/schemas/StateMachineWorkflowSkippedDto"
+          TRANSITION_MAKE: "#/components/schemas/StateMachineTransitionMadeDto"
+          TRANSITION_NOT_FOUND: "#/components/schemas/StateMachineTransitionNotFoundDto"
+          TRANSITION_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineTransitionCriterionNotMatchedDto"
+          TRANSITION_ABORTED: "#/components/schemas/StateMachineTransitionAbortedDto"
+          PROCESS_NOT_MATCH_CRITERION: "#/components/schemas/StateMachineProcessCriterionNotMatchedDto"
+          PAUSE_FOR_PROCESSING: "#/components/schemas/StateMachineProcessingPausedDto"
+          STATE_PROCESS_RESULT: "#/components/schemas/StateMachineStateProcessResultDto"
+          SCHEDULED_TRANSITION_ARM: "#/components/schemas/StateMachineScheduledTransitionArmedDto"
+          SCHEDULED_TRANSITION_FIRE: "#/components/schemas/StateMachineScheduledTransitionFiredDto"
+          SCHEDULED_TRANSITION_EXPIRE: "#/components/schemas/StateMachineScheduledTransitionExpiredDto"
+          SCHEDULED_TRANSITION_CANCEL: "#/components/schemas/StateMachineScheduledTransitionCancelledDto"
+          SCHEDULED_TRANSITION_FAIL: "#/components/schemas/StateMachineScheduledTransitionFailedDto"
       properties:
         eventType:
           type: string
       required:
         - eventType
     StateMachineFinishedDto:
-      type: object
-      properties:
-        state:
-          type: string
-          description: The state of the entity when the state machine flow was finished
-        success:
-          type: boolean
-          description: Whether the state machine execution was successful
-        stopReason:
-          $ref: "#/components/schemas/WorkflowStopReasonDto"
+      description: >
+        STATE_MACHINE_FINISH: the run succeeded and settled. cyoda-go records
+        it only for a run that succeeded. A scheduled fire records no
+        STATE_MACHINE_FINISH; its last event is SCHEDULED_TRANSITION_FIRE.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            state:
+              type: string
+              description: The state the run settled in.
+            success:
+              type: boolean
+              description: Whether the run succeeded. Always `true` from cyoda-go.
+            stopReason:
+              $ref: "#/components/schemas/WorkflowStopReasonDto"
       required:
         - state
         - stopReason
         - success
     StateMachineForcedSuccessDto:
+      description: >
+        FORCE_SUCCESS: a loopback ran on an entity whose state the selected
+        workflow does not declare, so there was nothing to loop back. The run
+        then finishes with the stop reason FORCE_SUCCESS.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
     StateMachineProcessCriterionNotMatchedDto:
+      description: >
+        PROCESS_NOT_MATCH_CRITERION. Never sent by cyoda-go, where a processor
+        has no criterion; kept for the contract cyoda-go shares with Cyoda
+        Cloud.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
@@ -11793,155 +11762,369 @@ components:
         - processorClassName
         - workflowName
     StateMachineProcessingPausedDto:
+      description: >
+        PAUSE_FOR_PROCESSING: the run reached the processors of a transition.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition
+              description: Name of the transition.
             processNames:
               type: array
-              description: List of process names that are paused
+              description: The transition's processor names, in pipeline order.
               items:
                 type: string
       required:
         - processNames
         - transition
         - workflowName
+    StateMachineScheduledTransitionArmedDto:
+      description: >
+        SCHEDULED_TRANSITION_ARM: a scheduled transition was armed, including
+        a re-arm by a loopback.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition fires from.
+            scheduledTime:
+              type: integer
+              format: int64
+              description: When the transition is due, in Unix milliseconds.
+      required:
+        - scheduledTime
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionCancelledDto:
+      description: >
+        SCHEDULED_TRANSITION_CANCEL: a scheduled task was removed without
+        firing, by an entity write or as the task came due.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+            workflowName:
+              type: string
+              description: >
+                The workflow selected for the entity. Present when the task is
+                cancelled as it comes due. Absent when a write cancels it: the
+                task may have been armed under another workflow.
+      required:
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionExpiredDto:
+      description: >
+        SCHEDULED_TRANSITION_EXPIRE: a scheduled task was removed without
+        firing because its deadline had passed: it was first picked up after
+        its deadline, or a schedule function returned a time already past its
+        expiry. For the first, `details` states the lateness and the timeout.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+      required:
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionFailedDto:
+      description: >
+        SCHEDULED_TRANSITION_FAIL: a scheduled task ended FAILED without
+        firing.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition was armed from.
+            reason:
+              type: string
+              description: >
+                Why the task failed, as the scheduled task's `failureReason`.
+                Open value set; accept values not listed here. Known values:
+                UNSAFE_WORK_NOT_COMPLETED — a processor not declared
+                `idempotent` was handed to a compute node and the run did not
+                commit, so it is not repeated;
+                OWNER_LOST_REPEATEDLY — the node running the task was lost too
+                many times;
+                EXPIRED_AFTER_FAILED_ATTEMPTS — the deadline passed after a
+                failed attempt or a lost node;
+                RUN_PANICKED — the run failed with an internal error;
+                STOPPED_AFTER_PARTIAL_COMMIT — the run committed the entity into
+                another state and then stopped.
+            attempts:
+              type: integer
+              format: int32
+              description: Failed attempts recorded since the task was last armed.
+            lostOwners:
+              type: integer
+              format: int32
+              description: Times the node running the task was lost since the
+                task was last armed.
+      required:
+        - attempts
+        - lostOwners
+        - reason
+        - sourceState
+        - transition
+    StateMachineScheduledTransitionFiredDto:
+      description: >
+        SCHEDULED_TRANSITION_FIRE: a scheduled transition fired. It is recorded
+        beside TRANSITION_MAKE and is the fire's last event: a fire records no
+        STATE_MACHINE_START and no STATE_MACHINE_FINISH. The outer `state` is
+        the state the run settled in.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            transition:
+              type: string
+              description: The scheduled transition.
+            sourceState:
+              type: string
+              description: The state the transition fired from.
+            workflowName:
+              type: string
+              description: The workflow selected for the entity.
+      required:
+        - sourceState
+        - transition
+        - workflowName
     StateMachineStartedDto:
+      description: STATE_MACHINE_START. A run started.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             state:
               type: string
-              description: The state of the entity when the state machine flow was started
-      required:
-        - state
+              description: >
+                The entity's state when the run started, as the outer `state`.
+                Absent when the run creates the entity, which has no state yet.
     StateMachineStateProcessResultDto:
+      description: >
+        STATE_PROCESS_RESULT: the outcome of one processor of a transition.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
-            stateProcessId:
-              $ref: "#/components/schemas/StateProcessIdDto"
-            stateProcessClassName:
+            processorName:
               type: string
-              description: Fully qualified class name of the state process
-            stateProcessType:
+              description: The processor's `name` in the workflow.
+            executionMode:
               type: string
               enum:
-                - SUCCESS
-                - FAIL
-                - RESUBMIT
-                - UNKNOWN
+                - SYNC
+                - ASYNC_SAME_TX
+                - ASYNC_NEW_TX
+                - COMMIT_BEFORE_DISPATCH
+              description: The processor's execution mode. A processor configured
+                with no mode runs, and is recorded, as SYNC.
+            success:
+              type: boolean
+              description: >
+                Whether the processor succeeded. `false` for a failed
+                ASYNC_NEW_TX processor too, although the run continues.
             failReason:
               type: string
-              description: Reason for failure, if applicable
+              description: >
+                The failure text the compute node sent. Present only when the
+                processor failed and the node itself sent text; absent for
+                every other failure.
       required:
-        - stateProcessClassName
-        - stateProcessId
-        - stateProcessType
+        - executionMode
+        - processorName
+        - success
+    StateMachineTransitionAbortedDto:
+      description: >
+        TRANSITION_ABORTED: a cyoda-go event. A transition or loopback was
+        refused because the caller's `ifMatch` precondition did not name the
+        entity version the request started from. It pairs the
+        STATE_MACHINE_START recorded before it.
+      allOf:
+        - $ref: "#/components/schemas/StateMachineEventDto"
+        - type: object
+          properties:
+            reason:
+              type: string
+              description: >
+                Why the transition was aborted. Known value: ENTITY_MODIFIED, the
+                entity changed since the version the caller named. The set
+                grows: a client accepts any other value.
+            transition:
+              type: string
+              description: The transition that was aborted. Absent for a
+                loopback, which has no transition.
+            expectedTxId:
+              type: string
+              description: The transaction id the caller's `ifMatch` named.
+            actualTxId:
+              type: string
+              description: The transaction id of the entity version the request
+                started from.
+      required:
+        - actualTxId
+        - expectedTxId
+        - reason
     StateMachineTransitionCriterionNotMatchedDto:
+      description: >
+        TRANSITION_NOT_MATCH_CRITERION: an automated transition was not taken
+        because its criterion did not match.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition
+              description: Name of the transition.
             criterion:
               type: string
-              description: Name of the criterion that was not matched
+              description: >
+                The function's name when a function condition is the whole
+                criterion; otherwise the condition's type (`simple`, `group`,
+                `lifecycle`, `array`).
             reason:
               type: string
-              description: Reason why the criterion was not matched
+              description: Why the criterion did not match.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the criterion holds a function
+                condition: one entry per function condition the evaluation
+                reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - criterion
+        - reason
         - transition
         - workflowName
     StateMachineTransitionMadeDto:
+      description: >
+        TRANSITION_MAKE: a transition was made. The outer `state` is the state
+        the transition left.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition that was made
+              description: Name of the transition that was made.
             newState:
               type: string
-              description: New state after the transition
+              description: The transition's target state.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the transition's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - newState
         - transition
         - workflowName
     StateMachineTransitionNotFoundDto:
+      description: >
+        TRANSITION_NOT_FOUND: the transition a request named cannot be made
+        from the entity's state: it is not declared there, it is disabled, or
+        it is scheduled. `details` says which.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow
+              description: Name of the workflow.
             transition:
               type: string
-              description: Name of the transition that was not found
+              description: Name of the transition the request named.
       required:
+        - transition
         - workflowName
     StateMachineWorkflowFoundDto:
+      description: >
+        WORKFLOW_FOUND: a workflow was selected for the entity.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow that was found
+              description: Name of the workflow that was selected.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the workflow's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - workflowName
     StateMachineWorkflowNotFoundDto:
+      description: >
+        WORKFLOW_NOT_FOUND. Never sent by cyoda-go, where an entity that no
+        workflow's criterion selects runs under the default workflow; kept for
+        the contract cyoda-go shares with Cyoda Cloud.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
     StateMachineWorkflowSkippedDto:
+      description: >
+        WORKFLOW_SKIP: a workflow was not selected because its criterion did
+        not match.
       allOf:
         - $ref: "#/components/schemas/StateMachineEventDto"
         - type: object
           properties:
             workflowName:
               type: string
-              description: Name of the workflow that was skipped
+              description: Name of the workflow that was skipped.
             reason:
               type: string
-              description: Reason for skipping the workflow
+              description: Why the workflow's criterion did not match.
+            functions:
+              type: array
+              description: >
+                Present, possibly empty, when the workflow's criterion holds a
+                function condition: one entry per function condition the
+                evaluation reached, in evaluation order.
+              items:
+                $ref: "#/components/schemas/CriterionFunctionResultDto"
       required:
         - reason
         - workflowName
-    StateProcessIdDto:
-      type: object
-      properties:
-        persisted:
-          type: boolean
-          description: Whether the process is persisted
-        runtimeId:
-          type: integer
-          format: int32
-          description: Runtime identifier
-        persistedId:
-          type: string
-          format: uuid
-          description: Persisted identifier, if applicable
-      required:
-        - persisted
-        - runtimeId
     SystemAuditEventDto:
       allOf:
         - $ref: "#/components/schemas/AuditEventDto"
@@ -11973,6 +12156,19 @@ components:
         - utcTime
     WorkflowStopReasonDto:
       type: object
+      description: >
+        Why a run stopped. cyoda-go records STATE_MACHINE_FINISH only for a
+        run that succeeded, so it sends three types:
+        COMPLETED_NO_AUTO_TRANSITIONS — the settled state has no automated
+        transition (none that is not disabled, not manual and not scheduled);
+        COMPLETED_ALL_CRITERIA_REJECTED — every automated transition of the
+        settled state was refused by its criterion in the last pass, listed in
+        `rejectedTransitions`;
+        FORCE_SUCCESS — a loopback on an entity whose state the selected
+        workflow does not declare.
+        PAUSED_FOR_PROCESSING, CANCELED, NO_WORKFLOW_FOUND, WORKFLOW_SKIPPED,
+        INCOMPLETE_TRANSACTION and UNKNOWN are never sent by cyoda-go; they
+        are kept for the contract cyoda-go shares with Cyoda Cloud.
       properties:
         type:
           type: string
@@ -11991,8 +12187,11 @@ components:
           description: Human-readable description of why the workflow stopped
         rejectedTransitions:
           type: array
-          description: If stopped due to criteria rejections, the transitions that were
-            rejected
+          description: >
+            Present when `type` is COMPLETED_ALL_CRITERIA_REJECTED: one entry
+            per automated transition of the settled state, in declaration
+            order. Only the last pass counts; a refusal in a state the run
+            then left is not listed.
           items:
             $ref: "#/components/schemas/RejectedTransitionCriterionDto"
       required:
@@ -12149,15 +12348,6 @@ components:
         ISTARTS_WITH, IS_NULL, LESS_OR_EQUAL, LESS_THAN, LIKE,
         MATCHES_PATTERN, NOT_CONTAINS, NOT_ENDS_WITH, NOT_EQUAL, NOT_NULL,
         NOT_STARTS_WITH, STARTS_WITH]
-    AbstractConditionDto:
-      type: object
-      discriminator:
-        propertyName: type
-      properties:
-        type:
-          type: string
-      required:
-        - type
     StreamDeleteResult:
       type: object
       properties:
@@ -12258,8 +12448,9 @@ components:
         status and `properties.errorCode` distinguishes them —
         TRANSACTION_EXPIRED: the token has passed its own expiry;
         CALLOUT_SUPERSEDED: the callout the token names has been handed to
-        another compute member, so the caller no longer owns the work it is
-        calling back about. Neither is retryable with the same token.
+        another compute member or has ended while the transaction is still
+        open, so the caller no longer owns the work it is calling back about.
+        Neither is retryable with the same token.
       content:
         application/problem+json:
           schema:
@@ -12293,16 +12484,31 @@ components:
             $ref: '#/components/schemas/ProblemDetail'
     InternalServerError:
       description: |
-        Internal Server Error — generic message with ticketId for correlation.
-        Per CLAUDE.md's 5xx convention; the underlying error is logged
-        server-side at ERROR level with the same ticketId.
+        Internal Server Error — generic message with a `ticket` for
+        correlation; the underlying error is logged server-side at ERROR
+        level under the same ticket.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    ScheduleFunctionInvalidResult:
+      description: >-
+        Internal Server Error — generic message with a `ticket` for
+        correlation; the underlying error is logged server-side at ERROR
+        level under the same ticket. The error code is SERVER_ERROR for an
+        unexpected server error, or SCHEDULE_FUNCTION_INVALID_RESULT when a
+        Function that computes the schedule of a scheduled transition
+        returned a result that is not a usable Schedule; the write is then
+        rolled back, unless an earlier COMMIT_BEFORE_DISPATCH processor of the
+        same request had already committed, and it is not retryable until the
+        Function is corrected.
       content:
         application/problem+json:
           schema:
             $ref: '#/components/schemas/ProblemDetail'
     NotImplemented:
       description: |
-        Not yet implemented.
+        NOT_IMPLEMENTED — not yet implemented.
         The handler exists as a placeholder but returns 501 Not Implemented;
         real implementation is tracked separately.
       content:
@@ -12312,7 +12518,8 @@ components:
     ServiceUnavailable:
       description: The request could not be served — the storage layer could not
         supply a connection within the acquire timeout, the transaction was
-        reclaimed by the idle-in-transaction ceiling, the connection was lost, or a
+        reclaimed by the idle-in-transaction ceiling, or the connection was lost (each
+        STORAGE_UNAVAILABLE), or a
         processor, criterion or function callout could not be completed
         (CALLOUT_FAILED, NO_COMPUTE_MEMBER_FOR_TAG, DISPATCH_TIMEOUT,
         COMPUTE_MEMBER_DISCONNECTED, DISPATCH_FORWARD_FAILED), or a request
@@ -12339,6 +12546,5 @@ components:
       scheme: basic
     bearerAuth:
       type: http
-      name: bearerAuth
       scheme: bearer
       bearerFormat: JWT

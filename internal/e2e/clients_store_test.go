@@ -220,6 +220,7 @@ func TestClientsStore_ConcurrentCreatesStopAtCap(t *testing.T) {
 		err  error
 	}
 	results := make([]result, attempts)
+	ctx := e2eCtx(t) // the goroutines never touch t
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for i := range attempts {
@@ -227,7 +228,7 @@ func TestClientsStore_ConcurrentCreatesStopAtCap(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			req, err := http.NewRequest(http.MethodPost, h.baseURL+"/api/clients", nil)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.baseURL+"/api/clients", nil)
 			if err != nil {
 				results[i].err = err
 				return
@@ -428,7 +429,7 @@ func TestClientsStore_ClientChangeNotInCallersTransaction(t *testing.T) {
 			"version": "1.1", "name": "m2m-txhold-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "m2m-hold", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "m2m-hold", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

@@ -335,6 +335,23 @@ removed with `SCHEDULED_TRANSITION_CANCEL` at that point too; a task past its
 deadline on its first attempt records `SCHEDULED_TRANSITION_EXPIRE` first,
 because lateness is decided before the workflow is resolved.
 
+Each event's `data` carries `eventType` and these fields:
+
+| Event | `data` |
+|---|---|
+| `SCHEDULED_TRANSITION_ARM` | `transition`, `sourceState`, `scheduledTime` (Unix ms) |
+| `SCHEDULED_TRANSITION_FIRE` | `transition`, `sourceState` (the state the transition fired from), `workflowName` (the selected workflow); the outer `state` is the state the run settled in |
+| `SCHEDULED_TRANSITION_EXPIRE` | `transition`, `sourceState`; at the fire, `details` states the lateness and the timeout |
+| `SCHEDULED_TRANSITION_CANCEL` | `transition`, `sourceState`; `workflowName` when the task is cancelled as it comes due, absent when a write cancels it (the task may have been armed under another workflow) |
+| `SCHEDULED_TRANSITION_FAIL` | `transition`, `sourceState`, `reason` (the task's `failureReason`, an open string), `attempts`, `lostOwners` |
+
+A fire records no `STATE_MACHINE_START` and no `STATE_MACHINE_FINISH`; its last
+event is `SCHEDULED_TRANSITION_FIRE`, so
+`GET /audit/entity/{entityId}/workflow/{transactionId}/finished` answers
+`404 ENTITY_NOT_FOUND` for a fire's transaction, unless a processor's callback
+saved the entity inside that transaction: the save runs the entity's workflow,
+which records its own `STATE_MACHINE_START` and `STATE_MACHINE_FINISH` there.
+
 ## 14. Arm-time `function`
 
 The callout runs synchronously inside the entity write's transaction and
@@ -413,7 +430,7 @@ The visible contract to match:
    `idempotent` means the same on a scheduled run as on any callout.
 3. §9's lateness table, decided by the task's one owner.
 4. The `FAILED` status, its five reasons, and **[ruling]** that it never moves
-   the entity; `SCHEDULED_TRANSITION_FAIL` and its data.
+   the entity; the data of every `SCHEDULED_TRANSITION_*` event (§13).
 5. §2: an arm is a new life that clears a `FAILED` status; a write removes every
    task not in its arm set; deletes and imports remove tasks.
 6. §1's import minimums and arm-time range.

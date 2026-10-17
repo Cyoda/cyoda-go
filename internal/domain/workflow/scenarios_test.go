@@ -49,12 +49,9 @@ func TestScenarioAutoCascadeChain(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("chain1", modelRef, map[string]any{"ok": true})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "FINAL" {
 		t.Fatalf("expected state FINAL, got %s", entity.Meta.State)
@@ -106,12 +103,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Entity with status=done → auto-completes to COMPLETED.
 	entity1 := makeEntity("lb1", modelRef, map[string]any{"status": "done"})
-	result, err := engine.Execute(ctx, entity1, "")
+	_, err := engine.Execute(ctx, entity1, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity1.Meta.State != "COMPLETED" {
 		t.Fatalf("expected COMPLETED, got %s", entity1.Meta.State)
@@ -119,12 +113,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Entity with status=pending → stays at PROCESSING (criterion false).
 	entity2 := makeEntity("lb2", modelRef, map[string]any{"status": "pending"})
-	result, err = engine.Execute(ctx, entity2, "")
+	_, err = engine.Execute(ctx, entity2, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success (stable state)")
 	}
 	if entity2.Meta.State != "PROCESSING" {
 		t.Fatalf("expected PROCESSING, got %s", entity2.Meta.State)
@@ -132,12 +123,9 @@ func TestScenarioLoopbackWithAutoExit(t *testing.T) {
 
 	// Manual RETRY transition → stays at PROCESSING, auto re-evaluates, still pending.
 	entity2.Meta.State = "PROCESSING"
-	result, err = engine.ManualTransition(ctx, entity2, "RETRY")
+	_, err = engine.ManualTransition(ctx, entity2, "RETRY")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity2.Meta.State != "PROCESSING" {
 		t.Fatalf("expected PROCESSING after retry (still pending), got %s", entity2.Meta.State)
@@ -163,12 +151,9 @@ func TestScenarioStuckState(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("stuck1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success (stable at STUCK)")
 	}
 	if entity.Meta.State != "STUCK" {
 		t.Fatalf("expected STUCK, got %s", entity.Meta.State)
@@ -208,12 +193,9 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 
 	// High priority: INITIAL -> FAST_TRACK -> DONE
 	entityHigh := makeEntity("prio-h", modelRef, map[string]any{"priority": "high"})
-	result, err := engine.Execute(ctx, entityHigh, "")
+	_, err := engine.Execute(ctx, entityHigh, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entityHigh.Meta.State != "DONE" {
 		t.Fatalf("expected DONE for high priority, got %s", entityHigh.Meta.State)
@@ -221,12 +203,9 @@ func TestScenarioSuccessiveAutoWithCriteria(t *testing.T) {
 
 	// Low priority: INITIAL -> SLOW_TRACK -> REVIEW -> DONE
 	entityLow := makeEntity("prio-l", modelRef, map[string]any{"priority": "low"})
-	result, err = engine.Execute(ctx, entityLow, "")
+	_, err = engine.Execute(ctx, entityLow, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entityLow.Meta.State != "DONE" {
 		t.Fatalf("expected DONE for low priority, got %s", entityLow.Meta.State)
@@ -427,24 +406,18 @@ func TestScenarioManualTriggersAutoCascade(t *testing.T) {
 
 	// Create entity → stays at INITIAL (no auto transitions).
 	entity := makeEntity("mc1", modelRef, map[string]any{"x": 1})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "INITIAL" {
 		t.Fatalf("expected INITIAL, got %s", entity.Meta.State)
 	}
 
 	// Manual transition PROCESS → cascades to DONE.
-	result, err = engine.ManualTransition(ctx, entity, "PROCESS")
+	_, err = engine.ManualTransition(ctx, entity, "PROCESS")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected DONE after manual transition + cascade, got %s", entity.Meta.State)
@@ -474,7 +447,7 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 
 	// Create with ready=false → stays at WAITING.
 	entity := makeEntity("lbr1", modelRef, map[string]any{"ready": false})
-	result, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -484,12 +457,9 @@ func TestScenarioLoopbackReEvaluates(t *testing.T) {
 
 	// Update data to ready=true and loopback → should cascade to DONE.
 	entity.Data, _ = json.Marshal(map[string]any{"ready": true})
-	result, err = engine.Loopback(ctx, entity)
+	_, err = engine.Loopback(ctx, entity)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if !result.Success {
-		t.Fatal("expected success")
 	}
 	if entity.Meta.State != "DONE" {
 		t.Fatalf("expected DONE after loopback, got %s", entity.Meta.State)
@@ -693,7 +663,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 					"next": "S2",
 					"manual": true,
 					"processors": [{
-						"type": "EXTERNAL",
+						"type": "externalized",
 						"name": "p",
 						"executionMode": "SYNC",
 						"config": {"startNewTxOnDispatch": true}

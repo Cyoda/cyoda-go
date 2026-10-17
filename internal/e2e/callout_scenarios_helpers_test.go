@@ -121,12 +121,34 @@ func assertRefusedOnAllDoors(t *testing.T, h *callbackHarness, pass, writeModel,
 	}
 	problem("http-write", func() (callbackResult, error) { return h.ReplayCreateHTTP(pass, writeModel, 1, child) })
 	problem("http-read", func() (callbackResult, error) { return h.ReplayGetHTTP(pass, readEntityID) })
+	// The other HTTP write doors answer a refused pass before they look at
+	// the request, so the entity and transition they name need not exist.
+	for _, d := range refusedWriteDoors(writeModel, readEntityID, child) {
+		problem(d.name, func() (callbackResult, error) { return h.callback(d.method, d.path, d.body, pass) })
+	}
 	envelope("grpc-write", func() (txEnvelope, error) { return h.ReplayCreateGRPC(pass, writeModel, 1, child) })
 	envelope("grpc-read", func() (txEnvelope, error) { return h.ReplayGetGRPC(pass, readEntityID) })
 	envelope("grpc-stream-write", func() (txEnvelope, error) {
 		return h.ReplayCreateCollectionGRPC(pass, writeModel, 1, child)
 	})
 	envelope("grpc-stream-read", func() (txEnvelope, error) { return h.ReplaySearchCollectionGRPC(pass, writeModel, 1) })
+}
+
+// refusedWriteDoor is one HTTP write route a pass can be presented on.
+type refusedWriteDoor struct{ name, method, path, body string }
+
+// refusedWriteDoors are the HTTP write doors beyond the single create:
+// the collection create, the update with a transition, the loopback update
+// and the patch. Each is answered by the join layer before the handler runs,
+// which is what these scenarios pin on every route a compute node can call
+// back through.
+func refusedWriteDoors(model, entityID, payload string) []refusedWriteDoor {
+	return []refusedWriteDoor{
+		{"http-write-collection", http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, payload)},
+		{"http-update-transition", http.MethodPut, "/api/entity/JSON/" + entityID + "/go", payload},
+		{"http-update", http.MethodPut, "/api/entity/JSON/" + entityID, payload},
+		{"http-patch", http.MethodPatch, "/api/entity/JSON/" + entityID, payload},
+	}
 }
 
 // assertNoLeak fails t if raw contains any of forbidden's non-empty entries —
@@ -208,6 +230,9 @@ func assertRefusedOnAllDoorsAs(t *testing.T, h *callbackHarness, bearer, pass, w
 	}
 	httpDoor("http-write", http.MethodPost, "/api/entity/JSON/"+writeModel+"/1", child)
 	httpDoor("http-read", http.MethodGet, "/api/entity/"+readEntityID, "")
+	for _, d := range refusedWriteDoors(writeModel, readEntityID, child) {
+		httpDoor(d.name, d.method, d.path, d.body)
+	}
 	grpcDoor("grpc-write", func() (txEnvelope, error) { return h.replayCreateGRPCAs(bearer, pass, writeModel, 1, child) })
 	grpcDoor("grpc-read", func() (txEnvelope, error) { return h.replayGetGRPCAs(bearer, pass, readEntityID) })
 	grpcDoor("grpc-stream-write", func() (txEnvelope, error) {
@@ -405,7 +430,7 @@ func chainWorkflowJSON(wfName string, procs ...procSpec) string {
 		for k, v := range p.config {
 			cfg[k] = v
 		}
-		list = append(list, map[string]any{"type": "calculator", "name": p.name, "executionMode": p.mode, "config": cfg})
+		list = append(list, map[string]any{"type": "externalized", "name": p.name, "executionMode": p.mode, "config": cfg})
 	}
 	return workflowDocJSON(wfName, map[string]any{
 		"NONE": map[string]any{"transitions": []any{map[string]any{

@@ -56,7 +56,7 @@ const (
 // obvious fix — would silently store a replacement character the client never
 // sent, which is exactly the substituted-value outcome
 // .claude/rules/correctness-over-availability.md forbids.
-func RejectUnstorable(raw []byte) error {
+func RejectUnstorable(raw []byte) *common.AppError {
 	// Whole-document check first. Invalid UTF-8 has no meaningful JSON path —
 	// the bytes may not even parse as text — so it is reported against the
 	// document rather than a field.
@@ -77,7 +77,7 @@ func RejectUnstorable(raw []byte) error {
 // response body and the log line WriteError emits for every operational error.
 const maxReportedPathLen = 200
 
-func unstorableErr(path, reason string) error {
+func unstorableErr(path, reason string) *common.AppError {
 	if len(path) > maxReportedPathLen {
 		path = path[:maxReportedPathLen] + "…(truncated)"
 	}
@@ -86,7 +86,7 @@ func unstorableErr(path, reason string) error {
 		common.ErrCodeBadRequest,
 		// %q so a control byte in a key or value is never echoed raw into the
 		// response body.
-		fmt.Sprintf("payload field %q %s", path, reason),
+		fmt.Sprintf("field %q %s", path, reason),
 	)
 }
 

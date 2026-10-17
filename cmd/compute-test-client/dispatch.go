@@ -311,13 +311,23 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 	case behaviourHold:
 		d.holdWork(heldWork{msg: msg, payload: payload, pass: pass})
 		return nil, false, nil
-	case behaviourFail, behaviourFailRetryable:
+	case behaviourCriterionReasonNUL:
+		// Any other request falls out of the switch and is served from the
+		// catalog.
+		if kind == "criterion" {
+			reply, err := d.buildCriteriaRefusal(head.RequestID, head.EntityID, "scripted reason\x00with U+0000")
+			return reply, false, err
+		}
+	case behaviourFail, behaviourFailRetryable, behaviourFailSilent:
 		var verdict *bool
 		if d.behaviour == behaviourFailRetryable {
 			v := true
 			verdict = &v
 		}
 		msgText := "scripted failure: " + string(d.behaviour)
+		if d.behaviour == behaviourFailSilent {
+			msgText = ""
+		}
 		var reply *cepb.CloudEvent
 		var err error
 		switch kind {
@@ -663,6 +673,19 @@ func (d *dispatcher) buildCriteriaResponse(requestID, entityID string, matches, 
 		resp["error"] = errorNode("CRITERIA_ERROR", errMsg, retryable)
 	}
 	return newCloudEvent(ceTypeCriteriaResponse, resp)
+}
+
+// buildCriteriaRefusal builds a successful criteria response whose verdict is
+// "does not match", with the member's reason for it.
+func (d *dispatcher) buildCriteriaRefusal(requestID, entityID, reason string) (*cepb.CloudEvent, error) {
+	return newCloudEvent(ceTypeCriteriaResponse, map[string]any{
+		"id":        uuid.NewString(),
+		"requestId": requestID,
+		"entityId":  entityID,
+		"success":   true,
+		"matches":   false,
+		"reason":    reason,
+	})
 }
 
 // --- CloudEvent helpers ---

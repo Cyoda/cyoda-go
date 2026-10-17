@@ -105,12 +105,12 @@ func TestCalloutFailure_AsyncNewTx_OperationContinuesNothingReported(t *testing.
 		"no answer":                   noAnswerFailure(),
 	} {
 		t.Run(name, func(t *testing.T) {
-			result, err, _, entity, runCtx := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
+			_, err, _, entity, runCtx := calloutModeEngine(t, ExecutionModeAsyncNewTx, nil, failure)
 			if err != nil {
 				t.Fatalf("Execute = %v, want success: an ASYNC_NEW_TX callout failure does not fail the operation", err)
 			}
-			if !result.Success || entity.Meta.State != "DONE" {
-				t.Errorf("success = %v state = %q, want true and DONE", result.Success, entity.Meta.State)
+			if entity.Meta.State != "DONE" {
+				t.Errorf("state = %q, want DONE", entity.Meta.State)
 			}
 			// Nothing reaches the client — not even the cnode's verdict — so
 			// the request's diagnostics carry no error for the processor either.
@@ -157,8 +157,10 @@ func TestCalloutFailure_CommitBeforeDispatch_FailsAndLeavesTxPreCommitted(t *tes
 			t.Run(kind+", "+name, func(t *testing.T) {
 				_, err, cnt, _, _ := calloutModeEngine(t, ExecutionModeCommitBeforeDispatch, startNewTx, k.failure)
 				k.assert(t, err)
-				if cnt.commits != 1 {
-					t.Errorf("engine commits = %d, want 1: TX_pre is committed before the callout and stays committed", cnt.commits)
+				// TX_pre, committed before the callout and staying committed,
+				// and the transaction of the processor's failed result.
+				if cnt.commits != 2 {
+					t.Errorf("engine commits = %d, want 2: TX_pre and the processor's failed result", cnt.commits)
 				}
 			})
 		}

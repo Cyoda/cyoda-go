@@ -1,0 +1,31 @@
+name: openapi-client-generation
+
+# Generates a Kotlin client (kotlin-spring, Cyoda Cloud's configOptions) and a
+# Java client from api/openapi.yaml, compiles both, and reads and writes every
+# sample in api/clientprobe/samples with each. A merge gate, like oasdiff.
+#
+# No paths filter: a required check with a paths filter stays pending on a PR
+# that does not touch those paths.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'release/**']
+
+permissions:
+  contents: read
+
+jobs:
+  client-probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Generate, compile and round-trip the samples
+        run: mvn -B -f api/clientprobe/pom.xml verify

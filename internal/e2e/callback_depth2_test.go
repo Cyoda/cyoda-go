@@ -75,7 +75,7 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 			"version": "1.1", "name": "secondary-d2-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "store", "next": "STORED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
+					"processors": [{"type": "externalized", "name": %q, "executionMode": %q,
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"STORED": {}
@@ -107,7 +107,7 @@ func depth2Chain(t *testing.T, tag, execMode string) {
 			"version": "1.1", "name": "primary-d2-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
@@ -237,7 +237,7 @@ func TestCallback_Depth2NestedJoin_FunctionCriterion(t *testing.T) {
 			"version": "1.1", "name": "primary-crit-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-d2-crit-primary", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-d2-crit-primary", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

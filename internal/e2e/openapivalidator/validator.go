@@ -46,30 +46,42 @@ type Validator struct {
 }
 
 // NewValidator builds a Validator from a parsed OpenAPI 3.1 document.
+//
+// The document is rewritten in place into the view of ApplyView; pass one
+// freshly loaded (api.GetSwagger parses a new one on every call).
 func NewValidator(doc *openapi3.T) (*Validator, error) {
+	if err := ApplyView(doc); err != nil {
+		return nil, fmt.Errorf("apply spec view: %w", err)
+	}
 	router, err := gorillamux.NewRouter(doc)
 	if err != nil {
 		return nil, fmt.Errorf("build router: %w", err)
 	}
 	return &Validator{
-		doc:    doc,
-		router: router,
-		opts: &openapi3filter.Options{
-			IncludeResponseStatus: true,
-			MultiError:            true,
-			AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
-				return nil // skip auth checks; we validate shape only
-			},
-		},
+		doc:       doc,
+		router:    router,
+		opts:      validatorOptions(),
 		recursive: recursiveSchemas(doc),
 	}, nil
+}
+
+// validatorOptions returns the options the Validator passes to
+// openapi3filter.ValidateResponse.
+func validatorOptions() *openapi3filter.Options {
+	return &openapi3filter.Options{
+		IncludeResponseStatus: true,
+		MultiError:            true,
+		AuthenticationFunc: func(ctx context.Context, ai *openapi3filter.AuthenticationInput) error {
+			return nil // skip auth checks; we validate shape only
+		},
+	}
 }
 
 // Validate runs the response through openapi3filter.ValidateResponse and
 // returns any mismatches it finds. Returns an empty slice on success.
 //
 // Records the matched operationId in the package's exercised set, regardless
-// of whether validation passed.
+// of whether validation passed, and the response's error-code triple.
 //
 // Wraps the underlying call in a panic recovery so that bugs in kin-openapi
 // (or in our spec/wire data hitting an untested code path) surface as
@@ -102,7 +114,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 		// No matching route — the request hit a path the spec doesn't declare.
 		// This is a real mismatch (handler exists for an undeclared route).
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,
@@ -131,7 +143,7 @@ func (v *Validator) Validate(ctx context.Context, req *http.Request, resp *http.
 			return nil
 		}
 		return []Mismatch{{
-			Operation: "<unmatched>",
+			Operation: unmatchedOperation,
 			Method:    req.Method,
 			Path:      req.URL.Path,
 			Status:    resp.StatusCode,

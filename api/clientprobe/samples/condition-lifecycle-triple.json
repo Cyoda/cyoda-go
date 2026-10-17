@@ -1,0 +1,14 @@
+{
+  "schema": "QueryConditionDto",
+  "valid": false,
+  "value": {
+    "type": "lifecycle",
+    "field": "state",
+    "operatorType": "BETWEEN",
+    "value": [
+      "A",
+      "B",
+      "C"
+    ]
+  }
+}

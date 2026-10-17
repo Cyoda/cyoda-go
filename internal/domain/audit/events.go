@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"fmt"
+	"maps"
 	"strings"
 	"time"
 
@@ -63,6 +64,19 @@ func entityChangeItem(v spi.EntityVersionMeta, entityID, callerTenant string) au
 	return auditItem{key: eventKey{at: at, kind: "EntityChange", version: v.Version}, body: body}
 }
 
+// eventData is the wire form of an event's data: a copy of the stored map with
+// the event's own type as its eventType (the discriminator of the typed
+// StateMachineEventDto). The stored map is never modified or shared; nil data
+// yields just the discriminator.
+func eventData(ev spi.StateMachineEvent) map[string]any {
+	data := maps.Clone(ev.Data)
+	if data == nil {
+		data = make(map[string]any, 1)
+	}
+	data["eventType"] = string(ev.EventType)
+	return data
+}
+
 // stateMachineItem builds one StateMachine audit event. The store assigns
 // every event an id (spi.StateMachineAuditStore); one that does not parse,
 // or parses to the nil UUID — a value no store ever assigns — is a store
@@ -88,7 +102,7 @@ func stateMachineItem(ev spi.StateMachineEvent, callerTenant string) (auditItem,
 		"entityId":       ev.EntityID,
 		"eventId":        id.String(),
 		"details":        ev.Details,
-		"data":           ev.Data,
+		"data":           eventData(ev),
 	}
 	if ev.TransactionID != "" {
 		body["transactionId"] = ev.TransactionID

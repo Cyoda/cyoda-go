@@ -19,11 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/jackc/pgx/v5"
-
-	genapi "github.com/cyoda-platform/cyoda-go/api"
-	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
 )
 
 // farFuture is later than any consistency time the node can have cached, so
@@ -155,16 +151,7 @@ func TestConsistencyUnavailable(t *testing.T) {
 	// is 1 s. Its handler sits behind the conformance validator.
 	t.Setenv("CYODA_POSTGRES_STATEMENT_TIMEOUT", "1s")
 	h := newStackOn(t, s, nil)
-	swagger, err := genapi.GetSwagger()
-	if err != nil {
-		t.Fatalf("get swagger: %v", err)
-	}
-	swagger.Servers = openapi3.Servers{{URL: "/api"}}
-	validator, err := openapivalidator.NewValidator(swagger)
-	if err != nil {
-		t.Fatalf("build validator: %v", err)
-	}
-	srv := httptest.NewServer(openapivalidator.NewMiddleware(validator)(h.app.Handler()))
+	srv := httptest.NewServer(validated(h.app.Handler()))
 	t.Cleanup(srv.Close)
 	token := h.token(t)
 	do := func(method, path, body string) (int, string) {

@@ -2,19 +2,36 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// TestInternalizedRejection_AuditEvents_ManualTransition asserts the
-// full audit-event sequence for a manual-fired internalized processor:
-// 1× SMEventProcessingPaused, 2× SMEventStateProcessResult (one inside
-// executeProcessors, one in the caller-level failure emit), 0×
-// SMEventFinished.
-func TestInternalizedRejection_AuditEvents_ManualTransition(t *testing.T) {
+// errProcessorRefused is the failure the mock compute member answers with in
+// the failed-processor audit tests below.
+var errProcessorRefused = errors.New("compute member refused the request")
+
+// failingProcessorEngine returns an engine whose compute member fails every
+// processor dispatch with errProcessorRefused.
+func failingProcessorEngine(t *testing.T) (*Engine, spi.StoreFactory) {
+	t.Helper()
 	engine, factory := setupEngine(t)
+	engine.extProc = &mockExternalProcessing{
+		dispatchFunc: func(context.Context, *spi.Entity, spi.ProcessorDefinition, string, string, string) (*spi.Entity, error) {
+			return nil, errProcessorRefused
+		},
+	}
+	return engine, factory
+}
+
+// TestFailedProcessor_AuditEvents_ManualTransition asserts the full
+// audit-event sequence for a manual-fired SYNC processor that fails:
+// 1× SMEventProcessingPaused, 1× SMEventStateProcessResult (the processor's
+// own record, without the wrapped error text), 0× SMEventFinished.
+func TestFailedProcessor_AuditEvents_ManualTransition(t *testing.T) {
+	engine, factory := failingProcessorEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "audit-manual", ModelVersion: "1.0"}
 
@@ -24,7 +41,7 @@ func TestInternalizedRejection_AuditEvents_ManualTransition(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "FIRE", Next: "DONE", Manual: true,
 					Processors: []spi.ProcessorDefinition{
-						{Type: ProcessorTypeInternalized, Name: "internal-proc", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "failing-proc", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"DONE": {},
@@ -34,8 +51,8 @@ func TestInternalizedRejection_AuditEvents_ManualTransition(t *testing.T) {
 
 	entity := makeEntity("e1", modelRef, map[string]any{})
 	_, err := engine.Execute(ctx, entity, "FIRE")
-	if err == nil {
-		t.Fatalf("expected rejection error from internalized processor, got nil")
+	if !errors.Is(err, errProcessorRefused) {
+		t.Fatalf("Execute error = %v, want the processor's failure", err)
 	}
 
 	auditStore, err := factory.StateMachineAuditStore(ctx)
@@ -66,45 +83,33 @@ func TestInternalizedRejection_AuditEvents_ManualTransition(t *testing.T) {
 	if processingPausedCount != 1 {
 		t.Errorf("SMEventProcessingPaused count = %d, want 1", processingPausedCount)
 	}
-	if got, want := len(stateProcessResults), 2; got != want {
-		t.Fatalf("SMEventStateProcessResult count = %d, want %d (one from executeProcessors, one from caller failure emit)", got, want)
+	if got, want := len(stateProcessResults), 1; got != want {
+		t.Fatalf("SMEventStateProcessResult count = %d, want %d (the processor's own record only)", got, want)
 	}
 	if stateMachineFinished != 0 {
 		t.Errorf("SMEventFinished count = %d, want 0 (cascade aborted)", stateMachineFinished)
 	}
 
-	// First emit comes from executeProcessors (engine_processors.go:72-74) with
-	// mode = declared ExecutionMode.
-	first := stateProcessResults[0]
-	if !strings.Contains(first.Details, `Processor "internal-proc" completed`) {
-		t.Errorf("first SMEventStateProcessResult Details = %q, want 'Processor \"internal-proc\" completed'", first.Details)
+	only := stateProcessResults[0]
+	if only.Details != `Processor "failing-proc" failed` {
+		t.Errorf("SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" failed'", only.Details)
 	}
-	if mode, _ := first.Data["mode"].(string); mode != ExecutionModeSync {
-		t.Errorf("first SMEventStateProcessResult Data.mode = %v, want %q", first.Data["mode"], ExecutionModeSync)
+	if strings.Contains(only.Details, errProcessorRefused.Error()) {
+		t.Errorf("SMEventStateProcessResult Details = %q holds the wrapped error text", only.Details)
 	}
-	if success, _ := first.Data["success"].(bool); success {
-		t.Errorf("first SMEventStateProcessResult Data.success = true, want false")
+	if mode, _ := only.Data["executionMode"].(string); mode != ExecutionModeSync {
+		t.Errorf("SMEventStateProcessResult Data.executionMode = %v, want %q", only.Data["executionMode"], ExecutionModeSync)
 	}
-
-	// Second emit comes from engine.go:465-467 (attemptTransition) with the full
-	// wrapped error in Details and no mode key.
-	second := stateProcessResults[1]
-	if !strings.Contains(second.Details, `Processor failed for transition "FIRE":`) {
-		t.Errorf("second SMEventStateProcessResult Details = %q, want 'Processor failed for transition \"FIRE\":' prefix", second.Details)
-	}
-	if !strings.Contains(second.Details, `execution type "internalized" is not yet implemented`) {
-		t.Errorf("second SMEventStateProcessResult Details = %q, want rejection sub-string", second.Details)
-	}
-	if _, hasMode := second.Data["mode"]; hasMode {
-		t.Errorf("second SMEventStateProcessResult Data should not have a 'mode' key (caller emit does not set it); got %v", second.Data)
+	if success, _ := only.Data["success"].(bool); success {
+		t.Errorf("SMEventStateProcessResult Data.success = true, want false")
 	}
 }
 
-// TestInternalizedRejection_AuditEvents_CascadedTransition asserts the
-// same audit sequence for a non-manual transition reached via
-// engine.cascadeAutomated (engine.go:553-556 emit path).
-func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
-	engine, factory := setupEngine(t)
+// TestFailedProcessor_AuditEvents_CascadedTransition asserts the same audit
+// sequence for a failing processor on a non-manual transition reached via
+// engine.cascadeAutomated.
+func TestFailedProcessor_AuditEvents_CascadedTransition(t *testing.T) {
+	engine, factory := failingProcessorEngine(t)
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "audit-cascade", ModelVersion: "1.0"}
 
@@ -114,7 +119,7 @@ func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
 			"INITIAL": {Transitions: []spi.TransitionDefinition{
 				{Name: "AUTO", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
-						{Type: ProcessorTypeInternalized, Name: "internal-proc", ExecutionMode: ExecutionModeSync},
+						{Type: ProcessorTypeExternalized, Name: "failing-proc", ExecutionMode: ExecutionModeSync},
 					}},
 			}},
 			"DONE": {},
@@ -124,8 +129,8 @@ func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
 
 	entity := makeEntity("e2", modelRef, map[string]any{})
 	_, err := engine.Execute(ctx, entity, "")
-	if err == nil {
-		t.Fatalf("expected rejection error from internalized processor in cascade path, got nil")
+	if !errors.Is(err, errProcessorRefused) {
+		t.Fatalf("Execute error = %v, want the processor's failure in the cascade path", err)
 	}
 
 	auditStore, err := factory.StateMachineAuditStore(ctx)
@@ -144,17 +149,56 @@ func TestInternalizedRejection_AuditEvents_CascadedTransition(t *testing.T) {
 		}
 	}
 
-	if got, want := len(stateProcessResults), 2; got != want {
-		t.Fatalf("SMEventStateProcessResult count = %d, want %d (one inside executeProcessors, one from cascade failure emit at engine.go:553-556)", got, want)
+	if got, want := len(stateProcessResults), 1; got != want {
+		t.Fatalf("SMEventStateProcessResult count = %d, want %d (the processor's own record only)", got, want)
+	}
+	if got := stateProcessResults[0].Details; got != `Processor "failing-proc" failed` {
+		t.Errorf("cascade-path SMEventStateProcessResult Details = %q, want 'Processor \"failing-proc\" failed'", got)
+	}
+	if strings.Contains(stateProcessResults[0].Details, errProcessorRefused.Error()) {
+		t.Errorf("cascade-path SMEventStateProcessResult Details = %q holds the wrapped error text", stateProcessResults[0].Details)
+	}
+}
+
+// TestExecuteProcessors_EmptyPipeline_NoPause asserts that a transition with
+// no processors fires and reaches the target state without entering the
+// per-processor loop: no SMEventProcessingPaused is recorded.
+func TestExecuteProcessors_EmptyPipeline_NoPause(t *testing.T) {
+	engine, factory := setupEngine(t)
+	ctx := ctxWithTenant(testTenant)
+	modelRef := spi.ModelRef{EntityName: "no-procs", ModelVersion: "1.0"}
+
+	wf := spi.WorkflowDefinition{
+		Version: "1.1", Name: "NoProcsWF", InitialState: "INITIAL", Active: true,
+		States: map[string]spi.StateDefinition{
+			"INITIAL": {Transitions: []spi.TransitionDefinition{
+				{Name: "RUN", Next: "DONE", Manual: false},
+			}},
+			"DONE": {},
+		},
+	}
+	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
+
+	entity := makeEntity("e1", modelRef, map[string]any{})
+	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entity.Meta.State != "DONE" {
+		t.Errorf("entity state = %q, want DONE", entity.Meta.State)
 	}
 
-	// The second emit (from engine.go:553-556) carries the wrapped error in Details.
-	second := stateProcessResults[1]
-	if !strings.Contains(second.Details, `Processor failed for transition "AUTO":`) {
-		t.Errorf("cascade-path second emit Details = %q, want 'Processor failed for transition \"AUTO\":' prefix", second.Details)
+	auditStore, err := factory.StateMachineAuditStore(ctx)
+	if err != nil {
+		t.Fatalf("StateMachineAuditStore: %v", err)
 	}
-	if !strings.Contains(second.Details, `execution type "internalized" is not yet implemented`) {
-		t.Errorf("cascade-path second emit Details = %q, want rejection sub-string", second.Details)
+	events, err := auditStore.GetEvents(ctx, "e1")
+	if err != nil {
+		t.Fatalf("GetEvents: %v", err)
+	}
+	for _, ev := range events {
+		if ev.EventType == spi.SMEventProcessingPaused {
+			t.Errorf("SMEventProcessingPaused was recorded for an empty processors[]; want none")
+		}
 	}
 }
 

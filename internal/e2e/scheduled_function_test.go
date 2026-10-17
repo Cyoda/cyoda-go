@@ -511,6 +511,25 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 	}
 }
 
+// scheduleFunctionTouchWorkflowJSON is scheduleFunctionWorkflowJSON with one
+// manual self-transition on Open, so a write that names a transition settles
+// in Open and re-arms its schedule there.
+func scheduleFunctionTouchWorkflowJSON(wfName, fnJSON string) string {
+	return fmt.Sprintf(`{
+		"importMode": "REPLACE",
+		"workflows": [{
+			"version": "1.3", "name": %q, "initialState": "Open", "active": true,
+			"states": {
+				"Open": {"transitions": [
+					{"name": "AutoClose", "next": "Closed", "manual": false, "schedule": {"function": %s}},
+					{"name": "touch", "next": "Open", "manual": true}
+				]},
+				"Closed": {}
+			}
+		}]
+	}`, wfName, fnJSON)
+}
+
 // TestScheduledFunction_MalformedResult_Returns500 proves a structurally
 // invalid Schedule result (here: both fireAt and fireAfterMs set —
 // resolveSchedule requires exactly one) fails the write with a 500
@@ -518,30 +537,80 @@ func TestScheduledFunction_DispatchTimeout_Returns503(t *testing.T) {
 // response, not the caller's request — and the response body follows the
 // sanitized-5xx contract (Gate 3 / .claude/rules/error-handling.md): a
 // generic detail plus a correlation ticket, never the internal cause text.
+//
+// Every write door settles the entity and re-arms its schedule, so every one
+// of them can meet the bad result: the create doors with the first arm, the
+// update doors with the re-arm of the state they settle in.
 func TestScheduledFunction_MalformedResult_Returns500(t *testing.T) {
 	h := newCallbackHarness(t)
-	const model = "e2e-schedfn-badresult"
+	const payload = `{"name":"Test Order","amount":100,"status":"draft"}`
 
-	h.RegisterFunction("calcBadResult", func(rc *reqCtx) (string, map[string]any, error) {
-		return "Schedule", map[string]any{"fireAt": time.Now().UnixMilli(), "fireAfterMs": int64(1000)}, nil
-	})
+	for _, door := range []struct {
+		name string
+		// existing says the door acts on an entity that was created while the
+		// Function still answered well.
+		existing bool
+		drive    func(t *testing.T, model, entityID string) (int, string)
+	}{
+		{"create", false, func(t *testing.T, model, _ string) (int, string) {
+			_, status, body := h.CreateEntity(t, model, 1, payload)
+			return status, body
+		}},
+		{"create-collection", false, func(t *testing.T, model, _ string) (int, string) {
+			return doorRequest(t, h, http.MethodPost, "/api/entity/JSON", collectionCreateItems(model, payload))
+		}},
+		{"update-transition", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON/"+id+"/touch", payload)
+		}},
+		{"loopback", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON/"+id, payload)
+		}},
+		{"patch", true, func(t *testing.T, _, id string) (int, string) {
+			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id, "application/merge-patch+json", "*", `{"amount":101}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+		{"patch-transition", true, func(t *testing.T, _, id string) (int, string) {
+			resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+id+"/touch", "application/merge-patch+json", "*", `{"amount":102}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+		{"update-collection", true, func(t *testing.T, _, id string) (int, string) {
+			return doorRequest(t, h, http.MethodPut, "/api/entity/JSON", collectionUpdateItems(id, "touch", payload))
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			key := doorKey(door.name)
+			model := "e2e-schedfn-badresult-" + key
+			fn := "calcBadResult" + key
+			var bad atomic.Bool
+			h.RegisterFunction(fn, func(rc *reqCtx) (string, map[string]any, error) {
+				if bad.Load() {
+					return "Schedule", map[string]any{"fireAt": time.Now().UnixMilli(), "fireAfterMs": int64(1000)}, nil
+				}
+				return "Schedule", map[string]any{"fireAfterMs": int64(600_000)}, nil
+			})
+			h.SetupModelWithWorkflow(t, model, scheduleFunctionTouchWorkflowJSON("schedfn-badresult-wf-"+key, validScheduleFunctionJSON(fn)))
 
-	wf := scheduleFunctionWorkflowJSON("schedfn-badresult-wf", validScheduleFunctionJSON("calcBadResult"))
-	h.SetupModelWithWorkflow(t, model, wf)
+			entityID := ""
+			if door.existing {
+				entityID = createQuietEntity(t, h, model, payload)
+			}
+			bad.Store(true)
 
-	_, status, body := h.CreateEntity(t, model, 1, `{"name":"Test Order","amount":100,"status":"draft"}`)
-	if status != http.StatusInternalServerError {
-		t.Fatalf("create entity with a malformed Schedule result (fireAt AND fireAfterMs both set): expected 500, got %d: %s", status, body)
-	}
-	pd := decodeProblem(t, body)
-	if pd.errorCode() != "SCHEDULE_FUNCTION_INVALID_RESULT" {
-		t.Errorf("properties.errorCode: got %q, want SCHEDULE_FUNCTION_INVALID_RESULT; body=%s", pd.errorCode(), body)
-	}
-	if pd.Ticket == "" {
-		t.Errorf("expected a correlation ticket UUID on the sanitized 500 response; body=%s", body)
-	}
-	if strings.Contains(body, "exactly one of fireAt") {
-		t.Errorf("sanitized-5xx contract violated: internal cause text leaked into the client-facing body=%s", body)
+			status, body := door.drive(t, model, entityID)
+			if status != http.StatusInternalServerError {
+				t.Fatalf("a malformed Schedule result (fireAt AND fireAfterMs both set): expected 500, got %d: %s", status, body)
+			}
+			pd := decodeProblem(t, body)
+			if pd.errorCode() != "SCHEDULE_FUNCTION_INVALID_RESULT" {
+				t.Errorf("properties.errorCode: got %q, want SCHEDULE_FUNCTION_INVALID_RESULT; body=%s", pd.errorCode(), body)
+			}
+			if pd.Ticket == "" {
+				t.Errorf("expected a correlation ticket UUID on the sanitized 500 response; body=%s", body)
+			}
+			if strings.Contains(body, "exactly one of fireAt") {
+				t.Errorf("sanitized-5xx contract violated: internal cause text leaked into the client-facing body=%s", body)
+			}
+		})
 	}
 }
 
@@ -619,6 +688,8 @@ func TestScheduledFunction_PastFireAt_FiresPromptly(t *testing.T) {
 	if !hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "Closed") {
 		t.Errorf("expected a SCHEDULED_TRANSITION_FIRE audit event with state Closed; got events: %+v", events)
 	}
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_FIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_FIRE",
+		"transition": "AutoClose", "sourceState": "Open", "workflowName": "schedfn-pastfire-wf"})
 }
 
 // TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire proves the
@@ -649,9 +720,12 @@ func TestScheduledFunction_ExpiryElapsedBeforeScan_ExpiresNoFire(t *testing.T) {
 	second := newStackOn(t, s, nil)
 
 	awaitCallbackSMEventType(t, second, entityID, "SCHEDULED_TRANSITION_EXPIRE", "Open", scheduledFireTimeout)
-	if hasSMEventType(second.GetSMAuditEvents(t, entityID), "SCHEDULED_TRANSITION_FIRE", "") {
+	events := second.GetSMAuditEvents(t, entityID)
+	if hasSMEventType(events, "SCHEDULED_TRANSITION_FIRE", "") {
 		t.Error("the task fired; its deadline had passed before the first claim")
 	}
+	assertSMEventData(t, events, "SCHEDULED_TRANSITION_EXPIRE", map[string]any{"eventType": "SCHEDULED_TRANSITION_EXPIRE",
+		"transition": "AutoClose", "sourceState": "Open"})
 	if st, _ := second.GetEntityState(t, entityID); st != "Open" {
 		t.Errorf("state = %q; want Open (expired, not fired)", st)
 	}

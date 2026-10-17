@@ -1,0 +1,10 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineScheduledTransitionArmedDto",
+  "value": {
+    "eventType": "SCHEDULED_TRANSITION_ARM",
+    "transition": "expire",
+    "sourceState": "PENDING",
+    "scheduledTime": 1760526000000
+  }
+}

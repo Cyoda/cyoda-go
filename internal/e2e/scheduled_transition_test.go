@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -57,6 +58,19 @@ func smEventsOfType(events []map[string]any, wantType string) []map[string]any {
 		}
 	}
 	return out
+}
+
+// assertSMEventData fails the test unless events hold exactly one event of
+// wantType and its data equals want.
+func assertSMEventData(t *testing.T, events []map[string]any, wantType string, want map[string]any) {
+	t.Helper()
+	found := smEventsOfType(events, wantType)
+	if len(found) != 1 {
+		t.Fatalf("%d %s events, want 1: %+v", len(found), wantType, events)
+	}
+	if data := found[0]["data"]; !reflect.DeepEqual(data, want) {
+		t.Errorf("%s data = %v, want %v", wantType, data, want)
+	}
 }
 
 // smEventTime returns the instant an audit event was recorded.

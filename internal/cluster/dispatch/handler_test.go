@@ -157,7 +157,7 @@ func TestHandler_Outcomes(t *testing.T) {
 				}
 			}},
 		{"the cnode said it failed", "processor",
-			internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", Retryable: &yes}},
+			internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined", Retryable: &yes}},
 			func(t *testing.T, r DispatchCalloutResponse) {
 				if r.Outcome != "member_failed" || r.MemberError != "card declined" || r.MemberRetryable == nil || !*r.MemberRetryable {
 					t.Errorf("%+v", r)
@@ -348,7 +348,7 @@ func TestHandler_NoLocalCnode_AnswersNoHandOff(t *testing.T) {
 func TestHandler_DiagnosticsOfTheTriesTravelBack(t *testing.T) {
 	auth := newAEAD(t)
 	runner := &fakeRunner{
-		result: internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined"}},
+		result: internalgrpc.LocalResult{TriesUsed: 1, Failure: &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined"}},
 		onRun: func(ctx context.Context) {
 			common.AddWarning(ctx, "processor myProcessor: slow")
 			common.AddError(ctx, "processor myProcessor: card declined")

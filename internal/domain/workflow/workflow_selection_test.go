@@ -210,9 +210,9 @@ func TestLoopback_EmitsWorkflowSelectionAudit(t *testing.T) {
 }
 
 // TestLoopback_StateAbsentFromSelectedWorkflow_IsStable asserts loopback
-// keeps its STATE_NOT_IN_WORKFLOW stable-state contract when the state is
-// absent from the SELECTED workflow — rather than cascading some other
-// definition that declares it.
+// finishes with the FORCE_SUCCESS stop reason when the state is absent from
+// the SELECTED workflow — rather than cascading some other definition that
+// declares it.
 func TestLoopback_StateAbsentFromSelectedWorkflow_IsStable(t *testing.T) {
 	engine, factory := setupEngine(t)
 	ctx := ctxWithTenant(testTenant)
@@ -236,15 +236,15 @@ func TestLoopback_StateAbsentFromSelectedWorkflow_IsStable(t *testing.T) {
 	entity := makeEntity("loopback-orphan-a", modelRef, map[string]any{"kind": "a"})
 	entity.Meta.State = "ORPHAN"
 
-	res, err := engine.Loopback(ctx, entity)
-	if err != nil {
+	if _, err := engine.Loopback(ctx, entity); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if entity.Meta.State != "ORPHAN" {
 		t.Errorf("state = %q, want ORPHAN (unchanged — kind-b-wf must not cascade)", entity.Meta.State)
 	}
-	if res.StopReason != "STATE_NOT_IN_WORKFLOW" {
-		t.Errorf("StopReason = %q, want STATE_NOT_IN_WORKFLOW", res.StopReason)
+	stop := finishOf(t, allEvents(t, factory, ctx, "loopback-orphan-a"), "ORPHAN")
+	if stop["type"] != "FORCE_SUCCESS" {
+		t.Errorf("FINISH stopReason = %v, want type FORCE_SUCCESS", stop)
 	}
 }
 

@@ -123,7 +123,7 @@ func TestCalloutModes_ScheduledFire(t *testing.T) {
 				"Open": map[string]any{"transitions": []any{map[string]any{
 					"name": "AutoClose", "next": "Closed", "manual": false,
 					"schedule": map[string]any{"delayMs": 200},
-					"processors": []any{map[string]any{"type": "calculator", "name": "s5-sched-proc", "executionMode": "SYNC",
+					"processors": []any{map[string]any{"type": "externalized", "name": "s5-sched-proc", "executionMode": "SYNC",
 						"config": map[string]any{"attachEntity": true, "calculationNodesTags": tag,
 							"responseTimeoutMs": 300, "idempotent": true}}},
 				}}},

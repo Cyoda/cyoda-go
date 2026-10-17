@@ -41,7 +41,7 @@ func ukProcWorkflowOneStep(model, procName string) string {
 			"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"CREATED": {}
@@ -139,7 +139,7 @@ func TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409(t *testing.T) {
 			"states": {
 				"NONE":     {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}
@@ -293,7 +293,7 @@ func TestUniqueKeys_ProcessorDeletesAndReclaims_SameTx(t *testing.T) {
 			"states": {
 				"NONE":    {"transitions": [{"name": "init", "next": "PENDING", "manual": false}]},
 				"PENDING": {"transitions": [{"name": "reclaim", "next": "DONE", "manual": true,
-					"processors": [{"type": "calculator", "name": "%s", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "%s", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"DONE":    {}

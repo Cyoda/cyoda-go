@@ -62,12 +62,9 @@ func TestDefaultWorkflowFallback_WhenImportedWorkflowCriterionDoesNotMatch(t *te
 
 	// Execute — the imported workflow's criterion won't match.
 	// The engine should fall back to the default workflow.
-	result, err := engine.Execute(ctx, entity, "")
+	_, err = engine.Execute(ctx, entity, "")
 	if err != nil {
 		t.Fatalf("Execute failed (should have fallen back to default): %v", err)
-	}
-	if !result.Success {
-		t.Fatalf("expected success")
 	}
 	if entity.Meta.State != "CREATED" {
 		t.Fatalf("expected state CREATED from default workflow, got %s", entity.Meta.State)

@@ -31,7 +31,7 @@ func procOutputWorkflow(procName string) string {
 			"version": "1.1", "name": "proc-output-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"CREATED": {}
 			}
@@ -150,9 +150,9 @@ func TestWorkflowProcOutput_ExtensionRollsBackWithTheTransition(t *testing.T) {
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "CREATED", "manual": false,
 					"processors": [
-						{"type": "calculator", "name": "procout-p1", "executionMode": "SYNC",
+						{"type": "externalized", "name": "procout-p1", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}},
-						{"type": "calculator", "name": "procout-p2", "executionMode": "SYNC",
+						{"type": "externalized", "name": "procout-p2", "executionMode": "SYNC",
 							"config": {"attachEntity": true, "calculationNodesTags": ""}}
 					]}]},
 				"CREATED": {}

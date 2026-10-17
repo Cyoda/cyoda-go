@@ -112,7 +112,7 @@ func grpcJoinedOutcome(env txEnvelope, err error) joinedCommitOutcome {
 // joinedPatch is a joined PATCH: the callback door's merge-patch form, which
 // h.callback cannot send (it always sets application/json).
 func (h *callbackHarness) joinedPatch(entityID, ifMatch, patch, pass string) (callbackResult, error) {
-	req, err := http.NewRequest(http.MethodPatch, h.baseURL+"/api/entity/JSON/"+entityID, strings.NewReader(patch))
+	req, err := http.NewRequestWithContext(h.ownerCtx(), http.MethodPatch, h.baseURL+"/api/entity/JSON/"+entityID, strings.NewReader(patch))
 	if err != nil {
 		return callbackResult{}, err
 	}
@@ -403,7 +403,7 @@ func hasRefusedProcessorResult(events []map[string]any) bool {
 			continue
 		}
 		data, _ := ev["data"].(map[string]any)
-		if mode, _ := data["mode"].(string); mode != "COMMIT_BEFORE_DISPATCH" {
+		if mode, _ := data["executionMode"].(string); mode != "COMMIT_BEFORE_DISPATCH" {
 			continue
 		}
 		if success, ok := data["success"].(bool); ok && !success {
@@ -422,7 +422,7 @@ func joinedCommitOuterWorkflow(name, proc string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": %q, "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"ACTIVE": {}
 			}
@@ -433,7 +433,7 @@ func joinedCommitOuterWorkflow(name, proc string) string {
 // joinedCommitTargetWorkflow places a COMMIT_BEFORE_DISPATCH processor as shape
 // says.
 func joinedCommitTargetWorkflow(name, proc string, startNewTx bool, shape joinedCommitShape) string {
-	cbd := fmt.Sprintf(`"processors": [{"type": "calculator", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
+	cbd := fmt.Sprintf(`"processors": [{"type": "externalized", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
 		"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": %t}}]`, proc, startNewTx)
 	var states string
 	switch shape {

@@ -96,7 +96,7 @@ func (h *callbackHarness) DoAuthBearer(t *testing.T, method, path, body, txToken
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := e2eNewRequest(t, method, h.baseURL+path, r)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -121,7 +121,7 @@ func (h *callbackHarness) callbackBearer(method, path, body, txToken, bearer str
 	if body != "" {
 		r = strings.NewReader(body)
 	}
-	req, err := http.NewRequest(method, h.baseURL+path, r)
+	req, err := http.NewRequestWithContext(h.ownerCtx(), method, h.baseURL+path, r)
 	if err != nil {
 		return callbackResult{}, err
 	}
@@ -276,7 +276,7 @@ func procCascadeWF(name, procName, execMode, cfgExtra string) string {
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": %q, "executionMode": %q,
+					"processors": [{"type": "externalized", "name": %q, "executionMode": %q,
 						"config": {"attachEntity": true, "calculationNodesTags": ""%s}}]
 				}]},
 				"ACTIVE": {}

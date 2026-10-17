@@ -1,0 +1,10 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineStateProcessResultDto",
+  "value": {
+    "eventType": "STATE_PROCESS_RESULT",
+    "processorName": "enrich",
+    "executionMode": "SYNC",
+    "success": true
+  }
+}

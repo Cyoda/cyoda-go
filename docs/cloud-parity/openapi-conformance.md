@@ -45,7 +45,53 @@ A CI gate (`openapi-breaking-change.yml`, using `oasdiff`) blocks merges that
 introduce breaking spec changes — removing an operation or field, sealing an
 open object, narrowing a type, or adding a required field to an existing
 response. Cloud may rely on this gate as a stability guarantee: the live common
-ground only grows; it does not shrink.
+ground only grows; it does not shrink. A severity file
+(`.github/oasdiff-severity-levels.txt`) raises to errors the changes the gate
+would otherwise pass: adding a value to a response `enum`, removing a response
+or request `enum` value, deleting a discriminator mapping key, and renaming a
+discriminator property.
+
+## Polymorphic form and generated clients
+
+The spec follows three rules, each enforced by a spec test in `api/` and
+recorded with its reasons in ADR 0005 (`docs/adr/0005-openapi-client-generation.md`).
+Cloud's spec must follow the same rules.
+
+- **Rule 1 — one form: a base.** Every polymorphic type is a base schema with a
+  discriminator and a mapping that names every member; each member includes the
+  base with `allOf`; every use is a `$ref` to the base; no `oneOf`/`anyOf`
+  carries a discriminator; a schema includes at most one base. This is Cloud's
+  form. The bases are `QueryConditionDto` (`type`: `array`, `function`, `group`,
+  `lifecycle`, `simple`), `AuditEventDto` (`auditEventType`: `EntityChange`,
+  `StateMachine`, `System`), `StateMachineEventDto` (`eventType`: the 19 event
+  types) and `ProcessorDefinitionDto` (`type`: `externalized`). Schema names
+  differ from Cloud's (`QueryConditionDto` here, `QueryCondition` there).
+- **Rule 5 — the client generator reads every shape.** No union of scalar
+  types: a value that may be one of several scalar types is an untyped schema
+  whose other keywords state the rule, where Cloud writes `type: any`. The only
+  `oneOf` allowed is `[{type: "null"}, {$ref}]`. No inline `enum` on a property
+  of a base (such an enum is a named schema, e.g. `AuditEventSeverity`,
+  `GroupOperator`). No member declares its base's discriminator property.
+- **Rule 6 — the contract grows by addition only.** A field, a member of a base
+  and an event type can be added; nothing published is renamed or removed (a
+  mapping key, an `enum` value, an event type). A value set that grows is a
+  plain string, never an `enum`: every discriminator property, and the outer
+  `eventType` of a state-machine audit event. A use of a base in a response is
+  never a required property. A client reads an unknown audit kind as an empty
+  entry in `items`, and an event of an unknown type with its `eventType` and
+  empty `data`; for a Jackson client that takes `FAIL_ON_UNKNOWN_PROPERTIES`
+  and `FAIL_ON_INVALID_SUBTYPE` disabled (`cyoda help openapi`, GENERATED
+  CLIENTS).
+
+**The client-generation check.** The CI job
+`openapi-client-generation.yml` generates `kotlin-spring` classes, with Cloud's
+`configOptions` (not its type, import or schema mappings), and a `java` client
+(library `native`, Jackson) from `api/openapi.yaml` with openapi-generator
+7.18.0, the version Cloud uses. It compiles both and round-trips the wire
+samples in `api/clientprobe/samples/` through each, and reads samples of a
+later spec (an unknown audit kind, an unknown event type, an added field) as
+Rule 6 states. A spec change that Cloud's generator cannot read with those
+options fails the merge gate on cyoda-go's side.
 
 ## Complement: field-level divergence catalog
 
@@ -73,7 +119,7 @@ ADR 0003). Each states the direction and what Cloud must mirror.
   and fully canonical). Cloud MUST emit `modelKey` on all entity reads. (The `EntityMetadata`
   schema already marks `modelKey` optional, so this is additive/non-breaking for consumers.)
 - **E2 — conditional `deleteEntities` (HTTP).** `DELETE /entity/{name}/{version}`
-  with an `AbstractConditionDto` body deletes only matching entities (empty body ⇒
+  with a `QueryConditionDto` body deletes only matching entities (empty body ⇒
   all); `verbose=true` returns deleted ids; `numberOfEntitites` (matched) and
   `numberOfEntititesRemoved` (removed) are distinct. Direction: server-gap (closed a
   data-loss defect). Cloud MUST honour the condition — never ignore it.

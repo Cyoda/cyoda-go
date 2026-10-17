@@ -234,7 +234,7 @@ func TestCallback_GRPCSearch_SeesUncommittedWrite(t *testing.T) {
 			"version": "1.1", "name": "primary-grpc-search-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "calculator", "name": "cb-grpc-search", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "cb-grpc-search", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}

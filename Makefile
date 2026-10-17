@@ -1,4 +1,4 @@
-.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-root-packages test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins
+.PHONY: dev-up dev-down dev-reset dev-ps dev-logs dev-run dev-test build test test-root test-root-packages test-full preflight race clean docker-build docker-push todos check-spi-pin-sync check-codegen check-gofmt repin-plugins client-probe
 
 # Recipes need pipefail: a `go test | testreport` pipeline must fail on the
 # LEFT side too, or a compile error in the test binary reports as success.
@@ -187,6 +187,9 @@ repin-plugins:         ## Pseudo-version-pin plugin submodules to the current (p
 
 check-codegen:         ## Verify api/generated.go is in sync with api/openapi.yaml (go generate is up to date)
 	@./scripts/check-generated-in-sync.sh
+
+client-probe:          ## Generate Cloud's Kotlin and the Java client from api/openapi.yaml and round-trip the samples (needs Java 21 + Maven; CI: openapi-client-generation)
+	mvn -B -f api/clientprobe/pom.xml verify
 
 check-gofmt:           ## Verify all Go files are gofmt-clean (root + plugin submodules)
 	@# `gofmt -l .` walks into .claude/worktrees/, so any feature worktree

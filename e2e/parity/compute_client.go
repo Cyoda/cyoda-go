@@ -16,9 +16,14 @@ const (
 	ComputeBehaviourStall         = "stall"          // take the work, never answer
 	ComputeBehaviourFail          = "fail"           // answer success=false, no verdict
 	ComputeBehaviourFailRetryable = "fail-retryable" // answer success=false, retryable=true
+	ComputeBehaviourFailSilent    = "fail-silent"    // answer success=false with no message and no verdict
 	ComputeBehaviourLateCallback  = "late-callback"  // never answer; call back with the pass on Release
 	ComputeBehaviourDrop          = "drop"           // close the stream on receiving work
 	ComputeBehaviourHold          = "hold"           // take the work; answer it from the catalog on Release
+
+	// ComputeBehaviourCriterionReasonNUL answers a criterion as a refusal whose
+	// reason holds U+0000; every other request is served from the catalog.
+	ComputeBehaviourCriterionReasonNUL = "criterion-reason-nul"
 )
 
 // ComputeClientSpec describes a further compute client for one scenario.
@@ -206,6 +211,7 @@ func RunComputeClientBehaviours(t *testing.T, fixture BackendFixture) {
 		{ComputeBehaviourStall, 300, http.StatusServiceUnavailable, "DISPATCH_TIMEOUT"},
 		{ComputeBehaviourFail, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
 		{ComputeBehaviourFailRetryable, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
+		{ComputeBehaviourFailSilent, 0, http.StatusBadRequest, "WORKFLOW_FAILED"},
 		{ComputeBehaviourDrop, 0, http.StatusServiceUnavailable, "COMPUTE_MEMBER_DISCONNECTED"},
 		{ComputeBehaviourLateCallback, 300, http.StatusServiceUnavailable, "DISPATCH_TIMEOUT"},
 	}

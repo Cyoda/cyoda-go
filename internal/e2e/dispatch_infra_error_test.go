@@ -52,7 +52,7 @@ func newDispatchInfraErrorServer(t *testing.T) (string, func()) {
 	cfg.Cluster.DispatchWaitTimeout = 200 * time.Millisecond
 
 	a := app.New(cfg)
-	srv := httptest.NewServer(a.Handler())
+	srv := httptest.NewServer(validated(a.Handler()))
 	return srv.URL, func() {
 		srv.Close()
 		a.Shutdown()
@@ -70,7 +70,7 @@ func doInfraErrRequest(t *testing.T, base, method, path, body string) (int, stri
 	} else {
 		reader = strings.NewReader("")
 	}
-	req, err := http.NewRequest(method, base+path, reader)
+	req, err := e2eNewRequest(t, method, base+path, reader)
 	if err != nil {
 		t.Fatalf("build request %s %s: %v", method, path, err)
 	}
@@ -125,7 +125,7 @@ func TestProcessorNoMember_Returns503(t *testing.T) {
 			"version": "1.1", "name": "%s-wf", "initialState": "NONE", "active": true,
 			"states": {
 				"NONE": {"transitions": [{"name": "init", "next": "DONE", "manual": false,
-					"processors": [{"type": "calculator", "name": "noop-proc", "executionMode": "SYNC",
+					"processors": [{"type": "externalized", "name": "noop-proc", "executionMode": "SYNC",
 						"config": {"attachEntity": true, "calculationNodesTags": "no-such-tag"}}]
 				}]},
 				"DONE": {}

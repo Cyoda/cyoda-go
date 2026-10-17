@@ -187,7 +187,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 		e.recordEvent(auditStore, txCtx, cur.EntityID, txID, cur.SourceState,
 			spi.SMEventScheduledTransitionExpired,
 			fmt.Sprintf("Scheduled transition %q expired (lateness %dms > timeout %dms)",
-				cur.Transition, lateness, *task.TimeoutMs), nil)
+				cur.Transition, lateness, *task.TimeoutMs),
+			ScheduledExpiredData(cur.Transition, cur.SourceState))
 		slog.InfoContext(txCtx, "scheduled transition expired",
 			"pkg", "workflow", "taskId", cur.ID, "entityId", cur.EntityID, "transition", cur.Transition)
 		return OutcomeExpired, commit(txID)
@@ -231,7 +232,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			spi.SMEventScheduledTransitionCancelled,
 			fmt.Sprintf("Scheduled transition %q cancelled (not a scheduled transition of state %q in the selected workflow %q)",
 				cur.Transition, cur.SourceState, wf.Name),
-			map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState, "workflowName": wf.Name})
+			ScheduledCancelledData(cur.Transition, cur.SourceState, wf.Name))
 		return OutcomeCancelled, commit(txID)
 	}
 
@@ -260,7 +261,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 			spi.SMEventScheduledTransitionCancelled,
 			fmt.Sprintf("Scheduled transition %q cancelled (entity carries no committed transaction ID, so the fire cannot be guarded)",
 				cur.Transition),
-			map[string]any{"transition": cur.Transition, "sourceState": cur.SourceState})
+			ScheduledCancelledData(cur.Transition, cur.SourceState, wf.Name))
 		return OutcomeCancelled, commit(txID)
 	}
 	newCtx, newTxID, fireErr := e.fireTransition(txCtx, entity, wf, transition, auditStore, txID)
@@ -277,7 +278,7 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 	}
 	g.firedTransitionDone.Store(true)
 
-	finalCtx, finalTxID, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
+	finalCtx, finalTxID, _, err := e.cascadeAutomated(newCtx, entity, wf, auditStore, newTxID)
 	curCtx, curTxID = finalCtx, finalTxID
 	if err != nil {
 		return "", err
@@ -337,7 +338,8 @@ func (e *Engine) fireScheduled(ctx context.Context, g *RunGuard, task spi.Schedu
 
 	e.recordEvent(auditStore, finalCtx, entity.Meta.ID, txID, entity.Meta.State,
 		spi.SMEventScheduledTransitionFired,
-		fmt.Sprintf("Scheduled transition %q fired", cur.Transition), nil)
+		fmt.Sprintf("Scheduled transition %q fired", cur.Transition),
+		ScheduledFiredData(cur.Transition, cur.SourceState, wf.Name))
 	return OutcomeFired, commit(finalTxID)
 }
 

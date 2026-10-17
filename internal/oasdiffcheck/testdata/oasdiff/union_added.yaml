@@ -1,0 +1,55 @@
+openapi: 3.1.0
+info:
+  title: Fixture API
+  version: 0.0.1
+paths:
+  /events:
+    get:
+      operationId: getEvents
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Base'
+components:
+  schemas:
+    Base:
+      type: object
+      required: [kind]
+      properties:
+        kind:
+          type: string
+        status:
+          type: string
+          enum:
+            - OPEN
+            - CLOSED
+      discriminator:
+        propertyName: kind
+        mapping:
+          alpha: '#/components/schemas/Alpha'
+          beta: '#/components/schemas/Beta'
+          gamma: '#/components/schemas/Gamma'
+    Alpha:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          properties:
+            alphaField:
+              type: string
+    Beta:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          properties:
+            betaField:
+              type: string
+    Gamma:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          properties:
+            gammaField:
+              type: string

@@ -1,0 +1,20 @@
+{
+  "schema": "StateMachineEventDto",
+  "class": "StateMachineTransitionCriterionNotMatchedDto",
+  "value": {
+    "eventType": "TRANSITION_NOT_MATCH_CRITERION",
+    "workflowName": "orders",
+    "transition": "approve",
+    "criterion": "isPriority",
+    "reason": "score below 80",
+    "functions": [
+      {
+        "path": "",
+        "name": "isPriority",
+        "called": true,
+        "matches": true,
+        "reason": "score above 80"
+      }
+    ]
+  }
+}
