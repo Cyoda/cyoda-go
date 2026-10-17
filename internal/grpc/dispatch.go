@@ -241,8 +241,9 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 		// The reason and the failure text reach the state-machine audit trail,
 		// which records no event holding U+0000, and a criterion's reason is
 		// copied into later events too (FINISH's stop reason, the functions of
-		// TRANSITION_MAKE and WORKFLOW_FOUND). Accepting such a text would let it remove the record of a
-		// state change, so the answer is not read at all.
+		// TRANSITION_MAKE and WORKFLOW_FOUND). Accepting such a text would let
+		// it remove the record of a state change, so the answer is not read at
+		// all.
 		if strings.ContainsRune(resp.Reason, 0) || strings.ContainsRune(resp.Error, 0) {
 			return CalloutResult{}, memberResponseUnreadable(errMemberTextNUL, memberTextNULReason, label, name, member.ID, requestID), true, nil
 		}

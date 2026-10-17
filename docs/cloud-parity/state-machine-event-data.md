@@ -227,10 +227,15 @@ event. Such text can reach an event from a caller (a transition name, an
 `reason` or `error` holds U+0000 is refused as unreadable, and the callout
 fails as any unreadable answer does (`400 WORKFLOW_FAILED`, not retryable,
 where its failure fails the operation; `internal/grpc/dispatch.go`,
-`internal/cluster/dispatch/handover.go` `readAnswer`). A criterion's reason is copied into later events of the run
-(FINISH's `stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE
-and WORKFLOW_FOUND), so one member text holding U+0000 would otherwise remove
-those events too, and with them the record of a state change.
+`internal/cluster/dispatch/handover.go` `readAnswer`). A criterion's reason is
+copied into later events of the run (FINISH's
+`stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE and
+WORKFLOW_FOUND), so one member text holding U+0000 would otherwise remove those
+events too, and with them the record of a state change. Nor can it reach one
+from a workflow: import refuses a body holding U+0000 with `400 BAD_REQUEST`
+(`internal/domain/workflow/handler.go`), as an entity payload is refused, since
+a workflow's names reach WORKFLOW_FOUND, TRANSITION_MAKE and
+PAUSE_FOR_PROCESSING.
 
 The reason: cyoda-go's PostgreSQL audit row is a `jsonb` document written in
 the request's transaction. PostgreSQL refuses U+0000 in `jsonb`, and the
@@ -344,7 +349,8 @@ scheduled one
     fail the operation. Cloud records such an event today. And refuse a compute
     member's answer whose `reason` or `error` holds U+0000 as unreadable, as
     any unreadable answer (`400 WORKFLOW_FAILED`, not retryable, where its
-    failure fails the operation).
+    failure fails the operation), and refuse a workflow import whose body
+    holds U+0000 with `400 BAD_REQUEST`.
 11. **Processor `type` (section 9).** Store an omitted or empty `type` as
     `externalized` and export it as `externalized`; refuse any other value at
     import with `400 VALIDATION_FAILED`, `scheduled` included. A scheduled

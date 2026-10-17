@@ -326,7 +326,8 @@ not retryable, the message naming the character, none of the member's text).
 A criterion's reason and a failure text reach the state-machine audit trail,
 which records no event holding U+0000, and a criterion's reason is copied into
 later events of the same run, so reading such an answer would take the record
-of a state change out of the trail. The rule covers every answer alike.
+of a state change out of the trail. The rule covers every answer alike, an
+`error` on a success answer included, so a member has one rule to follow.
 
 One rule covers every answer the server cannot read — this one, a `payload`
 that is not an object, a criterion with no `matches`: **nothing in such an

@@ -461,8 +461,9 @@ one of these causes:
   that cannot be begun or committed, is logged at WARN. The operation's outcome
   does not change. (A member's failure text holding U+0000, which the audit
   trail cannot record, never reaches the record: the answer is refused as
-  unreadable, so the record carries no `failReason`, and it rolls back with
-  the operation wherever the failure fails it.)
+  unreadable, so the record carries no `failReason`: an `ASYNC_NEW_TX`
+  processor's record is kept without it, and any other mode's rolls back
+  with the operation the failure fails.)
 - The processor ran in a callback that joined another operation's transaction,
   and the fence refused the callback's chain after the dispatch, because its
   compute node was replaced or its callout ended. The chain records nothing more,

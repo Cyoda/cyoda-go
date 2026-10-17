@@ -13,6 +13,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
 
 // descLogPreviewRunes caps the per-workflow `desc` field in the audit-log
@@ -229,6 +230,15 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	data, err := io.ReadAll(r.Body)
 	if err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read request body"))
+		return
+	}
+	// The workflow's names reach the state-machine audit trail, which records no
+	// event holding U+0000, and the stores cannot hold every such text either:
+	// refused here, as an entity payload is.
+	if err := ingest.RejectUnstorable(data); err != nil {
+		var appErr *common.AppError
+		errors.As(err, &appErr) // RejectUnstorable's every refusal is a 400 *common.AppError
+		common.WriteError(w, r, appErr)
 		return
 	}
 

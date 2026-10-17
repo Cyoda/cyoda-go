@@ -959,6 +959,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   it at WARN without the text, and the operation has the outcome it has without
   that event.
 
+- **Workflow import refuses text no backend can store.** A body holding
+  U+0000, an unpaired surrogate or invalid UTF-8 is refused with `400
+  BAD_REQUEST`, as an entity payload is. Such a workflow used to import; its
+  names reach the state-machine audit trail, which records no event holding
+  U+0000, so every run of it committed without its WORKFLOW_FOUND,
+  TRANSITION_MAKE and PAUSE_FOR_PROCESSING records.
+
 - **A compute member's answer whose reason or failure text holds U+0000 is
   unreadable.** The callout fails as any unreadable answer does (`400
   WORKFLOW_FAILED`, not retryable, where its failure fails the operation), on
