@@ -355,8 +355,11 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	if len(perOwner) != nodes {
 		t.Fatalf("want exactly the %d pnodes holding claims; %s", nodes, perPnode(perOwner))
 	}
-	for _, n := range perOwner {
-		if n != maxRuns {
+	for o, n := range perOwner {
+		if n > maxRuns {
+			t.Fatalf("pnode %d holds %d RUNNING tasks; its run cap is %d (%s)", s.ownerNode(t, o), n, maxRuns, perPnode(perOwner))
+		}
+		if n < maxRuns {
 			t.Fatalf("a held claim ended before its processor was released; %s", perPnode(perOwner))
 		}
 	}
