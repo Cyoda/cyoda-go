@@ -572,8 +572,9 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 	if !strings.Contains(err.Error(), "SYNC") {
 		t.Fatalf("error message must mention the offending mode (SYNC), got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
-		t.Fatalf("error message must mention workflow, transition, and processor names, got: %v", err)
+	if !strings.Contains(err.Error(), "test-wf") || !strings.Contains(err.Error(), `state "S1"`) ||
+		!strings.Contains(err.Error(), `"t"`) || !strings.Contains(err.Error(), `"p"`) {
+		t.Fatalf("error message must mention workflow, state, transition, and processor names, got: %v", err)
 	}
 }
 
@@ -684,8 +685,8 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 	}
 	respBody := rr.Body.String()
 	// Pin the full error format reaches the HTTP caller intact: error code,
-	// flag name, plus all four context fields the validator includes
-	// (workflow / transition / processor / offending mode). A future handler
+	// flag name, plus all five context fields the validator includes
+	// (workflow / state / transition / processor / offending mode). A future handler
 	// change that collapses this message would surface as a regression here,
 	// not just in the unit-level validator test. The validator uses %q on
 	// each name; the JSON response body escapes those inner quotes as \".
@@ -693,6 +694,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 		"VALIDATION_FAILED",
 		"startNewTxOnDispatch",
 		`workflow \"snttd-wf\"`,
+		`state \"S1\"`,
 		`transition \"t\"`,
 		`processor \"p\"`,
 		`got \"SYNC\"`,
