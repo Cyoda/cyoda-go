@@ -2002,6 +2002,63 @@ func TestImport_TransitionManualMissingOrNull_Rejected(t *testing.T) {
 	}
 }
 
+// TestImport_RefusalNamesFirstStateInOrder pins that an import refused by a
+// rule that two states break names the same state on every request: the
+// first in lexicographic order. The states sit in a JSON object, a Go map
+// after decoding, and a check that walks the map in its iteration order
+// would name either state at random.
+func TestImport_RefusalNamesFirstStateInOrder(t *testing.T) {
+	// states builds the states A and B, each holding the transition tr
+	// (a JSON object whose name is NAME), and the target state DONE.
+	states := func(tr string) string {
+		return `"A": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "ta") + `]},
+			"B": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "tb") + `]},
+			"DONE": {"transitions": []}`
+	}
+	for _, tc := range []struct {
+		name, states, want string
+	}{
+		{"manual omitted",
+			states(`{"name": "NAME", "next": "DONE"}`),
+			"manual is required"},
+		{"delayMs beside function",
+			states(`{"name": "NAME", "next": "DONE", "manual": false,
+				"schedule": {"delayMs": 0, "function": {"name": "f", "resultKind": "Schedule", "calculationNodesTags": "t"}}}`),
+			"schedule.delayMs and schedule.function are mutually exclusive"},
+		{"processor executionMode",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "BOGUS", "config": {"calculationNodesTags": "t"}}]}`),
+			"unknown executionMode"},
+		{"startNewTxOnDispatch outside COMMIT_BEFORE_DISPATCH",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "SYNC", "config": {"calculationNodesTags": "t", "startNewTxOnDispatch": true}}]}`),
+			"startNewTxOnDispatch=true is only valid"},
+		{"state annotations",
+			`"A": {"annotations": [], "transitions": []},
+			"B": {"annotations": [], "transitions": []}`,
+			"annotations must be a JSON object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+			body := `{"importMode": "REPLACE", "workflows": [{
+				"version": "1.1", "name": "wf", "initialState": "A",
+				"states": {` + tc.states + `}}]}`
+			for i := range 40 {
+				resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), tc.want) {
+					t.Fatalf("request %d: expected 400 containing %q, got %d: %s", i, tc.want, resp.StatusCode, b)
+				}
+				if !strings.Contains(string(b), `state \"A\"`) {
+					t.Fatalf("request %d: the refusal must name state A, the first in order; got: %s", i, b)
+				}
+			}
+		})
+	}
+}
+
 // TestImport_TrailingCloserAfterBody_400 pins the trailing-data fence for a
 // closing delimiter after the request object. json.Decoder.More reports
 // false before `}` and `]`, so such a body passed a More-based fence; it

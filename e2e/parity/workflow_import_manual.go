@@ -30,13 +30,18 @@ func manualWorkflow(wfName, goManual string) string {
 }
 
 // RunWorkflowImportManualRequired: a transition's manual is required. An
-// omitted or null manual is 400 VALIDATION_FAILED naming the transition; an
-// explicit true or false is stored and exported as sent.
+// omitted or null manual is 400 VALIDATION_FAILED naming the transition, and
+// the refused import leaves the stored workflows as they were; an explicit
+// true or false is stored and exported as sent.
 func RunWorkflowImportManualRequired(t *testing.T, fixture BackendFixture) {
 	tenant := fixture.NewTenant(t)
 	c := client.NewClient(fixture.BaseURL(), tenant.Token)
 	const modelName = "parity-manual-required"
 	calloutConfigModel(t, c, modelName)
+
+	if err := c.ImportWorkflow(t, modelName, 1, manualWorkflow("manual-ok-wf", `"manual": true,`)); err != nil {
+		t.Fatalf("ImportWorkflow: %v", err)
+	}
 
 	for _, tc := range []struct{ label, member string }{
 		{"omitted", ""},
@@ -59,15 +64,13 @@ func RunWorkflowImportManualRequired(t *testing.T, fixture BackendFixture) {
 		}
 	}
 
-	if err := c.ImportWorkflow(t, modelName, 1, manualWorkflow("manual-ok-wf", `"manual": true,`)); err != nil {
-		t.Fatalf("ImportWorkflow: %v", err)
-	}
 	raw, err := c.ExportWorkflow(t, modelName, 1)
 	if err != nil {
 		t.Fatalf("ExportWorkflow: %v", err)
 	}
 	var exported struct {
 		Workflows []struct {
+			Name   string `json:"name"`
 			States map[string]struct {
 				Transitions []struct {
 					Name   string `json:"name"`
@@ -79,8 +82,8 @@ func RunWorkflowImportManualRequired(t *testing.T, fixture BackendFixture) {
 	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode export: %v; raw: %s", err, raw)
 	}
-	if len(exported.Workflows) != 1 {
-		t.Fatalf("export must hold one workflow; raw: %s", raw)
+	if len(exported.Workflows) != 1 || exported.Workflows[0].Name != "manual-ok-wf" {
+		t.Fatalf("export must hold only manual-ok-wf, imported before the refused REPLACEs; raw: %s", raw)
 	}
 	want := map[string]bool{"go": true, "auto": false}
 	got := exported.Workflows[0].States["OPEN"].Transitions

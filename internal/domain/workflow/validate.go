@@ -4,7 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"sort"
+	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -97,7 +98,7 @@ func validateCalloutLimits(workflows []spi.WorkflowDefinition, maxResponseTimeou
 		if err := checkCriterionResponseTimeout(wf.Criterion, wfLoc, maxMs); err != nil {
 			return err
 		}
-		for _, stateName := range sortedStateNames(wf) {
+		for _, stateName := range sortedStateNames(wf.States) {
 			for _, tr := range wf.States[stateName].Transitions {
 				trLoc := fmt.Sprintf("workflow %q state %q transition %q", wf.Name, stateName, tr.Name)
 				if err := checkCriterionResponseTimeout(tr.Criterion, trLoc, maxMs); err != nil {
@@ -163,14 +164,12 @@ func checkResponseTimeout(ms, maxMs int64, location string) error {
 	return nil
 }
 
-// sortedStateNames returns wf's state names in lexicographic order.
-func sortedStateNames(wf spi.WorkflowDefinition) []string {
-	names := make([]string, 0, len(wf.States))
-	for name := range wf.States {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
+// sortedStateNames returns the names of states in lexicographic order. A
+// check that returns the first violation it finds walks the states in this
+// order, so that two states breaking one rule are reported the same way on
+// every request; Go randomises a map's iteration order.
+func sortedStateNames[V any](states map[string]V) []string {
+	return slices.Sorted(maps.Keys(states))
 }
 
 // maxIdentifierLen caps the length of workflow / state / transition /
@@ -246,7 +245,8 @@ func validateAndNormalizeAnnotations(workflows []spi.WorkflowDefinition) error {
 			return err
 		}
 		wf.CriterionAnnotations = wfCrit
-		for stateName, stateDef := range wf.States {
+		for _, stateName := range sortedStateNames(wf.States) {
+			stateDef := wf.States[stateName]
 			sCanon, err := canonicalizeAnnotations(stateDef.Annotations,
 				fmt.Sprintf("workflow %q state %q", wf.Name, stateName))
 			if err != nil {
@@ -588,7 +588,8 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 	//   Transition.Criterion — every data-addressing jsonPath must be JSON
 	//     Path; a MATCHES_PATTERN regex, if present, must compile; a
 	//     lifecycle/meta clause, if present, must be type-sound.
-	for stateName, stateDef := range wf.States {
+	for _, stateName := range sortedStateNames(wf.States) {
+		stateDef := wf.States[stateName]
 		if stateName == "" {
 			return fmt.Errorf("workflow %q: empty state name is not allowed in the states map",
 				wf.Name)
@@ -760,14 +761,14 @@ func validateWorkflowStructure(wf spi.WorkflowDefinition) error {
 // nil/false are equally valid (the flag just defaults to false). We never
 // inspect the flag for COMMIT_BEFORE_DISPATCH processors.
 func validateProcessorFlags(wf spi.WorkflowDefinition) error {
-	for _, st := range wf.States {
-		for _, tr := range st.Transitions {
+	for _, stateName := range sortedStateNames(wf.States) {
+		for _, tr := range wf.States[stateName].Transitions {
 			for _, p := range tr.Processors {
 				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
 					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
 					return fmt.Errorf(
-						"workflow %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
-						wf.Name, tr.Name, p.Name, p.ExecutionMode)
+						"workflow %q state %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",
+						wf.Name, stateName, tr.Name, p.Name, p.ExecutionMode)
 				}
 			}
 		}
@@ -850,7 +851,7 @@ func validateWorkflowLoops(wf spi.WorkflowDefinition) error {
 	// randomised per process, which previously made the reported cycle
 	// vary across CI runs on a workflow with multiple disjoint cycles.
 	// Lexicographic order is an arbitrary but stable choice.
-	stateNames := sortedStateNames(wf)
+	stateNames := sortedStateNames(wf.States)
 	for _, stateName := range stateNames {
 		if color[stateName] == white {
 			if err := dfs(stateName); err != nil {

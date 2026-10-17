@@ -358,7 +358,7 @@ only clauses without the operand their operator compares with; each error
 names the position of the condition in the criterion. Rule 13 touches only
 processors whose `type` was not `externalized` or empty; the error names the
 processor and the value, and the fix is to send `externalized` or omit the
-field. Rule 14 touches only transitions that left `manual` out; the error
+field. Rule 14 touches only transitions that left `manual` out or sent `null`; the error
 names the workflow, state and transition, and the fix is to send
 `"manual": false` where the omission meant an automatic transition. All
 fourteen rules apply to an import under

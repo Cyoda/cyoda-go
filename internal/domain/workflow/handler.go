@@ -117,9 +117,10 @@ type presenceProbe struct {
 		States map[string]struct {
 			Transitions []struct {
 				Name string `json:"name"`
-				// Manual is raw for the reason DelayMs is: an explicit null
-				// was sent, but it is not a boolean.
-				Manual   json.RawMessage `json:"manual"`
+				// Manual is a pointer so that an omitted manual reads as
+				// nil; encoding/json leaves a pointer nil for a JSON null
+				// too, and neither is a boolean.
+				Manual   *bool `json:"manual"`
 				Schedule *struct {
 					// DelayMs is raw so that an explicit JSON null counts
 					// as sent: encoding/json hands null to a RawMessage
@@ -147,9 +148,9 @@ type presenceProbe struct {
 // request instead.
 func checkManualSent(probe presenceProbe) error {
 	for _, wf := range probe.Workflows {
-		for stateName, state := range wf.States {
-			for _, tr := range state.Transitions {
-				if tr.Manual == nil || string(tr.Manual) == "null" {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
+				if tr.Manual == nil {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q: manual is required (true or false)",
 						wf.Name, stateName, tr.Name)
@@ -168,8 +169,8 @@ func checkManualSent(probe presenceProbe) error {
 // check reads the raw request instead.
 func checkDelayBesideFunction(probe presenceProbe) error {
 	for _, wf := range probe.Workflows {
-		for stateName, state := range wf.States {
-			for _, tr := range state.Transitions {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
 				if tr.Schedule != nil && tr.Schedule.Function != nil && tr.Schedule.DelayMs != nil {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q: schedule.delayMs and schedule.function are mutually exclusive; omit delayMs when function is set",

@@ -392,7 +392,8 @@ otherwise `UNSAFE_WORK_NOT_COMPLETED`.
   present (`VALIDATION_FAILED`). A `delayMs` sent beside `function` is
   rejected whatever its value — `0` and `null` included.
 - `schedule` and `manual: true` are mutually exclusive
-  (`VALIDATION_FAILED`).
+  (`VALIDATION_FAILED`). A scheduled transition still sends `manual`, as
+  every transition does: `"manual": false`.
 - `timeoutMs`, when present, must be `>= 0` (`VALIDATION_FAILED`) —
   checked whichever mode sets the schedule.
 - Static mode: `delayMs` must be `> 0` (`VALIDATION_FAILED`).
