@@ -56,7 +56,6 @@ func RunAuditCBDFailedProcessorRecorded(t *testing.T, fixture BackendFixture) {
 			}
 			type smEvent struct {
 				txID string
-				at   int64
 				data map[string]any
 			}
 			byType := map[string][]smEvent{}
@@ -73,7 +72,7 @@ func RunAuditCBDFailedProcessorRecorded(t *testing.T, fixture BackendFixture) {
 				if err := json.Unmarshal(sm.Data, &data); err != nil {
 					t.Fatalf("decode %s data: %v", sm.EventType, err)
 				}
-				byType[sm.EventType] = append(byType[sm.EventType], smEvent{txID: ev.TransactionID, at: ev.MicrosTime, data: data})
+				byType[sm.EventType] = append(byType[sm.EventType], smEvent{txID: ev.TransactionID, data: data})
 			}
 			paused, results := byType["PAUSE_FOR_PROCESSING"], byType["STATE_PROCESS_RESULT"]
 			if len(paused) != 1 || len(results) != 1 {
