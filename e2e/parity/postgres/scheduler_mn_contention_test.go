@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -145,32 +146,36 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 
 	// The gate: the scenario's own transaction, holding every task row from
 	// just after its entity's create until every task is due. pgx runs one
-	// statement at a time on a transaction, hence gateMu.
+	// statement at a time on a transaction, hence gateMu. A failed statement
+	// aborts the transaction, so the gate stops at its first error, gateErr.
 	gate, err := s.db.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the gate transaction: %v", err)
 	}
 	t.Cleanup(func() { _ = gate.Rollback(context.Background()) })
 	var gateMu sync.Mutex
-	lockTasks := func(tenantID string, id uuid.UUID) error {
+	var gateErr error
+	lockTasks := func(tenantID string, id uuid.UUID) {
 		gateMu.Lock()
 		defer gateMu.Unlock()
+		if gateErr != nil {
+			return
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		rows, err := gate.Query(ctx, `SELECT status FROM scheduled_tasks
 			WHERE tenant_id = $1 AND entity_id = $2 FOR UPDATE`, tenantID, id.String())
-		if err != nil {
-			return err
-		}
-		statuses, err := pgx.CollectRows(rows, pgx.RowTo[string])
-		if err != nil {
-			return err
+		var statuses []string
+		if err == nil {
+			statuses, err = pgx.CollectRows(rows, pgx.RowTo[string])
 		}
 		// A task claimed before its lock stays RUNNING: its processor is held.
-		if len(statuses) != 2 || statuses[0] != "WAITING" || statuses[1] != "WAITING" {
-			return fmt.Errorf("its tasks were %v when locked; want two WAITING, locked before they are due", statuses)
+		if err == nil && (len(statuses) != 2 || statuses[0] != "WAITING" || statuses[1] != "WAITING") {
+			err = fmt.Errorf("its tasks were %v when locked; want two WAITING, locked before they are due", statuses)
 		}
-		return nil
+		if err != nil {
+			gateErr = fmt.Errorf("locking the tasks of entity %s of tenant %s: %w", id, tenantID, err)
+		}
 	}
 
 	// Each entity's tasks are due delayMs after its create, so the due
@@ -196,11 +201,8 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 				id, err := j.ct.c.CreateEntity(t, model, 1, mnSample)
 				if err == nil {
 					j.ct.ids[j.i] = id // each job owns its slot
-					if lerr := lockTasks(j.ct.tenant.ID, id); lerr != nil {
-						err = fmt.Errorf("locking the tasks of entity %s: %w", id, lerr)
-					}
-				}
-				if err != nil {
+					lockTasks(j.ct.tenant.ID, id)
+				} else {
 					func() {
 						createMu.Lock()
 						defer createMu.Unlock()
@@ -219,6 +221,9 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	close(jobs)
 	createWG.Wait()
 	createdTo := time.Now()
+	if gateErr != nil {
+		t.Fatalf("gate: %v", gateErr)
+	}
 	if len(createErrs) > 0 {
 		t.Fatalf("creating the entities: %v", errors.Join(createErrs...))
 	}
@@ -283,6 +288,7 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	if err := gate.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the gate transaction: %v", err)
 	}
+	openedAt := time.Now()
 
 	// Every processor is held, so no claimed task leaves RUNNING until the
 	// scenario releases its processor. Once every pnode holds all its run
@@ -291,14 +297,13 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	// claim call wrote share their xmin, its transaction id, and no other
 	// write reaches a RUNNING row before its processor answers.
 	type heldRow struct{ owner, tenant, xmin string }
-	var held []heldRow
-	slotsFull := func() (bool, string) {
+	running := func() ([]heldRow, map[string]int, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		rows, err := s.db.Query(ctx, `SELECT claim_owner::text, tenant_id, xmin::text FROM scheduled_tasks
 			WHERE tenant_id = ANY($1) AND status = 'RUNNING'`, tenantIDs)
 		if err != nil {
-			return false, err.Error()
+			return nil, nil, err
 		}
 		got, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (heldRow, error) {
 			var h heldRow
@@ -306,28 +311,53 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 			return h, err
 		})
 		if err != nil {
-			return false, err.Error()
+			return nil, nil, err
 		}
 		perOwner := map[string]int{}
 		for _, h := range got {
 			perOwner[h.owner]++
 		}
-		last := fmt.Sprintf("RUNNING tasks per claim owner: %v", perOwner)
-		for _, n := range perOwner {
-			if n != maxRuns {
-				return false, last
-			}
-		}
-		held = got
-		return len(perOwner) == nodes, last
+		return got, perOwner, nil
 	}
-	for deadline := time.Now().Add(60 * time.Second); ; time.Sleep(100 * time.Millisecond) {
-		done, last := slotsFull()
-		if done {
-			break
+	// perPnode names each claim owner by its pnode (-1: no pnode's scheduler).
+	perPnode := func(perOwner map[string]int) string {
+		parts := make([]string, 0, len(perOwner))
+		for o, n := range perOwner {
+			parts = append(parts, fmt.Sprintf("pnode %d: %d", s.ownerNode(t, o), n))
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("every pnode holding all %d of its run slots not seen within 60s; last: %s", maxRuns, last)
+		slices.Sort(parts)
+		return "RUNNING tasks per pnode: " + strings.Join(parts, ", ")
+	}
+	// A pnode claims only while its heartbeats succeed (§6.1): each pnode's
+	// slots are due full Slack after the gate opened, or after the heartbeat
+	// that follows its last failed one.
+	fill := fixtureutil.HeartbeatGate{ReadyAt: openedAt, Slack: 15 * time.Second}
+	for i := 0; i < nodes; i++ {
+		inc := s.pg.Incarnation(t, i).String()
+		fill.Await(t, s.logsOf([]int{i}), fmt.Sprintf("pnode %d holding all %d of its run slots", i, maxRuns), func() (bool, string) {
+			_, perOwner, err := running()
+			if err != nil {
+				return false, err.Error()
+			}
+			for o, n := range perOwner {
+				if n > maxRuns {
+					t.Fatalf("pnode %d holds %d RUNNING tasks; its run cap is %d (%s)", s.ownerNode(t, o), n, maxRuns, perPnode(perOwner))
+				}
+			}
+			return perOwner[inc] == maxRuns, perPnode(perOwner)
+		})
+	}
+	// Nothing ends while the processors are held: every pnode is still full.
+	held, perOwner, err := running()
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	if len(perOwner) != nodes {
+		t.Fatalf("want exactly the %d pnodes holding claims; %s", nodes, perPnode(perOwner))
+	}
+	for _, n := range perOwner {
+		if n != maxRuns {
+			t.Fatalf("a held claim ended before its processor was released; %s", perPnode(perOwner))
 		}
 	}
 	type claimCall struct{ owner, xmin string }
