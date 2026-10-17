@@ -287,6 +287,10 @@ func (e *Engine) Execute(ctx context.Context, entity *spi.Entity, transitionName
 	))
 	defer span.End()
 
+	if err := refuseNULCallerText(transitionName, IfMatch{}); err != nil {
+		return nil, err
+	}
+
 	auditStore, err := e.factory.StateMachineAuditStore(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get audit store: %w", err)

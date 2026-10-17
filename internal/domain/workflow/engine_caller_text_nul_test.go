@@ -50,6 +50,10 @@ func TestEngine_CallerTextHoldingNUL_RefusedBeforeAnyEvent(t *testing.T) {
 	}
 
 	for name, run := range map[string]func(ctx context.Context, entity *spi.Entity) error{
+		"transition name on a creation": func(ctx context.Context, entity *spi.Entity) error {
+			_, err := engine.Execute(ctx, entity, "g\x00o")
+			return err
+		},
 		"transition name": func(ctx context.Context, entity *spi.Entity) error {
 			_, err := engine.ManualTransition(ctx, entity, "g\x00o")
 			return err
