@@ -9,7 +9,8 @@ package e2e_test
 // Coverage:
 //   - Merge happy-path (field preserved, field changed).
 //   - Error preconditions: 415 (XML format), 415 (wrong Content-Type),
-//     428 (missing If-Match), 501 (json-patch+json), 412 (stale token).
+//     428 (missing If-Match), 501 (json-patch+json), 412 (stale token),
+//     404 (unknown entity).
 //   - PATCH with a named transition (state advance + merge).
 //   - Merge-then-transition ordering: PATCH sets a field; a SYNC processor on
 //     the transition overwrites it. Processor value must win (full E2E,
@@ -23,6 +24,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -189,6 +192,18 @@ func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
 	body412 := readBody(t, r412)
 	if r412.StatusCode != http.StatusPreconditionFailed {
 		t.Errorf("stale If-Match: expected 412, got %d; body: %s", r412.StatusCode, body412)
+	}
+
+	// ── 7. Unknown entity → 404 ENTITY_NOT_FOUND ──────────────────────────
+	r404 := patchEntity(t,
+		"/api/entity/JSON/"+uuid.NewString(),
+		"application/merge-patch+json",
+		"*",
+		`{"amount":1}`,
+	)
+	body404 := readBody(t, r404)
+	if r404.StatusCode != http.StatusNotFound || !strings.Contains(body404, "ENTITY_NOT_FOUND") {
+		t.Errorf("unknown entity: expected 404 ENTITY_NOT_FOUND, got %d; body: %s", r404.StatusCode, body404)
 	}
 }
 

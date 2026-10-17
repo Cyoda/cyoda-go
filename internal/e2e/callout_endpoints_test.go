@@ -11,9 +11,9 @@ import (
 // callout_endpoints_test.go crosses every client-facing door that runs a
 // workflow with every code a callout can answer with. The plain create is
 // covered by callout_errors_test.go and callout_failover_test.go; this file
-// covers the other five doors spec §8.2 names — create-collection, update with
-// a transition, a loopback update, update-collection, and the transitions
-// query.
+// covers the other doors spec §8.2 names — create-collection, update with
+// a transition, a loopback update, a patch, update-collection, and the
+// transitions query.
 //
 // The transitions query's only callout is the WORKFLOW-level function
 // criterion: GetAvailableTransitionsForEntity names a state's transitions and
@@ -182,7 +182,7 @@ func assertNoDoorLeak(t *testing.T, detail string) {
 // doorKey is a door's name reduced to what a model name may carry.
 func doorKey(name string) string { return strings.ReplaceAll(name, "-", "") }
 
-// calloutDoors is the five doors of §8.2 that the plain create does not cover.
+// calloutDoors is the doors of §8.2 that the plain create does not cover.
 func calloutDoors() []calloutDoor {
 	// sampleReady is workflowSampleModel with the status the loopback door's
 	// automated transition waits for.
@@ -219,6 +219,17 @@ func calloutDoors() []calloutDoor {
 			},
 			drive: func(t *testing.T, h *callbackHarness, _, entityID string) (int, string) {
 				return doorRequest(t, h, http.MethodPut, "/api/entity/JSON/"+entityID, sampleReady)
+			},
+		},
+		{
+			name: "patch",
+			setup: func(t *testing.T, h *callbackHarness, model, wfName, tag string, tc calloutCase) string {
+				h.SetupModelWithWorkflow(t, model, readyProcWorkflowJSON(wfName, calloutProcConfig(tag, tc)))
+				return createQuietEntity(t, h, model, workflowSampleModel)
+			},
+			drive: func(t *testing.T, h *callbackHarness, _, entityID string) (int, string) {
+				resp := txctlHarnessPatch(t, h, "/api/entity/JSON/"+entityID, "application/merge-patch+json", "*", `{"status":"ready"}`)
+				return resp.StatusCode, h.readBody(t, resp)
 			},
 		},
 		{

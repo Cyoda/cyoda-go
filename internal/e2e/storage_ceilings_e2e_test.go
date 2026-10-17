@@ -131,25 +131,59 @@ func (hh *holdHarness) hold(t *testing.T) func() {
 	}
 }
 
-// TestE2E_SaturatedPool_WriteReturns503 is the HTTP half: the write fails fast
-// with a retryable 503 STORAGE_UNAVAILABLE instead of queueing behind the pool.
-func TestE2E_SaturatedPool_WriteReturns503(t *testing.T) {
+// TestE2E_SaturatedPool_HTTPReturns503 is the HTTP half: every door that needs a
+// connection fails fast with a retryable 503 STORAGE_UNAVAILABLE instead of
+// queueing behind the pool — the create (into the gated model), the collection
+// create, the three updates and the patch (against an ungated model seeded
+// before the pool was saturated). The read of one entity is not here: it takes
+// a connection straight from the pool with no acquire deadline, so on a
+// saturated pool it waits for the holder; its 503 is covered by
+// TestE2E_TornConnection_AuditAndTrustedKeys503/getOneEntity.
+func TestE2E_SaturatedPool_HTTPReturns503(t *testing.T) {
 	h := newSaturatedPoolHarness(t)
+	plain := h.model + "-plain"
+	h.setupModelSampleWithWorkflow(t, plain, storageCeilingSample, manualNoProcWorkflowJSON(plain+"-wf"))
+	plainID := createQuietEntity(t, h.callbackHarness, plain, storageCeilingSample)
 	release := h.hold(t)
 	defer release()
 
-	start := time.Now()
-	_, status, body := h.CreateEntity(t, h.model, 1, storageCeilingSample)
-	elapsed := time.Since(start)
+	for _, door := range []struct {
+		name string
+		call func() (int, string)
+	}{
+		{"create", func() (int, string) {
+			_, status, body := h.CreateEntity(t, h.model, 1, storageCeilingSample)
+			return status, body
+		}},
+		{"create-collection", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPost, "/api/entity/JSON", collectionCreateItems(plain, storageCeilingSample))
+		}},
+		{"update-transition", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPut, "/api/entity/JSON/"+plainID+"/go", storageCeilingSample)
+		}},
+		{"loopback", func() (int, string) {
+			return doorRequest(t, h.callbackHarness, http.MethodPut, "/api/entity/JSON/"+plainID, storageCeilingSample)
+		}},
+		{"patch", func() (int, string) {
+			resp := txctlHarnessPatch(t, h.callbackHarness, "/api/entity/JSON/"+plainID, "application/merge-patch+json", "*", `{"amount":2}`)
+			return resp.StatusCode, h.readBody(t, resp)
+		}},
+	} {
+		t.Run(door.name, func(t *testing.T) {
+			start := time.Now()
+			status, body := door.call()
+			elapsed := time.Since(start)
 
-	if status != http.StatusServiceUnavailable {
-		t.Fatalf("status = %d, want 503; body: %s", status, body)
+			if status != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want 503; body: %s", status, body)
+			}
+			assertStorageUnavailableProblem(t, body)
+			if elapsed > 3*time.Second {
+				t.Fatalf("queued for %v instead of failing fast", elapsed)
+			}
+			t.Logf("saturated-pool %s returned 503 after %v; body: %s", door.name, elapsed, body)
+		})
 	}
-	assertStorageUnavailableProblem(t, body)
-	if elapsed > 3*time.Second {
-		t.Fatalf("queued for %v instead of failing fast", elapsed)
-	}
-	t.Logf("saturated-pool write returned 503 after %v; body: %s", elapsed, body)
 }
 
 // assertStorageUnavailableProblem checks the RFC 9457 body carries the error

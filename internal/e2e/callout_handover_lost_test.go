@@ -411,17 +411,38 @@ func TestCalloutHandOver_AnswerLost_NotRepeatSafe(t *testing.T) {
 		t.Run(mode.name, func(t *testing.T) {
 			peerA.setAnswer(mode.answer)
 			peerB.setAnswer(mode.answer)
-			for _, door := range []string{"http", "grpc"} {
+			for _, door := range []string{"http", "grpc", "http-collection", "http-update-transition"} {
 				t.Run(door, func(t *testing.T) {
 					model := fmt.Sprintf("lost-%s-%s-%s", sfx, mode.name, door)
-					h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("lost-wf-"+mode.name+"-"+door,
-						procSpec{"lost-proc", "SYNC", map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300}}))
+					procCfg := map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300}
+					// committed is how many entities the failed request leaves:
+					// none for a create, the one the update door acts on.
+					committed, entityID := 0, ""
+					if door == "http-update-transition" {
+						h.SetupModelWithWorkflow(t, model, manualProcWorkflowJSON("lost-wf-"+mode.name+"-"+door, procCfg))
+						entityID = createQuietEntity(t, h, model, workflowSampleModel)
+						committed = 1
+					} else {
+						h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("lost-wf-"+mode.name+"-"+door,
+							procSpec{"lost-proc", "SYNC", procCfg}))
+					}
 					peerA.take()
 					peerB.take()
 
 					switch door {
-					case "http":
-						_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
+					case "http", "http-collection", "http-update-transition":
+						var status int
+						var body string
+						switch door {
+						case "http":
+							_, status, body = h.CreateEntity(t, model, 1, workflowSampleModel)
+						case "http-collection":
+							status, body = doorRequest(t, h, http.MethodPost, "/api/entity/JSON",
+								collectionCreateItems(model, workflowSampleModel))
+						case "http-update-transition":
+							status, body = doorRequest(t, h, http.MethodPut,
+								"/api/entity/JSON/"+entityID+"/go", workflowSampleModel)
+						}
 						pd := assertProblem(t, status, body, http.StatusServiceUnavailable, "DISPATCH_FORWARD_FAILED", true)
 						if pd.Detail != forwardFailedDetail {
 							t.Errorf("detail = %q; want the literal %q", pd.Detail, forwardFailedDetail)
@@ -455,8 +476,8 @@ func TestCalloutHandOver_AnswerLost_NotRepeatSafe(t *testing.T) {
 					if recs := h.ReceivedCallouts(); len(recs) != 0 {
 						t.Errorf("a compute member of the owner received %d callouts; the owner has none for this tag: %v", len(recs), recs)
 					}
-					if n := h.countEntities(t, model); n != 0 {
-						t.Errorf("%d entities committed by a failed SYNC create; want 0", n)
+					if n := h.countEntities(t, model); n != committed {
+						t.Errorf("%d entities after a failed SYNC write; want %d", n, committed)
 					}
 					assertNoPeerFaults(t, peerA, peerB)
 				})

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -120,13 +119,11 @@ func TestCallbackBounds_AnswerOverTheCeiling_413(t *testing.T) {
 	}
 }
 
-// burstOutcome is what the processor reports back to the test goroutine: it
+// queueOutcome is what the processor reports back to the test goroutine: it
 // cannot call t.Fatal from the member's handler goroutine.
-type burstOutcome struct {
-	served  int
-	refused int
-	other   []string
-	err     error
+type queueOutcome struct {
+	served, queued, refused callbackResult
+	err                     error
 }
 
 // Callbacks of one transaction are served one at a time, and the queue behind
@@ -134,9 +131,12 @@ type burstOutcome struct {
 // the member is told 503 TOO_MANY_JOINED_REQUESTS, retryably, and neither the
 // callback holding the transaction nor the transaction itself is harmed.
 //
-// The cap is lowered to one, so a handful of clients released together reach
-// it. Nothing here asserts an interleave — only that the bound bit, that the
-// queue drained, and that the transition committed.
+// The cap is lowered to one, and the callback holding the transaction is held
+// inside PostgreSQL on a row lock of the test's own, so the sequence is
+// fixed rather than raced: one callback is served and stuck, the next two
+// arrive while it is, one of them takes the single queue place and the other
+// is refused at once. Releasing the lock lets the served one and the queued
+// one finish, and the transition commits.
 func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 	h := newCallbackHarnessConfigured(t, func(cfg *app.Config) {
 		cfg.Callout.JoinedMaxWaiters = 1 // whoever holds the transaction, plus one queued
@@ -151,81 +151,104 @@ func TestCallbackBounds_TooManyQueuedCallbacks_503(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("seed create: status=%d body=%s", status, body)
 	}
+	victim := h.seedVictim(t, "cbb-waiters-victim-"+sfx)
+	unlock := holdRowLock(t, victim)
+	defer unlock()
 
-	outcome := make(chan burstOutcome, 1)
+	holding := make(chan struct{}) // the processor started the callback that will be stuck
+	proceed := make(chan struct{}) // the stuck callback is inside PostgreSQL
+	refusedCh := make(chan callbackResult, 1)
+	released := make(chan struct{}) // the row lock is gone
+	outcome := make(chan queueOutcome, 1)
 	h.RegisterProc(proc, func(rc *reqCtx) (map[string]any, error) {
-		const clients, rounds = 8, 3
-		start := make(chan struct{})
-		results := make(chan callbackResult, clients*rounds)
-		failures := make(chan error, clients*rounds)
-		var wg sync.WaitGroup
-		for range clients {
-			wg.Add(1)
+		var out queueOutcome
+		defer func() { outcome <- out }()
+		callback := func(do func() (callbackResult, error)) <-chan callbackResult {
+			ch := make(chan callbackResult, 1)
 			go func() {
-				defer wg.Done()
-				<-start
-				for range rounds {
-					res, err := rc.GetEntity(readID)
-					if err != nil {
-						failures <- err
-						return
-					}
-					results <- res
+				res, err := do()
+				if err != nil {
+					res = callbackResult{StatusCode: -1, Body: err.Error()}
 				}
+				ch <- res
 			}()
+			return ch
 		}
-		close(start) // released together, so they contend for the transaction
-		wg.Wait()
-		close(results)
-		close(failures)
 
-		var out burstOutcome
-		for err := range failures {
-			out.err = err
+		stuck := callback(func() (callbackResult, error) { return rc.UpdateEntity(victim, victimUpdate) })
+		close(holding)
+		select {
+		case <-proceed:
+		case <-time.After(15 * time.Second):
+			out.err = fmt.Errorf("the stuck callback never reached PostgreSQL")
+			return nil, nil
 		}
-		for res := range results {
-			switch {
-			case res.StatusCode == http.StatusOK:
-				out.served++
-			case res.StatusCode == http.StatusServiceUnavailable && problemErrorCode(res.Body) == "TOO_MANY_JOINED_REQUESTS":
-				out.refused++
-			default:
-				out.other = append(out.other, fmt.Sprintf("status=%d body=%s", res.StatusCode, res.Body))
-			}
+
+		// Two callbacks arrive while the first is stuck: one queues, the other
+		// is refused immediately, so the first answer to come back is the refusal.
+		get := func() (callbackResult, error) { return rc.GetEntity(readID) }
+		a, b := callback(get), callback(get)
+		var queued <-chan callbackResult
+		select {
+		case out.refused = <-a:
+			queued = b
+		case out.refused = <-b:
+			queued = a
+		case <-time.After(15 * time.Second):
+			out.err = fmt.Errorf("neither callback was refused")
+			return nil, nil
 		}
-		outcome <- out
-		// The member swallows the refusals; the callout must still succeed.
+		refusedCh <- out.refused
+		<-released
+		out.served, out.queued = <-stuck, <-queued
+		// The member swallows the refusal; the callout must still succeed.
 		return nil, nil
 	})
 	h.SetupModelWithWorkflow(t, primary, boundsWorkflow("cbb-waiters-wf-"+sfx, proc))
 
-	primaryID, status, body := h.CreateEntity(t, primary, 1, `{"name":"parent","amount":100,"status":"new"}`)
-	if status != http.StatusOK {
-		t.Fatalf("primary create: status=%d body=%s", status, body)
-	}
+	created := make(chan createEntityResult, 1)
+	go func() { created <- h.CreateEntityRaw(primary, 1, `{"name":"parent","amount":100,"status":"new"}`) }()
 
-	var out burstOutcome
+	select {
+	case <-holding:
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout: the processor never started")
+	}
+	awaitBlockedStatement(t, "entities", stmtCeilingLockerAppName)
+	close(proceed)
+
+	select {
+	case res := <-refusedCh:
+		assertProblem(t, res.StatusCode, res.Body, http.StatusServiceUnavailable, "TOO_MANY_JOINED_REQUESTS", true)
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout: no callback was refused for capacity")
+	}
+	unlock()
+	close(released)
+
+	var out queueOutcome
 	select {
 	case out = <-outcome:
 	case <-time.After(30 * time.Second):
-		t.Fatal("timeout: the processor's callback burst never finished")
+		t.Fatal("timeout: the processor never finished")
 	}
 	if out.err != nil {
-		t.Fatalf("a callback failed at the transport: %v", out.err)
+		t.Fatalf("%v", out.err)
 	}
-	if len(out.other) > 0 {
-		t.Fatalf("callbacks answered neither 200 nor the cap refusal: %s", strings.Join(out.other, "; "))
+	if out.served.StatusCode != http.StatusOK {
+		t.Errorf("the callback holding the transaction: %d %s; want 200", out.served.StatusCode, out.served.Body)
 	}
-	if out.refused == 0 {
-		t.Fatalf("no callback was refused for capacity (%d served); the cap did not reach the join layer", out.served)
-	}
-	if out.served == 0 {
-		t.Fatalf("every callback was refused (%d); the queue must still serve the ones it admits", out.refused)
+	if out.queued.StatusCode != http.StatusOK {
+		t.Errorf("the queued callback: %d %s; want 200 — the queue must still serve the one it admits", out.queued.StatusCode, out.queued.Body)
 	}
 
-	// The transaction is unharmed: refused callbacks touched nothing, the ones
-	// that were served read within T, and the transition committed.
-	if st, code := h.GetEntityState(t, primaryID); code != http.StatusOK || st != "ACTIVE" {
+	// The transaction is unharmed: the refused callback touched nothing, the
+	// ones that were served read and wrote within T, and the transition committed.
+	res := awaitCreate(t, created, 30*time.Second)
+	if res.status != http.StatusOK {
+		t.Fatalf("primary create: %d %s", res.status, res.body)
+	}
+	if st, code := h.GetEntityState(t, res.entityID); code != http.StatusOK || st != "ACTIVE" {
 		t.Fatalf("primary state = %q (http %d); want ACTIVE — a refused callback must not harm T", st, code)
 	}
 	if st, code := h.GetEntityState(t, readID); code != http.StatusOK || st != "STORED" {
