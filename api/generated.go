@@ -1983,6 +1983,9 @@ type JoinedPayloadTooLarge = ProblemDetail
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
+// ScheduleFunctionInvalidResult defines model for ScheduleFunctionInvalidResult.
+type ScheduleFunctionInvalidResult = ProblemDetail
+
 // ServiceUnavailable defines model for ServiceUnavailable.
 type ServiceUnavailable = ProblemDetail
 

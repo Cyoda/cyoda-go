@@ -26,7 +26,7 @@ It is also raised when a resolved fire or expiry time cannot be rendered as a ti
 
 A `fireAt` in the past is not an error — the transition is armed to fire immediately. Only a resolved expiry at or before the resolved fire time is treated as a distinct outcome (the arm is skipped and any prior scheduling for the transition is cancelled), not as this error.
 
-The failure is in the compute node's implementation, not the caller's request — the entity write that triggered arming is rejected so no state change commits against an unschedulable transition. Fix the Function's response shape; do not retry until it is corrected.
+The failure is in the compute node's implementation, not the caller's request — the entity write that triggered arming is rejected, so no state change commits against an unschedulable transition — unless an earlier `COMMIT_BEFORE_DISPATCH` processor of the same request had already committed. Fix the Function's response shape; do not retry until it is corrected.
 
 ## SEE ALSO
 

@@ -2338,8 +2338,8 @@ paths:
             (`INVALID_FIELD_PATH`), a condition operator that applies to none
             of the field's declared types or a comparison or range operand that
             parses into none of the types the operator applies to
-            (`CONDITION_TYPE_MISMATCH`), or, as BAD_REQUEST, an invalid model name (e.g., name
-            too long) or an invalid request parameter.
+            (`CONDITION_TYPE_MISMATCH`), or, as BAD_REQUEST, an unreadable body or an
+            invalid request parameter.
             A pointInTime later than the consistency time is refused with POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           content:
             application/problem+json:
@@ -2659,6 +2659,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -2859,11 +2861,11 @@ paths:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -2874,6 +2876,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}:
@@ -3056,6 +3060,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3136,14 +3142,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not conform to the registered model"
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not conform to the registered model; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "404":
           description: >-
-            Entity not found. A request carrying an `X-Tx-Token` is also answered 404 when
+            Entity not found (ENTITY_NOT_FOUND). A request carrying an `X-Tx-Token` is also answered 404 when
             the transaction the token names is no longer open, with `properties.errorCode`
             TRANSACTION_NOT_FOUND.
           content:
@@ -3200,6 +3206,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityId}/{transition}:
@@ -3394,6 +3402,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
     patch:
@@ -3548,6 +3558,8 @@ paths:
           $ref: '#/components/responses/Forbidden'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
+        "500":
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/{format}/{entityName}/{modelVersion}:
@@ -3760,18 +3772,18 @@ paths:
         "413":
           $ref: '#/components/responses/JoinedPayloadTooLarge'
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value; INVALID_UNIQUE_KEY_DEFINITION: the write would give a path that a unique key names a container branch."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY: a unique-key field is null, missing, or has an out-of-range value; INVALID_UNIQUE_KEY_DEFINITION: the write would give a keyed field (a path a unique key names) a container branch."
           content:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "408":
           description: >-
-            Transaction timeout exceeded — the supplied transactionTimeoutMillis
-            elapsed before the first commit; nothing committed. After a first
-            chunk commits, timeout expiry surfaces via the existing 200
-            per-chunk contract (error elements carry TRANSACTION_TIMEOUT)
-            instead of 408.
+            Transaction timeout exceeded — TRANSACTION_TIMEOUT: the supplied
+            transactionTimeoutMillis elapsed before the first commit; nothing
+            committed. After a first chunk commits, timeout expiry surfaces via
+            the existing 200 per-chunk contract (error elements carry
+            TRANSACTION_TIMEOUT) instead of 408.
           content:
             application/problem+json:
               schema:
@@ -3781,15 +3793,7 @@ paths:
         "403":
           $ref: '#/components/responses/Forbidden'
         "500":
-          description: >-
-            Internal Server Error — generic message with ticketId for correlation.
-            A Function that computes the schedule of a scheduled transition
-            returned a result that is not a usable Schedule
-            (SCHEDULE_FUNCTION_INVALID_RESULT); nothing is committed.
-          content:
-            application/problem+json:
-              schema:
-                $ref: "#/components/schemas/ProblemDetail"
+          $ref: '#/components/responses/ScheduleFunctionInvalidResult'
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -12435,8 +12439,9 @@ components:
         status and `properties.errorCode` distinguishes them —
         TRANSACTION_EXPIRED: the token has passed its own expiry;
         CALLOUT_SUPERSEDED: the callout the token names has been handed to
-        another compute member, so the caller no longer owns the work it is
-        calling back about. Neither is retryable with the same token.
+        another compute member or has ended while the transaction is still
+        open, so the caller no longer owns the work it is calling back about.
+        Neither is retryable with the same token.
       content:
         application/problem+json:
           schema:
@@ -12470,9 +12475,21 @@ components:
             $ref: '#/components/schemas/ProblemDetail'
     InternalServerError:
       description: |
-        Internal Server Error — generic message with ticketId for correlation.
-        Per CLAUDE.md's 5xx convention; the underlying error is logged
-        server-side at ERROR level with the same ticketId.
+        Internal Server Error — generic message with a `ticket` for
+        correlation; the underlying error is logged server-side at ERROR
+        level under the same ticket.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ProblemDetail'
+    ScheduleFunctionInvalidResult:
+      description: >-
+        Internal Server Error — generic message with a `ticket` for
+        correlation. A Function that computes the schedule of a scheduled
+        transition returned a result that is not a usable Schedule
+        (SCHEDULE_FUNCTION_INVALID_RESULT): the write is rolled back, unless
+        an earlier COMMIT_BEFORE_DISPATCH processor of the same request had
+        already committed. Not retryable until the Function is corrected.
       content:
         application/problem+json:
           schema:
