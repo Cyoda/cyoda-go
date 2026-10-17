@@ -123,17 +123,39 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err != nil {
 		t.Fatalf("ExportWorkflow: %v", err)
 	}
-	var shape map[string]any
-	if err := json.Unmarshal(raw, &shape); err != nil {
+	var exported struct {
+		Workflows []struct {
+			Active *bool `json:"active"`
+			States map[string]struct {
+				Transitions []struct {
+					Name     string `json:"name"`
+					Manual   *bool  `json:"manual"`
+					Disabled *bool  `json:"disabled"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	wfs, ok := shape["workflows"].([]any)
-	if !ok || len(wfs) == 0 {
-		t.Fatalf("export missing workflows: %v", shape)
+	if len(exported.Workflows) != 1 {
+		t.Fatalf("export must hold one workflow: %s", raw)
 	}
-	// Assert the transition name survived the round-trip.
-	if !strings.Contains(string(raw), `"MOVE"`) {
-		t.Errorf("export missing transition name MOVE: %s", string(raw))
+	wf := exported.Workflows[0]
+	// The dictionary's defaults: an omitted active is true, an omitted
+	// disabled is false. The export leaves a false disabled out.
+	if wf.Active == nil || !*wf.Active {
+		t.Errorf("exported active must be true: %s", raw)
+	}
+	trs := wf.States["s1"].Transitions
+	if len(trs) != 1 || trs[0].Name != "MOVE" {
+		t.Fatalf("export must hold transition MOVE out of s1: %s", raw)
+	}
+	if trs[0].Manual == nil || !*trs[0].Manual {
+		t.Errorf("exported manual must be true, as sent: %s", raw)
+	}
+	if trs[0].Disabled != nil && *trs[0].Disabled {
+		t.Errorf("exported disabled = true, want false or absent: %s", raw)
 	}
 }
 

@@ -361,8 +361,8 @@ processor and the value, and the fix is to send `externalized` or omit the
 field. Rule 14 touches only transitions that left `manual` out or sent
 `null`; the error names the workflow, state and transition, and the fix is
 to send `"manual": false` where the omission meant an automatic transition.
-All fourteen rules apply to an import under **any** schema version, 1.1 through 1.5 alike — they are
-validation-layer rules, not DTO-shape ones.
+All fourteen rules apply to an import under **any** schema version, 1.1
+through 1.5 alike — they are validation-layer rules, not DTO-shape ones.
 
 No rule is retroactive: a workflow already stored is not re-checked at
 import of another. A stored `responseTimeoutMs` above a bound that was lowered

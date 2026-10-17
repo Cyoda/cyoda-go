@@ -118,7 +118,7 @@ type presenceProbe struct {
 			Transitions []struct {
 				Name string `json:"name"`
 				// Manual is a pointer so that an omitted manual reads as
-				// nil; encoding/json leaves a pointer nil for a JSON null
+				// nil; encoding/json sets a pointer to nil for a JSON null
 				// too, and neither is a boolean.
 				Manual   *bool `json:"manual"`
 				Schedule *struct {
