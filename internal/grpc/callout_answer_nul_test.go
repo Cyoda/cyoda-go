@@ -11,10 +11,11 @@ import (
 )
 
 // A compute member's reason and failure text reach the state-machine audit
-// trail, which cannot hold U+0000 on PostgreSQL, and a criterion's reason is copied into later
-// events too (the FINISH event's stop reason, TRANSITION_MAKE's functions). An
-// answer whose text holds U+0000 is therefore unreadable: Terminal, with this
-// node's fixed message, none of the member's text, and none of its warnings.
+// trail, which cannot hold U+0000 on PostgreSQL, and a criterion's reason is
+// copied into later events too (the FINISH event's stop reason,
+// TRANSITION_MAKE's functions). An answer whose text holds U+0000 is therefore
+// unreadable: Terminal, with this node's fixed message, none of the member's
+// text, and none of its warnings.
 func TestDispatch_MemberTextHoldingNULIsUnreadable(t *testing.T) {
 	no := false
 	const want = "the compute member's response could not be read: a reason or error text held U+0000"
