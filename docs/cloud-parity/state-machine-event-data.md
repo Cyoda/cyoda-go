@@ -235,7 +235,11 @@ events too, and with them the record of a state change. Nor can it reach one
 from a workflow: import refuses a body holding U+0000 with `400 BAD_REQUEST`
 (`internal/domain/workflow/handler.go`), as an entity payload is refused, since
 a workflow's names reach WORKFLOW_FOUND, TRANSITION_MAKE and
-PAUSE_FOR_PROCESSING.
+PAUSE_FOR_PROCESSING. A collection update's body holding U+0000 outside an
+item's payload (an `ifMatch`, a `transition`) is refused whole with `400
+BAD_REQUEST` (`internal/domain/entity/handler.go`), since a failed item is
+isolated while its siblings commit; elsewhere a caller's text holding U+0000
+reaches only the events of an operation that fails and rolls back.
 
 The reason: cyoda-go's PostgreSQL audit row is a `jsonb` document written in
 the request's transaction. PostgreSQL refuses U+0000 in `jsonb`, and the

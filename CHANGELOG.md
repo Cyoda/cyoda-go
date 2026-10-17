@@ -959,6 +959,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   it at WARN without the text, and the operation has the outcome it has without
   that event.
 
+- **A collection update refuses text no backend can store outside an item's
+  payload.** An `ifMatch` or `transition` holding U+0000 used to reach the
+  item's audit event, which was then not recorded, while the failed item was
+  isolated and its siblings committed. The whole body is now refused with `400
+  BAD_REQUEST` before any item runs, as an item's payload holding it is.
+
 - **Workflow import refuses text no backend can store.** A body holding
   U+0000, an unpaired surrogate or invalid UTF-8 is refused with `400
   BAD_REQUEST`, as an entity payload is. Such a workflow used to import; its

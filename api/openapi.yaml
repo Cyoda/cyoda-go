@@ -2612,7 +2612,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, collection too large, or unsupported format
+          description: Bad request — invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition` (BAD_REQUEST, nothing committed)
           content:
             application/problem+json:
               schema:

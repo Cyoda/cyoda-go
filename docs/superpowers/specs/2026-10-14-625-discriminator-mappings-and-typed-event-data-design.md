@@ -458,6 +458,7 @@ mean.
 |---|---|---|
 | as today | as today | an event holding U+0000 (a caller's transition name or `ifMatch`) is not recorded, on every backend; the operation's outcome is the one it has without that event |
 | 400 | `WORKFLOW_FAILED`, not retryable | a compute member's answer whose `reason` or `error` holds U+0000: the answer is unreadable (Terminal, none of the member's text), wherever its failure fails the operation; a peer's relayed answer carrying such text is not believed |
+| 400 | `BAD_REQUEST` | a collection update whose body holds U+0000, an unpaired surrogate or invalid UTF-8 outside an item's payload (an `ifMatch`, a `transition`), refused whole before any item runs, since a failed item is isolated while its siblings commit |
 | 400 | `BAD_REQUEST` | a workflow import whose body holds U+0000, an unpaired surrogate or invalid UTF-8 (a workflow's names reach the audit trail), as for an entity payload |
 
 ## 10. Coverage matrix
