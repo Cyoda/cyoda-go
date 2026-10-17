@@ -80,10 +80,7 @@ func TestRejectUnstorablePayload(t *testing.T) {
 			if err == nil {
 				t.Fatalf("payload %q accepted but should be rejected (expected path %q)", tc.payload, tc.wantPath)
 			}
-			appErr, ok := err.(*common.AppError)
-			if !ok {
-				t.Fatalf("error is %T, want *common.AppError", err)
-			}
+			appErr := err // the signature makes every refusal a *common.AppError
 			if appErr.Status != http.StatusBadRequest {
 				t.Errorf("status=%d, want 400", appErr.Status)
 			}

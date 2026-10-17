@@ -235,9 +235,7 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// The workflow's names reach the state-machine audit trail, which records no
 	// event holding U+0000, and the stores cannot hold every such text either:
 	// refused here, as an entity payload is.
-	if err := ingest.RejectUnstorable(data); err != nil {
-		var appErr *common.AppError
-		errors.As(err, &appErr) // RejectUnstorable's every refusal is a 400 *common.AppError
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
 		common.WriteError(w, r, appErr)
 		return
 	}

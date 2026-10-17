@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -32,5 +33,8 @@ func TestWorkflowImport_UnstorableText_400(t *testing.T) {
 	}
 	if strings.ContainsRune(body, 0) {
 		t.Errorf("the response echoes the raw U+0000: %q", body)
+	}
+	if _, exported := exportWorkflowE2E(t, model, 1); strings.Contains(fmt.Sprint(exported), "unstorable-wf") {
+		t.Errorf("the refused workflow was saved: %v", exported)
 	}
 }
