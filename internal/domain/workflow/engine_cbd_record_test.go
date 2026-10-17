@@ -292,6 +292,44 @@ func TestCBDFailureAfterBoundary_OwnTransactionCommitFails(t *testing.T) {
 	}
 }
 
+// The record is refused in its own transaction: that transaction is rolled
+// back, not committed, nothing is recorded, and the operation fails with the
+// processor's error as before.
+func TestCBDFailureAfterBoundary_RecordRefused_OwnTransactionRolledBack(t *testing.T) {
+	for _, startNewTx := range []bool{false, true} {
+		t.Run(fmt.Sprintf("startNewTxOnDispatch=%t", startNewTx), func(t *testing.T) {
+			h := cbdRecordHarness(t, "memory", startNewTx)
+			h.failAuditEvent = spi.SMEventStateProcessResult
+			var commits []string
+			h.txMgr.commit = func(ctx context.Context, txID string) error {
+				commits = append(commits, txID)
+				return h.txMgr.TransactionManager.Commit(ctx, txID)
+			}
+			h.dispatchProcessor = func(context.Context, *spi.Entity, spi.ProcessorDefinition, string, string, string) (*spi.Entity, error) {
+				return nil, memberFailedWithText("card declined")
+			}
+			entryTxID, entryCtx := h.begin(t)
+
+			_, err := h.engine.Execute(entryCtx, h.entity, "")
+			if err == nil || err.Error() != "processor charge failed: card declined" {
+				t.Fatalf("err = %v, want the processor's own failure", err)
+			}
+			if len(h.refusedAuditTxIDs) != 1 || h.refusedAuditTxIDs[0] == entryTxID {
+				t.Fatalf("refused records ran in %v, want one, in a transaction of its own", h.refusedAuditTxIDs)
+			}
+			if len(commits) != 1 || commits[0] != entryTxID {
+				t.Errorf("commits = %v, want TX_pre's alone (%s)", commits, entryTxID)
+			}
+			if !h.txMgr.sawRollbackOf(h.refusedAuditTxIDs[0]) {
+				t.Errorf("the record's transaction %s was not rolled back", h.refusedAuditTxIDs[0])
+			}
+			if got := eventsOfType(committedTrail(t, h), spi.SMEventStateProcessResult); len(got) != 0 {
+				t.Errorf("committed STATE_PROCESS_RESULT records = %+v, want none", got)
+			}
+		})
+	}
+}
+
 // A scheduled run that refuses the dispatch after the boundary committed — its
 // unsafe mark refused — keeps the processor's record. The refusal is not the
 // member's text, so the record has no failReason.
