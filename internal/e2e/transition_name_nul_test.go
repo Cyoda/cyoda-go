@@ -9,9 +9,10 @@ import (
 // TestUpdateSingle_TransitionNameHoldingNUL_400: a transition name holding
 // U+0000 — sent percent-encoded in the path — is refused with 400 BAD_REQUEST
 // before the run records anything, and the entity is unchanged. The name
-// reaches the run's audit events, which cannot hold U+0000, and a joined write
-// that fails leaves the owner's transaction to commit, so the engine refuses
-// the name where it enters rather than letting its event be lost.
+// reaches the run's audit events; PostgreSQL refuses U+0000 in jsonb, so the
+// operation's transaction would abort there, while memory and SQLite would
+// store the event. Refusing the name where it enters gives every backend the
+// same result.
 func TestUpdateSingle_TransitionNameHoldingNUL_400(t *testing.T) {
 	model := "e2e-transition-nul-" + randSuffix(t)
 	setupModelWithWorkflow(t, model, trivialModelWF())

@@ -400,7 +400,7 @@ func readAnswer(call internalgrpc.Callout, resp *DispatchCalloutResponse, triesL
 			}
 			// A genuine peer refuses a reason holding U+0000 before it relays
 			// the answer (internal/grpc/dispatch.go): the audit trail cannot
-			// hold it.
+			// hold it on PostgreSQL.
 			if strings.ContainsRune(resp.Reason, 0) {
 				return lostAnswer()
 			}

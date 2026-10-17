@@ -11,7 +11,7 @@ import (
 // here a transition name — is refused at import with 400 BAD_REQUEST, as an
 // entity payload holding it is. The workflow's names reach the state-machine
 // audit trail (WORKFLOW_FOUND, TRANSITION_MAKE, PAUSE_FOR_PROCESSING), which
-// cannot hold U+0000.
+// cannot hold U+0000 on PostgreSQL.
 func TestWorkflowImport_UnstorableText_400(t *testing.T) {
 	const model = "e2e-wf-import-unstorable"
 	wf := `{

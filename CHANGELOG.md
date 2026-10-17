@@ -967,11 +967,6 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
     BAD_REQUEST` before the run records anything, on every door, a joined
     write included.
 
-  A criterion's reason is copied into later events (FINISH's stop reason,
-  TRANSITION_MAKE's functions) and a workflow's names into most events, so each
-  of these used to let one text take the record of a state change out of the
-  trail.
-
 - **Every polymorphic type in the OpenAPI document is a base with a
   discriminator mapping, and every condition is a `QueryConditionDto`.**
   `AbstractConditionDto` and `CriterionGroupConditionDto` are removed: every

@@ -245,10 +245,11 @@ The reason: cyoda-go's PostgreSQL audit row is a `jsonb` document written in
 the request's transaction. PostgreSQL refuses U+0000 in `jsonb`, and the
 refused `INSERT` aborts the whole transaction; memory and SQLite would store
 the event. Refusing the text where it enters gives every backend the same
-result, and keeps a committed operation's trail complete: a criterion's reason
-is copied into later events of the run (FINISH's
-`stopReason.rejectedTransitions`, the `functions` of TRANSITION_MAKE and
-WORKFLOW_FOUND), and a workflow's names into most events.
+result: the request is refused, instead of PostgreSQL aborting the operation
+and memory and SQLite storing the event. A criterion's reason is copied into
+later events of the run (FINISH's `stopReason.rejectedTransitions`, the
+`functions` of TRANSITION_MAKE and WORKFLOW_FOUND), and a workflow's names into
+most events, so each is refused once, where it enters.
 
 What Cloud does today: Cloud records such an event, and the request succeeds.
 The state-machine store is the Cassandra table `STATE_MACHINE_EVENTS`; each

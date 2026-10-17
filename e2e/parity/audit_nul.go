@@ -52,10 +52,12 @@ func AssertNULAnswerRefused(t *testing.T, c *client.Client, model string, status
 }
 
 // RunAuditNULAnswerRefused verifies that a compute member's text holding U+0000
-// cannot take records out of the audit trail. The audit trail records no event
-// holding U+0000, and a criterion's reason is copied into later events (FINISH,
-// TRANSITION_MAKE), so the answer is refused as unreadable instead: the create
-// fails and commits nothing, identically on memory, SQLite and PostgreSQL.
+// gets the same result on every backend. A criterion's reason reaches the
+// audit trail and is copied into later events (FINISH, TRANSITION_MAKE);
+// PostgreSQL refuses U+0000 in jsonb, so the operation's transaction would
+// abort there, while memory and SQLite would store it. The answer is refused
+// as unreadable instead: the create fails and commits nothing, identically on
+// memory, SQLite and PostgreSQL.
 func RunAuditNULAnswerRefused(t *testing.T, fixture BackendFixture) {
 	requireComputeClients(t, fixture)
 	tenant := fixture.NewTenant(t)

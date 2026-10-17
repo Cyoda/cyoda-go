@@ -57,9 +57,10 @@ written inside the request's transaction (`plugins/postgres/sm_audit_store.go:31
 in `jsonb`, and the refused `INSERT` aborts the whole transaction; memory and SQLite store the same event. So every
 text an event carries is refused where it enters, with nothing recorded (section 8.2): a compute answer at
 dispatch, a workflow at import, a collection-update body at its handler, and a caller's transition name or
-If-Match at the start of the run. A criterion's reason is copied into later events of the run (FINISH's stop
-reason, the `functions` of TRANSITION_MAKE and WORKFLOW_FOUND), so this is also what keeps a committed operation's
-trail complete.
+If-Match at the start of the run. Every backend then gives the same result: the request is refused, instead of
+PostgreSQL aborting the operation and memory and SQLite storing the event. A criterion's reason is copied into
+later events of the run (FINISH's stop reason, the `functions` of TRANSITION_MAKE and WORKFLOW_FOUND), so each text
+is refused once, where it enters.
 
 **Rule 5 — the client generator reads every shape.** The spec generates Kotlin (Cloud's settings) and Java that
 compile, and every sample (section 13.2) reads into the right class and writes back unchanged. What this
@@ -408,7 +409,7 @@ No test sets `defaultWorkflows` empty (the assignments at `arm_test.go:1079`, `:
   does not believe a peer's relayed answer carrying one (`internal/cluster/dispatch/handover.go` `readAnswer`).
 - Workflow import and the collection update run `ingest.RejectUnstorable` on their raw bodies: `400 BAD_REQUEST`.
 - `refuseNULCallerText` (`internal/domain/workflow/caller_text.go`) refuses a transition name or an If-Match
-  value holding U+0000 at the start of `manualTransition` and `loopback`, before anything is recorded:
+  value holding U+0000 at the start of `Execute`, `manualTransition` and `loopback`, before anything is recorded:
   `400 BAD_REQUEST`, on every door, a joined write included.
 
 The engine's audit write does not check the text again: no input reaches it with U+0000.
@@ -509,7 +510,7 @@ view of section 13.1. The scenarios below also assert values.
 | An automated transition behind a criterion whose member reason holds U+0000: the create fails with 400 `WORKFLOW_FAILED`, not retryable, and commits nothing, on memory, SQLite and PostgreSQL | | ✓ | | ✓ | | | |
 | The same through a hand-over (the peer refuses the answer) | | | | | ✓ | | |
 | A peer's relayed answer whose reason or failure text holds U+0000 is not believed | ✓ | | | | | | |
-| A transition name or If-Match holding U+0000 → 400 `BAD_REQUEST`, no event recorded (manual transition, If-Match on a transition and on a loopback) | ✓ | ✓ | | | | | |
+| A transition name or If-Match holding U+0000 → 400 `BAD_REQUEST`, no event recorded, the entity unchanged (U: a creation's transition, a manual transition, If-Match on a transition and on a loopback; E: a transition name in the path; G: a patch's If-Match and transition, a transition request; P: a transition name in the path, on memory, SQLite and PostgreSQL) | ✓ | ✓ | ✓ | ✓ | | | |
 | A collection update or workflow import whose body holds U+0000 → 400 `BAD_REQUEST`, nothing committed | | ✓ | | | | | |
 | `…/finished` returns FINISH with typed data | | ✓ | | ✓ | | | |
 

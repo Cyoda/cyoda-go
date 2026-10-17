@@ -165,7 +165,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 	"updateSingle": {
 		{Status: 400, Code: "TRANSITION_NOT_FOUND"},             // named transition absent from the model
 		{Status: 400, Code: "WORKFLOW_FAILED"},                  // workflow processor rejected the update
-		{Status: 400, Code: "BAD_REQUEST"},                      // TestTransactionControl_InvalidParams400/UpdateSingle: invalid/joined transactionTimeoutMillis
+		{Status: 400, Code: "BAD_REQUEST"},                      // TestTransactionControl_InvalidParams400/UpdateSingle: invalid/joined transactionTimeoutMillis; TestUpdateSingle_TransitionNameHoldingNUL_400
 		{Status: 404, Code: "ENTITY_NOT_FOUND"},                 // entity UUID not found
 		{Status: 409, Code: "UNIQUE_VIOLATION"},                 // TestUniqueKeys_ProcessorRewrite_IfMatchUpdate_409
 		{Status: 412, Code: "ENTITY_MODIFIED"},                  // If-Match mismatch
