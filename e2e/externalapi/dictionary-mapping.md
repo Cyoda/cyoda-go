@@ -123,7 +123,7 @@ Status vocabulary:
 | source_id | cyoda_go_status | notes |
 |-----------|-----------------|-------|
 | wf-import/01-simple-automated-transition | new:RunExternalAPI_08_01_SimpleAutomatedTransition | tranche 3; `different_naming_same_level` schema adaptations: dictionary `to`/`automated`/`criterion shape` → cyoda-go `next`/`manual:false`/`{type:"simple",jsonPath,operatorType,value}` |
-| wf-import/02-defaults-applied-and-returned | new:RunExternalAPI_08_02_DefaultsAppliedAndReturned | tranche 3 |
+| wf-import/02-defaults-applied-and-returned | new:RunExternalAPI_08_02_DefaultsAppliedAndReturned | tranche 3; asserts `active` true and `manual` as sent. Adaptations: cyoda-go's export leaves a false `disabled` out, so `disabled` is asserted false or absent; the import carries no function criterion and no processors, so the dictionary's `executionMode` default is not asserted |
 | wf-import/03-advanced-criteria-and-processors | new:RunExternalAPI_08_03_AdvancedCriteriaAndProcessors | tranche 3; group-criterion `clauses` → `conditions` field |
 | wf-import/04-strategy-replace | new:RunExternalAPI_08_04_StrategyReplace | tranche 3 |
 | wf-import/05-strategy-activate | new:RunExternalAPI_08_05_StrategyActivate | tranche 3 |
