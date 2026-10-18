@@ -27,7 +27,9 @@ criterion at workflow import is the one exception, as every other criterion
 refusal there is: the message names the workflow, state and transition in
 words, then the location inside the criterion (`workflow "wf" state "A"
 transition "go": criterion is not a valid condition: invalid JSON at
-"/conditions/1": …`). HTTP answers `400` with the endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
+"/conditions/1": …`). A paging cursor is opaque to the client, so a refused
+one answers `400 BAD_REQUEST: invalid cursor parameter` with no location. HTTP answers `400` with the
+endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
 `INVALID_CONDITION` on a search-shaped condition, `VALIDATION_FAILED` for a
 criterion at workflow import). gRPC answers `InvalidArgument`, except on an
 entity write (create, update, patch and the two collection events): there the
@@ -51,7 +53,7 @@ Two schema members are declared:
 
 | Event | Member | Meaning |
 |---|---|---|
-| `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present and names another tenant, the join is refused with `PermissionDenied`. A cyoda-go contract, documented in `cyoda help grpc` and read by the tenant check, which the schema left out; Cloud has the member only on `CalculationMemberGreetEvent`. |
+| `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present, not empty and names another tenant, the join is refused with `PermissionDenied`. A cyoda-go contract, documented in `cyoda help grpc` and read by the tenant check, which the schema left out; Cloud has the member only on `CalculationMemberGreetEvent`. |
 | `EntityDeleteAllRequest` | `pageSize` | No effect: the selection is streamed. Cloud's schema declares it, so Cloud's client may send it. |
 
 Four members Cloud's client sends are refused, because the server has nothing

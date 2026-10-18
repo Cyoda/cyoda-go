@@ -398,22 +398,59 @@ func unreadableReason(s reportedSuccess) string {
 	return ""
 }
 
+// The answer types declare every member of their schema
+// (EntityProcessorCalculationResponse, EntityCriteriaCalculationResponse,
+// EntityFunctionCalculationResponse): the strict decode refuses any other,
+// so a member missing here would make a valid answer unreadable.
+// TestAnswerTypes_DeclareTheSchemaMembers keeps them in step with the
+// generated types. They are not the generated types because those read an
+// absent and a null success alike, and matches as a plain bool.
+type answerError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable *bool  `json:"retryable"`
+}
+
+type processorAnswer struct {
+	ID        string          `json:"id"`
+	EntityID  string          `json:"entityId"`
+	RequestID string          `json:"requestId"`
+	Success   reportedSuccess `json:"success"`
+	Error     *answerError    `json:"error"`
+	Warnings  []string        `json:"warnings"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+type criteriaAnswer struct {
+	ID        string          `json:"id"`
+	EntityID  string          `json:"entityId"`
+	RequestID string          `json:"requestId"`
+	Success   reportedSuccess `json:"success"`
+	// A pointer: a response that says nothing about matches must arrive at
+	// the callout saying nothing. Decoded into a bool it would arrive as "does
+	// not match" — a verdict on a criterion that decides a transition,
+	// invented here, which the callout could no longer refuse.
+	Matches  *bool        `json:"matches"`
+	Reason   string       `json:"reason"`
+	Error    *answerError `json:"error"`
+	Warnings []string     `json:"warnings"`
+}
+
+type functionAnswer struct {
+	ID         string           `json:"id"`
+	EntityID   string           `json:"entityId"`
+	RequestID  string           `json:"requestId"`
+	Success    reportedSuccess  `json:"success"`
+	Result     *json.RawMessage `json:"result"`
+	ResultKind *string          `json:"resultKind"`
+	Error      *answerError     `json:"error"`
+	Warnings   []string         `json:"warnings"`
+}
+
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
 func handleProcessorResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		ID        string          `json:"id"`
-		EntityID  string          `json:"entityId"`
-		RequestID string          `json:"requestId"`
-		Success   reportedSuccess `json:"success"`
-		Error     *struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string        `json:"warnings"`
-		Payload  json.RawMessage `json:"payload"`
-	}
+	var resp processorAnswer
 	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "processor", payload, err)
 		return
@@ -438,24 +475,7 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 // handleCriteriaResponse routes a criteria calculation response to the
 // pending request on the given member.
 func handleCriteriaResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		ID        string          `json:"id"`
-		EntityID  string          `json:"entityId"`
-		RequestID string          `json:"requestId"`
-		Success   reportedSuccess `json:"success"`
-		// A pointer: a response that says nothing about matches must arrive
-		// at the callout saying nothing. Decoded into a bool it would arrive
-		// as "does not match" — a verdict on a criterion that decides a
-		// transition, invented here, which the callout could no longer refuse.
-		Matches *bool  `json:"matches"`
-		Reason  string `json:"reason"`
-		Error   *struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string `json:"warnings"`
-	}
+	var resp criteriaAnswer
 	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "criteria", payload, err)
 		return
@@ -481,20 +501,7 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 // handleFunctionResponse routes a function calculation response to the
 // pending request on the given member.
 func handleFunctionResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		ID         string           `json:"id"`
-		EntityID   string           `json:"entityId"`
-		RequestID  string           `json:"requestId"`
-		Success    reportedSuccess  `json:"success"`
-		Result     *json.RawMessage `json:"result"`
-		ResultKind *string          `json:"resultKind"`
-		Error      *struct {
-			Code      string `json:"code"`
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string `json:"warnings"`
-	}
+	var resp functionAnswer
 	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "function", payload, err)
 		return

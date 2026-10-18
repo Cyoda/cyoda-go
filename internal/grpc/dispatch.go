@@ -470,6 +470,16 @@ func boundCriterionReason(s string) string {
 	return string(r[:MaxCriterionReasonRunes]) + "…"
 }
 
+// processorPayload is a processor answer's payload, a DataPayload. Every
+// member is declared, so that the strict decode refuses a misspelt one
+// instead of ignoring it; TestAnswerTypes_DeclareTheSchemaMembers keeps it in
+// step with the generated type.
+type processorPayload struct {
+	Type string          `json:"type"`
+	Data json.RawMessage `json:"data"`
+	Meta json.RawMessage `json:"meta"`
+}
+
 // applyProcessorResponse extracts updated entity data from the response
 // payload. A response with no payload, or a payload whose data is absent or
 // null, returns no entity: the processor sent nothing to apply. It is never
@@ -481,13 +491,7 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 		return nil, nil
 	}
 
-	// The payload is a DataPayload; every member is declared so that the
-	// strict decode refuses a misspelt one instead of ignoring it.
-	var envelope struct {
-		Type string          `json:"type"`
-		Data json.RawMessage `json:"data"`
-		Meta json.RawMessage `json:"meta"`
-	}
+	var envelope processorPayload
 	if err := strictjson.Decode(resp.Payload, &envelope); err != nil {
 		return nil, fmt.Errorf("%w: %w", errProcessorPayload, err)
 	}

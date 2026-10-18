@@ -6063,7 +6063,10 @@ paths:
         Invalidates a registered trusted public key at once: from the moment
         the request returns, subject tokens signed with the corresponding
         private key are refused on every node. Trusted keys have no grace
-        period, and the request has no body.
+        period, and the request has no body: an empty body or `{}` is
+        accepted, and a body naming any member (a `gracePeriodSec`, for
+        example) is refused with 400 BAD_REQUEST and the key is left as it
+        was.
 
         Requires ROLE_ADMIN.
       operationId: invalidateTrustedKey
@@ -6081,7 +6084,7 @@ paths:
           description: Trusted key invalidated successfully
           content: {}
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, or a request body that names a member (the request has none)."
           content:
             application/problem+json:
               schema:

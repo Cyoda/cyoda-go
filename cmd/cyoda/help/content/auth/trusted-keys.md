@@ -91,7 +91,8 @@ Returns the tenant's keys with status (active / invalidated) and validity window
 ```bash
 # Stop accepting subject tokens signed with this key at once, without
 # removing the entry. The request has no body: trusted keys have no grace
-# period.
+# period, and a body naming a member (gracePeriodSec, say) is refused
+# with 400, leaving the key as it was.
 curl -X POST https://cyoda.example.com/api/oauth/keys/trusted/${KEY_ID}/invalidate \
   -H @- <<<"Authorization: Bearer ${ADMIN_TOKEN}"
 

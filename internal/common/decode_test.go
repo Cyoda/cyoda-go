@@ -87,7 +87,9 @@ func TestDecodeOptionalBoundedJSON(t *testing.T) {
 		wantErr bool
 	}{
 		"empty":          {"", false, false, false},
-		"whitespace":     {" \n", false, false, false},
+		"whitespace":     {" \t\r\n", false, false, false},
+		"no-break space": {"\u00a0", false, true, true},
+		"vertical tab":   {"\v", false, true, true},
 		"empty, chunked": {"", true, false, false},
 		"value":          {`{"x":1}`, false, true, false},
 		"empty object":   {`{}`, true, true, false},

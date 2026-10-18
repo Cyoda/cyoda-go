@@ -24,15 +24,16 @@ func DecodeBoundedJSON(w http.ResponseWriter, r *http.Request, max int64, dst an
 }
 
 // DecodeOptionalBoundedJSON is DecodeBoundedJSON for an operation whose body
-// is optional. An empty or whitespace-only body is absent (present false, dst
-// untouched), whatever Content-Length says; any other body is decoded
-// strictly.
+// is optional. An empty body, or one of JSON whitespace only, is absent
+// (present false, dst untouched), whatever Content-Length says; any other
+// body is decoded strictly.
 func DecodeOptionalBoundedJSON(w http.ResponseWriter, r *http.Request, max int64, dst any) (present bool, err error) {
 	data, err := readBounded(w, r, max)
 	if err != nil {
 		return false, err
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
+	// JSON's own whitespace only: any other byte is a body, decoded strictly.
+	if len(bytes.Trim(data, " \t\r\n")) == 0 {
 		return false, nil
 	}
 	return true, strictjson.Decode(data, dst)

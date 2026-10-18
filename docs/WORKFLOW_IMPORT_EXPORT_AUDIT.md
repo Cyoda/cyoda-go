@@ -75,7 +75,7 @@ Deferred parent issues (track post-v0.8.0 work):
 - **#223** — full crossover semantics (gated on Cassandra plugin work-recovery primitives).
 - **#254** — full member-failover retry loop (gated on #223 async semantics).
 - **#35** — full `WorkflowStore.CompareAndSave` SPI addition (gated on cyoda-go-cassandra#22 coordination).
-- **#145** — `DisallowUnknownFields` across remaining input boundaries.
+- **#145** — `DisallowUnknownFields` across remaining input boundaries (delivered in v0.9.0 by #678).
 
 ---
 
@@ -526,14 +526,13 @@ The strict-decoder boundary lands *after* the SPI shape carve so
 legitimate Cloud-parity fields are accepted; the validator then enforces
 the runtime constraints.
 
-#145 — the broader `DisallowUnknownFields` sweep across
-`internal/domain/entity`, `internal/cluster/dispatch`, and
-`internal/auth/validator.go` — remains open. Those boundaries have larger
-client surfaces and need a coordinated migration plan; the workflow
-boundary's small client base allowed a strict-from-day-one switch.
+The other client input boundaries followed in v0.9.0 (#678, closing
+#145): every HTTP body, gRPC request event, compute answer, condition and
+cursor decodes through the same `strictjson` rule. Node-to-node
+hand-overs, JWT claims and stored records are not client-typed input and
+keep their decoders.
 
-**Severity:** MEDIUM. **Status:** workflow boundary resolved; remaining
-boundaries tracked in #145.
+**Severity:** MEDIUM. **Status:** resolved.
 
 ### M7. No audit logging on a successful import
 
@@ -793,7 +792,7 @@ plan.
 | M3 | **Untracked — open issue needed** | Treat empty incoming as a 400 in REPLACE/ACTIVATE, or add an explicit `force: true` opt-in. |
 | M4 | **Untracked — open issue needed** | Add a duplicate-name + empty-name validation in `validateWorkflows`. |
 | M5 | **Untracked — open issue needed** | Document the default mode and case-insensitivity in OpenAPI, and add the missing tests. |
-| M6 | #264 (workflow boundary — closed), #261 (asyncResult/crossover SPI — closed), #145 (other boundaries — deferred) | Workflow boundary uses `DisallowUnknownFields` via #264. `asyncResult` / `crossoverToAsyncMs` carved into the SPI via #261. Remaining input boundaries (entity / dispatch / auth) still in #145. |
+| M6 | #264 (workflow boundary — closed), #261 (asyncResult/crossover SPI — closed), #678 (every other client input), #145 | Every client-typed input decodes through `strictjson` (unknown, case-variant and duplicate members refused); the workflow boundary since #264, the rest since #678. `asyncResult` / `crossoverToAsyncMs` carved into the SPI via #261. |
 | M7 | **Untracked — open issue needed** | Emit one `slog.Info` per successful import including mode, workflow names, and result count. |
 | M8 | **Untracked — open issue needed** | Document the workflow-level criterion selection rule in `cmd/cyoda/help/content/workflows.md` and the OpenAPI `criterion` description. |
 | M9 | #25, #122 (adjacent only) | The 18 cases in §M9 are not in either issue's scope. **New issue needed** to enumerate the cases as a single test-coverage sweep. |

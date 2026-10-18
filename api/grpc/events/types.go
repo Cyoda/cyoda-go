@@ -173,8 +173,8 @@ type CalculationMemberJoinEventJson struct {
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
 
 	// Optional: the tenant id the member expects to join. The member always joins the
-	// tenant of its bearer token; when this is present and differs from that tenant,
-	// the join is refused with PermissionDenied.
+	// tenant of its bearer token; when this is present, not empty and differs from
+	// that tenant, the join is refused with PermissionDenied.
 	JoinedLegalEntityID *string `json:"joinedLegalEntityId,omitempty" yaml:"joinedLegalEntityId,omitempty" mapstructure:"joinedLegalEntityId,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
