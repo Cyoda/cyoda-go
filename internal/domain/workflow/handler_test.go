@@ -1390,9 +1390,9 @@ func TestImport_MalformedJSONBody_Returns400(t *testing.T) {
 // TestImport_UnknownField_TopLevel_Returns400 covers the strict-decoder
 // boundary: unknown fields at the top of the import-request body (e.g.
 // forward-compat extras, typos) must be rejected at the wire boundary
-// with 400 BAD_REQUEST. Without DisallowUnknownFields the field is
-// silently dropped and the request proceeds, hiding shape errors from
-// the client.
+// with 400 BAD_REQUEST. A decoder that ignored it would drop the field
+// silently and let the request proceed, hiding shape errors from the
+// client.
 func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
 	srv := newTestServer(t)
 	importModel(t, srv.URL, "Order", 1)
@@ -1407,8 +1407,8 @@ func TestImport_UnknownField_TopLevel_Returns400(t *testing.T) {
 	commontest.ExpectErrorCode(t, resp, common.ErrCodeBadRequest)
 	respBody := readJSON(t, resp)
 	detail, _ := respBody["detail"].(string)
-	// Go's decoder emits `json: unknown field "futureField"` — the field
-	// name in the detail is what makes the error actionable to the caller.
+	// The decoder names the member (`unknown member name "futureField"`) —
+	// the name in the detail is what makes the error actionable to the caller.
 	if !strings.Contains(detail, "futureField") {
 		t.Errorf("expected detail to name the unknown field 'futureField', got: %s", detail)
 	}

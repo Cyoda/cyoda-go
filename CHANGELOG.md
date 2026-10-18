@@ -1054,10 +1054,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   on `CalculationMemberJoinEvent` (documented, not in the schema) and
   `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
   it) are declared in the event schemas. `audience` on a key-pair or
-  trusted-key request and `invalidateGracePeriodSec` on a trusted-key
-  registration are refused like any undeclared member: key pairs and trusted
-  keys have no audience, and trusted keys no grace period, so accepting them
-  would drop what the client asked for. A gRPC entity write runs the
+  trusted-key request, `invalidateGracePeriodSec` on a trusted-key
+  registration and any member in a trusted-key invalidate body (which has
+  none; `gracePeriodSec` was ignored before) are refused like any undeclared
+  member: key pairs and trusted keys have no audience, and trusted keys no
+  grace period, so accepting them would drop what the client asked for. A gRPC entity write runs the
   unstorable check on the whole event before the decode, as the HTTP
   collection endpoints do, so text no store can hold — a member written
   twice included — is answered by the event's error response

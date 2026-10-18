@@ -78,7 +78,7 @@ func TestGroupedStatsHandler_RejectsMalformedJSON(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
-	// DisallowUnknownFields contract: garbage top-level field => 400 MALFORMED_REQUEST.
+	// Strict decode: an undeclared top-level member => 400 MALFORMED_REQUEST.
 	h := newHandlerWithoutResolver()
 	body := strings.NewReader(`{"groupBy":["state"],"nope":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)

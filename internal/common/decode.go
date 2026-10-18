@@ -1,6 +1,7 @@
 package common
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -15,16 +16,39 @@ import (
 // strictjson refuses; callers translate that to 400 BAD_REQUEST via
 // WriteError.
 func DecodeBoundedJSON(w http.ResponseWriter, r *http.Request, max int64, dst any) error {
+	data, err := readBounded(w, r, max)
+	if err != nil {
+		return err
+	}
+	return strictjson.Decode(data, dst)
+}
+
+// DecodeOptionalBoundedJSON is DecodeBoundedJSON for an operation whose body
+// is optional. An empty or whitespace-only body is absent (present false, dst
+// untouched), whatever Content-Length says; any other body is decoded
+// strictly.
+func DecodeOptionalBoundedJSON(w http.ResponseWriter, r *http.Request, max int64, dst any) (present bool, err error) {
+	data, err := readBounded(w, r, max)
+	if err != nil {
+		return false, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return false, nil
+	}
+	return true, strictjson.Decode(data, dst)
+}
+
+func readBounded(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	data, err := io.ReadAll(r.Body)
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
-		return fmt.Errorf("request body exceeds %d bytes", max)
+		return nil, fmt.Errorf("request body exceeds %d bytes", max)
 	case err != nil:
-		return fmt.Errorf("read body: %w", err)
+		return nil, fmt.Errorf("read body: %w", err)
 	}
-	return strictjson.Decode(data, dst)
+	return data, nil
 }
 
 // InvalidBody is the 400 for a request body that does not decode. The

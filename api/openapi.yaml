@@ -5318,7 +5318,7 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: "BAD_REQUEST: invalid JSON body"
+                detail: "BAD_REQUEST: invalid request body: invalid JSON at \"/uniqueKeys/0\": unknown member name \"field\""
                 instance: /api/model/nobel-prize/1/unique-keys
         "404":
           description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."

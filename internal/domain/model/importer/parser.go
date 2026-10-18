@@ -105,9 +105,9 @@ func parseXMLElement(dec *xml.Decoder, start xml.StartElement) (any, error) {
 
 func inferXMLValue(s string) any {
 	// Defer numeric coercion: keep numbers as json.Number so callers can
-	// choose Int64() vs Float64() vs string preservation. Mirrors
-	// ParseJSON's UseNumber() — XML and JSON imports produce structurally
-	// identical trees for numeric leaves.
+	// choose Int64() vs Float64() vs string preservation, as ParseJSON
+	// does — XML and JSON imports produce structurally identical trees for
+	// numeric leaves.
 	if isJSONNumber(s) {
 		return json.Number(s)
 	}

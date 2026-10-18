@@ -7,6 +7,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -110,7 +111,7 @@ func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunctio
 	if err != nil {
 		// The decoder's location is relative to this condition; place it
 		// under the condition's own, as the condition parser does.
-		return nil, fmt.Errorf("function condition: %w", err.Under(ptr))
+		return nil, fmt.Errorf("function condition: %w", strictjson.Within(err, ptr))
 	}
 	if !present {
 		return nil, fmt.Errorf("function condition%s has no `function` object", atPointer(ptr))

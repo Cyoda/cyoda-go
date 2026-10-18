@@ -270,7 +270,13 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	// The request has no body: trusted keys have no grace period, and
-	// invalidation ends the key at once.
+	// invalidation ends the key at once. A body naming a member is refused,
+	// since accepting it would drop what the client asked for.
+	var none struct{}
+	if _, err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &none); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
+		return
+	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId); err != nil {
 		common.WriteError(w, r, trustedKeyStoreError(err))

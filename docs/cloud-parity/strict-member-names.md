@@ -22,8 +22,12 @@ pre-check), a workflow import and a paging cursor.
 
 The refusal names the location as a JSON Pointer from the top of the value
 (`invalid JSON at "/workflows/0/states/NEW/transitions/1": unknown member name
-"Manual"`) and never a type of the implementation. HTTP answers `400` with the
-endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
+"Manual"`) and never a type of the implementation. A workflow or transition
+criterion at workflow import is the one exception, as every other criterion
+refusal there is: the message names the workflow, state and transition in
+words, then the location inside the criterion (`workflow "wf" state "A"
+transition "go": criterion is not a valid condition: invalid JSON at
+"/conditions/1": …`). HTTP answers `400` with the endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
 `INVALID_CONDITION` on a search-shaped condition, `VALIDATION_FAILED` for a
 criterion at workflow import). gRPC answers `InvalidArgument`, except on an
 entity write (create, update, patch and the two collection events): there the
@@ -50,13 +54,15 @@ Two schema members are declared:
 | `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present and names another tenant, the join is refused with `PermissionDenied`. A cyoda-go contract, documented in `cyoda help grpc` and read by the tenant check, which the schema left out; Cloud has the member only on `CalculationMemberGreetEvent`. |
 | `EntityDeleteAllRequest` | `pageSize` | No effect: the selection is streamed. Cloud's schema declares it, so Cloud's client may send it. |
 
-Three members Cloud's client sends are refused, because the server has nothing
+Four members Cloud's client sends are refused, because the server has nothing
 that would honour them and accepting them would drop their meaning without a
 word: `audience` on `POST /oauth/keys/keypair` and on `POST
 /oauth/keys/trusted` (key pairs and trusted keys have no audience; see
-`signing-key-pairs.md`), and `invalidateGracePeriodSec` on `POST
-/oauth/keys/trusted` (trusted keys have no grace period; see
-`trusted-key-tenant.md`). Cloud is already asked to drop all three there.
+`signing-key-pairs.md`), `invalidateGracePeriodSec` on `POST
+/oauth/keys/trusted` and `gracePeriodSec` on `POST
+/oauth/keys/trusted/{keyId}/invalidate` (trusted keys have no grace period, and
+the invalidate request has no body; see `trusted-key-tenant.md`). An empty body
+or `{}` is accepted there. Cloud is already asked to drop all four.
 
 ## Why
 

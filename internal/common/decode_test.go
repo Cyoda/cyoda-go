@@ -73,6 +73,41 @@ func TestInvalidBody_NamesWhere(t *testing.T) {
 	}
 }
 
+// TestDecodeOptionalBoundedJSON: an operation whose body is optional treats
+// an empty or whitespace-only body as absent — whatever Content-Length says,
+// a chunked request included — and decodes any other body strictly.
+func TestDecodeOptionalBoundedJSON(t *testing.T) {
+	type dst struct {
+		X *int `json:"x"`
+	}
+	for name, tc := range map[string]struct {
+		body    string
+		chunked bool
+		present bool
+		wantErr bool
+	}{
+		"empty":          {"", false, false, false},
+		"whitespace":     {" \n", false, false, false},
+		"empty, chunked": {"", true, false, false},
+		"value":          {`{"x":1}`, false, true, false},
+		"empty object":   {`{}`, true, true, false},
+		"unknown member": {`{"y":1}`, false, true, true},
+		"not JSON":       {`{`, false, true, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
+			if tc.chunked {
+				r.ContentLength = -1
+			}
+			var d dst
+			present, err := common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
+			if present != tc.present || (err != nil) != tc.wantErr {
+				t.Errorf("present=%t err=%v, want present=%t err=%t", present, err, tc.present, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestDecodeBoundedJSON_BadJSON(t *testing.T) {
 	type dst struct{}
 	r := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`not-json`)))
