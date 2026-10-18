@@ -67,7 +67,7 @@ Replace `amd64` with `arm64` for ARM hosts. Both packages drop `/usr/bin/cyoda` 
 
 ### From source
 
-Requires **Go 1.26+**.
+Requires **Go 1.27.2+**.
 
 ```bash
 go install github.com/cyoda-platform/cyoda-go/cmd/cyoda@latest

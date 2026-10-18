@@ -162,10 +162,6 @@ jobs:
   # (cyoda-go-cassandra).
   per-module-hygiene:
     runs-on: ubuntu-latest
-    # Plan 3 note: this job will fail against cyoda-go-spi v0.1.0 because
-    # Plan 3 adds StoreFactory.TransactionManager(ctx) and Plugin.NewFactory(ctx).
-    # Plan 4 tags cyoda-go-spi v0.2.0 and this job becomes required.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
 
@@ -186,6 +182,12 @@ jobs:
 
       - name: Build and vet plugins/postgres with GOWORK=off
         working-directory: plugins/postgres
+        run: |
+          GOWORK=off go build ./...
+          GOWORK=off go vet ./...
+
+      - name: Build and vet plugins/sqlite with GOWORK=off
+        working-directory: plugins/sqlite
         run: |
           GOWORK=off go build ./...
           GOWORK=off go vet ./...
