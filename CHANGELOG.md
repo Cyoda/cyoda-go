@@ -1021,6 +1021,38 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the omission meant an automatic transition. See
   `docs/workflow-schema-versioning.md`.
 
+- **Typed JSON from a client must spell its member names exactly, once.**
+  Every HTTP request body, the `data` of every gRPC CloudEvent, a compute
+  member's answer, every condition and every paging cursor is decoded with
+  `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
+  differs from a declared member only in case, an undeclared member and a
+  duplicate member are each refused, as is anything after the value. Before,
+  `encoding/json` matched names ignoring case and Unicode folding, let a
+  duplicate replace or merge into the first value, and on most bodies ignored
+  an undeclared member, so one body could mean two things: a workflow import
+  holding `"transitions"` and `"Transitions"` stored a transition sent
+  without `manual` as automatic, a processor payload's `"Data"` was applied
+  as the entity's data, and a compute answer that misspelt `success` was read
+  as a success. HTTP answers `400` with the endpoint's code, gRPC
+  `InvalidArgument`, and a compute answer that breaks the rule is unreadable
+  and fails the callout; the message names the location as a JSON Pointer
+  (`invalid JSON at "/workflows/0": unknown member name "Name"`) and no
+  longer the server's Go types. A condition leaf that writes its operator
+  twice (two of `operatorType`, `operator`, `operation`) is refused, as is a
+  criterion function member placed beside `config` instead of in it, which
+  was ignored and left the callout untagged. Entity and message payload
+  contents are not typed JSON and keep their own rules. `joinedLegalEntityId`
+  on `CalculationMemberJoinEvent` (documented, not in the schema) and
+  `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
+  it) are declared in the event schemas. A gRPC entity write's unstorable
+  payload is refused by the unstorable check, as on HTTP, before the decode.
+  See `docs/cloud-parity/strict-member-names.md` and
+  `docs/workflow-schema-versioning.md`.
+
+- **Go 1.27.2 is required to build** (`go 1.26.9` → `go 1.27.2` in the root,
+  the three plugin modules and `go.work`), for `encoding/json/v2`. An
+  out-of-tree plugin raises its own `go` directive with its cyoda-go bump.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server

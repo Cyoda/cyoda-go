@@ -26,11 +26,13 @@ cyoda help cloudevents json       # full schemas tree as a single JSON document
 
 ## DESCRIPTION
 
-cyoda-go uses [CloudEvents v1.0](https://cloudevents.io) as the transport envelope for event-driven processing. Every payload carried inside a CloudEvent — workflow calculation requests, calculation responses, entity transaction events, snapshot state, model descriptors — is validated against a JSON Schema (Draft 2020-12).
+cyoda-go uses [CloudEvents v1.0](https://cloudevents.io) as the transport envelope for event-driven processing. Every payload carried inside a CloudEvent — workflow calculation requests, calculation responses, entity transaction events, snapshot state, model descriptors — is described by a JSON Schema (Draft 2020-12).
+
+**Member names are exact.** cyoda-go reads an inbound payload — a client's request or a compute member's answer — through types generated from its schema, and refuses a member the schema does not declare, a name in another letter case, a member written twice and anything after the payload's JSON value, as well as a missing required member. A refused request answers `InvalidArgument`, naming the member and where it is as a JSON Pointer; a refused answer is unreadable and fails the callout. The contents of an entity payload are the client's data and are not checked against the rule.
 
 The canonical schema tree lives at `docs/cyoda/schema/` in this repo and is embedded into the binary at build time. It is the single source of truth for:
 
-- **Runtime validation** of inbound CloudEvent payloads (in cyoda-go and external compute members).
+- **Decoding** of inbound CloudEvent payloads (in cyoda-go and external compute members).
 - **Code generation** via `scripts/generate-events.sh` — the Go types in `api/grpc/events/types.go` are derived from this tree.
 - **Downstream tooling**: documentation pipelines and SDK generators extract the tree from the binary (see `cyoda help cloudevents json`), so every version of cyoda ships with a matching, self-describing schema bundle.
 

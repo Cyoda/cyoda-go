@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the fourteen tightenings below
+Every payload 1.4 accepted that does not fall under the fifteen tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Fourteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Fifteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -338,6 +338,19 @@ they are recorded here, under the rubric of §"Tightening releases":
     and not as a validator bug fix. The import reads the raw request, since
     the decoded boolean cannot tell an omitted or `null` `manual` from
     `false`.
+15. **Member names are exact** in the whole import body, criteria included. A
+    name that differs from a declared member only in case (or by Unicode
+    folding) is an unknown member, a member written twice is refused, and an
+    undeclared member is refused inside a criterion too: in a condition, in a
+    function condition's `function` and in its `config`. Before, the decoder
+    matched names ignoring case and let a duplicate replace the first value,
+    so `"transitions"` beside `"Transitions"` imported a transition without
+    `manual` as automatic, and a criterion ignored a member it did not
+    declare, so `calculationNodesTags` written beside `config` instead of in
+    it left the callout untagged. A condition leaf that writes its operator
+    twice (two of `operatorType`, `operator`, `operation`) is refused as a
+    duplicate is. Rubric point 1 applies: fail loud where the old value was
+    ignored or merged.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -361,7 +374,11 @@ processor and the value, and the fix is to send `externalized` or omit the
 field. Rule 14 touches only transitions that left `manual` out or sent
 `null`; the error names the workflow, state and transition, and the fix is
 to send `"manual": false` where the omission meant an automatic transition.
-All fourteen rules apply to an import under **any** schema version, 1.1
+Rule 15 touches only bodies that spell a member in another case, write it
+twice, or put a member where its shape does not declare it; the error names
+the member and its location as a JSON Pointer, and the fix is the spelling
+and place the schema gives.
+All fifteen rules apply to an import under **any** schema version, 1.1
 through 1.5 alike — they are validation-layer rules, not DTO-shape ones.
 
 No rule is retroactive: a workflow already stored is not re-checked at
