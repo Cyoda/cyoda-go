@@ -82,7 +82,7 @@ func (a *AdminHandlers) SetTraceSampler(w http.ResponseWriter, r *http.Request) 
 		ParentBased *bool    `json:"parent_based,omitempty"`
 	}
 	if err := common.DecodeBoundedJSON(w, r, maxAdminBodyBytes, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -134,7 +134,7 @@ func (a *AdminHandlers) SetLogLevel(w http.ResponseWriter, r *http.Request) {
 		Level string `json:"level"`
 	}
 	if err := common.DecodeBoundedJSON(w, r, maxAdminBodyBytes, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if req.Level == "" {

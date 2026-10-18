@@ -35,7 +35,7 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 	}
 	var req genapi.IssueJwtKeyPairRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if string(req.Algorithm) != "RS256" {
@@ -207,7 +207,7 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 	if r.ContentLength != 0 {
 		var req genapi.InvalidateKeyRequestDto
 		if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+			common.WriteError(w, r, common.InvalidBody(err))
 			return
 		}
 		if req.GracePeriodSec != nil {
@@ -242,7 +242,7 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 	}
 	var req genapi.ReactivateKeyRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if req.ValidTo.IsZero() {

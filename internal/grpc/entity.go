@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,11 +11,13 @@ import (
 	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
@@ -34,10 +35,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 
 	switch eventType {
 	case EntityCreateRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		// The event carries an entity payload, which the unstorable guard
+		// must see as the client sent it: the guard reads the whole event
+		// first, so a payload no store can hold is refused as such rather
+		// than by the strict decode, which refuses invalid UTF-8 and
+		// duplicate names anywhere in the event with a bare InvalidArgument.
+		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityCreateRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -86,10 +93,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityUpdateRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		// The event carries an entity payload, which the unstorable guard
+		// must see as the client sent it: the guard reads the whole event
+		// first, so a payload no store can hold is refused as such rather
+		// than by the strict decode, which refuses invalid UTF-8 and
+		// duplicate names anywhere in the event with a bare InvalidArgument.
+		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityUpdateRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -139,10 +152,16 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityPatchRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		// The event carries an entity payload, which the unstorable guard
+		// must see as the client sent it: the guard reads the whole event
+		// first, so a payload no store can hold is refused as such rather
+		// than by the strict decode, which refuses invalid UTF-8 and
+		// duplicate names anywhere in the event with a bare InvalidArgument.
+		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+			return entityTransactionError(ctx, ce.Id, appErr)
+		}
 		var req events.EntityPatchRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -190,10 +209,8 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityDeleteRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityDeleteRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -220,10 +237,8 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityDeleteResponse, resp)
 
 	case EntityTransitionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityTransitionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -283,10 +298,17 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 	switch eventType {
 	case EntityCreateCollectionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		// As for the unary entity writes: the unstorable guard reads the
+		// whole event before the strict decode.
+		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 		var req events.EntityCreateCollectionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -354,10 +376,17 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityUpdateCollectionRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
+		// As for the unary entity writes: the unstorable guard reads the
+		// whole event before the strict decode.
+		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(respCE)
+		}
 		var req events.EntityUpdateCollectionRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
@@ -461,10 +490,8 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityDeleteAllRequest:
-		dec := json.NewDecoder(bytes.NewReader(payload))
-		dec.UseNumber()
 		var req events.EntityDeleteAllRequestJson
-		if err := dec.Decode(&req); err != nil {
+		if err := strictjson.Decode(payload, &req); err != nil {
 			return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 

@@ -61,7 +61,7 @@ func TestNewProcessorCallout(t *testing.T) {
 	// instead of applying the payload it dispatched with.
 	for name, resp := range map[string]*ProcessingResponse{
 		"no payload":           {Success: true},
-		"a payload, no data":   {Success: true, Payload: json.RawMessage(`{"other":1}`)},
+		"a payload, no data":   {Success: true, Payload: json.RawMessage(`{"type":"TREE"}`)},
 		"a payload, null data": {Success: true, Payload: json.RawMessage(`{"data":null}`)},
 	} {
 		none, err := call.mapResponse(resp)

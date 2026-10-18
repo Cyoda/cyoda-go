@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -69,8 +70,8 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		Payload  json.RawMessage `json:"payload"`
 		MetaData map[string]any  `json:"metaData"`
 	}
-	if err := json.Unmarshal(rawBody, &envelope); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected an object with a 'payload' field"))
+	if err := strictjson.Decode(rawBody, &envelope); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -80,9 +81,9 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 	}
 
 	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud behavior).
-	// json.Unmarshal above already validated envelope.Payload as a JSON value, so
+	// strictjson.Decode above already validated envelope.Payload as a JSON value, so
 	// json.Compact must succeed. If it fails, that is an invariant violation caused
-	// by a future code path constructing Payload by hand instead of via Unmarshal.
+	// by a future code path constructing Payload by hand instead of via Decode.
 	var compacted bytes.Buffer
 	if err := json.Compact(&compacted, envelope.Payload); err != nil {
 		common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
@@ -292,8 +293,8 @@ func (h *Handler) DeleteMessages(w http.ResponseWriter, r *http.Request, params 
 	}
 
 	var ids []string
-	if err := json.Unmarshal(rawBody, &ids); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: expected array of UUID strings"))
+	if err := strictjson.Decode(rawBody, &ids); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 

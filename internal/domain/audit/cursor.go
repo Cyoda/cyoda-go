@@ -1,13 +1,14 @@
 package audit
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // cursorBody is the decoded form of an audit page cursor: the sort key of
@@ -70,10 +71,8 @@ func decodeCursor(s string) (eventKey, error) {
 	if err != nil {
 		return eventKey{}, errBadCursor
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var b cursorBody
-	if err := dec.Decode(&b); err != nil || b.V != 1 {
+	if err := strictjson.Decode(raw, &b); err != nil || b.V != 1 {
 		return eventKey{}, errBadCursor
 	}
 	at, err := time.Parse(time.RFC3339Nano, b.T)

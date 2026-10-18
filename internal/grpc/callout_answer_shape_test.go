@@ -19,7 +19,7 @@ import (
 // where it becomes this node's text.
 
 // answerCriterion is the criterion literal the tests here dispatch.
-const answerCriterion = `{"name":"my-criteria","config":{"calculationNodesTags":"python","responseTimeoutMs":5000}}`
+const answerCriterion = `{"type":"function","function":{"name":"my-criteria","config":{"calculationNodesTags":"python","responseTimeoutMs":5000}}}`
 
 // replyOnce answers the one request the member is sent with resp.
 func replyOnce(t *testing.T, registry *MemberRegistry, memberID string, sentCh chan *cepb.CloudEvent, resp *ProcessingResponse) {
@@ -70,6 +70,40 @@ func TestHandleCriteriaResponse_AbsentMatchesStaysAbsent(t *testing.T) {
 				t.Errorf("matches = %t; want %t", *resp.Matches, *tc.want)
 			}
 		})
+	}
+}
+
+// An answer's member names are exact. A misspelt "sucess":false is not the
+// success flag, and read leniently the flag would be absent and default to
+// true, turning a failure into a success; a case variant, a duplicate and an
+// unknown member are refused the same way. Each makes the answer unreadable.
+func TestHandleResponses_MemberNamesAreExact(t *testing.T) {
+	handlers := map[string]func(*Member, json.RawMessage){
+		"processor": handleProcessorResponse,
+		"criteria":  handleCriteriaResponse,
+		"function":  handleFunctionResponse,
+	}
+	for kind, handle := range handlers {
+		for name, body := range map[string]string{
+			"misspelt":     `{"requestId":"r-1","sucess":false,"matches":true,"error":{"code":"E","message":"failed"}}`,
+			"case variant": `{"requestId":"r-1","Success":false,"matches":true}`,
+			"duplicate":    `{"requestId":"r-1","success":false,"success":true,"matches":true}`,
+		} {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				registry := NewMemberRegistry()
+				member := registry.Register("m-1", testTenantID, []string{"python"},
+					func(*cepb.CloudEvent) error { return nil }, nil)
+				ch, err := member.TrackRequest("r-1")
+				if err != nil {
+					t.Fatalf("TrackRequest: %v", err)
+				}
+				handle(member, json.RawMessage(body))
+				resp := <-ch
+				if resp.Unreadable != unreadableUndecodable {
+					t.Errorf("answer read as success=%t unreadable=%q; want it unreadable as undecodable", resp.Success, resp.Unreadable)
+				}
+			})
+		}
 	}
 }
 

@@ -40,7 +40,7 @@ import (
 func TestQueryGroupedStats_FunctionCondition_Is400(t *testing.T) {
 	cond := json.RawMessage(`{
 		"type": "function",
-		"function": {"name": "isWeekend", "args": {}}
+		"function": {"name": "isWeekend"}
 	}`)
 	svc := entity.NewGroupedStatsService(10000, newFixedConsistency())
 	req := &entity.ValidatedGroupedStatsRequest{

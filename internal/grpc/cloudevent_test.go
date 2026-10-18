@@ -230,22 +230,6 @@ func TestNewCloudEvent_ParseCloudEvent_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestExtractTransactionID_Present(t *testing.T) {
-	payload := json.RawMessage(`{"transactionId":"txn-456","other":"value"}`)
-	got := ExtractTransactionID(payload)
-	if got != "txn-456" {
-		t.Errorf("expected 'txn-456', got %q", got)
-	}
-}
-
-func TestExtractTransactionID_Absent(t *testing.T) {
-	payload := json.RawMessage(`{"other":"value"}`)
-	got := ExtractTransactionID(payload)
-	if got != "" {
-		t.Errorf("expected empty string, got %q", got)
-	}
-}
-
 func TestParseCloudEvent_Nil(t *testing.T) {
 	_, _, err := ParseCloudEvent(nil)
 	if err == nil {
@@ -274,16 +258,13 @@ func TestParseCloudEvent_BinaryData(t *testing.T) {
 	}
 }
 
-func TestExtractStringField(t *testing.T) {
-	payload := json.RawMessage(`{"foo":"bar","count":42}`)
-
-	if got := ExtractStringField(payload, "foo"); got != "bar" {
-		t.Errorf("expected 'bar', got %q", got)
+// stringField returns the string member name of a JSON object, or "" when it
+// is absent, not a string, or the payload is not an object.
+func stringField(payload json.RawMessage, name string) string {
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return ""
 	}
-	if got := ExtractStringField(payload, "missing"); got != "" {
-		t.Errorf("expected empty string for missing field, got %q", got)
-	}
-	if got := ExtractStringField(payload, "count"); got != "" {
-		t.Errorf("expected empty string for non-string field, got %q", got)
-	}
+	s, _ := m[name].(string)
+	return s
 }

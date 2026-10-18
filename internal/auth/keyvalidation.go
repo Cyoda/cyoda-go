@@ -7,6 +7,8 @@ import (
 	"math"
 	"math/big"
 	"regexp"
+
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // trustedKIDPattern is the character whitelist enforced on trusted-key
@@ -43,8 +45,14 @@ func parseRSAPublicKeyFromJWK(jwkData json.RawMessage) (*rsa.PublicKey, error) {
 	if len(jwkData) == 0 {
 		return nil, fmt.Errorf("empty JWK")
 	}
-	var jwk struct{ Kty, N, E string }
-	if err := json.Unmarshal(jwkData, &jwk); err != nil {
+	// Member names are case-sensitive (RFC 7517 §4); a JWK may carry
+	// members of its own, so the rest are allowed.
+	var jwk struct {
+		Kty string `json:"kty"`
+		N   string `json:"n"`
+		E   string `json:"e"`
+	}
+	if err := strictjson.Decode(jwkData, &jwk, strictjson.AllowUnknownMembers); err != nil {
 		return nil, fmt.Errorf("parse JWK: %w", err)
 	}
 	if jwk.Kty != "RSA" {

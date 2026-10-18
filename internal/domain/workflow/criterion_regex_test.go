@@ -40,7 +40,7 @@ func groupWithNestedMatchesPattern(pattern string) json.RawMessage {
 }
 
 func functionCriterion() json.RawMessage {
-	return json.RawMessage(`{"type":"function","function":{"name":"myFn","calculationNodesTags":"tag"}}`)
+	return json.RawMessage(`{"type":"function","function":{"name":"myFn","config":{"calculationNodesTags":"tag"}}}`)
 }
 
 func wfWithTransitionCriterion(criterion json.RawMessage) spi.WorkflowDefinition {

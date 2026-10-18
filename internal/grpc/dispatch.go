@@ -11,6 +11,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -480,10 +481,14 @@ func applyProcessorResponse(entity *spi.Entity, resp *ProcessingResponse) (*spi.
 		return nil, nil
 	}
 
+	// The payload is a DataPayload; every member is declared so that the
+	// strict decode refuses a misspelt one instead of ignoring it.
 	var envelope struct {
+		Type string          `json:"type"`
 		Data json.RawMessage `json:"data"`
+		Meta json.RawMessage `json:"meta"`
 	}
-	if err := json.Unmarshal(resp.Payload, &envelope); err != nil {
+	if err := strictjson.Decode(resp.Payload, &envelope); err != nil {
 		return nil, fmt.Errorf("%w: %w", errProcessorPayload, err)
 	}
 	// A null data is no data: encoding/json hands a RawMessage the literal

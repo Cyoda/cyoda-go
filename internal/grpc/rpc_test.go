@@ -522,6 +522,35 @@ func TestRPC_ModelSetUniqueKeys_200(t *testing.T) {
 	}
 }
 
+// TestRPC_ModelSetUniqueKeys_BaseEventMembers: every event carries the
+// BaseEvent members, and a Cloud client sends success and warnings on every
+// one, so the strict decode accepts them here as it does on generated types.
+func TestRPC_ModelSetUniqueKeys_BaseEventMembers(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "product", ModelVersion: "1", Format: "JSON", Converter: "SAMPLE_DATA",
+		Data: []byte(`{"name":"Alice"}`),
+	}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":         "test",
+		"success":    true,
+		"warnings":   []string{},
+		"model":      map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{{"id": "uk1", "fields": []string{"$.name"}}},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Errorf("expected success=true, got error %+v", typed.Error)
+	}
+}
+
 func TestRPC_ModelSetUniqueKeys_409_Locked(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 

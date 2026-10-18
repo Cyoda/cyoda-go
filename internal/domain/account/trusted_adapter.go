@@ -75,7 +75,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var req genapi.RegisterTrustedKeyRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if !auth.MatchesTrustedKIDPattern(req.KeyId) {
@@ -168,9 +168,9 @@ func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.P
 	if err != nil {
 		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
 	}
-	// n and e come from the parsed key, not the request: the parser matches
-	// member names without regard to case, so the request's own "n" and "e"
-	// may be absent while the key still verifies.
+	// n and e come from the parsed key, not the request, so the stored JWK
+	// holds them in canonical base64url (no padding, no leading zero bytes)
+	// whatever spelling the request used.
 	public = map[string]any{
 		"kty": kty,
 		"kid": keyId,
@@ -296,7 +296,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	var req genapi.ReactivateKeyRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if req.ValidTo.IsZero() {

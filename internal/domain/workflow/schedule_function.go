@@ -1,10 +1,10 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
@@ -41,9 +41,7 @@ func resolveSchedule(raw json.RawMessage, armMs int64) (scheduledTime int64, tim
 		ExpireAt      *int64 `json:"expireAt"`
 		ExpireAfterMs *int64 `json:"expireAfterMs"`
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if decErr := dec.Decode(&s); decErr != nil {
+	if decErr := strictjson.Decode(raw, &s); decErr != nil {
 		return 0, nil, false, invalidScheduleResult("malformed Schedule result: %v", decErr)
 	}
 	if (s.FireAt == nil) == (s.FireAfterMs == nil) {

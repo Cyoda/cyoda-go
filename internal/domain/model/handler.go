@@ -1,7 +1,6 @@
 package model
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -225,10 +224,9 @@ func (h *Handler) ValidateEntityModel(w http.ResponseWriter, r *http.Request, en
 
 // SetEntityModelUniqueKeys handles PUT /model/{entityName}/{modelVersion}/unique-keys.
 func (h *Handler) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Request, entityName string, modelVersion int32) {
-	r.Body = http.MaxBytesReader(w, r.Body, 1*1024*1024)
 	var req genapi.SetUniqueKeysRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body"))
+	if err := common.DecodeBoundedJSON(w, r, 1*1024*1024, &req); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 

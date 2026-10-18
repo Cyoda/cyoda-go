@@ -248,7 +248,7 @@ func TestStreaming_MemberRegisteredAndUnregistered(t *testing.T) {
 	// Wait for greet.
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	// Verify member is registered.
 	member := svc.registry.Get(memberID)
@@ -295,7 +295,7 @@ func TestStreaming_InboundKeepAliveUpdatesLivenessNoEcho(t *testing.T) {
 	// Wait for greet, then grab the member so we can observe liveness.
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 	member := svc.registry.Get(memberID)
 	if member == nil {
 		t.Fatal("member not found")
@@ -489,6 +489,27 @@ func TestStreaming_TenantMismatch_PermissionDenied(t *testing.T) {
 	}
 }
 
+// TestStreaming_JoinMemberNamesAreExact: the tenant check reads
+// joinedLegalEntityId, so the join must name it once and exactly. Read
+// leniently, a duplicate whose last value is the token's tenant passed the
+// check whatever the first one said.
+func TestStreaming_JoinMemberNamesAreExact(t *testing.T) {
+	for name, payload := range map[string]string{
+		"duplicate":    `{"id":"j1","joinedLegalEntityId":"tenant-2","joinedLegalEntityId":"tenant-1"}`,
+		"case variant": `{"id":"j1","JoinedLegalEntityId":"tenant-1"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			svc := newServiceForTest()
+			stream := newMockBidiStream(m2mContext("tenant-1"))
+			stream.enqueue(makeRawCE(CalculationMemberJoinEvent, []byte(payload)))
+			err := svc.StartStreaming(stream)
+			if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+				t.Fatalf("got %v; want InvalidArgument", err)
+			}
+		})
+	}
+}
+
 func TestStreaming_ProcessorResponse(t *testing.T) {
 	svc := newServiceForTest()
 	ctx, cancel := context.WithCancel(m2mContext("tenant-1"))
@@ -505,7 +526,7 @@ func TestStreaming_ProcessorResponse(t *testing.T) {
 	// Wait for greet to get memberID.
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	// Track a request on the member.
 	member := svc.registry.Get(memberID)
@@ -566,7 +587,7 @@ func TestStreaming_CriteriaResponse(t *testing.T) {
 	// Wait for greet.
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	member := svc.registry.Get(memberID)
 	if member == nil {
@@ -621,7 +642,7 @@ func TestStreaming_CriteriaResponse_PropagatesReason(t *testing.T) {
 
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	member := svc.registry.Get(memberID)
 	if member == nil {
@@ -694,7 +715,7 @@ func newRetryableHarness(t *testing.T, requestID string) *retryableHarness {
 
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 	member := svc.registry.Get(memberID)
 	if member == nil {
 		t.Fatal("member not found")
@@ -897,7 +918,7 @@ func TestStreaming_FunctionResponse(t *testing.T) {
 
 	greetCE := stream.waitForSent(t, 2*time.Second)
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	member := svc.registry.Get(memberID)
 	if member == nil {
@@ -1042,7 +1063,7 @@ func TestStreaming_EmptyTenantInJoinEvent_UsesAuthTenant(t *testing.T) {
 	}
 
 	_, greetPayload, _ := ParseCloudEvent(greetCE)
-	memberID := ExtractStringField(greetPayload, "memberId")
+	memberID := stringField(greetPayload, "memberId")
 
 	// Verify member registered with auth tenant.
 	member := svc.registry.Get(memberID)

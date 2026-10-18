@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
@@ -267,38 +267,26 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Strict-decoder boundary: unknown fields in the import-request body —
-	// top-level or nested in the workflow / state / transition / processor
-	// sub-shapes — are rejected with 400 BAD_REQUEST rather than silently
-	// dropped. This catches forward-compat extras and typos (e.g.
-	// `transitionn` for `transitions`) that previously imported as no-op
-	// workflows. Go's decoder emits `json: unknown field "X"` which names
-	// the offending field directly in the response detail.
-	//
-	// Decode consumes exactly one JSON value, so anything after the first
-	// object's closing brace is silently ignored unless we explicitly
-	// check. Reading one more token fences that trailing-garbage case —
-	// same class of "client got the shape wrong" failure as an unknown
-	// field. Only io.EOF (nothing but whitespace left) passes; dec.More()
-	// would not do, as it reports false before a stray `}` or `]`.
+	// Strict-decoder boundary: a member the import-request body does not
+	// declare — top-level or nested in the workflow / state / transition /
+	// processor sub-shapes — is refused with 400 BAD_REQUEST rather than
+	// silently dropped, as is a case-variant or duplicate member name and
+	// anything after the request object. This catches typos (e.g.
+	// `transitionn` for `transitions`) that would import as no-op
+	// workflows; the response detail names the member and where it is.
 	var req importRequest
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
-		return
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
+	if err := strictjson.Decode(data, &req); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
 		return
 	}
 
-	// Second, non-strict decode of the same bytes to recover the presence
-	// signals the strict decode above collapsed into the SPI's zero values
-	// (see presenceProbe). data was already proven valid JSON matching
-	// this shape by the strict decode, so this unmarshal cannot fail.
+	// Second decode of the same bytes to recover the presence signals the
+	// strict decode above collapsed into the SPI's zero values (see
+	// presenceProbe). The probe reads only some members, so it allows the
+	// rest; data was already proven to match this shape by the strict
+	// decode, so this decode cannot fail.
 	var probe presenceProbe
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := strictjson.Decode(data, &probe, strictjson.AllowUnknownMembers); err != nil {
 		common.WriteError(w, r, common.Internal("failed to re-decode workflow import request", err))
 		return
 	}
