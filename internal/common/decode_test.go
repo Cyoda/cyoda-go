@@ -85,18 +85,18 @@ func TestDecodeOptionalBoundedJSON(t *testing.T) {
 	for name, tc := range map[string]struct {
 		body    string
 		chunked bool
-		present bool
+		decoded bool
 		wantErr bool
 	}{
 		"empty":          {"", false, false, false},
 		"whitespace":     {" \t\r\n", false, false, false},
-		"no-break space": {"\u00a0", false, true, true},
-		"vertical tab":   {"\v", false, true, true},
+		"no-break space": {"\u00a0", false, false, true},
+		"vertical tab":   {"\v", false, false, true},
 		"empty, chunked": {"", true, false, false},
 		"value":          {`{"x":1}`, false, true, false},
-		"empty object":   {`{}`, true, true, false},
-		"unknown member": {`{"y":1}`, false, true, true},
-		"not JSON":       {`{`, false, true, true},
+		"empty object":   {`{}`, true, false, false},
+		"unknown member": {`{"y":1}`, false, false, true},
+		"not JSON":       {`{`, false, false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))
@@ -104,9 +104,9 @@ func TestDecodeOptionalBoundedJSON(t *testing.T) {
 				r.ContentLength = -1
 			}
 			var d dst
-			present, err := common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
-			if present != tc.present || (err != nil) != tc.wantErr {
-				t.Errorf("present=%t err=%v, want present=%t err=%t", present, err, tc.present, tc.wantErr)
+			err := common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
+			if (d.X != nil) != tc.decoded || (err != nil) != tc.wantErr {
+				t.Errorf("decoded=%t err=%v, want decoded=%t err=%t", d.X != nil, err, tc.decoded, tc.wantErr)
 			}
 		})
 	}
@@ -126,8 +126,7 @@ func TestDecodeBoundedJSON_ReadFailure(t *testing.T) {
 	for name, decode := range map[string]func(*http.Request) error{
 		"bounded": func(r *http.Request) error { return common.DecodeBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d) },
 		"optional": func(r *http.Request) error {
-			_, err := common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
-			return err
+			return common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
 		},
 	} {
 		err := decode(httptest.NewRequest("POST", "/", failingReader{}))

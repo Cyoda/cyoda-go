@@ -1026,7 +1026,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   member's answer, every condition and every paging cursor is decoded with
   `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
   differs from a declared member only in case, an undeclared member and a
-  duplicate member are each refused, as is anything after the value. Before,
+  duplicate member are each refused, as is anything after the value. A gRPC
+  event whose `data` is `null`, or holds `null` for a required object, is
+  refused as missing its required members; before, it read as a zero event.
+  Before,
   `encoding/json` matched names ignoring case and Unicode folding, let a
   duplicate replace or merge into the first value, and on most bodies ignored
   an undeclared member, so one body could mean two things: a workflow import
@@ -1038,7 +1041,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and fails the callout; the message names the location as a JSON Pointer
   (`invalid JSON at "/workflows/0": unknown member name "Name"`) and no
   longer the server's Go types. A condition leaf that writes its operator
-  twice (two of `operatorType`, `operator`, `operation`) is refused, as is a
+  twice (two of `operatorType`, `operator`, `operation`) is refused, naming
+  the two members and the leaf's place in words, as is a
   criterion function member placed beside `config` instead of in it, which
   was ignored and left the callout untagged. Invalid UTF-8 and a lone
   surrogate escape in a string are refused (`encoding/json` replaced them

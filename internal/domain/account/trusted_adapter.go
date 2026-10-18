@@ -271,7 +271,7 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	// invalidation ends the key at once. A body naming a member is refused,
 	// since accepting it would drop what the client asked for.
 	var none struct{}
-	if _, err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &none); err != nil {
+	if err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &none); err != nil {
 		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}

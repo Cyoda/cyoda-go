@@ -18,7 +18,11 @@ pre-check), a workflow import and a paging cursor.
 - A member written twice is refused, whatever the two values.
 - Anything after the value is refused.
 - A condition leaf writes its operator once: two of `operatorType`, `operator`
-  and `operation` in one leaf are refused, as a duplicate is.
+  and `operation` in one leaf are refused, as a duplicate is. The condition
+  parser refuses it, so the message names the two members and the leaf's
+  place as its other shape errors do (`failed to parse group condition[0]:
+  failed to parse simple condition: the operator is written twice, as
+  "operatorType" and "operator": write one`), not by a JSON Pointer.
 
 The refusal names the location as a JSON Pointer from the top of the value
 (`invalid JSON at "/workflows/0/states/NEW/transitions/1": unknown member name

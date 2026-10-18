@@ -205,7 +205,7 @@ func (h *Handler) InvalidateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 	}
 	var grace int64
 	var req genapi.InvalidateKeyRequestDto
-	if _, err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &req); err != nil {
+	if err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &req); err != nil {
 		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
