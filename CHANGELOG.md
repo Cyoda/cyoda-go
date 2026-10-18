@@ -1432,7 +1432,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   order, so the `400 VALIDATION_FAILED` named any one of them. They now walk
   the states in sorted order and name the first. The refusal of
   `startNewTxOnDispatch` outside `COMMIT_BEFORE_DISPATCH` now names the state
-  too, as every other import refusal already did.
+  too, as every other refusal of a processor or transition already did.
 
 - **A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
   committed has its `STATE_PROCESS_RESULT` in the audit trail.** The record

@@ -57,7 +57,7 @@ func RunWorkflowImportManualRequired(t *testing.T, fixture BackendFixture) {
 		if !containsErrorCode(resp, "VALIDATION_FAILED") {
 			t.Errorf("[%s] expected errorCode VALIDATION_FAILED, body=%s", tc.label, resp)
 		}
-		for _, want := range []string{"manual-bad-wf", `transition \"go\"`, "manual is required"} {
+		for _, want := range []string{"manual-bad-wf", `state \"OPEN\"`, `transition \"go\"`, "manual is required"} {
 			if !bytes.Contains(resp, []byte(want)) {
 				t.Errorf("[%s] detail must contain %s, body=%s", tc.label, want, resp)
 			}
