@@ -1453,7 +1453,9 @@ paths:
           description: >-
             Bad request — an undecodable body (`MALFORMED_REQUEST`: invalid
             JSON, a member that is undeclared at any depth, in another letter
-            case or written twice, or a `pointInTime` that is not RFC 3339), or a validation failure: empty `groupBy`
+            case or written twice, or a `pointInTime` that is not RFC 3339;
+            an undeclared or case-variant member inside `condition` is
+            `INVALID_CONDITION` instead), or a validation failure: empty `groupBy`
             (`MISSING_GROUP_BY`), a repeated `groupBy` dimension
             (`DUPLICATE_GROUP_BY`), unknown aggregation `op`
             (`INVALID_AGGREGATION_OP`), two aggregations claiming the same

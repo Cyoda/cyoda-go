@@ -574,14 +574,14 @@ ON entities (json_extract(data, '$.variantId'));
 Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
 
 - `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
-- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying a member that is undeclared at any depth, in another letter case or written twice (decoding is strict), or carrying a `pointInTime` that is not RFC 3339
+- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying a member that is undeclared at any depth, in another letter case or written twice (decoding is strict; an undeclared or case-variant member inside `condition` is `INVALID_CONDITION` instead), or carrying a `pointInTime` that is not RFC 3339
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
 - `INVALID_GROUP_BY_PATH` — `400` — `groupBy` JSONPath outside the grammar above (missing `$.` leader, bracket-quoted access, array projection, recursive descent, disallowed character)
 - `DUPLICATE_GROUP_BY` — `400` — duplicate `groupBy` entries
 - `INVALID_AGGREGATION_OP` — `400` — `op` outside the set {`sum`, `avg`, `min`, `max`, `stdev`}
 - `INVALID_AGGREGATION_FIELD` — `400` — aggregation `field` outside the same JSONPath grammar
 - `DUPLICATE_AGGREGATION_ALIAS` — `400` — two aliases collide on distinct `(op, field)` pairs
-- `INVALID_CONDITION` — `400` — `condition` malformed, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
+- `INVALID_CONDITION` — `400` — `condition` malformed, an undeclared or case-variant member in it, unknown `type`, `operatorType` outside the canonical list, malformed `LIKE` or `MATCHES_PATTERN` operand, or bad `BETWEEN` arity (propagated from search validator)
 - `INVALID_FIELD_PATH` — `400` — a `condition` `jsonPath` is not valid JSON Path, names an unknown meta field, or is absent from the locked schema (propagated from search validator)
 - `CONDITION_TYPE_MISMATCH` — `400` — a `condition` operator applies to none of the field's declared types, or a comparison or range operand parses into none of the types the operator applies to (propagated from search validator)
 - `INVALID_LIMIT` — `400` — `limit` non-positive or `> CYODA_STATS_GROUP_MAX`

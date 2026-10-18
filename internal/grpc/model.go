@@ -104,10 +104,7 @@ func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID str
 		converter = "SAMPLE_DATA"
 	}
 
-	dataBytes, err := json.Marshal(req.Payload)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal payload: %v", err)
-	}
+	dataBytes, _ := json.Marshal(req.Payload) // decoded from JSON, so it encodes: cannot fail
 
 	result, err := s.modelHandler.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   req.Model.Name,
