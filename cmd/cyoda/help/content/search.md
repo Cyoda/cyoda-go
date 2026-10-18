@@ -81,7 +81,7 @@ All search requests accept a `Condition` JSON document as the POST body. Conditi
 
 - `type`: `"simple"`
 - `jsonPath`: JSON Path string, `$.` leader **required** (e.g., `"$.year"`, `"$.laureates[0].firstname"`) — see **JSONPath grammar** below
-- `operatorType` (also accepted as `operator` or `operation`): operator string (see valid values below)
+- `operatorType` (also accepted as `operator` or `operation`; a clause writes one of the three, and two are refused with `400 INVALID_CONDITION`): operator string (see valid values below)
 - `value`: any JSON scalar
 
 **Valid `operatorType` values** (exhaustive): `EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `GREATER_OR_EQUAL`, `LESS_THAN`, `LESS_OR_EQUAL`, `CONTAINS`, `NOT_CONTAINS`, `STARTS_WITH`, `NOT_STARTS_WITH`, `ENDS_WITH`, `NOT_ENDS_WITH`, `LIKE`, `IS_NULL`, `NOT_NULL`, `BETWEEN`, `BETWEEN_INCLUSIVE`, `MATCHES_PATTERN`, `IEQUALS`, `INOT_EQUAL`, `ICONTAINS`, `INOT_CONTAINS`, `ISTARTS_WITH`, `INOT_STARTS_WITH`, `IENDS_WITH`, `INOT_ENDS_WITH`. `BETWEEN`/`BETWEEN_INCLUSIVE` require `value` to be a two-element array `[low, high]` of two non-null scalar bounds. Comparison is type-directed and same-type only (a JSON number and a numeric-looking string are treated identically); a missing/null field never matches any binary operator, including the `NOT_*`/`INOT_*` negatives. Full per-operator semantics, LIKE grammar, and validation rules are in the `predicates` topic.
@@ -128,7 +128,7 @@ Operator strings outside this list are rejected with `errors.INVALID_CONDITION` 
 
 - `type`: `"lifecycle"`
 - `field`: `state`, `creationDate`, `lastUpdateTime`, `transitionForLatestSave` (alias `previousTransition`), `transactionId`, `id`
-- `operatorType` (also accepted as `operator` or `operation`): operator string — same valid values as for `SimpleCondition`
+- `operatorType` (also accepted as `operator` or `operation`; a clause writes one of the three, and two are refused with `400 INVALID_CONDITION`): operator string — same valid values as for `SimpleCondition`
 - `value`: any JSON scalar
 
 `creationDate`/`lastUpdateTime` are temporal: compared chronologically at millisecond resolution. A comparison/range operand (`EQUALS`, `NOT_EQUAL`, `GREATER_THAN`, `LESS_THAN`, `GREATER_OR_EQUAL`, `LESS_OR_EQUAL`, `BETWEEN`, `BETWEEN_INCLUSIVE`) must parse as a temporal value — an offset-bearing RFC3339 instant, or a **coarser** value (`"2024"`, `"2024-09"`, an offset-less date-time) which **upscales** to an instant; only an operand that parses into no temporal form is rejected `400 CONDITION_TYPE_MISMATCH`. String and pattern operators (`CONTAINS`, `LIKE`, `MATCHES_PATTERN`, the case-insensitive family, …) do not apply to a date/time and are rejected `400 CONDITION_TYPE_MISMATCH`, as on a data field (see `predicates`). `IS_NULL`/`NOT_NULL` test presence and carry no type constraint. An unknown meta filter field is rejected `400 INVALID_FIELD_PATH`.

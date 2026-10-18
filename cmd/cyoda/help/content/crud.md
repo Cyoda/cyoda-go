@@ -574,7 +574,7 @@ ON entities (json_extract(data, '$.variantId'));
 Error codes (response carries RFC 9457 problem+json with `properties.errorCode` set to the machine-readable code below):
 
 - `MODEL_NOT_FOUND` — `404` — model not registered for the calling tenant
-- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying an unrecognised top-level field (decoding is strict), or carrying a `pointInTime` that is not RFC 3339
+- `MALFORMED_REQUEST` — `400` — body unreadable, not valid JSON, carrying a member that is undeclared at any depth, in another letter case or written twice (decoding is strict), or carrying a `pointInTime` that is not RFC 3339
 - `MISSING_GROUP_BY` — `400` — `groupBy` empty or missing
 - `INVALID_GROUP_BY_PATH` — `400` — `groupBy` JSONPath outside the grammar above (missing `$.` leader, bracket-quoted access, array projection, recursive descent, disallowed character)
 - `DUPLICATE_GROUP_BY` — `400` — duplicate `groupBy` entries

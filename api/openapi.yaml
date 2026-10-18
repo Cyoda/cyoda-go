@@ -1452,8 +1452,8 @@ paths:
         "400":
           description: >-
             Bad request — an undecodable body (`MALFORMED_REQUEST`: invalid
-            JSON, an unrecognised top-level field, or a `pointInTime` that is
-            not RFC 3339), or a validation failure: empty `groupBy`
+            JSON, a member that is undeclared at any depth, in another letter
+            case or written twice, or a `pointInTime` that is not RFC 3339), or a validation failure: empty `groupBy`
             (`MISSING_GROUP_BY`), a repeated `groupBy` dimension
             (`DUPLICATE_GROUP_BY`), unknown aggregation `op`
             (`INVALID_AGGREGATION_OP`), two aggregations claiming the same

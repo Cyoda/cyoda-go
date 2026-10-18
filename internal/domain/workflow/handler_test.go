@@ -1450,9 +1450,9 @@ func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
 // the strict-decoder switch: SPI fields that legitimately exist on
 // ProcessorConfig (asyncResult, retryPolicy, context,
 // calculationNodesTags, ...) and on the processor (startNewTxOnDispatch)
-// must NOT be rejected as unknown. If a future SPI tag drops or renames any of these on the
-// wire, this test fails loudly instead of silently breaking import for
-// clients sending the fields.
+// must NOT be rejected as unknown. If a future SPI tag drops or renames
+// any of these on the wire, this test fails loudly instead of silently
+// breaking import for clients sending the fields.
 //
 // crossoverToAsyncMs is exercised in the reject-at-import e2e tests
 // (TestE2E_CrossoverToAsyncMsRejectedAtImport in async_result_import_reject_test.go);
