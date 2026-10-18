@@ -38,6 +38,14 @@ refused:
 | `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present and names another tenant, the join is refused with `PermissionDenied`. Documented in `cyoda help grpc`; now in the schema too. |
 | `EntityDeleteAllRequest` | `pageSize` | No effect: the selection is streamed. Cloud's schema declares it, so Cloud's client may send it. |
 
+Three members Cloud's client sends are refused, because the server has nothing
+that would honour them and accepting them would drop their meaning without a
+word: `audience` on `POST /oauth/keys/keypair` and on `POST
+/oauth/keys/trusted` (key pairs and trusted keys have no audience; see
+`signing-key-pairs.md`), and `invalidateGracePeriodSec` on `POST
+/oauth/keys/trusted` (trusted keys have no grace period; see
+`trusted-key-tenant.md`). Cloud is already asked to drop all three there.
+
 ## Why
 
 `encoding/json`, which cyoda-go used before, matched a name to a field ignoring

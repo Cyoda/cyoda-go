@@ -1044,7 +1044,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   contents are not typed JSON and keep their own rules. `joinedLegalEntityId`
   on `CalculationMemberJoinEvent` (documented, not in the schema) and
   `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
-  it) are declared in the event schemas. A gRPC entity write's unstorable
+  it) are declared in the event schemas. `audience` on a key-pair or
+  trusted-key request and `invalidateGracePeriodSec` on a trusted-key
+  registration are refused like any undeclared member: key pairs and trusted
+  keys have no audience, and trusted keys no grace period, so accepting them
+  would drop what the client asked for. A gRPC entity write's unstorable
   payload is refused by the unstorable check, as on HTTP, before the decode.
   See `docs/cloud-parity/strict-member-names.md` and
   `docs/workflow-schema-versioning.md`.

@@ -325,16 +325,22 @@ func TestE2E_ReactivateJwtKeyPair_Happy(t *testing.T) {
 	}
 }
 
-// TestE2E_KeyPair_NoAudience: /current takes no audience query parameter,
-// and a key pair issued with a stray "audience":"human" field in the body is
-// accepted — the field is unknown to the server and has no effect, since key
-// pairs have no audience — and its validFrom (now) makes it the one
-// /current returns. No invalidateCurrent here: nothing pre-existing is
-// invalidated, so cleanup only has to delete the one key pair this test
-// created.
+// TestE2E_KeyPair_NoAudience: key pairs have no audience. An issue request
+// that names one is refused — accepted, it would silently drop the meaning
+// the client gave it — and /current takes no audience query parameter: a
+// key pair issued now is the one it returns. No invalidateCurrent here:
+// nothing pre-existing is invalidated, so cleanup only has to delete the one
+// key pair this test created.
 func TestE2E_KeyPair_NoAudience(t *testing.T) {
-	resp := operatorRequest(t, http.MethodPost, "/oauth/keys/keypair",
+	refused := operatorRequest(t, http.MethodPost, "/oauth/keys/keypair",
 		mustJSON(t, map[string]any{"algorithm": "RS256", "audience": "human"}))
+	if b := readBody(t, refused); refused.StatusCode != http.StatusBadRequest ||
+		!strings.Contains(b, `unknown member name \"audience\"`) {
+		t.Fatalf("issue with audience: %d %s; want 400 naming the member", refused.StatusCode, b)
+	}
+
+	resp := operatorRequest(t, http.MethodPost, "/oauth/keys/keypair",
+		mustJSON(t, map[string]any{"algorithm": "RS256"}))
 	body := readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("issue: %d %s", resp.StatusCode, body)
