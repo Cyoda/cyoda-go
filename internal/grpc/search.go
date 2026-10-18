@@ -165,10 +165,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
-	}
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
@@ -356,10 +353,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
-	}
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))

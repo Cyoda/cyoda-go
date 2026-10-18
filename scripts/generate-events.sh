@@ -119,10 +119,10 @@ fi
 # Fail loudly if a generated decode or message escaped the rewrites above: a
 # v1 decode of client data, a null let through the required checks, or a
 # message naming a Go type.
-LEFT=$(grep -cE 'json\.Unmarshal\(value|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" || true)
+LEFT=$(grep -cE 'json\.Unmarshal\(|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" || true)
 if [ "$LEFT" -ne 0 ]; then
   echo "ERROR: $LEFT generated line(s) in $OUT escaped the decode/message rewrites" >&2
-  grep -nE 'json\.Unmarshal\(value|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" >&2
+  grep -nE 'json\.Unmarshal\(|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" >&2
   exit 1
 fi
 

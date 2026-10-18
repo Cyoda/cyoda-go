@@ -12,6 +12,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
@@ -522,7 +523,7 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 		return appErr
 	}
 	var parsedData any
-	if err := ingest.DecodeJSONPreservingNumbers(data, &parsedData); err != nil {
+	if err := strictjson.Decode(data, &parsedData, strictjson.PreserveNumbers); err != nil {
 		return common.InvalidBody(err)
 	}
 

@@ -841,8 +841,8 @@ func TestValidate_OneReading(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status %d, want 400: %s", body, resp.StatusCode, b)
 		}
-		if strings.Contains(b, "failed to parse request body") {
-			t.Errorf("%s: the refusal gives no reason: %s", body, b)
+		if !strings.Contains(b, "invalid JSON at") && !strings.Contains(b, "BAD_REQUEST: field") {
+			t.Errorf("%s: the refusal does not name where: %s", body, b)
 		}
 	}
 }
