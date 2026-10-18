@@ -407,8 +407,8 @@ func unreadableReason(s reportedSuccess) string {
 // data must reach the entity as the member's own bytes, which the generated
 // type holds as interface{}; a null success must stay apart from an answer
 // that does not decode, so the callout can say success was null; and the
-// generated types refuse an answer without id or entityId, which the server
-// does not read.
+// generated types refuse an answer without id or entityId, or a payload
+// without type, which the server does not read.
 type answerError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`
