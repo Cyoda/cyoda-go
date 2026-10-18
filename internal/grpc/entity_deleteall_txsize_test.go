@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
@@ -527,26 +528,20 @@ func TestRPC_EntityDeleteAll_NonConvergence_Envelope(t *testing.T) {
 	}
 }
 
-// TestEntityDeleteAllRequestJson_PageSize_Tolerated pins that pageSize is no
-// longer part of the request type (there is nothing for it to mean —
-// selection is streamed) while a client still sending it is tolerated: the
-// generated unmarshaller ignores unknown fields.
+// TestEntityDeleteAllRequestJson_PageSize_Tolerated pins that a client still
+// sending pageSize is not refused (Cloud's schema declares it, so Cloud's
+// client may send it), although it has nothing to mean — selection is
+// streamed. The strict decode refuses an undeclared member, so the schema
+// declares it as having no effect.
 func TestEntityDeleteAllRequestJson_PageSize_Tolerated(t *testing.T) {
 	payload := []byte(`{"id":"test","model":{"name":"person","version":1},"pageSize":10,"verbose":true}`)
 
 	var req events.EntityDeleteAllRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
-		t.Fatalf("unmarshal with a legacy pageSize field must succeed: %v", err)
+	if err := strictjson.Decode(payload, &req); err != nil {
+		t.Fatalf("a request with pageSize must decode: %v", err)
 	}
 	if !req.Verbose {
 		t.Error("Verbose = false, want true (the rest of the payload must still bind)")
-	}
-	raw, err := json.Marshal(req)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if strings.Contains(string(raw), "pageSize") {
-		t.Errorf("re-encoded request still carries pageSize: %s", raw)
 	}
 }
 

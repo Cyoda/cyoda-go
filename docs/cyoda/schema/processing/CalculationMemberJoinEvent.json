@@ -15,6 +15,10 @@
       "items": {
         "type": "string"
       }
+    },
+    "joinedLegalEntityId": {
+      "type": "string",
+      "description": "Optional: the tenant id the member expects to join. The member always joins the tenant of its bearer token; when this is present and differs from that tenant, the join is refused with PermissionDenied."
     }
   }
 }

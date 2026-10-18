@@ -42,11 +42,11 @@ func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in BaseEventJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in BaseEventJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain BaseEventJsonError
 	var plain Plain
@@ -63,8 +63,8 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in BaseEventJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain BaseEventJson
 	var plain Plain
@@ -72,7 +72,7 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -121,11 +121,11 @@ func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberGreetEventJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberGreetEventJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain CalculationMemberGreetEventJsonError
 	var plain Plain
@@ -142,14 +142,14 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberGreetEventJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["joinedLegalEntityId"]; raw != nil && !ok {
-		return fmt.Errorf("field joinedLegalEntityId in CalculationMemberGreetEventJson: required")
+	if _, ok := raw["joinedLegalEntityId"]; !ok {
+		return fmt.Errorf("field joinedLegalEntityId: required")
 	}
-	if _, ok := raw["memberId"]; raw != nil && !ok {
-		return fmt.Errorf("field memberId in CalculationMemberGreetEventJson: required")
+	if _, ok := raw["memberId"]; !ok {
+		return fmt.Errorf("field memberId: required")
 	}
 	type Plain CalculationMemberGreetEventJson
 	var plain Plain
@@ -157,7 +157,7 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -171,6 +171,11 @@ type CalculationMemberJoinEventJson struct {
 
 	// Event ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Optional: the tenant id the member expects to join. The member always joins the
+	// tenant of its bearer token; when this is present and differs from that tenant,
+	// the join is refused with PermissionDenied.
+	JoinedLegalEntityID *string `json:"joinedLegalEntityId,omitempty" yaml:"joinedLegalEntityId,omitempty" mapstructure:"joinedLegalEntityId,omitempty"`
 
 	// Flag indicates whether this message relates to some failure.
 	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
@@ -203,11 +208,11 @@ func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberJoinEventJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberJoinEventJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain CalculationMemberJoinEventJsonError
 	var plain Plain
@@ -224,8 +229,8 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberJoinEventJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain CalculationMemberJoinEventJson
 	var plain Plain
@@ -233,7 +238,7 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -279,11 +284,11 @@ func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in CalculationMemberKeepAliveEventJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in CalculationMemberKeepAliveEventJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain CalculationMemberKeepAliveEventJsonError
 	var plain Plain
@@ -300,11 +305,11 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in CalculationMemberKeepAliveEventJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["memberId"]; raw != nil && !ok {
-		return fmt.Errorf("field memberId in CalculationMemberKeepAliveEventJson: required")
+	if _, ok := raw["memberId"]; !ok {
+		return fmt.Errorf("field memberId: required")
 	}
 	type Plain CalculationMemberKeepAliveEventJson
 	var plain Plain
@@ -312,7 +317,7 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -333,7 +338,7 @@ var enumValues_DataFormatJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *DataFormatJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -344,7 +349,7 @@ func (j *DataFormatJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_DataFormatJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_DataFormatJson)
 	}
 	*j = DataFormatJson(v)
 	return nil
@@ -367,8 +372,8 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["type"]; raw != nil && !ok {
-		return fmt.Errorf("field type in DataPayloadJson: required")
+	if _, ok := raw["type"]; !ok {
+		return fmt.Errorf("field type: required")
 	}
 	type Plain DataPayloadJson
 	var plain Plain
@@ -421,7 +426,7 @@ var enumValues_EntityChangeMetaJsonChangeType = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -432,7 +437,7 @@ func (j *EntityChangeMetaJsonChangeType) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityChangeMetaJsonChangeType, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityChangeMetaJsonChangeType)
 	}
 	*j = EntityChangeMetaJsonChangeType(v)
 	return nil
@@ -456,11 +461,11 @@ func (j *EntityChangeMetaJsonExecutedBy) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityChangeMetaJsonExecutedBy: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["kind"]; raw != nil && !ok {
-		return fmt.Errorf("field kind in EntityChangeMetaJsonExecutedBy: required")
+	if _, ok := raw["kind"]; !ok {
+		return fmt.Errorf("field kind: required")
 	}
 	type Plain EntityChangeMetaJsonExecutedBy
 	var plain Plain
@@ -477,14 +482,14 @@ func (j *EntityChangeMetaJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeType"]; raw != nil && !ok {
-		return fmt.Errorf("field changeType in EntityChangeMetaJson: required")
+	if _, ok := raw["changeType"]; !ok {
+		return fmt.Errorf("field changeType: required")
 	}
-	if _, ok := raw["timeOfChange"]; raw != nil && !ok {
-		return fmt.Errorf("field timeOfChange in EntityChangeMetaJson: required")
+	if _, ok := raw["timeOfChange"]; !ok {
+		return fmt.Errorf("field timeOfChange: required")
 	}
-	if _, ok := raw["user"]; raw != nil && !ok {
-		return fmt.Errorf("field user in EntityChangeMetaJson: required")
+	if _, ok := raw["user"]; !ok {
+		return fmt.Errorf("field user: required")
 	}
 	type Plain EntityChangeMetaJson
 	var plain Plain
@@ -537,11 +542,11 @@ func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityChangesMetadataGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityChangesMetadataGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityChangesMetadataGetRequestJsonError
 	var plain Plain
@@ -558,11 +563,11 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityChangesMetadataGetRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityChangesMetadataGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityChangesMetadataGetRequestJson
 	var plain Plain
@@ -570,7 +575,7 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -619,11 +624,11 @@ func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityChangesMetadataResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityChangesMetadataResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityChangesMetadataResponseJsonError
 	var plain Plain
@@ -640,14 +645,14 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeMeta"]; raw != nil && !ok {
-		return fmt.Errorf("field changeMeta in EntityChangesMetadataResponseJson: required")
+	if _, ok := raw["changeMeta"]; !ok {
+		return fmt.Errorf("field changeMeta: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityChangesMetadataResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityChangesMetadataResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityChangesMetadataResponseJson
 	var plain Plain
@@ -655,7 +660,7 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -698,11 +703,11 @@ func (j *EntityConsistencyTimeGetRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityConsistencyTimeGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityConsistencyTimeGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityConsistencyTimeGetRequestJsonError
 	var plain Plain
@@ -719,8 +724,8 @@ func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityConsistencyTimeGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityConsistencyTimeGetRequestJson
 	var plain Plain
@@ -728,7 +733,7 @@ func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error 
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -778,11 +783,11 @@ func (j *EntityConsistencyTimeResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityConsistencyTimeResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityConsistencyTimeResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityConsistencyTimeResponseJsonError
 	var plain Plain
@@ -799,11 +804,11 @@ func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityConsistencyTimeResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityConsistencyTimeResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityConsistencyTimeResponseJson
 	var plain Plain
@@ -811,7 +816,7 @@ func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -869,11 +874,11 @@ func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCreateCollectionRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCreateCollectionRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityCreateCollectionRequestJsonError
 	var plain Plain
@@ -890,14 +895,14 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityCreateCollectionRequestJson: required")
+	if _, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCreateCollectionRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["payloads"]; raw != nil && !ok {
-		return fmt.Errorf("field payloads in EntityCreateCollectionRequestJson: required")
+	if _, ok := raw["payloads"]; !ok {
+		return fmt.Errorf("field payloads: required")
 	}
 	type Plain EntityCreateCollectionRequestJson
 	var plain Plain
@@ -905,7 +910,7 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -927,11 +932,11 @@ func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; raw != nil && !ok {
-		return fmt.Errorf("field data in EntityCreatePayloadJson: required")
+	if _, ok := raw["data"]; !ok {
+		return fmt.Errorf("field data: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityCreatePayloadJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntityCreatePayloadJson
 	var plain Plain
@@ -986,11 +991,11 @@ func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCreateRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCreateRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityCreateRequestJsonError
 	var plain Plain
@@ -1007,14 +1012,14 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityCreateRequestJson: required")
+	if _, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCreateRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityCreateRequestJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityCreateRequestJson
 	var plain Plain
@@ -1022,7 +1027,7 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1098,11 +1103,11 @@ func (j *EntityCriteriaCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCriteriaCalculationRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCriteriaCalculationRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityCriteriaCalculationRequestJsonError
 	var plain Plain
@@ -1130,7 +1135,7 @@ var enumValues_EntityCriteriaCalculationRequestJsonTarget = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityCriteriaCalculationRequestJsonTarget) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -1141,7 +1146,7 @@ func (j *EntityCriteriaCalculationRequestJsonTarget) UnmarshalJSON(value []byte)
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityCriteriaCalculationRequestJsonTarget, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityCriteriaCalculationRequestJsonTarget)
 	}
 	*j = EntityCriteriaCalculationRequestJsonTarget(v)
 	return nil
@@ -1153,23 +1158,23 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["criteriaId"]; raw != nil && !ok {
-		return fmt.Errorf("field criteriaId in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["criteriaId"]; !ok {
+		return fmt.Errorf("field criteriaId: required")
 	}
-	if _, ok := raw["criteriaName"]; raw != nil && !ok {
-		return fmt.Errorf("field criteriaName in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["criteriaName"]; !ok {
+		return fmt.Errorf("field criteriaName: required")
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["target"]; raw != nil && !ok {
-		return fmt.Errorf("field target in EntityCriteriaCalculationRequestJson: required")
+	if _, ok := raw["target"]; !ok {
+		return fmt.Errorf("field target: required")
 	}
 	type Plain EntityCriteriaCalculationRequestJson
 	var plain Plain
@@ -1177,7 +1182,7 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1237,11 +1242,11 @@ func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityCriteriaCalculationResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityCriteriaCalculationResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityCriteriaCalculationResponseJsonError
 	var plain Plain
@@ -1258,14 +1263,14 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityCriteriaCalculationResponseJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityCriteriaCalculationResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityCriteriaCalculationResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityCriteriaCalculationResponseJson
 	var plain Plain
@@ -1273,7 +1278,7 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1290,6 +1295,10 @@ type EntityDeleteAllRequestJson struct {
 
 	// Information about the model.
 	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
+
+	// Has no effect: the selection is streamed, so there is no page for it to size.
+	// Accepted so that a client sending it is not refused.
+	PageSize *int `json:"pageSize,omitempty" yaml:"pageSize,omitempty" mapstructure:"pageSize,omitempty"`
 
 	// Point in time, i.e. delete all that existed at this point in time. Must be at
 	// or before the consistency time. If not provided, the current state is used.
@@ -1329,11 +1338,11 @@ func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteAllRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteAllRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityDeleteAllRequestJsonError
 	var plain Plain
@@ -1350,11 +1359,11 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteAllRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityDeleteAllRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntityDeleteAllRequestJson
 	var plain Plain
@@ -1362,7 +1371,7 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1424,11 +1433,11 @@ func (j *EntityDeleteAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteAllResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteAllResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityDeleteAllResponseJsonError
 	var plain Plain
@@ -1448,20 +1457,20 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; raw != nil && !ok {
-		return fmt.Errorf("field entityIds in EntityDeleteAllResponseJson: required")
+	if _, ok := raw["entityIds"]; !ok {
+		return fmt.Errorf("field entityIds: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteAllResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityDeleteAllResponseJson: required")
+	if _, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
 	}
-	if _, ok := raw["numDeleted"]; raw != nil && !ok {
-		return fmt.Errorf("field numDeleted in EntityDeleteAllResponseJson: required")
+	if _, ok := raw["numDeleted"]; !ok {
+		return fmt.Errorf("field numDeleted: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityDeleteAllResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityDeleteAllResponseJson
 	var plain Plain
@@ -1469,7 +1478,7 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1515,11 +1524,11 @@ func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityDeleteRequestJsonError
 	var plain Plain
@@ -1536,11 +1545,11 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityDeleteRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityDeleteRequestJson
 	var plain Plain
@@ -1548,7 +1557,7 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1603,11 +1612,11 @@ func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityDeleteResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityDeleteResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityDeleteResponseJsonError
 	var plain Plain
@@ -1624,20 +1633,20 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityDeleteResponseJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityDeleteResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityDeleteResponseJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityDeleteResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["transactionId"]; raw != nil && !ok {
-		return fmt.Errorf("field transactionId in EntityDeleteResponseJson: required")
+	if _, ok := raw["transactionId"]; !ok {
+		return fmt.Errorf("field transactionId: required")
 	}
 	type Plain EntityDeleteResponseJson
 	var plain Plain
@@ -1645,7 +1654,7 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1715,11 +1724,11 @@ func (j *EntityFunctionCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityFunctionCalculationRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityFunctionCalculationRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityFunctionCalculationRequestJsonError
 	var plain Plain
@@ -1736,23 +1745,23 @@ func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["functionId"]; raw != nil && !ok {
-		return fmt.Errorf("field functionId in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["functionId"]; !ok {
+		return fmt.Errorf("field functionId: required")
 	}
-	if _, ok := raw["functionName"]; raw != nil && !ok {
-		return fmt.Errorf("field functionName in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["functionName"]; !ok {
+		return fmt.Errorf("field functionName: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in EntityFunctionCalculationRequestJson: required")
+	if _, ok := raw["workflow"]; !ok {
+		return fmt.Errorf("field workflow: required")
 	}
 	type Plain EntityFunctionCalculationRequestJson
 	var plain Plain
@@ -1760,7 +1769,7 @@ func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1815,11 +1824,11 @@ func (j *EntityFunctionCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityFunctionCalculationResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityFunctionCalculationResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityFunctionCalculationResponseJsonError
 	var plain Plain
@@ -1836,14 +1845,14 @@ func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityFunctionCalculationResponseJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityFunctionCalculationResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityFunctionCalculationResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityFunctionCalculationResponseJson
 	var plain Plain
@@ -1851,7 +1860,7 @@ func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) erro
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1907,11 +1916,11 @@ func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityGetAllRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityGetAllRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityGetAllRequestJsonError
 	var plain Plain
@@ -1928,11 +1937,11 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityGetAllRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityGetAllRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntityGetAllRequestJson
 	var plain Plain
@@ -1946,7 +1955,7 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 		plain.PageSize = 20.0
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -1996,11 +2005,11 @@ func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityGetRequestJsonError
 	var plain Plain
@@ -2017,11 +2026,11 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityGetRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityGetRequestJson
 	var plain Plain
@@ -2029,7 +2038,7 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2075,11 +2084,11 @@ func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelDeleteRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelDeleteRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelDeleteRequestJsonError
 	var plain Plain
@@ -2096,11 +2105,11 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelDeleteRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelDeleteRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntityModelDeleteRequestJson
 	var plain Plain
@@ -2108,7 +2117,7 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2151,11 +2160,11 @@ func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelDeleteResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelDeleteResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelDeleteResponseJsonError
 	var plain Plain
@@ -2172,8 +2181,8 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelDeleteResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityModelDeleteResponseJson
 	var plain Plain
@@ -2181,7 +2190,7 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2230,11 +2239,11 @@ func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelExportRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelExportRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelExportRequestJsonError
 	var plain Plain
@@ -2251,14 +2260,14 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; raw != nil && !ok {
-		return fmt.Errorf("field converter in EntityModelExportRequestJson: required")
+	if _, ok := raw["converter"]; !ok {
+		return fmt.Errorf("field converter: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelExportRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelExportRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntityModelExportRequestJson
 	var plain Plain
@@ -2266,7 +2275,7 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2319,11 +2328,11 @@ func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelExportResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelExportResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelExportResponseJsonError
 	var plain Plain
@@ -2340,17 +2349,17 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelExportResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelExportResponseJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelExportResponseJson: required")
+	if _, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityModelExportResponseJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityModelExportResponseJson
 	var plain Plain
@@ -2358,7 +2367,7 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2401,11 +2410,11 @@ func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelGetAllRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelGetAllRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelGetAllRequestJsonError
 	var plain Plain
@@ -2422,8 +2431,8 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelGetAllRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityModelGetAllRequestJson
 	var plain Plain
@@ -2431,7 +2440,7 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2477,11 +2486,11 @@ func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelGetAllResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelGetAllResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelGetAllResponseJsonError
 	var plain Plain
@@ -2498,11 +2507,11 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelGetAllResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["models"]; raw != nil && !ok {
-		return fmt.Errorf("field models in EntityModelGetAllResponseJson: required")
+	if _, ok := raw["models"]; !ok {
+		return fmt.Errorf("field models: required")
 	}
 	type Plain EntityModelGetAllResponseJson
 	var plain Plain
@@ -2510,7 +2519,7 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2565,11 +2574,11 @@ func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelImportRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelImportRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelImportRequestJsonError
 	var plain Plain
@@ -2586,20 +2595,20 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; raw != nil && !ok {
-		return fmt.Errorf("field converter in EntityModelImportRequestJson: required")
+	if _, ok := raw["converter"]; !ok {
+		return fmt.Errorf("field converter: required")
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityModelImportRequestJson: required")
+	if _, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelImportRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelImportRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityModelImportRequestJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityModelImportRequestJson
 	var plain Plain
@@ -2607,7 +2616,7 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2653,11 +2662,11 @@ func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelImportResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelImportResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelImportResponseJsonError
 	var plain Plain
@@ -2674,11 +2683,11 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelImportResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelImportResponseJson: required")
+	if _, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
 	}
 	type Plain EntityModelImportResponseJson
 	var plain Plain
@@ -2686,7 +2695,7 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2735,11 +2744,11 @@ func (j *EntityModelTransitionRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelTransitionRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelTransitionRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelTransitionRequestJsonError
 	var plain Plain
@@ -2763,7 +2772,7 @@ var enumValues_EntityModelTransitionRequestJsonTransition = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntityModelTransitionRequestJsonTransition) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -2774,7 +2783,7 @@ func (j *EntityModelTransitionRequestJsonTransition) UnmarshalJSON(value []byte)
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntityModelTransitionRequestJsonTransition, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntityModelTransitionRequestJsonTransition)
 	}
 	*j = EntityModelTransitionRequestJsonTransition(v)
 	return nil
@@ -2786,14 +2795,14 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelTransitionRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntityModelTransitionRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
-	if _, ok := raw["transition"]; raw != nil && !ok {
-		return fmt.Errorf("field transition in EntityModelTransitionRequestJson: required")
+	if _, ok := raw["transition"]; !ok {
+		return fmt.Errorf("field transition: required")
 	}
 	type Plain EntityModelTransitionRequestJson
 	var plain Plain
@@ -2801,7 +2810,7 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2850,11 +2859,11 @@ func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityModelTransitionResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityModelTransitionResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityModelTransitionResponseJsonError
 	var plain Plain
@@ -2871,14 +2880,14 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityModelTransitionResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["modelId"]; raw != nil && !ok {
-		return fmt.Errorf("field modelId in EntityModelTransitionResponseJson: required")
+	if _, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in EntityModelTransitionResponseJson: required")
+	if _, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
 	}
 	type Plain EntityModelTransitionResponseJson
 	var plain Plain
@@ -2886,7 +2895,7 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -2915,11 +2924,11 @@ func (j *EntityPatchPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityPatchPayloadJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["patch"]; raw != nil && !ok {
-		return fmt.Errorf("field patch in EntityPatchPayloadJson: required")
+	if _, ok := raw["patch"]; !ok {
+		return fmt.Errorf("field patch: required")
 	}
 	type Plain EntityPatchPayloadJson
 	var plain Plain
@@ -2974,11 +2983,11 @@ func (j *EntityPatchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityPatchRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityPatchRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityPatchRequestJsonError
 	var plain Plain
@@ -2995,14 +3004,14 @@ func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityPatchRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["patchFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field patchFormat in EntityPatchRequestJson: required")
+	if _, ok := raw["patchFormat"]; !ok {
+		return fmt.Errorf("field patchFormat: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityPatchRequestJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityPatchRequestJson
 	var plain Plain
@@ -3010,7 +3019,7 @@ func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3080,11 +3089,11 @@ func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityProcessorCalculationRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityProcessorCalculationRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityProcessorCalculationRequestJsonError
 	var plain Plain
@@ -3101,23 +3110,23 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["processorId"]; raw != nil && !ok {
-		return fmt.Errorf("field processorId in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["processorId"]; !ok {
+		return fmt.Errorf("field processorId: required")
 	}
-	if _, ok := raw["processorName"]; raw != nil && !ok {
-		return fmt.Errorf("field processorName in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["processorName"]; !ok {
+		return fmt.Errorf("field processorName: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["workflow"]; raw != nil && !ok {
-		return fmt.Errorf("field workflow in EntityProcessorCalculationRequestJson: required")
+	if _, ok := raw["workflow"]; !ok {
+		return fmt.Errorf("field workflow: required")
 	}
 	type Plain EntityProcessorCalculationRequestJson
 	var plain Plain
@@ -3125,7 +3134,7 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3177,11 +3186,11 @@ func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityProcessorCalculationResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityProcessorCalculationResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityProcessorCalculationResponseJsonError
 	var plain Plain
@@ -3198,14 +3207,14 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityProcessorCalculationResponseJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityProcessorCalculationResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityProcessorCalculationResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityProcessorCalculationResponseJson
 	var plain Plain
@@ -3213,7 +3222,7 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3262,11 +3271,11 @@ func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityResponseJsonError
 	var plain Plain
@@ -3283,14 +3292,14 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityResponseJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityResponseJson
 	var plain Plain
@@ -3298,7 +3307,7 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3371,11 +3380,11 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySearchRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySearchRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntitySearchRequestJsonError
 	var plain Plain
@@ -3414,7 +3423,7 @@ var enumValues_EntitySearchRequestJsonOrderByElemSource = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -3425,7 +3434,7 @@ func (j *EntitySearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) e
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySearchRequestJsonOrderByElemSource, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntitySearchRequestJsonOrderByElemSource)
 	}
 	*j = EntitySearchRequestJsonOrderByElemSource(v)
 	return nil
@@ -3437,8 +3446,8 @@ func (j *EntitySearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; raw != nil && !ok {
-		return fmt.Errorf("field path in EntitySearchRequestJsonOrderByElem: required")
+	if _, ok := raw["path"]; !ok {
+		return fmt.Errorf("field path: required")
 	}
 	type Plain EntitySearchRequestJsonOrderByElem
 	var plain Plain
@@ -3461,14 +3470,14 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; raw != nil && !ok {
-		return fmt.Errorf("field condition in EntitySearchRequestJson: required")
+	if _, ok := raw["condition"]; !ok {
+		return fmt.Errorf("field condition: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySearchRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntitySearchRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntitySearchRequestJson
 	var plain Plain
@@ -3476,7 +3485,7 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3538,11 +3547,11 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySnapshotSearchRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySnapshotSearchRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntitySnapshotSearchRequestJsonError
 	var plain Plain
@@ -3581,7 +3590,7 @@ var enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -3592,7 +3601,7 @@ func (j *EntitySnapshotSearchRequestJsonOrderByElemSource) UnmarshalJSON(value [
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_EntitySnapshotSearchRequestJsonOrderByElemSource)
 	}
 	*j = EntitySnapshotSearchRequestJsonOrderByElemSource(v)
 	return nil
@@ -3604,8 +3613,8 @@ func (j *EntitySnapshotSearchRequestJsonOrderByElem) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; raw != nil && !ok {
-		return fmt.Errorf("field path in EntitySnapshotSearchRequestJsonOrderByElem: required")
+	if _, ok := raw["path"]; !ok {
+		return fmt.Errorf("field path: required")
 	}
 	type Plain EntitySnapshotSearchRequestJsonOrderByElem
 	var plain Plain
@@ -3628,14 +3637,14 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; raw != nil && !ok {
-		return fmt.Errorf("field condition in EntitySnapshotSearchRequestJson: required")
+	if _, ok := raw["condition"]; !ok {
+		return fmt.Errorf("field condition: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySnapshotSearchRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["model"]; raw != nil && !ok {
-		return fmt.Errorf("field model in EntitySnapshotSearchRequestJson: required")
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
 	}
 	type Plain EntitySnapshotSearchRequestJson
 	var plain Plain
@@ -3643,7 +3652,7 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3689,11 +3698,11 @@ func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntitySnapshotSearchResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntitySnapshotSearchResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntitySnapshotSearchResponseJsonError
 	var plain Plain
@@ -3710,11 +3719,11 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntitySnapshotSearchResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["status"]; raw != nil && !ok {
-		return fmt.Errorf("field status in EntitySnapshotSearchResponseJson: required")
+	if _, ok := raw["status"]; !ok {
+		return fmt.Errorf("field status: required")
 	}
 	type Plain EntitySnapshotSearchResponseJson
 	var plain Plain
@@ -3722,7 +3731,7 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3776,11 +3785,11 @@ func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsByStateGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsByStateGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityStatsByStateGetRequestJsonError
 	var plain Plain
@@ -3797,8 +3806,8 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsByStateGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityStatsByStateGetRequestJson
 	var plain Plain
@@ -3806,7 +3815,7 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3864,11 +3873,11 @@ func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsByStateResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsByStateResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityStatsByStateResponseJsonError
 	var plain Plain
@@ -3885,23 +3894,23 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; raw != nil && !ok {
-		return fmt.Errorf("field count in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["count"]; !ok {
+		return fmt.Errorf("field count: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["modelName"]; raw != nil && !ok {
-		return fmt.Errorf("field modelName in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["modelName"]; !ok {
+		return fmt.Errorf("field modelName: required")
 	}
-	if _, ok := raw["modelVersion"]; raw != nil && !ok {
-		return fmt.Errorf("field modelVersion in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["modelVersion"]; !ok {
+		return fmt.Errorf("field modelVersion: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in EntityStatsByStateResponseJson: required")
+	if _, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
 	}
 	type Plain EntityStatsByStateResponseJson
 	var plain Plain
@@ -3909,7 +3918,7 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -3959,11 +3968,11 @@ func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityStatsGetRequestJsonError
 	var plain Plain
@@ -3980,8 +3989,8 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityStatsGetRequestJson
 	var plain Plain
@@ -3989,7 +3998,7 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4044,11 +4053,11 @@ func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityStatsResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityStatsResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityStatsResponseJsonError
 	var plain Plain
@@ -4065,20 +4074,20 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; raw != nil && !ok {
-		return fmt.Errorf("field count in EntityStatsResponseJson: required")
+	if _, ok := raw["count"]; !ok {
+		return fmt.Errorf("field count: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityStatsResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["modelName"]; raw != nil && !ok {
-		return fmt.Errorf("field modelName in EntityStatsResponseJson: required")
+	if _, ok := raw["modelName"]; !ok {
+		return fmt.Errorf("field modelName: required")
 	}
-	if _, ok := raw["modelVersion"]; raw != nil && !ok {
-		return fmt.Errorf("field modelVersion in EntityStatsResponseJson: required")
+	if _, ok := raw["modelVersion"]; !ok {
+		return fmt.Errorf("field modelVersion: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityStatsResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
 	type Plain EntityStatsResponseJson
 	var plain Plain
@@ -4086,7 +4095,7 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4108,8 +4117,8 @@ func (j *EntityTransactionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; raw != nil && !ok {
-		return fmt.Errorf("field entityIds in EntityTransactionInfoJson: required")
+	if _, ok := raw["entityIds"]; !ok {
+		return fmt.Errorf("field entityIds: required")
 	}
 	type Plain EntityTransactionInfoJson
 	var plain Plain
@@ -4161,11 +4170,11 @@ func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransactionResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransactionResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityTransactionResponseJsonError
 	var plain Plain
@@ -4182,14 +4191,14 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransactionResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["requestId"]; raw != nil && !ok {
-		return fmt.Errorf("field requestId in EntityTransactionResponseJson: required")
+	if _, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
 	}
-	if _, ok := raw["transactionInfo"]; raw != nil && !ok {
-		return fmt.Errorf("field transactionInfo in EntityTransactionResponseJson: required")
+	if _, ok := raw["transactionInfo"]; !ok {
+		return fmt.Errorf("field transactionInfo: required")
 	}
 	type Plain EntityTransactionResponseJson
 	var plain Plain
@@ -4197,7 +4206,7 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4246,11 +4255,11 @@ func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransitionRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransitionRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityTransitionRequestJsonError
 	var plain Plain
@@ -4267,14 +4276,14 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityTransitionRequestJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransitionRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["transition"]; raw != nil && !ok {
-		return fmt.Errorf("field transition in EntityTransitionRequestJson: required")
+	if _, ok := raw["transition"]; !ok {
+		return fmt.Errorf("field transition: required")
 	}
 	type Plain EntityTransitionRequestJson
 	var plain Plain
@@ -4282,7 +4291,7 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4328,11 +4337,11 @@ func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityTransitionResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityTransitionResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityTransitionResponseJsonError
 	var plain Plain
@@ -4349,8 +4358,8 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityTransitionResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
 	type Plain EntityTransitionResponseJson
 	var plain Plain
@@ -4358,7 +4367,7 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4416,11 +4425,11 @@ func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityUpdateCollectionRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityUpdateCollectionRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityUpdateCollectionRequestJsonError
 	var plain Plain
@@ -4437,14 +4446,14 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityUpdateCollectionRequestJson: required")
+	if _, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityUpdateCollectionRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["payloads"]; raw != nil && !ok {
-		return fmt.Errorf("field payloads in EntityUpdateCollectionRequestJson: required")
+	if _, ok := raw["payloads"]; !ok {
+		return fmt.Errorf("field payloads: required")
 	}
 	type Plain EntityUpdateCollectionRequestJson
 	var plain Plain
@@ -4452,7 +4461,7 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4477,11 +4486,11 @@ func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; raw != nil && !ok {
-		return fmt.Errorf("field data in EntityUpdatePayloadJson: required")
+	if _, ok := raw["data"]; !ok {
+		return fmt.Errorf("field data: required")
 	}
-	if _, ok := raw["entityId"]; raw != nil && !ok {
-		return fmt.Errorf("field entityId in EntityUpdatePayloadJson: required")
+	if _, ok := raw["entityId"]; !ok {
+		return fmt.Errorf("field entityId: required")
 	}
 	type Plain EntityUpdatePayloadJson
 	var plain Plain
@@ -4536,11 +4545,11 @@ func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EntityUpdateRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EntityUpdateRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EntityUpdateRequestJsonError
 	var plain Plain
@@ -4557,14 +4566,14 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; raw != nil && !ok {
-		return fmt.Errorf("field dataFormat in EntityUpdateRequestJson: required")
+	if _, ok := raw["dataFormat"]; !ok {
+		return fmt.Errorf("field dataFormat: required")
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EntityUpdateRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["payload"]; raw != nil && !ok {
-		return fmt.Errorf("field payload in EntityUpdateRequestJson: required")
+	if _, ok := raw["payload"]; !ok {
+		return fmt.Errorf("field payload: required")
 	}
 	type Plain EntityUpdateRequestJson
 	var plain Plain
@@ -4572,7 +4581,7 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4618,11 +4627,11 @@ func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in EventAckResponseJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in EventAckResponseJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain EventAckResponseJsonError
 	var plain Plain
@@ -4639,11 +4648,11 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in EventAckResponseJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["sourceEventId"]; raw != nil && !ok {
-		return fmt.Errorf("field sourceEventId in EventAckResponseJson: required")
+	if _, ok := raw["sourceEventId"]; !ok {
+		return fmt.Errorf("field sourceEventId: required")
 	}
 	type Plain EventAckResponseJson
 	var plain Plain
@@ -4651,7 +4660,7 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -4672,7 +4681,7 @@ var enumValues_ModelConverterTypeJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *ModelConverterTypeJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4683,7 +4692,7 @@ func (j *ModelConverterTypeJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_ModelConverterTypeJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_ModelConverterTypeJson)
 	}
 	*j = ModelConverterTypeJson(v)
 	return nil
@@ -4709,17 +4718,17 @@ func (j *ModelInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in ModelInfoJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ModelInfoJson: required")
+	if _, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
 	}
-	if _, ok := raw["state"]; raw != nil && !ok {
-		return fmt.Errorf("field state in ModelInfoJson: required")
+	if _, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
 	}
-	if _, ok := raw["version"]; raw != nil && !ok {
-		return fmt.Errorf("field version in ModelInfoJson: required")
+	if _, ok := raw["version"]; !ok {
+		return fmt.Errorf("field version: required")
 	}
 	type Plain ModelInfoJson
 	var plain Plain
@@ -4744,11 +4753,11 @@ func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ModelSpecJson: required")
+	if _, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
 	}
-	if _, ok := raw["version"]; raw != nil && !ok {
-		return fmt.Errorf("field version in ModelSpecJson: required")
+	if _, ok := raw["version"]; !ok {
+		return fmt.Errorf("field version: required")
 	}
 	type Plain ModelSpecJson
 	var plain Plain
@@ -4772,7 +4781,7 @@ var enumValues_PatchFormatJson = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4783,7 +4792,7 @@ func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_PatchFormatJson, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_PatchFormatJson)
 	}
 	*j = PatchFormatJson(v)
 	return nil
@@ -4803,11 +4812,11 @@ func (j *ProcessorInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in ProcessorInfoJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in ProcessorInfoJson: required")
+	if _, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
 	}
 	type Plain ProcessorInfoJson
 	var plain Plain
@@ -4851,7 +4860,7 @@ var enumValues_SearchSnapshotStatusJsonStatus = []interface{}{
 // UnmarshalJSON implements json.Unmarshaler.
 func (j *SearchSnapshotStatusJsonStatus) UnmarshalJSON(value []byte) error {
 	var v string
-	if err := json.Unmarshal(value, &v); err != nil {
+	if err := decodeWithUseNumber(value, &v); err != nil {
 		return err
 	}
 	var ok bool
@@ -4862,7 +4871,7 @@ func (j *SearchSnapshotStatusJsonStatus) UnmarshalJSON(value []byte) error {
 		}
 	}
 	if !ok {
-		return fmt.Errorf("invalid value (expected one of %#v): %#v", enumValues_SearchSnapshotStatusJsonStatus, v)
+		return fmt.Errorf("invalid value %q: expected one of %v", v, enumValues_SearchSnapshotStatusJsonStatus)
 	}
 	*j = SearchSnapshotStatusJsonStatus(v)
 	return nil
@@ -4874,11 +4883,11 @@ func (j *SearchSnapshotStatusJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SearchSnapshotStatusJson: required")
+	if _, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
 	}
-	if _, ok := raw["status"]; raw != nil && !ok {
-		return fmt.Errorf("field status in SearchSnapshotStatusJson: required")
+	if _, ok := raw["status"]; !ok {
+		return fmt.Errorf("field status: required")
 	}
 	type Plain SearchSnapshotStatusJson
 	var plain Plain
@@ -4927,11 +4936,11 @@ func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotCancelRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotCancelRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain SnapshotCancelRequestJsonError
 	var plain Plain
@@ -4948,11 +4957,11 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotCancelRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotCancelRequestJson: required")
+	if _, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
 	}
 	type Plain SnapshotCancelRequestJson
 	var plain Plain
@@ -4960,7 +4969,7 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -5015,11 +5024,11 @@ func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotGetRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotGetRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain SnapshotGetRequestJsonError
 	var plain Plain
@@ -5036,11 +5045,11 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotGetRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotGetRequestJson: required")
+	if _, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
 	}
 	type Plain SnapshotGetRequestJson
 	var plain Plain
@@ -5054,7 +5063,7 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 		plain.PageSize = 10.0
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -5100,11 +5109,11 @@ func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; raw != nil && !ok {
-		return fmt.Errorf("field code in SnapshotGetStatusRequestJsonError: required")
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
 	}
-	if _, ok := raw["message"]; raw != nil && !ok {
-		return fmt.Errorf("field message in SnapshotGetStatusRequestJsonError: required")
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
 	}
 	type Plain SnapshotGetStatusRequestJsonError
 	var plain Plain
@@ -5121,11 +5130,11 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in SnapshotGetStatusRequestJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["snapshotId"]; raw != nil && !ok {
-		return fmt.Errorf("field snapshotId in SnapshotGetStatusRequestJson: required")
+	if _, ok := raw["snapshotId"]; !ok {
+		return fmt.Errorf("field snapshotId: required")
 	}
 	type Plain SnapshotGetStatusRequestJson
 	var plain Plain
@@ -5133,7 +5142,7 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 		return err
 	}
 	if v, ok := raw["success"]; ok && v == nil {
-		return fmt.Errorf("field success in %T: must not be null", *j)
+		return fmt.Errorf("field success: must not be null")
 	} else if !ok {
 		plain.Success = true
 	}
@@ -5161,17 +5170,17 @@ func (j *TransitionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in TransitionInfoJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in TransitionInfoJson: required")
+	if _, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
 	}
-	if _, ok := raw["stateFrom"]; raw != nil && !ok {
-		return fmt.Errorf("field stateFrom in TransitionInfoJson: required")
+	if _, ok := raw["stateFrom"]; !ok {
+		return fmt.Errorf("field stateFrom: required")
 	}
-	if _, ok := raw["stateTo"]; raw != nil && !ok {
-		return fmt.Errorf("field stateTo in TransitionInfoJson: required")
+	if _, ok := raw["stateTo"]; !ok {
+		return fmt.Errorf("field stateTo: required")
 	}
 	type Plain TransitionInfoJson
 	var plain Plain
@@ -5196,11 +5205,11 @@ func (j *WorkflowInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; raw != nil && !ok {
-		return fmt.Errorf("field id in WorkflowInfoJson: required")
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
 	}
-	if _, ok := raw["name"]; raw != nil && !ok {
-		return fmt.Errorf("field name in WorkflowInfoJson: required")
+	if _, ok := raw["name"]; !ok {
+		return fmt.Errorf("field name: required")
 	}
 	type Plain WorkflowInfoJson
 	var plain Plain
