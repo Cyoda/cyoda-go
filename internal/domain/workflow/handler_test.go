@@ -1993,7 +1993,7 @@ func TestImport_TransitionManualMissingOrNull_Rejected(t *testing.T) {
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
 			}
-			for _, want := range []string{"VALIDATION_FAILED", "manual is required", "approval-flow", "NEW", "APPROVE"} {
+			for _, want := range []string{"VALIDATION_FAILED", "manual is required", "approval-flow", `state \"NEW\"`, `transition \"APPROVE\"`} {
 				if !strings.Contains(string(b), want) {
 					t.Errorf("response must contain %q, got: %s", want, b)
 				}

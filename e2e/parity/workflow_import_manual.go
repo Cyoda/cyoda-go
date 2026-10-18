@@ -91,8 +91,15 @@ func RunWorkflowImportManualRequired(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("export must hold %d transitions out of OPEN; raw: %s", len(want), raw)
 	}
 	for _, tr := range got {
-		if tr.Manual == nil || *tr.Manual != want[tr.Name] {
-			t.Errorf("transition %q: exported manual = %v, want %t; raw: %s", tr.Name, tr.Manual, want[tr.Name], raw)
+		wantManual, ok := want[tr.Name]
+		if !ok {
+			t.Errorf("unexpected transition %q out of OPEN; raw: %s", tr.Name, raw)
+			continue
+		}
+		if tr.Manual == nil {
+			t.Errorf("transition %q: exported manual is absent, want %t; raw: %s", tr.Name, wantManual, raw)
+		} else if *tr.Manual != wantManual {
+			t.Errorf("transition %q: exported manual = %t, want %t; raw: %s", tr.Name, *tr.Manual, wantManual, raw)
 		}
 	}
 }
