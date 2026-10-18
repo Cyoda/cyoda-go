@@ -137,7 +137,7 @@ The engine enforces a per-state visit limit of 10 by default (configurable via `
 
 - `name` — string — transition name; used by the client in `PUT /entity/{format}/{entityId}/{name}` and in engine cascade
 - `next` — string — target state; must exist in `states`
-- `manual` — boolean — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade
+- `manual` — boolean, required — `true` means the transition requires an explicit client request; `false` means the engine evaluates it automatically in cascade. There is no default: an import whose transition omits `manual` or sends `null` is rejected (`400 VALIDATION_FAILED`)
 - `disabled` — boolean — when `true`, the engine skips this transition entirely
 - `criterion` — `Condition` JSON or `null` — evaluated before executing the transition; `null` means always matches; the same Condition DSL as search (see `search` topic)
 - `criterionAnnotations` — object or absent — optional client-owned metadata attached to this transition's `criterion` as a whole (see WorkflowDefinition `annotations`); sibling field, engine-opaque
@@ -392,7 +392,8 @@ otherwise `UNSAFE_WORK_NOT_COMPLETED`.
   present (`VALIDATION_FAILED`). A `delayMs` sent beside `function` is
   rejected whatever its value — `0` and `null` included.
 - `schedule` and `manual: true` are mutually exclusive
-  (`VALIDATION_FAILED`).
+  (`VALIDATION_FAILED`). A scheduled transition still sends `manual`, as
+  every transition does: `"manual": false`.
 - `timeoutMs`, when present, must be `>= 0` (`VALIDATION_FAILED`) —
   checked whichever mode sets the schedule.
 - Static mode: `delayMs` must be `> 0` (`VALIDATION_FAILED`).
@@ -601,6 +602,10 @@ Static validation runs on the incoming request before saving. Any of the followi
 - Empty processor `name`.
 - Workflow / state / transition / processor names longer than 256 characters.
 - Transition `next` not declared in `states`.
+- A transition whose `manual` is omitted or `null`. `manual` has no default: send `true` or `false`.
+- A transition `schedule` that breaks a rule under *Import-time validation* in SCHEDULED TRANSITIONS above.
+- A processor `type` other than `"externalized"` (an omitted or empty `type` is stored as `"externalized"`).
+- An `annotations` or `criterionAnnotations` value that is neither a JSON object nor `null`, or that is larger than 64 KB compacted. `null` reads as absent.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
 - Unknown `retryPolicy` value on any processor, any function condition in a criterion (at any depth) or any `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
 - A function condition in a criterion, at any depth, whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).

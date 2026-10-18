@@ -234,7 +234,7 @@ func TestWorkflowSchemaVersion_ImportAccepts13(t *testing.T) {
 	  "workflows": [{
 	    "version": "1.3", "name": "v13-wf", "initialState": "S", "active": true,
 	    "states": { "S": { "transitions": [ {
-	      "name": "t", "next": "Done",
+	      "name": "t", "next": "Done", "manual": false,
 	      "schedule": { "function": { "name": "computeFire", "resultKind": "Schedule", "calculationNodesTags": "scheduler" } }
 	    } ] }, "Done": {} }
 	  }]
@@ -282,7 +282,7 @@ func TestWorkflowSchemaVersion_ImportAccepts15(t *testing.T) {
 	      { "name": "go", "next": "Done", "manual": true,
 	        "processors": [ { "type": "externalized", "name": "p", "executionMode": "SYNC",
 	          "config": { "calculationNodesTags": "workers", "idempotent": true } } ] },
-	      { "name": "later", "next": "Done",
+	      { "name": "later", "next": "Done", "manual": false,
 	        "schedule": { "function": { "name": "computeFire", "resultKind": "Schedule",
 	          "calculationNodesTags": "scheduler", "retryPolicy": "NONE" } } }
 	    ] }, "Done": {} }

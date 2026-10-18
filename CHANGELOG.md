@@ -1014,6 +1014,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and every other value ran as `externalized`. An export now always carries
   `externalized`. See `docs/workflow-schema-versioning.md`.
 
+- **Workflow import refuses a transition that omits `manual` or sends it as
+  `null` (`400 VALIDATION_FAILED`).** The OpenAPI document always listed
+  `manual` as required, but import read the omission as `false` and stored an
+  automatic transition. `manual` has no default: send `"manual": false` where
+  the omission meant an automatic transition. See
+  `docs/workflow-schema-versioning.md`.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
@@ -1419,6 +1426,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **A workflow import that breaks one rule in several states is refused naming
+  the same state every time.** The checks walked the states in Go's random map
+  order, so the `400 VALIDATION_FAILED` named any one of them. They now walk
+  the states in sorted order and name the first. The refusal of
+  `startNewTxOnDispatch` outside `COMMIT_BEFORE_DISPATCH` now names the state
+  too, as every other refusal of a processor or transition already did.
 
 - **A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
   committed has its `STATE_PROCESS_RESULT` in the audit trail.** The record

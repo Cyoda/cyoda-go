@@ -25,6 +25,7 @@ parsed or re-serialised to attach metadata to it.
 {
   "name": "APPROVE",
   "next": "approved",
+  "manual": true,
   "criterion": { /* opaque condition tree — untouched, verbatim */ },
   "criterionAnnotations": { "displayName": "Approved & funded" },
   "processors": [

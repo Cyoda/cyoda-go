@@ -1728,7 +1728,7 @@ type TransitionDefinitionDto struct {
 	// Disabled Flag indicating if the transition is disabled
 	Disabled *bool `json:"disabled,omitempty"`
 
-	// Manual Whether this transition requires manual triggering
+	// Manual Whether this transition requires manual triggering: `true` means a client request triggers it, `false` means the engine runs it automatically. Required, with no default; an import whose transition omits it or sends `null` is rejected with 400 VALIDATION_FAILED.
 	Manual bool `json:"manual"`
 
 	// Name Name of the transition

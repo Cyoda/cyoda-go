@@ -98,12 +98,14 @@ type importRequest struct {
 }
 
 // presenceProbe records which fields the request body actually sent, where
-// the strict decode into SPI types cannot tell. The SPI decodes
+// the strict decode into SPI types cannot tell. The SPI decodes manual and
 // attachEntity into plain bool fields and schedule.delayMs into a plain
 // int64, so "omitted" and "explicit zero value" collapse to the same Go
 // value. The probe is a second, non-strict decode of the same request body
 // that declares only the field paths needed to recover the distinction;
-// every other field is ignored. It serves two rules:
+// every other field is ignored. It serves three rules:
+//   - a transition's manual is required and is never null — see
+//     checkManualSent;
 //   - an omitted attachEntity defaults to true (the OpenAPI DTOs document
 //     "Defaults to true"), for schedule.function.attachEntity and each
 //     processors[].config.attachEntity — see applyAttachEntityDefaults;
@@ -114,7 +116,11 @@ type presenceProbe struct {
 		Name   string `json:"name"`
 		States map[string]struct {
 			Transitions []struct {
-				Name     string `json:"name"`
+				Name string `json:"name"`
+				// Manual is a pointer so that an omitted manual reads as
+				// nil; encoding/json sets a pointer to nil for a JSON null
+				// too, and neither is a boolean.
+				Manual   *bool `json:"manual"`
 				Schedule *struct {
 					// DelayMs is raw so that an explicit JSON null counts
 					// as sent: encoding/json hands null to a RawMessage
@@ -134,6 +140,27 @@ type presenceProbe struct {
 	} `json:"workflows"`
 }
 
+// checkManualSent refuses a transition that omits manual or sends it as
+// null. api/openapi.yaml's TransitionDefinitionDto requires manual and types
+// it boolean, with no default: the author states whether a transition is
+// automatic. The strict decode reads an omitted or null manual as false,
+// which would make the transition automatic; this check reads the raw
+// request instead.
+func checkManualSent(probe presenceProbe) error {
+	for _, wf := range probe.Workflows {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
+				if tr.Manual == nil {
+					return fmt.Errorf(
+						"workflow %q state %q transition %q: manual is required (true or false)",
+						wf.Name, stateName, tr.Name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // checkDelayBesideFunction refuses a schedule that sends delayMs in any
 // form — 0, null, or any number — beside a function. api/openapi.yaml's
 // TransitionScheduleDto publishes delayMs as minimum 1 and mutually
@@ -142,8 +169,8 @@ type presenceProbe struct {
 // check reads the raw request instead.
 func checkDelayBesideFunction(probe presenceProbe) error {
 	for _, wf := range probe.Workflows {
-		for stateName, state := range wf.States {
-			for _, tr := range state.Transitions {
+		for _, stateName := range sortedStateNames(wf.States) {
+			for _, tr := range wf.States[stateName].Transitions {
 				if tr.Schedule != nil && tr.Schedule.Function != nil && tr.Schedule.DelayMs != nil {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q: schedule.delayMs and schedule.function are mutually exclusive; omit delayMs when function is set",
@@ -389,8 +416,16 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	applyProcessorTypeDefault(incoming)
-	// The structural validator above sees delayMs only as the SPI's int64;
-	// the raw request says whether it was sent at all beside a function.
+	// The structural validator above sees manual only as the SPI's bool and
+	// delayMs only as its int64; the raw request says whether each was sent.
+	// An omitted manual reaches it as false, so a structural rule that reads
+	// manual as false must run after checkManualSent, not in that validator.
+	// The probe checks in turn run after it because it caps the names they
+	// copy into the 400 body (maxIdentifierLen).
+	if err := checkManualSent(probe); err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
+		return
+	}
 	if err := checkDelayBesideFunction(probe); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return

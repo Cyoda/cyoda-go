@@ -1851,7 +1851,7 @@ func TestImportExport_CalloutFields_RoundTrip(t *testing.T) {
 					 "config":{"calculationNodesTags":"workers","idempotent":true,"retryPolicy":"FIXED"}},
 					{"type":"externalized","name":"plain","executionMode":"SYNC",
 					 "config":{"calculationNodesTags":"workers"}}]},
-				{"name":"later","next":"S2",
+				{"name":"later","next":"S2","manual":false,
 				 "schedule":{"function":{"name":"computeFire","resultKind":"Schedule",
 					"calculationNodesTags":"scheduler","retryPolicy":"NONE"}}}]},
 			"S2":{}}}]}`
@@ -1952,6 +1952,107 @@ func TestImport_ScheduleDelayMsBesideFunction_Rejected(t *testing.T) {
 			for _, want := range []string{"VALIDATION_FAILED", "schedule.delayMs and schedule.function are mutually exclusive", "fn-schedule-flow", "NEW", "AUTO_CLOSE"} {
 				if !strings.Contains(string(b), want) {
 					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_TransitionManualMissingOrNull_Rejected pins the published
+// TransitionDefinitionDto contract (api/openapi.yaml): manual is required and
+// is a boolean. The SPI decodes manual into a plain bool, so an omitted or
+// null manual reads as false to the structural validator, which would make
+// the transition automatic; the import must refuse it instead.
+func TestImport_TransitionManualMissingOrNull_Rejected(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		manual string
+	}{
+		{"omitted", ""},
+		{"null", `"manual": null,`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+
+			body := `{
+				"importMode": "REPLACE",
+				"workflows": [{
+					"version": "1.1",
+					"name": "approval-flow",
+					"initialState": "NEW",
+					"states": {
+						"NEW": {"transitions": [{` + tc.manual + `"name": "APPROVE", "next": "DONE"}]},
+						"DONE": {"transitions": []}
+					}
+				}]
+			}`
+			resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", resp.StatusCode, b)
+			}
+			for _, want := range []string{"VALIDATION_FAILED", "manual is required", "approval-flow", `state \"NEW\"`, `transition \"APPROVE\"`} {
+				if !strings.Contains(string(b), want) {
+					t.Errorf("response must contain %q, got: %s", want, b)
+				}
+			}
+		})
+	}
+}
+
+// TestImport_RefusalNamesFirstStateInOrder pins that an import refused by a
+// rule that two states break names the same state on every request: the
+// first in lexicographic order. The states sit in a JSON object, a Go map
+// after decoding, and a check that walks the map in its iteration order
+// would name either state at random.
+func TestImport_RefusalNamesFirstStateInOrder(t *testing.T) {
+	// states builds the states A and B, each holding the transition tr
+	// (a JSON object whose name is NAME), and the target state DONE.
+	states := func(tr string) string {
+		return `"A": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "ta") + `]},
+			"B": {"transitions": [` + strings.ReplaceAll(tr, "NAME", "tb") + `]},
+			"DONE": {"transitions": []}`
+	}
+	for _, tc := range []struct {
+		name, states, want string
+	}{
+		{"manual omitted",
+			states(`{"name": "NAME", "next": "DONE"}`),
+			"manual is required"},
+		{"delayMs beside function",
+			states(`{"name": "NAME", "next": "DONE", "manual": false,
+				"schedule": {"delayMs": 0, "function": {"name": "f", "resultKind": "Schedule", "calculationNodesTags": "t"}}}`),
+			"schedule.delayMs and schedule.function are mutually exclusive"},
+		{"processor executionMode",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "BOGUS", "config": {"calculationNodesTags": "t"}}]}`),
+			"unknown executionMode"},
+		{"startNewTxOnDispatch outside COMMIT_BEFORE_DISPATCH",
+			states(`{"name": "NAME", "next": "DONE", "manual": true,
+				"processors": [{"name": "p", "executionMode": "SYNC", "config": {"calculationNodesTags": "t", "startNewTxOnDispatch": true}}]}`),
+			"startNewTxOnDispatch=true is only valid"},
+		{"state annotations",
+			`"A": {"annotations": [], "transitions": []},
+			"B": {"annotations": [], "transitions": []}`,
+			"annotations must be a JSON object"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			importModel(t, srv.URL, "Order", 1)
+			body := `{"importMode": "REPLACE", "workflows": [{
+				"version": "1.1", "name": "wf", "initialState": "A",
+				"states": {` + tc.states + `}}]}`
+			for i := range 40 {
+				resp := doWorkflowImport(t, srv.URL, "Order", 1, body)
+				b, _ := io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), tc.want) {
+					t.Fatalf("request %d: expected 400 containing %q, got %d: %s", i, tc.want, resp.StatusCode, b)
+				}
+				if !strings.Contains(string(b), `state \"A\"`) {
+					t.Fatalf("request %d: the refusal must name state A, the first in order; got: %s", i, b)
 				}
 			}
 		})

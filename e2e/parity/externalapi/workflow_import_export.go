@@ -94,10 +94,10 @@ func RunExternalAPI_08_01_SimpleAutomatedTransition(t *testing.T, fixture parity
 }
 
 // RunExternalAPI_08_02_DefaultsAppliedAndReturned — dictionary 08/02.
-// Import a partially-specified workflow (transition omits manual/criterion);
-// export must round-trip the workflow with the transition name intact.
-// cyoda-go stores what was sent and applies active=true as the only server
-// default; omitted boolean fields default to false (Go zero value).
+// Import a partially-specified workflow (the workflow omits active, the
+// transition omits disabled and criterion); export must round-trip the
+// workflow with the transition name intact. The transition sends manual, as
+// the dictionary's does: manual is required and has no default.
 func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parity.BackendFixture) {
 	t.Helper()
 	d := driver.NewInProcess(t, fixture)
@@ -105,17 +105,13 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err := d.CreateModelFromSample("wf2", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	// Import a workflow that omits "manual" on the transition.
-	// dictionary uses "automated" field; cyoda-go uses "manual" (inverted) —
-	// different_naming_same_level. Omitting both → manual defaults to false
-	// (i.e., automated=true in dictionary terms).
 	body := `{
 		"workflows": [{
 			"name": "defaults",
 			"version": "1.1",
 			"initialState": "s1",
 			"states": {
-				"s1": {"transitions": [{"name": "MOVE", "next": "s2"}]},
+				"s1": {"transitions": [{"name": "MOVE", "next": "s2", "manual": true}]},
 				"s2": {"transitions": []}
 			}
 		}]
@@ -127,17 +123,39 @@ func RunExternalAPI_08_02_DefaultsAppliedAndReturned(t *testing.T, fixture parit
 	if err != nil {
 		t.Fatalf("ExportWorkflow: %v", err)
 	}
-	var shape map[string]any
-	if err := json.Unmarshal(raw, &shape); err != nil {
+	var exported struct {
+		Workflows []struct {
+			Active *bool `json:"active"`
+			States map[string]struct {
+				Transitions []struct {
+					Name     string `json:"name"`
+					Manual   *bool  `json:"manual"`
+					Disabled *bool  `json:"disabled"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &exported); err != nil {
 		t.Fatalf("decode export: %v", err)
 	}
-	wfs, ok := shape["workflows"].([]any)
-	if !ok || len(wfs) == 0 {
-		t.Fatalf("export missing workflows: %v", shape)
+	if len(exported.Workflows) != 1 {
+		t.Fatalf("export must hold one workflow: %s", raw)
 	}
-	// Assert the transition name survived the round-trip.
-	if !strings.Contains(string(raw), `"MOVE"`) {
-		t.Errorf("export missing transition name MOVE: %s", string(raw))
+	wf := exported.Workflows[0]
+	// The dictionary's defaults: an omitted active is true, an omitted
+	// disabled is false. The export leaves a false disabled out.
+	if wf.Active == nil || !*wf.Active {
+		t.Errorf("exported active must be true: %s", raw)
+	}
+	trs := wf.States["s1"].Transitions
+	if len(trs) != 1 || trs[0].Name != "MOVE" {
+		t.Fatalf("export must hold transition MOVE out of s1: %s", raw)
+	}
+	if trs[0].Manual == nil || !*trs[0].Manual {
+		t.Errorf("exported manual must be true, as sent: %s", raw)
+	}
+	if trs[0].Disabled != nil && *trs[0].Disabled {
+		t.Errorf("exported disabled = true, want false or absent: %s", raw)
 	}
 }
 
