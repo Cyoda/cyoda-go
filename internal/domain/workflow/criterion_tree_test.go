@@ -72,7 +72,7 @@ func TestBuildCriterionTree_Refusals(t *testing.T) {
 		{"no function member", `{"type":"function"}`, "has no `function` object"},
 		{"function member null", `{"type":"function","function":null}`, "has no `function` object"},
 		{"no name", `{"type":"group","operator":"AND","conditions":[{"type":"function","function":{"config":{}}}]}`, "function condition at /conditions/0 has no function name"},
-		{"bad config", `{"type":"function","function":{"name":"f","config":{"responseTimeoutMs":"5s"}}}`, "failed to parse criterion function"},
+		{"bad config", `{"type":"function","function":{"name":"f","config":{"responseTimeoutMs":"5s"}}}`, `function condition: invalid JSON at "/function/config/responseTimeoutMs": a JSON string where an integer is expected`},
 		{"function in pre-check", `{"type":"function","function":{"name":"f","criterion":` + treeFnA + `}}`, `function condition "f": its pre-check holds a function condition at /function/criterion`},
 		{"function nested in pre-check", `{"type":"group","operator":"AND","conditions":[` + treeLocal + `,{"type":"function","function":{"name":"f","criterion":{"type":"group","operator":"OR","conditions":[` + treeLocal + `,` + treeFnA + `]}}}]}`, "at /conditions/1/function/criterion/conditions/1"},
 		{"unknown operator on an engine group", `{"type":"group","operator":"XOR","conditions":[` + treeFnA + `]}`, `unknown group operator "XOR"`},

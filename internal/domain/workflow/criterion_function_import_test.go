@@ -82,7 +82,7 @@ func TestImport_FunctionConditionsRefused(t *testing.T) {
 		{"pre-check NOT with two members", impFnWith("f", impGroup("NOT", impLocal, impLifePre)),
 			"condition at /function/criterion: invalid condition: NOT requires exactly one condition, got 2"},
 		{"config not an object at depth", impGroup("OR", impLocal, `{"type":"function","function":{"name":"g","config":"x"}}`),
-			"function condition at /conditions/1: failed to parse criterion function"},
+			`function condition: invalid JSON at "/conditions/1/function/config": a JSON string where an object is expected`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

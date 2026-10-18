@@ -3876,7 +3876,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: "invalid JSON: expected array of UUID strings"
+                    detail: "BAD_REQUEST: invalid request body: invalid JSON at \"\": a JSON object where an array is expected"
                     instance: /api/message
                     properties:
                       errorCode: BAD_REQUEST
@@ -4077,7 +4077,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: "invalid JSON: expected an object with a 'payload' field"
+                    detail: "BAD_REQUEST: invalid request body: invalid JSON at \"\": unknown member name \"meta-data\""
                     instance: /api/message/new/nobel.prize.events
                     properties:
                       errorCode: BAD_REQUEST

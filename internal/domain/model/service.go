@@ -15,6 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -515,10 +516,13 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 		return common.Internal("failed to unmarshal schema", err)
 	}
 
+	// The data is read as entity create reads it, so validate never calls
+	// valid what create refuses.
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
+		return appErr
+	}
 	var parsedData any
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(&parsedData); err != nil {
+	if err := ingest.DecodeJSONPreservingNumbers(data, &parsedData); err != nil {
 		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
 	}
 

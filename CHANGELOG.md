@@ -1045,8 +1045,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   with U+FFFD). Entity and message payload contents are not typed JSON — no
   member there is unknown, and `"a"` and `"A"` are two fields — but a
   payload has one reading: a member written twice in one object is refused
-  in a message payload and in model-import sample data, on both doors, as
-  it already was in an entity payload. `joinedLegalEntityId`
+  in a message payload and in model-import sample data (on both doors), as
+  it already was in an entity payload, and makes a compute member's
+  processor answer unreadable. The model validate endpoint reads its data
+  as entity create does, so it no longer calls valid what create refuses,
+  and create collection refuses unstorable text anywhere in the body, as
+  update collection does. `joinedLegalEntityId`
   on `CalculationMemberJoinEvent` (documented, not in the schema) and
   `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
   it) are declared in the event schemas. `audience` on a key-pair or

@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -426,6 +428,22 @@ func TestRPC_ModelDelete(t *testing.T) {
 	validateResponse(t, resp, &typed)
 	if !typed.Success {
 		t.Error("expected success=true")
+	}
+}
+
+// TestRPC_ModelGetAll_DataIsDecoded: the request's data is read like every
+// other event's, so an undeclared member, or data that is not JSON, is
+// refused rather than ignored.
+func TestRPC_ModelGetAll_DataIsDecoded(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	for name, ce := range map[string]*cepb.CloudEvent{
+		"unknown member": makeCE(EntityModelGetAllRequest, map[string]any{"id": "test", "modelName": "alpha"}),
+		"not JSON":       makeRawCE(EntityModelGetAllRequest, []byte(`{"id":`)),
+	} {
+		_, err := svc.EntityModelManage(ctx, ce)
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		}
 	}
 }
 

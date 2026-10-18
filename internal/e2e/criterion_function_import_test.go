@@ -108,7 +108,7 @@ func TestCriterionFunctionImport_Refused(t *testing.T) {
 		{"pre-check NOT with two members", cfFn("f", cfGroup("NOT", cfAmountGT100, cfStateIsCreated)),
 			"condition at /function/criterion: invalid condition: NOT requires exactly one condition, got 2"},
 		{"config not an object at depth", cfGroup("OR", cfAmountGT100, `{"type":"function","function":{"name":"g","config":"x"}}`),
-			"function condition at /conditions/1: failed to parse criterion function"},
+			`function condition: invalid JSON at "/conditions/1/function/config": a JSON string where an object is expected`},
 		{"entry limit through a pre-check", cfFn("f", bigArray), "the limit is 10000"},
 		{"depth limit in a pre-check", cfFn("f", deep), "maximum depth"},
 	}

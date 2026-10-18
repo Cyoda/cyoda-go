@@ -70,7 +70,7 @@ func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb
 	case EntityModelDeleteRequest:
 		return s.handleModelDelete(ctx, ce.Id, eventType, payload)
 	case EntityModelGetAllRequest:
-		return s.handleModelGetAll(ctx, ce.Id, eventType)
+		return s.handleModelGetAll(ctx, ce.Id, eventType, payload)
 	case EntityModelSetUniqueKeysRequest:
 		return s.handleModelSetUniqueKeys(ctx, ce.Id, eventType, payload)
 	default:
@@ -225,7 +225,11 @@ func (s *CloudEventsServiceImpl) handleModelDelete(ctx context.Context, ceID str
 	return NewCloudEvent(EntityModelDeleteResponse, resp)
 }
 
-func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID string, eventType string) (*cepb.CloudEvent, error) {
+func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.EntityModelGetAllRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
 	models, err := s.modelHandler.ListModels(ctx)
 	if err != nil {
 		slog.Error("operation failed", "pkg", "grpc", "rpc", "entityModelManage", "type", eventType, "ceId", ceID, "error", err.Error())

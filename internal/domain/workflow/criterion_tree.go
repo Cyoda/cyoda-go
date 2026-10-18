@@ -108,7 +108,9 @@ func buildCriterionTree(cond predicate.Condition, ptr string) (critNode, error) 
 func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunction, error) {
 	fn, present, err := contract.ParseCriterionFunction(c.Raw)
 	if err != nil {
-		return nil, fmt.Errorf("function condition%s: %w", atPointer(ptr), err)
+		// The decoder's location is relative to this condition; place it
+		// under the condition's own, as the condition parser does.
+		return nil, fmt.Errorf("function condition: %w", err.Under(ptr))
 	}
 	if !present {
 		return nil, fmt.Errorf("function condition%s has no `function` object", atPointer(ptr))
@@ -126,9 +128,11 @@ func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunctio
 			fn.Name, atPointer(ptr), at)
 	}
 	node.preCheck = &critLocal{ptr: pcPtr, cond: c.PreCheck}
-	if node.preCheckValue, err = decodePreCheck(fn.Criterion); err != nil {
-		return nil, fmt.Errorf("function condition %q%s: %w", fn.Name, atPointer(ptr), err)
+	value, decodeErr := decodePreCheck(fn.Criterion)
+	if decodeErr != nil {
+		return nil, fmt.Errorf("function condition %q%s: %w", fn.Name, atPointer(ptr), decodeErr)
 	}
+	node.preCheckValue = value
 	return node, nil
 }
 

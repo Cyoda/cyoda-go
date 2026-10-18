@@ -36,7 +36,7 @@ date.
 | M3 — empty `workflows` array silently destructive in REPLACE/ACTIVATE | **Tracked** | #256 | Bundled with H2/H5. |
 | M4 — MERGE silently coalesces duplicate / empty workflow names | **Resolved in v0.8.0** | #255 | Closed by #255 — validator now rejects duplicate or empty workflow names within a request. |
 | M5 — `importMode` default + case-insensitivity undocumented | **Tracked** | #257 | |
-| M6 — JSON unmarshal silently drops unknown fields; `asyncResult` / `crossoverToAsyncMs` not implemented | **Resolved in v0.8.0** (workflow boundary), **Tracked** (other boundaries) | #264 (workflow handler — closed), #261 (asyncResult + crossoverToAsyncMs SPI shape — closed), #145 (other boundaries: entity / dispatch / auth — deferred) | Workflow handler now uses `DisallowUnknownFields` per #264. `asyncResult` / `crossoverToAsyncMs` exist in the SPI per #261. Other input boundaries remain in #145. |
+| M6 — JSON unmarshal silently drops unknown fields; `asyncResult` / `crossoverToAsyncMs` not implemented | **Resolved in v0.8.0** (workflow boundary), **Resolved in v0.9.0** (every other client input) | #264 (workflow handler — closed), #261 (asyncResult + crossoverToAsyncMs SPI shape — closed), #678 (every client-typed input), #145 | `asyncResult` / `crossoverToAsyncMs` exist in the SPI per #261. Every typed JSON a client sends — HTTP bodies, gRPC event data, compute answers, conditions, cursors — decodes through `strictjson` (cyoda-go-spi): an unknown, case-variant or duplicate member is refused. Node-to-node hand-overs, JWT claims and stored records are not client-typed input and keep their decoders. |
 | M7 — no audit logging on successful import | **Tracked** | #257 | |
 | M8 — workflow-level `Criterion` is honoured but under-documented | **Tracked** | #257 | |
 | M9 — test coverage gaps (18 enumerated) | **Tracked** | #258 (workflow import/export test-coverage sweep) | Sequenced with #255 / #256 per #258's plan. |
@@ -507,20 +507,17 @@ the rejection path exists at `handler.go:52–54`.
 
 ### M6. JSON unmarshal silently drops unknown fields
 
-**Issues:** **Resolved at the workflow boundary in v0.8.0 (#264); other
-boundaries deferred (#145).** The workflow import handler at
-`internal/domain/workflow/handler.go` now decodes the request body via a
-`json.Decoder` with `DisallowUnknownFields()` set. Unknown fields at the
-top level *and* nested anywhere in the workflow / state / transition /
-processor sub-shapes are rejected with `400 BAD_REQUEST` and the field
-name surfaced verbatim in the response detail (Go's decoder emits
-`json: unknown field "X"`). Typos in processor config
-(e.g. `"responseTimeoutsMs"`) and forward-compat extras at the workflow
-boundary no longer vanish on import. The handler additionally checks
-`Decoder.More()` after `Decode` to reject trailing JSON content after
-the first object — `Decode` consumes exactly one value, so without the
-tail check a body like `{...valid request...}{junk}` would accept
-silently.
+**Issues:** **Resolved at the workflow boundary in v0.8.0 (#264), and for
+every other client input in v0.9.0 (#678).** The workflow import body, like
+every typed JSON a client sends, decodes through `strictjson`
+(cyoda-go-spi): a member the shape does not declare — at the top level or
+nested anywhere in the workflow / state / transition / processor / criterion
+sub-shapes — a case-variant name and a duplicate name are refused with
+`400 BAD_REQUEST`, and so is anything after the request object. The detail
+names the member and its JSON Pointer (`invalid JSON at
+"/workflows/0/states/NEW/transitions/0/processors/0/config": unknown member
+name "responseTimeoutsMs"`), so typos in processor config and
+forward-compat extras no longer vanish on import.
 
 The `asyncResult` / `crossoverToAsyncMs` pair — which the OpenAPI
 advertised but the SPI did not previously carry — was added to the SPI

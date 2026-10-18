@@ -35,9 +35,11 @@ Entity and message payload contents are not typed JSON: there `"a"` and `"A"`
 are two fields, and no member is unknown. A payload still has one reading: a
 member written twice in one object, invalid UTF-8 and a lone UTF-16 surrogate
 escape are refused in an entity payload (by the unstorable-payload check, as
-before), in a message payload and in a model import's sample data, on both
-doors. `encoding/json` replaced invalid text with U+FFFD; in a typed string it
-is refused too.
+before), in a message payload, and in a model import's sample data on both
+doors. In a compute member's processor answer they make the answer unreadable,
+which fails the callout; before, the payload was read and then refused by the
+unstorable-payload check naming the field. `encoding/json` replaced invalid
+text with U+FFFD; in a typed string it is refused too.
 
 Two schema members are declared:
 

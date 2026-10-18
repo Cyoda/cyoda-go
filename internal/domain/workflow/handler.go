@@ -101,9 +101,10 @@ type importRequest struct {
 // the strict decode into SPI types cannot tell. The SPI decodes manual and
 // attachEntity into plain bool fields and schedule.delayMs into a plain
 // int64, so "omitted" and "explicit zero value" collapse to the same Go
-// value. The probe is a second, non-strict decode of the same request body
-// that declares only the field paths needed to recover the distinction;
-// every other field is ignored. It serves three rules:
+// value. The probe is a second decode of the same request body that
+// declares only the field paths needed to recover the distinction; names
+// still match exactly and a duplicate is still refused, but every member it
+// does not declare is ignored. It serves three rules:
 //   - a transition's manual is required and is never null — see
 //     checkManualSent;
 //   - an omitted attachEntity defaults to true (the OpenAPI DTOs document

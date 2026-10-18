@@ -869,6 +869,14 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
+	// Text no store can hold anywhere in the body is refused before any item
+	// runs, as on update collection; each payload is still checked on its own
+	// below, since it is a JSON-encoded string whose escapes this check
+	// cannot see.
+	if appErr := ingest.RejectUnstorable(bodyBytes); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	var rawItems []struct {
 		Model struct {
