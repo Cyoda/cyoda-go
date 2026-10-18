@@ -420,6 +420,8 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// delayMs only as its int64; the raw request says whether each was sent.
 	// An omitted manual reaches it as false, so a structural rule that reads
 	// manual as false must run after checkManualSent, not in that validator.
+	// The probe checks in turn run after it because it caps the names they
+	// copy into the 400 body (maxIdentifierLen).
 	if err := checkManualSent(probe); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
