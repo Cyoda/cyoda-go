@@ -1053,7 +1053,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `kty`, `n` and `e` are read by their exact names: a trusted key sent with
   `"N"` and `"E"` is refused (`missing n or e`), where before it registered.
   Invalid UTF-8 and a lone surrogate escape in a string are refused
-  (`encoding/json` replaced them with U+FFFD).
+  (`encoding/json` replaced them with U+FFFD). A date-time member of a body or
+  event (`pointInTime` in a gRPC event and in grouped stats, a key's
+  `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
+  seconds with `.` only: `03:04:05,5Z`, which `encoding/json` accepted, is
+  refused. The `pointInTime` query parameter still accepts it.
 
   On gRPC, an event whose `data` is `null`, or holds `null` for a required
   object, is refused as missing its required members; before, it read as a
