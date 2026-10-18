@@ -391,7 +391,9 @@ place in the condition, in words), and the fix is the spelling and place the sch
 `startNewTxOnDispatch` inside `config`; the error names the member and its
 location, and the fix is to move it beside `executionMode`.
 All sixteen rules apply to an import under **any** schema version, 1.1
-through 1.5 alike — they are validation-layer rules, not DTO-shape ones.
+through 1.5 alike: rules 1–15 are validation-layer rules, not DTO-shape
+ones, and rule 16 moves where the decoder reads a member, under every
+version alike.
 
 No rule is retroactive: a workflow already stored is not re-checked at
 import of another. A stored `responseTimeoutMs` above a bound that was lowered

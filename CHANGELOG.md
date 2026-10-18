@@ -1026,59 +1026,69 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   member's answer, every condition and every paging cursor is decoded with
   `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
   differs from a declared member only in case, an undeclared member and a
-  duplicate member are each refused, as is anything after the value. A JWK
-  keeps members of its own, but its `kty`, `n` and `e` are read by their exact
-  names: a trusted key sent with `"N"` and `"E"` is refused (`missing n or
-  e`), where before it registered. A condition whose `type` is written in
-  another case is refused as having no `type`. The gRPC
-  `EntityModelGetAllRequest` data is now decoded: an event without `id`, or
-  whose data is not its JSON object, is `InvalidArgument`, where before the
-  data was ignored. A gRPC
-  event whose `data` is `null`, or holds `null` for a required object, is
-  refused as missing its required members; before, it read as a zero event.
-  Before,
+  duplicate member are each refused, as is anything after the value. Before,
   `encoding/json` matched names ignoring case and Unicode folding, let a
   duplicate replace or merge into the first value, and on most bodies ignored
   an undeclared member, so one body could mean two things: a workflow import
-  holding `"transitions"` and `"Transitions"` stored a transition sent
-  without `manual` as automatic, a processor payload's `"Data"` was applied
-  as the entity's data, and a compute answer that misspelt `success` was read
-  as a success. HTTP answers `400` with the endpoint's code, gRPC
-  `InvalidArgument`, and a compute answer that breaks the rule is unreadable
-  and fails the callout; the message names the location as a JSON Pointer
-  (`invalid JSON at "/workflows/0": unknown member name "Name"`) and no
-  longer the server's Go types. A condition leaf that writes its operator
-  twice (two of `operatorType`, `operator`, `operation`) is refused, naming
-  the two members and the leaf's place in words, as is a
-  criterion function member placed beside `config` instead of in it, which
-  was ignored and left the callout untagged. Invalid UTF-8 and a lone
-  surrogate escape in a string are refused (`encoding/json` replaced them
-  with U+FFFD). Entity and message payload contents are not typed JSON — no
-  member there is unknown, and `"a"` and `"A"` are two fields — but a
-  payload has one reading: a member written twice in one object is refused
-  in a message payload and in model-import sample data (on both doors, which
-  also refuse anything after the sample value), as
-  it already was in an entity payload, and makes a compute member's
-  processor answer unreadable. The model validate endpoint reads its data
-  as entity create does, so it no longer calls valid what create refuses,
-  and create collection refuses unstorable text anywhere in the body, as
-  update collection does. A conditional delete whose body is only non-JSON
-  white space (a vertical tab, a no-break space) is an invalid condition;
-  before, it read as "no condition" and deleted every entity of the model. `joinedLegalEntityId`
-  on `CalculationMemberJoinEvent` (documented, not in the schema) and
-  `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
-  it) are declared in the event schemas. `audience` on a key-pair or
-  trusted-key request, `invalidateGracePeriodSec` on a trusted-key
-  registration and any member in a trusted-key invalidate body (which has
-  none; `gracePeriodSec` was ignored before) are refused like any undeclared
-  member: key pairs and trusted keys have no audience, and trusted keys no
-  grace period, so accepting them would drop what the client asked for. A gRPC entity write runs the
-  unstorable check on the whole event before the decode, as the HTTP
-  collection endpoints do, so text no store can hold — a member written
-  twice included — is answered by the event's error response
-  (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
-  See `docs/cloud-parity/strict-member-names.md` and
+  holding `"transitions"` and `"Transitions"` stored a transition sent without
+  `manual` as automatic, a processor payload's `"Data"` was applied as the
+  entity's data, and a compute answer that misspelt `success` was read as a
+  success.
+
+  HTTP answers `400` with the endpoint's code, gRPC `InvalidArgument`, and a
+  compute answer that breaks the rule is unreadable and fails the callout. The
+  message names the location as a JSON Pointer (`invalid JSON at
+  "/workflows/0": unknown member name "Name"`) and no longer the server's Go
+  types. A gRPC entity write runs the unstorable check on the whole event
+  before the decode, as the HTTP collection endpoints do, so text no store can
+  hold — a member written twice included — is answered by the event's error
+  response (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
+
+  Some refusals are named in words: a condition leaf that writes its operator
+  twice (two of `operatorType`, `operator`, `operation`) is refused naming the
+  two members and the leaf's place, and a condition whose `type` is written in
+  another case is refused as having no `type`. A criterion function member
+  placed beside `config` instead of in it is refused; before, it was ignored
+  and left the callout untagged. A JWK keeps members of its own, but its
+  `kty`, `n` and `e` are read by their exact names: a trusted key sent with
+  `"N"` and `"E"` is refused (`missing n or e`), where before it registered.
+  Invalid UTF-8 and a lone surrogate escape in a string are refused
+  (`encoding/json` replaced them with U+FFFD).
+
+  On gRPC, an event whose `data` is `null`, or holds `null` for a required
+  object, is refused as missing its required members; before, it read as a
+  zero event. The `EntityModelGetAllRequest` data is now decoded: an event
+  without `id`, or whose data is not its JSON object, is `InvalidArgument`,
+  where before the data was ignored. `joinedLegalEntityId` on
+  `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
+  on `EntityDeleteAllRequest` (no effect; Cloud's client may send it) are
+  declared in the event schemas.
+
+  `audience` on a key-pair or trusted-key request, `invalidateGracePeriodSec`
+  on a trusted-key registration and any member in a trusted-key invalidate
+  body (which has none; `gracePeriodSec` was ignored before) are refused like
+  any undeclared member: key pairs and trusted keys have no audience, and
+  trusted keys no grace period, so accepting them would drop what the client
+  asked for.
+
+  Entity and message payload contents are not typed JSON — no member there is
+  unknown, and `"a"` and `"A"` are two fields — but a payload has one reading:
+  a member written twice in one object is refused in a message payload and in
+  model-import sample data (on both doors, which also refuse anything after
+  the sample value), as it already was in an entity payload, and makes a
+  compute member's processor answer unreadable. The model validate endpoint
+  reads its data as entity create does, so it no longer calls valid what
+  create refuses, and create collection refuses unstorable text anywhere in
+  the body, as update collection does. See
+  `docs/cloud-parity/strict-member-names.md` and
   `docs/workflow-schema-versioning.md`.
+
+- **A conditional delete whose body is only non-JSON white space no longer
+  deletes every entity of the model.**
+  A body of a vertical tab, a form feed or a no-break space read as "no
+  condition" and deleted the whole model; it is now an invalid condition (`400
+  INVALID_CONDITION`) and nothing is deleted. Only an empty body, or one of
+  JSON white space (space, tab, CR, LF), means no condition.
 
 - **A processor's `startNewTxOnDispatch` is read beside `executionMode`, on
   the processor, where the OpenAPI document and `cyoda help workflows`
