@@ -383,8 +383,10 @@ field. Rule 14 touches only transitions that left `manual` out or sent
 to send `"manual": false` where the omission meant an automatic transition.
 Rule 15 touches only bodies that spell a member in another case, write it
 twice, or put a member where its shape does not declare it; the error names
-the member and its location as a JSON Pointer, and the fix is the spelling
-and place the schema gives. Rule 16 touches only processors that set
+the member and where it is (a JSON Pointer for a member in another case or out
+of place, the field's path for a member written twice, and inside a criterion
+the workflow, state and transition in words, then a pointer inside the
+criterion), and the fix is the spelling and place the schema gives. Rule 16 touches only processors that set
 `startNewTxOnDispatch` inside `config`; the error names the member and its
 location, and the fix is to move it beside `executionMode`.
 All sixteen rules apply to an import under **any** schema version, 1.1

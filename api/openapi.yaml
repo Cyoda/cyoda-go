@@ -4735,7 +4735,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityModelActionResultDto"
         "400":
-          description: Failed to read or parse request body
+          description: >-
+            The body cannot be read, is not JSON, has anything after its
+            value, writes a member twice in one object, or holds text no store
+            can hold (`BAD_REQUEST`)
           content:
             application/problem+json:
               schema:

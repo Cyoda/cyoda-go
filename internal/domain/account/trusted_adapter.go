@@ -12,6 +12,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -163,7 +164,7 @@ func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.P
 	raw, _ := json.Marshal(jwk) // decoded from JSON, so it encodes: cannot fail
 	pubKey, err := auth.ParseRSAPublicKeyFromJWK(raw)
 	if err != nil {
-		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", strictjson.Within(err, "/jwk"))
 	}
 	// n and e come from the parsed key, not the request, so the stored JWK
 	// holds them in canonical base64url (no padding, no leading zero bytes)

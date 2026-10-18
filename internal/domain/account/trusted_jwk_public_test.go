@@ -212,3 +212,17 @@ func TestRegisterTrustedKey_NonStringAlgOrUse_400(t *testing.T) {
 		})
 	}
 }
+
+// A JWK member of the wrong kind is located from the top of the request body,
+// as every other refusal of the body is.
+func TestRegisterTrustedKey_WrongKindLocatedInBody_400(t *testing.T) {
+	h := enabledHandler(t)
+	jwk := rsaJWK(t, "k1")
+	jwk["n"] = 5
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: jwk})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest || !strings.Contains(problemDetail(t, w), `"/jwk/n"`) {
+		t.Fatalf("status=%d detail=%q; want 400 locating /jwk/n", w.Code, problemDetail(t, w))
+	}
+}

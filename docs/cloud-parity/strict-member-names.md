@@ -23,7 +23,7 @@ pre-check), a workflow import and a paging cursor.
 The refusal names the location as a JSON Pointer from the top of the value
 (`invalid JSON at "/workflows/0/states/NEW/transitions/1": unknown member name
 "Manual"`) and never a type of the implementation. A workflow or transition
-criterion at workflow import is the one exception, as every other criterion
+criterion at workflow import is an exception, as every other criterion
 refusal there is: the message names the workflow, state and transition in
 words, then the location inside the criterion (`workflow "wf" state "A"
 transition "go": criterion is not a valid condition: invalid JSON at
@@ -31,11 +31,15 @@ transition "go": criterion is not a valid condition: invalid JSON at
 one answers `400 BAD_REQUEST: invalid cursor parameter` with no location. HTTP answers `400` with the
 endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
 `INVALID_CONDITION` on a search-shaped condition, `VALIDATION_FAILED` for a
-criterion at workflow import). A member written twice is found before any
-condition is parsed: inside a grouped-stats `condition` it is
-`MALFORMED_REQUEST`, and anywhere in a workflow import, an entity write or
-model validate the unstorable-payload check refuses it first, with
-`BAD_REQUEST` and `field "…" appears more than once…`. gRPC answers `InvalidArgument`, except on an
+criterion at workflow import). Where a condition sits inside a larger body, a
+member written twice in it is found before the condition is parsed: inside a
+grouped-stats `condition` it is `MALFORMED_REQUEST`. Where the body is the
+condition itself (search, conditional delete) it is `INVALID_CONDITION`.
+Anywhere in a workflow import, an entity create or update (one entity or a
+collection) or model validate, the unstorable-payload check refuses it first,
+with `BAD_REQUEST` and the field named by its path (`field
+"workflows[0].states.A.transitions[0].manual" appears more than once…`).
+Text that is not JSON is located by its byte offset. gRPC answers `InvalidArgument`, except on an
 entity write (create, update, patch and the two collection events): there the
 unstorable-payload check reads the whole event first, so a member written twice
 anywhere in the event is answered by the event's error response (`CLIENT_ERROR`,

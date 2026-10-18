@@ -109,7 +109,7 @@ Response: `200 OK`, `application/json` — format depends on converter.
 
 **POST /api/model/validate/{entityName}/{modelVersion}**
 
-Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure.
+Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure. The payload is read as entity create reads it: one that is not JSON, has anything after its value, writes a member twice in one object or holds text no store can hold is refused with `400 BAD_REQUEST`.
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
