@@ -5464,7 +5464,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/WorkflowImportSuccessDto"
         "400":
-          description: "Bad request — BAD_REQUEST: malformed JSON, unknown importMode, or text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8); VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          description: "Bad request — BAD_REQUEST: malformed JSON, unknown importMode, or text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8); VALIDATION_FAILED: structural validation failed (empty name, unknown state ref, invalid executionMode, a transition without manual, etc.); WORKFLOW_SCHEMA_VERSION_UNSUPPORTED: workflow declares an unsupported schema version; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:

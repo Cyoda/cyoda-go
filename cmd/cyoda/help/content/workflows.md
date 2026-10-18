@@ -605,7 +605,7 @@ Static validation runs on the incoming request before saving. Any of the followi
 - A transition whose `manual` is omitted or `null`. `manual` has no default: send `true` or `false`.
 - A transition `schedule` that breaks a rule under *Import-time validation* in SCHEDULED TRANSITIONS above.
 - A processor `type` other than `"externalized"` (an omitted or empty `type` is stored as `"externalized"`).
-- An `annotations` or `criterionAnnotations` value that is not a JSON object, or is larger than 64 KB.
+- An `annotations` or `criterionAnnotations` value that is neither a JSON object nor `null`, or that is larger than 64 KB compacted. `null` reads as absent.
 - Unknown `executionMode` value on any processor (allowed: `SYNC`, `ASYNC_SAME_TX`, `ASYNC_NEW_TX`, `COMMIT_BEFORE_DISPATCH`, or empty).
 - Unknown `retryPolicy` value on any processor, any function condition in a criterion (at any depth) or any `schedule.function` (allowed: `NONE`, `FIXED`, or empty).
 - A function condition in a criterion, at any depth, whose `function.config` cannot be read (for example a `responseTimeoutMs` that is not an integer).
