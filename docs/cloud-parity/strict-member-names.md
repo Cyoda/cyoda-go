@@ -23,19 +23,27 @@ The refusal names the location as a JSON Pointer from the top of the value
 "Manual"`) and never a type of the implementation. HTTP answers `400` with the
 endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
 `INVALID_CONDITION` on a search-shaped condition, `VALIDATION_FAILED` for a
-criterion at workflow import). gRPC answers `InvalidArgument`. A compute
-member's answer that breaks the rule is unreadable and fails the callout.
+criterion at workflow import). gRPC answers `InvalidArgument`, except on an
+entity write (create, update, patch and the two collection events): there the
+unstorable-payload check reads the whole event first, so a member written twice
+anywhere in the event is answered by the event's error response (`CLIENT_ERROR`,
+`BAD_REQUEST: field "…" appears more than once…`, the field named from the top
+of the event). A compute member's answer that breaks the rule is unreadable and
+fails the callout.
 
 Entity and message payload contents are not typed JSON: there `"a"` and `"A"`
-are two fields. A duplicate name inside an entity payload stays refused by the
-unstorable-payload check, as before.
+are two fields, and no member is unknown. A payload still has one reading: a
+member written twice in one object, invalid UTF-8 and a lone UTF-16 surrogate
+escape are refused in an entity payload (by the unstorable-payload check, as
+before), in a message payload and in a model import's sample data, on both
+doors. `encoding/json` replaced invalid text with U+FFFD; in a typed string it
+is refused too.
 
-Two schema members are declared so that what Cloud's client sends is not
-refused:
+Two schema members are declared:
 
 | Event | Member | Meaning |
 |---|---|---|
-| `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present and names another tenant, the join is refused with `PermissionDenied`. Documented in `cyoda help grpc`; now in the schema too. |
+| `CalculationMemberJoinEvent` | `joinedLegalEntityId` | Optional. The member joins its token's tenant; when this is present and names another tenant, the join is refused with `PermissionDenied`. A cyoda-go contract, documented in `cyoda help grpc` and read by the tenant check, which the schema left out; Cloud has the member only on `CalculationMemberGreetEvent`. |
 | `EntityDeleteAllRequest` | `pageSize` | No effect: the selection is streamed. Cloud's schema declares it, so Cloud's client may send it. |
 
 Three members Cloud's client sends are refused, because the server has nothing
@@ -58,10 +66,13 @@ a compute answer that misspelt `success` was read as a success.
 
 ## Cloud today
 
-Cloud's REST mapper is Jackson 3 under Spring Boot 4.1.1. Names match case
-sensitively, as here. `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES` and
-`StreamReadFeature.STRICT_DUPLICATE_DETECTION` are off by Jackson 3's defaults,
-and `CaasJsonMapperBuilderCustomizer` enables neither, so an unknown member is
+Cloud's REST mapper is Jackson 3 under Spring Boot 4.1.1, configured with
+`spring.jackson.use-jackson2-defaults=true` (the deployed configs set it). Names
+match case sensitively, as here. In that mode Spring Boot's
+`JacksonAutoConfiguration` applies `configureForJackson2()` and explicitly
+disables `DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES`;
+`StreamReadFeature.STRICT_DUPLICATE_DETECTION` is off by default; and
+`CaasJsonMapperBuilderCustomizer` enables neither. So an unknown member is
 ignored and the last of two duplicate names is kept. `@JsonAlias` on the
 operator lets two spellings in one leaf through, the last one winning.
 
@@ -70,6 +81,8 @@ operator lets two spellings in one leaf through, the last one winning.
 - Refuse an unknown member and a duplicate member name in every client-typed
   body: REST bodies, CloudEvent `data`, compute answers, conditions.
 - Refuse a condition leaf that writes its operator twice.
-- Declare `joinedLegalEntityId` on `CalculationMemberJoinEvent` (the tenant
-  check is described above) and keep `pageSize` declared on
-  `EntityDeleteAllRequest` with no effect.
+- Refuse a duplicate member name, invalid UTF-8 and a lone surrogate escape in
+  an entity payload, a message payload and model-import sample data.
+- Declare `joinedLegalEntityId` on `CalculationMemberJoinEvent` and check it as
+  described above, and keep `pageSize` declared on `EntityDeleteAllRequest`
+  with no effect.

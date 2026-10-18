@@ -7,16 +7,21 @@ import (
 	"io"
 	"strconv"
 	"strings"
+
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // ParseJSON parses a JSON reader into a generic any tree.
 // Numbers are preserved as json.Number to maintain precision for large
-// integers and big decimals.
+// integers and big decimals. The data has one reading: a member written
+// twice in one object, and anything after the value, are refused.
 func ParseJSON(r io.Reader) (any, error) {
-	dec := json.NewDecoder(r)
-	dec.UseNumber()
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("json parse: %w", err)
+	}
 	var raw any
-	if err := dec.Decode(&raw); err != nil {
+	if err := strictjson.Decode(data, &raw, strictjson.PreserveNumbers); err != nil {
 		return nil, fmt.Errorf("json parse: %w", err)
 	}
 	return raw, nil

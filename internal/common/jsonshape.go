@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // JSONErrorShape renders a decode/encode error for the server log without the
@@ -14,10 +16,17 @@ import (
 // struct field named (UnmarshalTypeError; the Struct and Field names come from
 // the caller's own fixed request/response shapes, never from payload content).
 //
+// A strictjson refusal gives its class (unknown member, duplicate member, …)
+// and not its text, which quotes a member name — possibly a tenant's data key.
+//
 // It lives here because every boundary that decodes a payload written by
 // someone else needs the same spelling: the compute-member legs in
 // internal/grpc, and the node-to-node hand-over in internal/cluster/dispatch.
 func JSONErrorShape(err error) string {
+	var strict *strictjson.Error
+	if errors.As(err, &strict) {
+		return fmt.Sprintf("%T (%s)", strict, strict.Class())
+	}
 	var syn *json.SyntaxError
 	if errors.As(err, &syn) {
 		return fmt.Sprintf("%T at offset %d", syn, syn.Offset)

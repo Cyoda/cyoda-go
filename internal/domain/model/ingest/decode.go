@@ -10,8 +10,8 @@ import (
 
 // DecodeJSONPreservingNumbers is the precision-preserving counterpart to
 // json.Unmarshal: numeric leaves arrive as json.Number rather than float64,
-// so callers can choose Int64()/Float64()/string preservation. Mirrors
-// importer.ParseJSON's UseNumber() behavior.
+// so callers can choose Int64()/Float64()/string preservation, as
+// importer.ParseJSON gives them.
 //
 // Like json.Unmarshal (and unlike a bare Decoder.Decode), data must hold
 // exactly one JSON value. Decode alone stops at the end of the first value and

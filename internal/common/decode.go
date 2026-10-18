@@ -1,6 +1,7 @@
 package common
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,7 +17,11 @@ import (
 func DecodeBoundedJSON(w http.ResponseWriter, r *http.Request, max int64, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, max)
 	data, err := io.ReadAll(r.Body)
-	if err != nil {
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		return fmt.Errorf("request body exceeds %d bytes", max)
+	case err != nil:
 		return fmt.Errorf("read body: %w", err)
 	}
 	return strictjson.Decode(data, dst)

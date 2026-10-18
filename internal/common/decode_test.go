@@ -32,8 +32,13 @@ func TestDecodeBoundedJSON_OverSize(t *testing.T) {
 	r := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"x":"`+big+`"}`)))
 	w := httptest.NewRecorder()
 	var d dst
-	if err := common.DecodeBoundedJSON(w, r, 1<<20, &d); err == nil {
+	err := common.DecodeBoundedJSON(w, r, 1<<20, &d)
+	if err == nil {
 		t.Fatal("expected error")
+	}
+	// The limit in the server's words, not net/http's.
+	if want := "request body exceeds 1048576 bytes"; err.Error() != want {
+		t.Errorf("error %q, want %q", err, want)
 	}
 }
 

@@ -80,15 +80,11 @@ func (h *Handler) NewMessage(w http.ResponseWriter, r *http.Request, subject str
 		return
 	}
 
-	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud behavior).
-	// strictjson.Decode above already validated envelope.Payload as a JSON value, so
-	// json.Compact must succeed. If it fails, that is an invariant violation caused
-	// by a future code path constructing Payload by hand instead of via Decode.
+	// Compact the payload JSON to normalize whitespace (matches Cyoda Cloud
+	// behavior). strictjson.Decode above validated envelope.Payload as one
+	// JSON value, so Compact cannot fail.
 	var compacted bytes.Buffer
-	if err := json.Compact(&compacted, envelope.Payload); err != nil {
-		common.WriteError(w, r, common.Internal("payload validation invariant broken", err))
-		return
-	}
+	_ = json.Compact(&compacted, envelope.Payload)
 	payloadString := compacted.String()
 
 	attributed, executor := spi.AttributionFor(opCtx)

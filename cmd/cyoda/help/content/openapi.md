@@ -120,7 +120,7 @@ All paths in the spec are relative to the `servers[0].url`, which is set at runt
 
 ## REQUEST BODIES
 
-A request body spells its member names exactly as the spec declares them, each once. A name in another letter case is not that member, a member the operation's schema does not declare is refused, a member written twice is refused, and so is anything after the body's JSON value. The refusal is `400` with the operation's code, and its detail names the member and where it is, as a JSON Pointer: `invalid JSON at "/workflows/0": unknown member name "Name"`. The rule covers every typed body and every condition; the contents of an entity or message payload are your data and are not checked against it. `cyoda help cloudevents` gives the same rule for the gRPC events.
+A request body spells its member names exactly as the spec declares them, each once. A name in another letter case is not that member, a member the operation's schema does not declare is refused, a member written twice is refused, and so is anything after the body's JSON value. The refusal is `400` with the operation's code, and its detail names the member and where it is, as a JSON Pointer: `invalid JSON at "/workflows/0": unknown member name "Name"`. The rule covers every typed body and every condition. Invalid UTF-8 and a lone surrogate escape in a string are refused too. The contents of an entity or message payload, and model-import sample data, are your data: no member there is unknown, and `"a"` and `"A"` are two fields, but a member written twice in one object is refused there as well. `cyoda help cloudevents` gives the same rule for the gRPC events.
 
 ## AUTHENTICATION
 

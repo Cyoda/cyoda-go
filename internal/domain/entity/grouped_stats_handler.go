@@ -104,7 +104,7 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
 			common.ErrCodeMalformedRequest,
-			err.Error(),
+			"invalid request body: "+err.Error(),
 		))
 		return
 	}

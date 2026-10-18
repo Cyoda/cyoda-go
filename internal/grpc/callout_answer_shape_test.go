@@ -78,16 +78,23 @@ func TestHandleCriteriaResponse_AbsentMatchesStaysAbsent(t *testing.T) {
 // true, turning a failure into a success; a case variant, a duplicate and an
 // unknown member are refused the same way. Each makes the answer unreadable.
 func TestHandleResponses_MemberNamesAreExact(t *testing.T) {
-	handlers := map[string]func(*Member, json.RawMessage){
-		"processor": handleProcessorResponse,
-		"criteria":  handleCriteriaResponse,
-		"function":  handleFunctionResponse,
+	// Each body is otherwise a valid answer of its kind, so the one wrong
+	// member is what makes it unreadable.
+	handlers := map[string]struct {
+		handle func(*Member, json.RawMessage)
+		rest   string
+	}{
+		"processor": {handleProcessorResponse, `"payload":{"type":"TREE","data":{}}`},
+		"criteria":  {handleCriteriaResponse, `"matches":true`},
+		"function":  {handleFunctionResponse, `"resultKind":"Boolean","result":true`},
 	}
-	for kind, handle := range handlers {
+	for kind, h := range handlers {
+		handle := h.handle
 		for name, body := range map[string]string{
-			"misspelt":     `{"requestId":"r-1","sucess":false,"matches":true,"error":{"code":"E","message":"failed"}}`,
-			"case variant": `{"requestId":"r-1","Success":false,"matches":true}`,
-			"duplicate":    `{"requestId":"r-1","success":false,"success":true,"matches":true}`,
+			"misspelt":     `{"requestId":"r-1","sucess":false,"error":{"code":"E","message":"failed"},` + h.rest + `}`,
+			"case variant": `{"requestId":"r-1","Success":false,` + h.rest + `}`,
+			"duplicate":    `{"requestId":"r-1","success":false,"success":true,` + h.rest + `}`,
+			"control":      `{"requestId":"r-1","success":false,"error":{"code":"E","message":"failed"},` + h.rest + `}`,
 		} {
 			t.Run(kind+"/"+name, func(t *testing.T) {
 				registry := NewMemberRegistry()
@@ -99,6 +106,12 @@ func TestHandleResponses_MemberNamesAreExact(t *testing.T) {
 				}
 				handle(member, json.RawMessage(body))
 				resp := <-ch
+				if name == "control" {
+					if resp.Unreadable != "" || resp.Success {
+						t.Errorf("a valid failure answer read as success=%t unreadable=%q", resp.Success, resp.Unreadable)
+					}
+					return
+				}
 				if resp.Unreadable != unreadableUndecodable {
 					t.Errorf("answer read as success=%t unreadable=%q; want it unreadable as undecodable", resp.Success, resp.Unreadable)
 				}

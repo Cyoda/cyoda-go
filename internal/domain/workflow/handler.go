@@ -276,15 +276,17 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// workflows; the response detail names the member and where it is.
 	var req importRequest
 	if err := strictjson.Decode(data, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, err.Error()))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
 	// Second decode of the same bytes to recover the presence signals the
 	// strict decode above collapsed into the SPI's zero values (see
 	// presenceProbe). The probe reads only some members, so it allows the
-	// rest; data was already proven to match this shape by the strict
-	// decode, so this decode cannot fail.
+	// rest. It fails only if presenceProbe has drifted from the request
+	// shape; then the import is refused, since a probe read as empty would
+	// pass the manual check vacuously and leave every omitted attachEntity
+	// false instead of its default, true.
 	var probe presenceProbe
 	if err := strictjson.Decode(data, &probe, strictjson.AllowUnknownMembers); err != nil {
 		common.WriteError(w, r, common.Internal("failed to re-decode workflow import request", err))

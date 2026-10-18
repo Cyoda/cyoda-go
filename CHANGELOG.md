@@ -1040,16 +1040,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   longer the server's Go types. A condition leaf that writes its operator
   twice (two of `operatorType`, `operator`, `operation`) is refused, as is a
   criterion function member placed beside `config` instead of in it, which
-  was ignored and left the callout untagged. Entity and message payload
-  contents are not typed JSON and keep their own rules. `joinedLegalEntityId`
+  was ignored and left the callout untagged. Invalid UTF-8 and a lone
+  surrogate escape in a string are refused (`encoding/json` replaced them
+  with U+FFFD). Entity and message payload contents are not typed JSON — no
+  member there is unknown, and `"a"` and `"A"` are two fields — but a
+  payload has one reading: a member written twice in one object is refused
+  in a message payload and in model-import sample data, on both doors, as
+  it already was in an entity payload. `joinedLegalEntityId`
   on `CalculationMemberJoinEvent` (documented, not in the schema) and
   `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
   it) are declared in the event schemas. `audience` on a key-pair or
   trusted-key request and `invalidateGracePeriodSec` on a trusted-key
   registration are refused like any undeclared member: key pairs and trusted
   keys have no audience, and trusted keys no grace period, so accepting them
-  would drop what the client asked for. A gRPC entity write's unstorable
-  payload is refused by the unstorable check, as on HTTP, before the decode.
+  would drop what the client asked for. A gRPC entity write runs the
+  unstorable check on the whole event before the decode, as the HTTP
+  collection endpoints do, so text no store can hold — a member written
+  twice included — is answered by the event's error response
+  (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
   See `docs/cloud-parity/strict-member-names.md` and
   `docs/workflow-schema-versioning.md`.
 
