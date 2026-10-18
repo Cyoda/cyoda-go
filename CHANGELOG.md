@@ -1427,6 +1427,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A workflow import that breaks one rule in several states is refused naming
+  the same state every time.** The checks walked the states in Go's random map
+  order, so the `400 VALIDATION_FAILED` named any one of them. They now walk
+  the states in sorted order and name the first. The refusal of
+  `startNewTxOnDispatch` outside `COMMIT_BEFORE_DISPATCH` now names the state
+  too, as every other import refusal already did.
+
 - **A `COMMIT_BEFORE_DISPATCH` processor that fails after its segment boundary
   committed has its `STATE_PROCESS_RESULT` in the audit trail.** The record
   was written in the transaction the boundary had already committed, every

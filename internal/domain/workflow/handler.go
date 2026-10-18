@@ -418,6 +418,8 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	applyProcessorTypeDefault(incoming)
 	// The structural validator above sees manual only as the SPI's bool and
 	// delayMs only as its int64; the raw request says whether each was sent.
+	// An omitted manual reaches it as false, so a structural rule that reads
+	// manual as false must run after checkManualSent, not in that validator.
 	if err := checkManualSent(probe); err != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeValidationFailed, err.Error()))
 		return
