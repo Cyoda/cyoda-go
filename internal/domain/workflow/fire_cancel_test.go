@@ -185,7 +185,7 @@ func TestRunCancel_CalloutsAfterCBDSeeTheCancellation(t *testing.T) {
 	}
 	startNewTx := true
 	cbdNewTx := safeProc("p2", ExecutionModeCommitBeforeDispatch)
-	cbdNewTx.Config.StartNewTxOnDispatch = &startNewTx
+	cbdNewTx.StartNewTxOnDispatch = &startNewTx
 	var cases []callCase
 	// One row per processor dispatch site. An ASYNC_NEW_TX error does not
 	// fail the transition; the run still ends cancelled at the next

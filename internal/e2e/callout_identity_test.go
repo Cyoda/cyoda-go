@@ -300,7 +300,7 @@ func TestCalloutIdentity_ScheduledFireCBDOutsideTx(t *testing.T) {
 		return map[string]any{"name": "Test Order", "amount": 777, "status": "draft"}, nil
 	})
 	proc := sProc("cid-sched-cbd-proc", "COMMIT_BEFORE_DISPATCH", "", true)
-	proc["config"].(map[string]any)["startNewTxOnDispatch"] = false
+	proc["startNewTxOnDispatch"] = false
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("cid-sched-cbd-wf", 300, 0, proc))
 
 	alice := oboTokenOn(t, h.baseURL, h.token(t), "alice")

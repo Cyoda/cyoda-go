@@ -434,7 +434,7 @@ func joinedCommitOuterWorkflow(name, proc string) string {
 // says.
 func joinedCommitTargetWorkflow(name, proc string, startNewTx bool, shape joinedCommitShape) string {
 	cbd := fmt.Sprintf(`"processors": [{"type": "externalized", "name": %q, "executionMode": "COMMIT_BEFORE_DISPATCH",
-		"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": %t}}]`, proc, startNewTx)
+		"startNewTxOnDispatch": %t, "config": {"attachEntity": true, "calculationNodesTags": ""}}]`, proc, startNewTx)
 	var states string
 	switch shape {
 	case shapeOnCreate:

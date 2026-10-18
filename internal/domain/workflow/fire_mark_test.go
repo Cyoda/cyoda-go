@@ -194,7 +194,7 @@ func unsafeAtEverySite() []struct {
 } {
 	startNewTx := true
 	cbdNewTx := unsafeProc("p1", ExecutionModeCommitBeforeDispatch)
-	cbdNewTx.Config.StartNewTxOnDispatch = &startNewTx
+	cbdNewTx.StartNewTxOnDispatch = &startNewTx
 	return []struct {
 		name string
 		proc spi.ProcessorDefinition

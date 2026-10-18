@@ -1449,8 +1449,8 @@ func TestImport_UnknownField_Typo_Returns400(t *testing.T) {
 // TestImport_KnownSPIFields_StillAccepted is the coordination fence for
 // the strict-decoder switch: SPI fields that legitimately exist on
 // ProcessorConfig (asyncResult, retryPolicy, context,
-// calculationNodesTags, startNewTxOnDispatch, ...) must NOT be rejected
-// as unknown. If a future SPI tag drops or renames any of these on the
+// calculationNodesTags, ...) and on the processor (startNewTxOnDispatch)
+// must NOT be rejected as unknown. If a future SPI tag drops or renames any of these on the
 // wire, this test fails loudly instead of silently breaking import for
 // clients sending the fields.
 //
@@ -1467,11 +1467,11 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 	// asyncResult=false + crossoverToAsyncMs omitted is the validator-
 	// accepted combination (see validate_import_test.go); both live on
 	// ProcessorConfig (the processor's `config` sub-shape). Other
-	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags,
-	// startNewTxOnDispatch — are exercised here at their valid defaults
-	// (startNewTxOnDispatch=true requires COMMIT_BEFORE_DISPATCH, so the
-	// fence uses false with SYNC) so the strict decoder must pass them
-	// through unchanged.
+	// ProcessorConfig fields — retryPolicy, context, calculationNodesTags —
+	// and the processor's startNewTxOnDispatch are exercised here at their
+	// valid defaults (startNewTxOnDispatch=true requires
+	// COMMIT_BEFORE_DISPATCH, so the fence uses false with SYNC) so the
+	// strict decoder must pass them through unchanged.
 	body := `{
 		"importMode":"REPLACE",
 		"workflows":[{
@@ -1481,12 +1481,12 @@ func TestImport_KnownSPIFields_StillAccepted(t *testing.T) {
 					"name":"go","next":"S2","manual":true,
 					"processors":[{
 						"type":"externalized","name":"p","executionMode":"SYNC",
+						"startNewTxOnDispatch":false,
 						"config":{
 							"asyncResult":false,
 							"retryPolicy":"NONE",
 							"context":"tenant-scoped",
-							"calculationNodesTags":"workers",
-							"startNewTxOnDispatch":false
+							"calculationNodesTags":"workers"
 						}
 					}]
 				}]},
@@ -2004,7 +2004,7 @@ func TestImport_RefusalNamesFirstStateInOrder(t *testing.T) {
 			"unknown executionMode"},
 		{"startNewTxOnDispatch outside COMMIT_BEFORE_DISPATCH",
 			states(`{"name": "NAME", "next": "DONE", "manual": true,
-				"processors": [{"name": "p", "executionMode": "SYNC", "config": {"calculationNodesTags": "t", "startNewTxOnDispatch": true}}]}`),
+				"processors": [{"name": "p", "executionMode": "SYNC", "startNewTxOnDispatch": true, "config": {"calculationNodesTags": "t"}}]}`),
 			"startNewTxOnDispatch=true is only valid"},
 		{"state annotations",
 			`"A": {"annotations": [], "transitions": []},
@@ -2029,5 +2029,54 @@ func TestImport_RefusalNamesFirstStateInOrder(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestImport_StartNewTxOnDispatch_IsAProcessorMember: startNewTxOnDispatch
+// qualifies executionMode, so the contract places it beside it on the
+// processor. There it is accepted and exported in the same place; inside
+// config it is a member config does not declare, and is refused.
+func TestImport_StartNewTxOnDispatch_IsAProcessorMember(t *testing.T) {
+	srv := newTestServer(t)
+	importModel(t, srv.URL, "Order", 1)
+	wf := func(processor string) string {
+		return `{"importMode": "REPLACE", "workflows": [{
+			"version": "1.1", "name": "wf", "initialState": "A",
+			"states": {"A": {"transitions": [{"name": "go", "next": "B", "manual": true,
+				"processors": [` + processor + `]}]}, "B": {"transitions": []}}}]}`
+	}
+
+	resp := doWorkflowImport(t, srv.URL, "Order", 1, wf(`{"name": "p", "executionMode": "COMMIT_BEFORE_DISPATCH",
+		"startNewTxOnDispatch": true, "config": {"calculationNodesTags": "t"}}`))
+	if b, _ := io.ReadAll(resp.Body); resp.StatusCode != http.StatusOK {
+		t.Fatalf("on the processor: %d %s", resp.StatusCode, b)
+	}
+	resp.Body.Close()
+	exp := doWorkflowExport(t, srv.URL, "Order", 1)
+	exported, _ := io.ReadAll(exp.Body)
+	exp.Body.Close()
+	var out struct {
+		Workflows []struct {
+			States map[string]struct {
+				Transitions []struct {
+					Processors []map[string]json.RawMessage `json:"processors"`
+				} `json:"transitions"`
+			} `json:"states"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(exported, &out); err != nil || len(out.Workflows) != 1 {
+		t.Fatalf("export: %v %s", err, exported)
+	}
+	proc := out.Workflows[0].States["A"].Transitions[0].Processors[0]
+	if string(proc["startNewTxOnDispatch"]) != "true" || strings.Contains(string(proc["config"]), "startNewTxOnDispatch") {
+		t.Errorf("exported processor: %s", exported)
+	}
+
+	resp = doWorkflowImport(t, srv.URL, "Order", 1, wf(`{"name": "p", "executionMode": "COMMIT_BEFORE_DISPATCH",
+		"config": {"calculationNodesTags": "t", "startNewTxOnDispatch": true}}`))
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), `unknown member name \"startNewTxOnDispatch\"`) {
+		t.Errorf("inside config: %d %s; want 400 naming the member", resp.StatusCode, b)
 	}
 }

@@ -50,7 +50,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 				{Name: "GO", Next: "DONE", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{Type: ProcessorTypeExternalized, Name: "charge", ExecutionMode: mode,
-							Config: spi.ProcessorConfig{StartNewTxOnDispatch: startNewTx}},
+							StartNewTxOnDispatch: startNewTx},
 					}},
 			}},
 			"DONE": {},

@@ -523,10 +523,10 @@ func (h *segmentGuardHarness) registerCBDProcessor(name string) {
 	startNewTx := true
 	st := h.wf.States["A"]
 	st.Transitions[0].Processors = []spi.ProcessorDefinition{{
-		Type:          ProcessorTypeExternalized,
-		Name:          name,
-		ExecutionMode: ExecutionModeCommitBeforeDispatch,
-		Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+		Type:                 ProcessorTypeExternalized,
+		Name:                 name,
+		ExecutionMode:        ExecutionModeCommitBeforeDispatch,
+		StartNewTxOnDispatch: &startNewTx,
 	}}
 	h.wf.States["A"] = st
 	h.dispatchProcessor = func(_ context.Context, _ *spi.Entity, _ spi.ProcessorDefinition, _, _, txID string) (*spi.Entity, error) {

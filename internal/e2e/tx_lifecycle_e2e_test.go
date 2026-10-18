@@ -191,7 +191,7 @@ func txLifeSegmentWF(name, processor, criterion string) string {
 				"NONE":   {"transitions": [{"name": "init", "next": "STAGED", "manual": false,
 					"processors": [{"type": "externalized", "name": %q,
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]}]},
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]}]},
 				"STAGED": {"transitions": [{"name": "gate", "next": "DONE", "manual": false,
 					"criterion": {"type":"function","function":{"name":%q}}}]},
 				"DONE":   {}

@@ -51,7 +51,9 @@ func TestParseRSAPublicKeyFromJWK_MemberNamesAreExact(t *testing.T) {
 	for name, jwk := range map[string]string{
 		"case-variant n and e": `{"kty":"RSA","N":"` + n + `","E":"` + e + `"}`,
 		"case-variant kty":     `{"KTY":"RSA","n":"` + n + `","e":"` + e + `"}`,
-		"duplicate n":          `{"kty":"RSA","n":"` + n + `","n":"AQAB","e":"` + e + `"}`,
+		// The valid modulus last: read leniently, the last duplicate wins
+		// and the key would be accepted.
+		"duplicate n": `{"kty":"RSA","n":"AQAB","n":"` + n + `","e":"` + e + `"}`,
 	} {
 		if _, err := auth.ParseRSAPublicKeyFromJWK([]byte(jwk)); err == nil {
 			t.Errorf("%s: accepted", name)

@@ -2551,10 +2551,10 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 				{Name: "CALLOUT", Next: "S_post", Manual: false,
 					Processors: []spi.ProcessorDefinition{
 						{
-							Type:          ProcessorTypeExternalized,
-							Name:          "cbd-proc",
-							ExecutionMode: ExecutionModeCommitBeforeDispatch,
-							Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &tt},
+							Type:                 ProcessorTypeExternalized,
+							Name:                 "cbd-proc",
+							ExecutionMode:        ExecutionModeCommitBeforeDispatch,
+							StartNewTxOnDispatch: &tt,
 						},
 					}},
 			}},

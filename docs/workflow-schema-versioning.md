@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the fifteen tightenings below
+Every payload 1.4 accepted that does not fall under the sixteen tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Fifteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Sixteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -351,6 +351,13 @@ they are recorded here, under the rubric of §"Tightening releases":
     twice (two of `operatorType`, `operator`, `operation`) is refused as a
     duplicate is. Rubric point 1 applies: fail loud where the old value was
     ignored or merged.
+16. **A processor's `startNewTxOnDispatch` is read on the processor**, beside
+    `executionMode`, where the published schema has always placed it. The
+    implementation read it inside `config`, so the documented placement was
+    refused as an unknown member and the undocumented one worked. Now the
+    documented placement is accepted and exported, and the member inside
+    `config` is refused as unknown. This rejects configurations that worked,
+    so it is recorded here.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -377,8 +384,10 @@ to send `"manual": false` where the omission meant an automatic transition.
 Rule 15 touches only bodies that spell a member in another case, write it
 twice, or put a member where its shape does not declare it; the error names
 the member and its location as a JSON Pointer, and the fix is the spelling
-and place the schema gives.
-All fifteen rules apply to an import under **any** schema version, 1.1
+and place the schema gives. Rule 16 touches only processors that set
+`startNewTxOnDispatch` inside `config`; the error names the member and its
+location, and the fix is to move it beside `executionMode`.
+All sixteen rules apply to an import under **any** schema version, 1.1
 through 1.5 alike — they are validation-layer rules, not DTO-shape ones.
 
 No rule is retroactive: a workflow already stored is not re-checked at

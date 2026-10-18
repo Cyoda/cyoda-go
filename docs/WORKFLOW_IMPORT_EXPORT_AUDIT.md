@@ -634,8 +634,9 @@ mask several of the H findings above).
   so the round-trip is stable.
 - `TransitionDefinition.Disabled` **is** `omitempty` (`types.go:134`),
   so `false` round-trips as missing — benign, both decode to `false`.
-- `ProcessorConfig.StartNewTxOnDispatch` is `*bool` with `omitempty`
-  (`types.go:160`), so `nil` and explicit `false` both serialize as missing
+- `ProcessorDefinition.StartNewTxOnDispatch` (on the processor, beside
+  `executionMode`) is `*bool` with `omitempty`, so `nil` and explicit
+  `false` both serialize as missing
   and re-import as `nil`. Benign semantically, but a nil-vs-false
   distinction at the wire is lost.
 
@@ -727,7 +728,7 @@ and the OpenAPI-generated DTO reference the field.
 | `ProcessorConfig.ResponseTimeoutMs` | USED (dispatcher) | `internal/grpc/dispatch.go:104, 248` (defaults to 30 s) |
 | `ProcessorConfig.RetryPolicy` | IMPORT-VALIDATED | rejected at import unless ∈ {NONE, FIXED, ""} (validate.go); no dispatch consumer yet — see #254 |
 | `ProcessorConfig.Context` | USED (dispatcher) | `internal/grpc/dispatch.go:71, 221` — pass-through string forwarded as `parameters` JSON node; resolved in v0.8.0 |
-| `ProcessorConfig.StartNewTxOnDispatch` | USED | `engine_processors.go:205` (only when COMMIT_BEFORE_DISPATCH; validated by `validate.go:51`) |
+| `ProcessorDefinition.StartNewTxOnDispatch` | USED | `engine_processors.go:433` (only when COMMIT_BEFORE_DISPATCH; validated by `validate.go:767`) |
 
 The dispatcher consumption matters: every claim about a "dead" config field
 was checked outside the engine package as well. Of the boundary-accepted

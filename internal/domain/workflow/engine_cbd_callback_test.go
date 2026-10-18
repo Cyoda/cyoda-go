@@ -38,7 +38,7 @@ func cbdNewTxProc(name string) spi.ProcessorDefinition {
 	startNewTx := true
 	return spi.ProcessorDefinition{
 		Type: ProcessorTypeExternalized, Name: name, ExecutionMode: ExecutionModeCommitBeforeDispatch,
-		Config: spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+		StartNewTxOnDispatch: &startNewTx,
 	}
 }
 

@@ -523,7 +523,7 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 	}
 	var parsedData any
 	if err := ingest.DecodeJSONPreservingNumbers(data, &parsedData); err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
+		return common.InvalidBody(err)
 	}
 
 	validationErrors := schema.Validate(modelNode, parsedData)

@@ -97,7 +97,7 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.M2M_CLIENT_CAP_REACHED` — `400` — not retryable — `POST /clients`: the tenant already holds `CYODA_IAM_M2M_CLIENT_MAX_PER_TENANT` M2M clients
 - `errors.M2M_CLIENT_EXISTS` — `409` — not retryable — `POST /clients?clientId=`: the tenant already holds a client with this id
 - `errors.M2M_CLIENT_NOT_FOUND` — `404` — not retryable — `/clients` delete or reset: the `clientId` does not exist in the caller's tenant (another tenant's client included)
-- `errors.MALFORMED_REQUEST` — `400` — not retryable — grouped-stats request body could not be read or decoded (invalid JSON, unknown top-level field, non-RFC 3339 `pointInTime`)
+- `errors.MALFORMED_REQUEST` — `400` — not retryable — grouped-stats request body could not be read or decoded (invalid JSON, an undeclared, case-variant or duplicate member, non-RFC 3339 `pointInTime`)
 - `errors.MISSING_GROUP_BY` — `400` — not retryable — grouped-stats request omitted `groupBy` or sent it empty
 - `errors.MODEL_ADMIN_IN_JOINED_TRANSACTION` — `400` — not retryable — a request carrying a transaction token asked to change a model or its workflows (import, delete, change level, lock, unlock, unique keys, workflow import); model and workflow administration never runs inside a transaction, and the refusal precedes the token's verification
 - `errors.MODEL_ALREADY_LOCKED` — `409` — not retryable — admin operation requires `UNLOCKED` state but the model is `LOCKED` (relock attempt or re-import on a locked model)

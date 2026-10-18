@@ -205,6 +205,14 @@ func procWorkflowJSON(wfName, procName, mode string, config map[string]any) stri
 	for k, v := range config {
 		cfg[k] = v
 	}
+	return oneProcWorkflowJSON(wfName, map[string]any{
+		"type": "externalized", "name": procName, "executionMode": mode, "config": cfg,
+	})
+}
+
+// oneProcWorkflowJSON builds a NONE -> DONE workflow whose one automated
+// transition carries the processor proc, as given.
+func oneProcWorkflowJSON(wfName string, proc map[string]any) string {
 	b, _ := json.Marshal(map[string]any{
 		"importMode": "REPLACE",
 		"workflows": []any{map[string]any{
@@ -212,9 +220,7 @@ func procWorkflowJSON(wfName, procName, mode string, config map[string]any) stri
 			"states": map[string]any{
 				"NONE": map[string]any{"transitions": []any{map[string]any{
 					"name": "init", "next": "DONE", "manual": false,
-					"processors": []any{map[string]any{
-						"type": "externalized", "name": procName, "executionMode": mode, "config": cfg,
-					}},
+					"processors": []any{proc},
 				}}},
 				"DONE": map[string]any{},
 			},

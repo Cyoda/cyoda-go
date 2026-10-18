@@ -171,7 +171,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 	}
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{
@@ -362,7 +362,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 	}
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{

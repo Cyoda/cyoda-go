@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 )
@@ -155,7 +156,7 @@ func ValidateGroupedStatsRequest(r GroupedStatsRequest, maxBuckets int) (*Valida
 		c, err := predicate.ParseCondition(r.Condition)
 		if err != nil {
 			return nil, &GroupedStatsValidationError{
-				Code: common.ErrCodeInvalidCondition, Message: "invalid condition: " + err.Error()}
+				Code: common.ErrCodeInvalidCondition, Message: "invalid condition: " + strictjson.Within(err, "/condition").Error()}
 		}
 		cond = c
 	}

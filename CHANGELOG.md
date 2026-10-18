@@ -1022,7 +1022,7 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/workflow-schema-versioning.md`.
 
 - **Typed JSON from a client must spell its member names exactly, once.**
-  Every HTTP request body, the `data` of every gRPC CloudEvent, a compute
+  Every HTTP request body, the `data` of every gRPC request event, a compute
   member's answer, every condition and every paging cursor is decoded with
   `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
   differs from a declared member only in case, an undeclared member and a
@@ -1063,6 +1063,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   twice included — is answered by the event's error response
   (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
   See `docs/cloud-parity/strict-member-names.md` and
+  `docs/workflow-schema-versioning.md`.
+
+- **A processor's `startNewTxOnDispatch` is read beside `executionMode`, on
+  the processor, where the OpenAPI document and `cyoda help workflows`
+  place it** — not inside `config`. Before, import refused the documented
+  placement as an unknown field and accepted the member only inside
+  `config`; export wrote it there. Now the documented placement is accepted
+  and exported, and inside `config` it is refused as an unknown member
+  (`400 BAD_REQUEST`). Move the member out of `config`. See
   `docs/workflow-schema-versioning.md`.
 
 - **Go 1.27.2 is required to build** (`go 1.26.9` → `go 1.27.2` in the root,

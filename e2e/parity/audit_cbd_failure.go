@@ -22,11 +22,11 @@ func RunAuditCBDFailedProcessorRecorded(t *testing.T, fixture BackendFixture) {
 		t.Run(fmt.Sprintf("startNewTxOnDispatch=%t", newTx), func(t *testing.T) {
 			name := fmt.Sprintf("cbd-record-%t", newTx)
 			cc := newCalloutCase(t, fixture, name, calloutSample, func(tag string) string {
-				cfg := map[string]any{"calculationNodesTags": tag, "startNewTxOnDispatch": newTx}
+				cfg := map[string]any{"calculationNodesTags": tag}
 				return calloutDoc("co-"+name+"-wf", "NONE", map[string]any{
 					"NONE": map[string]any{"transitions": []any{map[string]any{
 						"name": "init", "next": "ACTIVE", "manual": false,
-						"processors": []any{cbProc("charge", "COMMIT_BEFORE_DISPATCH", "", cfg)},
+						"processors": []any{withStartNewTx(cbProc("charge", "COMMIT_BEFORE_DISPATCH", "", cfg), newTx)},
 					}}},
 					"ACTIVE": map[string]any{},
 				})

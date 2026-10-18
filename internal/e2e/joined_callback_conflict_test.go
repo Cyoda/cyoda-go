@@ -36,8 +36,8 @@ func conflictDoorWorkflow(name, tag string, procs ...conflictProc) string {
 	list := make([]string, len(procs))
 	for i, proc := range procs {
 		list[i] = fmt.Sprintf(`{"type": "externalized", "name": %q, "executionMode": %q,
-			"config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000, "startNewTxOnDispatch": %t}}`,
-			proc.name, proc.mode, tag, proc.startNewTx)
+			"startNewTxOnDispatch": %t, "config": {"attachEntity": true, "calculationNodesTags": %q, "responseTimeoutMs": 60000}}`,
+			proc.name, proc.mode, proc.startNewTx, tag)
 	}
 	p := `"processors": [` + strings.Join(list, ",") + `]`
 	when := func(status string) string {

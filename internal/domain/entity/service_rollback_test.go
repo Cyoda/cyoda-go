@@ -829,10 +829,10 @@ func (hn *rollbackHarness) registerSegmentingWorkflow(t *testing.T) {
 			"A": {Transitions: []spi.TransitionDefinition{{
 				Name: "segment", Next: "B",
 				Processors: []spi.ProcessorDefinition{{
-					Type:          wfengine.ProcessorTypeExternalized,
-					Name:          "segmenter",
-					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
-					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+					Type:                 wfengine.ProcessorTypeExternalized,
+					Name:                 "segmenter",
+					ExecutionMode:        wfengine.ExecutionModeCommitBeforeDispatch,
+					StartNewTxOnDispatch: &startNewTx,
 				}},
 			}}},
 			"B": {},
@@ -876,10 +876,10 @@ func (hn *rollbackHarness) registerManualSegmentingWorkflow(t *testing.T, ref sp
 			"A": {Transitions: []spi.TransitionDefinition{{
 				Name: "segment", Next: "B", Manual: true,
 				Processors: []spi.ProcessorDefinition{{
-					Type:          wfengine.ProcessorTypeExternalized,
-					Name:          "segmenter",
-					ExecutionMode: wfengine.ExecutionModeCommitBeforeDispatch,
-					Config:        spi.ProcessorConfig{StartNewTxOnDispatch: &startNewTx},
+					Type:                 wfengine.ProcessorTypeExternalized,
+					Name:                 "segmenter",
+					ExecutionMode:        wfengine.ExecutionModeCommitBeforeDispatch,
+					StartNewTxOnDispatch: &startNewTx,
 				}},
 			}}},
 			"B": {},

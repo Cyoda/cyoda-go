@@ -764,7 +764,7 @@ func validateProcessorFlags(wf spi.WorkflowDefinition) error {
 	for _, stateName := range sortedStateNames(wf.States) {
 		for _, tr := range wf.States[stateName].Transitions {
 			for _, p := range tr.Processors {
-				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
+				if p.StartNewTxOnDispatch != nil && *p.StartNewTxOnDispatch &&
 					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",

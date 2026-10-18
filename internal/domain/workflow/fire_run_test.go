@@ -213,7 +213,7 @@ func TestFireScheduled_CBDOutsideTxCalloutCarriesArmedBy(t *testing.T) {
 	const entityID = "cbd-armedby-e1"
 	proc := safeProc("cbd", "COMMIT_BEFORE_DISPATCH")
 	noNewTx := false
-	proc.Config.StartNewTxOnDispatch = &noNewTx
+	proc.StartNewTxOnDispatch = &noNewTx
 	model := spi.ModelRef{EntityName: "run-" + entityID, ModelVersion: "1.0"}
 	saveWorkflow(t, env.factory, env.ctx, model, []spi.WorkflowDefinition{oneHopWF("CLOSED", []spi.ProcessorDefinition{proc}, nil)})
 	seedFireEntity(t, env.factory, env.ctx, entityID, model, "OPEN", "seed-tx-1", map[string]any{})
@@ -468,7 +468,7 @@ func TestScheduledRun_ReArmedBeforeTXPostBegin_StartNewTx_Superseded(t *testing.
 	})
 	startNewTx := true
 	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-	p1.Config.StartNewTxOnDispatch = &startNewTx
+	p1.StartNewTxOnDispatch = &startNewTx
 	claimed := env.claimed(t, "seg-new-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
 	wrap.hook = func() error { return env.rearm(claimed) }
 

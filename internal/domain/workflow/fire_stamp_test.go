@@ -159,7 +159,7 @@ func TestStamp_ReplacedOwnerSegmentRefused(t *testing.T) {
 	env = newRunEnv(t, ext)
 	startNewTx := true
 	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-	p1.Config.StartNewTxOnDispatch = &startNewTx
+	p1.StartNewTxOnDispatch = &startNewTx
 	claimed := env.claimed(t, "replaced-e1", oneHopWF("MID", nil, map[string]spi.StateDefinition{
 		"MID": autoStep("DONE", p1, safeProc("p2", ExecutionModeCommitBeforeDispatch)),
 	}))
@@ -374,7 +374,7 @@ func TestRunTxs_ReleasedOnEveryEnding(t *testing.T) {
 			env = newRunEnv(t, ext)
 			startNewTx := true
 			p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-			p1.Config.StartNewTxOnDispatch = &startNewTx
+			p1.StartNewTxOnDispatch = &startNewTx
 			claimed := env.claimed(t, "release-"+tc.name, oneHopWF("MID", nil, map[string]spi.StateDefinition{
 				"MID": autoStep("DONE", safeProc("p0", ExecutionModeSync), p1, safeProc("p2", ExecutionModeSync)),
 			}))
@@ -425,7 +425,7 @@ func TestRunTxs_TXPostInheritsGuard(t *testing.T) {
 			}}
 			env = newRunEnv(t, ext)
 			p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-			p1.Config.StartNewTxOnDispatch = &startNewTx
+			p1.StartNewTxOnDispatch = &startNewTx
 			claimed := env.claimed(t, "inherit-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{
 				p1, safeProc("pmid", ExecutionModeSync), safeProc("p2", ExecutionModeCommitBeforeDispatch),
 			}, nil))

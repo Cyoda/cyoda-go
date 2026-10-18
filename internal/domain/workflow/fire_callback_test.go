@@ -85,7 +85,7 @@ func TestCallback_WritesFiredEntity_AtSegmentBoundary_RunFires(t *testing.T) {
 	env = newRunEnv(t, ext)
 	startNewTx := true
 	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-	p1.Config.StartNewTxOnDispatch = &startNewTx
+	p1.StartNewTxOnDispatch = &startNewTx
 	claimed = env.claimed(t, "cbwseg-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
 
 	r := runWithin(t, env, claimed)
@@ -327,7 +327,7 @@ func TestCallback_BoundaryReReadFails_RunFails(t *testing.T) {
 	}, nil)
 	startNewTx := true
 	p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-	p1.Config.StartNewTxOnDispatch = &startNewTx
+	p1.StartNewTxOnDispatch = &startNewTx
 	claimed := env.claimed(t, "cbbr-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
 
 	r := runWithin(t, env, claimed)
@@ -381,7 +381,7 @@ func TestCallback_TXPostAnchorReadFails_RunFails(t *testing.T) {
 			})
 			startNewTx := true
 			p1 := safeProc("p1", ExecutionModeCommitBeforeDispatch)
-			p1.Config.StartNewTxOnDispatch = &startNewTx
+			p1.StartNewTxOnDispatch = &startNewTx
 			claimed := env.claimed(t, "cbtp-e1", oneHopWF("CLOSED", []spi.ProcessorDefinition{p1}, nil))
 
 			r := runWithin(t, env, claimed)

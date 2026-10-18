@@ -4,7 +4,9 @@
 
 Every piece of typed JSON a client sends is read under one rule: a member name
 spells a member its shape declares, exactly, once. This covers every HTTP
-request body, the `data` of every gRPC CloudEvent, a compute member's answer,
+request body, the `data` of every gRPC request event (a compute member's
+keep-alive and acknowledgement events carry nothing the server reads), a
+compute member's answer,
 a condition wherever it appears (search, async search, grouped stats,
 conditional delete, a workflow or transition criterion, a function's
 pre-check), a workflow import and a paging cursor.
