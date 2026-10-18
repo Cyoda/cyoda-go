@@ -1026,7 +1026,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   member's answer, every condition and every paging cursor is decoded with
   `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
   differs from a declared member only in case, an undeclared member and a
-  duplicate member are each refused, as is anything after the value. A gRPC
+  duplicate member are each refused, as is anything after the value. A JWK
+  keeps members of its own, but its `kty`, `n` and `e` are read by their exact
+  names: a trusted key sent with `"N"` and `"E"` is refused (`missing n or
+  e`), where before it registered. A gRPC
   event whose `data` is `null`, or holds `null` for a required object, is
   refused as missing its required members; before, it read as a zero event.
   Before,

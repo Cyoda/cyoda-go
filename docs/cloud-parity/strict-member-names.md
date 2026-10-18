@@ -18,11 +18,17 @@ pre-check), a workflow import and a paging cursor.
 - A member written twice is refused, whatever the two values.
 - Anything after the value is refused.
 - A condition leaf writes its operator once: two of `operatorType`, `operator`
-  and `operation` in one leaf are refused, as a duplicate is. The condition
+  and `operation` holding a value in one leaf are refused, as a duplicate is
+  (a spelling written as `null` is not an operator). The condition
   parser refuses it, so the message names the two members and the leaf's
   place as its other shape errors do (`failed to parse group condition[0]:
   failed to parse simple condition: the operator is written twice, as
-  "operatorType" and "operator": write one`), not by a JSON Pointer.
+  "operatorType" and "operator": write one`), not by a JSON Pointer. A
+  condition's `type` written in another case leaves the condition without
+  one, and is refused in those words: `the condition has no "type" member`.
+- On gRPC, a required member written in another case is answered as that
+  member missing (`invalid JSON at "/payload/model": field name: required`):
+  the generated types check for required members before the strict decode.
 
 The refusal names the location as a JSON Pointer from the top of the value
 (`invalid JSON at "/workflows/0/states/NEW/transitions/1": unknown member name

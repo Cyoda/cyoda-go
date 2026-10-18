@@ -348,8 +348,8 @@ they are recorded here, under the rubric of §"Tightening releases":
     `manual` as automatic, and a criterion ignored a member it did not
     declare, so `calculationNodesTags` written beside `config` instead of in
     it left the callout untagged. A condition leaf that writes its operator
-    twice (two of `operatorType`, `operator`, `operation`) is refused as a
-    duplicate is. Rubric point 1 applies: fail loud where the old value was
+    twice (two of `operatorType`, `operator`, `operation` holding a value) is
+    refused as a duplicate is. Rubric point 1 applies: fail loud where the old value was
     ignored or merged.
 16. **A processor's `startNewTxOnDispatch` is read on the processor**, beside
     `executionMode`, where the published schema has always placed it. The
