@@ -512,12 +512,16 @@ every other client input in v0.9.0 (#678).** The workflow import body, like
 every typed JSON a client sends, decodes through `strictjson`
 (cyoda-go-spi): a member the shape does not declare — at the top level or
 nested anywhere in the workflow / state / transition / processor / criterion
-sub-shapes — a case-variant name and a duplicate name are refused with
-`400 BAD_REQUEST`, and so is anything after the request object. The detail
-names the member and its JSON Pointer (`invalid JSON at
+sub-shapes — and a case-variant name are refused, and so is anything after
+the request object. Outside a criterion the refusal is `400 BAD_REQUEST`,
+and the detail names the member and its JSON Pointer (`invalid JSON at
 "/workflows/0/states/NEW/transitions/0/processors/0/config": unknown member
-name "responseTimeoutsMs"`), so typos in processor config and
-forward-compat extras no longer vanish on import.
+name "responseTimeoutsMs"`). Inside a criterion it is
+`400 VALIDATION_FAILED`, naming the workflow, state and transition in words,
+then the location inside the criterion. A member written twice anywhere in
+the body is refused first by the unstorable-payload check, with
+`400 BAD_REQUEST` and `field "…" appears more than once…`. So typos in
+processor config and forward-compat extras no longer vanish on import.
 
 The `asyncResult` / `crossoverToAsyncMs` pair — which the OpenAPI
 advertised but the SPI did not previously carry — was added to the SPI

@@ -31,7 +31,11 @@ transition "go": criterion is not a valid condition: invalid JSON at
 one answers `400 BAD_REQUEST: invalid cursor parameter` with no location. HTTP answers `400` with the
 endpoint's existing code (`BAD_REQUEST`, `MALFORMED_REQUEST` on grouped stats,
 `INVALID_CONDITION` on a search-shaped condition, `VALIDATION_FAILED` for a
-criterion at workflow import). gRPC answers `InvalidArgument`, except on an
+criterion at workflow import). A member written twice is found before any
+condition is parsed: inside a grouped-stats `condition` it is
+`MALFORMED_REQUEST`, and anywhere in a workflow import, an entity write or
+model validate the unstorable-payload check refuses it first, with
+`BAD_REQUEST` and `field "…" appears more than once…`. gRPC answers `InvalidArgument`, except on an
 entity write (create, update, patch and the two collection events): there the
 unstorable-payload check reads the whole event first, so a member written twice
 anywhere in the event is answered by the event's error response (`CLIENT_ERROR`,
@@ -44,7 +48,7 @@ are two fields, and no member is unknown. A payload still has one reading: a
 member written twice in one object, invalid UTF-8 and a lone UTF-16 surrogate
 escape are refused in an entity payload (by the unstorable-payload check, as
 before), in a message payload, and in a model import's sample data on both
-doors. In a compute member's processor answer they make the answer unreadable,
+doors, where anything after the value is refused too. In a compute member's processor answer they make the answer unreadable,
 which fails the callout; before, the payload was read and then refused by the
 unstorable-payload check naming the field. `encoding/json` replaced invalid
 text with U+FFFD; in a typed string it is refused too.
@@ -94,7 +98,8 @@ operator lets two spellings in one leaf through, the last one winning.
   body: REST bodies, CloudEvent `data`, compute answers, conditions.
 - Refuse a condition leaf that writes its operator twice.
 - Refuse a duplicate member name, invalid UTF-8 and a lone surrogate escape in
-  an entity payload, a message payload and model-import sample data.
+  an entity payload, a message payload and model-import sample data, and
+  anything after model-import sample data.
 - Declare `joinedLegalEntityId` on `CalculationMemberJoinEvent` and check it as
   described above, and keep `pageSize` declared on `EntityDeleteAllRequest`
   with no effect.

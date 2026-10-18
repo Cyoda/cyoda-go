@@ -271,10 +271,10 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 	// Strict-decoder boundary: a member the import-request body does not
 	// declare — top-level or nested in the workflow / state / transition /
 	// processor sub-shapes — is refused with 400 BAD_REQUEST rather than
-	// silently dropped, as is a case-variant or duplicate member name and
-	// anything after the request object. This catches typos (e.g.
-	// `transitionn` for `transitions`) that would import as no-op
-	// workflows; the response detail names the member and where it is.
+	// silently dropped, as is a case-variant member name and anything after
+	// the request object (a duplicate is refused just above). This catches
+	// typos (e.g. `transitionn` for `transitions`) that would import as
+	// no-op workflows; the response detail names the member and where it is.
 	var req importRequest
 	if err := strictjson.Decode(data, &req); err != nil {
 		common.WriteError(w, r, common.InvalidBody(err))
