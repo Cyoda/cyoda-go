@@ -517,8 +517,8 @@ the request object. Outside a criterion the refusal is `400 BAD_REQUEST`,
 and the detail names the member and its JSON Pointer (`invalid JSON at
 "/workflows/0/states/NEW/transitions/0/processors/0/config": unknown member
 name "responseTimeoutsMs"`). Inside a criterion it is
-`400 VALIDATION_FAILED`, naming the workflow, state and transition in words,
-then the location inside the criterion. A member written twice anywhere in
+`400 VALIDATION_FAILED`, naming the workflow, and for a transition criterion
+its state and transition, in words, then the location inside the criterion. A member written twice anywhere in
 the body is refused first by the unstorable-payload check, with
 `400 BAD_REQUEST` and `field "…" appears more than once…`. So typos in
 processor config and forward-compat extras no longer vanish on import.

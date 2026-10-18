@@ -385,8 +385,8 @@ Rule 15 touches only bodies that spell a member in another case, write it
 twice, or put a member where its shape does not declare it; the error names
 the member and where it is (a JSON Pointer for a member in another case or out
 of place, the field's path for a member written twice, and inside a criterion
-the workflow, state and transition in words, then a pointer inside the
-criterion; an operator written twice is named by its two members and its
+the workflow, and for a transition criterion its state and transition, in
+words, then a pointer inside the criterion; an operator written twice is named by its two members and its
 place in the condition, in words), and the fix is the spelling and place the schema gives. Rule 16 touches only processors that set
 `startNewTxOnDispatch` inside `config`; the error names the member and its
 location, and the fix is to move it beside `executionMode`.

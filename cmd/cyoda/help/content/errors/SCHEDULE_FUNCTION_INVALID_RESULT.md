@@ -20,7 +20,7 @@ HTTP: `500` `Internal Server Error`. Retryable: `no`.
 
 ## DESCRIPTION
 
-A `TransitionSchedule.function` callout must return `resultKind: "Schedule"` with a value shaped `{fireAt|fireAfterMs, expireAt?|expireAfterMs?}` — exactly one of `fireAt`/`fireAfterMs`, and at most one of `expireAt`/`expireAfterMs`. This error is raised when the compute node returns a different `resultKind`, or a `Schedule` value that is malformed: missing or duplicate fire/expiry fields, an unknown field, or a non-numeric value.
+A `TransitionSchedule.function` callout must return `resultKind: "Schedule"` with a value shaped `{fireAt|fireAfterMs, expireAt?|expireAfterMs?}` — exactly one of `fireAt`/`fireAfterMs`, and at most one of `expireAt`/`expireAfterMs`. This error is raised when the compute node returns a different `resultKind`, or a `Schedule` value that is malformed: missing fire fields, both fields of the fire or of the expiry pair, an unknown field, or a non-numeric value. A member written twice in the answer makes the whole answer unreadable instead, which fails the callout.
 
 It is also raised when a resolved fire or expiry time cannot be rendered as a time: a negative `fireAfterMs`/`expireAfterMs`, or a resolved `fireAt`/`fireAfterMs`/`expireAt`/`expireAfterMs` that overflows or falls outside `0`..`253402300799999` ms (the Unix epoch through `9999-12-31T23:59:59.999Z`, the last instant an RFC 3339 timestamp can express).
 

@@ -34,8 +34,8 @@ The refusal names the location as a JSON Pointer from the top of the value
 (`invalid JSON at "/workflows/0/states/NEW/transitions/1": unknown member name
 "Manual"`) and never a type of the implementation. A workflow or transition
 criterion at workflow import is an exception, as every other criterion
-refusal there is: the message names the workflow, state and transition in
-words, then the location inside the criterion (`workflow "wf" state "A"
+refusal there is: the message names the workflow, and for a transition
+criterion its state and transition, in words, then the location inside the criterion (`workflow "wf" state "A"
 transition "go": criterion is not a valid condition: invalid JSON at
 "/conditions/1": …`). A paging cursor is opaque to the client, so a refused
 one answers `400 BAD_REQUEST: invalid cursor parameter` with no location. HTTP answers `400` with the

@@ -1029,7 +1029,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   duplicate member are each refused, as is anything after the value. A JWK
   keeps members of its own, but its `kty`, `n` and `e` are read by their exact
   names: a trusted key sent with `"N"` and `"E"` is refused (`missing n or
-  e`), where before it registered. A gRPC
+  e`), where before it registered. A condition whose `type` is written in
+  another case is refused as having no `type`. The gRPC
+  `EntityModelGetAllRequest` data is now decoded: an event without `id`, or
+  whose data is not its JSON object, is `InvalidArgument`, where before the
+  data was ignored. A gRPC
   event whose `data` is `null`, or holds `null` for a required object, is
   refused as missing its required members; before, it read as a zero event.
   Before,
