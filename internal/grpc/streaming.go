@@ -403,8 +403,12 @@ func unreadableReason(s reportedSuccess) string {
 // EntityFunctionCalculationResponse): the strict decode refuses any other,
 // so a member missing here would make a valid answer unreadable.
 // TestAnswerTypes_DeclareTheSchemaMembers keeps them in step with the
-// generated types. They are not the generated types because those read an
-// absent and a null success alike, and matches as a plain bool.
+// generated types. They are not the generated types: a processor's payload
+// data must reach the entity as the member's own bytes, which the generated
+// type holds as interface{}; a null success must stay apart from an answer
+// that does not decode, so the callout can say success was null; and the
+// generated types refuse an answer without id or entityId, which the server
+// does not read.
 type answerError struct {
 	Code      string `json:"code"`
 	Message   string `json:"message"`

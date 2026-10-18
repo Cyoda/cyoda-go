@@ -117,6 +117,6 @@ func ParseCloudEvent(ce *cepb.CloudEvent) (eventType string, payload json.RawMes
 	case *cepb.CloudEvent_BinaryData:
 		return ce.Type, json.RawMessage(d.BinaryData), nil
 	default:
-		return "", nil, fmt.Errorf("unsupported CloudEvent data variant: %T", ce.Data)
+		return "", nil, errors.New("the CloudEvent carries neither text_data nor binary_data")
 	}
 }

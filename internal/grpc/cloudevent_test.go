@@ -237,6 +237,22 @@ func TestParseCloudEvent_Nil(t *testing.T) {
 	}
 }
 
+// TestParseCloudEvent_OtherDataRefusedInWords: an event with no data, or
+// with proto data, is refused naming what the server reads — text_data or
+// binary_data — and never a Go type.
+func TestParseCloudEvent_OtherDataRefusedInWords(t *testing.T) {
+	for name, ce := range map[string]*cepb.CloudEvent{
+		"no data":    {Id: "e", Source: "s", SpecVersion: "1.0", Type: "t"},
+		"proto data": {Id: "e", Source: "s", SpecVersion: "1.0", Type: "t", Data: &cepb.CloudEvent_ProtoData{}},
+	} {
+		_, _, err := ParseCloudEvent(ce)
+		const want = "the CloudEvent carries neither text_data nor binary_data"
+		if err == nil || err.Error() != want {
+			t.Errorf("%s: err = %v, want %q", name, err, want)
+		}
+	}
+}
+
 func TestParseCloudEvent_BinaryData(t *testing.T) {
 	ce := &cepb.CloudEvent{
 		Id:          "test-id",

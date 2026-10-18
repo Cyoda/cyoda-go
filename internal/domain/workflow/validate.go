@@ -210,10 +210,7 @@ func canonicalizeAnnotations(raw json.RawMessage, location string) (json.RawMess
 		return nil, fmt.Errorf("%s: annotations must be a JSON object", location)
 	}
 	var buf bytes.Buffer
-	if err := json.Compact(&buf, trimmed); err != nil {
-		// Unreachable in practice (decoder already validated); defensive.
-		return nil, fmt.Errorf("%s: annotations is not valid JSON: %v", location, err)
-	}
+	_ = json.Compact(&buf, trimmed) // the strict decoder validated it: cannot fail
 	if buf.Len() > maxAnnotationsBytes {
 		return nil, fmt.Errorf("%s: annotations size %d bytes exceeds the %d-byte limit",
 			location, buf.Len(), maxAnnotationsBytes)

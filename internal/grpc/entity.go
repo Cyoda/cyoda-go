@@ -35,12 +35,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 
 	switch eventType {
 	case EntityCreateRequest:
-		// The event carries an entity payload, which the unstorable guard
-		// must see as the client sent it: the guard reads the whole event
-		// first, so a payload no store can hold is refused as such rather
-		// than by the strict decode, which refuses invalid UTF-8 and
-		// duplicate names anywhere in the event with a bare InvalidArgument.
-		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+		if appErr := unstorableEvent(payload); appErr != nil {
 			return entityTransactionError(ctx, ce.Id, appErr)
 		}
 		var req events.EntityCreateRequestJson
@@ -93,12 +88,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityUpdateRequest:
-		// The event carries an entity payload, which the unstorable guard
-		// must see as the client sent it: the guard reads the whole event
-		// first, so a payload no store can hold is refused as such rather
-		// than by the strict decode, which refuses invalid UTF-8 and
-		// duplicate names anywhere in the event with a bare InvalidArgument.
-		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+		if appErr := unstorableEvent(payload); appErr != nil {
 			return entityTransactionError(ctx, ce.Id, appErr)
 		}
 		var req events.EntityUpdateRequestJson
@@ -152,12 +142,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		return NewCloudEvent(EntityTransactionResponse, resp)
 
 	case EntityPatchRequest:
-		// The event carries an entity payload, which the unstorable guard
-		// must see as the client sent it: the guard reads the whole event
-		// first, so a payload no store can hold is refused as such rather
-		// than by the strict decode, which refuses invalid UTF-8 and
-		// duplicate names anywhere in the event with a bare InvalidArgument.
-		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+		if appErr := unstorableEvent(payload); appErr != nil {
 			return entityTransactionError(ctx, ce.Id, appErr)
 		}
 		var req events.EntityPatchRequestJson
@@ -298,9 +283,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 
 	switch eventType {
 	case EntityCreateCollectionRequest:
-		// As for the unary entity writes: the unstorable guard reads the
-		// whole event before the strict decode.
-		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+		if appErr := unstorableEvent(payload); appErr != nil {
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -376,9 +359,7 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		return stream.Send(respCE)
 
 	case EntityUpdateCollectionRequest:
-		// As for the unary entity writes: the unstorable guard reads the
-		// whole event before the strict decode.
-		if appErr := ingest.RejectUnstorable(payload); appErr != nil {
+		if appErr := unstorableEvent(payload); appErr != nil {
 			respCE, ceErr := entityTransactionError(ctx, ce.Id, appErr)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -581,4 +562,14 @@ func deleteAllErrorsByID(idToError map[string]string) events.EntityDeleteAllResp
 		out[id] = msg
 	}
 	return out
+}
+
+// unstorableEvent refuses an entity-write event holding text no store can
+// hold. The event carries an entity payload, which the unstorable check must
+// see as the client sent it, so it reads the whole event before the strict
+// decode: a payload no store can hold is refused as such, with the event's
+// error response, rather than by the decode, which refuses invalid UTF-8 and
+// duplicate names anywhere in the event with a bare InvalidArgument.
+func unstorableEvent(payload json.RawMessage) *common.AppError {
+	return ingest.RejectUnstorable(payload)
 }

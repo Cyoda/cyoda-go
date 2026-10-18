@@ -17,7 +17,7 @@ func TestDeleteEntitiesConditional_NonJSONWhitespaceIsNotAbsent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, body := range []string{"\v", " ", "\f"} {
+	for _, body := range []string{"\v", "\u00a0", "\f"} {
 		if _, err := h.DeleteEntitiesConditional(ctx, ref.EntityName, 1, []byte(body), nil, false, 0); !errors.Is(err, ErrInvalidCondition) {
 			t.Errorf("%q: err = %v, want ErrInvalidCondition", body, err)
 		}

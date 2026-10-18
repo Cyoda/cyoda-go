@@ -160,10 +160,7 @@ func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.P
 			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
 		}
 	}
-	raw, err := json.Marshal(jwk)
-	if err != nil {
-		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
-	}
+	raw, _ := json.Marshal(jwk) // decoded from JSON, so it encodes: cannot fail
 	pubKey, err := auth.ParseRSAPublicKeyFromJWK(raw)
 	if err != nil {
 		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
