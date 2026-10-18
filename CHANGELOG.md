@@ -1050,7 +1050,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   processor answer unreadable. The model validate endpoint reads its data
   as entity create does, so it no longer calls valid what create refuses,
   and create collection refuses unstorable text anywhere in the body, as
-  update collection does. `joinedLegalEntityId`
+  update collection does. A conditional delete whose body is only non-JSON
+  white space (a vertical tab, a no-break space) is an invalid condition;
+  before, it read as "no condition" and deleted every entity of the model. `joinedLegalEntityId`
   on `CalculationMemberJoinEvent` (documented, not in the schema) and
   `pageSize` on `EntityDeleteAllRequest` (no effect; Cloud's client may send
   it) are declared in the event schemas. `audience` on a key-pair or

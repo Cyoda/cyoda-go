@@ -2,6 +2,8 @@ package common_test
 
 import (
 	"bytes"
+	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -107,6 +109,31 @@ func TestDecodeOptionalBoundedJSON(t *testing.T) {
 				t.Errorf("present=%t err=%v, want present=%t err=%t", present, err, tc.present, tc.wantErr)
 			}
 		})
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) {
+	return 0, errors.New("read tcp 10.0.0.1:8080->10.0.0.2:51890: i/o timeout")
+}
+
+// TestDecodeBoundedJSON_ReadFailure: a body that cannot be read is refused
+// in fixed words. The transport's error names socket addresses, which do not
+// belong in a response.
+func TestDecodeBoundedJSON_ReadFailure(t *testing.T) {
+	var d struct{}
+	for name, decode := range map[string]func(*http.Request) error{
+		"bounded": func(r *http.Request) error { return common.DecodeBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d) },
+		"optional": func(r *http.Request) error {
+			_, err := common.DecodeOptionalBoundedJSON(httptest.NewRecorder(), r, 1<<10, &d)
+			return err
+		},
+	} {
+		err := decode(httptest.NewRequest("POST", "/", failingReader{}))
+		if err == nil || err.Error() != "failed to read request body" {
+			t.Errorf("%s: err = %v, want the fixed text", name, err)
+		}
 	}
 }
 

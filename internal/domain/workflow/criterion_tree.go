@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 
@@ -129,11 +128,7 @@ func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunctio
 			fn.Name, atPointer(ptr), at)
 	}
 	node.preCheck = &critLocal{ptr: pcPtr, cond: c.PreCheck}
-	value, decodeErr := decodePreCheck(fn.Criterion)
-	if decodeErr != nil {
-		return nil, fmt.Errorf("function condition %q%s: %w", fn.Name, atPointer(ptr), decodeErr)
-	}
-	node.preCheckValue = value
+	node.preCheckValue = decodePreCheck(fn.Criterion)
 	return node, nil
 }
 
@@ -155,15 +150,12 @@ func firstFunction(cond predicate.Condition, ptr string) (string, bool) {
 }
 
 // decodePreCheck decodes the pre-check as written into plain JSON values for
-// the audit, keeping numbers exact.
-func decodePreCheck(raw json.RawMessage) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
+// the audit, keeping numbers exact. The condition parser has already accepted
+// these bytes as a pre-check, so the decode cannot fail.
+func decodePreCheck(raw json.RawMessage) any {
 	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("failed to decode the pre-check: %w", err)
-	}
-	return v, nil
+	_ = strictjson.Decode(raw, &v, strictjson.PreserveNumbers)
+	return v
 }
 
 // atPointer renders a position for a message: nothing for the criterion

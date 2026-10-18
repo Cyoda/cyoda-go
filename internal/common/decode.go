@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
@@ -32,11 +33,18 @@ func DecodeOptionalBoundedJSON(w http.ResponseWriter, r *http.Request, max int64
 	if err != nil {
 		return false, err
 	}
-	// JSON's own whitespace only: any other byte is a body, decoded strictly.
-	if len(bytes.Trim(data, " \t\r\n")) == 0 {
+	if NoJSONValue(data) {
 		return false, nil
 	}
 	return true, strictjson.Decode(data, dst)
+}
+
+// NoJSONValue reports whether data holds no JSON value: it is empty or JSON
+// whitespace only (space, tab, CR, LF). Any other byte — other Unicode white
+// space included — is a body to decode, and is refused if it is not JSON.
+// This is the one test for an optional body being absent.
+func NoJSONValue(data []byte) bool {
+	return len(bytes.Trim(data, " \t\r\n")) == 0
 }
 
 func readBounded(w http.ResponseWriter, r *http.Request, max int64) ([]byte, error) {
@@ -47,7 +55,9 @@ func readBounded(w http.ResponseWriter, r *http.Request, max int64) ([]byte, err
 	case errors.As(err, &tooLarge):
 		return nil, fmt.Errorf("request body exceeds %d bytes", max)
 	case err != nil:
-		return nil, fmt.Errorf("read body: %w", err)
+		// The transport's error names socket addresses: logged, not answered.
+		slog.Debug("request body could not be read", "pkg", "common", "error", err)
+		return nil, errors.New("failed to read request body")
 	}
 	return data, nil
 }
