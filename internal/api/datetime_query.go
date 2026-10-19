@@ -49,8 +49,10 @@ func dateTimeQueryParams(spec *openapi3.T) map[string][]string {
 		for method, op := range item.Operations() {
 			var names []string
 			for _, ref := range append(slices.Clone(item.Parameters), op.Parameters...) {
+				// The loader resolves every $ref or fails, so Value is set; a
+				// parameter declared with content has no Schema.
 				p := ref.Value
-				if p == nil || p.In != openapi3.ParameterInQuery || p.Schema == nil || p.Schema.Value == nil {
+				if p.In != openapi3.ParameterInQuery || p.Schema == nil {
 					continue
 				}
 				if p.Schema.Value.Format == "date-time" && !slices.Contains(names, p.Name) {
