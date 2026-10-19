@@ -1056,7 +1056,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   (`encoding/json` replaced them with U+FFFD). A date-time member of a body or
   event (`pointInTime` in a gRPC event and in grouped stats, a key's
   `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
-  seconds with `.` only: `03:04:05,5Z`, which `encoding/json` accepted, is
+  seconds with `.` only, has two-digit hours and bounds the offset:
+  `03:04:05,5Z`, `T3:04:05Z` and `+24:00`, which `encoding/json` accepted, are
   refused. The date-time query parameters (`pointInTime`, `fromUtcTime`,
   `toUtcTime`) are read by the same rule, on the operations that declare them:
   they refuse the comma too, a one-digit hour (`T3:04:05Z`) and the offset

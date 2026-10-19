@@ -17,5 +17,6 @@ func ParseDateTime(s string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	return t, json.Unmarshal(quoted, &t)
+	err = json.Unmarshal(quoted, &t)
+	return t, err
 }
