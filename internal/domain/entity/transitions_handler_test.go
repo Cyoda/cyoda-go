@@ -486,6 +486,17 @@ func TestDateTimeQueryParams_ReadAsBodiesAre(t *testing.T) {
 			t.Errorf("%s with a valid date-time: 400 %s", route, body)
 		}
 	}
+	// On a generated route an empty value is refused too (the binding read it
+	// as the year 0001), and so is a bad value repeated after a good one.
+	for _, q := range []string{"pointInTime=", "pointInTime=2024-01-02T03:04:05Z&pointInTime=2024-01-02"} {
+		resp, err := http.Get(srv.URL + "/entity/stats?" + q)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		if body := readBody(t, resp); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("?%s: status %d body %s, want 400", q, resp.StatusCode, body)
+		}
+	}
 	// An operation that does not declare the parameter ignores it, as it
 	// ignores any query parameter it does not declare.
 	resp, err := http.Get(srv.URL + "/model/?pointInTime=2024-01-02")

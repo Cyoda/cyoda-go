@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/go-chi/chi/v5"
@@ -23,7 +24,7 @@ func StrictDateTimeQuery(spec *openapi3.T) genapi.MiddlewareFunc {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// The chi mux registers each operation under its spec path, so
-			// the route pattern is the operation's path template.
+			// the route pattern is that path as dateTimeKey writes it.
 			names := byOperation[r.Method+" "+chi.RouteContext(r.Context()).RoutePattern()]
 			query := r.URL.Query()
 			for _, name := range names {
@@ -58,9 +59,19 @@ func dateTimeQueryParams(spec *openapi3.T) map[string][]string {
 			}
 			if len(names) > 0 {
 				slices.Sort(names)
-				byOperation[method+" "+path] = names
+				byOperation[dateTimeKey(method, path)] = names
 			}
 		}
 	}
 	return byOperation
+}
+
+// dateTimeKey is an operation's key: its method and the chi route pattern of
+// its spec path, which drops a trailing "/" (chi's RoutePattern does) so a
+// trailing-slash operation is not missed and left unchecked.
+func dateTimeKey(method, path string) string {
+	if len(path) > 1 {
+		path = strings.TrimSuffix(path, "/")
+	}
+	return method + " " + path
 }

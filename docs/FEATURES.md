@@ -15,7 +15,7 @@ For **product context** — value proposition, target use cases, scale envelope,
 - JSON and XML input formats
 - Entity versioning — every mutation creates an immutable version
 - Soft delete with deletion markers (preserves history)
-- Point-in-time retrieval (`?pointInTime=<ISO8601>`)
+- Point-in-time retrieval (`?pointInTime=<RFC 3339>`)
 - Entity statistics (count, state distribution per model)
 - Optimistic concurrency via `If-Match` header (transaction ID based) — layered on top of always-on SI+FCW at the transaction layer
 

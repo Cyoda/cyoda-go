@@ -3749,7 +3749,7 @@ type EntityStatsByStateGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// The point-in-time for statistics in RFC 3339 format. Must be at or before the
 	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
@@ -3936,7 +3936,7 @@ type EntityStatsGetRequestJson struct {
 	// Optional specifier of the Entity model to calculate statistics for.
 	Model *ModelSpecJson `json:"model,omitempty" yaml:"model,omitempty" mapstructure:"model,omitempty"`
 
-	// The point-in-time for statistics in ISO 8601 format. Must be at or before the
+	// The point-in-time for statistics in RFC 3339 format. Must be at or before the
 	// consistency time. If not provided, the current state is read.
 	PointInTime *time.Time `json:"pointInTime,omitempty" yaml:"pointInTime,omitempty" mapstructure:"pointInTime,omitempty"`
 
