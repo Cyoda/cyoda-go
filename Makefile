@@ -204,6 +204,7 @@ check-gofmt:           ## Verify all Go files are gofmt-clean (root + plugin sub
 	@# changes between Go releases, so another release's gofmt passes files
 	@# CI's refuses.
 	@gofmt="$$(go env GOROOT)/bin/gofmt"; \
+	[ -x "$$gofmt" ] || { echo "no gofmt at $$gofmt"; exit 1; }; \
 	dirty="$$("$$gofmt" -l $$(git ls-files -c -o --exclude-standard '*.go'))"; \
 	if [ -n "$$dirty" ]; then \
 		echo "gofmt-dirty files (run '$$gofmt -w' on them):"; echo "$$dirty"; exit 1; \

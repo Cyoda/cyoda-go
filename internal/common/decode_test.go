@@ -88,15 +88,16 @@ func TestDecodeOptionalBoundedJSON(t *testing.T) {
 		decoded bool
 		wantErr bool
 	}{
-		"empty":          {"", false, false, false},
-		"whitespace":     {" \t\r\n", false, false, false},
-		"no-break space": {"\u00a0", false, false, true},
-		"vertical tab":   {"\v", false, false, true},
-		"empty, chunked": {"", true, false, false},
-		"value":          {`{"x":1}`, false, true, false},
-		"empty object":   {`{}`, true, false, false},
-		"unknown member": {`{"y":1}`, false, false, true},
-		"not JSON":       {`{`, false, false, true},
+		"empty":                  {"", false, false, false},
+		"whitespace":             {" \t\r\n", false, false, false},
+		"no-break space":         {"\u00a0", false, false, true},
+		"vertical tab":           {"\v", false, false, true},
+		"empty, chunked":         {"", true, false, false},
+		"value":                  {`{"x":1}`, false, true, false},
+		"value, then whitespace": {"{\"x\":1} \n\t", false, true, false},
+		"empty object":           {`{}`, true, false, false},
+		"unknown member":         {`{"y":1}`, false, false, true},
+		"not JSON":               {`{`, false, false, true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := httptest.NewRequest("POST", "/", strings.NewReader(tc.body))

@@ -99,8 +99,9 @@ func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.
 			// without json.UseNumber decoding, or a Go type node never
 			// produces), not a tenant-contract one — its own text names a Go
 			// decoding instruction or a %T-formatted Go type, neither of
-			// which belongs in a 4xx body. Every production ingress decodes
-			// with json.UseNumber, so this is unreachable today; marking it
+			// which belongs in a 4xx body. Every production ingress keeps
+			// numbers as json.Number (json.UseNumber or
+			// strictjson.PreserveNumbers), so this is unreachable today; marking it
 			// here is what keeps it unreachable in the response too, should
 			// that ever change (security review L1).
 			return fmt.Errorf("%w: schema admission failed: %w", ErrInternalSchema, err)

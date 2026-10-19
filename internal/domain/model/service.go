@@ -48,8 +48,9 @@ func classifyGetErr(verb string, entityName string, ver int32, err error) *commo
 // json.UseNumber decoding, or a Go type schema.Describe's traversal never
 // produces), not the tenant's — its own text names a Go decoding instruction
 // or a %T-formatted Go type, neither of which belongs in a 4xx body. Every
-// production ingress into schema.Describe decodes with json.UseNumber (see
-// UnsupportedValueError's own doc comment), so this is unreachable today;
+// production ingress into schema.Describe keeps numbers as json.Number
+// (json.UseNumber or strictjson.PreserveNumbers; see UnsupportedValueError's
+// own doc comment), so this is unreachable today;
 // routing it to 5xx-with-ticket here mirrors ingest.ValidateOrExtend's
 // identical routing for the same error on the entity-write door, so the
 // classification cannot drift between the two doors that both funnel into
