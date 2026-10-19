@@ -1058,9 +1058,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
   seconds with `.` only: `03:04:05,5Z`, which `encoding/json` accepted, is
   refused. The date-time query parameters (`pointInTime`, `fromUtcTime`,
-  `toUtcTime`) are read by the same rule, so they refuse it too, and a bare
-  date (`2024-01-02`), which the generated routes accepted, with `400
-  BAD_REQUEST`.
+  `toUtcTime`) are read by the same rule, on the operations that declare them:
+  they refuse the comma too, a one-digit hour (`T3:04:05Z`) and the offset
+  `+24:00`, as they refuse a bare date (`2024-01-02`), which the generated
+  routes accepted; each is `400 BAD_REQUEST`. The spec's descriptions of these
+  parameters say RFC 3339, where they said ISO 8601.
 
   On gRPC, an event whose `data` is `null`, or holds `null` for a required
   object, is refused as missing its required members; before, it read as a

@@ -486,4 +486,13 @@ func TestDateTimeQueryParams_ReadAsBodiesAre(t *testing.T) {
 			t.Errorf("%s with a valid date-time: 400 %s", route, body)
 		}
 	}
+	// An operation that does not declare the parameter ignores it, as it
+	// ignores any query parameter it does not declare.
+	resp, err := http.Get(srv.URL + "/model/?pointInTime=2024-01-02")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if body := readBody(t, resp); resp.StatusCode == http.StatusBadRequest {
+		t.Errorf("an undeclared pointInTime was checked: 400 %s", body)
+	}
 }
