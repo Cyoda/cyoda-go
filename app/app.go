@@ -654,8 +654,14 @@ func New(cfg Config) *App {
 	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
 	// applied once, below, to the fully assembled handler. The chi mux runs
 	// each route's ROLE_M2M check before TxJoin, as dataMW does above.
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		slog.Error("failed to load the embedded OpenAPI document", "pkg", "app", "err", err)
+		os.Exit(1)
+	}
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
 		BaseRouter:       internalapi.NewChiMux(txJoinMW),
+		Middlewares:      []genapi.MiddlewareFunc{internalapi.StrictDateTimeQuery(spec)},
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 	if cfg.OTelEnabled {

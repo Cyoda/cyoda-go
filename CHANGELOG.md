@@ -1057,7 +1057,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   event (`pointInTime` in a gRPC event and in grouped stats, a key's
   `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
   seconds with `.` only: `03:04:05,5Z`, which `encoding/json` accepted, is
-  refused. The `pointInTime` query parameter still accepts it.
+  refused. The date-time query parameters (`pointInTime`, `fromUtcTime`,
+  `toUtcTime`) are read by the same rule, so they refuse it too, and a bare
+  date (`2024-01-02`), which the generated routes accepted, with `400
+  BAD_REQUEST`.
 
   On gRPC, an event whose `data` is `null`, or holds `null` for a required
   object, is refused as missing its required members; before, it read as a

@@ -74,7 +74,7 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		}
 		pointInTime, usePointInTime = submitTime, true
 	} else if pitStr != "" {
-		parsed, err := time.Parse(time.RFC3339, pitStr)
+		parsed, err := common.ParseDateTime(pitStr)
 		if err != nil {
 			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pointInTime format"))
 			return
