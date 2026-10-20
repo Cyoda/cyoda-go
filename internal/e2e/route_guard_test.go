@@ -26,12 +26,12 @@ func noM2MSuiteToken(t *testing.T) string {
 
 // TestRouteGuard_DataRouteRequiresM2M: a data route refuses a caller without
 // ROLE_M2M with 403 FORBIDDEN before its handler runs (the model need not
-// exist), on a generated route and on a hand-registered one.
+// exist), on a generated route and on the hand-registered one (grouped stats).
 func TestRouteGuard_DataRouteRequiresM2M(t *testing.T) {
 	tok := noM2MSuiteToken(t)
 	for _, rt := range []struct{ method, path, body string }{
 		{http.MethodPost, "/api/entity/JSON/route-guard/1", `{"a":1}`},
-		{http.MethodGet, "/api/entity/00000000-0000-0000-0000-000000000001/transitions", ""},
+		{http.MethodPost, "/api/entity/stats/route-guard/1/query", "{}"},
 	} {
 		resp := doAuthAgainst(t, serverURL, tok, rt.method, rt.path, rt.body)
 		body := readBody(t, resp)
