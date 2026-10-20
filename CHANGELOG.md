@@ -1102,9 +1102,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   request. `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no
   body deleted every current entity of the model, where `pointInTime` deletes
   the entities as they were at that instant; the gRPC delete-all already
-  refuses the misspelling. Now such a request is `400 BAD_REQUEST: unknown
-  query parameter "PointInTime"`, with `properties.parameter` naming it. A
-  query string that does not parse is refused whole (`400 BAD_REQUEST:
+  refuses the misspelling. The retired `waitForConsistencyAfter` is refused
+  the same way on the seven entity writes, where since v0.8.4 it was accepted
+  and ignored; the write is not made. Now such a request is `400 BAD_REQUEST:
+  unknown query parameter "PointInTime"`, with `properties.parameter` naming
+  it. A query string that does not parse is refused whole (`400 BAD_REQUEST:
   malformed query string`), as is a parameter other than an array given more
   than once (`query parameter "…" is given more than once`): `url.Values`
   drops a pair it cannot parse, and the binding read the first of repeated
