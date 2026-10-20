@@ -605,14 +605,13 @@ func New(cfg Config) *App {
 	mux.Handle("GET /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.GetTraceSampler)))
 	mux.Handle("POST /admin/trace-sampler", authMW(http.HandlerFunc(adminHandlers.SetTraceSampler)))
 
-	// Entity transition routes (with auth, outside generated API mux).
-	// TxJoin is nested inside authMW so UserContext is available for tenant
-	// checks; RequireM2M runs before TxJoin, so a caller without ROLE_M2M
-	// joins nothing. The /admin routes above are operator-guarded instead.
+	// The hand-written data route below takes the chain the generated routes
+	// take: TxJoin is nested inside authMW so UserContext is available for
+	// tenant checks; RequireM2M runs before TxJoin, so a caller without
+	// ROLE_M2M joins nothing. The /admin routes above are operator-guarded
+	// instead.
 	txJoinMW := httpmw.TxJoin(a.joiner)
 	dataMW := func(h http.Handler) http.Handler { return authMW(internalapi.RequireM2M(txJoinMW(h))) }
-	mux.Handle("GET /entity/{entityId}/transitions", dataMW(queryRules.Route("GET", "/entity/{entityId}/transitions")(http.HandlerFunc(entityHandler.HandleGetTransitions))))
-	mux.Handle("GET /platform-api/entity/fetch/transitions", dataMW(queryRules.Route("GET", "/platform-api/entity/fetch/transitions")(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -664,8 +663,7 @@ func New(cfg Config) *App {
 	// applied once, below, to the fully assembled handler. The chi mux runs
 	// each route's ROLE_M2M check before TxJoin, as dataMW does above.
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(txJoinMW),
-		Middlewares:      []genapi.MiddlewareFunc{queryRules.Generated()},
+		BaseRouter:       internalapi.NewChiMux(queryRules, txJoinMW),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 	if cfg.OTelEnabled {

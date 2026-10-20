@@ -228,7 +228,7 @@ func TestGetTransitions_TerminalState(t *testing.T) {
 func TestGetTransitions_EntityNotFound(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
 
-	resp, err := http.Get(fmt.Sprintf("%s/entity/%s/transitions", srv.URL, "nonexistent-entity-id"))
+	resp, err := http.Get(fmt.Sprintf("%s/entity/%s/transitions", srv.URL, "00000000-0000-0000-0000-00000000dead"))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestGetTransitions_EntityNotFound(t *testing.T) {
 func TestGetTransitions_BothParamsBadRequest(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
 
-	url := fmt.Sprintf("%s/entity/some-id/transitions?pointInTime=%s&transactionId=some-tx",
+	url := fmt.Sprintf("%s/entity/00000000-0000-0000-0000-000000000001/transitions?pointInTime=%s&transactionId=00000000-0000-0000-0000-000000000002",
 		srv.URL, time.Now().UTC().Format(time.RFC3339))
 	resp, err := http.Get(url)
 	if err != nil {

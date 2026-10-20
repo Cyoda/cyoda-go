@@ -12464,10 +12464,13 @@ components:
   responses:
     QueryParameterRefused:
       description: >-
-        A query parameter the operation does not declare (`unknown query
-        parameter "…"`), or a declared one whose value is malformed (`invalid
-        value for parameter '…'`). `properties.errorCode` is BAD_REQUEST and
-        `properties.parameter` names the parameter.
+        A query string that does not parse (`malformed query string`); a
+        query parameter the operation does not declare (`unknown query
+        parameter "…"`); a parameter other than an array given more than once
+        (`query parameter "…" is given more than once`); or a declared one
+        whose value is malformed (`invalid value for parameter '…'`).
+        `properties.errorCode` is BAD_REQUEST, and `properties.parameter`
+        names the parameter, except for a query string that does not parse.
       content:
         application/problem+json:
           schema:

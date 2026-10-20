@@ -42,10 +42,14 @@ func (f routeFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStor
 // binder's own refusals with 400 BAD_REQUEST without echoing the value.
 func TestListScheduledTasks_RoutedAndBound(t *testing.T) {
 	st := &routeStore{}
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
 	s := internalapi.NewServer()
 	s.ScheduledTasks = scheduledtask.NewHandler(routeFactory{store: st})
 	h := genapi.HandlerWithOptions(s, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(),
+		BaseRouter:       internalapi.NewChiMux(internalapi.NewQueryRules(spec)),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 	serve := func(target string) *httptest.ResponseRecorder {

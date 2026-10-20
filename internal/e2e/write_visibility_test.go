@@ -36,13 +36,21 @@ func TestWriteVisibility_RetiredFlagRefused_AllWriteOps(t *testing.T) {
 	}
 
 	t.Run("create", func(t *testing.T) {
+		before := countEntitiesInModel(t, model, 1)
 		refused(t, doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1%s", model, flag), `{"name":"A","amount":1,"status":"new"}`))
+		if after := countEntitiesInModel(t, model, 1); after != before {
+			t.Fatalf("a refused create wrote: %d entities, want %d", after, before)
+		}
 		resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), `{"name":"A","amount":1,"status":"new"}`)
 		assertEntityAmount(t, firstEntityID(t, resp), 1)
 	})
 	t.Run("createCollection", func(t *testing.T) {
 		body := fmt.Sprintf(`[{"model":{"name":%q,"version":1},"payload":"{\"name\":\"B\",\"amount\":2,\"status\":\"new\"}"}]`, model)
+		before := countEntitiesInModel(t, model, 1)
 		refused(t, doAuth(t, http.MethodPost, "/api/entity/JSON"+flag, body))
+		if after := countEntitiesInModel(t, model, 1); after != before {
+			t.Fatalf("a refused create wrote: %d entities, want %d", after, before)
+		}
 		assertEntityAmount(t, firstEntityID(t, doAuth(t, http.MethodPost, "/api/entity/JSON", body)), 2)
 	})
 	t.Run("updateSingle", func(t *testing.T) {

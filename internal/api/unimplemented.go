@@ -89,16 +89,10 @@ func (u *Unimplemented) GetEntityChangesMetadata(w http.ResponseWriter, r *http.
 	u.stub(w, r)
 }
 
-// GetEntityTransitions is never called — the real handler is mounted directly
-// on the outer mux in app/app.go before the generated API handler.
-// TODO(future-cleanup): consolidate transitions handler with the generated ServerInterface dispatch.
 func (u *Unimplemented) GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityTransitionsParams) {
 	u.stub(w, r)
 }
 
-// FetchEntityTransitions is never called — the real handler is mounted directly
-// on the outer mux in app/app.go before the generated API handler.
-// TODO(future-cleanup): consolidate transitions handler with the generated ServerInterface dispatch.
 func (u *Unimplemented) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params genapi.FetchEntityTransitionsParams) {
 	u.stub(w, r)
 }

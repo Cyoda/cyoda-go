@@ -1,49 +1,91 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
-	"github.com/go-chi/chi/v5"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// TestQueryRules_KeysAreRoutePatterns: the middleware finds an operation's
-// query rules by the chi route pattern of the request, and a key that matches
-// no pattern would refuse every query parameter of that operation. Every key
-// must be the pattern a request to its operation resolves to, so register each
-// spec operation on chi, as the generated routes are, and compare.
-func TestQueryRules_KeysAreRoutePatterns(t *testing.T) {
+// newGeneratedHandler serves every generated route through ChiMux, as app.go
+// does, on a Server with no domain handlers: a request that passes the query
+// check reaches the binding and then answers 501.
+func newGeneratedHandler(t *testing.T) http.Handler {
+	t.Helper()
 	spec, err := genapi.GetSwagger()
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := NewQueryRules(spec)
-	var resolved string
-	r := chi.NewRouter()
-	for path, item := range spec.Paths.Map() {
-		for method := range item.Operations() {
-			r.Method(method, path, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				resolved = r.Method + " " + chi.RouteContext(r.Context()).RoutePattern()
-			}))
+	return genapi.HandlerWithOptions(NewServer(), genapi.StdHTTPServerOptions{
+		BaseRouter:       NewChiMux(NewQueryRules(spec)),
+		ErrorHandlerFunc: BindingErrorHandler,
+	})
+}
+
+func withM2M(ctx context.Context) context.Context {
+	return spi.WithUserContext(ctx, &spi.UserContext{UserID: "caller", Tenant: spi.Tenant{ID: "acme", Name: "acme"}, Roles: []string{"ROLE_M2M"}})
+}
+
+// TestQueryRules_CheckRunsBeforeBinding: every generated route has its
+// operation's rules (ChiMux panics at registration otherwise), and the check
+// runs before the generated binding, so a refusal reads the same on every
+// route whatever the parameter's type.
+func TestQueryRules_CheckRunsBeforeBinding(t *testing.T) {
+	h := newGeneratedHandler(t)
+	for _, c := range []struct{ method, target, want string }{
+		{http.MethodPost, "/search/direct/X/1?limit=1&limit=2", `query parameter \"limit\" is given more than once`},
+		{http.MethodPost, "/search/direct/X/1?pointInTime=2024-01-02T03:04:05Z&pointInTime=2024-01-02T03:04:05Z", `query parameter \"pointInTime\" is given more than once`},
+		{http.MethodPost, "/search/direct/X/1?Limit=1", `unknown query parameter \"Limit\"`},
+		{http.MethodPost, "/search/direct/X/1?limit=1;x=2", "malformed query string"},
+		{http.MethodGet, "/model/?x=1", `unknown query parameter \"x\"`},
+	} {
+		req := httptest.NewRequest(c.method, c.target, nil)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req.WithContext(withM2M(req.Context())))
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), c.want) {
+			t.Errorf("%s %s: %d %s, want 400 %s", c.method, c.target, rec.Code, rec.Body.String(), c.want)
 		}
 	}
-	param := regexp.MustCompile(`\{[^}]+\}`)
+}
+
+// TestQueryRules_SpecShapes: the check reads a query parameter by its name,
+// so every query parameter is a scalar or a form-exploded array, whose
+// repeated key is that name; and every operation cyoda-go serves declares the
+// 400 the check answers.
+func TestQueryRules_SpecShapes(t *testing.T) {
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for path, item := range spec.Paths.Map() {
-		for method := range item.Operations() {
-			resolved = ""
-			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, param.ReplaceAllString(path, "x"), nil))
-			want := operationKey(method, path)
-			if resolved != want {
-				t.Errorf("%s %s resolves to %q, key %q", method, path, resolved, want)
+		for method, op := range item.Operations() {
+			if slices.Contains(op.Tags, "Stream Data") || slices.Contains(op.Tags, "SQL-Schema") {
+				continue // excluded from the generated server; not served
 			}
-			if _, ok := rules[want]; !ok {
-				t.Errorf("%s %s has no rules", method, path)
+			if op.Responses.Value("400") == nil {
+				t.Errorf("%s %s declares no 400", method, path)
+			}
+			for _, ref := range append(slices.Clone(item.Parameters), op.Parameters...) {
+				p := ref.Value
+				if p.In != openapi3.ParameterInQuery {
+					continue
+				}
+				if p.Schema == nil {
+					t.Errorf("%s %s parameter %q has no schema", method, path, p.Name)
+					continue
+				}
+				s := p.Schema.Value
+				if s.Type.Is("object") || (s.Type.Is("array") && ((p.Style != "" && p.Style != "form") || (p.Explode != nil && !*p.Explode))) {
+					t.Errorf("%s %s parameter %q: a shape whose query keys are not its name", method, path, p.Name)
+				}
 			}
 		}
 	}

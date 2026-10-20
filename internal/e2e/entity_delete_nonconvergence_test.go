@@ -63,10 +63,14 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
 	).WithMaxDeleteCycles(maxCycles)
 
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
 	apiServer := internalapi.NewServer()
 	apiServer.Entity = h
 	apiHandler := genapi.HandlerWithOptions(apiServer, genapi.StdHTTPServerOptions{
-		BaseRouter:       internalapi.NewChiMux(),
+		BaseRouter:       internalapi.NewChiMux(internalapi.NewQueryRules(spec)),
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 

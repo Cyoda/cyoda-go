@@ -1062,11 +1062,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `toUtcTime`) are read by the same rule, on the operations that declare them:
   they refuse the comma too, a one-digit hour (`T3:04:05Z`) and the offset
   `+24:00`, as they refuse a bare date (`2024-01-02`), which the generated
-  routes accepted; each is `400 BAD_REQUEST`. On the generated routes an empty
-  value (`?pointInTime=`), which bound as the year 0001, is refused too, and
-  every repeated value is checked, where the binding read the first. The
-  spec's descriptions of these parameters say RFC 3339, where they said ISO
-  8601.
+  routes accepted; each is `400 BAD_REQUEST`. An empty value
+  (`?pointInTime=`), which the generated routes bound as the year 0001, is
+  refused too. The spec's descriptions of these parameters say RFC 3339, where
+  they said ISO 8601.
 
   On gRPC, an event whose `data` is `null`, or holds `null` for a required
   object, is refused as missing its required members; before, it read as a
@@ -1111,14 +1110,19 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   than once (`query parameter "…" is given more than once`): `url.Values`
   drops a pair it cannot parse, and the binding read the first of repeated
   values, so both changed a request without a word. This holds on every
-  operation cyoda-go serves, the hand-written routes included (transitions,
-  fetch transitions, grouped stats), and every served operation's OpenAPI
-  responses declare the 400. The transitions route answers a malformed
-  `pointInTime` as every route does (`invalid value for parameter
-  'pointInTime'`, where it said `invalid pointInTime format`) and refuses an
-  empty one, which it read as absent. The token endpoint declares none and
-  refuses any query parameter with `400 invalid_request`, `unsupported
-  parameter`, so a credential never travels in a URL. See
+  operation cyoda-go serves, checked before the parameters are bound, so a
+  refusal reads the same on every route; grouped stats, the one hand-written
+  route, is checked too, and every served operation's OpenAPI responses
+  declare the 400. The two transitions operations (`GET
+  /entity/{entityId}/transitions`, `GET
+  /platform-api/entity/fetch/transitions`) are now served by the generated
+  routes: a malformed `pointInTime` is `invalid value for parameter
+  'pointInTime'` (it was `invalid pointInTime format`), an empty one is
+  refused (it read as absent), and an `entityId` or `transactionId` that is
+  not a UUID is `400 invalid value for parameter '…'` (an `entityId` was
+  looked up and answered 404). The token endpoint declares none and refuses
+  any query parameter with `400 invalid_request`, `unsupported parameter`, so
+  a credential never travels in a URL. See
   `docs/cloud-parity/strict-member-names.md`.
 
 - **A conditional delete whose body is only non-JSON white space no longer

@@ -91,13 +91,12 @@ the query parameters it declares: any other name, another letter case
 included, is refused with `400 BAD_REQUEST: unknown query parameter "…"` and
 `properties.parameter`. A query string that does not parse is refused whole,
 and a parameter other than an array may be given once. This holds on every
-operation, hand-written routes included. Before, an undeclared name was ignored, so
+operation. Before, an undeclared name was ignored, so
 `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no body
 deleted every current entity of the model instead of the entities as they
 were at that instant. A date-time parameter (`pointInTime`, `fromUtcTime`,
 `toUtcTime`) is RFC 3339, read as a body's date-time is; a malformed, empty
-or bare-date value is `400 BAD_REQUEST: invalid value for parameter '…'`, and
-every repeated value is checked. The token endpoint declares no query
+or bare-date value is `400 BAD_REQUEST: invalid value for parameter '…'`. The token endpoint declares no query
 parameter and refuses any with `400 invalid_request`.
 
 ## Why

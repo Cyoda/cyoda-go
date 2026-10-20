@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
@@ -196,7 +197,7 @@ func TestUpdateEntityCollection_MissingEntity_Still404(t *testing.T) {
 	expectEntityNotFound(t, err)
 }
 
-// --- HandleGetTransitions ----------------------------------------------------
+// --- GetEntityTransitions ----------------------------------------------------
 //
 // This route declares 503 in api/openapi.yaml, and its platform-api alias reads
 // the entity through workflow.GetAvailableTransitions, which has classified the
@@ -205,11 +206,10 @@ func TestUpdateEntityCollection_MissingEntity_Still404(t *testing.T) {
 func callGetTransitions(t *testing.T, readErr error) *httptest.ResponseRecorder {
 	t.Helper()
 	h, _ := newReadOutageHandler(t, readErr)
-	entityID := uuid.NewString()
+	entityID := uuid.New()
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest(http.MethodGet, "/entity/"+entityID+"/transitions", nil)
-	r.SetPathValue("entityId", entityID)
-	h.HandleGetTransitions(w, r.WithContext(readOutageCtx()))
+	r := httptest.NewRequest(http.MethodGet, "/entity/"+entityID.String()+"/transitions", nil)
+	h.GetEntityTransitions(w, r.WithContext(readOutageCtx()), entityID, genapi.GetEntityTransitionsParams{})
 	return w
 }
 

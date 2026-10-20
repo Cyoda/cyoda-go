@@ -14,30 +14,32 @@ import (
 // handles those patterns without conflict.
 type ChiMux struct {
 	r     chi.Router
+	query QueryRules
 	inner []func(http.Handler) http.Handler
 }
 
-// NewChiMux returns a ChiMux backed by a fresh chi router. inner wraps every
-// route's handler, outermost first, and runs after the route's ROLE_M2M check:
-// app.go passes the transaction-join middleware here, so a caller the check
-// refuses joins nothing.
-func NewChiMux(inner ...func(http.Handler) http.Handler) *ChiMux {
-	return &ChiMux{r: chi.NewRouter(), inner: inner}
+// NewChiMux returns a ChiMux backed by a fresh chi router. Every route checks
+// its query against query before the generated binding reads it. inner wraps
+// every route's handler, outermost first, and runs after the route's ROLE_M2M
+// check: app.go passes the transaction-join middleware here, so a caller the
+// check refuses joins nothing.
+func NewChiMux(query QueryRules, inner ...func(http.Handler) http.Handler) *ChiMux {
+	return &ChiMux{r: chi.NewRouter(), query: query, inner: inner}
 }
 
 // HandleFunc parses the "METHOD /path" pattern and registers it on chi.
-// Every route not on the allow-list requires ROLE_M2M (see RequireM2M).
+// Every route not on the allow-list requires ROLE_M2M (see RequireM2M). The
+// generated code registers every operation with its method, which names the
+// operation whose query rules the route checks; a pattern without one is a
+// wiring mistake, found at startup.
 func (c *ChiMux) HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request)) {
-	var h http.Handler = http.HandlerFunc(handler)
-	for i := len(c.inner) - 1; i >= 0; i-- {
-		h = c.inner[i](h)
-	}
 	method, path, ok := strings.Cut(pattern, " ")
 	if !ok {
-		// No method prefix — register for all methods. The allow-list names
-		// methods, so such a route is always guarded.
-		c.r.Handle(pattern, RequireM2M(h))
-		return
+		panic("api: route pattern without a method: " + pattern)
+	}
+	h := c.query.Route(method, path)(http.HandlerFunc(handler))
+	for i := len(c.inner) - 1; i >= 0; i-- {
+		h = c.inner[i](h)
 	}
 	if !IsAllowListed(method, path) {
 		h = RequireM2M(h)
