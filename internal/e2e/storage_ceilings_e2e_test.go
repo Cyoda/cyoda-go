@@ -991,7 +991,7 @@ func TestE2E_SearchCeiling_DoesNotLeakOntoInteractiveStatements(t *testing.T) {
 		t.Fatalf("an ordinary write failed with %d after the scan ran; the search ceiling leaked onto the interactive path. body: %s", status, body)
 	}
 
-	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?pageSize=10", model),
+	resp := h.DoAuth(t, http.MethodPost, fmt.Sprintf("/api/search/direct/%s/1?limit=10", model),
 		`{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"pool-hold"}`, "")
 	body := h.readBody(t, resp)
 	if resp.StatusCode != http.StatusOK {

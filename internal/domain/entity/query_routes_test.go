@@ -68,6 +68,27 @@ func TestUndeclaredQueryParams_Refused(t *testing.T) {
 		}
 		return resp.StatusCode, string(readBody(t, resp))
 	}
+	// A query that does not parse is refused whole: url.Values would drop the
+	// pair it cannot read, and a dropped pointInTime deletes everything now.
+	for _, q := range []string{
+		"transactionSize=100;pointInTime=2024-01-02T03:04:05Z",
+		"pointInTime=2024-01-02T03:04:05%Z",
+		"PointInTime%=2024",
+	} {
+		status, body := do(http.MethodDelete, "/entity/QueryDel/1?"+q)
+		if status != http.StatusBadRequest || !contains(body, "malformed query string") {
+			t.Errorf("DELETE ?%s: status %d body %s, want 400 malformed query string", q, status, body)
+		}
+	}
+	// A declared parameter that is not an array takes one value: the binding
+	// would read the first and drop the rest.
+	if status, body := do(http.MethodDelete, "/entity/QueryDel/1?pointInTime=2024-01-02T03:04:05Z&pointInTime=2099-01-02T03:04:05Z"); status != http.StatusBadRequest || !contains(body, "given more than once") {
+		t.Errorf("repeated pointInTime: status %d body %s, want 400 given more than once", status, body)
+	}
+	// An array parameter may repeat.
+	if status, body := do(http.MethodGet, "/entity/stats/states?states=A&states=B"); contains(body, "given more than once") {
+		t.Errorf("repeated array parameter: %d %s, refused", status, body)
+	}
 	for _, c := range []struct{ method, path string }{
 		{http.MethodDelete, "/entity/QueryDel/1?PointInTime=2024-01-02T03:04:05Z"},
 		{http.MethodGet, "/entity/stats?pointintime=2024-01-02T03:04:05Z"},

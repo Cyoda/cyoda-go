@@ -1103,10 +1103,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   body deleted every current entity of the model, where `pointInTime` deletes
   the entities as they were at that instant; the gRPC delete-all already
   refuses the misspelling. Now such a request is `400 BAD_REQUEST: unknown
-  query parameter "PointInTime"`, with `properties.parameter` naming it. This
-  holds on every operation in the spec, the hand-written routes included
-  (transitions, fetch transitions, grouped stats), and every operation's
-  OpenAPI responses declare the 400. The transitions route answers a malformed
+  query parameter "PointInTime"`, with `properties.parameter` naming it. A
+  query string that does not parse is refused whole (`400 BAD_REQUEST:
+  malformed query string`), as is a parameter other than an array given more
+  than once (`query parameter "…" is given more than once`): `url.Values`
+  drops a pair it cannot parse, and the binding read the first of repeated
+  values, so both changed a request without a word. This holds on every
+  operation cyoda-go serves, the hand-written routes included (transitions,
+  fetch transitions, grouped stats), and every served operation's OpenAPI
+  responses declare the 400. The transitions route answers a malformed
   `pointInTime` as every route does (`invalid value for parameter
   'pointInTime'`, where it said `invalid pointInTime format`) and refuses an
   empty one, which it read as absent. The token endpoint declares none and

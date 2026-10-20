@@ -157,7 +157,8 @@ The token endpoint returns OAuth-shaped errors (`{"error": "...", "error_descrip
 - `401 invalid_client`, `"client authentication failed"` — no Basic credentials, a client id outside the client-id grammar (`auth.clients`; refused before the client store is read), an unknown tenant or client id, or a wrong secret. Carries `WWW-Authenticate: Basic realm="cyoda"`. Each of the last three makes the same store read and one bcrypt comparison, and a store-decided `401` is sent no earlier than 500 ms after the request reached the handler, so timing does not tell whether the tenant or the client exists. The no-credentials and malformed-id `401`s are immediate. Re-read the credentials once; do not retry in a loop.
 - `503 temporarily_unavailable`, `"temporarily_unavailable"` (with `Retry-After: 1`) — the client store could not be read, or no client-secret check slot freed up within 1 second (`CYODA_IAM_TOKEN_MAX_CONCURRENT_SECRET_CHECKS`). Retry after `Retry-After`, with backoff.
 - `500 server_error`, `"server_error [ticket: <uuid>]"` — any other client-store failure, or a damaged client record (see `auth.clients`). The ticket names the server's log line; no internal detail is sent. A store failure is never answered `401`. Retry a few times with backoff; if it persists, give the ticket to the operator.
-- `400 invalid_request`, `"malformed request body"` — a body over 1 MiB, or one that does not parse as a form.
+- `400 invalid_request`, `"malformed request body"` — a body over 1 MiB, or one that does not parse as a form, or a query string that does not parse.
+- `400 invalid_request`, `"unsupported parameter"` — the request carries any query parameter. The endpoint declares none; its parameters go in the form body, so a credential never travels in the URL.
 - `400 unsupported_grant_type`, `"unsupported_grant_type"` — `grant_type` missing or not one of the two grants.
 - `400 unauthorized_client`, `"this client may only exchange user assertions"` — `client_credentials` by an on-behalf-of client.
 - `400 unauthorized_client`, `"this client may not exchange user assertions"` — a token exchange by any other client, refused before its assertion is read.
@@ -165,7 +166,7 @@ The token endpoint returns OAuth-shaped errors (`{"error": "...", "error_descrip
 
 On the token exchange only, after the checks above:
 
-- `400 invalid_request`, `"unsupported parameter"` — the request carries any query parameter (the endpoint declares none; its parameters go in the form body), or the body carries `actor_token`, `actor_token_type`, `resource`, `audience`, `scope` or `requested_token_type`, even empty.
+- `400 invalid_request`, `"unsupported parameter"` — the body carries `actor_token`, `actor_token_type`, `resource`, `audience`, `scope` or `requested_token_type`, even empty.
 - `400 invalid_request`, `"unsupported subject_token_type"` — `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`.
 - `400 invalid_request`, `"invalid subject token"` — the assertion does not parse as a JWT, its `alg` is not `RS256`, or it has no `kid`.
 - `400 invalid_request`, `"unknown or inactive trusted key"` — the `kid` is not a trusted key of the client's tenant, or the key is invalidated or outside its validity window.

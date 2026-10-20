@@ -89,8 +89,9 @@ or `{}` is accepted there. Cloud is already asked to drop all four.
 A query parameter is read by its exact name too, and an operation accepts only
 the query parameters it declares: any other name, another letter case
 included, is refused with `400 BAD_REQUEST: unknown query parameter "…"` and
-`properties.parameter`. This holds on every operation, hand-written routes
-included. Before, an undeclared name was ignored, so
+`properties.parameter`. A query string that does not parse is refused whole,
+and a parameter other than an array may be given once. This holds on every
+operation, hand-written routes included. Before, an undeclared name was ignored, so
 `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no body
 deleted every current entity of the model instead of the entities as they
 were at that instant. A date-time parameter (`pointInTime`, `fromUtcTime`,

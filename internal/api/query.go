@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -22,8 +23,8 @@ import (
 type QueryRules map[string]operationQuery
 
 type operationQuery struct {
-	declared  map[string]bool
-	dateTimes []string // sorted, so two bad ones are answered the same way every time
+	declared  map[string]bool // true for an array parameter, which may repeat
+	dateTimes []string        // sorted, so two bad ones are answered the same way every time
 }
 
 // NewQueryRules reads every operation's query parameters from the spec.
@@ -39,7 +40,7 @@ func NewQueryRules(spec *openapi3.T) QueryRules {
 				if p.In != openapi3.ParameterInQuery {
 					continue
 				}
-				q.declared[p.Name] = true
+				q.declared[p.Name] = p.Schema != nil && p.Schema.Value.Type.Is("array")
 				if p.Schema != nil && p.Schema.Value.Format == "date-time" && !slices.Contains(q.dateTimes, p.Name) {
 					q.dateTimes = append(q.dateTimes, p.Name)
 				}
@@ -81,23 +82,37 @@ func (q QueryRules) Route(method, path string) func(http.Handler) http.Handler {
 	}
 }
 
-// check refuses a query parameter the operation does not declare, then a
-// date-time parameter that common.ParseDateTime does not read, and reports
-// whether the request may go on. The generated binding parses a date-time with
+// check refuses a query that does not parse, a query parameter the operation
+// does not declare, a parameter other than an array given more than once, and
+// a date-time parameter that common.ParseDateTime does not read, and reports
+// whether the request may go on. url.Values drops a pair it cannot parse, and
+// the binding reads the first of repeated values, so each of these would
+// otherwise change the request without a word. The generated binding parses a date-time with
 // time.Parse, which takes a comma before the fractional seconds, a one-digit
 // hour and +24:00, and falls back to a bare date; a body's date-time member
 // takes none of these.
 func (q QueryRules) check(w http.ResponseWriter, r *http.Request, key string) bool {
 	op := q[key]
-	query := r.URL.Query()
+	query, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "malformed query string"))
+		return false
+	}
 	for _, name := range slices.Sorted(maps.Keys(query)) {
-		if !op.declared[name] {
-			appErr := common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-				fmt.Sprintf("unknown query parameter %q", name))
-			appErr.Props = map[string]any{"parameter": name}
-			common.WriteError(w, r, appErr)
-			return false
+		isArray, declared := op.declared[name]
+		msg := ""
+		switch {
+		case !declared:
+			msg = fmt.Sprintf("unknown query parameter %q", name)
+		case !isArray && len(query[name]) > 1:
+			msg = fmt.Sprintf("query parameter %q is given more than once", name)
+		default:
+			continue
 		}
+		appErr := common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
+		appErr.Props = map[string]any{"parameter": name}
+		common.WriteError(w, r, appErr)
+		return false
 	}
 	for _, name := range op.dateTimes {
 		for _, v := range query[name] {
