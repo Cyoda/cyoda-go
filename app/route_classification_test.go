@@ -34,8 +34,6 @@ var routeClassificationAllowList = []string{
 // handRegisteredDataRoutes are the authenticated data routes app.go registers
 // on its own mux, outside the generated router.
 var handRegisteredDataRoutes = [][2]string{
-	{"GET", "/entity/{entityId}/transitions"},
-	{"GET", "/platform-api/entity/fetch/transitions"},
 	{"POST", "/entity/stats/{entityName}/{modelVersion}/query"},
 }
 
