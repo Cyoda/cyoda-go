@@ -4,11 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"gopkg.in/yaml.v3"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
@@ -65,9 +67,28 @@ func TestQueryRules_SpecShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw, err := os.ReadFile("../../api/config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		OutputOptions struct {
+			ExcludeTags []string `yaml:"exclude-tags"`
+		} `yaml:"output-options"`
+	}
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	excluded := map[string]bool{}
+	for _, tag := range cfg.OutputOptions.ExcludeTags {
+		excluded[tag] = true
+	}
+	if len(excluded) == 0 {
+		t.Fatal("api/config.yaml excludes no tag; this test reads output-options.exclude-tags")
+	}
 	for path, item := range spec.Paths.Map() {
 		for method, op := range item.Operations() {
-			if slices.Contains(op.Tags, "Stream Data") || slices.Contains(op.Tags, "SQL-Schema") {
+			if slices.ContainsFunc(op.Tags, func(tag string) bool { return excluded[tag] }) {
 				continue // excluded from the generated server; not served
 			}
 			if op.Responses.Value("400") == nil {

@@ -34,9 +34,10 @@ func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 	// 404, so the refusal is proven to come first.
 
 	call := func(h *entity.Handler, params genapi.GetEntityTransitionsParams) (int, string) {
-		r := httptest.NewRequest(http.MethodGet, "/entity/e1/transitions", nil).WithContext(f.ctx)
+		id := uuid.New()
+		r := httptest.NewRequest(http.MethodGet, "/entity/"+id.String()+"/transitions", nil).WithContext(f.ctx)
 		w := httptest.NewRecorder()
-		h.GetEntityTransitions(w, r, uuid.New(), params)
+		h.GetEntityTransitions(w, r, id, params)
 		var pd struct {
 			Properties map[string]any `json:"properties"`
 		}

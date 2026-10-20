@@ -588,7 +588,7 @@ func New(cfg Config) *App {
 	}
 
 	// Every spec operation refuses a query parameter it does not declare, on
-	// the generated routes and on the hand-written ones below alike.
+	// the generated routes and on the hand-written one below alike.
 	spec, err := genapi.GetSwagger()
 	if err != nil {
 		slog.Error("failed to load the embedded OpenAPI document", "pkg", "app", "err", err)

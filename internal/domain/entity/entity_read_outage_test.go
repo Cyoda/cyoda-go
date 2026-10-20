@@ -213,7 +213,7 @@ func callGetTransitions(t *testing.T, readErr error) *httptest.ResponseRecorder 
 	return w
 }
 
-func TestHandleGetTransitions_StorageOutage_Returns503(t *testing.T) {
+func TestGetEntityTransitions_StorageOutage_Returns503(t *testing.T) {
 	w := callGetTransitions(t, storageOutage())
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503; body: %s", w.Code, w.Body.String())
@@ -236,7 +236,7 @@ func TestHandleGetTransitions_StorageOutage_Returns503(t *testing.T) {
 	}
 }
 
-func TestHandleGetTransitions_MissingEntity_Still404(t *testing.T) {
+func TestGetEntityTransitions_MissingEntity_Still404(t *testing.T) {
 	w := callGetTransitions(t, spi.ErrNotFound)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404; body: %s", w.Code, w.Body.String())

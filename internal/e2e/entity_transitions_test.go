@@ -11,10 +11,9 @@ import (
 // TestFetchEntityTransitions exercises operationId: fetchEntityTransitions
 // GET /platform-api/entity/fetch/transitions?entityClass=<Name>.<Version>&entityId=<uuid>
 //
-// This endpoint is routed outside the generated ServerInterface dispatch —
-// it is registered on the inner mux at /platform-api/entity/fetch/transitions
-// and is reachable as /api/platform-api/entity/fetch/transitions when the
-// app is mounted under the /api context path.
+// It is served by the generated router and is reachable as
+// /api/platform-api/entity/fetch/transitions when the app is mounted under
+// the /api context path.
 //
 // The test registers a model+workflow, creates an entity that auto-transitions
 // from NONE to CREATED, then calls fetchEntityTransitions and asserts a 200

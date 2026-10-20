@@ -204,13 +204,13 @@ func TestRouteClassification_EveryRouteClassified(t *testing.T) {
 
 // TestRouteClassification_RefusedBeforeJoin: a caller without ROLE_M2M that
 // presents a transaction token is refused for the role before the join layer
-// reads the token, on a generated route and on a hand-registered one.
+// reads the token, on a generated route and on the hand-registered one.
 func TestRouteClassification_RefusedBeforeJoin(t *testing.T) {
 	a, key := jwtAppWithKey(t)
 	h, tok := a.Handler(), mintAppToken(t, key, "ROLE_ADMIN")
 	for _, rt := range [][2]string{
 		{http.MethodGet, "/entity/00000000-0000-0000-0000-000000000001"},
-		{http.MethodGet, "/entity/00000000-0000-0000-0000-000000000001/transitions"},
+		{http.MethodPost, "/entity/stats/Model/1/query"},
 	} {
 		req := httptest.NewRequest(rt[0], rt[1], nil)
 		req.Header.Set("Authorization", "Bearer "+tok)

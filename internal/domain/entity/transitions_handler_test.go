@@ -352,20 +352,21 @@ func TestFetchTransitions_MissingParams(t *testing.T) {
 
 func TestFetchTransitions_MalformedEntityClass(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
-
-	// No dot
-	resp, err := http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=Offer&entityId=some-id", srv.URL))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	const id = "00000000-0000-0000-0000-000000000001"
+	for class, want := range map[string]string{
+		"Offer":  "entityClass must be in format Name.Version",
+		"Offer.": "entityClass must be in format Name.Version",
+		"":       "entityClass is required",
+	} {
+		resp, err := http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=%s&entityId=%s", srv.URL, class, id))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		expectStatus(t, resp, http.StatusBadRequest)
+		if body := string(readBody(t, resp)); !contains(body, want) {
+			t.Errorf("entityClass=%q: %s, want %q", class, body, want)
+		}
 	}
-	expectStatus(t, resp, http.StatusBadRequest)
-
-	// Trailing dot
-	resp, err = http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=Offer.&entityId=some-id", srv.URL))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusBadRequest)
 }
 
 func TestGetTransitions_WithTransactionId(t *testing.T) {
