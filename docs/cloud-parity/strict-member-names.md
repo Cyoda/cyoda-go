@@ -84,6 +84,21 @@ word: `audience` on `POST /oauth/keys/keypair` and on `POST
 the invalidate request has no body; see `trusted-key-tenant.md`). An empty body
 or `{}` is accepted there. Cloud is already asked to drop all four.
 
+## Query parameters
+
+A query parameter is read by its exact name too, and an operation accepts only
+the query parameters it declares: any other name, another letter case
+included, is refused with `400 BAD_REQUEST: unknown query parameter "…"` and
+`properties.parameter`. This holds on every operation, hand-written routes
+included. Before, an undeclared name was ignored, so
+`DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no body
+deleted every current entity of the model instead of the entities as they
+were at that instant. A date-time parameter (`pointInTime`, `fromUtcTime`,
+`toUtcTime`) is RFC 3339, read as a body's date-time is; a malformed, empty
+or bare-date value is `400 BAD_REQUEST: invalid value for parameter '…'`, and
+every repeated value is checked. The token endpoint declares no query
+parameter and refuses any with `400 invalid_request`.
+
 ## Why
 
 `encoding/json`, which cyoda-go used before, matched a name to a field ignoring
@@ -114,6 +129,10 @@ operator lets two spellings in one leaf through, the last one winning.
 - Refuse a duplicate member name, invalid UTF-8 and a lone surrogate escape in
   an entity payload, a message payload and model-import sample data, and
   anything after model-import sample data.
+- Refuse a query parameter an operation does not declare, with 400, on every
+  operation; read a date-time parameter as RFC 3339, as a body's date-time is,
+  refusing a bare date, an empty value and a comma before the fractional
+  seconds.
 - Declare `joinedLegalEntityId` on `CalculationMemberJoinEvent` and check it as
   described above, and keep `pageSize` declared on `EntityDeleteAllRequest`
   with no effect.

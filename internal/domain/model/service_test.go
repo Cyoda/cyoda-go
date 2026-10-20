@@ -792,3 +792,37 @@ func TestExportModel_UnsupportedConverter_400(t *testing.T) {
 			common.ErrCodeBadRequest, appErr.Code, appErr.Message)
 	}
 }
+
+// A model import reads the existing model to refuse re-importing a locked one.
+// A read that fails is not "no model": treating it so skipped the 409 and saved
+// a fresh descriptor over a locked model, without its unique keys. Only
+// not-found means absent; any other failure refuses the import.
+func TestImportModel_ReadFailure_RefusesWithoutSaving(t *testing.T) {
+	ref := spi.ModelRef{EntityName: "Dataset", ModelVersion: "1"}
+	locked := &spi.ModelDescriptor{Ref: ref, State: spi.ModelLocked}
+	input := model.ImportModelInput{
+		EntityName:   "Dataset",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Converter:    "SAMPLE_DATA",
+		Data:         []byte(`{"field":"value"}`),
+	}
+
+	failing := &refreshingModelStore{getDescriptor: locked, refreshErr: errors.New("connection reset")}
+	_, err := model.New(&fakeStoreFactory{modelStore: failing}).ImportModel(context.Background(), input)
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Status < 500 {
+		t.Errorf("read failure: err = %v, want a 5xx", err)
+	}
+	if failing.saveCount != 0 {
+		t.Errorf("read failure: %d saves, want none", failing.saveCount)
+	}
+
+	absent := &refreshingModelStore{refreshErr: spi.ErrNotFound}
+	if _, err := model.New(&fakeStoreFactory{modelStore: absent}).ImportModel(context.Background(), input); err != nil {
+		t.Errorf("not found: %v, want the import to proceed", err)
+	}
+	if absent.saveCount != 1 {
+		t.Errorf("not found: %d saves, want 1", absent.saveCount)
+	}
+}

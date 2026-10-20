@@ -13,20 +13,17 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 )
 
-// TestDateTimeQueryParams_KeysAreRoutePatterns: the middleware finds an
-// operation's date-time parameters by the chi route pattern of the request,
-// and a key that matches no pattern checks nothing. Every key must be the
-// pattern a request to its operation resolves to, so register each spec
-// operation on chi, as the generated routes are, and compare.
-func TestDateTimeQueryParams_KeysAreRoutePatterns(t *testing.T) {
+// TestQueryRules_KeysAreRoutePatterns: the middleware finds an operation's
+// query rules by the chi route pattern of the request, and a key that matches
+// no pattern would refuse every query parameter of that operation. Every key
+// must be the pattern a request to its operation resolves to, so register each
+// spec operation on chi, as the generated routes are, and compare.
+func TestQueryRules_KeysAreRoutePatterns(t *testing.T) {
 	spec, err := genapi.GetSwagger()
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys := dateTimeQueryParams(spec)
-	if len(keys) == 0 {
-		t.Fatal("the spec declares no date-time query parameter")
-	}
+	rules := NewQueryRules(spec)
 	var resolved string
 	r := chi.NewRouter()
 	for path, item := range spec.Paths.Map() {
@@ -41,19 +38,23 @@ func TestDateTimeQueryParams_KeysAreRoutePatterns(t *testing.T) {
 		for method := range item.Operations() {
 			resolved = ""
 			r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(method, param.ReplaceAllString(path, "x"), nil))
-			if want := dateTimeKey(method, path); resolved != want {
+			want := operationKey(method, path)
+			if resolved != want {
 				t.Errorf("%s %s resolves to %q, key %q", method, path, resolved, want)
+			}
+			if _, ok := rules[want]; !ok {
+				t.Errorf("%s %s has no rules", method, path)
 			}
 		}
 	}
 }
 
-// TestDateTimeQueryParams_NoUncheckedShape: StrictDateTimeQuery sees a
+// TestQueryRules_NoUncheckedDateTime: the query check sees a
 // date-time only as a query parameter whose own schema has that format. A
 // date-time anywhere else in a parameter — a header or path parameter, an
 // array's items, a composed schema, a content-typed parameter — would be bound
 // by the lenient generated parse and go unchecked, so the spec must have none.
-func TestDateTimeQueryParams_NoUncheckedShape(t *testing.T) {
+func TestQueryRules_NoUncheckedDateTime(t *testing.T) {
 	spec, err := genapi.GetSwagger()
 	if err != nil {
 		t.Fatal(err)

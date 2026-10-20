@@ -148,9 +148,11 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	// can briefly serve a stale LOCKED descriptor in the window between a
 	// peer's delete and its gossip-borne invalidation. Admin operations
 	// are low-frequency, so one forced round-trip is fine.
+	// Only not-found means no model: a read that fails would otherwise skip the
+	// locked-model refusal below and save over the stored model.
 	existing, err := getModelFresh(ctx, store, ref)
-	if err != nil {
-		existing = nil
+	if err != nil && !errors.Is(err, spi.ErrNotFound) {
+		return nil, common.Internal("failed to import model", err)
 	}
 
 	if existing != nil && existing.State == spi.ModelLocked {

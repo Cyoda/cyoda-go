@@ -74,12 +74,10 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 		}
 		pointInTime, usePointInTime = submitTime, true
 	} else if pitStr != "" {
-		parsed, err := common.ParseDateTime(pitStr)
-		if err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pointInTime format"))
-			return
-		}
-		pointInTime, usePointInTime = parsed, true
+		// The route's query check has refused any value common.ParseDateTime
+		// does not read.
+		pointInTime, _ = common.ParseDateTime(pitStr)
+		usePointInTime = true
 	}
 
 	// The instant is resolved from either source; fence it before any read.

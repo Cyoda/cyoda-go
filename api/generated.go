@@ -1989,6 +1989,9 @@ type JoinedPayloadTooLarge = ProblemDetail
 // NotImplemented defines model for NotImplemented.
 type NotImplemented = ProblemDetail
 
+// QueryParameterRefused defines model for QueryParameterRefused.
+type QueryParameterRefused = ProblemDetail
+
 // ScheduleFunctionInvalidResult defines model for ScheduleFunctionInvalidResult.
 type ScheduleFunctionInvalidResult = ProblemDetail
 

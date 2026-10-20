@@ -1096,6 +1096,24 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `docs/cloud-parity/strict-member-names.md` and
   `docs/workflow-schema-versioning.md`.
 
+- **Every HTTP operation refuses a query parameter it does not declare.**
+  A query parameter is read by its exact name, as a body member is; before,
+  any other name was ignored, so a misspelt parameter silently changed the
+  request. `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no
+  body deleted every current entity of the model, where `pointInTime` deletes
+  the entities as they were at that instant; the gRPC delete-all already
+  refuses the misspelling. Now such a request is `400 BAD_REQUEST: unknown
+  query parameter "PointInTime"`, with `properties.parameter` naming it. This
+  holds on every operation in the spec, the hand-written routes included
+  (transitions, fetch transitions, grouped stats), and every operation's
+  OpenAPI responses declare the 400. The transitions route answers a malformed
+  `pointInTime` as every route does (`invalid value for parameter
+  'pointInTime'`, where it said `invalid pointInTime format`) and refuses an
+  empty one, which it read as absent. The token endpoint declares none and
+  refuses any query parameter with `400 invalid_request`, `unsupported
+  parameter`, so a credential never travels in a URL. See
+  `docs/cloud-parity/strict-member-names.md`.
+
 - **A conditional delete whose body is only non-JSON white space no longer
   deletes every entity of the model.**
   A body of a vertical tab, a form feed or a no-break space read as "no
@@ -1521,6 +1539,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **A model import no longer saves over a stored model when reading it fails.**
+  The import reads the model first, to refuse re-importing a locked one with
+  `409 MODEL_ALREADY_LOCKED`. Any read error counted as "no model", so a store
+  failure skipped that refusal and saved a fresh descriptor over a locked
+  model, without its unique keys. Only not-found means no model now; any other
+  read error fails the import with a 5xx and saves nothing.
 
 - **A workflow import that breaks one rule in several states is refused naming
   the same state every time.** The checks walked the states in Go's random map

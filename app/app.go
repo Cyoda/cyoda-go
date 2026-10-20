@@ -587,6 +587,15 @@ func New(cfg Config) *App {
 		mux.Handle("/tenants/{tenant}/oauth/token", authSvc.Handler())
 	}
 
+	// Every spec operation refuses a query parameter it does not declare, on
+	// the generated routes and on the hand-written ones below alike.
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		slog.Error("failed to load the embedded OpenAPI document", "pkg", "app", "err", err)
+		os.Exit(1)
+	}
+	queryRules := internalapi.NewQueryRules(spec)
+
 	// Admin routes (auth middleware required).
 	authMW := middleware.Auth(a.authService)
 
@@ -602,8 +611,8 @@ func New(cfg Config) *App {
 	// joins nothing. The /admin routes above are operator-guarded instead.
 	txJoinMW := httpmw.TxJoin(a.joiner)
 	dataMW := func(h http.Handler) http.Handler { return authMW(internalapi.RequireM2M(txJoinMW(h))) }
-	mux.Handle("GET /entity/{entityId}/transitions", dataMW(http.HandlerFunc(entityHandler.HandleGetTransitions)))
-	mux.Handle("GET /platform-api/entity/fetch/transitions", dataMW(http.HandlerFunc(entityHandler.HandleFetchTransitions)))
+	mux.Handle("GET /entity/{entityId}/transitions", dataMW(queryRules.Route("GET", "/entity/{entityId}/transitions")(http.HandlerFunc(entityHandler.HandleGetTransitions))))
+	mux.Handle("GET /platform-api/entity/fetch/transitions", dataMW(queryRules.Route("GET", "/platform-api/entity/fetch/transitions")(http.HandlerFunc(entityHandler.HandleFetchTransitions))))
 
 	// Grouped-stats route (POST /entity/stats/{name}/{ver}/query). Wired here (not via openapi.yaml) so
 	// the closure can capture a.storeFactory directly — the handler needs
@@ -648,20 +657,15 @@ func New(cfg Config) *App {
 		return entityStore, ref, fields, modelStore, true, nil
 	}
 	groupedStatsHandler := entity.NewGroupedStatsHandler(groupedStatsResolver, cfg.StatsGroupMax, a.consistency)
-	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", dataMW(groupedStatsHandler))
+	mux.Handle("POST /entity/stats/{entityName}/{modelVersion}/query", dataMW(queryRules.Route("POST", "/entity/stats/{entityName}/{modelVersion}/query")(groupedStatsHandler)))
 
 	// Generated API routes (with auth) — uses chi to avoid ServeMux
 	// wildcard-conflict panics in overlapping /model/… paths. Recovery is
 	// applied once, below, to the fully assembled handler. The chi mux runs
 	// each route's ROLE_M2M check before TxJoin, as dataMW does above.
-	spec, err := genapi.GetSwagger()
-	if err != nil {
-		slog.Error("failed to load the embedded OpenAPI document", "pkg", "app", "err", err)
-		os.Exit(1)
-	}
 	apiHandler := genapi.HandlerWithOptions(server, genapi.StdHTTPServerOptions{
 		BaseRouter:       internalapi.NewChiMux(txJoinMW),
-		Middlewares:      []genapi.MiddlewareFunc{internalapi.StrictDateTimeQuery(spec)},
+		Middlewares:      []genapi.MiddlewareFunc{queryRules.Generated()},
 		ErrorHandlerFunc: internalapi.BindingErrorHandler,
 	})
 	if cfg.OTelEnabled {

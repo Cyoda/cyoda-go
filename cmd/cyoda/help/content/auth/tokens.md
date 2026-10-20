@@ -165,7 +165,7 @@ The token endpoint returns OAuth-shaped errors (`{"error": "...", "error_descrip
 
 On the token exchange only, after the checks above:
 
-- `400 invalid_request`, `"unsupported parameter"` — `actor_token`, `actor_token_type`, `resource`, `audience`, `scope` or `requested_token_type` is present, in the body or the query string, even empty.
+- `400 invalid_request`, `"unsupported parameter"` — the request carries any query parameter (the endpoint declares none; its parameters go in the form body), or the body carries `actor_token`, `actor_token_type`, `resource`, `audience`, `scope` or `requested_token_type`, even empty.
 - `400 invalid_request`, `"unsupported subject_token_type"` — `subject_token_type` is not `urn:ietf:params:oauth:token-type:jwt`.
 - `400 invalid_request`, `"invalid subject token"` — the assertion does not parse as a JWT, its `alg` is not `RS256`, or it has no `kid`.
 - `400 invalid_request`, `"unknown or inactive trusted key"` — the `kid` is not a trusted key of the client's tenant, or the key is invalidated or outside its validity window.

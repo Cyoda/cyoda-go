@@ -325,6 +325,8 @@ paths:
         legal entity, roles, and current subscription.
       operationId: accountGet
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Current user's account information with current subscription details
           content:
@@ -350,6 +352,8 @@ paths:
       operationId: accountSubscriptionsGet
       x-cyoda-status: planned
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Collection of all subscriptions for the user's legal entity
           content:
@@ -620,6 +624,8 @@ paths:
       operationId: listTechnicalUsers
       x-cyoda-iam-mode: jwt
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of M2M clients returned successfully
           content:
@@ -985,6 +991,8 @@ paths:
         never refused and its answer never changes. See `cyoda help crud`.
       operationId: getConsistencyTime
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: The current consistency time.
           content:
@@ -4331,6 +4339,8 @@ paths:
       security:
         - bearerAuth: []
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of available entity models
           content:
@@ -5399,6 +5409,8 @@ paths:
             type: integer
             format: int32
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Workflows exported successfully
           content:
@@ -5578,6 +5590,8 @@ paths:
       operationId: getCurrentJwtKeyPair
       x-cyoda-iam-mode: jwt
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Current key-pair information retrieved successfully
           content:
@@ -5857,6 +5871,8 @@ paths:
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of trusted keys
           content:
@@ -6414,6 +6430,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: The requested stream data configuration
           content:
@@ -6445,6 +6463,8 @@ paths:
               $ref: "#/components/schemas/StreamDataConfigDef"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Configuration updated successfully
         "404":
@@ -6476,6 +6496,8 @@ paths:
               $ref: "#/components/schemas/StreamDataConfigDef"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: UUID of the created configuration
           content:
@@ -6513,6 +6535,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Configuration deleted successfully
         "404":
@@ -6538,6 +6562,8 @@ paths:
       operationId: getAllConfigs
       x-cyoda-status: unimplemented
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of all stream data configurations
           content:
@@ -6576,6 +6602,8 @@ paths:
               $ref: "#/components/schemas/StreamDataRequest"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Deletion result with counts and any errors
           content:
@@ -6605,6 +6633,8 @@ paths:
       operationId: exportAll_1
       x-cyoda-status: unimplemented
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Container with all stream data configurations
           content:
@@ -6642,6 +6672,8 @@ paths:
             type: string
           example: com.example.MyEntity
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Container with stream data configurations for the entity class
           content:
@@ -6677,6 +6709,8 @@ paths:
               type: string
               format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Container with the requested stream data configurations
           content:
@@ -6714,6 +6748,8 @@ paths:
               $ref: "#/components/schemas/StreamDataRequest"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Stream data fetch result containing rows and pagination info
           content:
@@ -6759,6 +6795,8 @@ paths:
               $ref: "#/components/schemas/StreamDataConfigDefContainer"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Configurations imported successfully
         "404":
@@ -6788,6 +6826,8 @@ paths:
             type: string
           example: com.example.MyEntity
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of index configurations
           content:
@@ -6823,6 +6863,8 @@ paths:
               $ref: "#/components/schemas/QueryPlanRequest"
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Query plan with original and optimized versions
           content:
@@ -7682,6 +7724,8 @@ paths:
             maxLength: 1024
             minLength: 1
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Schema found
           content:
@@ -8000,6 +8044,8 @@ paths:
           schema:
             type: string
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Schema deleted successfully
           content:
@@ -8040,6 +8086,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Tables generated successfully
           content:
@@ -8178,6 +8226,8 @@ paths:
       operationId: getSchemas
       x-cyoda-status: planned
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of schemas retrieved successfully
           content:
@@ -8616,6 +8666,8 @@ paths:
                     hidden: false
         required: true
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Tables updated successfully
           content:
@@ -8762,6 +8814,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Schema found
           content:
@@ -8921,6 +8975,8 @@ paths:
             type: string
             format: uuid
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Schema deleted successfully
           content:
@@ -12446,6 +12502,16 @@ components:
       schema:
         type: string
   responses:
+    QueryParameterRefused:
+      description: >-
+        A query parameter the operation does not declare (`unknown query
+        parameter "…"`), or a declared one whose value is malformed (`invalid
+        value for parameter '…'`). `properties.errorCode` is BAD_REQUEST and
+        `properties.parameter` names the parameter.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
     TransactionNotFound:
       description: >-
         The transaction named by the `X-Tx-Token` is not open — it was never

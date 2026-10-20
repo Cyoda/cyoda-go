@@ -437,8 +437,8 @@ func TestGetTransitions_InvalidPointInTime(t *testing.T) {
 	if detail == "" {
 		t.Fatal("expected non-empty detail in error response")
 	}
-	if !contains(detail, "invalid pointInTime") {
-		t.Fatalf("expected 'invalid pointInTime' in detail, got: %s", detail)
+	if !contains(detail, "invalid value for parameter 'pointInTime'") {
+		t.Fatalf("expected the parameter refusal every route gives, got: %s", detail)
 	}
 }
 
