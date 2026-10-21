@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/model/EntityModelSetUniqueKeysRequest.json",
+  "title": "EntityModelSetUniqueKeysRequest",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
+  "properties": {
+    "model": {
+      "$ref": "../common/ModelSpec.json",
+      "description": "Entity model specification. The model must be unlocked."
+    },
+    "uniqueKeys": {
+      "type": "array",
+      "description": "The model's composite unique keys. They replace the keys the model has; an empty array removes them all.",
+      "items": {
+        "type": "object",
+        "description": "A composite unique key definition over one or more scalar leaf fields.",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this key definition."
+          },
+          "fields": {
+            "type": "array",
+            "description": "Ordered list of scalar leaf field paths.",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "fields"
+        ]
+      }
+    }
+  },
+  "required": [
+    "model",
+    "uniqueKeys"
+  ]
+}

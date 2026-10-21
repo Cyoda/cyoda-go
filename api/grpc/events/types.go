@@ -2703,6 +2703,207 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type EntityModelSetUniqueKeysRequestJson struct {
+	// Error details (if present).
+	Error *EntityModelSetUniqueKeysRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Entity model specification. The model must be unlocked.
+	Model ModelSpecJson `json:"model" yaml:"model" mapstructure:"model"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// The model's composite unique keys. They replace the keys the model has; an
+	// empty array removes them all.
+	UniqueKeys []EntityModelSetUniqueKeysRequestJsonUniqueKeysElem `json:"uniqueKeys" yaml:"uniqueKeys" mapstructure:"uniqueKeys"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityModelSetUniqueKeysRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	}
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysRequestJsonError(plain)
+	return nil
+}
+
+// A composite unique key definition over one or more scalar leaf fields.
+type EntityModelSetUniqueKeysRequestJsonUniqueKeysElem struct {
+	// Ordered list of scalar leaf field paths.
+	Fields []string `json:"fields" yaml:"fields" mapstructure:"fields"`
+
+	// Unique identifier for this key definition.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJsonUniqueKeysElem) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["fields"]; !ok {
+		return fmt.Errorf("field fields: required")
+	}
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJsonUniqueKeysElem
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysRequestJsonUniqueKeysElem(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	}
+	if _, ok := raw["model"]; !ok {
+		return fmt.Errorf("field model: required")
+	}
+	if _, ok := raw["uniqueKeys"]; !ok {
+		return fmt.Errorf("field uniqueKeys: required")
+	}
+	type Plain EntityModelSetUniqueKeysRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityModelSetUniqueKeysRequestJson(plain)
+	return nil
+}
+
+type EntityModelSetUniqueKeysResponseJson struct {
+	// Error details (if present).
+	Error *EntityModelSetUniqueKeysResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// ID of the entity model.
+	ModelID string `json:"modelId" yaml:"modelId" mapstructure:"modelId"`
+
+	// State of the entity model.
+	State string `json:"state" yaml:"state" mapstructure:"state"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type EntityModelSetUniqueKeysResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	}
+	if _, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	}
+	type Plain EntityModelSetUniqueKeysResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = EntityModelSetUniqueKeysResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *EntityModelSetUniqueKeysResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if _, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	}
+	if _, ok := raw["modelId"]; !ok {
+		return fmt.Errorf("field modelId: required")
+	}
+	if _, ok := raw["state"]; !ok {
+		return fmt.Errorf("field state: required")
+	}
+	type Plain EntityModelSetUniqueKeysResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = EntityModelSetUniqueKeysResponseJson(plain)
+	return nil
+}
+
 type EntityModelTransitionRequestJson struct {
 	// Error details (if present).
 	Error *EntityModelTransitionRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`

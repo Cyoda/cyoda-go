@@ -20,26 +20,9 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
 )
 
-// setUniqueKeysPayload is the CloudEvent payload for EntityModelSetUniqueKeysRequest.
-// It declares the BaseEvent members every event may carry (a Cloud client
-// sends success and warnings on each one), which the request does not read.
-type setUniqueKeysPayload struct {
-	ID         string               `json:"id"`
-	Model      events.ModelSpecJson `json:"model"`
-	UniqueKeys []uniqueKeyPayload   `json:"uniqueKeys"`
-	Success    *bool                `json:"success"`
-	Warnings   []string             `json:"warnings"`
-	Error      json.RawMessage      `json:"error"`
-}
-
-// uniqueKeyPayload is a single unique key definition in the CloudEvent payload.
-type uniqueKeyPayload struct {
-	ID     string   `json:"id"`
-	Fields []string `json:"fields"`
-}
-
 // EntityModelManage handles unary model management CloudEvents (import, export,
-// lock/unlock, delete, get all) by calling model service methods directly.
+// lock/unlock, delete, get all, set unique keys) by calling model service
+// methods directly.
 func (s *CloudEventsServiceImpl) EntityModelManage(ctx context.Context, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
 	ctx = common.WithDiagnostics(ctx)
 
@@ -255,7 +238,7 @@ func (s *CloudEventsServiceImpl) handleModelGetAll(ctx context.Context, ceID str
 }
 
 func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, ceID string, eventType string, payload json.RawMessage) (*cepb.CloudEvent, error) {
-	var req setUniqueKeysPayload
+	var req events.EntityModelSetUniqueKeysRequestJson
 	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
@@ -272,7 +255,7 @@ func (s *CloudEventsServiceImpl) handleModelSetUniqueKeys(ctx context.Context, c
 	}
 
 	diag := common.GetDiagnostics(ctx)
-	resp := events.EntityModelTransitionResponseJson{
+	resp := events.EntityModelSetUniqueKeysResponseJson{
 		ID:       ceID,
 		Success:  true,
 		Warnings: diag.GetWarnings(),

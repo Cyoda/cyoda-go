@@ -1145,6 +1145,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the three plugin modules and `go.work`), for `encoding/json/v2`. An
   out-of-tree plugin raises its own `go` directive with its cyoda-go bump.
 
+- **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
+  have schemas in the published CloudEvent tree, and the request is read
+  through the type generated from its schema.** `model` and `uniqueKeys` are
+  required, and so are `id` and `fields` on each key. Before, a request
+  without `uniqueKeys` was accepted and removed every unique key of the
+  model; now it is `InvalidArgument` and nothing changes. Send
+  `"uniqueKeys": []` to remove the keys. A `"success": null` and an `error`
+  without `code` or `message` are refused as on every other event. The
+  response is typed as `EntityModelSetUniqueKeysResponse`; its members are
+  those it had (`modelId`, `state`). `common/CloudEventType.json` now lists
+  every event type the server accepts or sends: these two, and
+  `EntityPatchRequest`, `EntityFunctionCalculationRequest` and
+  `EntityFunctionCalculationResponse`, which had schemas but were missing
+  from the enum. See `docs/cloud-parity/cloudevent-type-coverage.md`.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
