@@ -430,7 +430,7 @@ func (e *Engine) executeCommitBeforeDispatch(ctx context.Context, entity *spi.En
 	var pending []byte
 
 	// Read the flag. Nil pointer == default == false.
-	startNewTx := proc.Config.StartNewTxOnDispatch != nil && *proc.Config.StartNewTxOnDispatch
+	startNewTx := proc.StartNewTxOnDispatch != nil && *proc.StartNewTxOnDispatch
 
 	// The segment boundary: flush and commit TX_pre. Every return below it is
 	// after TX_pre committed.

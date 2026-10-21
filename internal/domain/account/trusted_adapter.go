@@ -12,6 +12,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -75,7 +76,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 	}
 	var req genapi.RegisterTrustedKeyRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if !auth.MatchesTrustedKIDPattern(req.KeyId) {
@@ -160,17 +161,14 @@ func parseTrustedJWK(jwk map[string]any, keyId string, maxProps int) (pub *rsa.P
 			return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("jwk.kid (%q) must equal keyId (%q)", s, keyId)
 		}
 	}
-	raw, err := json.Marshal(jwk)
-	if err != nil {
-		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("re-marshal jwk: %w", err)
-	}
+	raw, _ := json.Marshal(jwk) // decoded from JSON, so it encodes: cannot fail
 	pubKey, err := auth.ParseRSAPublicKeyFromJWK(raw)
 	if err != nil {
-		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", err)
+		return nil, nil, common.ErrCodeBadRequest, fmt.Errorf("invalid jwk: %w", strictjson.Within(err, "/jwk"))
 	}
-	// n and e come from the parsed key, not the request: the parser matches
-	// member names without regard to case, so the request's own "n" and "e"
-	// may be absent while the key still verifies.
+	// n and e come from the parsed key, not the request, so the stored JWK
+	// holds them in canonical base64url (no padding, no leading zero bytes)
+	// whatever spelling the request used.
 	public = map[string]any{
 		"kty": kty,
 		"kid": keyId,
@@ -270,7 +268,13 @@ func (h *Handler) InvalidateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		return
 	}
 	// The request has no body: trusted keys have no grace period, and
-	// invalidation ends the key at once.
+	// invalidation ends the key at once. A body naming a member is refused,
+	// since accepting it would drop what the client asked for.
+	var none struct{}
+	if err := common.DecodeOptionalBoundedJSON(w, r, 1<<20, &none); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
+		return
+	}
 	tID := tenantFromCtx(r)
 	if err := h.trustedKeyStore.Invalidate(r.Context(), tID, keyId); err != nil {
 		common.WriteError(w, r, trustedKeyStoreError(err))
@@ -296,7 +300,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	}
 	var req genapi.ReactivateKeyRequestDto
 	if err := common.DecodeBoundedJSON(w, r, 1<<20, &req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid request body"))
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 	if req.ValidTo.IsZero() {

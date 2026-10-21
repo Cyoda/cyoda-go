@@ -302,16 +302,20 @@ func TestToken_ContentTypeMustBeForm(t *testing.T) {
 
 // TestToken_TokenExchange_InvalidatedKeyEndsAtOnce: trusted keys have no
 // grace period. An exchange succeeds, the key is invalidated (no body), and
-// the very next exchange is refused. A stray gracePeriodSec in the
-// invalidate body changes nothing: the request has no body to read.
+// the very next exchange is refused. An invalidate that asks for a grace
+// period is refused, and the key keeps working: accepted, it would end the
+// key at once while the client asked for it to verify a while longer.
 func TestToken_TokenExchange_InvalidatedKeyEndsAtOnce(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e: requires Docker + PostgreSQL")
 	}
 	oboID, oboSecret := createClient(t, false, true)
-	for name, body := range map[string][]byte{
-		"no-body":          nil,
-		"stray-grace-body": mustJSON(t, map[string]any{"gracePeriodSec": 3600}),
+	for name, tc := range map[string]struct {
+		body   []byte
+		status int
+	}{
+		"no-body":          {nil, http.StatusOK},
+		"stray-grace-body": {mustJSON(t, map[string]any{"gracePeriodSec": 3600}), http.StatusBadRequest},
 	} {
 		t.Run(name, func(t *testing.T) {
 			priv, kid := registerTrustedSignerAs(t, suiteToken(t), "", nil)
@@ -323,16 +327,24 @@ func TestToken_TokenExchange_InvalidatedKeyEndsAtOnce(t *testing.T) {
 			}
 			ok.Body.Close()
 
-			inv := adminRequest(t, "POST", "/oauth/keys/trusted/"+kid+"/invalidate", body)
-			if inv.StatusCode != http.StatusOK {
+			inv := adminRequest(t, "POST", "/oauth/keys/trusted/"+kid+"/invalidate", tc.body)
+			if inv.StatusCode != tc.status {
 				raw, _ := io.ReadAll(inv.Body)
 				inv.Body.Close()
-				t.Fatalf("invalidate %s: status=%d; body: %s", kid, inv.StatusCode, raw)
+				t.Fatalf("invalidate %s: status=%d, want %d; body: %s", kid, inv.StatusCode, tc.status, raw)
 			}
 			inv.Body.Close()
 
-			assertOAuthErrorDesc(t, exchangeAs(t, oboID, oboSecret, assertionFor(priv, kid, "alice", "test-tenant", nil)),
-				http.StatusBadRequest, "invalid_request", descKey)
+			after := exchangeAs(t, oboID, oboSecret, assertionFor(priv, kid, "alice", "test-tenant", nil))
+			if tc.status != http.StatusOK {
+				if after.StatusCode != http.StatusOK {
+					raw, _ := io.ReadAll(after.Body)
+					t.Errorf("a refused invalidate ended the key: status=%d; body: %s", after.StatusCode, raw)
+				}
+				after.Body.Close()
+				return
+			}
+			assertOAuthErrorDesc(t, after, http.StatusBadRequest, "invalid_request", descKey)
 		})
 	}
 }

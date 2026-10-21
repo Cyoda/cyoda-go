@@ -17,10 +17,10 @@ func TestAppWiresTheOwnersLoopInBothModes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, re := range map[string]*regexp.Regexp{
-		"the Coordinator is built":                                                      regexp.MustCompile(`extProc = callout\.New\(`),
-		"the tracing decorator wraps the outside":                                       regexp.MustCompile(`(?s)extProc = callout\.New\(.*extProc = observability\.NewTracingExternalProcessingService\(extProc,`),
+		"the Coordinator is built":                regexp.MustCompile(`extProc = callout\.New\(`),
+		"the tracing decorator wraps the outside": regexp.MustCompile(`(?s)extProc = callout\.New\(.*extProc = observability\.NewTracingExternalProcessingService\(extProc,`),
 		"the peer router is held as the interface, so a single node has an untyped nil": regexp.MustCompile(`var peers callout\.PeerRouter`),
-		"one lock registry per process":                                                 regexp.MustCompile(`(?s)a\.txGate = txgate\.New\(\).*a\.fence = fence\.New\(a\.txGate\)`),
+		"one lock registry per process": regexp.MustCompile(`(?s)a\.txGate = txgate\.New\(\).*a\.fence = fence\.New\(a\.txGate\)`),
 	} {
 		if !re.Match(src) {
 			t.Errorf("app.go: %s — pattern %s not found", name, re)

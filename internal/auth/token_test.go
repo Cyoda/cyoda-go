@@ -869,9 +869,9 @@ func TestToken_ContentTypeMustBeForm(t *testing.T) {
 	})
 }
 
-// Grant parameters are read from the form body only: a forbidden RFC 8693
-// parameter in the query string is still refused, and a grant_type in the
-// query string is not a grant_type.
+// Grant parameters are read from the form body only, and the endpoint declares
+// no query parameter: any parameter in the query string is refused, a valid
+// grant in the body or not, so a credential never travels in the URL.
 func TestToken_QueryStringParameters(t *testing.T) {
 	env := setupTokenEnv(t)
 	post := func(t *testing.T, query, id, secret string, form url.Values) *httptest.ResponseRecorder {
@@ -895,8 +895,16 @@ func TestToken_QueryStringParameters(t *testing.T) {
 	})
 	t.Run("grant_type in the query", func(t *testing.T) {
 		rr := post(t, "grant_type=client_credentials", env.clientID, env.clientSecret, url.Values{})
-		if resp := decodeResponse(t, rr); rr.Code != http.StatusBadRequest || resp["error"] != "unsupported_grant_type" {
-			t.Fatalf("got %d %v, want 400 unsupported_grant_type", rr.Code, oauthErr(resp))
+		resp := decodeResponse(t, rr)
+		if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != "unsupported parameter" {
+			t.Fatalf("got %d %v, want 400 invalid_request / unsupported parameter", rr.Code, oauthErr(resp))
+		}
+	})
+	t.Run("a valid grant with a query parameter", func(t *testing.T) {
+		rr := post(t, "trace=1", env.clientID, env.clientSecret, url.Values{"grant_type": {"client_credentials"}})
+		resp := decodeResponse(t, rr)
+		if rr.Code != http.StatusBadRequest || resp["error"] != "invalid_request" || resp["error_description"] != "unsupported parameter" {
+			t.Fatalf("got %d %v, want 400 invalid_request / unsupported parameter", rr.Code, oauthErr(resp))
 		}
 	})
 }

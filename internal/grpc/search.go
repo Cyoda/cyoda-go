@@ -16,6 +16,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	cyodapb "github.com/cyoda-platform/cyoda-go/api/grpc/cyoda"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
@@ -102,7 +103,7 @@ func (s *CloudEventsServiceImpl) EntitySearchCollection(ce *cepb.CloudEvent, str
 
 func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -136,7 +137,7 @@ func (s *CloudEventsServiceImpl) handleEntityGetRequest(ctx context.Context, ce 
 // transaction.
 func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntityConsistencyTimeGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -160,17 +161,14 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 
 func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.EntitySnapshotSearchRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
-	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
-	}
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return nil, status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{
@@ -221,7 +219,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.SnapshotGetStatusRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -249,7 +247,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetStatusRequest(ctx context.Cont
 
 func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.SnapshotCancelRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -288,7 +286,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotCancelRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityGetAllRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -351,17 +349,14 @@ func (s *CloudEventsServiceImpl) handleEntityGetAllRequest(ctx context.Context, 
 
 func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntitySearchRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
-	condBytes, err := json.Marshal(req.Condition)
-	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "failed to marshal condition: %v", err)
-	}
+	condBytes, _ := json.Marshal(req.Condition) // decoded from JSON, so it encodes: cannot fail
 	cond, err := predicate.ParseCondition(condBytes)
 	if err != nil {
-		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", err)
+		return status.Errorf(codes.InvalidArgument, "invalid condition: %v", strictjson.Within(err, "/condition"))
 	}
 
 	modelRef := spi.ModelRef{
@@ -470,7 +465,7 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 
 func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityStatsGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -541,7 +536,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsGetRequest(ctx context.Context
 
 func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityStatsByStateGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -602,7 +597,7 @@ func (s *CloudEventsServiceImpl) handleEntityStatsByStateGetRequest(ctx context.
 
 func (s *CloudEventsServiceImpl) handleEntityChangesMetadataGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	var req events.EntityChangesMetadataGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 
@@ -709,7 +704,7 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 	stream cyodapb.CloudEventsService_EntitySearchCollectionServer,
 ) error {
 	var req events.SnapshotGetRequestJson
-	if err := json.Unmarshal(payload, &req); err != nil {
+	if err := strictjson.Decode(payload, &req); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 	}
 

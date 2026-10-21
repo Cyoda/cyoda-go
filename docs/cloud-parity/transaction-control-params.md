@@ -23,12 +23,12 @@ constructing `EntityDeleteAllRequest` literals that assign a bare `int` to
 `TransactionSize` — accepted pre-1.0 (no backward-compatibility constraint on
 `api`/`grpc`/`events` importers at this stage).
 
-`EntityDeleteAllRequest.pageSize` is removed outright. Selection is streamed,
-so a page size has nothing to control, and Cloud ignores the field too (its
-`transactionSize` drives both its read page and its batch). The generated Go
-type loses the `PageSize` field — compile-breaking for the same importers, on
-the same pre-1.0 terms. A client still sending the field is tolerated: the
-request decoder ignores unknown fields.
+`EntityDeleteAllRequest.pageSize` has no effect. Selection is streamed, so a
+page size has nothing to control, and Cloud ignores the field too (its
+`transactionSize` drives both its read page and its batch). The schema still
+declares it, as having no effect, because the request decoder refuses a
+member the schema does not declare and Cloud's schema declares `pageSize`, so
+Cloud's client may send it.
 
 ### Both params are now honored, opt-in
 

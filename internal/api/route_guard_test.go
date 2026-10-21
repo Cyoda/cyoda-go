@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/api"
 )
 
@@ -63,7 +64,11 @@ func TestRequireM2M(t *testing.T) {
 // and one other pattern through the ServeMux interface the generated router
 // uses: the allow-listed one is reachable without ROLE_M2M, the other is not.
 func TestChiMux_GuardsEveryRouteOutsideTheAllowList(t *testing.T) {
-	mux := api.NewChiMux()
+	spec, err := genapi.GetSwagger()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := api.NewChiMux(api.NewQueryRules(spec))
 	ok := func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }
 	mux.HandleFunc("GET /account", ok)
 	mux.HandleFunc("GET /account/subscriptions", ok)

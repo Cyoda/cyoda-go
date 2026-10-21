@@ -154,17 +154,17 @@ func TestRegisterTrustedKey_MinimalPublicMembers(t *testing.T) {
 	}
 }
 
-// The stored and returned n and e are the ones the key verifies with, even
-// when the request spells the members in another letter case: the JWK parser
-// matches member names without regard to case, so copying the request's
-// exact-case "n" and "e" would list nulls beside a working key.
-func TestRegisterTrustedKey_ListsTheModulusItVerifiesWith(t *testing.T) {
+// The stored and returned n and e are the parsed key's, in canonical
+// base64url: a request that pads them gets them back without padding.
+func TestRegisterTrustedKey_ListsCanonicalModulus(t *testing.T) {
 	h := enabledHandler(t)
 	jwk := rsaJWK(t, "k1")
-	n, e := jwk["n"], jwk["e"]
-	delete(jwk, "n")
-	delete(jwk, "e")
-	jwk["N"], jwk["E"] = n, e
+	n, e := jwk["n"].(string), jwk["e"].(string)
+	pad := func(s string) string { return s + strings.Repeat("=", (4-len(s)%4)%4) }
+	jwk["n"], jwk["e"] = pad(n), pad(e)
+	if jwk["n"] == n {
+		t.Fatal("the test modulus needs padding to test anything")
+	}
 	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: jwk})
 	w := httptest.NewRecorder()
 	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
@@ -174,10 +174,24 @@ func TestRegisterTrustedKey_ListsTheModulusItVerifiesWith(t *testing.T) {
 	var reg genapi.TrustedKeyResponseDto
 	_ = json.Unmarshal(w.Body.Bytes(), &reg)
 	if reg.Jwk["n"] != n || reg.Jwk["e"] != e {
-		t.Errorf("jwk n=%v e=%v, want the verifying modulus and exponent", reg.Jwk["n"], reg.Jwk["e"])
+		t.Errorf("jwk n=%v e=%v, want the unpadded %v and %v", reg.Jwk["n"], reg.Jwk["e"], n, e)
 	}
-	if got := jwkMembers(reg.Jwk); got != "e kid kty n" {
-		t.Errorf("jwk members = %q, want e kid kty n", got)
+}
+
+// JWK member names are case-sensitive (RFC 7517 §4): a JWK that spells n and
+// e as "N" and "E" has neither, and is refused.
+func TestRegisterTrustedKey_CaseVariantMembers_400(t *testing.T) {
+	h := enabledHandler(t)
+	jwk := rsaJWK(t, "k1")
+	n, e := jwk["n"], jwk["e"]
+	delete(jwk, "n")
+	delete(jwk, "e")
+	jwk["N"], jwk["E"] = n, e
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: jwk})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "missing n or e") {
+		t.Fatalf("status=%d body=%s; want 400 naming the missing n or e", w.Code, w.Body.String())
 	}
 }
 
@@ -196,5 +210,19 @@ func TestRegisterTrustedKey_NonStringAlgOrUse_400(t *testing.T) {
 			}
 			commontest.ExpectErrorCode(t, resultResp(w), "BAD_REQUEST")
 		})
+	}
+}
+
+// A JWK member of the wrong kind is located from the top of the request body,
+// as every other refusal of the body is.
+func TestRegisterTrustedKey_WrongKindLocatedInBody_400(t *testing.T) {
+	h := enabledHandler(t)
+	jwk := rsaJWK(t, "k1")
+	jwk["n"] = 5
+	body, _ := json.Marshal(genapi.RegisterTrustedKeyRequestDto{KeyId: "k1", Jwk: jwk})
+	w := httptest.NewRecorder()
+	h.RegisterTrustedKey(w, adminReq(t, "POST", "/", body))
+	if w.Code != http.StatusBadRequest || !strings.Contains(problemDetail(t, w), `"/jwk/n"`) {
+		t.Fatalf("status=%d detail=%q; want 400 locating /jwk/n", w.Code, problemDetail(t, w))
 	}
 }

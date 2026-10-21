@@ -1,7 +1,6 @@
 package entity
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1197,9 +1196,10 @@ func (h *Handler) DeleteEntitiesConditional(ctx context.Context, entityName stri
 	ref := spi.ModelRef{EntityName: entityName, ModelVersion: strconv.Itoa(modelVersion)}
 
 	// Parse the condition (if any) BEFORE opening a tx — a parse error is a
-	// 400 that must not start a transaction. Empty/whitespace body ⇒ delete-all.
+	// 400 that must not start a transaction. A body with no JSON value (empty
+	// or JSON whitespace) ⇒ delete-all; any other body is a condition.
 	var cond predicate.Condition
-	if len(bytes.TrimSpace(condBody)) > 0 {
+	if !common.NoJSONValue(condBody) {
 		c, err := predicate.ParseCondition(condBody)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidCondition, err)

@@ -117,30 +117,6 @@ func ParseCloudEvent(ce *cepb.CloudEvent) (eventType string, payload json.RawMes
 	case *cepb.CloudEvent_BinaryData:
 		return ce.Type, json.RawMessage(d.BinaryData), nil
 	default:
-		return "", nil, fmt.Errorf("unsupported CloudEvent data variant: %T", ce.Data)
+		return "", nil, errors.New("the CloudEvent carries neither text_data nor binary_data")
 	}
-}
-
-// ExtractTransactionID extracts the "transactionId" string field from a JSON payload.
-// Returns "" if the field is absent or not a string.
-func ExtractTransactionID(payload json.RawMessage) string {
-	return ExtractStringField(payload, "transactionId")
-}
-
-// ExtractStringField extracts a string field by name from a JSON payload.
-// Returns "" if the field is absent, not a string, or the payload is invalid JSON.
-func ExtractStringField(payload json.RawMessage, field string) string {
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	v, ok := m[field]
-	if !ok {
-		return ""
-	}
-	s, ok := v.(string)
-	if !ok {
-		return ""
-	}
-	return s
 }

@@ -415,11 +415,14 @@ func TestDispatchCriteria_MatchesTrue(t *testing.T) {
 	entity := testEntity()
 
 	criterion := json.RawMessage(`{
-		"name": "my-criteria",
-		"config": {
-			"calculationNodesTags": "python",
-			"attachEntity": true,
-			"responseTimeoutMs": 5000
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"attachEntity": true,
+				"responseTimeoutMs": 5000
+			}
 		}
 	}`)
 
@@ -457,10 +460,13 @@ func TestDispatchCriteria_MatchesFalse(t *testing.T) {
 	entity := testEntity()
 
 	criterion := json.RawMessage(`{
-		"name": "my-criteria",
-		"config": {
-			"calculationNodesTags": "python",
-			"responseTimeoutMs": 5000
+		"type": "function",
+		"function": {
+			"name": "my-criteria",
+			"config": {
+				"calculationNodesTags": "python",
+				"responseTimeoutMs": 5000
+			}
 		}
 	}`)
 

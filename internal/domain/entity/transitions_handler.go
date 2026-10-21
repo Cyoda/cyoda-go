@@ -7,23 +7,18 @@ import (
 	"strings"
 	"time"
 
+	openapi_types "github.com/oapi-codegen/runtime/types"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
-// HandleGetTransitions returns available transitions for an entity at a given point in time.
+// GetEntityTransitions returns available transitions for an entity at a given point in time.
 // GET /entity/{entityId}/transitions?pointInTime=...&transactionId=...
-func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
-	entityID := r.PathValue("entityId")
-	if entityID == "" {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "entityId is required"))
-		return
-	}
-
-	pitStr := r.URL.Query().Get("pointInTime")
-	txIDStr := r.URL.Query().Get("transactionId")
-
-	if pitStr != "" && txIDStr != "" {
+func (h *Handler) GetEntityTransitions(w http.ResponseWriter, r *http.Request, entityId openapi_types.UUID, params genapi.GetEntityTransitionsParams) {
+	entityID := entityId.String()
+	if params.PointInTime != nil && params.TransactionId != nil {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
 			"pointInTime and transactionId are mutually exclusive"))
 		return
@@ -39,8 +34,8 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 	// missing. See internal/e2e/transitions_clockskew_test.go.
 	var pointInTime time.Time
 	var usePointInTime bool
-	if txIDStr != "" {
-		submitTime, err := h.txMgr.GetSubmitTime(r.Context(), txIDStr)
+	if params.TransactionId != nil {
+		submitTime, err := h.txMgr.GetSubmitTime(r.Context(), params.TransactionId.String())
 		if err != nil {
 			// "No such transaction" and "that transaction belongs to another
 			// tenant" must be one indistinguishable answer. They are different
@@ -73,13 +68,8 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pointInTime, usePointInTime = submitTime, true
-	} else if pitStr != "" {
-		parsed, err := time.Parse(time.RFC3339, pitStr)
-		if err != nil {
-			common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid pointInTime format"))
-			return
-		}
-		pointInTime, usePointInTime = parsed, true
+	} else if params.PointInTime != nil {
+		pointInTime, usePointInTime = *params.PointInTime, true
 	}
 
 	// The instant is resolved from either source; fence it before any read.
@@ -135,15 +125,13 @@ func (h *Handler) HandleGetTransitions(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSON(w, http.StatusOK, transitions)
 }
 
-// HandleFetchTransitions returns available transitions using the platform library format.
+// FetchEntityTransitions returns available transitions using the platform library format.
 // GET /platform-api/entity/fetch/transitions?entityClass=Offer.1&entityId=<uuid>
-func (h *Handler) HandleFetchTransitions(w http.ResponseWriter, r *http.Request) {
-	entityClass := r.URL.Query().Get("entityClass")
-	entityID := r.URL.Query().Get("entityId")
-
-	if entityClass == "" || entityID == "" {
+func (h *Handler) FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params genapi.FetchEntityTransitionsParams) {
+	entityClass := params.EntityClass
+	if entityClass == "" {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest,
-			"entityClass and entityId are required"))
+			"entityClass is required"))
 		return
 	}
 
@@ -158,9 +146,9 @@ func (h *Handler) HandleFetchTransitions(w http.ResponseWriter, r *http.Request)
 
 	modelRef := spi.ModelRef{EntityName: entityName, ModelVersion: modelVersion}
 
-	transitions, err := h.engine.GetAvailableTransitions(r.Context(), entityID, modelRef)
+	transitions, err := h.engine.GetAvailableTransitions(r.Context(), params.EntityId.String(), modelRef)
 	if err != nil {
-		// Same classifier as HandleGetTransitions — this endpoint is an alias
+		// Same classifier as GetEntityTransitions — this endpoint is an alias
 		// over the same engine call and must not diverge on status.
 		common.WriteError(w, r, classifyWorkflowError(err))
 		return

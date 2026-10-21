@@ -729,7 +729,7 @@ func TestWorkflowProc_UpdateWithCBD_TrueBranch_SecondaryEntityWritten(t *testing
 				"PENDING":  {"transitions": [{"name": "approve", "next": "APPROVED", "manual": true,
 					"processors": [{"type": "externalized", "name": "cbd-true-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"APPROVED": {}
 			}

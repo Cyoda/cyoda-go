@@ -42,8 +42,9 @@ func TestSuccess_ExplicitNullIsRefused(t *testing.T) {
 	if !strings.Contains(err.Error(), "success") {
 		t.Errorf("error %q does not name the field that was wrong", err)
 	}
-	if !strings.Contains(err.Error(), "EntityProcessorCalculationResponseJson") {
-		t.Errorf("error %q does not name the type it came from", err)
+	// The error reaches the sender, so it names the member, never the Go type.
+	if strings.Contains(err.Error(), "EntityProcessorCalculationResponseJson") {
+		t.Errorf("error %q names a Go type", err)
 	}
 }
 

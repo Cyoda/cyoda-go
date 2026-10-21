@@ -53,7 +53,19 @@ sed -i '' 's/Success bool `json:"success,omitempty"/Success bool `json:"success"
 # preserved as json.Number rather than coerced to float64 — precision
 # loss above 2^53 otherwise breaks search filters with large-integer
 # values (issue #79).
-sed -i '' 's|json\.Unmarshal(value, &raw)|decodeWithUseNumber(value, \&raw)|g; s|json\.Unmarshal(value, &plain)|decodeWithUseNumber(value, \&plain)|g' "$OUT"
+sed -i '' 's|json\.Unmarshal(value, &raw)|decodeWithUseNumber(value, \&raw)|g; s|json\.Unmarshal(value, &plain)|decodeWithUseNumber(value, \&plain)|g; s|json\.Unmarshal(value, &v)|decodeWithUseNumber(value, \&v)|g' "$OUT"
+
+# Post-process: the messages these methods return reach the client inside the
+# decode error, so they name the member and never a Go type, and a JSON null
+# — which holds no member — is refused as missing every required one rather
+# than skipping the checks. go-jsonschema writes `raw != nil && !ok`, which
+# lets a null through as a zero event, names the struct in "field X in
+# FooJson: required", and prints an enum's allowed values in Go syntax.
+perl -0777 -i -pe '
+  s/if _, ok := raw\["(\w+)"\]; raw != nil && !ok \{/if _, ok := raw["$1"]; !ok {/g;
+  s/fmt\.Errorf\("field (\w+) in \w+: required"\)/fmt.Errorf("field $1: required")/g;
+  s/fmt\.Errorf\("invalid value \(expected one of %#v\): %#v", (enumValues_\w+), v\)/fmt.Errorf("invalid value %q: expected one of %v", v, $1)/g;
+' "$OUT"
 
 # Post-process: type the inbound entity payload fields as json.RawMessage so
 # the client's bytes survive to the unstorable-payload guard
@@ -85,10 +97,10 @@ fi
 # true. Only the first is the default: `success` is declared `"type":
 # "boolean"`, so a null is an invalid instance, and the server refuses it as an
 # answer it cannot read. A generated type that reads it as success is the one
-# reading in the tree that nothing else agrees with. `%T` names the concrete
-# type at every site, so one substitution serves all of them.
+# reading in the tree that nothing else agrees with. The message names no type,
+# so one substitution serves every site.
 perl -0777 -i -pe '
-  s/\tif v, ok := raw\["success"\]; !ok \|\| v == nil \{\n\t\tplain\.Success = true\n\t\}\n/\tif v, ok := raw["success"]; ok \&\& v == nil {\n\t\treturn fmt.Errorf("field success in %T: must not be null", *j)\n\t} else if !ok {\n\t\tplain.Success = true\n\t}\n/g;
+  s/\tif v, ok := raw\["success"\]; !ok \|\| v == nil \{\n\t\tplain\.Success = true\n\t\}\n/\tif v, ok := raw["success"]; ok \&\& v == nil {\n\t\treturn fmt.Errorf("field success: must not be null")\n\t} else if !ok {\n\t\tplain.Success = true\n\t}\n/g;
 ' "$OUT"
 
 # Fail loudly if that substitution stops matching (e.g. go-jsonschema changes
@@ -98,9 +110,19 @@ if [ "$LENIENT_NULL" -ne 0 ]; then
   echo "ERROR: $LENIENT_NULL site(s) in $OUT still read an explicit \"success\": null as the default" >&2
   exit 1
 fi
-STRICT_NULL=$(grep -c 'field success in %T: must not be null' "$OUT" || true)
+STRICT_NULL=$(grep -c 'field success: must not be null' "$OUT" || true)
 if [ "$STRICT_NULL" -eq 0 ]; then
   echo "ERROR: no success-null refusals in $OUT; the post-processing substitution matched nothing" >&2
+  exit 1
+fi
+
+# Fail loudly if a generated decode or message escaped the rewrites above: a
+# v1 decode of client data, a null let through the required checks, or a
+# message naming a Go type.
+LEFT=$(grep -cE 'json\.Unmarshal\(|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" || true)
+if [ "$LEFT" -ne 0 ]; then
+  echo "ERROR: $LEFT generated line(s) in $OUT escaped the decode/message rewrites" >&2
+  grep -nE 'json\.Unmarshal\(|raw != nil && !ok|%T|%#v| in [A-Za-z0-9_]+: required' "$OUT" >&2
   exit 1
 fi
 

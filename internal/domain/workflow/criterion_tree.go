@@ -1,12 +1,12 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
@@ -108,7 +108,9 @@ func buildCriterionTree(cond predicate.Condition, ptr string) (critNode, error) 
 func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunction, error) {
 	fn, present, err := contract.ParseCriterionFunction(c.Raw)
 	if err != nil {
-		return nil, fmt.Errorf("function condition%s: %w", atPointer(ptr), err)
+		// The decoder's location is relative to this condition; place it
+		// under the condition's own, as the condition parser does.
+		return nil, fmt.Errorf("function condition: %w", strictjson.Within(err, ptr))
 	}
 	if !present {
 		return nil, fmt.Errorf("function condition%s has no `function` object", atPointer(ptr))
@@ -126,9 +128,7 @@ func buildFunctionNode(c *predicate.FunctionCondition, ptr string) (*critFunctio
 			fn.Name, atPointer(ptr), at)
 	}
 	node.preCheck = &critLocal{ptr: pcPtr, cond: c.PreCheck}
-	if node.preCheckValue, err = decodePreCheck(fn.Criterion); err != nil {
-		return nil, fmt.Errorf("function condition %q%s: %w", fn.Name, atPointer(ptr), err)
-	}
+	node.preCheckValue = decodePreCheck(fn.Criterion)
 	return node, nil
 }
 
@@ -150,15 +150,12 @@ func firstFunction(cond predicate.Condition, ptr string) (string, bool) {
 }
 
 // decodePreCheck decodes the pre-check as written into plain JSON values for
-// the audit, keeping numbers exact.
-func decodePreCheck(raw json.RawMessage) (any, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
+// the audit, keeping numbers exact. The condition parser has already accepted
+// these bytes as a pre-check, so the decode cannot fail.
+func decodePreCheck(raw json.RawMessage) any {
 	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("failed to decode the pre-check: %w", err)
-	}
-	return v, nil
+	_ = strictjson.Decode(raw, &v, strictjson.PreserveNumbers)
+	return v
 }
 
 // atPointer renders a position for a message: nothing for the criterion

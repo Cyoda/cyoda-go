@@ -12,9 +12,11 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/exporter"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/importer"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 )
 
@@ -46,8 +48,9 @@ func classifyGetErr(verb string, entityName string, ver int32, err error) *commo
 // json.UseNumber decoding, or a Go type schema.Describe's traversal never
 // produces), not the tenant's — its own text names a Go decoding instruction
 // or a %T-formatted Go type, neither of which belongs in a 4xx body. Every
-// production ingress into schema.Describe decodes with json.UseNumber (see
-// UnsupportedValueError's own doc comment), so this is unreachable today;
+// production ingress into schema.Describe keeps numbers as json.Number
+// (json.UseNumber or strictjson.PreserveNumbers; see UnsupportedValueError's
+// own doc comment), so this is unreachable today;
 // routing it to 5xx-with-ticket here mirrors ingest.ValidateOrExtend's
 // identical routing for the same error on the entity-write door, so the
 // classification cannot drift between the two doors that both funnel into
@@ -145,9 +148,11 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	// can briefly serve a stale LOCKED descriptor in the window between a
 	// peer's delete and its gossip-borne invalidation. Admin operations
 	// are low-frequency, so one forced round-trip is fine.
+	// Only not-found means no model: a read that fails would otherwise skip the
+	// locked-model refusal below and save over the stored model.
 	existing, err := getModelFresh(ctx, store, ref)
-	if err != nil {
-		existing = nil
+	if err != nil && !errors.Is(err, spi.ErrNotFound) {
+		return nil, common.Internal("failed to import model", err)
 	}
 
 	if existing != nil && existing.State == spi.ModelLocked {
@@ -515,11 +520,14 @@ func (h *Handler) ValidateModel(ctx context.Context, entityName, modelVersion st
 		return common.Internal("failed to unmarshal schema", err)
 	}
 
+	// The data is read as entity create reads it, so validate never calls
+	// valid what create refuses.
+	if appErr := ingest.RejectUnstorable(data); appErr != nil {
+		return appErr
+	}
 	var parsedData any
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if err := dec.Decode(&parsedData); err != nil {
-		return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to parse request body")
+	if err := strictjson.Decode(data, &parsedData, strictjson.PreserveNumbers); err != nil {
+		return common.InvalidBody(err)
 	}
 
 	validationErrors := schema.Validate(modelNode, parsedData)

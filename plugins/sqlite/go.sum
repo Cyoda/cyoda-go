@@ -6,6 +6,10 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261016075535-166c3eb7e4f0 h1:x
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261016075535-166c3eb7e4f0/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261017033307-ee49328f8ece h1:2QG/t2+R1vbZCVA9pylu67kv7o9GBRYpvgsqjyhmCLU=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261017033307-ee49328f8ece/go.mod h1:AcwgAIrvssNIUXbChpZM0/BaXhPmFDLRM+T19iCfD3k=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018153646-e3b384c2cc9b h1:TXvfPZL+uhRBIPsO4FK1pxG5GIquE11R9Q5KDsUfX/8=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018153646-e3b384c2cc9b/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018180211-97ff6210e982 h1:CRWDnx+Ef3T1CXekVl0pnAuJJ1TI9ATdp+vCK9Z5NoQ=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018180211-97ff6210e982/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/dustin/go-humanize v1.0.0 h1:VSnTsYCnlFHaM2/igO1h6X3HA71jcobQuxemgkq4zYo=
 github.com/dustin/go-humanize v1.0.0/go.mod h1:HtrtbFcZ19U5GC7JDqmcUSB87Iq5E25KnS6fMYU6eOk=
 github.com/gofrs/flock v0.13.1 h1:jjREztyBeSKBZYAC+mgc1laB+xsgy4kYMf3FbKF2UBo=

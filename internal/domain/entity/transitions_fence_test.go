@@ -8,7 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
@@ -30,11 +33,11 @@ func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 	// The entity is deliberately missing: without the fence both calls answer
 	// 404, so the refusal is proven to come first.
 
-	call := func(h *entity.Handler, query string) (int, string) {
-		r := httptest.NewRequest(http.MethodGet, "/entity/e1/transitions?"+query, nil).WithContext(f.ctx)
-		r.SetPathValue("entityId", "e1")
+	call := func(h *entity.Handler, params genapi.GetEntityTransitionsParams) (int, string) {
+		id := uuid.New()
+		r := httptest.NewRequest(http.MethodGet, "/entity/"+id.String()+"/transitions", nil).WithContext(f.ctx)
 		w := httptest.NewRecorder()
-		h.HandleGetTransitions(w, r)
+		h.GetEntityTransitions(w, r, id, params)
 		var pd struct {
 			Properties map[string]any `json:"properties"`
 		}
@@ -43,14 +46,15 @@ func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 		return w.Code, code
 	}
 
-	later := f.c.Add(time.Millisecond).Format(time.RFC3339Nano)
-	if status, code := call(f.h, "pointInTime="+later); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {
+	later := f.c.Add(time.Millisecond)
+	if status, code := call(f.h, genapi.GetEntityTransitionsParams{PointInTime: &later}); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {
 		t.Errorf("pointInTime after C: %d %s", status, code)
 	}
 
 	txh := entity.New(f.factory, submitTimeTM{TransactionManager: f.tm, submit: f.c.Add(time.Millisecond)},
 		common.NewDefaultUUIDGenerator(), nil, txgate.New(), consistency.New(f.tm))
-	if status, code := call(txh, "transactionId=some-tx"); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {
+	txID := uuid.New()
+	if status, code := call(txh, genapi.GetEntityTransitionsParams{TransactionId: &txID}); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {
 		t.Errorf("transactionId submit time after C: %d %s", status, code)
 	}
 }

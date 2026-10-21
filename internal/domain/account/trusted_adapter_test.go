@@ -149,10 +149,20 @@ func TestDeleteTrustedKey_CrossTenant_404(t *testing.T) {
 	}
 }
 
-// Invalidation ends the key at once, and the request has no body: a stray
-// gracePeriodSec is not read.
+// Invalidation ends the key at once, and the request has no body. A body
+// that names a member — a grace period, which trusted keys do not have — is
+// refused, and the key is left as it was: accepted, it would end the key at
+// once while the client asked for it to verify a while longer.
 func TestInvalidateTrustedKey_EndsAtOnce(t *testing.T) {
-	for name, body := range map[string][]byte{"no-body": nil, "stray-grace": []byte(`{"gracePeriodSec":3600}`)} {
+	for name, tc := range map[string]struct {
+		body   []byte
+		status int
+		ended  bool
+	}{
+		"no body":      {nil, http.StatusOK, true},
+		"empty object": {[]byte(`{}`), http.StatusOK, true},
+		"stray grace":  {[]byte(`{"gracePeriodSec":3600}`), http.StatusBadRequest, false},
+	} {
 		t.Run(name, func(t *testing.T) {
 			ts := newTestTrustedStore(t)
 			tk := &auth.TrustedKey{KID: "k", TenantID: spi.TenantID("t1"), PublicKey: mkRSAPub(t), Active: true, ValidFrom: time.Now().Add(-time.Minute), JWK: map[string]any{"kty": "RSA", "kid": "k"}}
@@ -163,12 +173,13 @@ func TestInvalidateTrustedKey_EndsAtOnce(t *testing.T) {
 			feats.TrustedKeyRegistrationEnabled = true
 			h := account.New(newTestKeyStore(t), ts, nil, feats, auth.OperatorGuard{})
 			w := httptest.NewRecorder()
-			h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", body), "k")
-			if w.Code != http.StatusOK {
-				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			h.InvalidateTrustedKey(w, adminReq(t, "POST", "/", tc.body), "k")
+			if w.Code != tc.status {
+				t.Fatalf("status=%d body=%s, want %d", w.Code, w.Body.String(), tc.status)
 			}
-			if _, err := ts.GetForVerification(context.Background(), spi.TenantID("t1"), "k"); !errors.Is(err, auth.ErrTrustedKeyNotFound) {
-				t.Errorf("invalidated key still verifies: err = %v", err)
+			_, err := ts.GetForVerification(context.Background(), spi.TenantID("t1"), "k")
+			if ended := errors.Is(err, auth.ErrTrustedKeyNotFound); ended != tc.ended {
+				t.Errorf("key ended = %t, want %t (err = %v)", ended, tc.ended, err)
 			}
 		})
 	}

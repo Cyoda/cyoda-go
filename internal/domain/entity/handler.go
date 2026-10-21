@@ -15,6 +15,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
@@ -868,6 +869,14 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "failed to read body"))
 		return
 	}
+	// Text no store can hold anywhere in the body is refused before any item
+	// runs, as on update collection; each payload is still checked on its own
+	// below, since it is a JSON-encoded string whose escapes this check
+	// cannot see.
+	if appErr := ingest.RejectUnstorable(bodyBytes); appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
 
 	var rawItems []struct {
 		Model struct {
@@ -876,8 +885,8 @@ func (h *Handler) CreateCollection(w http.ResponseWriter, r *http.Request, forma
 		} `json:"model"`
 		Payload string `json:"payload"`
 	}
-	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array"))
+	if err := strictjson.Decode(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
@@ -964,8 +973,8 @@ func (h *Handler) UpdateCollection(w http.ResponseWriter, r *http.Request, forma
 		Transition string `json:"transition"`
 		IfMatch    string `json:"ifMatch"`
 	}
-	if err := json.Unmarshal(bodyBytes, &rawItems); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON array (payload must be a JSON-encoded string)"))
+	if err := strictjson.Decode(bodyBytes, &rawItems); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 

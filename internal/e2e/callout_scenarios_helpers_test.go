@@ -432,6 +432,12 @@ func chainWorkflowJSON(wfName string, procs ...procSpec) string {
 		}
 		list = append(list, map[string]any{"type": "externalized", "name": p.name, "executionMode": p.mode, "config": cfg})
 	}
+	return chainProcsWorkflowJSON(wfName, list...)
+}
+
+// chainProcsWorkflowJSON is chainWorkflowJSON with the processors given as
+// they are written.
+func chainProcsWorkflowJSON(wfName string, list ...any) string {
 	return workflowDocJSON(wfName, map[string]any{
 		"NONE": map[string]any{"transitions": []any{map[string]any{
 			"name": "init", "next": "DONE", "manual": false, "processors": list,

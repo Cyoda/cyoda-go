@@ -1021,6 +1021,130 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the omission meant an automatic transition. See
   `docs/workflow-schema-versioning.md`.
 
+- **Typed JSON from a client must spell its member names exactly, once.**
+  Every HTTP request body, the `data` of every gRPC request event, a compute
+  member's answer, every condition and every paging cursor is decoded with
+  `encoding/json/v2` under one rule (the SPI's `strictjson`): a name that
+  differs from a declared member only in case, an undeclared member and a
+  duplicate member are each refused, as is anything after the value. Before,
+  `encoding/json` matched names ignoring case and Unicode folding, let a
+  duplicate replace or merge into the first value, and on most bodies ignored
+  an undeclared member, so one body could mean two things: a workflow import
+  holding `"transitions"` and `"Transitions"` stored a transition sent without
+  `manual` as automatic, a processor payload's `"Data"` was applied as the
+  entity's data, and a compute answer that misspelt `success` was read as a
+  success.
+
+  HTTP answers `400` with the endpoint's code, gRPC `InvalidArgument`, and a
+  compute answer that breaks the rule is unreadable and fails the callout. The
+  message names the location as a JSON Pointer (`invalid JSON at
+  "/workflows/0": unknown member name "Name"`) and no longer the server's Go
+  types. A gRPC entity write runs the unstorable check on the whole event
+  before the decode, as the HTTP collection endpoints do, so text no store can
+  hold — a member written twice included — is answered by the event's error
+  response (`CLIENT_ERROR`, `BAD_REQUEST: …`), not `InvalidArgument`.
+
+  Some refusals are named in words: a condition leaf that writes its operator
+  twice (two of `operatorType`, `operator`, `operation`) is refused naming the
+  two members and the leaf's place, and a condition whose `type` is written in
+  another case is refused as having no `type`. A criterion function member
+  placed beside `config` instead of in it is refused; before, it was ignored
+  and left the callout untagged. A JWK keeps members of its own, but its
+  `kty`, `n` and `e` are read by their exact names: a trusted key sent with
+  `"N"` and `"E"` is refused (`missing n or e`), where before it registered.
+  Invalid UTF-8 and a lone surrogate escape in a string are refused
+  (`encoding/json` replaced them with U+FFFD). A date-time member of a body or
+  event (`pointInTime` in a gRPC event and in grouped stats, a key's
+  `validFrom` and `validTo`) is read as RFC 3339, which separates fractional
+  seconds with `.` only, has two-digit hours and bounds the offset:
+  `03:04:05,5Z`, `T3:04:05Z` and `+24:00`, which `encoding/json` accepted, are
+  refused. The date-time query parameters (`pointInTime`, `fromUtcTime`,
+  `toUtcTime`) are read by the same rule, on the operations that declare them:
+  they refuse the comma too, a one-digit hour (`T3:04:05Z`) and the offset
+  `+24:00`, as they refuse a bare date (`2024-01-02`), which the generated
+  routes accepted; each is `400 BAD_REQUEST`. An empty value
+  (`?pointInTime=`), which the generated routes bound as the year 0001, is
+  refused too. The spec's descriptions of these parameters say RFC 3339, where
+  they said ISO 8601.
+
+  On gRPC, an event whose `data` is `null`, or holds `null` for a required
+  object, is refused as missing its required members; before, it read as a
+  zero event. The `EntityModelGetAllRequest` data is now decoded: an event
+  without `id`, or whose data is not its JSON object, is `InvalidArgument`,
+  where before the data was ignored. `joinedLegalEntityId` on
+  `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
+  on `EntityDeleteAllRequest` (no effect; Cloud's client may send it) are
+  declared in the event schemas.
+
+  `audience` on a key-pair or trusted-key request, `invalidateGracePeriodSec`
+  on a trusted-key registration and any member in a trusted-key invalidate
+  body (which has none; `gracePeriodSec` was ignored before) are refused like
+  any undeclared member: key pairs and trusted keys have no audience, and
+  trusted keys no grace period, so accepting them would drop what the client
+  asked for.
+
+  Entity and message payload contents are not typed JSON — no member there is
+  unknown, and `"a"` and `"A"` are two fields — but a payload has one reading:
+  a member written twice in one object is refused in a message payload and in
+  model-import sample data (on both doors, which also refuse anything after
+  the sample value), as it already was in an entity payload, and makes a
+  compute member's processor answer unreadable. The model validate endpoint
+  reads its data as entity create does, so it no longer calls valid what
+  create refuses, and create collection refuses unstorable text anywhere in
+  the body, as update collection does. See
+  `docs/cloud-parity/strict-member-names.md` and
+  `docs/workflow-schema-versioning.md`.
+
+- **Every HTTP operation refuses a query parameter it does not declare.**
+  A query parameter is read by its exact name, as a body member is; before,
+  any other name was ignored, so a misspelt parameter silently changed the
+  request. `DELETE /entity/{entityName}/{modelVersion}?PointInTime=…` with no
+  body deleted every current entity of the model, where `pointInTime` deletes
+  the entities as they were at that instant; the gRPC delete-all already
+  refuses the misspelling. The retired `waitForConsistencyAfter` is refused
+  the same way on the seven entity writes, where since v0.8.4 it was accepted
+  and ignored; the write is not made. Now such a request is `400 BAD_REQUEST:
+  unknown query parameter "PointInTime"`, with `properties.parameter` naming
+  it. A query string that does not parse is refused whole (`400 BAD_REQUEST:
+  malformed query string`), as is a parameter other than an array given more
+  than once (`query parameter "…" is given more than once`): `url.Values`
+  drops a pair it cannot parse, and the binding read the first of repeated
+  values, so both changed a request without a word. This holds on every
+  operation cyoda-go serves, checked before the parameters are bound, so a
+  refusal reads the same on every route; grouped stats, the one hand-written
+  route, is checked too, and every served operation's OpenAPI responses
+  declare the 400. The two transitions operations (`GET
+  /entity/{entityId}/transitions`, `GET
+  /platform-api/entity/fetch/transitions`) are now served by the generated
+  routes: a malformed `pointInTime` is `invalid value for parameter
+  'pointInTime'` (it was `invalid pointInTime format`), an empty one is
+  refused (it read as absent), and an `entityId` or `transactionId` that is
+  not a UUID is `400 invalid value for parameter '…'` (an `entityId` was
+  looked up and answered 404). The token endpoint declares none and refuses
+  any query parameter with `400 invalid_request`, `unsupported parameter`, so
+  a credential never travels in a URL. See
+  `docs/cloud-parity/strict-member-names.md`.
+
+- **A conditional delete whose body is only non-JSON white space no longer
+  deletes every entity of the model.**
+  A body of a vertical tab, a form feed or a no-break space read as "no
+  condition" and deleted the whole model; it is now an invalid condition (`400
+  INVALID_CONDITION`) and nothing is deleted. Only an empty body, or one of
+  JSON white space (space, tab, CR, LF), means no condition.
+
+- **A processor's `startNewTxOnDispatch` is read beside `executionMode`, on
+  the processor, where the OpenAPI document and `cyoda help workflows`
+  place it** — not inside `config`. Before, import refused the documented
+  placement as an unknown field and accepted the member only inside
+  `config`; export wrote it there. Now the documented placement is accepted
+  and exported, and inside `config` it is refused as an unknown member
+  (`400 BAD_REQUEST`). Move the member out of `config`. See
+  `docs/workflow-schema-versioning.md`.
+
+- **Go 1.27.2 is required to build** (`go 1.26.9` → `go 1.27.2` in the root,
+  the three plugin modules and `go.work`), for `encoding/json/v2`. An
+  out-of-tree plugin raises its own `go` directive with its cyoda-go bump.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
@@ -1426,6 +1550,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **A model import no longer saves over a stored model when reading it fails.**
+  The import reads the model first, to refuse re-importing a locked one with
+  `409 MODEL_ALREADY_LOCKED`. Any read error counted as "no model", so a store
+  failure skipped that refusal and saved a fresh descriptor over a locked
+  model, without its unique keys. Only not-found means no model now; any other
+  read error fails the import with a 5xx and saves nothing.
 
 - **A workflow import that breaks one rule in several states is refused naming
   the same state every time.** The checks walked the states in Go's random map

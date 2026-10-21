@@ -26,7 +26,7 @@ func TestEngine_JoinedChain_RefusesCommitBeforeDispatch(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newSegmentGuardHarness(t, "memory")
 			h.registerCBDProcessor("segmenter")
-			h.wf.States["A"].Transitions[0].Processors[0].Config.StartNewTxOnDispatch = &startNewTx
+			h.wf.States["A"].Transitions[0].Processors[0].StartNewTxOnDispatch = &startNewTx
 
 			var committed []string
 			h.txMgr.commit = func(ctx context.Context, txID string) error {

@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
@@ -55,20 +56,14 @@ func (s *CloudEventsServiceImpl) StartStreaming(stream googlegrpc.BidiStreamingS
 
 	// 3. Extract tags and joinedLegalEntityId.
 	var joinEvent events.CalculationMemberJoinEventJson
-	if err := json.Unmarshal(payload, &joinEvent); err != nil {
+	if err := strictjson.Decode(payload, &joinEvent); err != nil {
 		return status.Errorf(codes.InvalidArgument, "invalid join event payload: %v", err)
 	}
 
-	// Also check for joinedLegalEntityId (not in the generated schema but
-	// may be present as an extra field from the client).
-	var extra struct {
-		JoinedLegalEntityID string `json:"joinedLegalEntityId"`
-	}
-	_ = json.Unmarshal(payload, &extra)
-
-	// 4. Validate tenant.
+	// 4. Validate tenant. The member joins the token's tenant; a
+	// joinedLegalEntityId, when sent, must name it.
 	tenantID := uc.Tenant.ID
-	if extra.JoinedLegalEntityID != "" && spi.TenantID(extra.JoinedLegalEntityID) != tenantID {
+	if j := joinEvent.JoinedLegalEntityID; j != nil && *j != "" && spi.TenantID(*j) != tenantID {
 		return status.Errorf(codes.PermissionDenied, "tenant mismatch")
 	}
 
@@ -338,7 +333,7 @@ func (s *reportedSuccess) UnmarshalJSON(data []byte) error {
 		s.null = true
 		return nil
 	}
-	return json.Unmarshal(data, &s.value)
+	return strictjson.Decode(data, &s.value)
 }
 
 // succeeded reports whether the member reported success, the schema's default
@@ -382,6 +377,9 @@ func completeUndecodable(member *Member, kind string, payload json.RawMessage, c
 	var ident struct {
 		RequestID string `json:"requestId"`
 	}
+	// encoding/json (v1), deliberately: it recovers the id from an answer
+	// the strict decode refused (a duplicate or misspelt member), so the
+	// callout ends now, as unreadable, rather than at its timeout.
 	if err := json.Unmarshal(payload, &ident); err != nil || ident.RequestID == "" {
 		slog.Warn("failed to unmarshal "+kind+" response, and it names no request",
 			"pkg", "grpc", "memberId", member.ID, "error", common.JSONErrorShape(cause))
@@ -400,20 +398,64 @@ func unreadableReason(s reportedSuccess) string {
 	return ""
 }
 
+// The answer types declare every member of their schema
+// (EntityProcessorCalculationResponse, EntityCriteriaCalculationResponse,
+// EntityFunctionCalculationResponse): the strict decode refuses any other,
+// so a member missing here would make a valid answer unreadable.
+// TestAnswerTypes_DeclareTheSchemaMembers keeps them in step with the
+// generated types. They are not the generated types: a processor's payload
+// data must reach the entity as the member's own bytes, which the generated
+// type holds as interface{}; a null success must stay apart from an answer
+// that does not decode, so the callout can say success was null; and the
+// generated types refuse an answer without id or entityId, or a payload
+// without type, which the server does not read.
+type answerError struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Retryable *bool  `json:"retryable"`
+}
+
+type processorAnswer struct {
+	ID        string          `json:"id"`
+	EntityID  string          `json:"entityId"`
+	RequestID string          `json:"requestId"`
+	Success   reportedSuccess `json:"success"`
+	Error     *answerError    `json:"error"`
+	Warnings  []string        `json:"warnings"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+type criteriaAnswer struct {
+	ID        string          `json:"id"`
+	EntityID  string          `json:"entityId"`
+	RequestID string          `json:"requestId"`
+	Success   reportedSuccess `json:"success"`
+	// A pointer: a response that says nothing about matches must arrive at
+	// the callout saying nothing. Decoded into a bool it would arrive as "does
+	// not match" — a verdict on a criterion that decides a transition,
+	// invented here, which the callout could no longer refuse.
+	Matches  *bool        `json:"matches"`
+	Reason   string       `json:"reason"`
+	Error    *answerError `json:"error"`
+	Warnings []string     `json:"warnings"`
+}
+
+type functionAnswer struct {
+	ID         string           `json:"id"`
+	EntityID   string           `json:"entityId"`
+	RequestID  string           `json:"requestId"`
+	Success    reportedSuccess  `json:"success"`
+	Result     *json.RawMessage `json:"result"`
+	ResultKind *string          `json:"resultKind"`
+	Error      *answerError     `json:"error"`
+	Warnings   []string         `json:"warnings"`
+}
+
 // handleProcessorResponse routes a processor calculation response to the
 // pending request on the given member.
 func handleProcessorResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		RequestID string          `json:"requestId"`
-		Success   reportedSuccess `json:"success"`
-		Error     *struct {
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string        `json:"warnings"`
-		Payload  json.RawMessage `json:"payload"`
-	}
-	if err := json.Unmarshal(payload, &resp); err != nil {
+	var resp processorAnswer
+	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "processor", payload, err)
 		return
 	}
@@ -437,22 +479,8 @@ func handleProcessorResponse(member *Member, payload json.RawMessage) {
 // handleCriteriaResponse routes a criteria calculation response to the
 // pending request on the given member.
 func handleCriteriaResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		RequestID string          `json:"requestId"`
-		Success   reportedSuccess `json:"success"`
-		// A pointer: a response that says nothing about matches must arrive
-		// at the callout saying nothing. Decoded into a bool it would arrive
-		// as "does not match" — a verdict on a criterion that decides a
-		// transition, invented here, which the callout could no longer refuse.
-		Matches *bool  `json:"matches"`
-		Reason  string `json:"reason"`
-		Error   *struct {
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string `json:"warnings"`
-	}
-	if err := json.Unmarshal(payload, &resp); err != nil {
+	var resp criteriaAnswer
+	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "criteria", payload, err)
 		return
 	}
@@ -477,18 +505,8 @@ func handleCriteriaResponse(member *Member, payload json.RawMessage) {
 // handleFunctionResponse routes a function calculation response to the
 // pending request on the given member.
 func handleFunctionResponse(member *Member, payload json.RawMessage) {
-	var resp struct {
-		RequestID  string           `json:"requestId"`
-		Success    reportedSuccess  `json:"success"`
-		Result     *json.RawMessage `json:"result"`
-		ResultKind *string          `json:"resultKind"`
-		Error      *struct {
-			Message   string `json:"message"`
-			Retryable *bool  `json:"retryable"`
-		} `json:"error"`
-		Warnings []string `json:"warnings"`
-	}
-	if err := json.Unmarshal(payload, &resp); err != nil {
+	var resp functionAnswer
+	if err := strictjson.Decode(payload, &resp); err != nil {
 		completeUndecodable(member, "function", payload, err)
 		return
 	}

@@ -246,8 +246,9 @@ Per-finding contract decisions from the Edge-message reconciliation slice.
   property in the API, while every other body field (including the `getMessage` response's own
   `metaData`) is camelCase. cyoda-go now accepts the metadata map under `metaData` on the create
   request, so the field name is symmetric with the response and consistent with the project-wide
-  convention. The legacy `meta-data` key is no longer honored (its contents are ignored) — a
-  breaking input change, taken on a patch release because edge messages have no known consumers.
+  convention. The legacy `meta-data` key is no longer honored: it is an unknown member and is
+  refused with `400 BAD_REQUEST` (see `strict-member-names.md`) — a breaking input change, taken
+  on a patch release because edge messages have no known consumers.
   Supersedes the `meta-data` request-field spelling in M1 and M3. Direction: **cyoda-go leads —
   Cloud MUST conform**: accept `metaData` (not `meta-data`) on the `newMessage` request body.
 - **Deferred (out of this slice).** Honoring `transactionTimeoutMillis` / `transactionSize`

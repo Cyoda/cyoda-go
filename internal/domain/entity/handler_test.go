@@ -1337,6 +1337,19 @@ func TestCreateCollectionInvalidJSON(t *testing.T) {
 	resp.Body.Close()
 }
 
+// TestCreateCollection_UnstorableBody: text no store can hold anywhere in the
+// body is refused by the unstorable check before any item runs, as on update
+// collection and the gRPC collection events, naming the reason.
+func TestCreateCollection_UnstorableBody(t *testing.T) {
+	srv := newTestServer(t)
+	body := `[{"model":{"name":"Batch\u0000Nul","version":1},"payload":"{\"name\":\"Bob\"}"}]`
+	resp := doCreateCollection(t, srv.URL, "JSON", body)
+	b := readBody(t, resp)
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(b), "NUL character") {
+		t.Fatalf("status %d: %s; want 400 from the unstorable check", resp.StatusCode, b)
+	}
+}
+
 func TestCreateCollectionModelNotFound(t *testing.T) {
 	srv := newTestServer(t)
 	body := `[{"model":{"name":"NoSuchModel","version":1},"payload":"{\"name\":\"Bob\"}"}]`

@@ -53,9 +53,9 @@ var cbRaceModes = []struct {
 	{name: "ASYNC_NEW_TX", proc: cbProc("cb-race-target-strict", "ASYNC_NEW_TX", "", nil)},
 	{name: "ASYNC_NEW_TX_ThenFails", proc: cbProc("cb-race-target-thenfail", "ASYNC_NEW_TX", "", nil)},
 	{name: "COMMIT_BEFORE_DISPATCH", segmented: true,
-		proc: cbProc("cb-race-target-strict", "COMMIT_BEFORE_DISPATCH", "", map[string]any{"startNewTxOnDispatch": true})},
+		proc: withStartNewTx(cbProc("cb-race-target-strict", "COMMIT_BEFORE_DISPATCH", "", nil), true)},
 	{name: "COMMIT_BEFORE_DISPATCH_ThenFails", segmented: true,
-		proc: cbProc("cb-race-target-thenfail", "COMMIT_BEFORE_DISPATCH", "", map[string]any{"startNewTxOnDispatch": true})},
+		proc: withStartNewTx(cbProc("cb-race-target-thenfail", "COMMIT_BEFORE_DISPATCH", "", nil), true)},
 }
 
 func RunCallbackTxJoin_LostWriteRaceIs409(t *testing.T, fixture BackendFixture) {

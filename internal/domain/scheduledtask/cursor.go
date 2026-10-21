@@ -1,12 +1,12 @@
 package scheduledtask
 
 import (
-	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // cursorBody is the decoded form of a page cursor: the (scheduledTime, id)
@@ -45,10 +45,8 @@ func decodeCursor(s string) (spi.ScheduledTaskCursor, error) {
 	if err != nil {
 		return spi.ScheduledTaskCursor{}, errBadCursor
 	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
 	var b cursorBody
-	if err := dec.Decode(&b); err != nil || b.V != 1 || b.I == "" {
+	if err := strictjson.Decode(raw, &b); err != nil || b.V != 1 || b.I == "" {
 		return spi.ScheduledTaskCursor{}, errBadCursor
 	}
 	c := spi.ScheduledTaskCursor{ScheduledTime: b.T, ID: b.I}

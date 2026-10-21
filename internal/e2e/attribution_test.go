@@ -267,22 +267,22 @@ func assertAttribution(t *testing.T, change map[string]any, label, wantUser, wan
 }
 
 // procCascadeWF builds a single-transition workflow whose init transition runs
-// one processor of the given name and execution mode. cfgExtra is spliced into
-// the processor config object (e.g. `, "startNewTxOnDispatch": true`).
-func procCascadeWF(name, procName, execMode, cfgExtra string) string {
+// one processor of the given name and execution mode. procExtra is spliced into
+// the processor object (e.g. `, "startNewTxOnDispatch": true`).
+func procCascadeWF(name, procName, execMode, procExtra string) string {
 	return fmt.Sprintf(`{
 		"importMode": "REPLACE",
 		"workflows": [{
 			"version": "1.1", "name": %q, "initialState": "NONE", "active": true,
 			"states": {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
-					"processors": [{"type": "externalized", "name": %q, "executionMode": %q,
-						"config": {"attachEntity": true, "calculationNodesTags": ""%s}}]
+					"processors": [{"type": "externalized", "name": %q, "executionMode": %q%s,
+						"config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
 			}
 		}]
-	}`, name+"-wf", procName, execMode, cfgExtra)
+	}`, name+"-wf", procName, execMode, procExtra)
 }
 
 // --- Scenario 1: cascade — service processor writes Y in the user's tx --------

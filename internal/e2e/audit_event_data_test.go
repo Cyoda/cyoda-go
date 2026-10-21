@@ -295,8 +295,10 @@ func TestAudit_ProcessorRecord_CommitBeforeDispatchFailure(t *testing.T) {
 			name := fmt.Sprintf("cbd-record-%t-%s", newTx, sfx)
 			model, tag := name, name+"-tag"
 			h.AttachCnode(t, cnodeSpec{name: name, tags: []string{tag}, script: scriptAlways(answerFail("card declined"))})
-			h.SetupModelWithWorkflow(t, model, procWorkflowJSON(name+"-wf", "charge", "COMMIT_BEFORE_DISPATCH",
-				map[string]any{"calculationNodesTags": tag, "startNewTxOnDispatch": newTx}))
+			h.SetupModelWithWorkflow(t, model, oneProcWorkflowJSON(name+"-wf", map[string]any{
+				"type": "externalized", "name": "charge", "executionMode": "COMMIT_BEFORE_DISPATCH",
+				"startNewTxOnDispatch": newTx, "config": map[string]any{"attachEntity": true, "calculationNodesTags": tag},
+			}))
 
 			_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
 			assertProblem(t, status, body, http.StatusBadRequest, "WORKFLOW_FAILED", false)

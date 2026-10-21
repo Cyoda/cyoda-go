@@ -138,8 +138,9 @@ func TestUpdateCollection_PayloadMustBeString(t *testing.T) {
 		t.Fatalf("status = %d, want 400 for object payload; body: %s", resp.StatusCode, rbody)
 	}
 	// Pin the operator-facing error text so a future refactor doesn't
-	// silently regress the hint that payload must be a JSON-encoded string.
-	if !strings.Contains(string(rbody), "payload must be") {
+	// silently regress the hint that payload must be a JSON-encoded string:
+	// the decoder names the member and the kind it expects there.
+	if !strings.Contains(string(rbody), `invalid JSON at \"/0/payload\": a JSON object where a string is expected`) {
 		t.Errorf("body does not explain the payload-must-be-string contract: %s", rbody)
 	}
 }

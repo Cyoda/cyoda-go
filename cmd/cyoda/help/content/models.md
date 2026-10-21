@@ -109,7 +109,7 @@ Response: `200 OK`, `application/json` — format depends on converter.
 
 **POST /api/model/validate/{entityName}/{modelVersion}**
 
-Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure.
+Validate a JSON payload against the model's schema. Returns a result object, not an HTTP error, on validation failure. The payload is read as entity create reads it: one that is not JSON, has anything after its value, writes a member twice in one object or holds text no store can hold is refused with `400 BAD_REQUEST`.
 
 - `entityName` (path): string
 - `modelVersion` (path): int32
@@ -332,6 +332,8 @@ Transitions:
 
 - `UNLOCKED` → `LOCKED` via `PUT /model/{name}/{version}/lock`
 - `LOCKED` → `UNLOCKED` via `PUT /model/{name}/{version}/unlock` (only when entity count is zero)
+
+Model administration — import, lock, unlock, delete — is meant to run from one place, such as a deploy step, not concurrently on the same model. Two such calls that overlap on one model have no defined order: an import that overlaps a lock can save the model back as `UNLOCKED`. Register and lock a model once, from one caller, rather than from every replica of an application at start-up.
 
 The `changeLevel` field controls schema evolution on locked models. When set, entity ingestion that introduces new structure triggers an additive schema extension (delta computed via `schema.Diff`, appended via `ModelStore.ExtendSchema`, committed with the entity transaction).
 

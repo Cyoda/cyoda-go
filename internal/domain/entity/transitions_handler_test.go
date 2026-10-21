@@ -228,7 +228,7 @@ func TestGetTransitions_TerminalState(t *testing.T) {
 func TestGetTransitions_EntityNotFound(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
 
-	resp, err := http.Get(fmt.Sprintf("%s/entity/%s/transitions", srv.URL, "nonexistent-entity-id"))
+	resp, err := http.Get(fmt.Sprintf("%s/entity/%s/transitions", srv.URL, "00000000-0000-0000-0000-00000000dead"))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestGetTransitions_EntityNotFound(t *testing.T) {
 func TestGetTransitions_BothParamsBadRequest(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
 
-	url := fmt.Sprintf("%s/entity/some-id/transitions?pointInTime=%s&transactionId=some-tx",
+	url := fmt.Sprintf("%s/entity/00000000-0000-0000-0000-000000000001/transitions?pointInTime=%s&transactionId=00000000-0000-0000-0000-000000000002",
 		srv.URL, time.Now().UTC().Format(time.RFC3339))
 	resp, err := http.Get(url)
 	if err != nil {
@@ -352,20 +352,21 @@ func TestFetchTransitions_MissingParams(t *testing.T) {
 
 func TestFetchTransitions_MalformedEntityClass(t *testing.T) {
 	_, srv := newTestAppAndServer(t)
-
-	// No dot
-	resp, err := http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=Offer&entityId=some-id", srv.URL))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
+	const id = "00000000-0000-0000-0000-000000000001"
+	for class, want := range map[string]string{
+		"Offer":  "entityClass must be in format Name.Version",
+		"Offer.": "entityClass must be in format Name.Version",
+		"":       "entityClass is required",
+	} {
+		resp, err := http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=%s&entityId=%s", srv.URL, class, id))
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		expectStatus(t, resp, http.StatusBadRequest)
+		if body := string(readBody(t, resp)); !contains(body, want) {
+			t.Errorf("entityClass=%q: %s, want %q", class, body, want)
+		}
 	}
-	expectStatus(t, resp, http.StatusBadRequest)
-
-	// Trailing dot
-	resp, err = http.Get(fmt.Sprintf("%s/platform-api/entity/fetch/transitions?entityClass=Offer.&entityId=some-id", srv.URL))
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	expectStatus(t, resp, http.StatusBadRequest)
 }
 
 func TestGetTransitions_WithTransactionId(t *testing.T) {
@@ -437,8 +438,8 @@ func TestGetTransitions_InvalidPointInTime(t *testing.T) {
 	if detail == "" {
 		t.Fatal("expected non-empty detail in error response")
 	}
-	if !contains(detail, "invalid pointInTime") {
-		t.Fatalf("expected 'invalid pointInTime' in detail, got: %s", detail)
+	if !contains(detail, "invalid value for parameter 'pointInTime'") {
+		t.Fatalf("expected the parameter refusal every route gives, got: %s", detail)
 	}
 }
 

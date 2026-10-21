@@ -221,7 +221,7 @@ func TestCallback_CBDPost_JoinsTxPost(t *testing.T) {
 				"NONE":   {"transitions": [{"name": "init", "next": "ACTIVE", "manual": false,
 					"processors": [{"type": "externalized", "name": "cb-cbd-post-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"ACTIVE": {}
 			}
@@ -304,7 +304,7 @@ func TestCallback_CriterionAfterCBDSegment_JoinsTxPost(t *testing.T) {
 				"NONE":    {"transitions": [{"name": "segment", "next": "WAITING", "manual": false,
 					"processors": [{"type": "externalized", "name": "cb-critseg-proc",
 						"executionMode": "COMMIT_BEFORE_DISPATCH",
-						"config": {"attachEntity": true, "calculationNodesTags": "", "startNewTxOnDispatch": true}}]
+						"startNewTxOnDispatch": true, "config": {"attachEntity": true, "calculationNodesTags": ""}}]
 				}]},
 				"WAITING": {"transitions": [{"name": "gate", "next": "ACTIVE", "manual": false,
 					"criterion": {"type": "function", "function": {"name": "cb-critseg-crit",

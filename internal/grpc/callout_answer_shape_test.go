@@ -19,7 +19,7 @@ import (
 // where it becomes this node's text.
 
 // answerCriterion is the criterion literal the tests here dispatch.
-const answerCriterion = `{"name":"my-criteria","config":{"calculationNodesTags":"python","responseTimeoutMs":5000}}`
+const answerCriterion = `{"type":"function","function":{"name":"my-criteria","config":{"calculationNodesTags":"python","responseTimeoutMs":5000}}}`
 
 // replyOnce answers the one request the member is sent with resp.
 func replyOnce(t *testing.T, registry *MemberRegistry, memberID string, sentCh chan *cepb.CloudEvent, resp *ProcessingResponse) {
@@ -70,6 +70,53 @@ func TestHandleCriteriaResponse_AbsentMatchesStaysAbsent(t *testing.T) {
 				t.Errorf("matches = %t; want %t", *resp.Matches, *tc.want)
 			}
 		})
+	}
+}
+
+// An answer's member names are exact. A misspelt "sucess":false is not the
+// success flag, and read leniently the flag would be absent and default to
+// true, turning a failure into a success; a case variant, a duplicate and an
+// unknown member are refused the same way. Each makes the answer unreadable.
+func TestHandleResponses_MemberNamesAreExact(t *testing.T) {
+	// Each body is otherwise a valid answer of its kind, so the one wrong
+	// member is what makes it unreadable.
+	handlers := map[string]struct {
+		handle func(*Member, json.RawMessage)
+		rest   string
+	}{
+		"processor": {handleProcessorResponse, `"payload":{"type":"TREE","data":{}}`},
+		"criteria":  {handleCriteriaResponse, `"matches":true`},
+		"function":  {handleFunctionResponse, `"resultKind":"Boolean","result":true`},
+	}
+	for kind, h := range handlers {
+		handle := h.handle
+		for name, body := range map[string]string{
+			"misspelt":     `{"requestId":"r-1","sucess":false,"error":{"code":"E","message":"failed"},` + h.rest + `}`,
+			"case variant": `{"requestId":"r-1","Success":false,` + h.rest + `}`,
+			"duplicate":    `{"requestId":"r-1","success":false,"success":true,` + h.rest + `}`,
+			"control":      `{"requestId":"r-1","success":false,"error":{"code":"E","message":"failed"},` + h.rest + `}`,
+		} {
+			t.Run(kind+"/"+name, func(t *testing.T) {
+				registry := NewMemberRegistry()
+				member := registry.Register("m-1", testTenantID, []string{"python"},
+					func(*cepb.CloudEvent) error { return nil }, nil)
+				ch, err := member.TrackRequest("r-1")
+				if err != nil {
+					t.Fatalf("TrackRequest: %v", err)
+				}
+				handle(member, json.RawMessage(body))
+				resp := <-ch
+				if name == "control" {
+					if resp.Unreadable != "" || resp.Success {
+						t.Errorf("a valid failure answer read as success=%t unreadable=%q", resp.Success, resp.Unreadable)
+					}
+					return
+				}
+				if resp.Unreadable != unreadableUndecodable {
+					t.Errorf("answer read as success=%t unreadable=%q; want it unreadable as undecodable", resp.Success, resp.Unreadable)
+				}
+			})
+		}
 	}
 }
 

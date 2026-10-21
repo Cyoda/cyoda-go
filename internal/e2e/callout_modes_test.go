@@ -75,9 +75,9 @@ func TestCalloutModes_CommitBeforeDispatch(t *testing.T) {
 				second := h.AttachCnode(t, cnodeSpec{name: "second", tags: []string{tag}})
 				defer second.Detach(t)
 				defer first.Detach(t)
-				h.SetupModelWithWorkflow(t, model, chainWorkflowJSON("s5-cbd-wf-"+name, procSpec{"s5-proc", "COMMIT_BEFORE_DISPATCH",
-					map[string]any{"calculationNodesTags": tag, "responseTimeoutMs": 300,
-						"idempotent": idempotent, "startNewTxOnDispatch": newTx}}))
+				h.SetupModelWithWorkflow(t, model, chainProcsWorkflowJSON("s5-cbd-wf-"+name, map[string]any{
+					"type": "externalized", "name": "s5-proc", "executionMode": "COMMIT_BEFORE_DISPATCH", "startNewTxOnDispatch": newTx,
+					"config": map[string]any{"attachEntity": true, "calculationNodesTags": tag, "responseTimeoutMs": 300, "idempotent": idempotent}}))
 
 				_, status, body := h.CreateEntity(t, model, 1, workflowSampleModel)
 				if got := first.Received(); len(got) != 1 {

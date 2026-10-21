@@ -78,7 +78,7 @@ func TestGroupedStatsHandler_RejectsMalformedJSON(t *testing.T) {
 }
 
 func TestGroupedStatsHandler_RejectsUnknownTopLevelField(t *testing.T) {
-	// DisallowUnknownFields contract: garbage top-level field => 400 MALFORMED_REQUEST.
+	// Strict decode: an undeclared top-level member => 400 MALFORMED_REQUEST.
 	h := newHandlerWithoutResolver()
 	body := strings.NewReader(`{"groupBy":["state"],"nope":1}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
@@ -158,6 +158,25 @@ func TestGroupedStatsHandler_InvalidConditionReturns400(t *testing.T) {
 	}
 	if got := decodeProblemErrorCode(t, rec.Body.Bytes()); got != "INVALID_CONDITION" {
 		t.Fatalf("errorCode=%s, want INVALID_CONDITION (body: %s)", got, rec.Body.String())
+	}
+}
+
+// A refusal inside the condition names its location from the top of the
+// request body, /condition included.
+func TestGroupedStatsHandler_ConditionRefusalNamesItsLocation(t *testing.T) {
+	store := &fakeIterable{}
+	resolver := func(_ *http.Request, _, _ string) (spi.EntityStore, spi.ModelRef, map[string]schema.FieldDescriptor, spi.ModelStore, bool, error) {
+		return store, spi.ModelRef{EntityName: "X", ModelVersion: "1"}, nil, nil, true, nil
+	}
+	h := entity.NewGroupedStatsHandler(resolver, 10000, newFixedConsistency())
+	body := strings.NewReader(`{"groupBy":["state"],"condition":{"type":"simple","JsonPath":"$.a","operatorType":"EQUALS","value":1}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/entity/stats/X/1/query", body)
+	req.SetPathValue("entityName", "X")
+	req.SetPathValue("modelVersion", "1")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if want := `invalid JSON at \"/condition\": unknown member name \"JsonPath\"`; rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("status %d body %s; want 400 containing %s", rec.Code, rec.Body.String(), want)
 	}
 }
 

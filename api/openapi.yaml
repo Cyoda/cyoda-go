@@ -93,7 +93,7 @@ info:
 
     All endpoints support:
 
-    - Point-in-time queries using ISO 8601 datetime format
+    - Point-in-time queries using RFC 3339 date-time format
 
     - Complex search conditions using GroupConditionDto
 
@@ -300,7 +300,7 @@ tags:
 
       All endpoints support:
 
-      - Point-in-time queries using ISO 8601 datetime format
+      - Point-in-time queries using RFC 3339 date-time format
 
       - Complex search conditions using GroupConditionDto
 
@@ -325,6 +325,8 @@ paths:
         legal entity, roles, and current subscription.
       operationId: accountGet
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Current user's account information with current subscription details
           content:
@@ -350,6 +352,8 @@ paths:
       operationId: accountSubscriptionsGet
       x-cyoda-status: planned
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Collection of all subscriptions for the user's legal entity
           content:
@@ -620,6 +624,8 @@ paths:
       operationId: listTechnicalUsers
       x-cyoda-iam-mode: jwt
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of M2M clients returned successfully
           content:
@@ -985,6 +991,8 @@ paths:
         never refused and its answer never changes. See `cyoda help crud`.
       operationId: getConsistencyTime
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: The current consistency time.
           content:
@@ -1009,7 +1017,7 @@ paths:
       parameters:
         - name: pointInTime
           in: query
-          description: The point-in-time for statistics in ISO 8601 format (e.g.,
+          description: The point-in-time for statistics in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -1068,7 +1076,7 @@ paths:
       parameters:
         - name: pointInTime
           in: query
-          description: The point-in-time for statistics in ISO 8601 format (e.g.,
+          description: The point-in-time for statistics in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -1181,7 +1189,7 @@ paths:
           example: 1
         - name: pointInTime
           in: query
-          description: The point-in-time for statistics in ISO 8601 format (e.g.,
+          description: The point-in-time for statistics in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -1292,7 +1300,7 @@ paths:
           example: 1
         - name: pointInTime
           in: query
-          description: The point-in-time for statistics in ISO 8601 format (e.g.,
+          description: The point-in-time for statistics in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -1452,8 +1460,10 @@ paths:
         "400":
           description: >-
             Bad request — an undecodable body (`MALFORMED_REQUEST`: invalid
-            JSON, an unrecognised top-level field, or a `pointInTime` that is
-            not RFC 3339), or a validation failure: empty `groupBy`
+            JSON, a member that is undeclared at any depth, in another letter
+            case or written twice, or a `pointInTime` that is not RFC 3339;
+            an undeclared or case-variant member inside `condition` is
+            `INVALID_CONDITION` instead), or a validation failure: empty `groupBy`
             (`MISSING_GROUP_BY`), a repeated `groupBy` dimension
             (`DUPLICATE_GROUP_BY`), unknown aggregation `op`
             (`INVALID_AGGREGATION_OP`), two aggregations claiming the same
@@ -1531,7 +1541,7 @@ paths:
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         - name: pointInTime
           in: query
-          description: The point-in-time for loading the entity, in ISO 8601 format (e.g.,
+          description: The point-in-time for loading the entity, in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent means the current committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -1787,7 +1797,7 @@ paths:
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         - name: pointInTime
           in: query
-          description: The point-in-time for loading the entity changes, in ISO 8601
+          description: The point-in-time for loading the entity changes, in RFC 3339
             format (e.g., '2026-01-01T12:00:00Z'). Absent means the current
             committed state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
@@ -1902,7 +1912,7 @@ paths:
           example: 1d1e1b10-1155-11f0-bcd5-ae468cd3ed16
         - name: pointInTime
           in: query
-          description: Evaluate available transitions as of this point in time (ISO 8601 / RFC 3339).
+          description: Evaluate available transitions as of this point in time (RFC 3339).
             Mutually exclusive with transactionId.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
           required: false
@@ -2061,7 +2071,7 @@ paths:
           example: 0
         - name: pointInTime
           in: query
-          description: The point-in-time for loading the entities, in ISO 8601 format
+          description: The point-in-time for loading the entities, in RFC 3339 format
             (e.g., '2026-01-01T12:00:00Z'). Absent means the current committed
             state.
             Must be at or before the consistency time (GET /entity/consistency-time); a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
@@ -2241,7 +2251,7 @@ paths:
         - name: pointInTime
           in: query
           description: |
-            Select the entities that existed at this instant, in ISO 8601
+            Select the entities that existed at this instant, in RFC 3339
             format (e.g. '2026-01-01T12:00:00Z'), and delete their current
             rows. Absent means the current committed state. An entity
             selected at the instant but already gone is reported in
@@ -3876,7 +3886,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: "invalid JSON: expected array of UUID strings"
+                    detail: "BAD_REQUEST: invalid request body: invalid JSON at \"\": a JSON object where an array is expected"
                     instance: /api/message
                     properties:
                       errorCode: BAD_REQUEST
@@ -4077,7 +4087,7 @@ paths:
                     type: about:blank
                     title: Bad Request
                     status: 400
-                    detail: "invalid JSON: expected an object with a 'payload' field"
+                    detail: "BAD_REQUEST: invalid request body: invalid JSON at \"\": unknown member name \"meta-data\""
                     instance: /api/message/new/nobel.prize.events
                     properties:
                       errorCode: BAD_REQUEST
@@ -4329,6 +4339,8 @@ paths:
       security:
         - bearerAuth: []
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of available entity models
           content:
@@ -4733,7 +4745,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityModelActionResultDto"
         "400":
-          description: Failed to read or parse request body
+          description: >-
+            The body cannot be read, is not JSON, has anything after its
+            value, writes a member twice in one object, or holds text no store
+            can hold (`BAD_REQUEST`)
           content:
             application/problem+json:
               schema:
@@ -5318,7 +5333,7 @@ paths:
                 type: about:blank
                 title: Bad Request
                 status: 400
-                detail: "BAD_REQUEST: invalid JSON body"
+                detail: "BAD_REQUEST: invalid request body: invalid JSON at \"/uniqueKeys/0\": unknown member name \"field\""
                 instance: /api/model/nobel-prize/1/unique-keys
         "404":
           description: "Not Found — MODEL_NOT_FOUND: the entity model is not registered."
@@ -5394,6 +5409,8 @@ paths:
             type: integer
             format: int32
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Workflows exported successfully
           content:
@@ -5573,6 +5590,8 @@ paths:
       operationId: getCurrentJwtKeyPair
       x-cyoda-iam-mode: jwt
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: Current key-pair information retrieved successfully
           content:
@@ -5852,6 +5871,8 @@ paths:
       x-cyoda-iam-mode: jwt
       x-cyoda-feature: trusted-key-registration
       responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
         "200":
           description: List of trusted keys
           content:
@@ -6063,7 +6084,10 @@ paths:
         Invalidates a registered trusted public key at once: from the moment
         the request returns, subject tokens signed with the corresponding
         private key are refused on every node. Trusted keys have no grace
-        period, and the request has no body.
+        period, and the request has no body: an empty body or `{}` is
+        accepted, and a body naming any member (a `gracePeriodSec`, for
+        example) is refused with 400 BAD_REQUEST and the key is left as it
+        was.
 
         Requires ROLE_ADMIN.
       operationId: invalidateTrustedKey
@@ -6081,7 +6105,7 @@ paths:
           description: Trusted key invalidated successfully
           content: {}
         "400":
-          description: "Bad request — BAD_REQUEST: invalid keyId format."
+          description: "Bad request — BAD_REQUEST: invalid keyId format, or a request body that names a member (the request has none)."
           content:
             application/problem+json:
               schema:
@@ -7149,7 +7173,7 @@ paths:
             format: int32
         - name: pointInTime
           in: query
-          description: "The point-in-time for the report, in ISO 8601 format (e.g.,
+          description: "The point-in-time for the report, in RFC 3339 format (e.g.,
             '2026-01-01T12:00:00Z'). Absent: the consistency time at submission.
             Must be at or before the consistency time (GET /entity/consistency-time);
             a later instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME."
@@ -7537,7 +7561,7 @@ paths:
             format: int32
         - name: pointInTime
           in: query
-          description: "The point-in-time for searching the entities, in ISO 8601 format.
+          description: "The point-in-time for searching the entities, in RFC 3339 format.
             Absent means the current committed state. Must be at or before the
             consistency time (GET /entity/consistency-time); a later instant is
             refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME."
@@ -11160,7 +11184,7 @@ components:
           type: string
           format: date-time
           description: >-
-            Optional point-in-time for the query in ISO 8601 / RFC 3339
+            Optional point-in-time for the query in RFC 3339
             format. Absent means the current committed state. Must be at or
             before the consistency time (GET /entity/consistency-time); a later
             instant is refused with 400 POINT_IN_TIME_AFTER_CONSISTENCY_TIME.
@@ -12438,6 +12462,19 @@ components:
       schema:
         type: string
   responses:
+    QueryParameterRefused:
+      description: >-
+        A query string that does not parse (`malformed query string`); a
+        query parameter the operation does not declare (`unknown query
+        parameter "…"`); a parameter other than an array given more than once
+        (`query parameter "…" is given more than once`); or a declared one
+        whose value is malformed (`invalid value for parameter '…'`).
+        `properties.errorCode` is BAD_REQUEST, and `properties.parameter`
+        names the parameter, except for a query string that does not parse.
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/ProblemDetail"
     TransactionNotFound:
       description: >-
         The transaction named by the `X-Tx-Token` is not open — it was never

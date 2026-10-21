@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 )
@@ -101,9 +101,10 @@ type importRequest struct {
 // the strict decode into SPI types cannot tell. The SPI decodes manual and
 // attachEntity into plain bool fields and schedule.delayMs into a plain
 // int64, so "omitted" and "explicit zero value" collapse to the same Go
-// value. The probe is a second, non-strict decode of the same request body
-// that declares only the field paths needed to recover the distinction;
-// every other field is ignored. It serves three rules:
+// value. The probe is a second decode of the same request body that
+// declares only the field paths needed to recover the distinction; names
+// still match exactly and a duplicate is still refused, but every member it
+// does not declare is ignored. It serves three rules:
 //   - a transition's manual is required and is never null — see
 //     checkManualSent;
 //   - an omitted attachEntity defaults to true (the OpenAPI DTOs document
@@ -267,38 +268,28 @@ func (h *Handler) ImportEntityModelWorkflow(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Strict-decoder boundary: unknown fields in the import-request body —
-	// top-level or nested in the workflow / state / transition / processor
-	// sub-shapes — are rejected with 400 BAD_REQUEST rather than silently
-	// dropped. This catches forward-compat extras and typos (e.g.
-	// `transitionn` for `transitions`) that previously imported as no-op
-	// workflows. Go's decoder emits `json: unknown field "X"` which names
-	// the offending field directly in the response detail.
-	//
-	// Decode consumes exactly one JSON value, so anything after the first
-	// object's closing brace is silently ignored unless we explicitly
-	// check. Reading one more token fences that trailing-garbage case —
-	// same class of "client got the shape wrong" failure as an unknown
-	// field. Only io.EOF (nothing but whitespace left) passes; dec.More()
-	// would not do, as it reports false before a stray `}` or `]`.
+	// Strict-decoder boundary: a member the import-request body does not
+	// declare — top-level or nested in the workflow / state / transition /
+	// processor sub-shapes — is refused with 400 BAD_REQUEST rather than
+	// silently dropped, as is a case-variant member name and anything after
+	// the request object (a duplicate is refused just above). This catches
+	// typos (e.g. `transitionn` for `transitions`) that would import as
+	// no-op workflows; the response detail names the member and where it is.
 	var req importRequest
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, fmt.Sprintf("invalid JSON: %v", err)))
-		return
-	}
-	if _, err := dec.Token(); err != io.EOF {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON: trailing data after request object"))
+	if err := strictjson.Decode(data, &req); err != nil {
+		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
 
-	// Second, non-strict decode of the same bytes to recover the presence
-	// signals the strict decode above collapsed into the SPI's zero values
-	// (see presenceProbe). data was already proven valid JSON matching
-	// this shape by the strict decode, so this unmarshal cannot fail.
+	// Second decode of the same bytes to recover the presence signals the
+	// strict decode above collapsed into the SPI's zero values (see
+	// presenceProbe). The probe reads only some members, so it allows the
+	// rest. It fails only if presenceProbe has drifted from the request
+	// shape; then the import is refused, since a probe read as empty would
+	// pass the manual check vacuously and leave every omitted attachEntity
+	// false instead of its default, true.
 	var probe presenceProbe
-	if err := json.Unmarshal(data, &probe); err != nil {
+	if err := strictjson.Decode(data, &probe, strictjson.AllowUnknownMembers); err != nil {
 		common.WriteError(w, r, common.Internal("failed to re-decode workflow import request", err))
 		return
 	}

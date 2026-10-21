@@ -385,7 +385,7 @@ func validateOperand(op string, value any) error {
 	case errors.Is(err, spi.ErrOperandArray):
 		return fmt.Errorf("%w: operator %q takes a single value, not an array; only BETWEEN and BETWEEN_INCLUSIVE take a [low, high] pair", ErrInvalidCondition, op)
 	case errors.Is(err, spi.ErrBetweenNotArray):
-		return fmt.Errorf("%w: operator %q requires exactly two operands, got %T", ErrInvalidCondition, op, value)
+		return fmt.Errorf("%w: operator %q requires exactly two operands, got %s", ErrInvalidCondition, op, scalarKind(value))
 	case errors.Is(err, spi.ErrBetweenCount):
 		// ErrBetweenCount is returned only for a []any operand.
 		return fmt.Errorf("%w: operator %q requires exactly two operands, got %d", ErrInvalidCondition, op, len(value.([]any)))
@@ -410,4 +410,17 @@ func canonicalOperatorList() string {
 	}
 	sort.Strings(ops)
 	return strings.Join(ops, ", ")
+}
+
+// scalarKind names the JSON kind of a scalar operand for a client message,
+// which names no Go type: a decoded number is a json.Number.
+func scalarKind(v any) string {
+	switch v.(type) {
+	case string:
+		return "a string"
+	case bool:
+		return "a boolean"
+	default:
+		return "a number"
+	}
 }

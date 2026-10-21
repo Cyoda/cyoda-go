@@ -1,0 +1,1 @@
+{"requestId":"req-1","entityId":"0d8f2b1e-5c3a-4f6d-9e7b-1a2b3c4d5e6f","payload":{"type":"TREE","data":{"name":"Ånna 😀","age":42,"score":1.5,"tags":["a","b"],"child":{"ok":true,"none":null}},"meta":{"source":"fixture"}},"success":true,"id":"evt-2","warnings":["slow path taken"]}

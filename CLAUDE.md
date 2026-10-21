@@ -113,7 +113,7 @@ guard that consistency, they don't define behaviour.
 
 ## Go Conventions
 
-- Go 1.26+. Use `log/slog` exclusively — never `log.Printf` or `fmt.Printf`.
+- Go 1.27.2+. Use `log/slog` exclusively — never `log.Printf` or `fmt.Printf`.
 - Manual dependency injection via constructors. No DI frameworks.
 - Wrap errors with context: `fmt.Errorf("failed to X: %w", err)`.
 - Use `uuid.UUID` type, not `string`, for UUIDs.

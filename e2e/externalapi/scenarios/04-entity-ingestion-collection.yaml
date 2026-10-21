@@ -127,11 +127,11 @@ scenarios:
       count: 500
     steps:
       - action: create_entity
-        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000&waitForConsistencyAfter=true" }
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=1000" }
         body_ref: "generated: list of 500 family members"
         capture: txSingle
       - action: create_entity
-        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=100&waitForConsistencyAfter=true" }
+        endpoint: { rest: "POST /entity/JSON/family/1?transactionWindow=100" }
         body_ref: "generated: list of 500 family members"
         capture: txSplit
     assertions:

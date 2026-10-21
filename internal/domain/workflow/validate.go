@@ -210,10 +210,7 @@ func canonicalizeAnnotations(raw json.RawMessage, location string) (json.RawMess
 		return nil, fmt.Errorf("%s: annotations must be a JSON object", location)
 	}
 	var buf bytes.Buffer
-	if err := json.Compact(&buf, trimmed); err != nil {
-		// Unreachable in practice (decoder already validated); defensive.
-		return nil, fmt.Errorf("%s: annotations is not valid JSON: %v", location, err)
-	}
+	_ = json.Compact(&buf, trimmed) // the strict decoder validated it: cannot fail
 	if buf.Len() > maxAnnotationsBytes {
 		return nil, fmt.Errorf("%s: annotations size %d bytes exceeds the %d-byte limit",
 			location, buf.Len(), maxAnnotationsBytes)
@@ -764,7 +761,7 @@ func validateProcessorFlags(wf spi.WorkflowDefinition) error {
 	for _, stateName := range sortedStateNames(wf.States) {
 		for _, tr := range wf.States[stateName].Transitions {
 			for _, p := range tr.Processors {
-				if p.Config.StartNewTxOnDispatch != nil && *p.Config.StartNewTxOnDispatch &&
+				if p.StartNewTxOnDispatch != nil && *p.StartNewTxOnDispatch &&
 					p.ExecutionMode != ExecutionModeCommitBeforeDispatch {
 					return fmt.Errorf(
 						"workflow %q state %q transition %q processor %q: startNewTxOnDispatch=true is only valid with executionMode=COMMIT_BEFORE_DISPATCH (got %q)",

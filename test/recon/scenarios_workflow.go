@@ -57,7 +57,7 @@ func workflowLifecycleFlow() Scenario {
 			{
 				Name:         "Create entity through workflow",
 				Method:       "POST",
-				PathTemplate: "/entity/JSON/{model}/1?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON/{model}/1",
 				Body:         `{"name":"Alice","age":30}`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,

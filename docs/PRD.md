@@ -222,7 +222,7 @@ is the only one of the three that is not the commit instant: it records
 when the row was physically inserted, which is earlier than the commit by
 the remaining lifetime of the transaction.
 
-**Point-in-time retrieval:** Any entity (or collection) can be queried as it existed at a specific timestamp via `?pointInTime=<ISO8601>`. This applies to single-entity reads, collection reads, and search operations.
+**Point-in-time retrieval:** Any entity (or collection) can be queried as it existed at a specific timestamp via `?pointInTime=<RFC 3339>`. This applies to single-entity reads, collection reads, and search operations.
 
 **Version history:** Every mutation (create, update, delete) appends a new immutable version. The full history is queryable through the audit trail.
 

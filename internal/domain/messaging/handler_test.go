@@ -247,23 +247,13 @@ func TestNewMessageMetaDataFieldIsCamelCase(t *testing.T) {
 		t.Errorf("expected metaData.eventType round-tripped from camelCase request field, got %v", metaData["eventType"])
 	}
 
-	// The legacy kebab-case `meta-data` request field is no longer honored
-	// (breaking rename). Sending it must not populate metadata.
-	legacy := `{"payload": {"data": "test"}, "meta-data": {"eventType": "should.be.ignored"}}`
+	// The legacy kebab-case `meta-data` request field was renamed; it is an
+	// unknown member now, refused rather than dropped without a word.
+	legacy := `{"payload": {"data": "test"}, "meta-data": {"eventType": "should.be.refused"}}`
 	resp = postMessage(t, srv.URL, "events.legacy", legacy)
-	expectStatus(t, resp, http.StatusOK)
-	legacyID := extractMessageID(t, resp)
-
-	resp = getMessage(t, srv.URL, legacyID)
-	expectStatus(t, resp, http.StatusOK)
-	var legacyMsg map[string]any
-	if err := json.Unmarshal(readBody(t, resp), &legacyMsg); err != nil {
-		t.Fatalf("failed to parse GET response: %v", err)
-	}
-	if md, ok := legacyMsg["metaData"].(map[string]any); ok {
-		if _, present := md["eventType"]; present {
-			t.Errorf("legacy `meta-data` field must be ignored, but eventType leaked into metaData: %v", md)
-		}
+	expectStatus(t, resp, http.StatusBadRequest)
+	if b := string(readBody(t, resp)); !strings.Contains(b, `unknown member name \"meta-data\"`) {
+		t.Errorf("body does not name the unknown member: %s", b)
 	}
 }
 

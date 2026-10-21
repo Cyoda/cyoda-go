@@ -553,7 +553,7 @@ func TestValidateWorkflows_RejectsStartNewTxOnDispatchOnNonCommitBeforeDispatch(
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
 					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "SYNC",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+						StartNewTxOnDispatch: &tt},
 				}},
 			}},
 			"S2": {},
@@ -586,7 +586,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchOnCommitBeforeDispatch(t *
 			"S1": {Transitions: []spi.TransitionDefinition{
 				{Name: "t", Next: "S2", Manual: true, Processors: []spi.ProcessorDefinition{
 					{Type: ProcessorTypeExternalized, Name: "p", ExecutionMode: "COMMIT_BEFORE_DISPATCH",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &tt}},
+						StartNewTxOnDispatch: &tt},
 				}},
 			}},
 			"S2": {},
@@ -608,7 +608,7 @@ func TestValidateWorkflows_AcceptsStartNewTxOnDispatchNilOrFalse(t *testing.T) {
 					{Type: ProcessorTypeExternalized, Name: "p1", ExecutionMode: "SYNC",
 						Config: spi.ProcessorConfig{}},
 					{Type: ProcessorTypeExternalized, Name: "p2", ExecutionMode: "SYNC",
-						Config: spi.ProcessorConfig{StartNewTxOnDispatch: &ff}},
+						StartNewTxOnDispatch: &ff},
 				}},
 			}},
 			"S2": {},
@@ -667,7 +667,7 @@ func TestScenarioStartNewTxOnDispatchRejectionViaImport(t *testing.T) {
 						"type": "externalized",
 						"name": "p",
 						"executionMode": "SYNC",
-						"config": {"startNewTxOnDispatch": true}
+						"startNewTxOnDispatch": true
 					}]
 				}]},
 				"S2": {"transitions": []}

@@ -94,7 +94,7 @@ func modelLifecycleFlow() Scenario {
 			{
 				Name:         "Create entity with extra field (extends model)",
 				Method:       "POST",
-				PathTemplate: "/entity/JSON/{model}/1?waitForConsistencyAfter=true",
+				PathTemplate: "/entity/JSON/{model}/1",
 				Body:         `{"name":"Bob","age":25,"extra":"field"}`,
 				ExpectStatus: 200,
 				Exclusions:   EntityExclusions,

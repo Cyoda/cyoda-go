@@ -230,7 +230,7 @@ groups:
   before and failed every evaluation, so no working configuration changes
   meaning.
 
-Every payload 1.4 accepted that does not fall under the fourteen tightenings below
+Every payload 1.4 accepted that does not fall under the sixteen tightenings below
 is byte-identical and remains valid; a workflow that never mentions either
 field exports without them.
 
@@ -238,7 +238,7 @@ field exports without them.
 `SupportedSchemaRanges` widens in place to
 `{Major: 1, MinMinor: 1, MaxMinor: 5}`.
 
-**Fourteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
+**Sixteen tightenings taken in the same MINOR.** Unlike the v0.8.4 entries under
 "When NOT to bump", these are not bug fixes to a validator that was always
 meant to reject — the inputs below imported, and most of them *worked* — so
 they are recorded here, under the rubric of §"Tightening releases":
@@ -338,6 +338,26 @@ they are recorded here, under the rubric of §"Tightening releases":
     and not as a validator bug fix. The import reads the raw request, since
     the decoded boolean cannot tell an omitted or `null` `manual` from
     `false`.
+15. **Member names are exact** in the whole import body, criteria included. A
+    name that differs from a declared member only in case (or by Unicode
+    folding) is an unknown member, a member written twice is refused, and an
+    undeclared member is refused inside a criterion too: in a condition, in a
+    function condition's `function` and in its `config`. Before, the decoder
+    matched names ignoring case and let a duplicate replace the first value,
+    so `"transitions"` beside `"Transitions"` imported a transition without
+    `manual` as automatic, and a criterion ignored a member it did not
+    declare, so `calculationNodesTags` written beside `config` instead of in
+    it left the callout untagged. A condition leaf that writes its operator
+    twice (two of `operatorType`, `operator`, `operation` holding a value) is
+    refused as a duplicate is. Rubric point 1 applies: fail loud where the old value was
+    ignored or merged.
+16. **A processor's `startNewTxOnDispatch` is read on the processor**, beside
+    `executionMode`, where the published schema has always placed it. The
+    implementation read it inside `config`, so the documented placement was
+    refused as an unknown member and the undocumented one worked. Now the
+    documented placement is accepted and exported, and the member inside
+    `config` is refused as unknown. This rejects configurations that worked,
+    so it is recorded here.
 
 **Why dual-shape and not retirement.** Rubric point 2 asks whether an older
 payload "happens to import only by coincidence". It does not: the first two rules
@@ -361,8 +381,19 @@ processor and the value, and the fix is to send `externalized` or omit the
 field. Rule 14 touches only transitions that left `manual` out or sent
 `null`; the error names the workflow, state and transition, and the fix is
 to send `"manual": false` where the omission meant an automatic transition.
-All fourteen rules apply to an import under **any** schema version, 1.1
-through 1.5 alike — they are validation-layer rules, not DTO-shape ones.
+Rule 15 touches only bodies that spell a member in another case, write it
+twice, or put a member where its shape does not declare it; the error names
+the member and where it is (a JSON Pointer for a member in another case or out
+of place, the field's path for a member written twice, and inside a criterion
+the workflow, and for a transition criterion its state and transition, in
+words, then a pointer inside the criterion; an operator written twice is named by its two members and its
+place in the condition, in words), and the fix is the spelling and place the schema gives. Rule 16 touches only processors that set
+`startNewTxOnDispatch` inside `config`; the error names the member and its
+location, and the fix is to move it beside `executionMode`.
+All sixteen rules apply to an import under **any** schema version, 1.1
+through 1.5 alike: rules 1–15 are validation-layer rules, not DTO-shape
+ones, and rule 16 moves where the decoder reads a member, under every
+version alike.
 
 No rule is retroactive: a workflow already stored is not re-checked at
 import of another. A stored `responseTimeoutMs` above a bound that was lowered

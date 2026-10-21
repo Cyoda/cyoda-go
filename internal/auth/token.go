@@ -187,6 +187,12 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeTokenError(w, http.StatusBadRequest, "invalid_request", "malformed request body")
 		return
 	}
+	// The endpoint declares no query parameter, as every operation refuses one
+	// it does not declare; here that also keeps a credential out of the URL.
+	if len(r.URL.Query()) > 0 {
+		writeTokenError(w, http.StatusBadRequest, "invalid_request", "unsupported parameter")
+		return
+	}
 
 	switch r.PostForm.Get("grant_type") {
 	case "client_credentials":
@@ -245,10 +251,10 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	// r.Form holds the body and the query string; a parameter in either is
-	// refused, even when empty.
+	// The query string is already refused, so the body is where a parameter
+	// can be; it is refused even when empty.
 	for _, p := range exchangeForbiddenParams {
-		if _, present := r.Form[p]; present {
+		if _, present := r.PostForm[p]; present {
 			writeTokenError(w, http.StatusBadRequest, "invalid_request", "unsupported parameter")
 			return
 		}

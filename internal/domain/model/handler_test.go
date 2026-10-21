@@ -821,6 +821,32 @@ func TestValidateNonConformingData(t *testing.T) {
 	}
 }
 
+// TestValidate_OneReading: validate reads the data as entity create does, so it
+// never calls valid what create refuses. A member written twice, anything after
+// the value, and text no store can hold are 400, not a verdict on the last
+// duplicate or the first value.
+func TestValidate_OneReading(t *testing.T) {
+	srv := newTestServer(t)
+	resp := doImport(t, srv.URL, "ValOne", 1, `{"name":"Alice","age":30}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	for _, body := range []string{
+		`{"name":"Bob","name":"Carol","age":25}`,
+		`{"name":"Bob","age":25} {"x":1}`,
+		`{"name":"Bo\u0000b","age":25}`,
+	} {
+		resp := doValidate(t, srv.URL, "ValOne", 1, body)
+		b := string(readBody(t, resp))
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400: %s", body, resp.StatusCode, b)
+		}
+		if !strings.Contains(b, "invalid JSON at") && !strings.Contains(b, "BAD_REQUEST: field") {
+			t.Errorf("%s: the refusal does not name where: %s", body, b)
+		}
+	}
+}
+
 func TestValidateModelNotFound(t *testing.T) {
 	srv := newTestServer(t)
 

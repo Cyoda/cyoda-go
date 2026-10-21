@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -429,6 +431,22 @@ func TestRPC_ModelDelete(t *testing.T) {
 	}
 }
 
+// TestRPC_ModelGetAll_DataIsDecoded: the request's data is read like every
+// other event's, so an undeclared member, or data that is not JSON, is
+// refused rather than ignored.
+func TestRPC_ModelGetAll_DataIsDecoded(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	for name, ce := range map[string]*cepb.CloudEvent{
+		"unknown member": makeCE(EntityModelGetAllRequest, map[string]any{"id": "test", "modelName": "alpha"}),
+		"not JSON":       makeRawCE(EntityModelGetAllRequest, []byte(`{"id":`)),
+	} {
+		_, err := svc.EntityModelManage(ctx, ce)
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		}
+	}
+}
+
 func TestRPC_ModelGetAll(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 
@@ -519,6 +537,35 @@ func TestRPC_ModelSetUniqueKeys_200(t *testing.T) {
 	validateResponse(t, resp, &typed)
 	if !typed.Success {
 		t.Error("expected success=true")
+	}
+}
+
+// TestRPC_ModelSetUniqueKeys_BaseEventMembers: every event carries the
+// BaseEvent members, and a Cloud client sends success and warnings on every
+// one, so the strict decode accepts them here as it does on generated types.
+func TestRPC_ModelSetUniqueKeys_BaseEventMembers(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "product", ModelVersion: "1", Format: "JSON", Converter: "SAMPLE_DATA",
+		Data: []byte(`{"name":"Alice"}`),
+	}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
+		"id":         "test",
+		"success":    true,
+		"warnings":   []string{},
+		"model":      map[string]any{"name": "product", "version": 1},
+		"uniqueKeys": []map[string]any{{"id": "uk1", "fields": []string{"$.name"}}},
+	})
+	resp, err := svc.EntityModelManage(ctx, ce)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var typed events.EntityModelTransitionResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Errorf("expected success=true, got error %+v", typed.Error)
 	}
 }
 

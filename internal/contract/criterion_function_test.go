@@ -29,11 +29,15 @@ func TestParseCriterionFunction(t *testing.T) {
 			in:   `{"type":"function","function":{"name":"f"}}`,
 			want: CriterionFunction{Name: "f"}, wantPresent: true,
 		},
-		{
-			name: "unknown members are ignored; the criterion is client-owned JSON",
-			in:   `{"type":"function","function":{"name":"f","calculationNodesTags":"legacy","config":{"x":1}}}`,
-			want: CriterionFunction{Name: "f"}, wantPresent: true,
-		},
+		// Member names are exact: a member in the wrong place, misspelt or in
+		// another case is refused, not ignored. Ignored, tags written beside
+		// config instead of in it would route the callout to any member.
+		{name: "a config member beside config", in: `{"type":"function","function":{"name":"f","calculationNodesTags":"pricing"}}`, wantErr: true},
+		{name: "an unknown config member", in: `{"type":"function","function":{"name":"f","config":{"x":1}}}`, wantErr: true},
+		{name: "a misspelt config member", in: `{"type":"function","function":{"name":"f","config":{"attachEntiy":false}}}`, wantErr: true},
+		{name: "a case-variant config member", in: `{"type":"function","function":{"name":"f","config":{"CalculationNodesTags":"pricing"}}}`, wantErr: true},
+		{name: "a duplicate member", in: `{"type":"function","function":{"name":"f","name":"g"}}`, wantErr: true},
+		{name: "an unknown condition member", in: `{"type":"function","function":{"name":"f"},"jsonPath":"$.a"}`, wantErr: true},
 		{name: "function member absent", in: `{"type":"function"}`, want: CriterionFunction{}, wantPresent: false},
 		{name: "function member null", in: `{"type":"function","function":null}`, want: CriterionFunction{}, wantPresent: false},
 		{name: "function member not an object", in: `{"type":"function","function":"f"}`, wantErr: true},

@@ -20,9 +20,9 @@ HTTP: `400` `Bad Request`. Retryable: `no`.
 
 ## DESCRIPTION
 
-Raised by `POST /api/entity/stats/{entityName}/{modelVersion}/query` when the body cannot be read from the connection, is not valid JSON, or does not decode into the request shape. Decoding is strict: an unrecognised top-level field is rejected rather than ignored, so a misspelled `agregations` fails here instead of quietly running with no aggregations. A `pointInTime` that is not RFC 3339 also lands here, because it is rejected while the body is being decoded — there is no separate code for it.
+Raised by `POST /api/entity/stats/{entityName}/{modelVersion}/query` when the body cannot be read from the connection, is not valid JSON, or does not decode into the request shape. Decoding is strict: a member the request does not declare, at any depth, is rejected rather than ignored, as is a member name in another letter case or written twice, so a misspelled `agregations` fails here instead of quietly running with no aggregations. An unknown or case-variant member inside `condition` is `INVALID_CONDITION` instead; a duplicate there is refused here. A `pointInTime` that is not RFC 3339 also lands here, because it is rejected while the body is being decoded — there is no separate code for it.
 
-The message carries the decoder's reason. Correct the body and resend.
+The message carries the decoder's reason and the member's location as a JSON Pointer, or a byte offset where the text is not JSON. Correct the body and resend.
 
 A body over the 10 MiB ceiling is a different outcome: `413` with `BAD_REQUEST`. Field-level problems that survive decoding — an empty `groupBy`, a bad JSONPath, an unknown aggregation operator — have their own codes.
 

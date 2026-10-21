@@ -213,7 +213,7 @@ The compute member protocol allows external processes to serve as workflow proce
 }
 ```
 
-`joinedLegalEntityId` is optional. The member always joins the tenant of its bearer token. When the field is present it must equal that tenant id exactly, or the server returns `codes.PermissionDenied` and registers nothing; when it is absent, nothing is checked. Sending it makes a misconfigured tenant fail loudly at join time instead of leaving the member waiting for callouts that never come.
+`joinedLegalEntityId` is optional. The member always joins the tenant of its bearer token. When the field is present and not empty it must equal that tenant id exactly, or the server returns `codes.PermissionDenied` and registers nothing; when it is absent or empty, nothing is checked. Sending it makes a misconfigured tenant fail loudly at join time instead of leaving the member waiting for callouts that never come.
 
 3. Server registers the member and responds with `CalculationMemberGreetEvent`:
 

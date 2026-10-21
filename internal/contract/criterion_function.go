@@ -2,7 +2,8 @@ package contract
 
 import (
 	"encoding/json"
-	"fmt"
+
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 )
 
 // CriterionFunctionConfig is the callout configuration of a function
@@ -32,14 +33,18 @@ type CriterionFunction struct {
 // ParseCriterionFunction decodes the `function` member of a function
 // condition. present reports whether that member is there and not null. It
 // does not check the condition's `type`: whether a condition is a function
-// condition is the caller's knowledge (predicate.ParseCondition). Members it
-// does not name are ignored — the criterion is client-owned JSON.
+// condition is the caller's knowledge (predicate.ParseCondition). The
+// condition is a client's typed JSON, so its member names are exact: a member
+// the shape does not declare, a case variant and a duplicate are refused.
+//
+// A refusal is the decoder's, with its location relative to the condition.
 func ParseCriterionFunction(condition json.RawMessage) (fn CriterionFunction, present bool, err error) {
 	var envelope struct {
+		Type     string             `json:"type"`
 		Function *CriterionFunction `json:"function"`
 	}
-	if err := json.Unmarshal(condition, &envelope); err != nil {
-		return CriterionFunction{}, false, fmt.Errorf("failed to parse criterion function: %w", err)
+	if err := strictjson.Decode(condition, &envelope); err != nil {
+		return CriterionFunction{}, false, err
 	}
 	if envelope.Function == nil {
 		return CriterionFunction{}, false, nil

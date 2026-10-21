@@ -1,13 +1,12 @@
 package entity
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
@@ -97,17 +96,15 @@ func (h *GroupedStatsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// 400 — malformed JSON. DisallowUnknownFields keeps us strict: a
-	// typo'd `agregations` field rejects with 400 rather than silently
-	// running with zero aggregations and surprising the client.
+	// 400 — malformed JSON. strictjson refuses a typo'd `agregations`
+	// rather than silently running with zero aggregations, and a
+	// case-variant or duplicate member name.
 	var req GroupedStatsRequest
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := strictjson.Decode(raw, &req); err != nil {
 		common.WriteError(w, r, common.Operational(
 			http.StatusBadRequest,
 			common.ErrCodeMalformedRequest,
-			"invalid JSON: "+err.Error(),
+			"invalid request body: "+err.Error(),
 		))
 		return
 	}

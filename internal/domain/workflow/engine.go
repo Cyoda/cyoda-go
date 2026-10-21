@@ -129,29 +129,19 @@ func capReason(s string) string {
 
 // criterionName derives the audit "criterion" field: the FUNCTION name for a
 // function criterion, else the parsed condition type (e.g. "simple", "group").
-// The canonical FUNCTION wire shape nests the name under "function" (see
-// internal/grpc/dispatch.go); a top-level "name" is kept as a fallback for
-// robustness.
+// It reads the criterion with the parsers import validated it with, so a
+// shape import refuses names nothing.
 func criterionName(criterion []byte) string {
-	var envelope struct {
-		Type     string `json:"type"`
-		Name     string `json:"name"`
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
+	cond, err := predicate.ParseCondition(criterion)
+	if err != nil {
+		return ""
 	}
-	if json.Unmarshal(criterion, &envelope) == nil && envelope.Type == "function" {
-		if envelope.Function.Name != "" {
-			return envelope.Function.Name
-		}
-		if envelope.Name != "" {
-			return envelope.Name
+	if cond.Type() == "function" {
+		if fn, present, err := contract.ParseCriterionFunction(criterion); err == nil && present && fn.Name != "" {
+			return fn.Name
 		}
 	}
-	if cond, err := predicate.ParseCondition(criterion); err == nil {
-		return cond.Type()
-	}
-	return ""
+	return cond.Type()
 }
 
 // Engine orchestrates workflow execution for entities.

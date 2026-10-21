@@ -36,7 +36,7 @@ func cbdRecordHarness(t *testing.T, backend string, startNewTx bool) *segmentGua
 	h := newSegmentGuardHarness(t, backend)
 	h.ctx = spi.WithUserContext(context.Background(), cbdRecordUser())
 	h.registerCBDProcessor("charge")
-	h.wf.States["A"].Transitions[0].Processors[0].Config.StartNewTxOnDispatch = &startNewTx
+	h.wf.States["A"].Transitions[0].Processors[0].StartNewTxOnDispatch = &startNewTx
 	return h
 }
 
