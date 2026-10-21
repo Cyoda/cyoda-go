@@ -1156,6 +1156,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and gRPC `InvalidArgument`, and nothing changes. Send `"uniqueKeys": []` to
   remove the keys.
 
+- **An entity's data is a JSON object at every change level.** With a
+  change level set, a write whose data did not fit the model proposed a
+  schema change instead of being refused: at `TYPE` a `null` entity made the
+  model's root nullable and was stored with no data, and at `STRUCTURAL` a
+  `null`, scalar or array replaced the document. Create, update, patch and
+  the collection writes, on HTTP and gRPC, now refuse it with `400
+  VALIDATION_FAILED: validation failed: expected object, got …`, as a model
+  without a change level does, and neither the model nor the entity changes.
+  A processor that returns such data fails the transition, as processor
+  output that does not fit the model does. Below `TYPE` the refusal no
+  longer names a change level as the remedy.
+
 - **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
   have schemas in the published CloudEvent tree, and the request is read
   through the type generated from its schema.** The event's `id`, `model`
