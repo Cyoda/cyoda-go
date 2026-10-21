@@ -166,7 +166,7 @@ Request body (`application/json`):
 }
 ```
 
-- `uniqueKeys` — array of key definitions; `[]` clears all keys.
+- `uniqueKeys` — array of key definitions, required; `[]` clears all keys. A body without it, or with `null`, is refused and changes nothing.
 - `id` — stable string identifier, unique within the model.
 - `fields` — ordered array of scalar leaf field paths (dotted paths matching the model's inferred schema). Array, object, and wildcard paths are rejected.
 
@@ -174,6 +174,7 @@ Validation is immediate: field paths must be known scalar leaves in the model's 
 
 Returns `200 OK` with `EntityModelActionResultDto` on success.
 
+- `400 BAD_REQUEST` — the body is not JSON, has a member other than `uniqueKeys`, or has no `uniqueKeys` (absent or `null`).
 - `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
 - `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.

@@ -5267,6 +5267,8 @@ paths:
 
         - All declared fields must be scalar leaf fields in the model schema
 
+        - uniqueKeys is required: the keys sent replace the model's keys, an empty array removes them all, and a body without uniqueKeys, or with null, is refused with 400 BAD_REQUEST and changes nothing
+
 
         Enforcement:
 
@@ -5324,7 +5326,7 @@ paths:
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: malformed or unparseable request body; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body, or uniqueKeys absent or null; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -9238,6 +9240,7 @@ components:
       properties:
         uniqueKeys:
           type: array
+          description: The model's composite unique keys. They replace the keys the model has; an empty array removes them all.
           items:
             $ref: "#/components/schemas/UniqueKeyDto"
     EntityModelActionResultDto:

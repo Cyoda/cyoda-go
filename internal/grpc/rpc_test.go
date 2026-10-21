@@ -572,7 +572,7 @@ func TestRPC_ModelSetUniqueKeys_BaseEventMembers(t *testing.T) {
 // TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema: the request is read through
 // the type generated from its published schema, so it is refused exactly as
 // that schema refuses it — a null success, an error with no code, a missing
-// required member. Nothing reaches the model store.
+// required member — and the model keeps the keys it had.
 func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 	svc, ctx := newTestEnv(t)
 	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
@@ -581,6 +581,9 @@ func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("import failed: %v", err)
 	}
+	if _, err := svc.modelHandler.SetUniqueKeys(ctx, "product", "1", []spi.UniqueKey{{ID: "uk1", Fields: []string{"$.name"}}}); err != nil {
+		t.Fatalf("set keys failed: %v", err)
+	}
 	mdl := `"model":{"name":"product","version":1}`
 	keys := `"uniqueKeys":[{"id":"uk1","fields":["$.name"]}]`
 	for name, body := range map[string]string{
@@ -588,12 +591,21 @@ func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 		"error without code": `{"id":"test","error":{"message":"m"},` + mdl + `,` + keys + `}`,
 		"no model":           `{"id":"test",` + keys + `}`,
 		"no uniqueKeys":      `{"id":"test",` + mdl + `}`,
+		"null uniqueKeys":    `{"id":"test",` + mdl + `,"uniqueKeys":null}`,
+		"no id":              `{` + mdl + `,` + keys + `}`,
 		"key without id":     `{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`,
 		"key without fields": `{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`,
 	} {
 		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(body)))
 		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
 			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		}
+		exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+		if err != nil {
+			t.Fatalf("export failed: %v", err)
+		}
+		if len(exported.UniqueKeys) != 1 {
+			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported.UniqueKeys)
 		}
 	}
 }

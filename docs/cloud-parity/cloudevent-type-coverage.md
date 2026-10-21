@@ -24,8 +24,9 @@ direction.
   plus `model` (`ModelSpec`, required) and `uniqueKeys` (required), an array
   of `{id, fields}` with both members required — the shape of the HTTP
   `UniqueKeyDto`. The array replaces the model's keys; an empty array removes
-  them all. A request without `uniqueKeys` is refused (`InvalidArgument`); it
-  does not remove the keys.
+  them all. A request without `uniqueKeys`, or with `"uniqueKeys": null`, is
+  refused (`InvalidArgument`) and changes nothing; it does not remove the
+  keys. The HTTP door refuses the same bodies with `400 BAD_REQUEST`.
 - **Response** (`model/EntityModelSetUniqueKeysResponse.json`): `BaseEvent`
   plus `modelId` (uuid) and `state`, both required, as in
   `EntityModelTransitionResponse`. A failure is the usual envelope:
@@ -34,6 +35,13 @@ direction.
   `COMPOSITE_KEY_UNSUPPORTED`), `modelId` the nil UUID and `state` empty.
 - The request is model administration: with a transaction token it is refused
   (`model-administration-not-joined.md`).
+
+### A required member is never `null`
+
+No schema in the tree lets a required member be `null`, so a `null` there is
+refused like an absent member, on every event (`InvalidArgument`, `field
+name: must not be null`). Before, a `null` passed the required check and read
+as the zero value.
 
 ### `CloudEventType` values
 
@@ -52,5 +60,5 @@ of 2026-09-24): it has no schema for any of the five types above, nor for
 `EntityConsistencyTimeGetRequest`/`Response` (`consistency-time.md`), and its
 `CloudEventType` enum lists none of the seven. Cloud has no composite unique
 keys on either door. Aligning means adding each event type's schema and enum
-value when Cloud implements the operation, and generating the request types
-from the schemas so a missing required member is refused.
+value when Cloud implements the operation, and refusing a required member that
+is missing or `null`.

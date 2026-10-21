@@ -42,11 +42,15 @@ func (j *BaseEventJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain BaseEventJsonError
 	var plain Plain
@@ -63,8 +67,10 @@ func (j *BaseEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain BaseEventJson
 	var plain Plain
@@ -121,11 +127,15 @@ func (j *CalculationMemberGreetEventJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberGreetEventJsonError
 	var plain Plain
@@ -142,14 +152,20 @@ func (j *CalculationMemberGreetEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["joinedLegalEntityId"]; !ok {
+	if v, ok := raw["joinedLegalEntityId"]; !ok {
 		return fmt.Errorf("field joinedLegalEntityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field joinedLegalEntityId: must not be null")
 	}
-	if _, ok := raw["memberId"]; !ok {
+	if v, ok := raw["memberId"]; !ok {
 		return fmt.Errorf("field memberId: required")
+	} else if v == nil {
+		return fmt.Errorf("field memberId: must not be null")
 	}
 	type Plain CalculationMemberGreetEventJson
 	var plain Plain
@@ -208,11 +224,15 @@ func (j *CalculationMemberJoinEventJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberJoinEventJsonError
 	var plain Plain
@@ -229,8 +249,10 @@ func (j *CalculationMemberJoinEventJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain CalculationMemberJoinEventJson
 	var plain Plain
@@ -284,11 +306,15 @@ func (j *CalculationMemberKeepAliveEventJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain CalculationMemberKeepAliveEventJsonError
 	var plain Plain
@@ -305,11 +331,15 @@ func (j *CalculationMemberKeepAliveEventJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["memberId"]; !ok {
+	if v, ok := raw["memberId"]; !ok {
 		return fmt.Errorf("field memberId: required")
+	} else if v == nil {
+		return fmt.Errorf("field memberId: must not be null")
 	}
 	type Plain CalculationMemberKeepAliveEventJson
 	var plain Plain
@@ -372,8 +402,10 @@ func (j *DataPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["type"]; !ok {
+	if v, ok := raw["type"]; !ok {
 		return fmt.Errorf("field type: required")
+	} else if v == nil {
+		return fmt.Errorf("field type: must not be null")
 	}
 	type Plain DataPayloadJson
 	var plain Plain
@@ -461,11 +493,15 @@ func (j *EntityChangeMetaJsonExecutedBy) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["kind"]; !ok {
+	if v, ok := raw["kind"]; !ok {
 		return fmt.Errorf("field kind: required")
+	} else if v == nil {
+		return fmt.Errorf("field kind: must not be null")
 	}
 	type Plain EntityChangeMetaJsonExecutedBy
 	var plain Plain
@@ -482,14 +518,20 @@ func (j *EntityChangeMetaJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeType"]; !ok {
+	if v, ok := raw["changeType"]; !ok {
 		return fmt.Errorf("field changeType: required")
+	} else if v == nil {
+		return fmt.Errorf("field changeType: must not be null")
 	}
-	if _, ok := raw["timeOfChange"]; !ok {
+	if v, ok := raw["timeOfChange"]; !ok {
 		return fmt.Errorf("field timeOfChange: required")
+	} else if v == nil {
+		return fmt.Errorf("field timeOfChange: must not be null")
 	}
-	if _, ok := raw["user"]; !ok {
+	if v, ok := raw["user"]; !ok {
 		return fmt.Errorf("field user: required")
+	} else if v == nil {
+		return fmt.Errorf("field user: must not be null")
 	}
 	type Plain EntityChangeMetaJson
 	var plain Plain
@@ -542,11 +584,15 @@ func (j *EntityChangesMetadataGetRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityChangesMetadataGetRequestJsonError
 	var plain Plain
@@ -563,11 +609,15 @@ func (j *EntityChangesMetadataGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityChangesMetadataGetRequestJson
 	var plain Plain
@@ -624,11 +674,15 @@ func (j *EntityChangesMetadataResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityChangesMetadataResponseJsonError
 	var plain Plain
@@ -645,14 +699,20 @@ func (j *EntityChangesMetadataResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["changeMeta"]; !ok {
+	if v, ok := raw["changeMeta"]; !ok {
 		return fmt.Errorf("field changeMeta: required")
+	} else if v == nil {
+		return fmt.Errorf("field changeMeta: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityChangesMetadataResponseJson
 	var plain Plain
@@ -703,11 +763,15 @@ func (j *EntityConsistencyTimeGetRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityConsistencyTimeGetRequestJsonError
 	var plain Plain
@@ -724,8 +788,10 @@ func (j *EntityConsistencyTimeGetRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityConsistencyTimeGetRequestJson
 	var plain Plain
@@ -783,11 +849,15 @@ func (j *EntityConsistencyTimeResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityConsistencyTimeResponseJsonError
 	var plain Plain
@@ -804,11 +874,15 @@ func (j *EntityConsistencyTimeResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityConsistencyTimeResponseJson
 	var plain Plain
@@ -874,11 +948,15 @@ func (j *EntityCreateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCreateCollectionRequestJsonError
 	var plain Plain
@@ -895,14 +973,20 @@ func (j *EntityCreateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; !ok {
+	if v, ok := raw["dataFormat"]; !ok {
 		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payloads"]; !ok {
+	if v, ok := raw["payloads"]; !ok {
 		return fmt.Errorf("field payloads: required")
+	} else if v == nil {
+		return fmt.Errorf("field payloads: must not be null")
 	}
 	type Plain EntityCreateCollectionRequestJson
 	var plain Plain
@@ -932,11 +1016,15 @@ func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; !ok {
+	if v, ok := raw["data"]; !ok {
 		return fmt.Errorf("field data: required")
+	} else if v == nil {
+		return fmt.Errorf("field data: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityCreatePayloadJson
 	var plain Plain
@@ -991,11 +1079,15 @@ func (j *EntityCreateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCreateRequestJsonError
 	var plain Plain
@@ -1012,14 +1104,20 @@ func (j *EntityCreateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; !ok {
+	if v, ok := raw["dataFormat"]; !ok {
 		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityCreateRequestJson
 	var plain Plain
@@ -1103,11 +1201,15 @@ func (j *EntityCriteriaCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCriteriaCalculationRequestJsonError
 	var plain Plain
@@ -1158,23 +1260,35 @@ func (j *EntityCriteriaCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["criteriaId"]; !ok {
+	if v, ok := raw["criteriaId"]; !ok {
 		return fmt.Errorf("field criteriaId: required")
+	} else if v == nil {
+		return fmt.Errorf("field criteriaId: must not be null")
 	}
-	if _, ok := raw["criteriaName"]; !ok {
+	if v, ok := raw["criteriaName"]; !ok {
 		return fmt.Errorf("field criteriaName: required")
+	} else if v == nil {
+		return fmt.Errorf("field criteriaName: must not be null")
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["target"]; !ok {
+	if v, ok := raw["target"]; !ok {
 		return fmt.Errorf("field target: required")
+	} else if v == nil {
+		return fmt.Errorf("field target: must not be null")
 	}
 	type Plain EntityCriteriaCalculationRequestJson
 	var plain Plain
@@ -1242,11 +1356,15 @@ func (j *EntityCriteriaCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityCriteriaCalculationResponseJsonError
 	var plain Plain
@@ -1263,14 +1381,20 @@ func (j *EntityCriteriaCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityCriteriaCalculationResponseJson
 	var plain Plain
@@ -1338,11 +1462,15 @@ func (j *EntityDeleteAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteAllRequestJsonError
 	var plain Plain
@@ -1359,11 +1487,15 @@ func (j *EntityDeleteAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityDeleteAllRequestJson
 	var plain Plain
@@ -1433,11 +1565,15 @@ func (j *EntityDeleteAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteAllResponseJsonError
 	var plain Plain
@@ -1457,20 +1593,30 @@ func (j *EntityDeleteAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; !ok {
+	if v, ok := raw["entityIds"]; !ok {
 		return fmt.Errorf("field entityIds: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityIds: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; !ok {
+	if v, ok := raw["modelId"]; !ok {
 		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["numDeleted"]; !ok {
+	if v, ok := raw["numDeleted"]; !ok {
 		return fmt.Errorf("field numDeleted: required")
+	} else if v == nil {
+		return fmt.Errorf("field numDeleted: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityDeleteAllResponseJson
 	var plain Plain
@@ -1524,11 +1670,15 @@ func (j *EntityDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteRequestJsonError
 	var plain Plain
@@ -1545,11 +1695,15 @@ func (j *EntityDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityDeleteRequestJson
 	var plain Plain
@@ -1612,11 +1766,15 @@ func (j *EntityDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityDeleteResponseJsonError
 	var plain Plain
@@ -1633,20 +1791,30 @@ func (j *EntityDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["transactionId"]; !ok {
+	if v, ok := raw["transactionId"]; !ok {
 		return fmt.Errorf("field transactionId: required")
+	} else if v == nil {
+		return fmt.Errorf("field transactionId: must not be null")
 	}
 	type Plain EntityDeleteResponseJson
 	var plain Plain
@@ -1724,11 +1892,15 @@ func (j *EntityFunctionCalculationRequestJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityFunctionCalculationRequestJsonError
 	var plain Plain
@@ -1745,23 +1917,35 @@ func (j *EntityFunctionCalculationRequestJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["functionId"]; !ok {
+	if v, ok := raw["functionId"]; !ok {
 		return fmt.Errorf("field functionId: required")
+	} else if v == nil {
+		return fmt.Errorf("field functionId: must not be null")
 	}
-	if _, ok := raw["functionName"]; !ok {
+	if v, ok := raw["functionName"]; !ok {
 		return fmt.Errorf("field functionName: required")
+	} else if v == nil {
+		return fmt.Errorf("field functionName: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["workflow"]; !ok {
+	if v, ok := raw["workflow"]; !ok {
 		return fmt.Errorf("field workflow: required")
+	} else if v == nil {
+		return fmt.Errorf("field workflow: must not be null")
 	}
 	type Plain EntityFunctionCalculationRequestJson
 	var plain Plain
@@ -1824,11 +2008,15 @@ func (j *EntityFunctionCalculationResponseJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityFunctionCalculationResponseJsonError
 	var plain Plain
@@ -1845,14 +2033,20 @@ func (j *EntityFunctionCalculationResponseJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityFunctionCalculationResponseJson
 	var plain Plain
@@ -1916,11 +2110,15 @@ func (j *EntityGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityGetAllRequestJsonError
 	var plain Plain
@@ -1937,11 +2135,15 @@ func (j *EntityGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityGetAllRequestJson
 	var plain Plain
@@ -2005,11 +2207,15 @@ func (j *EntityGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityGetRequestJsonError
 	var plain Plain
@@ -2026,11 +2232,15 @@ func (j *EntityGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityGetRequestJson
 	var plain Plain
@@ -2084,11 +2294,15 @@ func (j *EntityModelDeleteRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelDeleteRequestJsonError
 	var plain Plain
@@ -2105,11 +2319,15 @@ func (j *EntityModelDeleteRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityModelDeleteRequestJson
 	var plain Plain
@@ -2160,11 +2378,15 @@ func (j *EntityModelDeleteResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelDeleteResponseJsonError
 	var plain Plain
@@ -2181,8 +2403,10 @@ func (j *EntityModelDeleteResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityModelDeleteResponseJson
 	var plain Plain
@@ -2239,11 +2463,15 @@ func (j *EntityModelExportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelExportRequestJsonError
 	var plain Plain
@@ -2260,14 +2488,20 @@ func (j *EntityModelExportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; !ok {
+	if v, ok := raw["converter"]; !ok {
 		return fmt.Errorf("field converter: required")
+	} else if v == nil {
+		return fmt.Errorf("field converter: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntityModelExportRequestJson
 	var plain Plain
@@ -2328,11 +2562,15 @@ func (j *EntityModelExportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelExportResponseJsonError
 	var plain Plain
@@ -2349,17 +2587,25 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["modelId"]; !ok {
+	if v, ok := raw["modelId"]; !ok {
 		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityModelExportResponseJson
 	var plain Plain
@@ -2410,11 +2656,15 @@ func (j *EntityModelGetAllRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelGetAllRequestJsonError
 	var plain Plain
@@ -2431,8 +2681,10 @@ func (j *EntityModelGetAllRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityModelGetAllRequestJson
 	var plain Plain
@@ -2486,11 +2738,15 @@ func (j *EntityModelGetAllResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelGetAllResponseJsonError
 	var plain Plain
@@ -2507,11 +2763,15 @@ func (j *EntityModelGetAllResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["models"]; !ok {
+	if v, ok := raw["models"]; !ok {
 		return fmt.Errorf("field models: required")
+	} else if v == nil {
+		return fmt.Errorf("field models: must not be null")
 	}
 	type Plain EntityModelGetAllResponseJson
 	var plain Plain
@@ -2574,11 +2834,15 @@ func (j *EntityModelImportRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelImportRequestJsonError
 	var plain Plain
@@ -2595,20 +2859,30 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["converter"]; !ok {
+	if v, ok := raw["converter"]; !ok {
 		return fmt.Errorf("field converter: required")
+	} else if v == nil {
+		return fmt.Errorf("field converter: must not be null")
 	}
-	if _, ok := raw["dataFormat"]; !ok {
+	if v, ok := raw["dataFormat"]; !ok {
 		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityModelImportRequestJson
 	var plain Plain
@@ -2662,11 +2936,15 @@ func (j *EntityModelImportResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelImportResponseJsonError
 	var plain Plain
@@ -2683,11 +2961,15 @@ func (j *EntityModelImportResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; !ok {
+	if v, ok := raw["modelId"]; !ok {
 		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
 	type Plain EntityModelImportResponseJson
 	var plain Plain
@@ -2745,11 +3027,15 @@ func (j *EntityModelSetUniqueKeysRequestJsonError) UnmarshalJSON(value []byte) e
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelSetUniqueKeysRequestJsonError
 	var plain Plain
@@ -2775,11 +3061,15 @@ func (j *EntityModelSetUniqueKeysRequestJsonUniqueKeysElem) UnmarshalJSON(value 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["fields"]; !ok {
+	if v, ok := raw["fields"]; !ok {
 		return fmt.Errorf("field fields: required")
+	} else if v == nil {
+		return fmt.Errorf("field fields: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityModelSetUniqueKeysRequestJsonUniqueKeysElem
 	var plain Plain
@@ -2796,14 +3086,20 @@ func (j *EntityModelSetUniqueKeysRequestJson) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["uniqueKeys"]; !ok {
+	if v, ok := raw["uniqueKeys"]; !ok {
 		return fmt.Errorf("field uniqueKeys: required")
+	} else if v == nil {
+		return fmt.Errorf("field uniqueKeys: must not be null")
 	}
 	type Plain EntityModelSetUniqueKeysRequestJson
 	var plain Plain
@@ -2860,11 +3156,15 @@ func (j *EntityModelSetUniqueKeysResponseJsonError) UnmarshalJSON(value []byte) 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelSetUniqueKeysResponseJsonError
 	var plain Plain
@@ -2881,14 +3181,20 @@ func (j *EntityModelSetUniqueKeysResponseJson) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; !ok {
+	if v, ok := raw["modelId"]; !ok {
 		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["state"]; !ok {
+	if v, ok := raw["state"]; !ok {
 		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
 	type Plain EntityModelSetUniqueKeysResponseJson
 	var plain Plain
@@ -2945,11 +3251,15 @@ func (j *EntityModelTransitionRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelTransitionRequestJsonError
 	var plain Plain
@@ -2996,14 +3306,20 @@ func (j *EntityModelTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
-	if _, ok := raw["transition"]; !ok {
+	if v, ok := raw["transition"]; !ok {
 		return fmt.Errorf("field transition: required")
+	} else if v == nil {
+		return fmt.Errorf("field transition: must not be null")
 	}
 	type Plain EntityModelTransitionRequestJson
 	var plain Plain
@@ -3060,11 +3376,15 @@ func (j *EntityModelTransitionResponseJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityModelTransitionResponseJsonError
 	var plain Plain
@@ -3081,14 +3401,20 @@ func (j *EntityModelTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelId"]; !ok {
+	if v, ok := raw["modelId"]; !ok {
 		return fmt.Errorf("field modelId: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelId: must not be null")
 	}
-	if _, ok := raw["state"]; !ok {
+	if v, ok := raw["state"]; !ok {
 		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
 	type Plain EntityModelTransitionResponseJson
 	var plain Plain
@@ -3125,11 +3451,15 @@ func (j *EntityPatchPayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["patch"]; !ok {
+	if v, ok := raw["patch"]; !ok {
 		return fmt.Errorf("field patch: required")
+	} else if v == nil {
+		return fmt.Errorf("field patch: must not be null")
 	}
 	type Plain EntityPatchPayloadJson
 	var plain Plain
@@ -3184,11 +3514,15 @@ func (j *EntityPatchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityPatchRequestJsonError
 	var plain Plain
@@ -3205,14 +3539,20 @@ func (j *EntityPatchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["patchFormat"]; !ok {
+	if v, ok := raw["patchFormat"]; !ok {
 		return fmt.Errorf("field patchFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field patchFormat: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityPatchRequestJson
 	var plain Plain
@@ -3290,11 +3630,15 @@ func (j *EntityProcessorCalculationRequestJsonError) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityProcessorCalculationRequestJsonError
 	var plain Plain
@@ -3311,23 +3655,35 @@ func (j *EntityProcessorCalculationRequestJson) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["processorId"]; !ok {
+	if v, ok := raw["processorId"]; !ok {
 		return fmt.Errorf("field processorId: required")
+	} else if v == nil {
+		return fmt.Errorf("field processorId: must not be null")
 	}
-	if _, ok := raw["processorName"]; !ok {
+	if v, ok := raw["processorName"]; !ok {
 		return fmt.Errorf("field processorName: required")
+	} else if v == nil {
+		return fmt.Errorf("field processorName: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["workflow"]; !ok {
+	if v, ok := raw["workflow"]; !ok {
 		return fmt.Errorf("field workflow: required")
+	} else if v == nil {
+		return fmt.Errorf("field workflow: must not be null")
 	}
 	type Plain EntityProcessorCalculationRequestJson
 	var plain Plain
@@ -3387,11 +3743,15 @@ func (j *EntityProcessorCalculationResponseJsonError) UnmarshalJSON(value []byte
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityProcessorCalculationResponseJsonError
 	var plain Plain
@@ -3408,14 +3768,20 @@ func (j *EntityProcessorCalculationResponseJson) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityProcessorCalculationResponseJson
 	var plain Plain
@@ -3472,11 +3838,15 @@ func (j *EntityResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityResponseJsonError
 	var plain Plain
@@ -3493,14 +3863,20 @@ func (j *EntityResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityResponseJson
 	var plain Plain
@@ -3581,11 +3957,15 @@ func (j *EntitySearchRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySearchRequestJsonError
 	var plain Plain
@@ -3647,8 +4027,10 @@ func (j *EntitySearchRequestJsonOrderByElem) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; !ok {
+	if v, ok := raw["path"]; !ok {
 		return fmt.Errorf("field path: required")
+	} else if v == nil {
+		return fmt.Errorf("field path: must not be null")
 	}
 	type Plain EntitySearchRequestJsonOrderByElem
 	var plain Plain
@@ -3671,14 +4053,20 @@ func (j *EntitySearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; !ok {
+	if v, ok := raw["condition"]; !ok {
 		return fmt.Errorf("field condition: required")
+	} else if v == nil {
+		return fmt.Errorf("field condition: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntitySearchRequestJson
 	var plain Plain
@@ -3748,11 +4136,15 @@ func (j *EntitySnapshotSearchRequestJsonError) UnmarshalJSON(value []byte) error
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJsonError
 	var plain Plain
@@ -3814,8 +4206,10 @@ func (j *EntitySnapshotSearchRequestJsonOrderByElem) UnmarshalJSON(value []byte)
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["path"]; !ok {
+	if v, ok := raw["path"]; !ok {
 		return fmt.Errorf("field path: required")
+	} else if v == nil {
+		return fmt.Errorf("field path: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJsonOrderByElem
 	var plain Plain
@@ -3838,14 +4232,20 @@ func (j *EntitySnapshotSearchRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["condition"]; !ok {
+	if v, ok := raw["condition"]; !ok {
 		return fmt.Errorf("field condition: required")
+	} else if v == nil {
+		return fmt.Errorf("field condition: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["model"]; !ok {
+	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
+	} else if v == nil {
+		return fmt.Errorf("field model: must not be null")
 	}
 	type Plain EntitySnapshotSearchRequestJson
 	var plain Plain
@@ -3899,11 +4299,15 @@ func (j *EntitySnapshotSearchResponseJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntitySnapshotSearchResponseJsonError
 	var plain Plain
@@ -3920,11 +4324,15 @@ func (j *EntitySnapshotSearchResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["status"]; !ok {
+	if v, ok := raw["status"]; !ok {
 		return fmt.Errorf("field status: required")
+	} else if v == nil {
+		return fmt.Errorf("field status: must not be null")
 	}
 	type Plain EntitySnapshotSearchResponseJson
 	var plain Plain
@@ -3986,11 +4394,15 @@ func (j *EntityStatsByStateGetRequestJsonError) UnmarshalJSON(value []byte) erro
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsByStateGetRequestJsonError
 	var plain Plain
@@ -4007,8 +4419,10 @@ func (j *EntityStatsByStateGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityStatsByStateGetRequestJson
 	var plain Plain
@@ -4074,11 +4488,15 @@ func (j *EntityStatsByStateResponseJsonError) UnmarshalJSON(value []byte) error 
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsByStateResponseJsonError
 	var plain Plain
@@ -4095,23 +4513,35 @@ func (j *EntityStatsByStateResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; !ok {
+	if v, ok := raw["count"]; !ok {
 		return fmt.Errorf("field count: required")
+	} else if v == nil {
+		return fmt.Errorf("field count: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelName"]; !ok {
+	if v, ok := raw["modelName"]; !ok {
 		return fmt.Errorf("field modelName: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelName: must not be null")
 	}
-	if _, ok := raw["modelVersion"]; !ok {
+	if v, ok := raw["modelVersion"]; !ok {
 		return fmt.Errorf("field modelVersion: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelVersion: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["state"]; !ok {
+	if v, ok := raw["state"]; !ok {
 		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
 	type Plain EntityStatsByStateResponseJson
 	var plain Plain
@@ -4169,11 +4599,15 @@ func (j *EntityStatsGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsGetRequestJsonError
 	var plain Plain
@@ -4190,8 +4624,10 @@ func (j *EntityStatsGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityStatsGetRequestJson
 	var plain Plain
@@ -4254,11 +4690,15 @@ func (j *EntityStatsResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityStatsResponseJsonError
 	var plain Plain
@@ -4275,20 +4715,30 @@ func (j *EntityStatsResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["count"]; !ok {
+	if v, ok := raw["count"]; !ok {
 		return fmt.Errorf("field count: required")
+	} else if v == nil {
+		return fmt.Errorf("field count: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["modelName"]; !ok {
+	if v, ok := raw["modelName"]; !ok {
 		return fmt.Errorf("field modelName: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelName: must not be null")
 	}
-	if _, ok := raw["modelVersion"]; !ok {
+	if v, ok := raw["modelVersion"]; !ok {
 		return fmt.Errorf("field modelVersion: required")
+	} else if v == nil {
+		return fmt.Errorf("field modelVersion: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
 	type Plain EntityStatsResponseJson
 	var plain Plain
@@ -4318,8 +4768,10 @@ func (j *EntityTransactionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityIds"]; !ok {
+	if v, ok := raw["entityIds"]; !ok {
 		return fmt.Errorf("field entityIds: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityIds: must not be null")
 	}
 	type Plain EntityTransactionInfoJson
 	var plain Plain
@@ -4371,11 +4823,15 @@ func (j *EntityTransactionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransactionResponseJsonError
 	var plain Plain
@@ -4392,14 +4848,20 @@ func (j *EntityTransactionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["requestId"]; !ok {
+	if v, ok := raw["requestId"]; !ok {
 		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
 	}
-	if _, ok := raw["transactionInfo"]; !ok {
+	if v, ok := raw["transactionInfo"]; !ok {
 		return fmt.Errorf("field transactionInfo: required")
+	} else if v == nil {
+		return fmt.Errorf("field transactionInfo: must not be null")
 	}
 	type Plain EntityTransactionResponseJson
 	var plain Plain
@@ -4456,11 +4918,15 @@ func (j *EntityTransitionRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransitionRequestJsonError
 	var plain Plain
@@ -4477,14 +4943,20 @@ func (j *EntityTransitionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["transition"]; !ok {
+	if v, ok := raw["transition"]; !ok {
 		return fmt.Errorf("field transition: required")
+	} else if v == nil {
+		return fmt.Errorf("field transition: must not be null")
 	}
 	type Plain EntityTransitionRequestJson
 	var plain Plain
@@ -4538,11 +5010,15 @@ func (j *EntityTransitionResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityTransitionResponseJsonError
 	var plain Plain
@@ -4559,8 +5035,10 @@ func (j *EntityTransitionResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
 	type Plain EntityTransitionResponseJson
 	var plain Plain
@@ -4626,11 +5104,15 @@ func (j *EntityUpdateCollectionRequestJsonError) UnmarshalJSON(value []byte) err
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityUpdateCollectionRequestJsonError
 	var plain Plain
@@ -4647,14 +5129,20 @@ func (j *EntityUpdateCollectionRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; !ok {
+	if v, ok := raw["dataFormat"]; !ok {
 		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payloads"]; !ok {
+	if v, ok := raw["payloads"]; !ok {
 		return fmt.Errorf("field payloads: required")
+	} else if v == nil {
+		return fmt.Errorf("field payloads: must not be null")
 	}
 	type Plain EntityUpdateCollectionRequestJson
 	var plain Plain
@@ -4687,11 +5175,15 @@ func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["data"]; !ok {
+	if v, ok := raw["data"]; !ok {
 		return fmt.Errorf("field data: required")
+	} else if v == nil {
+		return fmt.Errorf("field data: must not be null")
 	}
-	if _, ok := raw["entityId"]; !ok {
+	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")
+	} else if v == nil {
+		return fmt.Errorf("field entityId: must not be null")
 	}
 	type Plain EntityUpdatePayloadJson
 	var plain Plain
@@ -4746,11 +5238,15 @@ func (j *EntityUpdateRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EntityUpdateRequestJsonError
 	var plain Plain
@@ -4767,14 +5263,20 @@ func (j *EntityUpdateRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["dataFormat"]; !ok {
+	if v, ok := raw["dataFormat"]; !ok {
 		return fmt.Errorf("field dataFormat: required")
+	} else if v == nil {
+		return fmt.Errorf("field dataFormat: must not be null")
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["payload"]; !ok {
+	if v, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
+	} else if v == nil {
+		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityUpdateRequestJson
 	var plain Plain
@@ -4828,11 +5330,15 @@ func (j *EventAckResponseJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain EventAckResponseJsonError
 	var plain Plain
@@ -4849,11 +5355,15 @@ func (j *EventAckResponseJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["sourceEventId"]; !ok {
+	if v, ok := raw["sourceEventId"]; !ok {
 		return fmt.Errorf("field sourceEventId: required")
+	} else if v == nil {
+		return fmt.Errorf("field sourceEventId: must not be null")
 	}
 	type Plain EventAckResponseJson
 	var plain Plain
@@ -4919,17 +5429,25 @@ func (j *ModelInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; !ok {
+	if v, ok := raw["name"]; !ok {
 		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["state"]; !ok {
+	if v, ok := raw["state"]; !ok {
 		return fmt.Errorf("field state: required")
+	} else if v == nil {
+		return fmt.Errorf("field state: must not be null")
 	}
-	if _, ok := raw["version"]; !ok {
+	if v, ok := raw["version"]; !ok {
 		return fmt.Errorf("field version: required")
+	} else if v == nil {
+		return fmt.Errorf("field version: must not be null")
 	}
 	type Plain ModelInfoJson
 	var plain Plain
@@ -4954,11 +5472,15 @@ func (j *ModelSpecJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["name"]; !ok {
+	if v, ok := raw["name"]; !ok {
 		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["version"]; !ok {
+	if v, ok := raw["version"]; !ok {
 		return fmt.Errorf("field version: required")
+	} else if v == nil {
+		return fmt.Errorf("field version: must not be null")
 	}
 	type Plain ModelSpecJson
 	var plain Plain
@@ -5013,11 +5535,15 @@ func (j *ProcessorInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; !ok {
+	if v, ok := raw["name"]; !ok {
 		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
 	type Plain ProcessorInfoJson
 	var plain Plain
@@ -5084,11 +5610,15 @@ func (j *SearchSnapshotStatusJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["snapshotId"]; !ok {
+	if v, ok := raw["snapshotId"]; !ok {
 		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
-	if _, ok := raw["status"]; !ok {
+	if v, ok := raw["status"]; !ok {
 		return fmt.Errorf("field status: required")
+	} else if v == nil {
+		return fmt.Errorf("field status: must not be null")
 	}
 	type Plain SearchSnapshotStatusJson
 	var plain Plain
@@ -5137,11 +5667,15 @@ func (j *SnapshotCancelRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotCancelRequestJsonError
 	var plain Plain
@@ -5158,11 +5692,15 @@ func (j *SnapshotCancelRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; !ok {
+	if v, ok := raw["snapshotId"]; !ok {
 		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotCancelRequestJson
 	var plain Plain
@@ -5225,11 +5763,15 @@ func (j *SnapshotGetRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotGetRequestJsonError
 	var plain Plain
@@ -5246,11 +5788,15 @@ func (j *SnapshotGetRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; !ok {
+	if v, ok := raw["snapshotId"]; !ok {
 		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotGetRequestJson
 	var plain Plain
@@ -5310,11 +5856,15 @@ func (j *SnapshotGetStatusRequestJsonError) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["code"]; !ok {
+	if v, ok := raw["code"]; !ok {
 		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
 	}
-	if _, ok := raw["message"]; !ok {
+	if v, ok := raw["message"]; !ok {
 		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
 	}
 	type Plain SnapshotGetStatusRequestJsonError
 	var plain Plain
@@ -5331,11 +5881,15 @@ func (j *SnapshotGetStatusRequestJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["snapshotId"]; !ok {
+	if v, ok := raw["snapshotId"]; !ok {
 		return fmt.Errorf("field snapshotId: required")
+	} else if v == nil {
+		return fmt.Errorf("field snapshotId: must not be null")
 	}
 	type Plain SnapshotGetStatusRequestJson
 	var plain Plain
@@ -5371,17 +5925,25 @@ func (j *TransitionInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; !ok {
+	if v, ok := raw["name"]; !ok {
 		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
-	if _, ok := raw["stateFrom"]; !ok {
+	if v, ok := raw["stateFrom"]; !ok {
 		return fmt.Errorf("field stateFrom: required")
+	} else if v == nil {
+		return fmt.Errorf("field stateFrom: must not be null")
 	}
-	if _, ok := raw["stateTo"]; !ok {
+	if v, ok := raw["stateTo"]; !ok {
 		return fmt.Errorf("field stateTo: required")
+	} else if v == nil {
+		return fmt.Errorf("field stateTo: must not be null")
 	}
 	type Plain TransitionInfoJson
 	var plain Plain
@@ -5406,11 +5968,15 @@ func (j *WorkflowInfoJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if _, ok := raw["id"]; !ok {
+	if v, ok := raw["id"]; !ok {
 		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
 	}
-	if _, ok := raw["name"]; !ok {
+	if v, ok := raw["name"]; !ok {
 		return fmt.Errorf("field name: required")
+	} else if v == nil {
+		return fmt.Errorf("field name: must not be null")
 	}
 	type Plain WorkflowInfoJson
 	var plain Plain

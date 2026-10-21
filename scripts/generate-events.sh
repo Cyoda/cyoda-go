@@ -67,6 +67,23 @@ perl -0777 -i -pe '
   s/fmt\.Errorf\("invalid value \(expected one of %#v\): %#v", (enumValues_\w+), v\)/fmt.Errorf("invalid value %q: expected one of %v", v, $1)/g;
 ' "$OUT"
 
+# Post-process: a required member that is present but null is refused. No
+# schema in the tree lets a required member be null, so a null is an invalid
+# instance as an absence is; go-jsonschema checks only that the key is present,
+# so a null decoded as the zero value — `"uniqueKeys": null` read as "no keys"
+# and removed every unique key of the model.
+perl -0777 -i -pe '
+  s/\tif _, ok := raw\["(\w+)"\]; !ok \{\n\t\treturn fmt\.Errorf\("field \1: required"\)\n\t\}\n/\tif v, ok := raw["$1"]; !ok {\n\t\treturn fmt.Errorf("field $1: required")\n\t} else if v == nil {\n\t\treturn fmt.Errorf("field $1: must not be null")\n\t}\n/g;
+' "$OUT"
+
+# Fail loudly if a required check escaped that rewrite.
+PRESENCE_ONLY=$(grep -c 'if _, ok := raw\["' "$OUT" || true)
+if [ "$PRESENCE_ONLY" -ne 0 ]; then
+  echo "ERROR: $PRESENCE_ONLY required check(s) in $OUT still let a null through" >&2
+  grep -n 'if _, ok := raw\["' "$OUT" >&2
+  exit 1
+fi
+
 # Post-process: type the inbound entity payload fields as json.RawMessage so
 # the client's bytes survive to the unstorable-payload guard
 # (internal/domain/model/ingest.RejectUnstorable). Decoding them into

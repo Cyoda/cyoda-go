@@ -2,6 +2,11 @@ package grpc
 
 // CloudEvent type constants matching Cyoda's CloudEventType enum values.
 // These must match exactly what the Java SDK sends.
+//
+// This file declares every event type the server accepts or sends, and only
+// event types: each one has a schema of its own name in the published tree
+// and a value in common/CloudEventType.json (cloudevent_schema_coverage_test.go
+// reads this file to check both). Declare a new event type here, not elsewhere.
 
 // Streaming / calculation types.
 const (

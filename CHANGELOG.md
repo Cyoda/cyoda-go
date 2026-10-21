@@ -1067,9 +1067,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   refused too. The spec's descriptions of these parameters say RFC 3339, where
   they said ISO 8601.
 
-  On gRPC, an event whose `data` is `null`, or holds `null` for a required
-  object, is refused as missing its required members; before, it read as a
-  zero event. The `EntityModelGetAllRequest` data is now decoded: an event
+  On gRPC, an event whose `data` is `null` is refused as missing its
+  required members, and a required member that is `null` is refused (`field
+  name: must not be null`); before, both read as zero values. The `EntityModelGetAllRequest` data is now decoded: an event
   without `id`, or whose data is not its JSON object, is `InvalidArgument`,
   where before the data was ignored. `joinedLegalEntityId` on
   `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
@@ -1145,14 +1145,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the three plugin modules and `go.work`), for `encoding/json/v2`. An
   out-of-tree plugin raises its own `go` directive with its cyoda-go bump.
 
+- **Setting a model's unique keys without `uniqueKeys` is refused; it no
+  longer removes every key.** The keys sent replace the model's keys. A
+  request without `uniqueKeys`, or with `"uniqueKeys": null`, was accepted
+  as "no keys" and removed them all, on both doors. Now `PUT
+  /model/{entityName}/{modelVersion}/unique-keys` answers `400 BAD_REQUEST`
+  and gRPC `InvalidArgument`, and nothing changes. Send `"uniqueKeys": []` to
+  remove the keys.
+
 - **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
   have schemas in the published CloudEvent tree, and the request is read
-  through the type generated from its schema.** `model` and `uniqueKeys` are
-  required, and so are `id` and `fields` on each key. Before, a request
-  without `uniqueKeys` was accepted and removed every unique key of the
-  model; now it is `InvalidArgument` and nothing changes. Send
-  `"uniqueKeys": []` to remove the keys. A `"success": null` and an `error`
-  without `code` or `message` are refused as on every other event. The
+  through the type generated from its schema.** The event's `id`, `model`
+  and `uniqueKeys` are required, and so are `id` and `fields` on each key;
+  none may be `null`. A `"success": null` and an `error` without `code` or
+  `message` are refused as on every other event. The
   response is typed as `EntityModelSetUniqueKeysResponse`; its members are
   those it had (`modelId`, `state`). `common/CloudEventType.json` now lists
   every event type the server accepts or sends: these two, and
