@@ -1016,10 +1016,8 @@ func (j *EntityCreatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if v, ok := raw["data"]; !ok {
+	if _, ok := raw["data"]; !ok {
 		return fmt.Errorf("field data: required")
-	} else if v == nil {
-		return fmt.Errorf("field data: must not be null")
 	}
 	if v, ok := raw["model"]; !ok {
 		return fmt.Errorf("field model: required")
@@ -2602,10 +2600,8 @@ func (j *EntityModelExportResponseJson) UnmarshalJSON(value []byte) error {
 	} else if v == nil {
 		return fmt.Errorf("field modelId: must not be null")
 	}
-	if v, ok := raw["payload"]; !ok {
+	if _, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
-	} else if v == nil {
-		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityModelExportResponseJson
 	var plain Plain
@@ -2879,10 +2875,8 @@ func (j *EntityModelImportRequestJson) UnmarshalJSON(value []byte) error {
 	} else if v == nil {
 		return fmt.Errorf("field model: must not be null")
 	}
-	if v, ok := raw["payload"]; !ok {
+	if _, ok := raw["payload"]; !ok {
 		return fmt.Errorf("field payload: required")
-	} else if v == nil {
-		return fmt.Errorf("field payload: must not be null")
 	}
 	type Plain EntityModelImportRequestJson
 	var plain Plain
@@ -3456,10 +3450,8 @@ func (j *EntityPatchPayloadJson) UnmarshalJSON(value []byte) error {
 	} else if v == nil {
 		return fmt.Errorf("field entityId: must not be null")
 	}
-	if v, ok := raw["patch"]; !ok {
+	if _, ok := raw["patch"]; !ok {
 		return fmt.Errorf("field patch: required")
-	} else if v == nil {
-		return fmt.Errorf("field patch: must not be null")
 	}
 	type Plain EntityPatchPayloadJson
 	var plain Plain
@@ -5175,10 +5167,8 @@ func (j *EntityUpdatePayloadJson) UnmarshalJSON(value []byte) error {
 	if err := decodeWithUseNumber(value, &raw); err != nil {
 		return err
 	}
-	if v, ok := raw["data"]; !ok {
+	if _, ok := raw["data"]; !ok {
 		return fmt.Errorf("field data: required")
-	} else if v == nil {
-		return fmt.Errorf("field data: must not be null")
 	}
 	if v, ok := raw["entityId"]; !ok {
 		return fmt.Errorf("field entityId: required")

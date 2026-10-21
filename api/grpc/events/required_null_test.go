@@ -8,11 +8,11 @@ import (
 	"github.com/cyoda-platform/cyoda-go/api/grpc/events"
 )
 
-// No schema in the tree lets a required member be null, so a null there is an
-// invalid instance, as an absent member is. go-jsonschema checks only that the
-// key is present: a null passed and decoded as the zero value, so
+// A required member whose schema states its type cannot be null, so a null
+// there is an invalid instance, as an absent member is. go-jsonschema checks
+// only that the key is present: a null passed and decoded as the zero value, so
 // `"uniqueKeys": null` read as "no keys" and removed every key of the model.
-// scripts/generate-events.sh rewrites every required check; this test is what
+// scripts/generate-events.sh rewrites those required checks; this test is what
 // says the rewrite is still there, on a required array, string and object.
 func TestRequiredMember_ExplicitNullIsRefused(t *testing.T) {
 	const mdl = `"model":{"name":"m","version":1}`
@@ -46,5 +46,34 @@ func TestRequiredMember_EmptyArrayIsAValue(t *testing.T) {
 	}
 	if req.UniqueKeys == nil || len(req.UniqueKeys) != 0 {
 		t.Errorf("uniqueKeys = %#v; want an empty, non-nil slice", req.UniqueKeys)
+	}
+}
+
+// A required member whose schema states no type holds any JSON value, null
+// included: the entity data, the patch and the model-import sample are the
+// client's data, and the domain refuses a null there with its own code
+// (VALIDATION_FAILED, as on HTTP). The decode leaves those to it.
+func TestRequiredMember_AnyValueMemberMayBeNull(t *testing.T) {
+	for name, decode := range map[string]func() error{
+		"create data": func() error {
+			var v events.EntityCreatePayloadJson
+			return json.Unmarshal([]byte(`{"model":{"name":"m","version":1},"data":null}`), &v)
+		},
+		"update data": func() error {
+			var v events.EntityUpdatePayloadJson
+			return json.Unmarshal([]byte(`{"entityId":"e","data":null}`), &v)
+		},
+		"patch": func() error {
+			var v events.EntityPatchPayloadJson
+			return json.Unmarshal([]byte(`{"entityId":"e","ifMatch":"*","patch":null}`), &v)
+		},
+		"import payload": func() error {
+			var v events.EntityModelImportRequestJson
+			return json.Unmarshal([]byte(`{"id":"e","model":{"name":"m","version":1},"dataFormat":"JSON","converter":"SAMPLE_DATA","payload":null}`), &v)
+		},
+	} {
+		if err := decode(); err != nil {
+			t.Errorf("%s: a null the schema admits was refused at decode: %v", name, err)
+		}
 	}
 }

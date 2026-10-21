@@ -67,19 +67,42 @@ perl -0777 -i -pe '
   s/fmt\.Errorf\("invalid value \(expected one of %#v\): %#v", (enumValues_\w+), v\)/fmt.Errorf("invalid value %q: expected one of %v", v, $1)/g;
 ' "$OUT"
 
-# Post-process: a required member that is present but null is refused. No
-# schema in the tree lets a required member be null, so a null is an invalid
-# instance as an absence is; go-jsonschema checks only that the key is present,
-# so a null decoded as the zero value — `"uniqueKeys": null` read as "no keys"
-# and removed every unique key of the model.
-perl -0777 -i -pe '
-  s/\tif _, ok := raw\["(\w+)"\]; !ok \{\n\t\treturn fmt\.Errorf\("field \1: required"\)\n\t\}\n/\tif v, ok := raw["$1"]; !ok {\n\t\treturn fmt.Errorf("field $1: required")\n\t} else if v == nil {\n\t\treturn fmt.Errorf("field $1: must not be null")\n\t}\n/g;
+# Post-process: a required member that is present but null is refused when its
+# schema states a type, which no type here admits null for; go-jsonschema
+# checks only that the key is present, so a null decoded as the zero value —
+# `"uniqueKeys": null` read as "no keys" and removed every unique key of the
+# model. A required member whose schema states no type (the entity data, the
+# patch, the model-import sample) holds any JSON value, null included: it is
+# the client's data, and the domain refuses a null there with its own code, as
+# on HTTP. Those members are read from the schemas and keep the presence check.
+ANY_VALUE=$(python3 - "$CLEAN_DIR" <<'EOF'
+import json, pathlib, sys
+typing = {"type", "$ref", "enum", "const", "oneOf", "anyOf", "allOf"}
+out = []
+for f in sorted(pathlib.Path(sys.argv[1]).rglob("*.json")):
+    doc = json.loads(f.read_text())
+    props = doc.get("properties", {})
+    for member in doc.get("required", []):
+        if member in props and not typing & props[member].keys():
+            out.append(doc["title"] + "Json." + member)
+print(",".join(out))
+EOF
+)
+ANY_VALUE="$ANY_VALUE" perl -0777 -i -pe '
+  BEGIN { %any = map { $_ => 1 } split /,/, $ENV{ANY_VALUE} }
+  s{(func \(j \*(\w+)\) UnmarshalJSON\(value \[\]byte\) error \{\n.*?\n\}\n)}{
+    my ($fn, $type) = ($1, $2);
+    $fn =~ s/\tif _, ok := raw\["(\w+)"\]; !ok \{\n\t\treturn fmt\.Errorf\("field \1: required"\)\n\t\}\n/$any{"$type.$1"} ? $& : "\tif v, ok := raw[\"$1\"]; !ok {\n\t\treturn fmt.Errorf(\"field $1: required\")\n\t} else if v == nil {\n\t\treturn fmt.Errorf(\"field $1: must not be null\")\n\t}\n"/ge;
+    $fn
+  }gse;
 ' "$OUT"
 
-# Fail loudly if a required check escaped that rewrite.
+# Fail loudly if a required check escaped that rewrite: the presence-only
+# checks left are exactly the any-value members.
+EXPECTED=$(printf '%s' "$ANY_VALUE" | tr ',' '\n' | grep -c . || true)
 PRESENCE_ONLY=$(grep -c 'if _, ok := raw\["' "$OUT" || true)
-if [ "$PRESENCE_ONLY" -ne 0 ]; then
-  echo "ERROR: $PRESENCE_ONLY required check(s) in $OUT still let a null through" >&2
+if [ "$PRESENCE_ONLY" -ne "$EXPECTED" ]; then
+  echo "ERROR: $PRESENCE_ONLY presence-only required check(s) in $OUT; want $EXPECTED, one per any-value member ($ANY_VALUE)" >&2
   grep -n 'if _, ok := raw\["' "$OUT" >&2
   exit 1
 fi

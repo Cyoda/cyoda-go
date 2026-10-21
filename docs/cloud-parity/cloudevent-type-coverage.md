@@ -38,10 +38,15 @@ direction.
 
 ### A required member is never `null`
 
-No schema in the tree lets a required member be `null`, so a `null` there is
-refused like an absent member, on every event (`InvalidArgument`, `field
-name: must not be null`). Before, a `null` passed the required check and read
-as the zero value.
+A required member whose schema states a type is refused when it is `null`, like
+an absent member, on every event (`InvalidArgument`, `field name: must not be
+null`); no stated type admits `null`. Before, a `null` passed the required
+check and read as the zero value. The five required members whose schema
+states no type hold any JSON value, `null` included: the entity `data`
+(create, update), the `patch`, the model-import `payload` and the
+model-export `payload`. A `null` entity `data`, `patch` or import `payload` is
+refused by the operation, in the event's error envelope (`CLIENT_ERROR`,
+`VALIDATION_FAILED`), as on HTTP.
 
 ### `CloudEventType` values
 
@@ -61,4 +66,4 @@ of 2026-09-24): it has no schema for any of the five types above, nor for
 `CloudEventType` enum lists none of the seven. Cloud has no composite unique
 keys on either door. Aligning means adding each event type's schema and enum
 value when Cloud implements the operation, and refusing a required member that
-is missing or `null`.
+is missing, or `null` where its schema states a type.

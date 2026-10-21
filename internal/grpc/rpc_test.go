@@ -586,19 +586,23 @@ func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 	}
 	mdl := `"model":{"name":"product","version":1}`
 	keys := `"uniqueKeys":[{"id":"uk1","fields":["$.name"]}]`
-	for name, body := range map[string]string{
-		"null success":       `{"id":"test","success":null,` + mdl + `,` + keys + `}`,
-		"error without code": `{"id":"test","error":{"message":"m"},` + mdl + `,` + keys + `}`,
-		"no model":           `{"id":"test",` + keys + `}`,
-		"no uniqueKeys":      `{"id":"test",` + mdl + `}`,
-		"null uniqueKeys":    `{"id":"test",` + mdl + `,"uniqueKeys":null}`,
-		"no id":              `{` + mdl + `,` + keys + `}`,
-		"key without id":     `{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`,
-		"key without fields": `{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`,
+	// want is the member the refusal must name, so a case cannot pass on
+	// another member's refusal.
+	for name, tc := range map[string]struct{ body, want string }{
+		"null success":       {`{"id":"test","success":null,` + mdl + `,` + keys + `}`, "field success: must not be null"},
+		"error without code": {`{"id":"test","error":{"message":"m"},` + mdl + `,` + keys + `}`, "field code: required"},
+		"no model":           {`{"id":"test",` + keys + `}`, "field model: required"},
+		"no uniqueKeys":      {`{"id":"test",` + mdl + `}`, "field uniqueKeys: required"},
+		"null uniqueKeys":    {`{"id":"test",` + mdl + `,"uniqueKeys":null}`, "field uniqueKeys: must not be null"},
+		"no id":              {`{` + mdl + `,` + keys + `}`, "field id: required"},
+		"key without id":     {`{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`, "field id: required"},
+		"key without fields": {`{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`, "field fields: required"},
 	} {
-		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(body)))
+		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(tc.body)))
 		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
 			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		} else if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not say %q", name, err, tc.want)
 		}
 		exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
 		if err != nil {
