@@ -66,7 +66,7 @@ were missing.
 
 Checked against Cloud's tree at `client/src/main/resources/schema/` (checkout
 of 2026-09-24): it has no schema for any of the five types above, nor for
-`EntityConsistencyTimeGetRequest`/`Response` (`consistency-time.md`), and its
+`EntityConsistencyTimeGetRequest`/`EntityConsistencyTimeResponse` (`consistency-time.md`), and its
 `CloudEventType` enum lists none of the seven. Cloud has no composite unique
 keys on either door. Aligning means adding each event type's schema and enum
 value when Cloud implements the operation, and refusing a required member that

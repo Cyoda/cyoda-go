@@ -1164,14 +1164,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   schema change instead of being refused: at `TYPE` a `null` entity made the
   model's root nullable and was stored with no data, and at `STRUCTURAL` a
   `null`, scalar or array replaced the document. Create, update and the
-  collection writes, on HTTP and gRPC, now refuse it with `400
-  VALIDATION_FAILED: validation failed: expected object, got …`, as a model
-  without a change level does (and as patch already did), and neither the
-  model nor the entity changes. A processor that returns a scalar or an
-  array as the entity's data fails the transition, as processor output that
-  does not fit the model does; `null` data from a processor still means no
-  change. Below `STRUCTURAL` the refusal no longer names a change level as
-  the remedy.
+  collection writes now refuse it with `VALIDATION_FAILED: validation
+  failed: expected object, got …` — `400` on HTTP, `CLIENT_ERROR` in the
+  gRPC response envelope — as a model without a change level does (and as
+  patch already did), and neither the model nor the entity changes. A
+  processor that returns a scalar or an array as the entity's data fails
+  the transition, as processor output that does not fit the model does;
+  `null` data from a processor still means no change. Below `STRUCTURAL` the
+  refusal no longer names a change level as the remedy.
 
 - **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
   have schemas in the published CloudEvent tree, and the request is read
