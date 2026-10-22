@@ -1070,13 +1070,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   On gRPC, an event whose `data` is `null` is refused as missing its
   required members, and in a request event a required member whose schema
   states a type is refused when it is `null` (`field name: must not be
-  null`); before, both read as zero values. The entity `data`, the `patch`
+  null`); before, a `null` event read as a zero event, and a `null` string,
+  number or array member as its zero value. The entity `data`, the `patch`
   and the model-import `payload` hold any JSON value: a `null` entity `data`,
-  merge `patch` or import `payload` is refused by the operation, as before
-  (`VALIDATION_FAILED`, as on HTTP). The `EntityModelGetAllRequest` data is
-  now decoded: an event without `id`, or whose data is not its JSON object,
-  is `InvalidArgument`,
-  where before the data was ignored. `joinedLegalEntityId` on
+  merge `patch` or import `payload` is left to the operation, which refuses
+  it with `VALIDATION_FAILED`, as on HTTP. The `EntityModelGetAllRequest`
+  data is now decoded: an event without `id`, or whose data is not its JSON
+  object, is `InvalidArgument`, where before the data was ignored.
+  `joinedLegalEntityId` on
   `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
   on `EntityDeleteAllRequest` (no effect; Cloud's client may send it) are
   declared in the event schemas.
@@ -1162,13 +1163,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   change level set, a write whose data did not fit the model proposed a
   schema change instead of being refused: at `TYPE` a `null` entity made the
   model's root nullable and was stored with no data, and at `STRUCTURAL` a
-  `null`, scalar or array replaced the document. Create, update, patch and
-  the collection writes, on HTTP and gRPC, now refuse it with `400
+  `null`, scalar or array replaced the document. Create, update and the
+  collection writes, on HTTP and gRPC, now refuse it with `400
   VALIDATION_FAILED: validation failed: expected object, got …`, as a model
-  without a change level does, and neither the model nor the entity changes.
-  A processor that returns such data fails the transition, as processor
-  output that does not fit the model does. Below `TYPE` the refusal no
-  longer names a change level as the remedy.
+  without a change level does (and as patch already did), and neither the
+  model nor the entity changes. A processor that returns a scalar or an
+  array as the entity's data fails the transition, as processor output that
+  does not fit the model does; `null` data from a processor still means no
+  change. Below `STRUCTURAL` the refusal no longer names a change level as
+  the remedy.
 
 - **`EntityModelSetUniqueKeysRequest` and `EntityModelSetUniqueKeysResponse`
   have schemas in the published CloudEvent tree, and the request is read

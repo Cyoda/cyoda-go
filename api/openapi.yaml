@@ -5362,7 +5362,7 @@ paths:
                 detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
                 instance: /api/model/nobel-prize/1/unique-keys
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a key's id is empty, missing or duplicated, its fields is empty or missing or names a field twice, or a field path is not a known scalar leaf of the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
           content:
             application/problem+json:
               schema:

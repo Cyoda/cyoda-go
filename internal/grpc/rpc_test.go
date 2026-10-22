@@ -612,6 +612,24 @@ func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported.UniqueKeys)
 		}
 	}
+
+	// [] is the one request that removes the keys.
+	resp, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(`{"id":"test",`+mdl+`,"uniqueKeys":[]}`)))
+	if err != nil {
+		t.Fatalf("[]: unexpected error: %v", err)
+	}
+	var typed events.EntityModelSetUniqueKeysResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("[]: expected success, got error %+v", typed.Error)
+	}
+	exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+	if err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	if len(exported.UniqueKeys) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported.UniqueKeys)
+	}
 }
 
 func TestRPC_ModelSetUniqueKeys_409_Locked(t *testing.T) {

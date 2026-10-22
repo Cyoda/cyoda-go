@@ -50,9 +50,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		defer cancelTimeout()
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 		// The payload bytes go to the entity service verbatim — no
 		// decode→re-marshal round-trip, which would rewrite unpaired
 		// surrogates and invalid UTF-8 to U+FFFD and collapse duplicate
@@ -103,9 +100,6 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		defer cancelTimeout()
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 		transition := ""
 		if req.Payload.Transition != nil {
 			transition = *req.Payload.Transition
@@ -397,9 +391,6 @@ func (s *CloudEventsServiceImpl) EntityManageCollection(ce *cepb.CloudEvent, str
 		}
 
 		format := string(req.DataFormat)
-		if format == "" {
-			format = "JSON"
-		}
 
 		// Update each entity individually, collecting IDs.
 		allIDs := make([]string, 0, len(req.Payloads))

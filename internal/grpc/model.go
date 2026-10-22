@@ -79,13 +79,7 @@ func (s *CloudEventsServiceImpl) handleModelImport(ctx context.Context, ceID str
 	}
 
 	dataFormat := string(req.DataFormat)
-	if dataFormat == "" {
-		dataFormat = "JSON"
-	}
 	converter := string(req.Converter)
-	if converter == "" {
-		converter = "SAMPLE_DATA"
-	}
 
 	dataBytes, _ := json.Marshal(req.Payload) // decoded from JSON, so it encodes: cannot fail
 
@@ -119,9 +113,6 @@ func (s *CloudEventsServiceImpl) handleModelExport(ctx context.Context, ceID str
 	}
 
 	converter := string(req.Converter)
-	if converter == "" {
-		converter = "JSON_SCHEMA"
-	}
 
 	result, err := s.modelHandler.ExportModel(ctx, req.Model.Name, fmt.Sprintf("%d", req.Model.Version), converter)
 	if err != nil {

@@ -1008,6 +1008,18 @@ func TestSetUniqueKeys_400_NoUniqueKeys(t *testing.T) {
 			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported["uniqueKeys"])
 		}
 	}
+
+	// [] is the one body that removes the keys.
+	resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, `{"uniqueKeys": []}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKMissing", 1)
+	expectStatus(t, resp, http.StatusOK)
+	var exported map[string]any
+	json.Unmarshal(readBody(t, resp), &exported)
+	if arr, _ := exported["uniqueKeys"].([]any); len(arr) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported["uniqueKeys"])
+	}
 }
 
 func TestTenantIsolationViaHTTP(t *testing.T) {
