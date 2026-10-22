@@ -36,17 +36,21 @@ direction.
 - The request is model administration: with a transaction token it is refused
   (`model-administration-not-joined.md`).
 
-### A required member is never `null`
+### A null required member
 
-A required member whose schema states a type is refused when it is `null`, like
-an absent member, on every event (`InvalidArgument`, `field name: must not be
-null`); no stated type admits `null`. Before, a `null` passed the required
-check and read as the zero value. The five required members whose schema
-states no type hold any JSON value, `null` included: the entity `data`
-(create, update), the `patch`, the model-import `payload` and the
-model-export `payload`. A `null` entity `data`, `patch` or import `payload` is
-refused by the operation, in the event's error envelope (`CLIENT_ERROR`,
-`VALIDATION_FAILED`), as on HTTP.
+In a client's request event and in `CalculationMemberJoinEvent` — every event
+the server reads through its generated types — a required member whose schema
+states a type is refused when it is `null`, as when it is absent
+(`InvalidArgument`, `field name: must not be null`); no stated type admits
+`null`. Five required members state no type and hold any JSON value, `null`
+included: the entity `data` (create, update), the `patch`, the model-import
+`payload` and the model-export `payload`. A `null` entity `data`, merge
+`patch` or import `payload` is refused by the operation, in the event's error
+envelope (`CLIENT_ERROR`, `VALIDATION_FAILED`), as on HTTP: an entity's data
+is a JSON object at every change level, and a model-import sample is an
+object or an array of objects. A compute member's answer is not covered by
+this rule: it is read through the members its schema declares, without
+required-member checks.
 
 ### `CloudEventType` values
 

@@ -1068,12 +1068,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   they said ISO 8601.
 
   On gRPC, an event whose `data` is `null` is refused as missing its
-  required members, and a required member whose schema states a type is
-  refused when it is `null` (`field name: must not be null`); before, both
-  read as zero values. The entity `data`, the `patch` and the model-import
-  `payload` hold any JSON value: a `null` there is refused by the operation,
-  as before (`VALIDATION_FAILED`, as on HTTP). The `EntityModelGetAllRequest` data is now decoded: an event
-  without `id`, or whose data is not its JSON object, is `InvalidArgument`,
+  required members, and in a request event a required member whose schema
+  states a type is refused when it is `null` (`field name: must not be
+  null`); before, both read as zero values. The entity `data`, the `patch`
+  and the model-import `payload` hold any JSON value: a `null` entity `data`,
+  merge `patch` or import `payload` is refused by the operation, as before
+  (`VALIDATION_FAILED`, as on HTTP). The `EntityModelGetAllRequest` data is
+  now decoded: an event without `id`, or whose data is not its JSON object,
+  is `InvalidArgument`,
   where before the data was ignored. `joinedLegalEntityId` on
   `CalculationMemberJoinEvent` (documented, not in the schema) and `pageSize`
   on `EntityDeleteAllRequest` (no effect; Cloud's client may send it) are

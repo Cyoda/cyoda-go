@@ -595,8 +595,8 @@ func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
 		"no uniqueKeys":      {`{"id":"test",` + mdl + `}`, "field uniqueKeys: required"},
 		"null uniqueKeys":    {`{"id":"test",` + mdl + `,"uniqueKeys":null}`, "field uniqueKeys: must not be null"},
 		"no id":              {`{` + mdl + `,` + keys + `}`, "field id: required"},
-		"key without id":     {`{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`, "field id: required"},
-		"key without fields": {`{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`, "field fields: required"},
+		"key without id":     {`{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`, `"/uniqueKeys/0": field id: required`},
+		"key without fields": {`{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`, `"/uniqueKeys/0": field fields: required`},
 	} {
 		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(tc.body)))
 		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {

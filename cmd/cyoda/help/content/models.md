@@ -174,10 +174,12 @@ Validation is immediate: field paths must be known scalar leaves in the model's 
 
 Returns `200 OK` with `EntityModelActionResultDto` on success.
 
-- `400 BAD_REQUEST` — the body is not JSON, has a member other than `uniqueKeys`, or has no `uniqueKeys` (absent or `null`).
-- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `400 BAD_REQUEST` — the body is not JSON, has a member it does not declare (at the top level or in a key), or has no `uniqueKeys` (absent or `null`).
+- `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries a transaction token; see the administration note above.
+- `404 MODEL_NOT_FOUND` — no model with this name and version.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
-- `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
+- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `422 INVALID_UNIQUE_KEY_DEFINITION` — a key's `id` is empty or missing or duplicated, its `fields` is empty or missing, or a field path references a non-scalar/unknown/array field.
 
 **Transactional ordering.** When one transaction (e.g. a workflow) both frees a unique-key value — by deleting or re-keying its holder — and claims it on another entity, free it before claiming. Free-then-claim works on every backend; the reverse is rejected on write-time backends (PostgreSQL) and accepted on commit-time ones (in-memory, SQLite), so free-before-claim for portable behavior.
 
