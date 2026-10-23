@@ -143,8 +143,8 @@ WANT=$(printf '%s' "$ANY_VALUE" | tr ',' '\n' | grep . | sort || true)
 ALL=$(grep -c 'if _, ok := raw\["' "$OUT" || true)
 if [ "$LEFT" != "$WANT" ] || [ "$ALL" -ne "$(printf '%s' "$WANT" | grep -c . || true)" ]; then
   echo "ERROR: the presence-only required checks in $OUT are not exactly the any-value members" >&2
-  echo "  left: $(echo $LEFT)" >&2
-  echo "  want: $(echo $WANT)" >&2
+  printf '  left: %s\n' "$(printf '%s' "$LEFT" | tr '\n' ' ')" >&2
+  printf '  want: %s\n' "$(printf '%s' "$WANT" | tr '\n' ' ')" >&2
   exit 1
 fi
 

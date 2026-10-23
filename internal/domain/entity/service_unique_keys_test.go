@@ -276,9 +276,9 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 
 // TestUpdateEntityCollection_NonObjectRoot_ValidationFailed: an item whose data
 // is not a JSON object is refused with 400 VALIDATION_FAILED on a model with
-// unique keys too, as on every other write path. The unique-key pre-check runs
-// after the schema check; before, it ran first, failed to decode a scalar or
-// array root and answered 500.
+// unique keys too, as on every other write path. The object-root refusal runs
+// ahead of the unique-key pre-check; before, the pre-check could not decode a
+// scalar or array root and answered 500.
 func TestUpdateEntityCollection_NonObjectRoot_ValidationFailed(t *testing.T) {
 	h, ctx := newOrderTestHandler(t)
 	res, err := h.CreateEntity(ctx, CreateEntityInput{

@@ -696,8 +696,9 @@ func mapKeys(m map[string]any) []string {
 
 // TestUniqueKeys_CollectionUpdateNonObjectRoot_400 verifies that a collection
 // update whose item data is not a JSON object answers 400 VALIDATION_FAILED on
-// a model with unique keys, as without them. Before, the unique-key pre-check
-// ran first, could not read a scalar or array root and answered 500.
+// a model with unique keys, as without them. The object-root refusal runs ahead
+// of the unique-key pre-check, which could not read a scalar or array root and
+// answered 500.
 func TestUniqueKeys_CollectionUpdateNonObjectRoot_400(t *testing.T) {
 	const model = "e2e-uk-coll-root"
 	setupUKModel(t, model, `{"uniqueKeys":[{"id":"name-amount-key","fields":["$.name","$.amount"]}]}`)
