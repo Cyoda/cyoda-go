@@ -63,14 +63,23 @@ func enrichWithModelRef(err error, ref spi.ModelRef) error {
 	return err
 }
 
-func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
-	// An entity's data is a JSON object at every change level. A change level
-	// lets a write grow the document, never replace it: without this, a null
-	// root at TYPE made the model's root nullable and stored an entity with no
-	// data, and any root at STRUCTURAL replaced the document with a value. The
-	// wording is the one the unextended model's object root gives.
+// RequireObjectRoot refuses entity data that is not a JSON object. An entity's
+// data is a JSON object at every change level: a change level lets a write grow
+// the document, never replace it. The wording is the one the unextended model's
+// object root gives.
+func RequireObjectRoot(parsedData any) error {
 	if _, ok := parsedData.(map[string]any); !ok {
 		return fmt.Errorf("validation failed: expected object, got %s", schema.JSONKindName(parsedData))
+	}
+	return nil
+}
+
+func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
+	// Without this, a null root at TYPE made the model's root nullable and
+	// stored an entity with no data, and any root at STRUCTURAL replaced the
+	// document with a value.
+	if err := RequireObjectRoot(parsedData); err != nil {
+		return err
 	}
 
 	modelNode, err := schema.Unmarshal(desc.Schema)

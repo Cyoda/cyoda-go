@@ -1168,8 +1168,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   failed: expected object, got …` — `400` on HTTP, `CLIENT_ERROR` in the
   gRPC response envelope — as a model without a change level does (and as
   patch already did), and neither the model nor the entity changes. A
-  collection update on a model with unique keys answered a scalar or array
-  root with a 500; it answers the same `VALIDATION_FAILED`. A
+  collection update on HTTP on a model with unique keys answered a scalar
+  or array root with a 500; it answers the same `VALIDATION_FAILED`. A
   processor that returns a scalar or an array as the entity's data fails
   the transition, as processor output that does not fit the model does;
   `null` data from a processor still means no change. Below `STRUCTURAL` the
