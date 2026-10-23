@@ -2527,8 +2527,19 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
-		// Pre-check for partial unique key. Called while desc is in hand so
-		// no extra model read is needed. Rolls back and fails the whole batch.
+		// Stamp this item's unique-key definitions onto the context before
+		// engine execution. Called unconditionally so a keyed item never leaks
+		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
+		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
+
+		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
+			return nil, classifyValidateOrExtendErr(err)
+		}
+
+		// Pre-check for partial unique key, after the schema check as on every
+		// other write path, so the data it reads is a JSON object. Called while
+		// desc is in hand so no extra model read is needed. Rolls back and fails
+		// the whole batch.
 		if len(desc.UniqueKeys) > 0 {
 			if _, err := spi.ComputeClaims(desc.UniqueKeys, item.bodyBytes); err != nil {
 				if errors.Is(err, spi.ErrPartialUniqueKey) {
@@ -2537,15 +2548,6 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 				}
 				return nil, common.Internal(fmt.Sprintf("item %d: failed to evaluate unique keys", i), err)
 			}
-		}
-
-		// Stamp this item's unique-key definitions onto the context before
-		// engine execution. Called unconditionally so a keyed item never leaks
-		// its keys to the next item; spi.WithUniqueKeys overwrites any prior value.
-		currentCtx = spi.WithUniqueKeys(currentCtx, desc.UniqueKeys)
-
-		if err := ingest.ValidateOrExtend(currentCtx, modelStore, desc, item.parsedData); err != nil {
-			return nil, classifyValidateOrExtendErr(err)
 		}
 
 		// Computed on currentCtx (the current segment's tx-carrying

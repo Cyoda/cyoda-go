@@ -274,6 +274,33 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	}
 }
 
+// TestUpdateEntityCollection_NonObjectRoot_ValidationFailed: an item whose data
+// is not a JSON object is refused with 400 VALIDATION_FAILED on a model with
+// unique keys too, as on every other write path. The unique-key pre-check runs
+// after the schema check; before, it ran first, failed to decode a scalar or
+// array root and answered 500.
+func TestUpdateEntityCollection_NonObjectRoot_ValidationFailed(t *testing.T) {
+	h, ctx := newOrderTestHandler(t)
+	res, err := h.CreateEntity(ctx, CreateEntityInput{
+		EntityName:   "Order",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"email":"a@b.com","accountId":"acc-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	for _, root := range []string{`5`, `"x"`, `[1]`, `null`} {
+		_, err := h.UpdateEntityCollection(ctx, []UpdateCollectionItem{
+			{EntityID: res.EntityIDs[0], Payload: json.RawMessage(root)},
+		})
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) || appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeValidationFailed {
+			t.Errorf("root %s: got %v; want 400 VALIDATION_FAILED", root, err)
+		}
+	}
+}
+
 // ----- Helpers -----
 
 // newOrderTestHandler builds a Handler wired to a fresh in-memory store with a

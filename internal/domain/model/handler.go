@@ -232,7 +232,7 @@ func (h *Handler) SetEntityModelUniqueKeys(w http.ResponseWriter, r *http.Reques
 	// The keys replace the model's keys, so an absent or null uniqueKeys is
 	// refused rather than read as "no keys"; only [] removes them.
 	if req.UniqueKeys == nil {
-		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "missing required field: uniqueKeys"))
+		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "uniqueKeys is required and must not be null; send [] to remove the keys"))
 		return
 	}
 
