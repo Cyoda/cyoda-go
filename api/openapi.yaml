@@ -3020,7 +3020,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; WORKFLOW_FAILED: the workflow rejected the update"
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model (for example, it is not a JSON object); WORKFLOW_FAILED: the workflow rejected the update"
           content:
             application/problem+json:
               schema:

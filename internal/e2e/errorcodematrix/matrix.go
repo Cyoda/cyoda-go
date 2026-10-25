@@ -143,6 +143,7 @@ var EntityErrorCodeMatrix = map[string][]Cell{
 	},
 	"updateSingleWithLoopback": {
 		{Status: 400, Code: "BAD_REQUEST"},        // unparseable body, or a payload carrying U+0000 (TestEntity_NulInPayload_400)
+		{Status: 400, Code: "VALIDATION_FAILED"},  // data that does not fit the model, e.g. not a JSON object (TestModelExtension_RootStaysAnObject)
 		{Status: 400, Code: "WORKFLOW_FAILED"},    // engine rejected the loopback — e.g. an unevaluable workflow selection criterion (TestWorkflowSelection_UnevaluableCriterionFailsClosedOnEveryDoor)
 		{Status: 409, Code: "UNIQUE_VIOLATION"},   // TestUniqueKeys_UpdateMovesKey
 		{Status: 412, Code: "ENTITY_MODIFIED"},    // TestIfMatch_StaleLoopbackPut412
