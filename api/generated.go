@@ -1517,6 +1517,7 @@ type ScheduledTaskPageDto struct {
 
 // SetUniqueKeysRequest defines model for SetUniqueKeysRequest.
 type SetUniqueKeysRequest struct {
+	// UniqueKeys The model's composite unique keys. They replace the keys the model has; an empty array removes them all.
 	UniqueKeys []UniqueKeyDto `json:"uniqueKeys"`
 }
 

@@ -384,7 +384,15 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 	}
 
 	// Release the held processors until every entity has settled.
-	mnAwait(t, 90*time.Second, "every entity settled", func() bool {
+	// The remaining claims stop while every pnode's heartbeats fail, as a
+	// database stall makes them: the wait counts from the heartbeat after the
+	// first pnode's last failed one (fixtureutil.HeartbeatGate).
+	settle := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: 90 * time.Second}
+	all := make([]int, nodes)
+	for i := range all {
+		all[i] = i
+	}
+	settle.Await(t, s.logsOf(all), "every entity settled", func() (bool, string) {
 		for _, ct := range tenants {
 			for _, cl := range ct.clients {
 				cl.Release(t)
@@ -392,18 +400,24 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		}
 		var active int
 		if err := s.db.QueryRow(context.Background(), `SELECT count(*) FROM scheduled_tasks
-			WHERE tenant_id = ANY($1) AND status IN ('WAITING', 'RUNNING')`, tenantIDs).Scan(&active); err != nil || active > 0 {
-			return false
+			WHERE tenant_id = ANY($1) AND status IN ('WAITING', 'RUNNING')`, tenantIDs).Scan(&active); err != nil {
+			return false, "read the tasks: " + err.Error()
+		}
+		if active > 0 {
+			return false, fmt.Sprintf("%d tasks waiting or running", active)
 		}
 		for _, ct := range tenants {
 			for _, id := range ct.ids {
 				got, err := ct.c.GetEntity(t, id)
-				if err != nil || (got.Meta.State != "A" && got.Meta.State != "B") {
-					return false
+				if err != nil {
+					return false, "read entity " + id.String() + ": " + err.Error()
+				}
+				if got.Meta.State != "A" && got.Meta.State != "B" {
+					return false, "entity " + id.String() + " in state " + got.Meta.State
 				}
 			}
 		}
-		return true
+		return true, ""
 	})
 	halt()
 

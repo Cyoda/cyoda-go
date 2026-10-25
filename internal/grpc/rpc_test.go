@@ -533,7 +533,7 @@ func TestRPC_ModelSetUniqueKeys_200(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if !typed.Success {
 		t.Error("expected success=true")
@@ -562,10 +562,73 @@ func TestRPC_ModelSetUniqueKeys_BaseEventMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if !typed.Success {
 		t.Errorf("expected success=true, got error %+v", typed.Error)
+	}
+}
+
+// TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema: the request is read through
+// the type generated from its published schema, so it is refused exactly as
+// that schema refuses it — a null success, an error with no code, a missing
+// required member — and the model keeps the keys it had.
+func TestRPC_ModelSetUniqueKeys_PayloadIsTheSchema(t *testing.T) {
+	svc, ctx := newTestEnv(t)
+	if _, err := svc.modelHandler.ImportModel(ctx, model.ImportModelInput{
+		EntityName: "product", ModelVersion: "1", Format: "JSON", Converter: "SAMPLE_DATA",
+		Data: []byte(`{"name":"Alice"}`),
+	}); err != nil {
+		t.Fatalf("import failed: %v", err)
+	}
+	if _, err := svc.modelHandler.SetUniqueKeys(ctx, "product", "1", []spi.UniqueKey{{ID: "uk1", Fields: []string{"$.name"}}}); err != nil {
+		t.Fatalf("set keys failed: %v", err)
+	}
+	mdl := `"model":{"name":"product","version":1}`
+	keys := `"uniqueKeys":[{"id":"uk1","fields":["$.name"]}]`
+	// want is the member the refusal must name, so a case cannot pass on
+	// another member's refusal.
+	for name, tc := range map[string]struct{ body, want string }{
+		"null success":       {`{"id":"test","success":null,` + mdl + `,` + keys + `}`, "field success: must not be null"},
+		"error without code": {`{"id":"test","error":{"message":"m"},` + mdl + `,` + keys + `}`, "field code: required"},
+		"no model":           {`{"id":"test",` + keys + `}`, "field model: required"},
+		"no uniqueKeys":      {`{"id":"test",` + mdl + `}`, "field uniqueKeys: required"},
+		"null uniqueKeys":    {`{"id":"test",` + mdl + `,"uniqueKeys":null}`, "field uniqueKeys: must not be null"},
+		"no id":              {`{` + mdl + `,` + keys + `}`, "field id: required"},
+		"key without id":     {`{"id":"test",` + mdl + `,"uniqueKeys":[{"fields":["$.name"]}]}`, `"/uniqueKeys/0": field id: required`},
+		"key without fields": {`{"id":"test",` + mdl + `,"uniqueKeys":[{"id":"uk1"}]}`, `"/uniqueKeys/0": field fields: required`},
+	} {
+		_, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(tc.body)))
+		if st, _ := status.FromError(err); err == nil || st.Code() != codes.InvalidArgument {
+			t.Errorf("%s: got %v; want InvalidArgument", name, err)
+		} else if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error %q does not say %q", name, err, tc.want)
+		}
+		exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+		if err != nil {
+			t.Fatalf("export failed: %v", err)
+		}
+		if len(exported.UniqueKeys) != 1 {
+			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported.UniqueKeys)
+		}
+	}
+
+	// [] is the one request that removes the keys.
+	resp, err := svc.EntityModelManage(ctx, makeRawCE(EntityModelSetUniqueKeysRequest, []byte(`{"id":"test",`+mdl+`,"uniqueKeys":[]}`)))
+	if err != nil {
+		t.Fatalf("[]: unexpected error: %v", err)
+	}
+	var typed events.EntityModelSetUniqueKeysResponseJson
+	validateResponse(t, resp, &typed)
+	if !typed.Success {
+		t.Fatalf("[]: expected success, got error %+v", typed.Error)
+	}
+	exported, err := svc.modelHandler.ExportModel(ctx, "product", "1", "JSON_SCHEMA")
+	if err != nil {
+		t.Fatalf("export failed: %v", err)
+	}
+	if len(exported.UniqueKeys) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported.UniqueKeys)
 	}
 }
 
@@ -590,7 +653,7 @@ func TestRPC_ModelSetUniqueKeys_409_Locked(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for locked model")
@@ -634,7 +697,7 @@ func TestRPC_ModelSetUniqueKeys_422_BadField(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for bad field")
@@ -673,7 +736,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for unsupported backend")
@@ -711,7 +774,7 @@ func TestRPC_ModelSetUniqueKeys_404_UnknownModel(t *testing.T) {
 		t.Errorf("expected type %s, got %s", EntityModelSetUniqueKeysResponse, resp.Type)
 	}
 
-	var typed events.EntityModelTransitionResponseJson
+	var typed events.EntityModelSetUniqueKeysResponseJson
 	validateResponse(t, resp, &typed)
 	if typed.Success {
 		t.Error("expected success=false for unknown model")

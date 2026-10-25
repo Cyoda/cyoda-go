@@ -71,10 +71,10 @@ func TestSchedulerMN_LostOwners(t *testing.T) {
 	}))
 
 	// All four running, each with its processor at its stalled client.
-	a.claim = s.awaitTask(t, a.id, "Fire", 30*time.Second, "A running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
-	b.claim = s.awaitTask(t, b.id, "Fire", 30*time.Second, "B running with its mark", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.Marked })
-	cc.claim = s.awaitTask(t, cc.id, "Fire", 30*time.Second, "C running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
-	d.claim = s.awaitTask(t, d.id, "Fire", 30*time.Second, "D running after its partial commit", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.PartialCommit })
+	a.claim = s.awaitClaim(t, a.id, "Fire", s.schedulerNodes(host), "A running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
+	b.claim = s.awaitClaim(t, b.id, "Fire", s.schedulerNodes(host), "B running with its mark", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.Marked })
+	cc.claim = s.awaitClaim(t, cc.id, "Fire", s.schedulerNodes(host), "C running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
+	d.claim = s.awaitClaim(t, d.id, "Fire", s.schedulerNodes(host), "D running after its partial commit", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.PartialCommit })
 	all := []*lostSubject{a, b, cc, d}
 	for _, sub := range all {
 		mnAwait(t, 10*time.Second, "the stalled processor", func() bool { return mnReceived(t, sub.stall, sub.id) == 1 })

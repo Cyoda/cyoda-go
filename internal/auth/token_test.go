@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -331,7 +330,9 @@ func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
 // expires_in equal to the token's remaining life.
 func TestTokenClientCredentialsValid(t *testing.T) {
 	env := setupTokenEnv(t)
+	before := time.Now().Unix()
 	rr := env.clientCredentials(t, env.clientID, env.clientSecret)
+	after := time.Now().Unix()
 	body, claims := issued(t, rr)
 	if body["token_type"] != "Bearer" {
 		t.Errorf("token_type = %v, want Bearer", body["token_type"])
@@ -368,11 +369,17 @@ func TestTokenClientCredentialsValid(t *testing.T) {
 		}
 	}
 	exp, iat := numClaim(t, claims, "exp"), numClaim(t, claims, "iat")
+	// The token is issued at the time of the request: the in-process call lies
+	// between the two clock reads.
+	if iat < before || iat > after {
+		t.Errorf("iat = %d, want the issue time, in [%d, %d]", iat, before, after)
+	}
 	if exp-iat != testExpiry {
 		t.Errorf("exp - iat = %d, want %d", exp-iat, testExpiry)
 	}
-	if got, want := body["expires_in"].(float64), float64(exp-time.Now().Unix()); math.Abs(got-want) > 1 {
-		t.Errorf("expires_in = %v, want exp - now = %v", got, want)
+	// The server issues iat and computes expires_in from the same instant.
+	if got := int64(body["expires_in"].(float64)); got != exp-iat {
+		t.Errorf("expires_in = %d, want exp - iat = %d", got, exp-iat)
 	}
 }
 
@@ -608,9 +615,10 @@ func TestTokenExchange_Claims(t *testing.T) {
 	if _, err := uuid.Parse(fmt.Sprint(claims["jti"])); err != nil {
 		t.Errorf("jti = %v, want a uuid", claims["jti"])
 	}
-	exp := numClaim(t, claims, "exp")
-	if got, want := body["expires_in"].(float64), float64(exp-time.Now().Unix()); math.Abs(got-want) > 1 {
-		t.Errorf("expires_in = %v, want exp - now = %v", got, want)
+	// The server issues iat and computes expires_in from the same instant.
+	exp, iat := numClaim(t, claims, "exp"), numClaim(t, claims, "iat")
+	if got := int64(body["expires_in"].(float64)); got != exp-iat {
+		t.Errorf("expires_in = %d, want exp - iat = %d", got, exp-iat)
 	}
 }
 
@@ -619,13 +627,29 @@ func TestTokenExchange_Claims(t *testing.T) {
 func TestTokenExchange_ExpCappedByAssertion(t *testing.T) {
 	env := setupTokenEnv(t)
 	aexp := time.Now().Add(60 * time.Second).Unix()
-	a := env.assertion(t, func(c map[string]any) { c["exp"] = aexp })
-	body, claims := issued(t, env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}}))
-	if got := numClaim(t, claims, "exp"); got != aexp {
-		t.Errorf("exp = %d, want the assertion's %d", got, aexp)
+	// The assertion's iat is set in the past, so a token that took the
+	// assertion's iat instead of its own issue time fails the bracket below.
+	a := env.assertion(t, func(c map[string]any) {
+		c["iat"] = time.Now().Add(-10 * time.Second).Unix()
+		c["exp"] = aexp
+	})
+	before := time.Now().Unix()
+	rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}})
+	after := time.Now().Unix()
+	body, claims := issued(t, rr)
+	exp, iat := numClaim(t, claims, "exp"), numClaim(t, claims, "iat")
+	// The token is issued at the time of the request: the in-process call lies
+	// between the two clock reads.
+	if iat < before || iat > after {
+		t.Errorf("iat = %d, want the issue time, in [%d, %d]", iat, before, after)
 	}
-	if got := body["expires_in"].(float64); math.Abs(got-60) > 1 {
-		t.Errorf("expires_in = %v, want about 60", got)
+	if exp != aexp {
+		t.Errorf("exp = %d, want the assertion's %d", exp, aexp)
+	}
+	// expires_in is exp less the server's issue time, which is iat; a fixed
+	// 60 drifts by however long the exchange takes.
+	if got := int64(body["expires_in"].(float64)); got != exp-iat {
+		t.Errorf("expires_in = %d, want exp - iat = %d", got, exp-iat)
 	}
 }
 
@@ -637,8 +661,8 @@ func TestTokenExchange_ExpCappedByConfig(t *testing.T) {
 	if d := numClaim(t, claims, "exp") - numClaim(t, claims, "iat"); d != 30 {
 		t.Errorf("exp - iat = %d, want 30", d)
 	}
-	if got := body["expires_in"].(float64); math.Abs(got-30) > 1 {
-		t.Errorf("expires_in = %v, want about 30", got)
+	if got := body["expires_in"].(float64); got != 30 {
+		t.Errorf("expires_in = %v, want 30", got)
 	}
 }
 

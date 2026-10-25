@@ -274,6 +274,90 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	}
 }
 
+// TestUpdateEntityCollection_NonObjectRoot_ValidationFailed: an item whose data
+// is not a JSON object is refused with 400 VALIDATION_FAILED on a model with
+// unique keys too, as on every other write path. The object-root refusal runs
+// ahead of the unique-key pre-check; before, the pre-check could not decode a
+// scalar or array root and answered 500.
+func TestUpdateEntityCollection_NonObjectRoot_ValidationFailed(t *testing.T) {
+	h, ctx := newOrderTestHandler(t)
+	res, err := h.CreateEntity(ctx, CreateEntityInput{
+		EntityName:   "Order",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"email":"a@b.com","accountId":"acc-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	for _, root := range []string{`5`, `"x"`, `[1]`, `null`} {
+		_, err := h.UpdateEntityCollection(ctx, []UpdateCollectionItem{
+			{EntityID: res.EntityIDs[0], Payload: json.RawMessage(root)},
+		})
+		var appErr *common.AppError
+		if !errors.As(err, &appErr) || appErr.Status != http.StatusBadRequest || appErr.Code != common.ErrCodeValidationFailed {
+			t.Errorf("root %s: got %v; want 400 VALIDATION_FAILED", root, err)
+		}
+	}
+}
+
+// TestUpdateEntityCollection_PartialKeyRefused_ModelUnchanged: an item refused
+// for an incomplete unique key changes nothing, the model included. The
+// pre-check runs before the schema check may extend the model; the memory
+// backend applies a schema extension at once, outside the entity transaction,
+// so a later refusal could not take it back.
+func TestUpdateEntityCollection_PartialKeyRefused_ModelUnchanged(t *testing.T) {
+	h, ctx := newOrderTestHandler(t)
+	// The schema-apply function production wires (app.makeSchemaApply).
+	h.factory.(*memory.StoreFactory).SetApplyFunc(func(base []byte, delta spi.SchemaDelta) ([]byte, error) {
+		node, err := schema.Unmarshal(base)
+		if err != nil {
+			return nil, err
+		}
+		extended, err := schema.Apply(node, delta)
+		if err != nil {
+			return nil, err
+		}
+		return schema.Marshal(extended)
+	})
+	res, err := h.CreateEntity(ctx, CreateEntityInput{
+		EntityName:   "Order",
+		ModelVersion: "1",
+		Format:       "JSON",
+		Data:         json.RawMessage(`{"email":"a@b.com","accountId":"acc-1"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateEntity: %v", err)
+	}
+	modelStore, err := h.factory.ModelStore(ctx)
+	if err != nil {
+		t.Fatalf("ModelStore: %v", err)
+	}
+	ref := spi.ModelRef{EntityName: "Order", ModelVersion: "1"}
+	if err := modelStore.SetChangeLevel(ctx, ref, spi.ChangeLevelStructural); err != nil {
+		t.Fatalf("SetChangeLevel: %v", err)
+	}
+	before, err := modelStore.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+
+	_, err = h.UpdateEntityCollection(ctx, []UpdateCollectionItem{
+		{EntityID: res.EntityIDs[0], Payload: json.RawMessage(`{"email":"a@b.com","injected":"x"}`)},
+	})
+	var appErr *common.AppError
+	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeInvalidUniqueKey {
+		t.Fatalf("got %v; want 422 INVALID_UNIQUE_KEY", err)
+	}
+	after, err := modelStore.Get(ctx, ref)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if string(after.Schema) != string(before.Schema) {
+		t.Errorf("the refused item extended the model:\nbefore %s\nafter  %s", before.Schema, after.Schema)
+	}
+}
+
 // ----- Helpers -----
 
 // newOrderTestHandler builds a Handler wired to a fresh in-memory store with a

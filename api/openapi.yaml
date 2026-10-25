@@ -2622,7 +2622,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: Bad request — invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition` (BAD_REQUEST, nothing committed)
+          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType. Nothing is committed."
           content:
             application/problem+json:
               schema:
@@ -2838,7 +2838,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; WORKFLOW_FAILED: a workflow processor rejected an entity."
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: a workflow processor rejected an entity."
           content:
             application/problem+json:
               schema:
@@ -3020,7 +3020,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; WORKFLOW_FAILED: the workflow rejected the update"
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the update"
           content:
             application/problem+json:
               schema:
@@ -3152,7 +3152,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not conform to the registered model; WORKFLOW_FAILED: the workflow rejected the patch"
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, or a value 256 or more levels below the document root (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
@@ -3362,7 +3362,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
           content:
             application/problem+json:
               schema:
@@ -3504,7 +3504,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: Bad request — invalid patch or validation failure
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, or a value 256 or more levels below the document root (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
@@ -3745,7 +3745,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: workflow processor rejected the entity."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a value 256 or more levels below the document root; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
@@ -5267,6 +5267,8 @@ paths:
 
         - All declared fields must be scalar leaf fields in the model schema
 
+        - uniqueKeys is required: the keys sent replace the model's keys, an empty array removes them all, and a body without uniqueKeys, or with null, is refused with 400 BAD_REQUEST and changes nothing
+
 
         Enforcement:
 
@@ -5324,7 +5326,7 @@ paths:
                     message: unique keys set on model nobel-prize:1
                     modelId: cee334fa-c0ac-11f0-ba79-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: malformed or unparseable request body; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
+          description: "Bad request — BAD_REQUEST: malformed or unparseable request body, or uniqueKeys absent or null; MODEL_ADMIN_IN_JOINED_TRANSACTION — the request carries an X-Tx-Token: model and workflow administration never runs inside a transaction; refused before the token is verified, so make the request without it."
           content:
             application/problem+json:
               schema:
@@ -5360,7 +5362,7 @@ paths:
                 detail: "MODEL_ALREADY_LOCKED: cannot process entityModel{entityName=nobel-prize, entityVersion=1}. expectedState=UNLOCKED, actualState=LOCKED"
                 instance: /api/model/nobel-prize/1/unique-keys
         "422":
-          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a field path does not exist in the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
+          description: "Unprocessable Entity — INVALID_UNIQUE_KEY_DEFINITION: a key's id is empty, missing or duplicated, its fields is empty or missing or names a field twice, or a field path is not a known scalar leaf of the model schema; COMPOSITE_KEY_UNSUPPORTED: the storage backend does not support composite unique keys."
           content:
             application/problem+json:
               schema:
@@ -9238,6 +9240,7 @@ components:
       properties:
         uniqueKeys:
           type: array
+          description: The model's composite unique keys. They replace the keys the model has; an empty array removes them all.
           items:
             $ref: "#/components/schemas/UniqueKeyDto"
     EntityModelActionResultDto:

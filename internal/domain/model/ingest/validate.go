@@ -63,7 +63,25 @@ func enrichWithModelRef(err error, ref spi.ModelRef) error {
 	return err
 }
 
+// RequireObjectRoot refuses entity data that is not a JSON object. An entity's
+// data is a JSON object at every change level: a change level lets a write grow
+// the document, never replace it. The wording is the one the unextended model's
+// object root gives.
+func RequireObjectRoot(parsedData any) error {
+	if _, ok := parsedData.(map[string]any); !ok {
+		return fmt.Errorf("validation failed: expected object, got %s", schema.JSONKindName(parsedData))
+	}
+	return nil
+}
+
 func ValidateOrExtend(ctx context.Context, modelStore spi.ModelStore, desc *spi.ModelDescriptor, parsedData any) error {
+	// Without this, a null root at TYPE made the model's root nullable and
+	// stored an entity with no data, and any root at STRUCTURAL replaced the
+	// document with a value.
+	if err := RequireObjectRoot(parsedData); err != nil {
+		return err
+	}
+
 	modelNode, err := schema.Unmarshal(desc.Schema)
 	if err != nil {
 		return fmt.Errorf("%w: failed to unmarshal model schema: %w", ErrInternalSchema, err)
@@ -200,7 +218,7 @@ const maxRenderedValidationErrors = 32
 // fields so classifyValidateOrExtendErr can render INCOMPATIBLE_TYPE Props
 // without scraping the Message string. Other validation errors fall back
 // to the generic "validation failed: ..." wrap, classified as
-// BAD_REQUEST downstream.
+// VALIDATION_FAILED downstream.
 func ValidationErrorsToError(errs []schema.ValidationError) error {
 	rendered := errs
 	truncated := false

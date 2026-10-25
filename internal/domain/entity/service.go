@@ -2527,9 +2527,16 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 			return nil, common.Internal(fmt.Sprintf("item %d: failed to load model for entity", i), err)
 		}
 
-		// Pre-check for partial unique key. Called while desc is in hand so
-		// no extra model read is needed. Rolls back and fails the whole batch.
+		// Pre-check for partial unique key, before the schema check can extend
+		// the model: on a backend whose schema extension does not join the
+		// entity transaction, a refusal after it would leave the model
+		// extended. The data it reads must be a JSON object, refused with the
+		// schema check's own answer. Called while desc is in hand so no extra
+		// model read is needed. Rolls back and fails the whole batch.
 		if len(desc.UniqueKeys) > 0 {
+			if err := ingest.RequireObjectRoot(item.parsedData); err != nil {
+				return nil, classifyValidateOrExtendErr(err)
+			}
 			if _, err := spi.ComputeClaims(desc.UniqueKeys, item.bodyBytes); err != nil {
 				if errors.Is(err, spi.ErrPartialUniqueKey) {
 					return nil, common.Operational(http.StatusUnprocessableEntity, common.ErrCodeInvalidUniqueKey,

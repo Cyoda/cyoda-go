@@ -133,6 +133,32 @@ func (s *schedMN) awaitTaskGated(t *testing.T, id uuid.UUID, transition string, 
 	return r
 }
 
+// claimWait is how long after the first of its claimers is allowed to claim
+// (fixtureutil.HeartbeatGate) a task may take to be claimed.
+const claimWait = 30 * time.Second
+
+// awaitClaim awaits a claim of a due task by one of claimers. A pnode claims
+// only while its heartbeats succeed (spec §6.1), and on a loaded host a
+// heartbeat fails whenever the database stalls for a second, so the wait is
+// claimWait after the first claimer is allowed, not after a fixed instant.
+func (s *schedMN) awaitClaim(t *testing.T, id uuid.UUID, transition string, claimers []int, what string, cond func(mnTask, bool) bool) mnTask {
+	t.Helper()
+	g := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: claimWait}
+	return s.awaitTaskGated(t, id, transition, g, claimers, what, cond)
+}
+
+// schedulerNodes is every pnode but host, the one whose scheduler is off
+// (hostOnly).
+func (s *schedMN) schedulerNodes(host int) []int {
+	var out []int
+	for i := 0; i < s.pg.NodeCount(); i++ {
+		if i != host {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
 // awaitLostOwnerClaim awaits a lost-owner claim by one of claimers: due slack
 // after the first of them is allowed one by spec §6.1, once the owner went
 // stale at ownerStaleAt and its own heartbeats have run clean for STALE_AFTER.

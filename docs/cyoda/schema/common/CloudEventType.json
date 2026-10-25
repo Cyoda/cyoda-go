@@ -12,6 +12,8 @@
     "EventAckResponse",
     "EntityCriteriaCalculationRequest",
     "EntityCriteriaCalculationResponse",
+    "EntityFunctionCalculationRequest",
+    "EntityFunctionCalculationResponse",
     "CalculationMemberKeepAliveEvent",
 
     "EntityModelImportRequest",
@@ -24,6 +26,8 @@
     "EntityModelDeleteResponse",
     "EntityModelGetAllRequest",
     "EntityModelGetAllResponse",
+    "EntityModelSetUniqueKeysRequest",
+    "EntityModelSetUniqueKeysResponse",
 
     "EntityCreateRequest",
     "EntityCreateCollectionRequest",
@@ -36,6 +40,7 @@
     "EntityDeleteAllResponse",
     "EntityTransitionRequest",
     "EntityTransitionResponse",
+    "EntityPatchRequest",
 
     "EntityGetRequest",
     "EntityGetAllRequest",

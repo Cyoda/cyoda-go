@@ -29,21 +29,7 @@ func restartTask(t *testing.T, c *client.Client, id uuid.UUID) *client.Scheduled
 	return nil
 }
 
-func awaitRestartTask(t *testing.T, c *client.Client, id uuid.UUID, within time.Duration, what string, cond func(*client.ScheduledTask) bool) *client.ScheduledTask {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		if task := restartTask(t, c, id); cond(task) {
-			return task
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("task of %s: %s not seen within %s; last %+v", id, what, within, restartTask(t, c, id))
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-}
-
-// awaitRestartClaim polls like awaitRestartTask until cond holds, with the
+// awaitRestartClaim polls the task until cond holds, with the
 // deadline of a lost-owner claim by node (fixtureutil.HeartbeatGate): 30s
 // after the later of claimFrom and a stale period of clean heartbeats after
 // node's last failed one.
@@ -128,8 +114,18 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 	}
 	r1 := setup("sq-restart-1", tag1, true)
 	r2 := setup("sq-restart-2", tag2, false)
+	// A node claims only while its heartbeats succeed (spec §6.1): each claim
+	// is due 15s after the later of the start of its wait and the heartbeat
+	// that follows the node's last failed one.
 	for _, id := range []uuid.UUID{r1, r2} {
-		awaitRestartTask(t, c, id, 15*time.Second, "running", func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "RUNNING" })
+		claim := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: 15 * time.Second}
+		claim.Await(t, func() []string { return []string{first.Logs.String()} }, "task of "+id.String()+": running", func() (bool, string) {
+			tk := restartTask(t, c, id)
+			if tk == nil {
+				return false, "no task"
+			}
+			return tk.Status == "RUNNING", fmt.Sprintf("%+v", *tk)
+		})
 	}
 	parity.AwaitReceived(t, stall1, 1, 10*time.Second)
 	parity.AwaitReceived(t, stall2, 1, 10*time.Second)

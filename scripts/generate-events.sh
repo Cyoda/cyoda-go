@@ -67,6 +67,87 @@ perl -0777 -i -pe '
   s/fmt\.Errorf\("invalid value \(expected one of %#v\): %#v", (enumValues_\w+), v\)/fmt.Errorf("invalid value %q: expected one of %v", v, $1)/g;
 ' "$OUT"
 
+# Post-process: a required member that is present but null is refused when its
+# schema states a type, which no type here admits null for; go-jsonschema
+# checks only that the key is present, so a null decoded as the zero value —
+# `"uniqueKeys": null` read as "no keys" and removed every unique key of the
+# model. A required member whose schema states no type (the entity data, the
+# patch, the model-import sample) holds any JSON value, null included: it is
+# the client's data, and the domain refuses a null there with its own code, as
+# on HTTP. Those members are read from the schemas and keep the presence check.
+ANY_VALUE=$(python3 - "$CLEAN_DIR" <<'EOF'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+typing = {"type", "$ref", "enum", "const", "oneOf", "anyOf", "allOf"}
+
+def states_type(schema, here):
+    """Whether a member's schema states a type, following a $ref to its target."""
+    if not typing & schema.keys():
+        return False
+    ref = schema.get("$ref")
+    if ref and not typing - {"$ref"} & schema.keys():
+        target = json.loads((here.parent / ref.split("#")[0]).read_text())
+        return bool(typing & target.keys())
+    return True
+
+def nested(schema):
+    """Every sub-schema below a schema's own members: what go-jsonschema turns into another Go type."""
+    for key in ("properties", "$defs"):
+        for sub in schema.get(key, {}).values():
+            yield sub
+    if isinstance(schema.get("items"), dict):
+        yield schema["items"]
+    for key in ("allOf", "oneOf", "anyOf"):
+        yield from schema.get(key, [])
+
+out, unsupported = [], []
+for f in sorted(root.rglob("*.json")):
+    doc = json.loads(f.read_text())
+    stack = [(doc, True, f.relative_to(root).as_posix())]
+    while stack:
+        schema, top, where = stack.pop()
+        props = schema.get("properties", {})
+        for member in schema.get("required", []):
+            if member in props and not states_type(props[member], f):
+                if top:
+                    out.append(doc["title"] + "Json." + member)
+                else:
+                    unsupported.append(where + ": " + member + " (below the top level)")
+        stack.extend((sub, False, where) for sub in nested(schema) if isinstance(sub, dict))
+if unsupported:
+    # Only a top-level member's Go type is named after its schema's title, so
+    # only there can the exemption be applied. Give the member a type, or
+    # teach this scan the generated name.
+    sys.exit("required member with no stated type: " + "; ".join(unsupported))
+print(",".join(out))
+EOF
+)
+ANY_VALUE="$ANY_VALUE" perl -0777 -i -pe '
+  BEGIN { %any = map { $_ => 1 } split /,/, $ENV{ANY_VALUE} }
+  s{(func \(j \*(\w+)\) UnmarshalJSON\(value \[\]byte\) error \{\n.*?\n\}\n)}{
+    my ($fn, $type) = ($1, $2);
+    $fn =~ s/\tif _, ok := raw\["(\w+)"\]; !ok \{\n\t\treturn fmt\.Errorf\("field \1: required"\)\n\t\}\n/$any{"$type.$1"} ? $& : "\tif v, ok := raw[\"$1\"]; !ok {\n\t\treturn fmt.Errorf(\"field $1: required\")\n\t} else if v == nil {\n\t\treturn fmt.Errorf(\"field $1: must not be null\")\n\t}\n"/ge;
+    $fn
+  }gse;
+' "$OUT"
+
+# Fail loudly if a required check escaped that rewrite: the presence-only
+# checks left are exactly the any-value members, by type and member name.
+LEFT=$(perl -0777 -ne '
+  while (/func \(j \*(\w+)\) UnmarshalJSON\(value \[\]byte\) error \{\n(.*?)\n\}\n/gs) {
+    my ($type, $body) = ($1, $2);
+    print "$type.$1\n" while $body =~ /if _, ok := raw\["(\w+)"\]; !ok \{/g;
+  }
+' "$OUT" | sort)
+WANT=$(printf '%s' "$ANY_VALUE" | tr ',' '\n' | grep . | sort || true)
+ALL=$(grep -c 'if _, ok := raw\["' "$OUT" || true)
+if [ "$LEFT" != "$WANT" ] || [ "$ALL" -ne "$(printf '%s' "$WANT" | grep -c . || true)" ]; then
+  echo "ERROR: the presence-only required checks in $OUT are not exactly the any-value members" >&2
+  printf '  left: %s\n' "$(printf '%s' "$LEFT" | tr '\n' ' ')" >&2
+  printf '  want: %s\n' "$(printf '%s' "$WANT" | tr '\n' ' ')" >&2
+  exit 1
+fi
+
 # Post-process: type the inbound entity payload fields as json.RawMessage so
 # the client's bytes survive to the unstorable-payload guard
 # (internal/domain/model/ingest.RejectUnstorable). Decoding them into

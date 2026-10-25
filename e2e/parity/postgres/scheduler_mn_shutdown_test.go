@@ -35,8 +35,8 @@ func TestSchedulerMN_ShutdownDrain(t *testing.T) {
 	t1 := mnSetup(t, c, "mn-sd-1", mnWorkflow("mn-sd-1-wf", mnFire(300, 0, mnProc("noop", "SYNC", tag1, true, mnLongAnswer))))
 	t2 := mnSetup(t, c, "mn-sd-2", mnWorkflow("mn-sd-2-wf", mnFire(300, 0,
 		mnProc("noop", "SYNC", tag2a, false, mnLongAnswer), mnProc("noop", "SYNC", tag2b, true, 10000))))
-	r1 := s.awaitTask(t, t1, "Fire", 30*time.Second, "T1 running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
-	r2 := s.awaitTask(t, t2, "Fire", 30*time.Second, "T2 running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.Marked })
+	r1 := s.awaitClaim(t, t1, "Fire", s.schedulerNodes(host), "T1 running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
+	r2 := s.awaitClaim(t, t2, "Fire", s.schedulerNodes(host), "T2 running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" && r.Marked })
 	mnAwait(t, 10*time.Second, "both processors at their clients", func() bool {
 		return mnReceived(t, stall, t1) == 1 && mnReceived(t, hold, t2) == 1
 	})

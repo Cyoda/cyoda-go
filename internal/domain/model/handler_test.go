@@ -979,6 +979,49 @@ func TestExportIncludesUniqueKeys(t *testing.T) {
 	}
 }
 
+// TestSetUniqueKeys_400_NoUniqueKeys: `uniqueKeys` is required. A body without
+// it, or with null, is refused and the model keeps its keys; before, it read
+// as "no keys" and removed them all. Only `[]` removes the keys.
+func TestSetUniqueKeys_400_NoUniqueKeys(t *testing.T) {
+	srv := newTestServer(t)
+
+	resp := doImport(t, srv.URL, "UKMissing", 1, sampleJSON)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, `{"uniqueKeys": [{"id": "uk1", "fields": ["$.name"]}]}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+
+	for name, body := range map[string]string{
+		"absent": `{}`,
+		"null":   `{"uniqueKeys": null}`,
+	} {
+		resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, body)
+		expectStatus(t, resp, http.StatusBadRequest)
+		commontest.ExpectErrorCode(t, resp, "BAD_REQUEST")
+
+		resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKMissing", 1)
+		expectStatus(t, resp, http.StatusOK)
+		var exported map[string]any
+		json.Unmarshal(readBody(t, resp), &exported)
+		if arr, _ := exported["uniqueKeys"].([]any); len(arr) != 1 {
+			t.Errorf("%s: unique keys after the refused request = %v; want the one key kept", name, exported["uniqueKeys"])
+		}
+	}
+
+	// [] is the one body that removes the keys.
+	resp = doSetUniqueKeys(t, srv.URL, "UKMissing", 1, `{"uniqueKeys": []}`)
+	expectStatus(t, resp, http.StatusOK)
+	resp.Body.Close()
+	resp = doExport(t, srv.URL, "JSON_SCHEMA", "UKMissing", 1)
+	expectStatus(t, resp, http.StatusOK)
+	var exported map[string]any
+	json.Unmarshal(readBody(t, resp), &exported)
+	if arr, _ := exported["uniqueKeys"].([]any); len(arr) != 0 {
+		t.Errorf("unique keys after [] = %v; want none", exported["uniqueKeys"])
+	}
+}
+
 func TestTenantIsolationViaHTTP(t *testing.T) {
 	srvA := newTestServerWithTenant(t, "tenant-A", "Tenant A")
 	srvB := newTestServerWithTenant(t, "tenant-B", "Tenant B")

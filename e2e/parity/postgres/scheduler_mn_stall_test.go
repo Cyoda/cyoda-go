@@ -31,7 +31,7 @@ func TestSchedulerMN_LostOwnerAfterSurvivorStall(t *testing.T) {
 	stall := s.startClient(t, host, tenant, tag, parity.ComputeBehaviourStall)
 	id := mnSetup(t, c, "mn-stall", mnWorkflow("mn-stall-wf", mnFire(300, 0, mnProc("noop", "SYNC", tag, true, mnLongAnswer))))
 
-	first := s.awaitTask(t, id, "Fire", 30*time.Second, "T running",
+	first := s.awaitClaim(t, id, "Fire", s.schedulerNodes(host), "T running",
 		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
 	owner := s.ownerNode(t, first.ClaimOwner)
 	if owner != 0 && owner != 1 {

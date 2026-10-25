@@ -1,6 +1,6 @@
 module github.com/cyoda-platform/cyoda-go/plugins/postgres
 
-go 1.27.2
+go 1.27.3
 
 require (
 	github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018180211-97ff6210e982

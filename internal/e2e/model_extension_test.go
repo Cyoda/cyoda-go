@@ -219,3 +219,46 @@ func jsonContainsKey(obj map[string]any, key string) bool {
 	}
 	return false
 }
+
+// TestModelExtension_RootStaysAnObject: a change level lets a write grow the
+// entity document, never replace it. A null root at TYPE used to make the
+// model's root nullable and store an entity with no data; any root at
+// STRUCTURAL used to replace the document with a value. Each is refused with
+// 400 VALIDATION_FAILED, as without a change level, and neither the model nor
+// the entity changes.
+func TestModelExtension_RootStaysAnObject(t *testing.T) {
+	for _, level := range []string{"TYPE", "STRUCTURAL"} {
+		t.Run(level, func(t *testing.T) {
+			model := "e2e-ext-root-" + level
+			importModelE2E(t, model, 1)
+			lockModelE2E(t, model, 1)
+			setChangeLevelE2E(t, model, 1, level)
+			entityID := createEntityE2E(t, model, 1, `{"name":"Test","amount":100,"status":"new"}`)
+			before, _ := json.Marshal(exportModelE2E(t, model, 1))
+
+			for _, root := range []string{`null`, `5`, `"x"`} {
+				resp := doAuth(t, http.MethodPost, fmt.Sprintf("/api/entity/JSON/%s/1", model), root)
+				body := readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("create with root %s: expected 400, got %d: %s", root, resp.StatusCode, body)
+				} else {
+					assertErrorCode(t, body, "VALIDATION_FAILED")
+				}
+				resp = doAuth(t, http.MethodPut, "/api/entity/JSON/"+entityID, root)
+				body = readBody(t, resp)
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("update with root %s: expected 400, got %d: %s", root, resp.StatusCode, body)
+				} else {
+					assertErrorCode(t, body, "VALIDATION_FAILED")
+				}
+			}
+
+			if after, _ := json.Marshal(exportModelE2E(t, model, 1)); string(after) != string(before) {
+				t.Errorf("the model changed:\nbefore %s\nafter  %s", before, after)
+			}
+			if data := getEntityData(t, entityID, ""); data["name"] != "Test" {
+				t.Errorf("the entity changed: %v", data)
+			}
+		})
+	}
+}

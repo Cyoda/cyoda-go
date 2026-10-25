@@ -54,7 +54,9 @@ Schema inference is additive: importing sample data against an existing model me
 
 **Sample data is a document, or a collection of documents.** A JSON object is one sample document. A JSON array is several — each element must itself be an object, and the derived model is their merge, the same result successive imports produce. Any other body (a scalar, an array holding a non-object) is rejected with `400 VALIDATION_FAILED`, naming the offending element.
 
-**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, so the answer turns on the level: giving a path a kind it does not declare is a `STRUCTURAL` change, refused below that level and accepted at it.
+**An entity document's values sit at most 255 levels below its root.** The root is level 0 and a scalar counts as a level, so a value 256 or more levels down is refused with `400 VALIDATION_FAILED` (`validation depth exceeded (max 256)`) on every write, whatever the `changeLevel`. Objects and arrays that nest more than 10 000 deep, one inside another, are not read as JSON at all: the document is refused before it is validated, with `400 BAD_REQUEST` on HTTP and `InvalidArgument` on gRPC. That depth counts from the root of the request body, of each item's `payload` on an HTTP collection write, and on gRPC of the event's data.
+
+**A value's kind must be one the field declares.** A field declared as a scalar accepts a scalar; declared as an array, an array; declared as an object, an object. A value of any other kind is rejected with `400`, at every depth including array elements. On a model with no `changeLevel` (and on PATCH) that is `VALIDATION_FAILED` — `expected scalar, got array`, naming every kind the field does declare. With a `changeLevel` set the write also proposes a schema change, so the answer turns on the level: giving a path a kind it does not declare is a `STRUCTURAL` change, refused below that level and accepted at it. The root is the exception: an entity's data is a JSON object at every `changeLevel`, and a write whose data is `null`, a scalar or an array is refused with `400 VALIDATION_FAILED` (`expected object, got null`) and changes neither the model nor the entity.
 
 A field may declare more than one kind — observed in each while the model is `UNLOCKED` (successive imports, or one import of several sample documents), or added by a write at `STRUCTURAL`. Every declared kind is admissible at every `changeLevel`, and the export names each branch.
 
@@ -166,7 +168,7 @@ Request body (`application/json`):
 }
 ```
 
-- `uniqueKeys` — array of key definitions; `[]` clears all keys.
+- `uniqueKeys` — array of key definitions, required; `[]` clears all keys. A body without it, or with `null`, is refused and changes nothing.
 - `id` — stable string identifier, unique within the model.
 - `fields` — ordered array of scalar leaf field paths (dotted paths matching the model's inferred schema). Array, object, and wildcard paths are rejected.
 
@@ -174,9 +176,12 @@ Validation is immediate: field paths must be known scalar leaves in the model's 
 
 Returns `200 OK` with `EntityModelActionResultDto` on success.
 
-- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `400 BAD_REQUEST` — the body is not JSON, has a member it does not declare (at the top level or in a key), or has no `uniqueKeys` (absent or `null`).
+- `400 MODEL_ADMIN_IN_JOINED_TRANSACTION` — the request carries a transaction token; see the administration note above.
+- `404 MODEL_NOT_FOUND` — no model with this name and version.
 - `409 MODEL_ALREADY_LOCKED` — model is not in `UNLOCKED` state.
-- `422 INVALID_UNIQUE_KEY_DEFINITION` — a field path references a non-scalar/unknown/array field, a key `id` is duplicated, or `fields` is empty.
+- `422 COMPOSITE_KEY_UNSUPPORTED` — the active storage backend does not support composite unique keys.
+- `422 INVALID_UNIQUE_KEY_DEFINITION` — a key's `id` is empty or missing or duplicated, its `fields` is empty or missing or names a field twice, or a field path references a non-scalar/unknown/array field.
 
 **Transactional ordering.** When one transaction (e.g. a workflow) both frees a unique-key value — by deleting or re-keying its holder — and claims it on another entity, free it before claiming. Free-then-claim works on every backend; the reverse is rejected on write-time backends (PostgreSQL) and accepted on commit-time ones (in-memory, SQLite), so free-before-claim for portable behavior.
 
