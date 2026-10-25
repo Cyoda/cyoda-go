@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -92,5 +93,19 @@ func TestDecodeStoredJSON_ToleratesTrailingContent(t *testing.T) {
 	}
 	if v["x"] != json.Number("1") {
 		t.Errorf("v[x] = %v, want 1", v["x"])
+	}
+}
+
+// A body with more than 10 000 nested objects and arrays is not read as JSON
+// at all (encoding/json's nesting limit), so it is refused before schema
+// validation; cyoda help models states the boundary.
+func TestDecodeJSONPreservingNumbers_NestingLimit(t *testing.T) {
+	nested := func(n int) []byte { return []byte(strings.Repeat("[", n) + strings.Repeat("]", n)) }
+	var v any
+	if err := DecodeJSONPreservingNumbers(nested(10000), &v); err != nil {
+		t.Errorf("10 000 nested arrays: %v; want decoded", err)
+	}
+	if err := DecodeJSONPreservingNumbers(nested(10001), &v); err == nil {
+		t.Error("10 001 nested arrays decoded; want refused")
 	}
 }
