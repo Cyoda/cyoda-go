@@ -400,14 +400,19 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		}
 		var active int
 		if err := s.db.QueryRow(context.Background(), `SELECT count(*) FROM scheduled_tasks
-			WHERE tenant_id = ANY($1) AND status IN ('WAITING', 'RUNNING')`, tenantIDs).Scan(&active); err != nil || active > 0 {
+			WHERE tenant_id = ANY($1) AND status IN ('WAITING', 'RUNNING')`, tenantIDs).Scan(&active); err != nil {
+			return false, "read the tasks: " + err.Error()
+		} else if active > 0 {
 			return false, fmt.Sprintf("%d tasks waiting or running", active)
 		}
 		for _, ct := range tenants {
 			for _, id := range ct.ids {
 				got, err := ct.c.GetEntity(t, id)
-				if err != nil || (got.Meta.State != "A" && got.Meta.State != "B") {
-					return false, "entity " + id.String() + " not settled"
+				if err != nil {
+					return false, "read entity " + id.String() + ": " + err.Error()
+				}
+				if got.Meta.State != "A" && got.Meta.State != "B" {
+					return false, "entity " + id.String() + " in state " + got.Meta.State
 				}
 			}
 		}

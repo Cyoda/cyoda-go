@@ -114,10 +114,11 @@ func TestSchedulerRestart_ReclaimsOwnRunningTasks(t *testing.T) {
 	}
 	r1 := setup("sq-restart-1", tag1, true)
 	r2 := setup("sq-restart-2", tag2, false)
-	// A node claims only while its heartbeats succeed (spec §6.1): 15s after
-	// the heartbeat that follows its last failed one, not after a fixed instant.
-	claim := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: 15 * time.Second}
+	// A node claims only while its heartbeats succeed (spec §6.1): each claim
+	// is due 15s after the later of the start of its wait and the heartbeat
+	// that follows the node's last failed one.
 	for _, id := range []uuid.UUID{r1, r2} {
+		claim := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: 15 * time.Second}
 		claim.Await(t, func() []string { return []string{first.Logs.String()} }, "task of "+id.String()+": running", func() (bool, string) {
 			tk := restartTask(t, c, id)
 			if tk == nil {
