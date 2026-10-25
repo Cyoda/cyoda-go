@@ -620,12 +620,16 @@ func TestTokenExchange_ExpCappedByAssertion(t *testing.T) {
 	env := setupTokenEnv(t)
 	aexp := time.Now().Add(60 * time.Second).Unix()
 	a := env.assertion(t, func(c map[string]any) { c["exp"] = aexp })
+	// expires_in is exp less the server's issue time, which lies between
+	// these two reads; a fixed 60 drifts by however long the exchange takes.
+	before := time.Now().Unix()
 	body, claims := issued(t, env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}}))
+	after := time.Now().Unix()
 	if got := numClaim(t, claims, "exp"); got != aexp {
 		t.Errorf("exp = %d, want the assertion's %d", got, aexp)
 	}
-	if got := body["expires_in"].(float64); math.Abs(got-60) > 1 {
-		t.Errorf("expires_in = %v, want about 60", got)
+	if got := int64(body["expires_in"].(float64)); got < aexp-after || got > aexp-before {
+		t.Errorf("expires_in = %d, want exp - issue time, in [%d, %d]", got, aexp-after, aexp-before)
 	}
 }
 
