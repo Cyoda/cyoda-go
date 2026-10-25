@@ -87,7 +87,13 @@ func TestSchedulerMN_FrozenOwnerSendsNoUnsafe(t *testing.T) {
 	if err := s.pg.SignalNode(owner, syscall.SIGCONT); err != nil {
 		t.Fatalf("SIGCONT node %d: %v", owner, err)
 	}
-	mnAwait(t, 20*time.Second, "the resumed owner's heartbeat", func() bool { return s.heartbeatAt(t, first.ClaimOwner).After(beat) })
+	// A heartbeat that fails moves the next one on, so the wait counts from
+	// the heartbeat after the owner's last failed one (fixtureutil.HeartbeatGate).
+	resumed := fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: 20 * time.Second}
+	resumed.Await(t, s.logsOf([]int{owner}), "the resumed owner's heartbeat", func() (bool, string) {
+		at := s.heartbeatAt(t, first.ClaimOwner)
+		return at.After(beat), "last heartbeat at " + at.String()
+	})
 
 	// With both guards removed, the resumed run's unsafe processor arrives
 	// before the first poll. Watch well past that and past a bookkeeping
