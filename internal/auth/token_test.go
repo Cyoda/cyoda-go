@@ -627,7 +627,12 @@ func TestTokenExchange_Claims(t *testing.T) {
 func TestTokenExchange_ExpCappedByAssertion(t *testing.T) {
 	env := setupTokenEnv(t)
 	aexp := time.Now().Add(60 * time.Second).Unix()
-	a := env.assertion(t, func(c map[string]any) { c["exp"] = aexp })
+	// The assertion's iat is set in the past, so a token that took the
+	// assertion's iat instead of its own issue time fails the bracket below.
+	a := env.assertion(t, func(c map[string]any) {
+		c["iat"] = time.Now().Add(-10 * time.Second).Unix()
+		c["exp"] = aexp
+	})
 	before := time.Now().Unix()
 	rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}})
 	after := time.Now().Unix()
