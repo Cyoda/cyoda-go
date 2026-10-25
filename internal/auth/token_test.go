@@ -330,7 +330,9 @@ func TestTokenEndpoint_MalformedClientIDIs401(t *testing.T) {
 // expires_in equal to the token's remaining life.
 func TestTokenClientCredentialsValid(t *testing.T) {
 	env := setupTokenEnv(t)
+	before := time.Now().Unix()
 	rr := env.clientCredentials(t, env.clientID, env.clientSecret)
+	after := time.Now().Unix()
 	body, claims := issued(t, rr)
 	if body["token_type"] != "Bearer" {
 		t.Errorf("token_type = %v, want Bearer", body["token_type"])
@@ -367,6 +369,11 @@ func TestTokenClientCredentialsValid(t *testing.T) {
 		}
 	}
 	exp, iat := numClaim(t, claims, "exp"), numClaim(t, claims, "iat")
+	// The token is issued at the time of the request: the in-process call lies
+	// between the two clock reads.
+	if iat < before || iat > after {
+		t.Errorf("iat = %d, want the issue time, in [%d, %d]", iat, before, after)
+	}
 	if exp-iat != testExpiry {
 		t.Errorf("exp - iat = %d, want %d", exp-iat, testExpiry)
 	}
@@ -621,8 +628,16 @@ func TestTokenExchange_ExpCappedByAssertion(t *testing.T) {
 	env := setupTokenEnv(t)
 	aexp := time.Now().Add(60 * time.Second).Unix()
 	a := env.assertion(t, func(c map[string]any) { c["exp"] = aexp })
-	body, claims := issued(t, env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}}))
+	before := time.Now().Unix()
+	rr := env.exchange(t, env.oboID, env.oboSecret, url.Values{"subject_token": {a}})
+	after := time.Now().Unix()
+	body, claims := issued(t, rr)
 	exp, iat := numClaim(t, claims, "exp"), numClaim(t, claims, "iat")
+	// The token is issued at the time of the request: the in-process call lies
+	// between the two clock reads.
+	if iat < before || iat > after {
+		t.Errorf("iat = %d, want the issue time, in [%d, %d]", iat, before, after)
+	}
 	if exp != aexp {
 		t.Errorf("exp = %d, want the assertion's %d", exp, aexp)
 	}
