@@ -2622,7 +2622,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType. Nothing is committed."
+          description: "Bad request — BAD_REQUEST: invalid payload, collection too large, unsupported format, or a body holding text no storage backend can keep (U+0000, an unpaired surrogate, invalid UTF-8) outside an item's payload, such as in an `ifMatch` or a `transition`; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a document nested deeper than 256 levels; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType. Nothing is committed."
           content:
             application/problem+json:
               schema:
@@ -2838,7 +2838,7 @@ paths:
                     - 72428380-0704-11ef-a357-ae468cd3ed16
                     - 459ac800-2032-11ef-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: a workflow processor rejected an entity."
+          description: "Bad request — BAD_REQUEST: invalid JSON array, payload, or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a document nested deeper than 256 levels; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: a workflow processor rejected an entity."
           content:
             application/problem+json:
               schema:
@@ -3020,7 +3020,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the update"
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a document nested deeper than 256 levels; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the update"
           content:
             application/problem+json:
               schema:
@@ -3152,7 +3152,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, or an undeclared field (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the patch"
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, or a document nested deeper than 256 levels (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
@@ -3362,7 +3362,7 @@ paths:
                 entityIds:
                   - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter; VALIDATION_FAILED: the data does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a document nested deeper than 256 levels; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: workflow processor rejected the update. When the transition's criterion evaluates false, `detail` is `transition \"<name>\" criterion not matched: <reason>` — <reason> is the criteria compute node's explanation, or omitted (bare `criterion not matched`) when no reason was supplied."
           content:
             application/problem+json:
               schema:
@@ -3504,7 +3504,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/EntityTransactionResponse"
         "400":
-          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, or an undeclared field (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: the workflow rejected the patch"
+          description: "Bad request — BAD_REQUEST: invalid patch or parameter; VALIDATION_FAILED: the patched document does not fit the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, or a document nested deeper than 256 levels (a patch never extends the model); INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; TRANSITION_NOT_FOUND: named transition absent from the model; WORKFLOW_FAILED: the workflow rejected the patch"
           content:
             application/problem+json:
               schema:
@@ -3745,7 +3745,7 @@ paths:
                   entityIds:
                     - cdcff600-bab1-11ee-a357-ae468cd3ed16
         "400":
-          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, or a change the changeLevel does not permit; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: workflow processor rejected the entity."
+          description: "Bad request — BAD_REQUEST: invalid payload or parameter, or transactionWindow out of range; VALIDATION_FAILED: the payload parsed but failed against the model — not a JSON object, a value whose kind the field does not declare, an undeclared field, a field name the jsonPath grammar cannot address, a change the changeLevel does not permit, or a document nested deeper than 256 levels; INCOMPATIBLE_TYPE: a leaf value's type is not assignable to the declared DataType; WORKFLOW_FAILED: workflow processor rejected the entity."
           content:
             application/problem+json:
               schema:
