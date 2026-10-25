@@ -45,7 +45,7 @@ func TestSchedulerMN_FrozenOwnerSendsNoUnsafe(t *testing.T) {
 
 	// A task is RUNNING from its claim, before its processor is sent: wait
 	// for the processor itself before freezing its owner.
-	first := s.awaitTask(t, id, "Fire", 30*time.Second, "running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
+	first := s.awaitClaim(t, id, "Fire", s.schedulerNodes(host), "running", func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
 	mnAwait(t, 10*time.Second, "the held processor", func() bool { return mnReceived(t, hold, id) == 1 })
 	owner := s.ownerNode(t, first.ClaimOwner)
 	if owner < 0 || owner == host {

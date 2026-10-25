@@ -36,7 +36,7 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 	wf := mnWorkflow("mn-outage-wf", mnFire(300, 0, mnProc("noop", "SYNC", tag, true, mnLongAnswer)))
 
 	t1 := mnSetup(t, c, "mn-outage-1", wf)
-	r1 := s.awaitTask(t, t1, "Fire", 30*time.Second, "T1 running",
+	r1 := s.awaitClaim(t, t1, "Fire", s.schedulerNodes(host), "T1 running",
 		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
 	owner := s.ownerNode(t, r1.ClaimOwner)
 	if owner != 0 && owner != 1 {
@@ -52,7 +52,7 @@ func TestSchedulerMN_DatabaseOutageLongerThanStaleAfter(t *testing.T) {
 
 	// T2 can only be claimed by the survivor now.
 	t2 := mnSetup(t, c, "mn-outage-2", wf)
-	r2 := s.awaitTask(t, t2, "Fire", 30*time.Second, "T2 running on the survivor",
+	r2 := s.awaitClaim(t, t2, "Fire", []int{survivor}, "T2 running on the survivor",
 		func(r mnTask, ok bool) bool { return ok && r.Status == "RUNNING" })
 	if r2.ClaimOwner != survivorInc {
 		t.Fatalf("T2 is held by %q; want the survivor %q", r2.ClaimOwner, survivorInc)
