@@ -402,7 +402,8 @@ func TestSchedulerMN_ClaimContention(t *testing.T) {
 		if err := s.db.QueryRow(context.Background(), `SELECT count(*) FROM scheduled_tasks
 			WHERE tenant_id = ANY($1) AND status IN ('WAITING', 'RUNNING')`, tenantIDs).Scan(&active); err != nil {
 			return false, "read the tasks: " + err.Error()
-		} else if active > 0 {
+		}
+		if active > 0 {
 			return false, fmt.Sprintf("%d tasks waiting or running", active)
 		}
 		for _, ct := range tenants {
