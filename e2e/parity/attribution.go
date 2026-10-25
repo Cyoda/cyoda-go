@@ -41,27 +41,18 @@ func findChangeByType(changes []client.EntityChangeMeta, changeType string) *cli
 }
 
 // awaitEntityStateAttr polls GetEntity until Meta.State == wantState, failing
-// the test once timeout elapses. Local to attribution.go (the shared base
-// package has no such helper; the scheduledtransition extension keeps its own).
-func awaitEntityStateAttr(t *testing.T, c *client.Client, id uuid.UUID, wantState string, timeout time.Duration) {
+// the test at the deadline of a wait of timeout on fixture's scheduler
+// (AwaitScheduler). Local to attribution.go (the shared base package has no
+// such helper; the scheduledtransition extension keeps its own).
+func awaitEntityStateAttr(t *testing.T, fixture BackendFixture, c *client.Client, id uuid.UUID, wantState string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var lastState string
-	for {
+	AwaitScheduler(t, fixture, timeout, fmt.Sprintf("entity %s in state %q", id, wantState), func() (bool, string) {
 		got, err := c.GetEntity(t, id)
 		if err != nil {
 			t.Fatalf("GetEntity while awaiting state %q: %v", wantState, err)
 		}
-		lastState = got.Meta.State
-		if lastState == wantState {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last state %q",
-				timeout, id, wantState, lastState)
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return got.Meta.State == wantState, fmt.Sprintf("state %q", got.Meta.State)
+	})
 }
 
 // RunAttributionTombstoneUniformity pins the tombstone-attribution contract for
@@ -311,7 +302,7 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 		armingPrincipal := changePrincipalOf(t, mustChanges(t, c, entityID), "service", "creator (service executor)")
 
 		// Wait for the platform scheduler to really fire the transition.
-		awaitEntityStateAttr(t, c, entityID, "CLOSED", 15*time.Second)
+		awaitEntityStateAttr(t, fixture, c, entityID, "CLOSED", 15*time.Second)
 		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, c, entityID)), armingPrincipal, "service")
 	})
 
@@ -342,7 +333,7 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("CreateEntity as alice (OBO): %v", err)
 		}
 
-		awaitEntityStateAttr(t, admin, entityID, "CLOSED", 15*time.Second)
+		awaitEntityStateAttr(t, fixture, admin, entityID, "CLOSED", 15*time.Second)
 		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, entityID)), "alice", "user")
 	})
 
@@ -401,7 +392,7 @@ func RunAttributionScheduledArmedByFire(t *testing.T, fixture BackendFixture) {
 				secCreate.ExecutedBy)
 		}
 
-		awaitEntityStateAttr(t, admin, secID, "Closed", 15*time.Second)
+		awaitEntityStateAttr(t, fixture, admin, secID, "Closed", 15*time.Second)
 		assertScheduledFireAttribution(t, firedSystemAnchor(t, mustChanges(t, admin, secID)), "alice", "user")
 	})
 }

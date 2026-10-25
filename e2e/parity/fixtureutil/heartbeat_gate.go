@@ -130,6 +130,21 @@ func (g HeartbeatGate) Await(t testing.TB, logs func() []string, what string, ch
 	}
 }
 
+// AwaitNodeScheduler implements parity.SchedulerWaitFixture for a fixture
+// whose nodes' outputs are logs, every node running a scheduler: check is due
+// slack after the later of now and the heartbeat that follows the last failed
+// heartbeat of the first node allowed to act.
+func AwaitNodeScheduler(t testing.TB, slack time.Duration, what string, check func() (done bool, last string), logs ...*SyncBuffer) {
+	t.Helper()
+	HeartbeatGate{ReadyAt: time.Now(), Slack: slack}.Await(t, func() []string {
+		out := make([]string, len(logs))
+		for i, l := range logs {
+			out[i] = l.String()
+		}
+		return out
+	}, what, check)
+}
+
 // describeFailures lists each pnode's last failed heartbeat.
 func describeFailures(failures []time.Time) string {
 	parts := make([]string, len(failures))

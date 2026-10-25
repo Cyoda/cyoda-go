@@ -7,7 +7,9 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"flag"
+	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -65,6 +67,9 @@ func TestMain(m *testing.M) {
 	if testing.Short() {
 		os.Exit(0) // skip E2E in short mode
 	}
+	// Text-format logs, the format internal/logging gives the server, to stderr
+	// and into e2eLogs, which the scheduler waits read (awaitScheduler).
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, &e2eLogs), nil)))
 
 	ctx := context.Background()
 

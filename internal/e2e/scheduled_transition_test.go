@@ -20,13 +20,10 @@ import (
 // Schedule.DelayMs plus generous, bounded polling — never a bare time.Sleep as
 // the sole detector of a positive outcome.
 
-// scheduledFireTimeout bounds every poll loop that waits for a fire. The
+// scheduledFireTimeout is the slack of every wait for a fire (awaitScheduler). The
 // scheduler stacks claim every 50ms (schedulerTuning); the bound is sized for
 // slow CI, so a real bug — not the scan cadence — trips it.
 const scheduledFireTimeout = 15 * time.Second
-
-// scheduledPollInterval is the sleep between polls.
-const scheduledPollInterval = 75 * time.Millisecond
 
 // Scheduled-transition assertions read their timings from the SERVER's audit
 // trail, never from elapsed wall-clock on the test side.

@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
@@ -25,9 +26,19 @@ type sqliteFixture struct {
 	// client joins under.
 	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
+	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
+	logs *fixtureutil.SyncBuffer
 }
 
 var _ parity.ComputeClientFixture = (*sqliteFixture)(nil)
+
+var _ parity.SchedulerWaitFixture = (*sqliteFixture)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture.
+func (f *sqliteFixture) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, f.logs)
+}
 
 // BaseURL implements parity.BackendFixture.
 func (f *sqliteFixture) BaseURL() string { return f.baseURL }
@@ -104,6 +115,7 @@ func setup() (*sqliteFixture, func(), error) {
 		keySet:       ks,
 		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
+		logs:         result.Logs,
 	}
 
 	return fix, cleanup, nil

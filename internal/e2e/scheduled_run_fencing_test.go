@@ -48,7 +48,7 @@ func TestSchedFence_ReArmedLifeRefusesOldRun(t *testing.T) {
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sf-rearm-wf", 100, 0, sProc("p", "SYNC", tag, true)))
 	id := createOpen(t, h, model, workflowSampleModel)
 
-	awaitDBCondition(t, scheduledFireTimeout, "the run's processor", func() bool { return len(cn.Received()) == 1 })
+	awaitSchedulerCondition(t, scheduledFireTimeout, "the run's processor", func() bool { return len(cn.Received()) == 1 })
 
 	resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+id, `{"name":"Test Order","amount":3,"status":"draft"}`, "")
 	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
@@ -127,7 +127,7 @@ func TestSchedFence_ReclaimedTaskRefusesOldRun(t *testing.T) {
 			h.SetupModelWithWorkflow(t, model, fireOpenToDone("sf-reclaim-wf", 100, 0, tc.procs(tagA, tagB)...))
 			id := createOpen(t, h, model, workflowSampleModel)
 
-			<-gotWork
+			awaitWork(t, gotWork)
 			token, owner := injectReclaim(t, s, id)
 			rel()
 
@@ -166,7 +166,7 @@ func TestSchedFence_SupersededOwnerSendsNoUnsafe(t *testing.T) {
 		sProc("p1", "SYNC", tagA, true), sProc("p2", "SYNC", tagB, false)))
 	id := createOpen(t, h, model, workflowSampleModel)
 
-	awaitDBCondition(t, scheduledFireTimeout, "the old run's p1", func() bool { return len(a.Received()) == 1 })
+	awaitSchedulerCondition(t, scheduledFireTimeout, "the old run's p1", func() bool { return len(a.Received()) == 1 })
 	resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+id, `{"name":"Test Order","amount":4,"status":"draft"}`, "")
 	if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
 		t.Fatalf("client update: %d %s", resp.StatusCode, body)
@@ -216,7 +216,7 @@ func TestSchedLimits_MaxRunsAndFreedSlotClaimsAtOnce(t *testing.T) {
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("sl-max-wf", 100, 0, sProc("p", "SYNC", tag, true)))
 	ids := []string{createOpen(t, h, model, workflowSampleModel), createOpen(t, h, model, workflowSampleModel), createOpen(t, h, model, workflowSampleModel)}
 
-	awaitDBCondition(t, 25*time.Second, "two runs", func() bool { return len(cn.Received()) >= 2 })
+	awaitSchedulerCondition(t, 25*time.Second, "two runs", func() bool { return len(cn.Received()) >= 2 })
 	// A claim is one statement, so a scan that broke the limit would show a
 	// third RUNNING row by now; the third task, due as long as the others,
 	// waits.
@@ -227,6 +227,8 @@ func TestSchedLimits_MaxRunsAndFreedSlotClaimsAtOnce(t *testing.T) {
 	}
 	freedAt := time.Now()
 	tokens <- struct{}{}
+	// A fixed bound on purpose: the claim must come at once, not at the next
+	// 10s scan, which a failed heartbeat would also postpone it to.
 	awaitDBCondition(t, 3*time.Second, "the third run, claimed when the slot freed", func() bool { return len(cn.Received()) == 3 })
 	if since := time.Since(freedAt); since > 3*time.Second {
 		t.Errorf("the third run started %s after the slot freed; want at once, not at the next 10s scan", since)
@@ -487,7 +489,7 @@ func TestSchedPool_LockTimeoutOnTaskRowLock(t *testing.T) {
 	}})
 	h.SetupModelWithWorkflow(t, model, fireOpenToDone("pool-lock-wf", 100, 0, sProc("p", "SYNC", tag, true)))
 	id := createOpen(t, h, model, workflowSampleModel)
-	<-gotWork
+	awaitWork(t, gotWork)
 	before := mustTask(t, s, id)
 
 	// The holder: a create whose processor updates the scheduled entity

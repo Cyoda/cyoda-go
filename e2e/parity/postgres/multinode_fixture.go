@@ -116,6 +116,27 @@ func (f *pgMultiNode) ComputeUser(t *testing.T, userID string, roles ...string) 
 // attribution capability, like ComputeUser.
 func (f *pgMultiNode) ComputeServiceID() string { return f.computeClientID }
 
+var _ parity.SchedulerWaitFixture = (*pgMultiNode)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture over the nodes that
+// run a scheduler, known by its start line (fixtureutil.IncarnationFromLog):
+// the first of them allowed to act sets the deadline. A node with its
+// scheduler off is left out, since it never logs a failed heartbeat and would
+// pin the deadline to the start.
+func (f *pgMultiNode) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	var schedulers []*fixtureutil.SyncBuffer
+	for _, l := range f.nodeLogs {
+		if l == nil {
+			continue
+		}
+		if _, err := fixtureutil.IncarnationFromLog(l.String()); err == nil {
+			schedulers = append(schedulers, l)
+		}
+	}
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, schedulers...)
+}
+
 // NodeLogs returns node idx's captured combined stdout+stderr as a string
 // snapshot. Scenarios read lines from it as data, such as the scheduler's
 // start line (Incarnation), its failed heartbeats (a HeartbeatGate's

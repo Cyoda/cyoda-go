@@ -3,7 +3,6 @@ package scheduledtransition
 import (
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -54,27 +53,25 @@ func RunScheduledTransition_JoinedCallbackConflictRecorded(t *testing.T, fixture
 	}
 	oc.c.DeleteEntityOnCleanup(t, eID)
 
-	awaitCallout(t, cc, eID, fireTimeout)
+	awaitCallout(t, cc, eID, waitOn(fixture, fireTimeout))
 	if err := oc.c.UpdateEntityData(t, fID, `{"k":2,"flavor":"two"}`); err != nil {
 		t.Fatalf("client update of F: %v", err)
 	}
 	cc.Release(t)
 
-	task := awaitTask(t, oc.c, eID, "Fire", fireTimeout, "a recorded error",
+	task := awaitTask(t, oc.c, eID, "Fire", waitOn(fixture, fireTimeout), "a recorded error",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.LastError != "" })
 	if task.LastError != conflictText {
 		t.Fatalf("lastError = %q; want %q", task.LastError, conflictText)
 	}
 }
 
-// awaitCallout polls until cc has received a callout for entityID.
-func awaitCallout(t *testing.T, cc parity.ComputeClient, entityID uuid.UUID, within time.Duration) {
+// awaitCallout polls until cc has received a callout for entityID, failing the
+// test at w's deadline.
+func awaitCallout(t *testing.T, cc parity.ComputeClient, entityID uuid.UUID, w fireWait) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for receivedFor(t, cc, entityID) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("no callout for %s within %s", entityID, within)
-		}
-		time.Sleep(pollInterval)
-	}
+	w.await(t, fmt.Sprintf("a callout for %s", entityID), func() (bool, string) {
+		n := receivedFor(t, cc, entityID)
+		return n > 0, fmt.Sprintf("%d callouts", n)
+	})
 }

@@ -19,7 +19,7 @@ import (
 // (§5.8). Each test builds a stack with a scheduler on a database of its own.
 
 // firstAttempt waits for the first recorded attempt of the task and returns
-// the row as it was then. The retry delay is 1s and the poll 20ms, so the
+// the row as it was then. The retry delay is 1s and the poll 100ms, so the
 // first row with attempts >= 1 has attempts 1.
 func firstAttempt(t *testing.T, s *schedDB, entityID, transition string) taskRow {
 	t.Helper()
@@ -128,7 +128,7 @@ func TestSchedRun_SelfLoopReArmsNewLife(t *testing.T) {
 	if !ok {
 		t.Fatal("no task after the create")
 	}
-	awaitDBCondition(t, scheduledFireTimeout, "two fires", func() bool {
+	awaitSchedulerCondition(t, scheduledFireTimeout, "two fires", func() bool {
 		return len(smEventsOfType(schedEvents(t, h, id), "SCHEDULED_TRANSITION_FIRE")) >= 2
 	})
 	later := s.awaitTask(t, id, "Tick", scheduledFireTimeout, "a new life",
@@ -174,7 +174,7 @@ func TestSchedRun_IdempotentFailureRetried(t *testing.T) {
 	if r.Status != "WAITING" || r.Attempts != 1 || r.Marked || r.LastError != "proc boom" {
 		t.Errorf("after the failed idempotent processor: %+v; want WAITING, attempts 1, no mark, \"proc boom\"", r)
 	}
-	awaitDBCondition(t, scheduledFireTimeout, "a second send", func() bool { return len(cn.Received()) >= 2 })
+	awaitSchedulerCondition(t, scheduledFireTimeout, "a second send", func() bool { return len(cn.Received()) >= 2 })
 }
 
 // TestSchedRun_LateAfterFailedAttemptsFails: timeoutMs 9000, an idempotent
@@ -454,7 +454,7 @@ func TestSchedRun_LastErrorText(t *testing.T) {
 		h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-tk-wf", 100, 0, sProc("p", "SYNC", tag, true)))
 		id := createOpen(t, h, model, workflowSampleModel)
 
-		<-gotWork
+		awaitWork(t, gotWork)
 		// The run's transaction is the only one open in this database while
 		// its processor is held. state_change < 200ms excludes a session that
 		// only just went idle in transaction (e.g. one still settling its own
@@ -508,7 +508,7 @@ func TestSchedRun_LastErrorText(t *testing.T) {
 		h.SetupModelWithWorkflow(t, model, fireOpenToDone("sr-cf-wf", 100, 0, sProc("p", "SYNC", tag, true)))
 		id := createOpen(t, h, model, workflowSampleModel)
 
-		<-gotWork
+		awaitWork(t, gotWork)
 		resp := h.DoAuth(t, http.MethodPut, "/api/entity/JSON/"+fID, `{"name":"Test Order","amount":1,"status":"draft"}`, "")
 		if body := h.readBody(t, resp); resp.StatusCode != http.StatusOK {
 			t.Fatalf("client update of F: %d %s", resp.StatusCode, body)
@@ -560,7 +560,7 @@ func TestSchedRun_FailedTaskUnderEntityWrites(t *testing.T) {
 			t.Fatalf("after the update: %+v present=%t; want a new life with no mark", r, ok)
 		}
 		// The new life runs and sends its processor: no old-life mark stops it.
-		awaitDBCondition(t, scheduledFireTimeout, "the new life's send", func() bool { return len(cn.Received()) >= 2 })
+		awaitSchedulerCondition(t, scheduledFireTimeout, "the new life's send", func() bool { return len(cn.Received()) >= 2 })
 	})
 
 	t.Run("CancelledWhenEntityLeaves", func(t *testing.T) {

@@ -267,22 +267,15 @@ func TestScheduledFunction_Import_MissingCalculationNodesTags_400(t *testing.T) 
 // --- Arm happy paths (fake Function-serving compute node, callback harness) ---
 
 // awaitCallbackEntityState polls until entityID reaches wantState on h's
-// stack, or fails the test once timeout elapses.
+// stack, or fails the test at awaitScheduler's deadline for timeout.
 func awaitCallbackEntityState(t *testing.T, h *callbackHarness, entityID, wantState string, timeout time.Duration) string {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last string
-	for {
+	awaitScheduler(t, timeout, fmt.Sprintf("entity %s in state %q", entityID, wantState), func() (bool, string) {
 		last, _ = h.GetEntityState(t, entityID)
-		if last == wantState {
-			return last
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last observed state %q",
-				timeout, entityID, wantState, last)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
+		return last == wantState, fmt.Sprintf("state %q", last)
+	})
+	return last
 }
 
 // TestScheduledFunction_ArmAbsoluteFireAt_FiresThroughHTTPStack proves the
@@ -453,21 +446,13 @@ func scheduleFunctionJSONWithTimeout(functionName string, timeoutMs int) string 
 
 // awaitCallbackSMEventType polls h's own audit endpoint until an event
 // matching wantType (and, if wantState is non-empty, state too) appears, or
-// fails the test once timeout elapses.
+// fails the test at awaitScheduler's deadline for timeout.
 func awaitCallbackSMEventType(t *testing.T, h *callbackHarness, entityID, wantType, wantState string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
+	awaitScheduler(t, timeout, fmt.Sprintf("StateMachine event %q (state=%q) on entity %s", wantType, wantState, entityID), func() (bool, string) {
 		events := h.GetSMAuditEvents(t, entityID)
-		if hasSMEventType(events, wantType, wantState) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, wantType, wantState, entityID, events)
-		}
-		time.Sleep(scheduledPollInterval)
-	}
+		return hasSMEventType(events, wantType, wantState), fmt.Sprintf("events: %+v", events)
+	})
 }
 
 // TestScheduledFunction_NoMember_Returns503 lives in

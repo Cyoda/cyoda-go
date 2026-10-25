@@ -2,6 +2,7 @@ package scheduledtransition
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -57,21 +58,16 @@ func taskOf(t *testing.T, c *client.Client, entityID uuid.UUID, transition strin
 	return nil
 }
 
-// awaitTask polls the entity's task every 50ms and returns the first view for
-// which cond holds.
-func awaitTask(t *testing.T, c *client.Client, entityID uuid.UUID, transition string, within time.Duration, what string, cond func(*client.ScheduledTask) bool) *client.ScheduledTask {
+// awaitTask polls the entity's task and returns the first view for which cond
+// holds, failing the test at w's deadline.
+func awaitTask(t *testing.T, c *client.Client, entityID uuid.UUID, transition string, w fireWait, what string, cond func(*client.ScheduledTask) bool) *client.ScheduledTask {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		task := taskOf(t, c, entityID, transition)
-		if cond(task) {
-			return task
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("task %s/%s: %s not seen within %s; last: %+v", entityID, transition, what, within, task)
-		}
-		time.Sleep(pollInterval)
-	}
+	var task *client.ScheduledTask
+	w.await(t, fmt.Sprintf("task %s/%s: %s", entityID, transition, what), func() (bool, string) {
+		task = taskOf(t, c, entityID, transition)
+		return cond(task), fmt.Sprintf("%+v", task)
+	})
+	return task
 }
 
 // ownWorkflow wraps states in a schema 1.5 import document (the minor that
@@ -138,9 +134,9 @@ func countEvents(t *testing.T, c *client.Client, id uuid.UUID, eventType string)
 }
 
 // failEventData decodes the data of the entity's SCHEDULED_TRANSITION_FAIL.
-func failEventData(t *testing.T, c *client.Client, id uuid.UUID) map[string]any {
+func failEventData(t *testing.T, fixture parity.BackendFixture, c *client.Client, id uuid.UUID) map[string]any {
 	t.Helper()
-	ev := awaitStateMachineEvent(t, c, id, eventFailed, "", fireTimeout)
+	ev := awaitStateMachineEvent(t, c, id, eventFailed, "", waitOn(fixture, fireTimeout))
 	var data map[string]any
 	if err := json.Unmarshal(ev.Data, &data); err != nil {
 		t.Fatalf("decode %s data: %v (%s)", eventFailed, err, ev.Data)
@@ -194,7 +190,7 @@ func RunScheduledTransition_NoComputeNodeThenFires(t *testing.T, fixture parity.
 	oc := newOwnCase(t, fixture)
 	id := oc.create(t, "st-own-nocn", ownWorkflow("st-own-nocn-wf", fireToDone(100, 0, ownProc("noop", oc.tag, false))))
 
-	first := awaitTask(t, oc.c, id, "Fire", fireTimeout, "a recorded attempt",
+	first := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "a recorded attempt",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Attempts >= 1 })
 	if first.Status != "WAITING" || first.Attempts != 1 || first.FailureReason != "" {
 		t.Fatalf("after the first attempt: %+v; want WAITING, attempts 1, no failure reason", *first)
@@ -207,7 +203,7 @@ func RunScheduledTransition_NoComputeNodeThenFires(t *testing.T, fixture parity.
 	}
 
 	cc := oc.start(t, fixture, oc.tag, parity.ComputeBehaviourCatalog)
-	awaitEntityState(t, oc.c, id, "Done", fireTimeout)
+	awaitEntityState(t, oc.c, id, "Done", waitOn(fixture, fireTimeout))
 	if n := countEvents(t, oc.c, id, eventFired); n != 1 {
 		t.Errorf("%d %s events; want 1", n, eventFired)
 	}
@@ -241,14 +237,11 @@ func RunScheduledTransition_SelfLoopReArmsNewLife(t *testing.T, fixture parity.B
 	if armed == nil {
 		t.Fatal("no task after the create")
 	}
-	deadline := time.Now().Add(fireTimeout)
-	for countEvents(t, oc.c, id, eventFired) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("fewer than two fires within %s", fireTimeout)
-		}
-		time.Sleep(pollInterval)
-	}
-	later := awaitTask(t, oc.c, id, "Tick", fireTimeout, "the re-armed task",
+	waitOn(fixture, fireTimeout).await(t, "two fires", func() (bool, string) {
+		n := countEvents(t, oc.c, id, eventFired)
+		return n >= 2, fmt.Sprintf("%d fires", n)
+	})
+	later := awaitTask(t, oc.c, id, "Tick", waitOn(fixture, fireTimeout), "the re-armed task",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.ArmedTime.After(armed.ArmedTime) })
 	if later.TaskID != armed.TaskID {
 		t.Errorf("taskId changed across lives: %s then %s; a self-loop re-arms the same id", armed.TaskID, later.TaskID)
@@ -279,7 +272,7 @@ func RunScheduledTransition_CriterionErrorRetried(t *testing.T, fixture parity.B
 	}
 	id := oc.create(t, "st-own-crit", ownWorkflow("st-own-crit-wf", states))
 
-	first := awaitTask(t, oc.c, id, "Fire", fireTimeout, "a recorded attempt",
+	first := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "a recorded attempt",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Attempts >= 1 })
 	if first.Status != "WAITING" || first.Attempts != 1 || first.FailureReason != "" {
 		t.Fatalf("after the failed criterion: %+v; want WAITING, attempts 1", *first)
@@ -300,7 +293,7 @@ func RunScheduledTransition_IdempotentFailureRetried(t *testing.T, fixture parit
 	cc := oc.start(t, fixture, oc.tag, parity.ComputeBehaviourFail)
 	id := oc.create(t, "st-own-idem", ownWorkflow("st-own-idem-wf", fireToDone(100, 0, ownProc("noop", oc.tag, true))))
 
-	first := awaitTask(t, oc.c, id, "Fire", fireTimeout, "a recorded attempt",
+	first := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "a recorded attempt",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Attempts >= 1 })
 	if first.Status != "WAITING" || first.Attempts != 1 || first.FailureReason != "" {
 		t.Fatalf("after the failed idempotent processor: %+v; want WAITING, attempts 1", *first)
@@ -308,13 +301,10 @@ func RunScheduledTransition_IdempotentFailureRetried(t *testing.T, fixture parit
 	if !strings.Contains(first.LastError, "scripted failure: fail") {
 		t.Errorf("lastError = %q; want the compute node's own message", first.LastError)
 	}
-	deadline := time.Now().Add(fireTimeout)
-	for receivedFor(t, cc, id) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the idempotent processor was not sent again within %s", fireTimeout)
-		}
-		time.Sleep(pollInterval)
-	}
+	waitOn(fixture, fireTimeout).await(t, "the idempotent processor sent again", func() (bool, string) {
+		n := receivedFor(t, cc, id)
+		return n >= 2, fmt.Sprintf("%d requests", n)
+	})
 	if n := countEvents(t, oc.c, id, eventFailed); n != 0 {
 		t.Errorf("%d %s events; a safe failure never fails the task", n, eventFailed)
 	}
@@ -330,7 +320,7 @@ func RunScheduledTransition_LateAfterFailedAttemptsFails(t *testing.T, fixture p
 	oc.start(t, fixture, oc.tag, parity.ComputeBehaviourFail)
 	id := oc.create(t, "st-own-late", ownWorkflow("st-own-late-wf", fireToDone(100, 1500, ownProc("noop", oc.tag, true))))
 
-	failed := awaitTask(t, oc.c, id, "Fire", 20*time.Second, "FAILED",
+	failed := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, 20*time.Second), "FAILED",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if failed.FailureReason != "EXPIRED_AFTER_FAILED_ATTEMPTS" || failed.Attempts < 1 || failed.FailedTime == nil {
 		t.Errorf("failed task = %+v; want EXPIRED_AFTER_FAILED_ATTEMPTS, attempts >= 1, failedTime set", *failed)
@@ -346,7 +336,7 @@ func RunScheduledTransition_LateAfterFailedAttemptsFails(t *testing.T, fixture p
 	if failed.LastAttemptTime == nil {
 		t.Errorf("lastAttemptTime missing; the counted attempts set it")
 	}
-	if data := failEventData(t, oc.c, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
+	if data := failEventData(t, fixture, oc.c, id); data["reason"] != "EXPIRED_AFTER_FAILED_ATTEMPTS" {
 		t.Errorf("%s data = %v; want reason EXPIRED_AFTER_FAILED_ATTEMPTS", eventFailed, data)
 	}
 	if got, _ := oc.c.GetEntity(t, id); got.Meta.State != "Open" {
@@ -367,7 +357,7 @@ func RunScheduledTransition_UnsafeFailureFails(t *testing.T, fixture parity.Back
 	// The FAILED item as GET /scheduled-tasks shows it (§8): status, reason,
 	// the failure's text paired with failedTime, and attempts. Fail does not count an attempt (§10.1: only
 	// RecordAttempt adds 1), and this was the first run: attempts 0.
-	failed := awaitTask(t, oc.c, id, "Fire", fireTimeout, "FAILED",
+	failed := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "FAILED",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if failed.FailureReason != "UNSAFE_WORK_NOT_COMPLETED" {
 		t.Errorf("failureReason = %q; want UNSAFE_WORK_NOT_COMPLETED", failed.FailureReason)
@@ -390,7 +380,7 @@ func RunScheduledTransition_UnsafeFailureFails(t *testing.T, fixture parity.Back
 	if failed.LastAttemptTime != nil {
 		t.Errorf("lastAttemptTime = %v; a first-run failure counted no attempt", failed.LastAttemptTime)
 	}
-	data := failEventData(t, oc.c, id)
+	data := failEventData(t, fixture, oc.c, id)
 	if data["transition"] != "Fire" || data["sourceState"] != "Open" || data["reason"] != "UNSAFE_WORK_NOT_COMPLETED" {
 		t.Errorf("%s data = %v; want transition Fire, sourceState Open, reason UNSAFE_WORK_NOT_COMPLETED", eventFailed, data)
 	}
@@ -424,7 +414,7 @@ func RunScheduledTransition_LaterStepFailsAfterUnsafeHandOff(t *testing.T, fixtu
 	id := oc.create(t, "st-own-later", ownWorkflow("st-own-later-wf",
 		fireToDone(100, 0, ownProc("noop", oc.tag, false), ownProc("noop", tagB, true))))
 
-	failed := awaitTask(t, oc.c, id, "Fire", fireTimeout, "FAILED",
+	failed := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "FAILED",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if failed.FailureReason != "UNSAFE_WORK_NOT_COMPLETED" {
 		t.Errorf("failureReason = %q; want UNSAFE_WORK_NOT_COMPLETED", failed.FailureReason)
@@ -479,8 +469,8 @@ func RunScheduledTransition_FireTimeCancelNotScheduled(t *testing.T, fixture par
 		t.Fatal("the re-import removed the task; it is still scheduled in W2, so the import keeps it")
 	}
 
-	awaitStateMachineEvent(t, oc.c, id, eventCancelled, "Open", fireTimeout)
-	awaitTask(t, oc.c, id, "Fire", fireTimeout, "removal", func(tk *client.ScheduledTask) bool { return tk == nil })
+	awaitStateMachineEvent(t, oc.c, id, eventCancelled, "Open", waitOn(fixture, fireTimeout))
+	awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "removal", func(tk *client.ScheduledTask) bool { return tk == nil })
 	if n := countEvents(t, oc.c, id, eventFired); n != 0 {
 		t.Errorf("%d %s events; want 0", n, eventFired)
 	}
@@ -502,7 +492,7 @@ func failOnce(t *testing.T, fixture parity.BackendFixture, model string) (ownCas
 		map[string]any{"name": "Leave", "next": "Left", "manual": true})
 	states["Left"] = map[string]any{}
 	id := oc.create(t, model, ownWorkflow(model+"-wf", states))
-	failed := awaitTask(t, oc.c, id, "Fire", fireTimeout, "FAILED",
+	failed := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "FAILED",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if failed.FailureReason != "UNSAFE_WORK_NOT_COMPLETED" {
 		t.Fatalf("failureReason = %q; want UNSAFE_WORK_NOT_COMPLETED", failed.FailureReason)
@@ -535,14 +525,12 @@ func RunScheduledTransition_FailedTaskReArmedByUpdate(t *testing.T, fixture pari
 
 	// The new life runs: its processor is sent (a second request), and it ends
 	// FAILED again, for its own reason.
-	deadline := time.Now().Add(fireTimeout)
-	for receivedFor(t, cc, id) < 2 {
-		if time.Now().After(deadline) {
-			t.Fatalf("the new life never sent its processor; an old-life mark would end it FAILED unsent")
-		}
-		time.Sleep(pollInterval)
-	}
-	again := awaitTask(t, oc.c, id, "Fire", fireTimeout, "FAILED again",
+	// An old-life mark would end it FAILED unsent.
+	waitOn(fixture, fireTimeout).await(t, "the new life's processor sent", func() (bool, string) {
+		n := receivedFor(t, cc, id)
+		return n >= 2, fmt.Sprintf("%d requests", n)
+	})
+	again := awaitTask(t, oc.c, id, "Fire", waitOn(fixture, fireTimeout), "FAILED again",
 		func(tk *client.ScheduledTask) bool { return tk != nil && tk.Status == "FAILED" })
 	if again.FailureReason != "UNSAFE_WORK_NOT_COMPLETED" || !again.ArmedTime.Equal(fresh.ArmedTime) {
 		t.Errorf("second ending = %+v; want the new life FAILED UNSAFE_WORK_NOT_COMPLETED", *again)

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -25,9 +26,19 @@ type postgresFixture struct {
 	// client joins under.
 	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
+	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
+	logs *fixtureutil.SyncBuffer
 }
 
 var _ parity.ComputeClientFixture = (*postgresFixture)(nil)
+
+var _ parity.SchedulerWaitFixture = (*postgresFixture)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture.
+func (f *postgresFixture) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, f.logs)
+}
 
 // BaseURL implements parity.BackendFixture.
 func (f *postgresFixture) BaseURL() string { return f.baseURL }
@@ -117,6 +128,7 @@ func setup() (*postgresFixture, func(), error) {
 		keySet:       ks,
 		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
+		logs:         result.Logs,
 	}
 
 	return fix, cleanup, nil

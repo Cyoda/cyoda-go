@@ -70,17 +70,32 @@ const (
 	eventTransitionMade   = "TRANSITION_MAKE"
 )
 
-// fireTimeout bounds every poll loop in this file. It is sized generously
-// above the worst case a tuned-down scan interval should need (the parity
-// fixtures set CYODA_SCHEDULER_SCAN_INTERVAL to 50ms — see
+// fireTimeout is the slack of every fireWait in this package. It is sized
+// generously above the worst case a tuned-down scan interval should need (the
+// parity fixtures set CYODA_SCHEDULER_SCAN_INTERVAL to 50ms — see
 // fixtureutil.TunedServerEnv) while still tolerating the untuned 1s default
 // plus slow-CI / postgres-subprocess startup overhead, so a real bug (not
 // scheduler cadence) is what trips this timeout.
 const fireTimeout = 15 * time.Second
 
-// pollInterval is the sleep between polls in awaitEntityState /
-// awaitStateMachineEvent.
-const pollInterval = 50 * time.Millisecond
+// fireWait is a wait of slack on fixture's scheduler (parity.AwaitScheduler).
+type fireWait struct {
+	fixture parity.BackendFixture
+	slack   time.Duration
+}
+
+// waitOn is a fireWait of slack on fixture's scheduler.
+func waitOn(fixture parity.BackendFixture, slack time.Duration) fireWait {
+	return fireWait{fixture: fixture, slack: slack}
+}
+
+// await polls check until it reports done, and fails t at the wait's
+// deadline. what names the awaited outcome; check's last describes the state
+// it last saw.
+func (w fireWait) await(t *testing.T, what string, check func() (done bool, last string)) {
+	t.Helper()
+	parity.AwaitScheduler(t, w.fixture, w.slack, what, check)
+}
 
 // setupModelWithWorkflow imports a model from sampleDoc, locks it, and
 // imports the given workflow JSON — the scheduledtransition-package
@@ -102,26 +117,19 @@ func setupModelWithWorkflow(t *testing.T, c *client.Client, modelName string, mo
 }
 
 // awaitEntityState polls GetEntity until Meta.State == wantState, or fails
-// the test once timeout elapses.
-func awaitEntityState(t *testing.T, c *client.Client, id uuid.UUID, wantState string, timeout time.Duration) client.EntityResult {
+// the test at w's deadline.
+func awaitEntityState(t *testing.T, c *client.Client, id uuid.UUID, wantState string, w fireWait) client.EntityResult {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
 	var last client.EntityResult
-	for {
+	w.await(t, fmt.Sprintf("entity %s in state %q", id, wantState), func() (bool, string) {
 		got, err := c.GetEntity(t, id)
 		if err != nil {
 			t.Fatalf("GetEntity: %v", err)
 		}
 		last = got
-		if got.Meta.State == wantState {
-			return got
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for entity %s to reach state %q; last observed state %q",
-				timeout, id, wantState, last.Meta.State)
-		}
-		time.Sleep(pollInterval)
-	}
+		return got.Meta.State == wantState, fmt.Sprintf("state %q", got.Meta.State)
+	})
+	return last
 }
 
 // stateMachineEvents fetches and decodes every StateMachine-typed audit
@@ -183,23 +191,21 @@ func onlyEventData(t *testing.T, events []client.StateMachineAuditEvent, eventTy
 
 // awaitStateMachineEvent polls GetAuditEvents until an event matching
 // eventType (and, if state is non-empty, State too) appears, or fails the
-// test once timeout elapses.
-func awaitStateMachineEvent(t *testing.T, c *client.Client, id uuid.UUID, eventType, state string, timeout time.Duration) client.StateMachineAuditEvent {
+// test at w's deadline.
+func awaitStateMachineEvent(t *testing.T, c *client.Client, id uuid.UUID, eventType, state string, w fireWait) client.StateMachineAuditEvent {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
+	var found client.StateMachineAuditEvent
+	w.await(t, fmt.Sprintf("StateMachine event %q (state=%q) on entity %s", eventType, state, id), func() (bool, string) {
 		events := stateMachineEvents(t, c, id)
 		for _, ev := range events {
 			if ev.EventType == eventType && (state == "" || ev.State == state) {
-				return ev
+				found = ev
+				return true, ""
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out after %s waiting for StateMachine event %q (state=%q) on entity %s; got events: %+v",
-				timeout, eventType, state, id, events)
-		}
-		time.Sleep(pollInterval)
-	}
+		return false, fmt.Sprintf("events: %+v", events)
+	})
+	return found
 }
 
 // RunScheduledTransition_ArmsOnEntry verifies that an entity landing in a
@@ -283,7 +289,7 @@ func RunScheduledTransition_FiresOnTime(t *testing.T, fixture parity.BackendFixt
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
@@ -329,7 +335,7 @@ func RunScheduledTransition_DeclineCriterionFalse(t *testing.T, fixture parity.B
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitStateMachineEvent(t, c, entityID, eventCriterionNoMatch, "OPEN", fireTimeout)
+	awaitStateMachineEvent(t, c, entityID, eventCriterionNoMatch, "OPEN", waitOn(fixture, fireTimeout))
 
 	got, err := c.GetEntity(t, entityID)
 	if err != nil {
@@ -383,7 +389,7 @@ func RunScheduledTransition_NoExpireWhenNilTimeout(t *testing.T, fixture parity.
 	// so arriving "late" to the check must not matter.
 	time.Sleep(500 * time.Millisecond)
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "CLOSED") {
@@ -550,7 +556,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 		t.Fatalf("UpdateEntityData (loopback): %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "CLOSED", fireTimeout)
+	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
 	elapsed := time.Since(createdAt)
 	if elapsed < minElapsedForCorrectReArm {
 		t.Errorf("entity fired %s after creation — too soon: expected the loopback to re-arm the task to fire "+
@@ -598,7 +604,7 @@ func RunScheduledTransition_CascadeAfterFire(t *testing.T, fixture parity.Backen
 		t.Fatalf("CreateEntity: %v", err)
 	}
 
-	awaitEntityState(t, c, entityID, "DONE", fireTimeout)
+	awaitEntityState(t, c, entityID, "DONE", waitOn(fixture, fireTimeout))
 
 	events := stateMachineEvents(t, c, entityID)
 	if !hasStateMachineEvent(events, eventFired, "DONE") {

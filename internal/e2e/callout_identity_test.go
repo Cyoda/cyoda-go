@@ -49,7 +49,8 @@ func sendCalloutAuth(seen chan<- calloutAuth, rc *reqCtx) {
 	}
 }
 
-// awaitCalloutAuth waits for the first callout seen on ch.
+// awaitCalloutAuth waits for the first callout seen on ch. For a callout of a
+// scheduled fire, use awaitReceive: the fire waits on the scheduler.
 func awaitCalloutAuth(t *testing.T, ch <-chan calloutAuth, within time.Duration) calloutAuth {
 	t.Helper()
 	select {
@@ -277,7 +278,7 @@ func TestCalloutIdentity_ScheduledFire(t *testing.T) {
 		t.Fatalf("create as alice (OBO): %d %s", status, body)
 	}
 
-	got := awaitCalloutAuth(t, seen, scheduledFireTimeout)
+	got := awaitReceive(t, seen, scheduledFireTimeout, "the scheduled fire's callout")
 	assertCalloutAuth(t, "scheduled fire", got, "alice", "user", firedSchedExecID, firedSchedExecKind)
 	if got.claimsPresent {
 		t.Errorf("scheduled fire: authclaims = %q, want absent: the system holds no roles", got.claims)
@@ -309,7 +310,7 @@ func TestCalloutIdentity_ScheduledFireCBDOutsideTx(t *testing.T) {
 		t.Fatalf("create as alice (OBO): %d %s", status, body)
 	}
 
-	got := awaitCalloutAuth(t, seen, scheduledFireTimeout)
+	got := awaitReceive(t, seen, scheduledFireTimeout, "the scheduled fire's callout")
 	assertCalloutAuth(t, "scheduled fire, CBD outside a transaction", got, "alice", "user", firedSchedExecID, firedSchedExecKind)
 	if got.claimsPresent {
 		t.Errorf("scheduled fire, CBD outside a transaction: authclaims = %q, want absent: the system holds no roles", got.claims)

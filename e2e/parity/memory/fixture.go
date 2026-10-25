@@ -5,6 +5,7 @@ package memory
 
 import (
 	"testing"
+	"time"
 
 	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 	"github.com/cyoda-platform/cyoda-go/e2e/parity/fixtureutil"
@@ -19,9 +20,19 @@ type memoryFixture struct {
 	// client joins under.
 	computeCreds *fixtureutil.ComputeCredentials
 	computeBin   string
+	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
+	logs *fixtureutil.SyncBuffer
 }
 
 var _ parity.ComputeClientFixture = (*memoryFixture)(nil)
+
+var _ parity.SchedulerWaitFixture = (*memoryFixture)(nil)
+
+// AwaitScheduler implements parity.SchedulerWaitFixture.
+func (f *memoryFixture) AwaitScheduler(t *testing.T, slack time.Duration, what string, check func() (bool, string)) {
+	t.Helper()
+	fixtureutil.AwaitNodeScheduler(t, slack, what, check, f.logs)
+}
 
 // BaseURL implements parity.BackendFixture.
 func (f *memoryFixture) BaseURL() string { return f.baseURL }
@@ -74,6 +85,7 @@ func setup() (*memoryFixture, func(), error) {
 		keySet:       ks,
 		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
+		logs:         result.Logs,
 	}
 
 	return fix, cleanup, nil

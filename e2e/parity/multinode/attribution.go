@@ -247,7 +247,7 @@ func RunAttribution_ScheduledFire(t *testing.T, fixture MultiNodeFixture) {
 
 	cRead := client.NewClient(urls[2%len(urls)], admin.Token)
 	for i, id := range ids {
-		attrWaitForState(t, cRead, id, "Closed", 30*time.Second)
+		attrWaitForState(t, fixture, cRead, id, "Closed", 30*time.Second)
 		// The scheduled fire's change is the one executed by the SYSTEM (the
 		// scheduler), attributed to the arming user. The CREATE change, by
 		// contrast, is executed by the user. Select by executor kind.
@@ -401,23 +401,18 @@ func attrFindChangeByExecutorKind(t *testing.T, c *client.Client, entityID uuid.
 	return client.EntityChangeMeta{}
 }
 
-// attrWaitForState polls until the entity reaches wantState or the deadline
-// elapses.
-func attrWaitForState(t *testing.T, c *client.Client, entityID uuid.UUID, wantState string, timeout time.Duration) {
+// attrWaitForState polls until the entity reaches wantState, failing the test
+// at the deadline of a wait of timeout on the cluster's schedulers
+// (parity.AwaitScheduler). A failed read is retried.
+func attrWaitForState(t *testing.T, fixture MultiNodeFixture, c *client.Client, entityID uuid.UUID, wantState string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	var last string
-	for time.Now().Before(deadline) {
+	parity.AwaitScheduler(t, fixture, timeout, fmt.Sprintf("entity %s in state %q", entityID, wantState), func() (bool, string) {
 		ent, err := c.GetEntity(t, entityID)
-		if err == nil {
-			last = ent.Meta.State
-			if last == wantState {
-				return
-			}
+		if err != nil {
+			return false, "read: " + err.Error()
 		}
-		time.Sleep(150 * time.Millisecond)
-	}
-	t.Fatalf("entity %s did not reach state %q within %v (last=%q)", entityID, wantState, timeout, last)
+		return ent.Meta.State == wantState, fmt.Sprintf("state %q", ent.Meta.State)
+	})
 }
 
 // attrAssert asserts the {attributed, executor} pair on a change entry.

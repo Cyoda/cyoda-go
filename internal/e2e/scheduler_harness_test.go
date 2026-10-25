@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -158,21 +159,17 @@ func (s *schedDB) task(t *testing.T, entityID, transition string) (taskRow, bool
 	return r, true
 }
 
-// awaitTask polls the task every 20ms until cond holds and returns the first
-// row that satisfies it.
+// awaitTask polls the task until cond holds and returns the first row that
+// satisfies it, with awaitScheduler's deadline.
 func (s *schedDB) awaitTask(t *testing.T, entityID, transition string, within time.Duration, what string, cond func(taskRow, bool) bool) taskRow {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		r, ok := s.task(t, entityID, transition)
-		if cond(r, ok) {
-			return r
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("task %s/%s: %s not seen within %s; last: present=%t %+v", entityID, transition, what, within, ok, r)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	var r taskRow
+	awaitScheduler(t, within, fmt.Sprintf("task %s/%s: %s", entityID, transition, what), func() (bool, string) {
+		row, ok := s.task(t, entityID, transition)
+		r = row
+		return cond(row, ok), fmt.Sprintf("present=%t %+v", ok, row)
+	})
+	return r
 }
 
 // count runs a count(*) query on this test's database.
@@ -185,7 +182,57 @@ func (s *schedDB) count(t *testing.T, sql string, args ...any) int {
 	return n
 }
 
-// awaitDBCondition polls cond every 20ms until it is true.
+// e2eLogs is this test process's log output: TestMain installs the server's
+// text log handler, writing to stderr as before and here. A scheduler claims
+// and fires only while its heartbeats succeed (spec §6.1), and under the tuned
+// 1s heartbeat a database stall on a loaded host fails one, so scheduler waits
+// read failed heartbeats from it (fixtureutil.HeartbeatGate). Every harness in
+// the process logs here: another test's failed heartbeat can extend a wait,
+// never shorten one.
+var e2eLogs fixtureutil.SyncBuffer
+
+// awaitScheduler polls check until it reports done, and fails t slack after
+// the later of now and the heartbeat that follows the last failed heartbeat
+// logged in this process. what names the awaited outcome; check's last
+// describes the state it last saw.
+func awaitScheduler(t *testing.T, slack time.Duration, what string, check func() (done bool, last string)) {
+	t.Helper()
+	// The gate's single "pnode" here is this whole process's log, which the
+	// failure text says after the last state seen.
+	fixtureutil.HeartbeatGate{ReadyAt: time.Now(), Slack: slack}.Await(t,
+		func() []string { return []string{e2eLogs.String()} }, what, func() (bool, string) {
+			done, last := check()
+			return done, last + "; heartbeats read: every scheduler in this test process"
+		})
+}
+
+// awaitReceive receives the first value from ch, with awaitScheduler's
+// deadline.
+func awaitReceive[T any](t *testing.T, ch <-chan T, slack time.Duration, what string) T {
+	t.Helper()
+	var got T
+	awaitScheduler(t, slack, what, func() (bool, string) {
+		select {
+		case got = <-ch:
+			return true, ""
+		default:
+			return false, "nothing received"
+		}
+	})
+	return got
+}
+
+// awaitSchedulerCondition polls cond until it is true, with awaitScheduler's
+// deadline: for a scheduler claim or fire.
+func awaitSchedulerCondition(t *testing.T, within time.Duration, what string, cond func() bool) {
+	t.Helper()
+	awaitScheduler(t, within, what, func() (bool, string) { return cond(), "" })
+}
+
+// awaitDBCondition polls cond every 20ms until it is true, failing the test
+// within a fixed time: for waits that must not move with failed heartbeats,
+// such as a heartbeat that must keep landing. A scheduler claim or fire uses
+// awaitSchedulerCondition.
 func awaitDBCondition(t *testing.T, within time.Duration, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(within)

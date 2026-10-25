@@ -165,11 +165,7 @@ func TestSchedRun_CancelAfterTXPreStopsAtNextStep(t *testing.T) {
 	id := createOpen(t, h, model, workflowSampleModel)
 	createdTx := entityTxID(t, h, id)
 
-	select {
-	case <-gotWork:
-	case <-time.After(scheduledFireTimeout):
-		t.Fatal("p1 was not dispatched")
-	}
+	awaitReceive(t, gotWork, scheduledFireTimeout, "p1 dispatched")
 	// The premise: TX_pre committed before p1 was dispatched.
 	if tx := entityTxID(t, h, id); tx == createdTx {
 		t.Fatalf("the entity still carries the create's transaction %s; TX_pre did not commit", tx)
@@ -216,13 +212,7 @@ func joinedWriteScript(result chan<- int) cnodeScript {
 // awaitStatus receives the first callback status from ch.
 func awaitStatus(t *testing.T, ch <-chan int, what string) int {
 	t.Helper()
-	select {
-	case st := <-ch:
-		return st
-	case <-time.After(scheduledFireTimeout):
-		t.Fatalf("%s: no callback within %s", what, scheduledFireTimeout)
-		return 0
-	}
+	return awaitReceive(t, ch, scheduledFireTimeout, what+": a callback")
 }
 
 // TestSchedRun_JoinedCallbackWritesFiredEntity_OrdinaryOutcome: with no unsafe

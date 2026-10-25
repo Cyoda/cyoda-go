@@ -2,6 +2,7 @@ package e2e_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -137,16 +138,10 @@ func TestCalloutModes_ScheduledFire(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("create: %d %s", status, body)
 	}
-	deadline := time.Now().Add(scheduledFireTimeout)
-	for {
-		if st, _ := h.GetEntityState(t, id); st == "Closed" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the scheduled transition did not complete; callouts: %v", h.ReceivedCallouts())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	awaitScheduler(t, scheduledFireTimeout, "the scheduled transition completed", func() (bool, string) {
+		st, _ := h.GetEntityState(t, id)
+		return st == "Closed", fmt.Sprintf("state %q; callouts: %v", st, h.ReceivedCallouts())
+	})
 	got1, got2 := first.Received(), second.Received()
 	if len(got1) != 1 || len(got2) != 1 {
 		t.Fatalf("first received %d, second %d; want exactly 1 each (the silent cnode tried once, the second answers once)", len(got1), len(got2))

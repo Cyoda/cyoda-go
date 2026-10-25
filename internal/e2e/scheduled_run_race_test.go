@@ -50,7 +50,7 @@ func TestSchedRace_ClientWritesAgainstLiveScheduler(t *testing.T) {
 	}
 	// The timers are live before the writers start.
 	for _, id := range ids {
-		awaitDBCondition(t, scheduledFireTimeout, "a first fire of "+id, func() bool {
+		awaitSchedulerCondition(t, scheduledFireTimeout, "a first fire of "+id, func() bool {
 			_, ok := latestFire(t, h, id)
 			return ok
 		})
@@ -109,7 +109,7 @@ func TestSchedRace_ClientWritesAgainstLiveScheduler(t *testing.T) {
 			t.Errorf("entity %s: %d task rows after the writers stopped; want 1", id, c)
 			continue
 		}
-		awaitDBCondition(t, scheduledFireTimeout, "a fire of "+id+" after the writers stopped", func() bool {
+		awaitSchedulerCondition(t, scheduledFireTimeout, "a fire of "+id+" after the writers stopped", func() bool {
 			at, ok := latestFire(t, h, id)
 			return ok && at.After(stopped)
 		})

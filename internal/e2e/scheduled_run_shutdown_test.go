@@ -26,11 +26,7 @@ func shutdownAsync(h *callbackHarness) <-chan time.Duration {
 // awaitWork waits for a held script to take its callout.
 func awaitWork(t *testing.T, gotWork <-chan struct{}) {
 	t.Helper()
-	select {
-	case <-gotWork:
-	case <-time.After(scheduledFireTimeout):
-		t.Fatalf("the scheduled run's callout did not reach the cnode within %s", scheduledFireTimeout)
-	}
+	awaitReceive(t, gotWork, scheduledFireTimeout, "the scheduled run's callout at the cnode")
 }
 
 // requireStillRunning fails the test if Shutdown returns within d.

@@ -510,6 +510,9 @@ type LaunchResult struct {
 	// ComputeBin is the built compute-test-client, so a fixture can start
 	// further clients for a scenario (fixtureutil.StartComputeClientForFixture).
 	ComputeBin string
+	// Logs is the cyoda node's combined output (NodeProc.Logs), for a
+	// fixture's parity.SchedulerWaitFixture.
+	Logs *SyncBuffer
 }
 
 // LaunchOpts configures optional behavior for LaunchCyodaAndCompute.
@@ -685,6 +688,7 @@ func LaunchCyodaAndComputeWithBinaries(cyodaBin, computeBin string, ks *JWTKeySe
 		CyodaCmd:     node.cmd,
 		ComputeCmd:   compute.Cmd(),
 		ComputeBin:   computeBin,
+		Logs:         node.Logs,
 	}, cleanup, nil
 }
 
