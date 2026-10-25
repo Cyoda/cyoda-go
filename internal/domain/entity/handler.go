@@ -164,7 +164,7 @@ func (h *Handler) commitOwned(ctx context.Context, txID string, owned bool) erro
 //
 // Both model-store reads are marked with ingest.ErrInternalSchema on failure.
 // Callers classify this function's errors with classifyValidateOrExtendErr,
-// whose catch-all is a 400 BAD_REQUEST carrying err.Error() verbatim: unmarked,
+// whose catch-all is a 400 VALIDATION_FAILED carrying err.Error() verbatim: unmarked,
 // a store outage would be reported to the caller as a fault in THEIR payload,
 // with the driver's own text and SQLSTATE in the response body. Neither read
 // can fail for a reason the caller caused, so both are 5xx-with-a-ticket.

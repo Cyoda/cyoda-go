@@ -218,7 +218,7 @@ const maxRenderedValidationErrors = 32
 // fields so classifyValidateOrExtendErr can render INCOMPATIBLE_TYPE Props
 // without scraping the Message string. Other validation errors fall back
 // to the generic "validation failed: ..." wrap, classified as
-// BAD_REQUEST downstream.
+// VALIDATION_FAILED downstream.
 func ValidationErrorsToError(errs []schema.ValidationError) error {
 	rendered := errs
 	truncated := false
