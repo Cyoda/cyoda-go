@@ -41,9 +41,6 @@ func TestToken_ClientCredentials_LifetimeIsConfiguredMax(t *testing.T) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("decode response: %v (%s)", err, raw)
 	}
-	if body.ExpiresIn < 3599 || body.ExpiresIn > 3600 {
-		t.Fatalf("expires_in = %d, want in [3599, 3600]", body.ExpiresIn)
-	}
 	p, err := auth.Parse(body.AccessToken)
 	if err != nil {
 		t.Fatalf("parse access_token: %v", err)
@@ -52,6 +49,10 @@ func TestToken_ClientCredentials_LifetimeIsConfiguredMax(t *testing.T) {
 	iat, _ := p.Claims["iat"].(float64)
 	if got := exp - iat; got != 3600 {
 		t.Fatalf("exp - iat = %v, want 3600", got)
+	}
+	// The server issues iat and computes expires_in from the same instant.
+	if want := int(exp - iat); body.ExpiresIn != want {
+		t.Fatalf("expires_in = %d, want exp - iat = %d", body.ExpiresIn, want)
 	}
 }
 
@@ -66,10 +67,11 @@ func TestToken_Exchange_LifetimeCappedByAssertion(t *testing.T) {
 	const tenant = "test-tenant"
 	oboID, oboSecret := createClient(t, false, true)
 	priv, kid := registerTrustedSignerAs(t, suiteToken(t), "", nil)
+	now := time.Now()
+	aexp := now.Add(120 * time.Second).Unix()
 	assertion := assertionFor(priv, kid, "alice", tenant, func(c map[string]any) {
-		now := time.Now()
 		c["iat"] = now.Unix()
-		c["exp"] = now.Add(120 * time.Second).Unix()
+		c["exp"] = aexp
 	})
 	resp := exchangeAs(t, oboID, oboSecret, assertion)
 	defer resp.Body.Close()
@@ -87,16 +89,19 @@ func TestToken_Exchange_LifetimeCappedByAssertion(t *testing.T) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("decode response: %v (%s)", err, raw)
 	}
-	if body.ExpiresIn < 119 || body.ExpiresIn > 120 {
-		t.Fatalf("expires_in = %d, want in [119, 120]", body.ExpiresIn)
-	}
 	p, err := auth.Parse(body.AccessToken)
 	if err != nil {
 		t.Fatalf("parse access_token: %v", err)
 	}
+	// The cap is the assertion's exp itself; the server issues iat and
+	// computes expires_in from the same instant. A window around 120 s drifts
+	// by however long the exchange takes.
 	exp, _ := p.Claims["exp"].(float64)
 	iat, _ := p.Claims["iat"].(float64)
-	if got := exp - iat; got < 119 || got > 120 {
-		t.Fatalf("exp - iat = %v, want in [119, 120]", got)
+	if int64(exp) != aexp {
+		t.Fatalf("exp = %v, want the assertion's %d", exp, aexp)
+	}
+	if want := int(exp - iat); body.ExpiresIn != want {
+		t.Fatalf("expires_in = %d, want exp - iat = %d", body.ExpiresIn, want)
 	}
 }

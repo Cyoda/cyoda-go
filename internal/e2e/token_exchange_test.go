@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -206,9 +205,11 @@ func TestToken_TokenExchange_Accepted(t *testing.T) {
 			t.Errorf("%s present on the OBO token: %v", absent, claims[absent])
 		}
 	}
+	// The server issues iat and computes expires_in from the same instant.
 	exp, _ := claims["exp"].(float64)
-	if want := exp - float64(time.Now().Unix()); math.Abs(tok.ExpiresIn-want) > 1 {
-		t.Errorf("expires_in = %v, want exp - now = %v", tok.ExpiresIn, want)
+	iat, _ := claims["iat"].(float64)
+	if tok.ExpiresIn != exp-iat {
+		t.Errorf("expires_in = %v, want exp - iat = %v", tok.ExpiresIn, exp-iat)
 	}
 
 	use := unauthRequest(t, http.MethodGet, "/api/model/", "Bearer "+tok.AccessToken)
