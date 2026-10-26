@@ -18,7 +18,7 @@ RUN mkdir -p /data && chown 65532:65532 /data
 # resolves to a multi-arch OCI image index (linux/amd64 + linux/arm64), so
 # the COPY $TARGETPLATFORM/cyoda below still resolves under buildx.
 # Refresh monthly via scripts/refresh-distroless-digest.sh.
-FROM gcr.io/distroless/static@sha256:f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe
+FROM gcr.io/distroless/static@sha256:15f8637509792e05b97d83451b0b6ccfa4abd548f997e406ac1e72c87fe1fa78
 # was :latest, pinned 2026-09-09
 ARG TARGETPLATFORM
 
