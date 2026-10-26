@@ -307,17 +307,18 @@ func (s *resultIDsStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([]
 }
 
 // hydrateEntityStore answers GetAsAt per id: an id in errs fails with the mapped
-// error, anything else resolves.
+// error, anything else resolves, carrying its bytes from data.
 type hydrateEntityStore struct {
 	spi.EntityStore
 	errs map[string]error
+	data map[string][]byte
 }
 
 func (s *hydrateEntityStore) GetAsAt(_ context.Context, id string, _ time.Time) (*spi.Entity, error) {
 	if err, ok := s.errs[id]; ok {
 		return nil, err
 	}
-	return &spi.Entity{Meta: spi.EntityMeta{ID: id}}, nil
+	return &spi.Entity{Meta: spi.EntityMeta{ID: id}, Data: s.data[id]}, nil
 }
 
 type hydrateFactory struct {

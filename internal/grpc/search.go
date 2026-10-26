@@ -1,7 +1,6 @@
 package grpc
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,6 +21,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
@@ -430,18 +430,27 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		return stream.Send(errCE)
 	}
 
-	diag := common.GetDiagnostics(ctx)
-	warnings := diag.GetWarnings()
+	return sendEntityResults(ctx, ce, results, EntitySearchRequest, stream)
+}
+
+// sendEntityResults streams one EntityResponse per result. Every envelope is
+// built before the first send, so stored data that does not decode fails the
+// request with one error envelope instead of a stream with entities left out.
+func sendEntityResults(ctx context.Context, ce *cepb.CloudEvent, results []*spi.Entity, reqType string, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
+	warnings := common.GetDiagnostics(ctx).GetWarnings()
+	out := make([]*cepb.CloudEvent, 0, len(results))
 	for _, e := range results {
 		var data any
-		dec := json.NewDecoder(bytes.NewReader(e.Data))
-		dec.UseNumber()
-		if err := dec.Decode(&data); err != nil {
-			slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
-			continue
+		if err := ingest.DecodeStoredJSON(e.Data, &data); err != nil {
+			appErr := common.Internal("failed to parse entity data", err)
+			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", reqType, "ceId", ce.Id, "entityId", e.Meta.ID, "error", appErr.Error())
+			errCE, ceErr := entityResponseError(ctx, ce.Id, appErr)
+			if ceErr != nil {
+				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
+			}
+			return stream.Send(errCE)
 		}
-
-		resp := events.EntityResponseJson{
+		respCE, err := NewCloudEvent(EntityResponse, events.EntityResponseJson{
 			ID:        ce.Id,
 			Success:   true,
 			Warnings:  warnings,
@@ -451,11 +460,13 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 				Data: data,
 				Meta: buildEntityMeta(e, nil),
 			},
-		}
-		respCE, err := NewCloudEvent(EntityResponse, resp)
+		})
 		if err != nil {
 			return status.Errorf(codes.Internal, "failed to build response: %v", err)
 		}
+		out = append(out, respCE)
+	}
+	for _, respCE := range out {
 		if err := stream.Send(respCE); err != nil {
 			return err
 		}
@@ -731,36 +742,5 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 		return stream.Send(errCE)
 	}
 
-	diag := common.GetDiagnostics(ctx)
-	warnings := diag.GetWarnings()
-	for _, e := range results {
-		var data any
-		if e.Data != nil {
-			dec := json.NewDecoder(bytes.NewReader(e.Data))
-			dec.UseNumber()
-			if err := dec.Decode(&data); err != nil {
-				slog.Warn("failed to unmarshal entity data", "pkg", "grpc", "entityId", e.Meta.ID, "error", err)
-				continue
-			}
-		}
-		resp := events.EntityResponseJson{
-			ID:        ce.Id,
-			Success:   true,
-			Warnings:  warnings,
-			RequestID: ce.Id,
-			Payload: events.DataPayloadJson{
-				Type: "JSON",
-				Data: data,
-				Meta: buildEntityMeta(e, nil),
-			},
-		}
-		respCE, err := NewCloudEvent(EntityResponse, resp)
-		if err != nil {
-			return status.Errorf(codes.Internal, "failed to build response: %v", err)
-		}
-		if err := stream.Send(respCE); err != nil {
-			return err
-		}
-	}
-	return nil
+	return sendEntityResults(ctx, ce, results, SnapshotGetRequest, stream)
 }

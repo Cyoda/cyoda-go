@@ -78,6 +78,16 @@ type updateOptions struct {
 	merge func(existing json.RawMessage, incoming any) (any, error)
 	// strictValidate forces validate-only — never extend the model schema (PATCH).
 	strictValidate bool
+	// keepStored ignores the input data and keeps the stored bytes, read inside
+	// the transaction, as they are (a transition without data).
+	keepStored bool
+}
+
+// TransitionEntityInput holds parameters for a transition that keeps the
+// entity's data.
+type TransitionEntityInput struct {
+	EntityID   string
+	Transition string
 }
 
 // PatchEntityInput holds parameters for a partial (RFC 7386) entity update.
@@ -2133,6 +2143,16 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	return h.updateEntityCore(ctx, input, updateOptions{})
 }
 
+// TransitionEntity applies a transition to an entity and keeps its data. The
+// data is the stored version this transaction reads, so a write committed by
+// another transaction is never overwritten with an older copy.
+func (h *Handler) TransitionEntity(ctx context.Context, input TransitionEntityInput) (*EntityTransactionResult, error) {
+	return h.updateEntityCore(ctx, UpdateEntityInput{
+		EntityID:   input.EntityID,
+		Transition: input.Transition,
+	}, updateOptions{keepStored: true})
+}
+
 // updateEntityCore is the shared implementation for UpdateEntity and PatchEntity.
 // opts.merge, when non-nil, applies an RFC 7386 merge before validation.
 // opts.strictValidate forces validate-only (never extends the model schema).
@@ -2145,27 +2165,29 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// Parse body based on format
 	bodyBytes := []byte(input.Data)
 	var parsedData any
-	switch input.Format {
-	case "JSON":
-		if err := ingest.DecodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
+	if !opts.keepStored {
+		switch input.Format {
+		case "JSON":
+			if err := ingest.DecodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
+				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid JSON")
+			}
+		case "XML":
+			parsed, err := importer.ParseXML(strings.NewReader(string(bodyBytes)))
+			if err != nil {
+				return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid XML")
+			}
+			parsedData = parsed
+			bodyBytes, err = json.Marshal(parsedData)
+			if err != nil {
+				return nil, common.Internal("failed to serialize parsed XML", err)
+			}
+		default:
+			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
 		}
-	case "XML":
-		parsed, err := importer.ParseXML(strings.NewReader(string(bodyBytes)))
-		if err != nil {
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid XML")
-		}
-		parsedData = parsed
-		bodyBytes, err = json.Marshal(parsedData)
-		if err != nil {
-			return nil, common.Internal("failed to serialize parsed XML", err)
-		}
-	default:
-		return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "unsupported format")
-	}
 
-	if err := ingest.RejectUnstorable(bodyBytes); err != nil {
-		return nil, err
+		if err := ingest.RejectUnstorable(bodyBytes); err != nil {
+			return nil, err
+		}
 	}
 
 	// Begin a fresh tx, or PARTICIPATE in a joined tx already on ctx.
@@ -2198,6 +2220,15 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	desc, err := modelStore.Get(txCtx, existing.Meta.ModelRef)
 	if err != nil {
 		return nil, common.Internal("failed to load model for entity", err)
+	}
+
+	// A transition without data keeps the stored bytes of the version this
+	// transaction read.
+	if opts.keepStored {
+		bodyBytes = existing.Data
+		if err := ingest.DecodeStoredJSON(bodyBytes, &parsedData); err != nil {
+			return nil, common.Internal("failed to parse entity data", err)
+		}
 	}
 
 	// PATCH: merge the sparse body onto the stored data before validation,

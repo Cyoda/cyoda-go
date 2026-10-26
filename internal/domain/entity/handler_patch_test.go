@@ -49,6 +49,20 @@ func TestPatch_MissingIfMatchIs428(t *testing.T) {
 	}
 }
 
+// An empty If-Match states no version, so it is refused as an absent one is;
+// only "*" accepts last-writer-wins.
+func TestPatch_EmptyIfMatchIs428(t *testing.T) {
+	h, _ := newPatchTestHandler(t)
+	r := httptest.NewRequest(http.MethodPatch, "/entity/JSON/"+sampleUUID, strings.NewReader(`{}`))
+	r.Header.Set("Content-Type", "application/merge-patch+json")
+	w := httptest.NewRecorder()
+	empty := ""
+	h.PatchSingleWithLoopback(w, r, "JSON", openapi_types.UUID(mustUUID(sampleUUID)), genapi.PatchSingleWithLoopbackParams{IfMatch: &empty})
+	if w.Code != http.StatusPreconditionRequired {
+		t.Fatalf("got %d", w.Code)
+	}
+}
+
 // --- helpers ---
 
 // genapiPatchLoopbackParams returns PatchSingleWithLoopbackParams with IfMatch

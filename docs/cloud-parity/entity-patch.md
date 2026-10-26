@@ -61,14 +61,14 @@ This is never referred to as "version".
 |---|---|---|
 | `"<transactionId>"` | Conditional: the stored entity must still carry this transactionId as its merge base | **412 Precondition Failed** if the stored transactionId differs |
 | `*` | Unconditional opt-out: merge onto the current state, whatever it is | Proceeds (entity must exist); translated internally to a no-CAS save |
-| *absent* | — | **428 Precondition Required**; the error body is educational (see below) |
+| *absent* or empty | — | **428 Precondition Required**; the error body is educational (see below). An empty value names no version; only `*` accepts last-writer-wins |
 
 ### The 428 educational body
 
 The 428 response body must explain the two valid choices to the caller. This is
 the message cyoda-go returns:
 
-> missing If-Match: send `If-Match: <transactionId>` from your last GET of this
+> missing or empty If-Match: send `If-Match: <transactionId>` from your last GET of this
 > entity to patch safely, or `If-Match: *` to explicitly accept last-writer-wins
 
 The target audience is naive or LLM-generated clients that will not send
@@ -123,7 +123,7 @@ for structural symmetry with the PUT routes; only `JSON` is accepted for PATCH.
 | 409 Conflict (retryable) | A concurrent writer committed between the in-transaction base read and this save (read-set conflict at commit). Possible even under `If-Match: *`; the caller may retry. |
 | 412 Precondition Failed | `If-Match: "<transactionId>"` supplied and the stored transactionId differs. Error code: `ENTITY_MODIFIED` ("entity has been modified since last read"). |
 | 415 Unsupported Media Type | `XML` format, or a `Content-Type` other than the two recognised patch media types |
-| 428 Precondition Required | No `If-Match` header present |
+| 428 Precondition Required | No `If-Match` header present, or an empty one |
 | 501 Not Implemented | `Content-Type: application/json-patch+json` |
 | 4xx (domain) | The merged result fails strict model-schema validation; full domain detail plus error code |
 
@@ -146,7 +146,7 @@ is never leaked to a malformed or unconditional request:
 
 1. Media type / format resolution — unrecognised `Content-Type` or `XML` ⇒ **415**;
    recognised-but-unimplemented `application/json-patch+json` ⇒ **501**
-2. `If-Match` presence — absent ⇒ **428**
+2. `If-Match` presence — absent or empty ⇒ **428**
 3. Entity lookup — not found or soft-deleted ⇒ **404**
 4. transactionId compare — mismatch ⇒ **412**
 5. Merge + strict schema validation — invalid merged result ⇒ **4xx domain**

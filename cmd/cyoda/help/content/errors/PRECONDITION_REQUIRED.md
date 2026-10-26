@@ -1,6 +1,6 @@
 ---
 topic: errors.PRECONDITION_REQUIRED
-title: "PRECONDITION_REQUIRED — PATCH request missing required If-Match header"
+title: "PRECONDITION_REQUIRED — PATCH request with no If-Match value"
 stability: stable
 see_also:
   - errors
@@ -12,7 +12,7 @@ see_also:
 
 ## NAME
 
-PRECONDITION_REQUIRED — a PATCH request was submitted without an `If-Match` header, which is mandatory for patch operations.
+PRECONDITION_REQUIRED — a PATCH request was submitted without an `If-Match` header, or with an empty one; a value is mandatory for patch operations.
 
 ## SYNOPSIS
 
@@ -20,11 +20,11 @@ HTTP: `428` `Precondition Required`. Retryable: `no`.
 
 ## DESCRIPTION
 
-PATCH applies a merge patch to the entity's stored state rather than replacing it wholesale. Because the patch is applied relative to the current stored data, cyoda-go requires the caller to state a precondition explicitly via `If-Match`. Omitting the header entirely is rejected.
+PATCH applies a merge patch to the entity's stored state rather than replacing it wholesale. Because the patch is applied relative to the current stored data, cyoda-go requires the caller to state a precondition explicitly via `If-Match`. Omitting the header, or sending it empty, is rejected: an empty value names no version, and only `*` accepts last-writer-wins.
 
 This behaviour is specific to PATCH. A PUT without `If-Match` is treated as an unconditional replace and is accepted.
 
-Not retryable as-is — the same request without an `If-Match` header produces the same error.
+Not retryable as-is — the same request without an `If-Match` value produces the same error.
 
 ## RECOVERY
 

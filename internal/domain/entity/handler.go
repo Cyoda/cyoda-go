@@ -1168,7 +1168,7 @@ func (h *Handler) PatchSingle(w http.ResponseWriter, r *http.Request, format gen
 }
 
 // patch is the shared PATCH implementation. Error precedence: media-type/format
-// (415) -> If-Match presence (428) -> transactionTimeoutMillis validation (400) ->
+// (415) -> If-Match presence, empty counting as absent (428) -> transactionTimeoutMillis validation (400) ->
 // service (404/412/409/501/4xx).
 func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, entityId openapi_types.UUID, transition string, ifMatchHeader *string, millis *int64) {
 	if format != "JSON" {
@@ -1181,9 +1181,9 @@ func (h *Handler) patch(w http.ResponseWriter, r *http.Request, format string, e
 			"unsupported Content-Type; use application/merge-patch+json or application/json-patch+json"))
 		return
 	}
-	if ifMatchHeader == nil {
+	if ifMatchHeader == nil || *ifMatchHeader == "" {
 		common.WriteError(w, r, common.Operational(http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
-			"missing If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
+			"missing or empty If-Match: send If-Match: <transactionId> from your last GET of this entity to patch safely, or If-Match: * to explicitly accept last-writer-wins"))
 		return
 	}
 	opCtx, cancelTimeout, paramErr := resolveRequestTimeout(r.Context(), millis)
