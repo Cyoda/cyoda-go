@@ -2153,9 +2153,12 @@ func (h *Handler) TransitionEntity(ctx context.Context, input TransitionEntityIn
 	}, updateOptions{keepStored: true})
 }
 
-// updateEntityCore is the shared implementation for UpdateEntity and PatchEntity.
+// updateEntityCore is the shared implementation for UpdateEntity, PatchEntity
+// and TransitionEntity.
 // opts.merge, when non-nil, applies an RFC 7386 merge before validation.
 // opts.strictValidate forces validate-only (never extends the model schema).
+// opts.keepStored ignores input.Data and keeps the stored bytes this
+// transaction reads.
 func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput, opts updateOptions) (*EntityTransactionResult, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
 	if err != nil {
@@ -2213,7 +2216,9 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		if !errors.Is(err, spi.ErrNotFound) {
 			return nil, common.Internal("failed to read entity for update", err)
 		}
-		return nil, common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, "entity not found")
+		appErr := common.Operational(http.StatusNotFound, common.ErrCodeEntityNotFound, fmt.Sprintf("entity id=%s not found", input.EntityID))
+		appErr.Props = map[string]any{"entityId": input.EntityID}
+		return nil, appErr
 	}
 
 	// Load model descriptor

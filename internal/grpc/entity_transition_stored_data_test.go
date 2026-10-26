@@ -3,6 +3,7 @@ package grpc
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -137,6 +138,21 @@ func TestRPC_EntityTransition_KeepsStoredBytes(t *testing.T) {
 	}
 	if got := storedData(t, ctx, f, id); got != storedOrder {
 		t.Errorf("stored data after transition = %s, want the stored bytes %s", got, storedOrder)
+	}
+}
+
+// A transition of an entity that does not exist names the entity it looked for,
+// as a get of it does.
+func TestRPC_EntityTransition_UnknownEntityNamesIt(t *testing.T) {
+	svc, ctx, _ := newTransitionTestEnv(t)
+	id := "5f0e0000-0000-4000-8000-000000000001"
+
+	typed := transition(t, svc, ctx, id)
+	if typed.Success || typed.Error == nil {
+		t.Fatalf("transition of an unknown entity succeeded: %+v", typed)
+	}
+	if !strings.Contains(typed.Error.Message, "ENTITY_NOT_FOUND") || !strings.Contains(typed.Error.Message, id) {
+		t.Errorf("message = %q, want ENTITY_NOT_FOUND naming %s", typed.Error.Message, id)
 	}
 }
 

@@ -153,7 +153,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if req.Payload.IfMatch == nil || *req.Payload.IfMatch == "" {
 			return entityTransactionError(ctx, ce.Id, common.Operational(
 				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
-				"missing ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
+				"missing or empty ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
 		}
 		transition := ""
 		if req.Payload.Transition != nil {
