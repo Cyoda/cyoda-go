@@ -1621,6 +1621,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   result before it sends the first one, and fails the request with a 5xx (gRPC:
   one `SERVER_ERROR` envelope) without sending part of the result.
 
+- **A PATCH over stored data that does not decode is a 5xx, as a get is, not
+  `400 BAD_REQUEST`.** The merge base was read with the request-body decoder,
+  so a server-side fault read as the caller's error, and stored data that a
+  get reads (content after the first value) refused every patch. The merge
+  base is now read as a get reads stored data.
+
 - **A model import no longer saves over a stored model when reading it fails.**
   The import reads the model first, to refuse re-importing a locked one with
   `409 MODEL_ALREADY_LOCKED`. Any read error counted as "no model", so a store

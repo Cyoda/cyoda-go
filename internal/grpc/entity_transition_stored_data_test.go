@@ -141,6 +141,33 @@ func TestRPC_EntityTransition_KeepsStoredBytes(t *testing.T) {
 	}
 }
 
+// Stored data that does not decode fails the transition as it fails a get: the
+// state does not move over data nobody can read.
+func TestRPC_EntityTransition_UndecodableStoredData_ServerError(t *testing.T) {
+	svc, ctx, f := newTransitionTestEnv(t)
+	id := createStored(t, svc, ctx, f)
+	s, err := f.StoreFactory.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("entity store: %v", err)
+	}
+	e, err := s.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("read stored entity: %v", err)
+	}
+	e.Data = []byte(`{"zname":`)
+	if _, err := s.Save(ctx, e); err != nil {
+		t.Fatalf("overwrite stored data: %v", err)
+	}
+
+	typed := transition(t, svc, ctx, id)
+	if typed.Success || typed.Error == nil || typed.Error.Code != "SERVER_ERROR" {
+		t.Fatalf("transition over undecodable data = %+v; want a SERVER_ERROR refusal", typed)
+	}
+	if got := storedData(t, ctx, f, id); got != `{"zname":` {
+		t.Errorf("stored data changed to %s", got)
+	}
+}
+
 // A transition of an entity that does not exist names the entity it looked for,
 // as a get of it does.
 func TestRPC_EntityTransition_UnknownEntityNamesIt(t *testing.T) {

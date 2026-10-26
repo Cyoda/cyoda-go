@@ -73,14 +73,15 @@ type UpdateEntityInput struct {
 // updateOptions tunes the shared update flow. Zero value = plain replace (PUT).
 type updateOptions struct {
 	// merge, when non-nil, transforms the parsed request body against the
-	// existing entity's stored data inside the transaction, before validation
-	// (RFC 7386 for PATCH).
-	merge func(existing json.RawMessage, incoming any) (any, error)
+	// existing entity's decoded stored data inside the transaction, before
+	// validation (RFC 7386 for PATCH).
+	merge func(existing any, incoming any) any
 	// strictValidate forces validate-only — never extend the model schema (PATCH).
 	strictValidate bool
-	// keepStored ignores the input data and keeps the stored bytes, read inside
-	// the transaction, as they are (a transition without data).
-	keepStored bool
+	// startFromStored ignores the input data and starts from the stored bytes
+	// read inside the transaction, not re-encoded (a transition without data).
+	// The transition's processors may still change them.
+	startFromStored bool
 }
 
 // TransitionEntityInput holds parameters for a transition that brings no data
@@ -2151,14 +2152,14 @@ func (h *Handler) TransitionEntity(ctx context.Context, input TransitionEntityIn
 	return h.updateEntityCore(ctx, UpdateEntityInput{
 		EntityID:   input.EntityID,
 		Transition: input.Transition,
-	}, updateOptions{keepStored: true})
+	}, updateOptions{startFromStored: true})
 }
 
 // updateEntityCore is the shared implementation for UpdateEntity, PatchEntity
 // and TransitionEntity.
 // opts.merge, when non-nil, applies an RFC 7386 merge before validation.
 // opts.strictValidate forces validate-only (never extends the model schema).
-// opts.keepStored ignores input.Data and keeps the stored bytes this
+// opts.startFromStored ignores input.Data and starts from the stored bytes this
 // transaction reads.
 func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput, opts updateOptions) (*EntityTransactionResult, error) {
 	modelStore, err := h.factory.ModelStore(ctx)
@@ -2169,7 +2170,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// Parse body based on format
 	bodyBytes := []byte(input.Data)
 	var parsedData any
-	if !opts.keepStored {
+	if !opts.startFromStored {
 		switch input.Format {
 		case "JSON":
 			if err := ingest.DecodeJSONPreservingNumbers(bodyBytes, &parsedData); err != nil {
@@ -2228,26 +2229,22 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, common.Internal("failed to load model for entity", err)
 	}
 
-	// A transition without data keeps the stored bytes of the version this
-	// transaction read.
-	if opts.keepStored {
-		bodyBytes = existing.Data
-		if err := ingest.DecodeStoredJSON(bodyBytes, &parsedData); err != nil {
-			return nil, common.Internal("failed to parse entity data", err)
+	// A transition without data, and PATCH's merge, start from the stored data
+	// of the version this transaction read. It is read as GET reads it: data
+	// that does not decode is a server fault, not the caller's.
+	if opts.startFromStored || opts.merge != nil {
+		var stored any
+		if err := ingest.DecodeStoredJSON(existing.Data, &stored); err != nil {
+			return nil, common.Internal("failed to parse entity data", fmt.Errorf("entity %s: %w", input.EntityID, err))
 		}
-	}
-
-	// PATCH: merge the sparse body onto the stored data before validation,
-	// inside this transaction so the merge base is the version being overwritten.
-	if opts.merge != nil {
-		merged, mErr := opts.merge(existing.Data, parsedData)
-		if mErr != nil {
-			return nil, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "invalid patch: "+mErr.Error())
-		}
-		parsedData = merged
-		bodyBytes, err = json.Marshal(parsedData)
-		if err != nil {
-			return nil, common.Internal("failed to serialize merged entity", err)
+		if opts.startFromStored {
+			bodyBytes, parsedData = existing.Data, stored
+		} else {
+			parsedData = opts.merge(stored, parsedData)
+			bodyBytes, err = json.Marshal(parsedData)
+			if err != nil {
+				return nil, common.Internal("failed to serialize merged entity", err)
+			}
 		}
 	}
 
@@ -2428,7 +2425,7 @@ func (h *Handler) PatchEntity(ctx context.Context, input PatchEntityInput) (*Ent
 		Transition: input.Transition,
 		IfMatch:    ifMatch,
 	}, updateOptions{
-		merge:          mergeMergePatch,
+		merge:          applyMergePatch,
 		strictValidate: true,
 	})
 }

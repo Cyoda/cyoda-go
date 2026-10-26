@@ -33,10 +33,7 @@ func TestApplyMergePatch_RFC7386_AppendixA(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := mergeMergePatch(json.RawMessage(tc.target), mustParse(t, tc.patch))
-			if err != nil {
-				t.Fatalf("merge: %v", err)
-			}
+			got := applyMergePatch(mustParse(t, tc.target), mustParse(t, tc.patch))
 			gotBytes, err := json.Marshal(got)
 			if err != nil {
 				t.Fatalf("marshal got: %v", err)
@@ -57,12 +54,9 @@ func TestApplyMergePatch_RFC7386_AppendixA(t *testing.T) {
 
 func TestApplyMergePatch_NumberFidelity(t *testing.T) {
 	// int64 above 2^53 must survive without float64 coercion.
-	target := json.RawMessage(`{"big":1}`)
+	target := mustParse(t, `{"big":1}`)
 	patch := mustParse(t, `{"big":9007199254740993}`)
-	got, err := mergeMergePatch(target, patch)
-	if err != nil {
-		t.Fatalf("merge: %v", err)
-	}
+	got := applyMergePatch(target, patch)
 	b, err := json.Marshal(got)
 	if err != nil {
 		t.Fatalf("marshal got: %v", err)
