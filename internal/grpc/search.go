@@ -430,20 +430,21 @@ func (s *CloudEventsServiceImpl) handleDirectSearchRequest(ctx context.Context, 
 		return stream.Send(errCE)
 	}
 
-	return sendEntityResults(ctx, ce, results, EntitySearchRequest, stream)
+	return sendEntityResults(ctx, ce, results, stream)
 }
 
 // sendEntityResults streams one EntityResponse per result. Every envelope is
 // built before the first send, so stored data that does not decode fails the
 // request with one error envelope instead of a stream with entities left out.
-func sendEntityResults(ctx context.Context, ce *cepb.CloudEvent, results []*spi.Entity, reqType string, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
+func sendEntityResults(ctx context.Context, ce *cepb.CloudEvent, results []*spi.Entity, stream cyodapb.CloudEventsService_EntitySearchCollectionServer) error {
 	warnings := common.GetDiagnostics(ctx).GetWarnings()
 	out := make([]*cepb.CloudEvent, 0, len(results))
 	for _, e := range results {
 		var data any
 		if err := ingest.DecodeStoredJSON(e.Data, &data); err != nil {
-			appErr := common.Internal("failed to parse entity data", err)
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearchCollection", "type", reqType, "ceId", ce.Id, "entityId", e.Meta.ID, "error", appErr.Error())
+			// buildErrorFields logs the detail under the ticket; the entity id
+			// rides in the cause so that one line names the entity.
+			appErr := common.Internal("failed to parse entity data", fmt.Errorf("entity %s: %w", e.Meta.ID, err))
 			errCE, ceErr := entityResponseError(ctx, ce.Id, appErr)
 			if ceErr != nil {
 				return status.Errorf(codes.Internal, "failed to build error response: %v", ceErr)
@@ -742,5 +743,5 @@ func (s *CloudEventsServiceImpl) handleSnapshotGetRequestStreaming(
 		return stream.Send(errCE)
 	}
 
-	return sendEntityResults(ctx, ce, results, SnapshotGetRequest, stream)
+	return sendEntityResults(ctx, ce, results, stream)
 }

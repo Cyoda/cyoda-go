@@ -83,8 +83,8 @@ type updateOptions struct {
 	keepStored bool
 }
 
-// TransitionEntityInput holds parameters for a transition that keeps the
-// entity's data.
+// TransitionEntityInput holds parameters for a transition that brings no data
+// of its own.
 type TransitionEntityInput struct {
 	EntityID   string
 	Transition string
@@ -2143,9 +2143,10 @@ func (h *Handler) UpdateEntity(ctx context.Context, input UpdateEntityInput) (*E
 	return h.updateEntityCore(ctx, input, updateOptions{})
 }
 
-// TransitionEntity applies a transition to an entity and keeps its data. The
-// data is the stored version this transaction reads, so a write committed by
-// another transaction is never overwritten with an older copy.
+// TransitionEntity applies a transition that brings no data of its own. It
+// starts from the stored bytes of the version this transaction reads, not
+// re-encoded, so a write committed by another transaction is never overwritten
+// with an older copy. The transition's processors may still change the data.
 func (h *Handler) TransitionEntity(ctx context.Context, input TransitionEntityInput) (*EntityTransactionResult, error) {
 	return h.updateEntityCore(ctx, UpdateEntityInput{
 		EntityID:   input.EntityID,

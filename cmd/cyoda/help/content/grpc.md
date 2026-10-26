@@ -170,7 +170,7 @@ The full CloudEvent envelope for an ack:
 - `EntityUpdateCollectionRequest` / `EntityTransactionResponse` (streamed)
 - `EntityDeleteRequest` / `EntityDeleteResponse`
 - `EntityDeleteAllRequest` / `EntityDeleteAllResponse`
-- `EntityTransitionRequest` / `EntityTransitionResponse` — fires the named transition and keeps the entity's data as stored. The data is read inside the transition's transaction, so the transition never writes an older copy over a write another request commits after that read: the transition fails instead, with a retryable `errors.CONFLICT`, or with `errors.ENTITY_MODIFIED` when the write lands after a `COMMIT_BEFORE_DISPATCH` segment of the transition has committed.
+- `EntityTransitionRequest` / `EntityTransitionResponse` — fires the named transition on the entity's stored data, as stored, without re-encoding it; the transition's processors may still change it. The data is read inside the transition's transaction, so the transition never writes an older copy over a write another request commits after that read: the transition fails instead, with a retryable `errors.CONFLICT`, or with `errors.ENTITY_MODIFIED` when the write lands after a `COMMIT_BEFORE_DISPATCH` segment of the transition has committed.
 - `EntityPatchRequest` / `EntityTransactionResponse` — partial update; `PatchFormat` selects the dialect (`MERGE_PATCH`, RFC 7386 `application/merge-patch+json`, or `JSON_PATCH` `application/json-patch+json`). Requires `ifMatch` (the `transactionId` from the last read, or `"*"` for last-writer-wins); an optional `transition` names the transition to fire.
 
 **Model management event types**:

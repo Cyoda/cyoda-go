@@ -1606,12 +1606,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   entity's data over a concurrent write.** It read the data outside the
   transition's transaction, then wrote that copy back. A write committed
   between the two was lost, and the transition reported success. The
-  transition now keeps the stored data, read inside its own transaction, byte
-  for byte. A write committed after that read fails the transition: with a
-  retryable `CONFLICT`, or with `ENTITY_MODIFIED` when it lands after a
-  `COMMIT_BEFORE_DISPATCH` segment has committed. A transition of an unknown
-  entity names it in the `ENTITY_NOT_FOUND` message again, as do PUT and
-  PATCH. See `cyoda help grpc`.
+  transition now starts from the stored data, read inside its own transaction
+  and not re-encoded; its processors may still change it. A write committed
+  after that read fails the transition: with a retryable `CONFLICT`, or with
+  `ENTITY_MODIFIED` when it lands after a `COMMIT_BEFORE_DISPATCH` segment has
+  committed. The `404 ENTITY_NOT_FOUND` of a transition, PUT or PATCH of an
+  unknown entity names the entity in its message and in `properties.entityId`
+  (PUT and PATCH named neither before). See `cyoda help grpc`.
 
 - **A search fails when stored entity data does not decode, as a get does.**
   HTTP direct search and async results returned such an entity with

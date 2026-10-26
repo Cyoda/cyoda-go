@@ -213,8 +213,9 @@ func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
 	}
 
 	// ── 7. Unknown entity → 404 ENTITY_NOT_FOUND ──────────────────────────
+	unknownID := uuid.NewString()
 	r404 := patchEntity(t,
-		"/api/entity/JSON/"+uuid.NewString(),
+		"/api/entity/JSON/"+unknownID,
 		"application/merge-patch+json",
 		"*",
 		`{"amount":1}`,
@@ -222,6 +223,12 @@ func TestE2E_EntityPatch_MergeAndPreconditions(t *testing.T) {
 	body404 := readBody(t, r404)
 	if r404.StatusCode != http.StatusNotFound || !strings.Contains(body404, "ENTITY_NOT_FOUND") {
 		t.Errorf("unknown entity: expected 404 ENTITY_NOT_FOUND, got %d; body: %s", r404.StatusCode, body404)
+	}
+	var problem404 struct {
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(body404), &problem404); err != nil || problem404.Properties["entityId"] != unknownID {
+		t.Errorf("unknown entity: properties.entityId = %v, want %s; body: %s", problem404.Properties["entityId"], unknownID, body404)
 	}
 }
 

@@ -462,7 +462,7 @@ func entityEnvelope(e *spi.Entity) (map[string]any, *common.AppError) {
 
 	var data any
 	if err := ingest.DecodeStoredJSON(e.Data, &data); err != nil {
-		return nil, common.Internal("failed to parse entity data", err)
+		return nil, common.Internal("failed to parse entity data", fmt.Errorf("entity %s: %w", e.Meta.ID, err))
 	}
 
 	return map[string]any{
