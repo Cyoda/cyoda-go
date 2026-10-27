@@ -2388,7 +2388,7 @@ type PatchSingleWithLoopbackParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).
@@ -2447,7 +2447,7 @@ type PatchSingleParams struct {
 	// means no server-side timeout.
 	TransactionTimeoutMillis *int64 `form:"transactionTimeoutMillis,omitempty" json:"transactionTimeoutMillis,omitempty"`
 
-	// IfMatch transactionId from the last read, or "*" for unconditional. Absent returns 428.
+	// IfMatch transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
 	IfMatch *string `json:"If-Match,omitempty"`
 
 	// XTxToken Transaction routing token. A processor, criterion or function callout receives one with its request (gRPC metadata key `tx-token`, CloudEvent extension attribute `cyodatxtoken`); echoing it here runs this request inside the open transaction the token names, so the request sees what that transaction has saved so far and its own writes commit with it. The entity the callout runs for is saved only when its chain of transitions has run, or at a COMMIT_BEFORE_DISPATCH processor; until then a read of it returns its last saved version, and the callout's own request carries the current one (see `cyoda help workflows`).

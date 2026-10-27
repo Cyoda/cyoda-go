@@ -153,7 +153,7 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 		if req.Payload.IfMatch == nil || *req.Payload.IfMatch == "" {
 			return entityTransactionError(ctx, ce.Id, common.Operational(
 				http.StatusPreconditionRequired, common.ErrCodePreconditionRequired,
-				"missing ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
+				"missing or empty ifMatch: provide the transactionId from your last read, or \"*\" to accept last-writer-wins"))
 		}
 		transition := ""
 		if req.Payload.Transition != nil {
@@ -221,25 +221,8 @@ func (s *CloudEventsServiceImpl) EntityManage(ctx context.Context, ce *cepb.Clou
 			return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
 		}
 
-		// Fetch the entity's current data to pass through with the transition.
-		envelope, err := s.entityHandler.GetEntity(ctx, entity.GetOneEntityInput{
-			EntityID: req.EntityID,
-		})
-		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
-			return entityTransitionError(ctx, ce.Id, err)
-		}
-
-		dataBytes, err := json.Marshal(envelope.Data)
-		if err != nil {
-			slog.Error("operation failed", "pkg", "grpc", "rpc", "entityManage", "type", eventType, "ceId", ce.Id, "error", err.Error())
-			return entityTransitionError(ctx, ce.Id, fmt.Errorf("failed to marshal entity data: %v", err))
-		}
-
-		_, err = s.entityHandler.UpdateEntity(ctx, entity.UpdateEntityInput{
+		_, err := s.entityHandler.TransitionEntity(ctx, entity.TransitionEntityInput{
 			EntityID:   req.EntityID,
-			Format:     "JSON",
-			Data:       dataBytes,
 			Transition: req.Transition,
 		})
 		if err != nil {

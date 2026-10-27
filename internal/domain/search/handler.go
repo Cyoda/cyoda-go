@@ -1,7 +1,6 @@
 package search
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/model/ingest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 )
 
@@ -212,13 +212,19 @@ func (h *Handler) SearchEntities(w http.ResponseWriter, r *http.Request, entityN
 		return
 	}
 
+	envelopes, envErr := entityEnvelopes(results)
+	if envErr != nil {
+		common.WriteError(w, r, envErr)
+		return
+	}
+
 	// Per canonical openapi-entity-search.yml line 587, sync search returns
 	// application/x-ndjson — a stream of EntityResult JSON objects, one per line.
 	w.Header().Set("Content-Type", "application/x-ndjson")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
-	for _, e := range results {
-		if err := enc.Encode(entityEnvelope(e)); err != nil {
+	for _, env := range envelopes {
+		if err := enc.Encode(env); err != nil {
 			// Header is already written; we can only log and stop. The
 			// client sees a truncated stream and a connection error,
 			// which is the correct failure mode for a streaming endpoint.
@@ -361,9 +367,10 @@ func (h *Handler) GetAsyncSearchResults(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	envelopes := make([]map[string]any, 0, len(page.Results))
-	for _, e := range page.Results {
-		envelopes = append(envelopes, entityEnvelope(e))
+	envelopes, envErr := entityEnvelopes(page.Results)
+	if envErr != nil {
+		common.WriteError(w, r, envErr)
+		return
 	}
 
 	if pageSize <= 0 {
@@ -437,7 +444,7 @@ func buildStatusResponse(status SearchJobStatus) map[string]any {
 	return resp
 }
 
-func entityEnvelope(e *spi.Entity) map[string]any {
+func entityEnvelope(e *spi.Entity) (map[string]any, *common.AppError) {
 	modelVersion, _ := strconv.Atoi(e.Meta.ModelRef.ModelVersion)
 	meta := map[string]any{
 		"id":             e.Meta.ID,
@@ -454,13 +461,28 @@ func entityEnvelope(e *spi.Entity) map[string]any {
 	}
 
 	var data any
-	dec := json.NewDecoder(bytes.NewReader(e.Data))
-	dec.UseNumber()
-	_ = dec.Decode(&data)
+	if err := ingest.DecodeStoredJSON(e.Data, &data); err != nil {
+		return nil, common.Internal("failed to parse entity data", fmt.Errorf("entity %s: %w", e.Meta.ID, err))
+	}
 
 	return map[string]any{
 		"type": "ENTITY",
 		"data": data,
 		"meta": meta,
+	}, nil
+}
+
+// entityEnvelopes builds every envelope before the caller writes a byte, so
+// stored data that does not decode fails the request instead of sending a
+// partial result.
+func entityEnvelopes(results []*spi.Entity) ([]map[string]any, *common.AppError) {
+	envelopes := make([]map[string]any, 0, len(results))
+	for _, e := range results {
+		env, envErr := entityEnvelope(e)
+		if envErr != nil {
+			return nil, envErr
+		}
+		envelopes = append(envelopes, env)
 	}
+	return envelopes, nil
 }

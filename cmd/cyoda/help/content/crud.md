@@ -270,7 +270,7 @@ Three states are accepted:
 
 - `If-Match: "<transactionId>"` — Conditional: the stored entity's `transactionId` must still match; returns `412 Precondition Failed` if it has moved since the caller's read.
 - `If-Match: *` — Unconditional opt-out: merge onto current state regardless of version (entity must exist); a concurrent-writer race can still surface as `409` (see below).
-- Absent — returns `428 Precondition Required`; the response body explains the two valid choices.
+- Absent or empty — returns `428 Precondition Required`; the response body explains the two valid choices. An empty value names no version, so it is not a request for last-writer-wins; only `*` is.
 
 Response: `200 OK`, same shape as the single-item PUT update.
 
@@ -297,7 +297,7 @@ The merge patch is applied first; the named transition's processors then run on 
 - `409 Conflict` (retryable) — a concurrent writer committed between the in-transaction base read and this save (read-set conflict at commit); may occur even with `If-Match: *`; caller may retry
 - `412 Precondition Failed` — `If-Match: "<transactionId>"` supplied and the stored `transactionId` differs; see `errors.ENTITY_MODIFIED`
 - `415 Unsupported Media Type` — `XML` format, or a `Content-Type` other than the two patch media types
-- `428 Precondition Required` — no `If-Match` header present
+- `428 Precondition Required` — no `If-Match` header present, or an empty one
 - `501 Not Implemented` — `Content-Type: application/json-patch+json` (RFC 6902 is recognised but not yet implemented)
 - Standard `4xx` domain errors — the **merged result** fails strict schema validation (full domain detail + error code)
 

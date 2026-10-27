@@ -1190,6 +1190,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `EntityFunctionCalculationResponse`, which had schemas but were missing
   from the enum. See `docs/cloud-parity/cloudevent-type-coverage.md`.
 
+- **An empty `If-Match` on PATCH is `428 PRECONDITION_REQUIRED`, as an absent
+  one is.** An empty value names no version, but HTTP passed it on and the
+  patch was applied as last-writer-wins. Only `If-Match: *` accepts
+  last-writer-wins. The gRPC `EntityPatchRequest` already refused an empty
+  `ifMatch`. See `cyoda help errors.PRECONDITION_REQUIRED`.
+
 ### Added
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
@@ -1595,6 +1601,31 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   token-exchange URN for such a client.**
 
 ### Fixed
+
+- **A gRPC `EntityTransitionRequest` no longer writes an older copy of the
+  entity's data over a concurrent write.** It read the data outside the
+  transition's transaction, then wrote that copy back. A write committed
+  between the two was lost, and the transition reported success. The
+  transition now starts from the stored data, read inside its own transaction
+  and not re-encoded; its processors may still change it. A write committed
+  after that read fails the transition: with a retryable `CONFLICT`, or with
+  `ENTITY_MODIFIED` when it lands after a `COMMIT_BEFORE_DISPATCH` segment has
+  committed. The `404 ENTITY_NOT_FOUND` of a transition, PUT or PATCH of an
+  unknown entity names the entity in its message and in `properties.entityId`
+  (PUT and PATCH named neither before). See `cyoda help grpc`.
+
+- **A search fails when stored entity data does not decode, as a get does.**
+  HTTP direct search and async results returned such an entity with
+  `data: null`, and gRPC direct search and snapshot results left it out with
+  a WARN. Both were wrong answers. Every search writer now decodes every
+  result before it sends the first one, and fails the request with a 5xx (gRPC:
+  one `SERVER_ERROR` envelope) without sending part of the result.
+
+- **A PATCH over stored data that does not decode is a 5xx, as a get is, not
+  `400 BAD_REQUEST`.** The merge base was read with the request-body decoder,
+  so a server-side fault read as the caller's error, and stored data that a
+  get reads (content after the first value) refused every patch. The merge
+  base is now read as a get reads stored data.
 
 - **A model import no longer saves over a stored model when reading it fails.**
   The import reads the model first, to refuse re-importing a locked one with

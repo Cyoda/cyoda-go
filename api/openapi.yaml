@@ -3088,7 +3088,7 @@ paths:
 
         If-Match is required in some form: the transactionId from your last GET
         of this entity (conditional; 412 if it has moved), or "*" to accept
-        last-writer-wins. Its absence returns 428.
+        last-writer-wins. An absent or empty If-Match returns 428.
       operationId: patchSingleWithLoopback
       parameters:
         - name: format
@@ -3109,7 +3109,7 @@ paths:
             format: uuid
         - name: If-Match
           in: header
-          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          description: transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
           required: false
           schema:
             type: string
@@ -3195,7 +3195,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent or empty; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:
@@ -3430,7 +3430,7 @@ paths:
 
         If-Match is required in some form: the transactionId from your last GET
         of this entity (conditional; 412 if it has moved), or "*" to accept
-        last-writer-wins. Its absence returns 428.
+        last-writer-wins. An absent or empty If-Match returns 428.
       operationId: patchSingle
       parameters:
         - name: format
@@ -3461,7 +3461,7 @@ paths:
           example: UPDATE
         - name: If-Match
           in: header
-          description: transactionId from the last read, or "*" for unconditional. Absent returns 428.
+          description: transactionId from the last read, or "*" for unconditional. Absent or empty returns 428.
           required: false
           schema:
             type: string
@@ -3547,7 +3547,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "428":
-          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent; supply a transactionId or \"*\"."
+          description: "Precondition Required — PRECONDITION_REQUIRED: If-Match absent or empty; supply a transactionId or \"*\"."
           content:
             application/problem+json:
               schema:

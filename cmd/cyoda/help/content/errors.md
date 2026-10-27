@@ -108,7 +108,7 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.NOT_IMPLEMENTED` — `501` — not retryable — endpoint is defined but has no functional implementation in this version
 - `errors.NO_COMPUTE_MEMBER_FOR_TAG` — `503` — retryable — no compute member for the required tag appeared, on any cluster node, within `CYODA_DISPATCH_WAIT_TIMEOUT`; no try was made
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — not retryable — the read's pointInTime is later than the consistency time
-- `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header
+- `errors.PRECONDITION_REQUIRED` — `428` — not retryable — a PATCH request has no `If-Match` header, or an empty one
 - `errors.SCHEDULE_FUNCTION_INVALID_RESULT` — `500` — not retryable — a scheduled transition's arm-time function answered, but its result cannot be read as a schedule
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — not retryable — operation attempted on a search job that has already completed, failed, or been cancelled
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
