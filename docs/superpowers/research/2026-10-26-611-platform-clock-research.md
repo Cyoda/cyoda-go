@@ -142,3 +142,32 @@ docs.camunda.io/docs/apis-tools/orchestration-cluster-api-rest/specifications/pi
 docs.xtdb.com/drivers/clojure/codox/xtdb.api.html;
 forum.datomic.com/t/ingest-historical-data-from-some-log-files-into-datomic-maybe-local-and-preserving-the-transaction-time/2483;
 man.archlinux.org/man/faketime.1.
+
+## 8. Why postgres stamps from the database clock
+
+No document states "database clock instead of process clock" as a decision.
+The reasons on record:
+
+- cyoda-light-go `docs/plans/2026-03-27-postgresql-storage-design.md` §5:
+  `transaction_time` from `CURRENT_TIMESTAMP` — "same for all writes in the
+  transaction"; `wall_clock_time` from `clock_timestamp()` — "Actual insertion
+  moment … for debugging and analysis".
+- cyoda-light-go `docs/ARCHITECTURE.md:366`: the submit time "is the database's
+  view of commit time, not the application's wall clock".
+- cyoda-light-go #132 (`docs/superpowers/specs/2026-04-01-postgres-temporal-consistency-design.md`):
+  Delete moved from the Go clock to the database clock so that all stamps "come
+  from the same source (DB clock)".
+- #649 (Paul, issuecomment-5954874596): the consistency time "must come from
+  the store's clock domain … In a cluster, cyoda-go nodes ask the store; they
+  never use their own clocks for this."
+- Liveness checks stamp and compare on the database clock
+  (`plugins/postgres/search_store.go:217-220`, `scheduled_task_store.go:453-458`).
+- Incidents from comparing process time with database stamps: #460 (transitions
+  404 when the database clock ran ahead; Docker VM 10–13 ms behind the host),
+  #649 (async search dropped confirmed saves; database ahead by up to 21.8 ms).
+- Contrast: cassandra stamps from node clocks and needed a hybrid logical clock
+  (cyoda-light-go `docs/hlc-clock.md`; `CASSANDRA_BACKEND_DESIGN.md` §2.2:
+  "Physical wall clocks can skew — NTP is not a guarantee").
+
+Conclusion used by the design: production keeps one database clock for every
+stamp; only a test clock replaces it.
