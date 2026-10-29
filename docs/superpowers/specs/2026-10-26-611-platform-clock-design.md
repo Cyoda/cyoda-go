@@ -111,18 +111,20 @@ type Clock interface {
 - **Test clock:** holds the setting in memory, swapped atomically, and
   computes `S + k × (time.Now() − R)`.
   - Elapsed time is measured on Go's monotonic clock, so a step in the
-    machine's wall clock does not jump the platform time.
+    machine's wall clock does not jump the platform time. A setting received
+    from another node carries `R` as Unix time; the receiving node converts it
+    once to a local monotonic anchor.
   - `Now()` never fails and never does I/O.
 - **Selection:** the host builds one or the other at startup, from
   `CYODA_CLOCK_CONTROL_ENABLED`, and passes it through constructors to every
   component that reads business time. This is the project's existing
   injection style (`app/app.go`).
-- **Existing clock hooks are rewired to it:**
-  - `scheduler.Clock` (`internal/scheduler/clock.go`);
-  - the engine's `WithScheduledClock` (`internal/domain/workflow/engine.go:213-219`).
-  
-  The scheduler keeps its own interface. It is the same method set, so the
-  clock satisfies it.
+- **Existing clock hooks are replaced by it and deleted:**
+  - `scheduler.Clock` and `NewRealClock` (`internal/scheduler/clock.go`);
+  - the engine's function-typed `WithScheduledClock`
+    (`internal/domain/workflow/engine.go:213-219`).
+
+  One clock type is left; no second abstraction for the same thing.
 
 ### What reads the clock, and what stays on real time
 
@@ -135,7 +137,7 @@ type Clock interface {
 | entity pre-commit `CreationDate`/`LastModifiedDate` (`internal/domain/entity/service.go:282,2015,2271,2528`) | `time.Now()` |
 | model `UpdateDate` (`internal/domain/model/service.go:195`) | `time.Now()` |
 | search job `CreateTime` and finish times (`internal/domain/search/service.go:967,1183,1189,1208,1216,1228,1315,1496`, `reaper.go:258,292`) | `time.Now()` |
-| callout request CloudEvent `time` attribute (callout dispatch, `internal/grpc/cloudevent.go`) | not set |
+| callout request CloudEvent `time` attribute (`internal/grpc/dispatch.go:161`) | not set |
 | storage plugins' business stamps (see "Plugins") | plugin clock, or the database clock |
 
 **Operational time, stays on real time:**
@@ -145,7 +147,7 @@ type Clock interface {
   Tokens from an external identity provider carry real times anyway.
 - callout deadlines, gossip, keep-alives, heartbeats, watchdogs, the
   model-cache lease, member `ConnectedAt`, metrics;
-- v1 UUIDs (`internal/common/uuid.go:21`). They are identifiers; the audit
+- v1 UUIDs (`internal/common/uuid.go:22`). They are identifiers; the audit
   listing uses their time only to break ties (`internal/domain/audit/events.go:144`).
 
 The build lists every remaining `time.Now`/`time.Since`/`time.Until` in
@@ -177,6 +179,13 @@ holds it in its test clock.
   join-time state exchange (`LocalState`/`MergeRemoteState`; today they are
   unused, `internal/cluster/registry/gossip.go:605-606`). The periodic
   push-pull of that exchange repairs a broadcast a node missed.
+- **Only with the feature on.** The topic subscription and the state
+  exchange carry the setting only when `CYODA_CLOCK_CONTROL_ENABLED` is true;
+  with it off, `LocalState` returns nothing, as today.
+- **Before background work.** A node joins and merges the setting before it
+  starts any background loop (search reapers, scheduler). Today the search
+  reapers start before gossip registration (`app/app.go:426`, `:436`); with
+  the feature on, the order changes so that registration comes first.
 - **Single-node deployments** have no gossip; the setting is local.
 - **Lag.** A node learns of a change within gossip latency, usually well
   under a second. Under decision 2 the test waits for the change to return
@@ -211,9 +220,13 @@ recorded in the store:
 4. Otherwise it broadcasts the setting.
 
 On a fresh store the floor is zero, so any start from 1970 on is accepted. The
-help topic says to set the start before anything else: on memory and sqlite,
-even a read moves the floor (their snapshot time), so a read made first raises
-the earliest allowed start.
+help topic says to set the start before anything else. Every operation that
+obtains a consistency time moves the floor on every backend (a point-in-time
+read, an async search), and on memory and sqlite every transaction does
+(their snapshot time). Any of these done first raises the earliest allowed
+start.
+
+A `time` together with a `rate` sets both in one change.
 
 ### Moving forward (step-through)
 
@@ -225,10 +238,15 @@ loop:
   wait until no scheduled task is RUNNING and none WAITING is due (≤ now)
   e = earliest NextAttemptTime of any WAITING task, all tenants
   if there is none, or e > T:
-      set the clock to T (and the requested rate, if any); done
-  set the clock to e
-  wake this node's scheduler
+      if now < T: set the clock to T
+      apply the requested rate, if any; done
+  if now < e: set the clock to e
 ```
+
+The clock keeps running between the query and the set, and during each
+fire. So a set never moves it back: an intermediate step goes to `e` only if
+`e` is still ahead, and the final step goes to `T` only if `T` is still ahead.
+If a fire near the end ran past `T`, the move ends with the clock where it is.
 
 - **Each step** is an ordinary change: applied locally and broadcast.
 - **The scheduler** on every node then fires what is due, as it does on real
@@ -239,9 +257,14 @@ loop:
   transition armed by an earlier fire inside the window is reached in its
   place.
 - **"Wait"** polls the store, so it sees tasks on every node.
-- **Concurrency.** The loop remembers the version of its own last change. If
-  it sees a version it did not write, another change was made, and it stops
-  with 409 `CLOCK_CHANGED`.
+- **Due order holds between due times further apart than one scan interval
+  times the rate.** Tasks that come due within that span of each other are
+  claimed in the same scan and run concurrently (up to `MaxRuns`, 8, and 4 per
+  tenant, `app/config.go:457-459`), so their commit order is not their due
+  order. That is also how they behave on real time. The help topic says so.
+- **One change at a time.** Two changes at once are the test's mistake
+  (decision 2), not something the platform detects. The last setting gossiped
+  wins.
 - **Interruption.** If the request is cancelled or the node stops, the clock
   stays where the last step put it, running at its rate. Repeating the move
   continues from there.
@@ -275,9 +298,13 @@ the move runs at the current rate and the new rate applies at the end.
   - first joins the cluster and takes the setting from its peers if any holds
     one;
   - if none does (a single node, or a full restart), it starts on real time
-    and checks the store. If the store's consistency time is more than 1 s
-    later than real time, startup fails: "the store holds times later than
-    real time; start over with a fresh store" (decision 7).
+    and checks the store. If the store's consistency time (asked with tenant
+    `PLATFORM` in the context, which `ConsistencyTime` requires) is more than
+    1 s later than real time, startup fails: "the store holds times later
+    than real time; start over with a fresh store" (decision 7).
+  - The check is a function that returns an error; startup exits on it, as on
+    every other startup failure (`app.New` reports failures with
+    `os.Exit(1)`).
 - **Data behind real time** (a past start was used before the restart) does
   not fail the start: real time is simply later, as after a sleep.
 - **Clock control off:** a node does none of this, and production startup is
@@ -318,11 +345,11 @@ Errors, in the order they are checked:
 | 403 | `CLOCK_CONTROL_DISABLED` | the feature is off on this node | — | ✓ |
 | 400 | existing strict-body / validation codes | malformed body, unknown member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0` or overflowing, `rate` outside 0.1–100, `time` not RFC 3339 or outside 1970–9999 | — | ✓ |
 | 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest recorded time; the detail names it | — | ✓ |
-| 409 | `CLOCK_CHANGED` | another change was made during a move | — | ✓ |
 | 503 | existing store-unavailable | the store did not answer the consistency-time check or the move's task query | — | ✓ |
 | 500 | generic + ticket | anything else | ✓ | ✓ |
 
-`GET` makes no store call, so it has no 503.
+`GET` makes no store call, so it has no 503, and no 500 that a request could
+cause.
 
 ### gRPC
 
@@ -330,7 +357,7 @@ Errors, in the order they are checked:
   `PlatformClockResponse` (`now`, `rate`, `controllable`), next to
   `EntityConsistencyTimeGetRequest` (`internal/grpc/cloudevent_types.go:84-85`).
   Each has a published JSON schema (#626).
-- Error classes: unauthenticated, internal.
+- Error classes: unauthenticated.
 - Changing the clock is HTTP-only, like the other operator controls.
 
 ## Configuration
@@ -389,26 +416,29 @@ Today one `Clock` serves both business stamps and operational checks
 
 Production keeps the database clock (decision 5). With a test clock:
 
-- **Stamp functions.** `cyoda_stamp` and `cyoda_consistency_time`
-  (`migrations/000016_consistency_time.up.sql:39-84`) take an optional time
-  argument.
+- **Stamp functions.** A new migration (000017) re-creates `cyoda_stamp`
+  and `cyoda_consistency_time` (`migrations/000016_consistency_time.up.sql:39-57`,
+  `:59-82`) with an optional time argument.
   - NULL (production) uses `clock_timestamp()` exactly as today.
   - A value (test clock) is used instead. The floor rules are unchanged.
-- **Placeholder dates.** The `SELECT CURRENT_TIMESTAMP` that fills placeholder
-  dates before the commit stamp (`entity_store.go:242`, `:774`) takes the test
-  clock's time when one is given. Reads inside the same transaction see the
-  placeholder, so it must be platform time.
+- **Placeholder dates.** Placeholder dates fill a row until the commit stamp
+  replaces them, and reads inside the same transaction see them
+  (`entity_store.go:613-614`), so they must be platform time. They come from
+  two places:
+  - the `SELECT CURRENT_TIMESTAMP` at `entity_store.go:242`, `:774`;
+  - column defaults that the inserts rely on: `entities.creation_date` and
+    `last_modified` (`entity_store.go:298-310`; `000012_commit_instant.up.sql:20-22`)
+    and `entity_versions.transaction_time` (`entity_store.go:372-380`, `:836`;
+    `000001:35`).
+
+  With a test clock, the select takes the clock's time, and the inserts write
+  these columns explicitly from that value. Without one, the inserts write the
+  same `CURRENT_TIMESTAMP` value the defaults give today.
 - **Submit-time pruning and search-job reaping.** Today these compare business
   stamps with Go's `time.Now()` (`transaction_manager.go:354`, `:543-560`;
   `search_store.go:587`). With a test clock they use it, so both sides are
   platform time. Without one they are unchanged.
-- **Stale reclaim's fallback** compares the engine-supplied `created_at` with
-  the database's `now()` (`search_store.go:630`), mixing two clocks today.
-  - The insert writes `heartbeat_time = now()` instead, and the fallback is
-    removed. Liveness is then judged on the database clock alone, as for every
-    other liveness check.
-  - This is a fix to production code (Gate 6); its effect there is within
-    host–database skew.
+- **Stale reclaim:** see "Search-job liveness" below.
 - **Dead defaults** (agreed):
   - drop the unused `DEFAULT now()` on `search_jobs.created_at`
     (`000001:106`; the insert always supplies it, `search_store.go:109`);
@@ -426,6 +456,29 @@ Production keeps the database clock (decision 5). With a test clock:
   "load-bearing for correctness (tx-stable timestamps)". Commit stamping
   replaced that; the comment is corrected.
 
+### Search-job liveness (all backends, SPI contract)
+
+Stale reclaim measures from `HeartbeatTime`, and from the engine-supplied
+`CreateTime` while a job has never heartbeated. That is the SPI contract
+(`cyoda-go-spi/search_store.go:47-50`, enforced by spitest
+`Claim/NilHeartbeatBaseline`, `spitest/asyncsearch.go:455-466`). It compares a
+business time with the store's physical clock on every backend:
+- memory `search_store.go:388-390`;
+- sqlite `:408`, `:418`;
+- postgres `:630`.
+
+With a past clock, every new job looks stale until its first heartbeat, is
+reclaimed, and is fenced out.
+
+The contract changes:
+- `CreateJob` stamps `HeartbeatTime` from the store's physical clock, and the
+  `CreateTime` fallback is removed in all three plugins;
+- liveness is then judged on one clock, like every other liveness check;
+- the spitest cases change in the SPI PR.
+
+In production this changes the baseline of a never-heartbeated job from the
+engine's clock to the store's, a difference within host–store skew.
+
 ### cassandra (separate repository)
 
 An issue in `cyoda-go-cassandra`, before its v0.9.0 bump:
@@ -433,22 +486,36 @@ An issue in `cyoda-go-cassandra`, before its v0.9.0 bump:
 - generate transaction-id and audit timeuuids from it (recovery compares them
   with the floor, `internal/tx/tx_recovery.go:330-337`);
 - `period_bucket`;
-- the stub `SchedulerActivity`.
+- the stub `SchedulerActivity`;
+- the search-job liveness contract change.
 
 ## Production impact
 
-With the feature off, these are the only differences from today:
+With the feature off, a production deployment differs from today in these
+ways and no others.
 
+**Behaviour on existing paths:**
 1. **Clock calls.** Business-time sites call `clock.Now()` on an injected
    clock that returns `time.Now()`, instead of calling `time.Now()` directly.
+   The scheduler and engine clock hooks are replaced by it.
 2. **Callout `time` attribute.** Callout requests carry the CloudEvent `time`
    attribute.
-3. **Postgres stamp functions** take an extra argument, NULL in production.
-   They take the same branch as today.
-4. **Stale reclaim** judges a never-heartbeated search job from its insert
-   time on the database clock.
-5. **Dead defaults and columns** are dropped.
+3. **Postgres stamp functions** are re-created by migration 000017 with an
+   extra argument, NULL in production. They take the same branch as today.
+4. **Postgres inserts** write the placeholder dates explicitly. The values are
+   the same as the column defaults give today.
+5. **Search-job liveness.** On all backends, a new job's liveness baseline is
+   the store's clock at insert, not the engine's `CreateTime`.
+6. **Dead defaults and columns** are dropped.
 
+**Additions that production does not exercise:**
+- `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`
+  (answers 403 `CLOCK_CONTROL_DISABLED`);
+- the gRPC read types, the new error code, and the OpenAPI and schema entries;
+- the SPI method `SchedulerActivity`, which every plugin implements and
+  production never calls.
+
+The gossip topic and the state exchange are active only with the feature on.
 No new store reads, locks, checks or background work run in production.
 
 ## Security
@@ -489,7 +556,8 @@ No new store reads, locks, checks or background work run in production.
   has no controllable clock (`ClockCtrl` is replaceable only by tests).
 - **CHANGELOG:**
   - `### Added` for the feature;
-  - `### Breaking` for plugin authors (`SchedulerActivity`).
+  - `### Breaking` for plugin authors (`SchedulerActivity`, and
+    `CreateJob` stamping `HeartbeatTime`).
 
 ## Coverage matrix
 
@@ -511,24 +579,27 @@ No new store reads, locks, checks or background work run in production.
 | Test clock arithmetic: rate, re-anchor, monotonic elapsed | ✓ | | | | |
 | Fresh deployment: set the clock years into the past; the first revision, audit event, consistency time and `GET /platform/clock` carry that time | | ✓ | ✓ | | ✓ |
 | Advance by one day (#611 "done when"): new revision time, audit time, a transition due in that day fired at its due time, point-in-time "now" answers at the new time, `GET` returns it | | ✓ | ✓ | | |
-| Move order: transitions of three entities in two tenants fire in due order, each within one scan interval of its due time; a transition armed by an earlier fire inside the window fires in its place | ✓ | ✓ | | | |
+| Move order: transitions of three entities in two tenants, due times spaced wider than scan interval × rate, fire in due order, each within one scan interval of its due time; a transition armed by an earlier fire inside the window fires in its place; a task due exactly at the target does not move the clock back | ✓ | ✓ | | | |
 | A transition with a time limit shorter than the move fires and is not expired | | ✓ | | | |
 | Rate change does not jump the time; rate 2 runs twice as fast | ✓ | ✓ | | | |
 | Plugin stamps follow an injected clock; without it they are as today | | | | | ✓ |
 | Operational checks stay on the physical clock with an injected clock far from real time (owner not swept, running search job not reclaimed) | | | | | ✓ |
 | With a past clock: an async search's results are not reaped early; `GetSubmitTime` still answers | | ✓ | ✓ | | ✓ |
-| `CLOCK_BEFORE_RECORDED_TIME` after a write, with the latest time in the detail | ✓ | ✓ | | | |
-| `CLOCK_CHANGED` when a second change arrives during a move (scheduler off, so the move waits) | | ✓ | | | |
+| `CLOCK_BEFORE_RECORDED_TIME` after a write, with the latest time in the detail | ✓ | ✓ | ✓ | | |
+| Interrupted move: the clock stays where the last step put it; repeating the move continues | | ✓ | | | |
+| In-transaction read of a new entity under a test clock returns platform-time placeholder dates (postgres) | | ✓ | | | |
+| `SchedulerActivity`: earliest WAITING across two tenants, the RUNNING flag, an empty store | | | | | ✓ |
+| Search-job liveness: a new job carries `HeartbeatTime` at insert and is not reclaimed before it is stale on the store's clock | | | | | ✓ |
 | Feature off → 403 `CLOCK_CONTROL_DISABLED`; GET returns real time | | ✓ | | | |
 | Non-operator → 403; on-behalf-of → 403; 401 on both operations | | ✓ | | | |
 | Each 400 cell, including the query-parameter refusal | ✓ | ✓ | | | |
-| 503 when the store fails the check | ✓ | waived: no e2e stops the database mid-test; handler unit test | | | |
-| 500 | ✓ | waived: no e2e can force an internal fault; handler unit test | | | |
+| POST 503 when the store fails the check | ✓ | waived: no e2e stops the database mid-test; handler unit test | | | |
+| POST 500 | ✓ | waived: no e2e can force an internal fault; handler unit test | | | |
 | Cluster: a change through node A reaches node B; a node that joins later takes the setting | ✓ | ✓ | | | |
-| Restart alone on a store with times ahead of real time → startup fails; behind → starts on real time | ✓ | ✓ | | | |
+| Restart alone on a store with times ahead of real time → the check returns an error; behind → starts on real time | ✓ | waived: startup failure exits the process (`app.New`, `os.Exit(1)`), and e2e runs the app in-process; the check function is unit-tested on a real store | | | |
 | Callout `time` attribute carries the clock's time; an absolute schedule-function fire time computed from it is due at the right platform time | ✓ | ✓ | | | |
 | Stale reclaim of a never-heartbeated job judged on the database clock | | | | | ✓ |
-| gRPC `PlatformClockGetRequest`: success, unauthenticated, internal | | | | ✓ | |
+| gRPC `PlatformClockGetRequest`: success, unauthenticated | | | | ✓ | |
 
 ## Rollout
 
@@ -541,7 +612,7 @@ No new store reads, locks, checks or background work run in production.
 
 - Package and type names; the gossip topic name and the encoding of the
   setting.
-- The poll interval of the move's wait, and the scheduler's wake signal.
+- The poll interval of the move's wait.
 - How `SchedulerActivity` is implemented per plugin.
 - The wording of the log lines and help topics.
 
@@ -553,13 +624,14 @@ No new store reads, locks, checks or background work run in production.
 - **Setting a past time** is checked against the store's consistency time.
   On memory and sqlite, a read made before the start raises the earliest
   allowed start; the help topic says to set the start first.
-- **A move stops** with `CLOCK_CHANGED` if another change appears. An
-  interrupted move leaves the clock where it got to.
+- **One change at a time** is documented, not detected. An interrupted move
+  leaves the clock where it got to. There is no wake signal for the scheduler;
+  each step waits up to one scan interval.
 - **A rate change together with a move** applies at the end of the move.
 - **The restart check's tolerance** is 1 s.
 - **`advanceByMs`** is in milliseconds, like other API durations.
 - **The route** is `/platform/clock`. Changes are HTTP-only; gRPC can only
   read.
 - **Real time stays** for IAM dates and v1 UUIDs.
-- **Stale reclaim.** The insert writes `heartbeat_time`, removing the
-  two-clock fallback in production.
+- **Search-job liveness:** the SPI contract change described above, on all
+  backends.
