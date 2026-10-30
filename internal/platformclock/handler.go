@@ -17,8 +17,8 @@ import (
 // maxBodyBytes bounds a POST /platform/clock body.
 const maxBodyBytes = 1 << 20
 
-// maxRateLiteral bounds the text of a rate, so that parsing it exactly stays
-// cheap whatever exponent it spells.
+// maxRateLiteral bounds the length of a rate literal. What bounds the cost of
+// parsing one is Go's exponent cap: big.Rat refuses exponents above about 1e6.
 const maxRateLiteral = 64
 
 // Controller is the clock service the handler drives; *Service is one.
@@ -61,9 +61,26 @@ func StateOf(svc interface{ State() State }, enabled bool) State {
 	return svc.State()
 }
 
+// ReadableState returns the state both doors answer, or the generic internal
+// error when the clock has run past the year 9999, which a timestamp cannot
+// carry. The check comes before any answer is written.
+func ReadableState(svc interface{ State() State }, enabled bool) (State, *common.AppError) {
+	st := StateOf(svc, enabled)
+	if st.Now.UTC().Year() > 9999 {
+		return st, common.Internal("failed to read the platform clock",
+			fmt.Errorf("the platform clock is beyond the year 9999: %s", stamp(st.Now)))
+	}
+	return st, nil
+}
+
 // GetPlatformClock implements GET /platform/clock.
 func (h *Handler) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
-	common.WriteJSON(w, http.StatusOK, bodyOf(StateOf(h.svc, h.enabled)))
+	st, appErr := ReadableState(h.svc, h.enabled)
+	if appErr != nil {
+		common.WriteError(w, r, appErr)
+		return
+	}
+	common.WriteJSON(w, http.StatusOK, bodyOf(st))
 }
 
 // member is a body member that records it was present and refuses JSON null:

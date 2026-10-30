@@ -165,7 +165,8 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 // handlePlatformClockGetRequest answers this node's platform time, rate and
 // controllability, the same state GET /platform/clock answers. It reads no
 // store, so no failure a request can cause exists besides authentication,
-// which the interceptor refuses before the handler.
+// which the interceptor refuses before the handler, and a clock past the year
+// 9999, which a timestamp cannot carry.
 func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.PlatformClockGetRequestJson
 	if err := strictjson.Decode(payload, &req); err != nil {
@@ -173,6 +174,11 @@ func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Conte
 	}
 
 	st := s.clockState()
+	if st.Now.UTC().Year() > 9999 {
+		err := fmt.Errorf("the platform clock is beyond the year 9999: %s", st.Now.UTC().Format(time.RFC3339Nano))
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockGetRequest, "ceId", ce.Id, "error", err.Error())
+		return platformClockError(ctx, ce.Id, common.Internal("failed to read the platform clock", err))
+	}
 	now := st.Now.UTC()
 	rate := float64(st.RatePPM) / 1e6
 	diag := common.GetDiagnostics(ctx)
