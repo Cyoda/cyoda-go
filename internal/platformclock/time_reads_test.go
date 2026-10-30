@@ -32,29 +32,71 @@ var (
 	sqlRead   = regexp.MustCompile(`(?i)(?:^|[^.\w])(now\s*\(\s*\)|current_timestamp|clock_timestamp\s*\(\s*\))`)
 )
 
-// markedLines returns the set of lines carrying a `// realtime: <reason>` comment.
-func markedLines(fset *token.FileSet, file *ast.File) map[int]bool {
-	m := map[int]bool{}
+// markers records where `// realtime: <reason>` comments sit. A whole-line
+// comment (nothing else on its line) covers a read on the next line; a trailing
+// comment on a code line covers only reads on that same line.
+type markers struct {
+	whole    map[int]bool
+	trailing map[int]bool
+}
+
+func (m markers) onLine(l int) bool { return m.whole[l] || m.trailing[l] }
+
+// covers reports whether a read on line l is marked: a marker on l, or a
+// whole-line marker directly above.
+func (m markers) covers(l int) bool { return m.onLine(l) || m.whole[l-1] }
+
+func findMarkers(fset *token.FileSet, file *ast.File, src []byte) markers {
+	m := markers{whole: map[int]bool{}, trailing: map[int]bool{}}
 	for _, cg := range file.Comments {
 		for _, c := range cg.List {
-			if goMarker.MatchString(c.Text) {
-				m[fset.Position(c.Pos()).Line] = true
+			if !goMarker.MatchString(c.Text) {
+				continue
+			}
+			p := fset.Position(c.Pos())
+			if strings.TrimSpace(string(lineStart(src, c.Pos(), fset))) == "" {
+				m.whole[p.Line] = true
+			} else {
+				m.trailing[p.Line] = true
 			}
 		}
 	}
 	return m
 }
 
+// lineStart returns the source text on pos's line before pos.
+func lineStart(src []byte, pos token.Pos, fset *token.FileSet) []byte {
+	off := fset.Position(pos).Offset
+	i := off
+	for i > 0 && src[i-1] != '\n' {
+		i--
+	}
+	return src[i:off]
+}
+
 // scanGoTimeReads reports every unmarked time.Now/Since/Until reference and,
 // when sql is true, every unmarked now()/CURRENT_TIMESTAMP/clock_timestamp()
 // in a string literal. src may be nil to read filename from disk.
 func scanGoTimeReads(filename string, src any, sql bool) ([]string, error) {
+	var raw []byte
+	switch v := src.(type) {
+	case nil:
+		b, err := os.ReadFile(filename)
+		if err != nil {
+			return nil, err
+		}
+		raw = b
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = v
+	}
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, filename, src, parser.ParseComments|parser.SkipObjectResolution)
+	file, err := parser.ParseFile(fset, filename, raw, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
 		return nil, err
 	}
-	marked := markedLines(fset, file)
+	marked := findMarkers(fset, file, raw)
 	line := func(p token.Pos) int { return fset.Position(p).Line }
 	at := func(l int) string { return filename + ":" + strconv.Itoa(l) }
 
@@ -75,7 +117,7 @@ func scanGoTimeReads(filename string, src any, sql bool) ([]string, error) {
 			switch x.Sel.Name {
 			case "Now", "Since", "Until":
 				l := line(x.Pos())
-				if !marked[l] && !marked[l-1] {
+				if !marked.covers(l) {
 					out = append(out, at(l)+": time."+x.Sel.Name+": "+timeReadAdvice)
 				}
 			}
@@ -97,7 +139,7 @@ func scanGoTimeReads(filename string, src any, sql bool) ([]string, error) {
 					break
 				}
 			}
-			goLevel := marked[start] || marked[start-1] || marked[stmtStart] || marked[stmtStart-1]
+			goLevel := marked.covers(start) || marked.covers(stmtStart)
 			for i, l := range strings.Split(val, "\n") {
 				if !sqlRead.MatchString(l) {
 					continue
@@ -178,6 +220,24 @@ func f() {
 	}
 }
 
+func TestTimeReadGuard_TrailingMarkerCoversOnlyItsLine(t *testing.T) {
+	src := `package p
+import "time"
+func f() {
+	a := time.Now() // realtime: first
+	b := time.Now()
+	_, _ = a, b
+}
+`
+	got, err := scanGoTimeReads("p.go", src, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.HasPrefix(got[0], "p.go:5:") {
+		t.Fatalf("a trailing marker must not cover the next line; want one finding at p.go:5, got %v", got)
+	}
+}
+
 func TestTimeReadGuard_AcceptsMarked(t *testing.T) {
 	src := `package p
 import "time"
@@ -214,8 +274,8 @@ func f() {
 	}
 }
 
-// repoRoot walks up from the working directory to the directory holding go.work,
-// or failing that the outermost go.mod that declares the cyoda-go module.
+// repoRoot walks up from the working directory to the nearest directory holding go.work,
+// or failing that the nearest go.mod that declares the cyoda-go module.
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()

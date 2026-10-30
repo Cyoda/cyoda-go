@@ -246,8 +246,9 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// clock_timestamp() is a deliberately different value: wall_clock_time is
 	// the physical moment of insertion by design, and no stamp ever rewrites it.
 	var dbNow, wallClockTime time.Time
-	// realtime: placeholder date fallback when no clock supplies $1; the commit stamp rewrites it; wall_clock_time is physical by design
-	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz, CURRENT_TIMESTAMP), clock_timestamp()`,
+	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
 		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
@@ -787,8 +788,9 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// transaction commits — exactly as in saveOn, whose comment on the same
 	// statement carries the reasoning.
 	var dbNow, wallClockTime time.Time
-	// realtime: placeholder date fallback when no clock supplies $1; the commit stamp rewrites it; wall_clock_time is physical by design
-	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz, CURRENT_TIMESTAMP), clock_timestamp()`,
+	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
 		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
 	}

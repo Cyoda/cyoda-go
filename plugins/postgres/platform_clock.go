@@ -38,7 +38,7 @@ func placeholderAtArg(c spi.Clock) *time.Time {
 // reading, or the process clock without one.
 func businessNow(c spi.Clock) time.Time {
 	if c == nil {
-		return time.Now() // realtime: no business clock configured; process clock fallback
+		return time.Now() // realtime: no test clock configured; production's business clock is real time (DB clock in SQL), a test clock is passed when the feature is on
 	}
 	return c.Now()
 }
