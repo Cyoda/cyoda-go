@@ -6,6 +6,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **Storage plugins: three new obligations for the platform clock.**
+  `ScheduledTaskStore.SchedulerActivity` returns the earliest waiting task's
+  `NextAttemptTime` and whether any task is running, across all tenants.
+  `TransactionManager.LatestRecordedTime` returns the store's floor without
+  raising it (zero on a fresh store). `CreateJob` stamps `HeartbeatTime` from
+  the store's physical clock, and stale-job reclaim no longer falls back to
+  `CreateTime`. Out-of-tree plugins must implement the first two and follow
+  the third; see `COMPATIBILITY.md`.
+
 - **Only M2M clients reach cyoda-go; an application acts for its users
   through an on-behalf-of client.** cyoda-go has no per-user permissions: an
   on-behalf-of client exchanges a user assertion its application signed for
@@ -1197,6 +1206,16 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `ifMatch`. See `cyoda help errors.PRECONDITION_REQUIRED`.
 
 ### Added
+
+- **A controllable platform clock, a test feature (off by default).** With
+  `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
+  to a past or future time, change its rate, or move it forward through
+  `POST /platform/clock`; `GET /platform/clock` (and the gRPC
+  `PlatformClockGetRequest`) read it. Revision, audit, consistency and
+  scheduled times follow the clock, and a move fires each scheduled
+  transition at its due time. Callout requests carry the platform time in
+  the CloudEvent `time` attribute. Authentication, timeouts and leases stay
+  on real time. The clock is instance-wide. See `cyoda help clock`.
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
   error (500) already carried it (a UUID, also written to the server log with

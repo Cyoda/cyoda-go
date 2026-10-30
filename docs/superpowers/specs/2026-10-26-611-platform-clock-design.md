@@ -182,10 +182,12 @@ holds it in its test clock.
 - **Only with the feature on.** The topic subscription and the state
   exchange carry the setting only when `CYODA_CLOCK_CONTROL_ENABLED` is true;
   with it off, `LocalState` returns nothing, as today.
+- **What is shared.** A node shares only a setting it published or adopted
+  from a peer. A local change still pending, such as a set-back awaiting the
+  store's answer, is not shared, because it may yet be undone.
 - **Before background work.** A node joins and merges the setting before it
-  starts any background loop (search reapers, scheduler). Today the search
-  reapers start before gossip registration (`app/app.go:426`, `:436`); with
-  the feature on, the order changes so that registration comes first.
+  starts any background loop (search reapers, scheduler). Gossip registration
+  comes before the search reapers start, in both modes.
 - **Single-node deployments** have no gossip; the setting is local.
 - **Lag.** A node learns of a change within gossip latency, usually well
   under a second. Under decision 2 the test waits for the change to return
@@ -298,10 +300,15 @@ the move runs at the current rate and the new rate applies at the end.
   - first joins the cluster and takes the setting from its peers if any holds
     one;
   - if none does (a single node, or a full restart), it starts on real time
-    and checks the store. If the store's consistency time (asked with tenant
-    `PLATFORM` in the context, which `ConsistencyTime` requires) is more than
-    1 s later than real time, startup fails: "the store holds times later
-    than real time; start over with a fresh store" (decision 7).
+    and checks the store. The check reads the store's latest recorded time
+    (`TransactionManager.LatestRecordedTime`, asked with tenant `PLATFORM` in
+    the context). That is the floor, read without raising it; it is zero on
+    a fresh store. If it is more than 1 s later than real time, startup
+    fails: "the store holds times later than real time; start over with a
+    fresh store" (decision 7). The floor is not raised, so the operator's
+    first setting in the past is still accepted after the check.
+  - The check runs only when no peer supplied a setting after the cluster
+    join.
   - The check is a function that returns an error; startup exits on it, as on
     every other startup failure (`app.New` reports failures with
     `os.Exit(1)`).
@@ -385,6 +392,12 @@ every operator route. The help topic says so.
     today.
   - A plugin given a clock takes every business stamp from it, and keeps its
     own physical clock for operational time.
+- **`TransactionManager.LatestRecordedTime(ctx) (time.Time, error)`:**
+  returns a time at or above the latest submit time, SnapshotTime or
+  consistency time the store has issued (sqlite seeds it from a persisted
+  high-water mark). It does not raise the floor and does not wait. It returns
+  the zero time on a store that has issued none. The restart check uses it.
+  It is a new interface method, so it is breaking for out-of-tree plugins.
 - **`ScheduledTaskStore.SchedulerActivity(ctx)`:** returns the earliest
   `NextAttemptTime` of any WAITING task and whether any task is RUNNING,
   across all tenants. The move needs it; today `Query` is per tenant. This is
@@ -512,10 +525,12 @@ ways and no others.
 - `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`
   (answers 403 `CLOCK_CONTROL_DISABLED`);
 - the gRPC read types, the new error code, and the OpenAPI and schema entries;
-- the SPI method `SchedulerActivity`, which every plugin implements and
-  production never calls.
+- the SPI methods `SchedulerActivity` and `LatestRecordedTime`, which every
+  plugin implements and production never calls.
 
 The gossip topic and the state exchange are active only with the feature on.
+Gossip registration now happens before the search reapers start, in both
+modes, so with the feature off the reapers start after the cluster join.
 No new store reads, locks, checks or background work run in production.
 
 ## Security
@@ -556,8 +571,8 @@ No new store reads, locks, checks or background work run in production.
   has no controllable clock (`ClockCtrl` is replaceable only by tests).
 - **CHANGELOG:**
   - `### Added` for the feature;
-  - `### Breaking` for plugin authors (`SchedulerActivity`, and
-    `CreateJob` stamping `HeartbeatTime`).
+  - `### Breaking` for plugin authors (`SchedulerActivity`,
+    `LatestRecordedTime`, and `CreateJob` stamping `HeartbeatTime`).
 
 ## Coverage matrix
 

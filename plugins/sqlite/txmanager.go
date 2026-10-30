@@ -130,7 +130,7 @@ type transactionManager struct {
 	submitTimes     map[string]submitTimeEntry
 	savepoints      map[string]map[string]savepointSnapshot
 	consistencyHigh int64 // persisted consistency_floor.micros; guarded by mu
-	lastSubmitTime  int64 // monotonic submit time in microseconds; bumped and read under mu, by callers holding the commit gate
+	lastSubmitTime  int64 // monotonic submit time in microseconds; bumped under mu by callers holding the commit gate; also read under mu alone, without the gate, by LatestRecordedTime
 
 	// commitSeq counts committed writes, a transaction's and a task-row
 	// write that commits on its own alike; txSnapshotSeq holds its value at
