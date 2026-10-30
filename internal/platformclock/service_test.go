@@ -655,3 +655,34 @@ func TestClassify_ClientGoneKeepsMarker(t *testing.T) {
 		t.Fatalf("classified error lost the client-gone marker: %v", e.Err)
 	}
 }
+
+// A move runs with the user context of its request stripped: the scheduled-task
+// store is read across tenants (the fakes fail on any user context), and
+// cancelling the request still stops the move.
+func TestMove_StripsUserContext(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	f.sched.due = []time.Time{base.Add(time.Hour)}
+	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
+		UserID: "u", Tenant: spi.Tenant{ID: "t"},
+	})
+	target := base.Add(2 * time.Hour)
+	if _, err := f.svc.Change(ctx, Change{At: &target}); err != nil {
+		t.Fatalf("Change with a user context: %v", err)
+	}
+}
+
+func TestMove_CancelStopsWithUserContext(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	f.sched.due = []time.Time{base.Add(time.Hour)}
+	f.sched.fire = false
+	ctx, cancel := context.WithCancel(spi.WithUserContext(context.Background(),
+		&spi.UserContext{UserID: "u", Tenant: spi.Tenant{ID: "t"}}))
+	f.pub.hook = func(Setting) { cancel() }
+	target := base.Add(2 * time.Hour)
+	_, err := f.svc.Change(ctx, Change{At: &target})
+	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
+	}
+}

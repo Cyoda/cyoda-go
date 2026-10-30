@@ -158,11 +158,22 @@ func (s *Service) commit(st Setting) {
 	s.publish(st)
 }
 
+// crossTenantContext returns a context for store calls that span tenants: it
+// carries reqCtx's values without the user context, and is cancelled when
+// reqCtx is. release must be called when the work ends.
+func crossTenantContext(reqCtx context.Context) (context.Context, func()) {
+	base, cancel := context.WithCancel(spi.WithUserContext(context.WithoutCancel(reqCtx), nil))
+	stop := context.AfterFunc(reqCtx, cancel)
+	return base, func() { stop(); cancel() }
+}
+
 // move runs the step-through loop towards target. The clock keeps running
 // throughout, so each step sets it only forward (setForward compares and
 // sets atomically). A step failing to read the store leaves the clock at
 // the last step, which was published whole.
-func (s *Service) move(ctx context.Context, target time.Time, rate *int64) error {
+func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) error {
+	ctx, release := crossTenantContext(reqCtx)
+	defer release()
 	store, err := s.tasks(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to resolve the scheduled-task store: %w", err)
