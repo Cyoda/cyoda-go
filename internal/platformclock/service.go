@@ -172,7 +172,7 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) er
 	ctx := spi.WithUserContext(reqCtx, nil)
 	store, err := s.tasks(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to resolve the scheduled-task store: %w", err)
+		return clientGoneOr(ctx, fmt.Errorf("failed to resolve the scheduled-task store: %w", err))
 	}
 	ticker := time.NewTicker(s.poll)
 	defer ticker.Stop()
@@ -208,7 +208,7 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 		}
 		rep, err := store.SchedulerActivity(ctx)
 		if err != nil {
-			return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read scheduler activity: %w", err)
+			return spi.SchedulerActivityReport{}, clientGoneOr(ctx, fmt.Errorf("failed to read scheduler activity: %w", err))
 		}
 		earliest := time.UnixMilli(rep.EarliestWaitingMs)
 		due := rep.HasWaiting && !earliest.After(s.c.Now())
@@ -227,6 +227,16 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 		case <-ticker.C:
 		}
 	}
+}
+
+// clientGoneOr marks err as the client's departure when the move's context
+// has ended: a store call the cancellation interrupted returns its own error,
+// and the client going away is what stopped it.
+func clientGoneOr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return common.ClientGone(err)
+	}
+	return err
 }
 
 // progress throttles a move's INFO lines to one per progressEvery, measured

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -32,11 +33,15 @@ type fakeScheduler struct {
 	polls    int
 	failAt   int // from this poll on, SchedulerActivity fails with failErr
 	failErr  error
+	onPoll   func() // runs at the start of each poll, before any failure
 }
 
 func (f *fakeScheduler) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
 	if spi.GetUserContext(ctx) != nil {
 		return spi.SchedulerActivityReport{}, errors.New("cross-tenant call given a tenant context")
+	}
+	if f.onPoll != nil {
+		f.onPoll()
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -293,6 +298,40 @@ func TestMove_CancelIsClientGone(t *testing.T) {
 	f.pub.hook = func(Setting) { cancel() }
 	target := base.Add(2 * time.Hour)
 	_, err := f.svc.Change(ctx, Change{At: &target})
+	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
+	}
+}
+
+// A cancellation that lands while the store is answering comes back as the
+// store's own error; the move still reports it as the client's departure.
+func TestMove_CancelDuringPollIsClientGone(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.sched.onPoll = cancel
+	f.sched.failAt = 1
+	f.sched.failErr = fmt.Errorf("query: %w", context.Canceled)
+	target := f.t0.Add(time.Hour)
+	_, err := f.svc.Change(ctx, Change{At: &target})
+	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
+	}
+}
+
+func TestMove_CancelDuringStoreLookupIsClientGone(t *testing.T) {
+	src := newFakeSrc()
+	c := NewTest("n1", src.now)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	svc := NewService(c, (&fakeStoreTime{}).storeTime,
+		func(context.Context) (spi.ScheduledTaskStore, error) {
+			cancel()
+			return nil, fmt.Errorf("resolve: %w", context.Canceled)
+		},
+		(&publishLog{}).publish, testPoll)
+	target := c.Now().Add(time.Hour)
+	_, err := svc.Change(ctx, Change{At: &target})
 	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
 	}
