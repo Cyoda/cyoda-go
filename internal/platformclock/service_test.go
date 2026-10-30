@@ -850,3 +850,22 @@ func TestChange_AdvancePastYear9000_Refused(t *testing.T) {
 		t.Fatalf("clock = %v, beyond the year 9000", f.clock.Now())
 	}
 }
+
+// The year-9000 limit applies to what a change sets or moves to; a rate alone
+// re-anchors at now, which may lie past it once the clock has run on.
+func TestChange_RateOnlyPastSetLimit_Applies(t *testing.T) {
+	f := newFixture(t)
+	end := maxSetTime
+	if _, err := f.svc.Change(context.Background(), Change{At: &end}); err != nil {
+		t.Fatalf("set the limit: %v", err)
+	}
+	f.src.advance(2 * time.Second)
+	published := len(f.pub.starts())
+	rate := int64(2_000_000)
+	if _, err := f.svc.Change(context.Background(), Change{RatePPM: &rate}); err != nil {
+		t.Fatalf("rate change: %v", err)
+	}
+	if got := len(f.pub.starts()); got != published+1 {
+		t.Fatalf("published %d settings, want %d", got, published+1)
+	}
+}

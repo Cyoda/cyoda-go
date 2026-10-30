@@ -164,8 +164,8 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 
 // handlePlatformClockGetRequest answers this node's platform time, rate and
 // controllability, the same state GET /platform/clock answers. It reads no
-// store, so no failure a request can cause exists besides authentication,
-// which the interceptor refuses before the handler.
+// store, so the only failures a request can cause are authentication, which
+// the interceptor refuses before the handler, and an invalid payload.
 func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.PlatformClockGetRequestJson
 	if err := strictjson.Decode(payload, &req); err != nil {

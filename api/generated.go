@@ -1310,7 +1310,7 @@ type PagedEntityResultsDto struct {
 
 // PlatformClockChangeDto defines model for PlatformClockChangeDto.
 type PlatformClockChangeDto struct {
-	// AdvanceByMs Milliseconds to move the clock forward from now. Exclusive with `time`.
+	// AdvanceByMs Milliseconds to move the clock forward from now; the target may not lie past the year 9000. Exclusive with `time`.
 	AdvanceByMs *int64 `json:"advanceByMs,omitempty"`
 
 	// Rate Platform seconds per real second, with at most six fractional digits.

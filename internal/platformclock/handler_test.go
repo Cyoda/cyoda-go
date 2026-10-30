@@ -77,6 +77,7 @@ func TestHandler_Post_400(t *testing.T) {
 		{"time_not_rfc3339", `{"time":"yesterday"}`},
 		{"time_before_1970", `{"time":"1969-12-31T23:59:59Z"}`},
 		{"time_after_9000", `{"time":"9001-01-01T00:00:00Z"}`},
+		{"time_after_9000_in_utc", `{"time":"9000-12-31T23:59:59-01:00"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -121,6 +122,18 @@ func TestHandler_Post_Accepted(t *testing.T) {
 		}
 		c := f.calls[0]
 		if c.At == nil || !c.At.Equal(time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC)) || *c.RatePPM != 10_000_000 {
+			t.Fatalf("change %+v", c)
+		}
+	})
+	t.Run("time at the limit", func(t *testing.T) {
+		f := newFake()
+		h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+		rec := httptest.NewRecorder()
+		h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"time":"9000-12-31T23:59:59.999999Z"}`))
+		if rec.Code != 200 {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+		if c := f.calls[0]; c.At == nil || !c.At.Equal(time.Date(9000, 12, 31, 23, 59, 59, 999999000, time.UTC)) {
 			t.Fatalf("change %+v", c)
 		}
 	})

@@ -11200,8 +11200,8 @@ components:
           format: int64
           minimum: 1
           description: >-
-            Milliseconds to move the clock forward from now. Exclusive with
-            `time`.
+            Milliseconds to move the clock forward from now; the target may not
+            lie past the year 9000. Exclusive with `time`.
         rate:
           type: number
           minimum: 0.1

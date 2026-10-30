@@ -112,3 +112,18 @@ func TestSync_FreshClockCarriesNothing(t *testing.T) {
 		t.Fatalf("local() = %q, want nil", got)
 	}
 }
+
+// Changes stop at the end of the year 9000, but a clock keeps running past it
+// and a rate change re-anchors there, so peers adopt any start up to 9999.
+func TestSync_AdoptsStartPastSetLimit(t *testing.T) {
+	b := &fakeBroadcaster{}
+	c := platformclock.NewTest("node-b", nil)
+	platformclock.Attach(c, b, &fakeExchange{})
+	s := validSetting(3)
+	s.StartUnixMicro = time.Date(9500, 1, 1, 0, 0, 0, 0, time.UTC).UnixMicro()
+	raw, _ := json.Marshal(s)
+	b.Broadcast(platformclock.Topic, raw)
+	if got := c.Setting(); got != s {
+		t.Fatalf("setting = %+v, want %+v", got, s)
+	}
+}
