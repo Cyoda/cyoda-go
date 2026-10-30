@@ -120,9 +120,10 @@ func reaperTestConfig() *Config {
 	}
 }
 
-// createReapTestJob persists a RUNNING job that decodes and re-runs, created
-// createdAgo in the past.
-func createReapTestJob(t *testing.T, store spi.AsyncSearchStore, id string, createdAgo time.Duration) {
+// createReapTestJob persists a RUNNING job that decodes and re-runs. The store
+// stamps its heartbeat at creation, so a test that needs it stale ages the
+// store's clock.
+func createReapTestJob(t *testing.T, store spi.AsyncSearchStore, id string) {
 	t.Helper()
 	opts, err := json.Marshal(struct {
 		Limit int `json:"limit"`
@@ -137,7 +138,7 @@ func createReapTestJob(t *testing.T, store spi.AsyncSearchStore, id string, crea
 		ModelRef:   spi.ModelRef{EntityName: "person", ModelVersion: "1"},
 		Condition:  []byte(`{"type":"group","operator":"AND","conditions":[]}`),
 		SearchOpts: opts,
-		CreateTime: time.Now().Add(-createdAgo),
+		CreateTime: time.Now(),
 	}
 	if err := store.CreateJob(commontest.SystemUserContext("tenant-reap"), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
@@ -221,7 +222,7 @@ func TestSearchReapers_BlockedReapDoesNotStopClaims(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("no snapshot reap started within 2s")
 	}
-	createReapTestJob(t, base, "job-released", 0)
+	createReapTestJob(t, base, "job-released")
 	if err := base.Release(commontest.SystemUserContext("tenant-reap"), "job-released", 1); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
@@ -277,7 +278,8 @@ func (s *blockedFailStore) UpdateJobStatus(ctx context.Context, jobID string, ep
 // when stop returns, no write the sweeps started is still in flight. The job
 // it did not fail stays RUNNING at its claimed epoch, to be claimed again.
 func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	defer factory.Close()
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -289,7 +291,8 @@ func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
 	health.Store(true)
 
 	// Stale, and at its cap on the first claim (maxAttempts 1).
-	createReapTestJob(t, base, "job-capped", time.Hour)
+	createReapTestJob(t, base, "job-capped")
+	clock.Advance(time.Hour)
 	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
 	select {
 	case <-store.failing:

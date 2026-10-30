@@ -40,7 +40,8 @@ func jobStatus(t *testing.T, store spi.AsyncSearchStore, tenant, id string) stri
 // Two tenants may each have a job with the same id. When one sweep claims
 // both at their cap, each is owed its own FAILED write.
 func TestReclaimStaleJobs_SameJobIDInTwoTenants_BothOwedWritesLand(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -49,8 +50,8 @@ func TestReclaimStaleJobs_SameJobIDInTwoTenants_BothOwedWritesLand(t *testing.T)
 	store := newMainPoolBlockedStore(base)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, base, "tenant-a", "job-shared-id", ref, cond, time.Now())
-	createStaleReclaimJob(t, base, "tenant-b", "job-shared-id", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-shared-id", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-b", "job-shared-id", ref, cond, time.Now())
 
 	svc := newSecondPassService(t, factory, store)
 	t.Cleanup(store.release)
@@ -87,7 +88,8 @@ func (s *panicOnFirstFailStore) UpdateJobStatus(ctx context.Context, jobID strin
 // when that sweep owes nothing itself. The write that panicked is not retried;
 // its job stays RUNNING and is claimed again once stale.
 func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -98,7 +100,7 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 	ids := []string{"job-capped-1", "job-capped-2"}
 	for _, id := range ids {
-		createStaleReclaimJob(t, base, "tenant-a", id, ref, cond, time.Now())
+		createStaleReclaimJob(t, clock, base, "tenant-a", id, ref, cond, time.Now())
 	}
 
 	health := &atomic.Bool{}
@@ -192,7 +194,8 @@ func TestReclaimStaleJobs_FencedRefusalOfOwedFailIsNotAFault(t *testing.T) {
 	for _, refusal := range []error{spi.ErrStaleClaim, spi.ErrAlreadyTerminal, spi.ErrNotFound} {
 		for _, kind := range []string{"capped", "undecodable"} {
 			t.Run(kind+"/"+refusal.Error(), func(t *testing.T) {
-				factory := memory.NewStoreFactory()
+				clock := memory.NewTestClock()
+				factory := memory.NewStoreFactory(memory.WithClock(clock))
 				t.Cleanup(func() { factory.Close() })
 				base, err := factory.AsyncSearchStore(context.Background())
 				if err != nil {
@@ -211,7 +214,7 @@ func TestReclaimStaleJobs_FencedRefusalOfOwedFailIsNotAFault(t *testing.T) {
 					}
 					ordered.undecodable = "job-refused"
 				} else {
-					createStaleReclaimJob(t, base, "tenant-a", "job-refused", ref, cond, time.Now())
+					createStaleReclaimJob(t, clock, base, "tenant-a", "job-refused", ref, cond, time.Now())
 				}
 				store := &refusingFailStore{orderedClaimStore: ordered, refusal: refusal}
 				svc := newSecondPassService(t, factory, store)

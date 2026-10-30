@@ -146,7 +146,8 @@ func awaitHeartbeats(t *testing.T, store *mainPoolBlockedStore, want int32, with
 // pool is exhausted: the job's ClearResults runs under its heartbeat, not ahead
 // of it in the sweep.
 func TestReclaimStaleJobs_MainPoolExhausted_SweepReturnsAndJobIsHeartbeated(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -159,7 +160,7 @@ func TestReclaimStaleJobs_MainPoolExhausted_SweepReturnsAndJobIsHeartbeated(t *t
 	saveModelWithFields(t, ctx, factory, ref, map[string]schema.DataType{"name": schema.String})
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, base, "tenant-a", "job-starved", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-starved", ref, cond, time.Now())
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
@@ -298,7 +299,8 @@ func (s *orderedClaimStore) Heartbeat(ctx context.Context, jobID string, epoch i
 // batch, and their FAILED writes wait on an exhausted main pool; the runnable
 // job after them is heartbeated all the same.
 func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -313,7 +315,7 @@ func TestReclaimStaleJobs_BlockedWriteForUnrunJob_DoesNotDelayRunnableJob(t *tes
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
 
 	// Stale: the claim counts, and with maxAttempts 1 the job is at its cap.
-	createStaleReclaimJob(t, base, "tenant-a", "a-capped", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "a-capped", ref, cond, time.Now())
 	// Released, so the claim does not count: an undecodable job, and a
 	// runnable one.
 	createRunningReclaimJobAt(t, base, "tenant-a", "b-undecodable", ref, cond, time.Now(), time.Now())
@@ -401,7 +403,8 @@ func awaitCount(t *testing.T, get func() int32, want int32, within time.Duration
 // The later sweep's own owed write joins the one second pass in flight rather
 // than starting another, and nothing owed is lost once the pool frees.
 func TestReclaimStaleJobs_BlockedSecondPass_LaterSweepStillClaims(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -446,14 +449,14 @@ func TestReclaimStaleJobs_BlockedSecondPass_LaterSweepStillClaims(t *testing.T) 
 	}
 
 	// Stale, so the claim counts: with maxAttempts 1 the job is at its cap.
-	createStaleReclaimJob(t, base, "tenant-a", "a-capped", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "a-capped", ref, cond, time.Now())
 	store.blocked.Store(true)
 	if got := sweep("the first sweep"); got != 0 {
 		t.Fatalf("the first sweep re-enqueued %d, want 0", got)
 	}
 	awaitCount(t, store.waiting.Load, 1, 2*time.Second, "the capped job's FAILED write waiting on the main pool")
 
-	createStaleReclaimJob(t, base, "tenant-a", "b-capped", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "b-capped", ref, cond, time.Now())
 	createRunningReclaimJobAt(t, base, "tenant-a", "c-runnable", ref, cond, time.Now(), time.Now())
 	if err := base.Release(ctx, "c-runnable", 1); err != nil {
 		t.Fatalf("Release(c-runnable): %v", err)

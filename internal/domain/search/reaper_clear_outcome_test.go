@@ -45,7 +45,8 @@ func (s *clearOutcomeStore) Release(ctx context.Context, jobID string, epoch int
 func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 	for _, refusal := range []error{spi.ErrStaleClaim, spi.ErrAlreadyTerminal, spi.ErrNotFound} {
 		t.Run(refusal.Error(), func(t *testing.T) {
-			factory := memory.NewStoreFactory()
+			clock := memory.NewTestClock()
+			factory := memory.NewStoreFactory(memory.WithClock(clock))
 			t.Cleanup(func() { factory.Close() })
 			base, err := factory.AsyncSearchStore(context.Background())
 			if err != nil {
@@ -54,7 +55,7 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 			store := &clearOutcomeStore{AsyncSearchStore: base, refuse: refusal}
 			ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 			cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-			createStaleReclaimJob(t, base, "tenant-a", "job-refused", ref, cond, time.Now())
+			createStaleReclaimJob(t, clock, base, "tenant-a", "job-refused", ref, cond, time.Now())
 
 			pool := search.NewWorkerPool(1, 4)
 			svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
@@ -83,7 +84,8 @@ func TestReclaimStaleJobs_RefusedClearSendsNoRelease(t *testing.T) {
 // before its clear. Its worker sends no clear and no second Release: the
 // shutdown release already handed the job back, uncounted.
 func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -92,7 +94,7 @@ func TestReclaimStaleJobs_ReleasedBeforeWorkerRunsSendsNoClear(t *testing.T) {
 	store := &clearOutcomeStore{AsyncSearchStore: base}
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, base, "tenant-a", "job-queued", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-queued", ref, cond, time.Now())
 
 	// One worker, held busy, so the reclaimed job waits in the queue.
 	pool := search.NewWorkerPool(1, 4)
