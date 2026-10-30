@@ -13,19 +13,29 @@ import (
 // ROLE_M2M, as "METHOD /path" in the generated router's patterns (base path
 // excluded). Each one is decided by its own rule instead: the admin rule
 // (clients, trusted keys), the operator rule (key pairs, POST
-// /platform/clock), or none (GET /account, GET /platform/clock). The /admin routes app.go registers on its own mux are
-// operator-guarded and never wrapped, so they are not listed here.
+// /platform/clock), or none (GET /account, GET /platform/clock). The /admin
+// routes app.go registers on its own mux are operator-guarded and never
+// wrapped, so they are not listed here.
 var allowList = map[string]bool{
-	"GET /account":        true,
-	"GET /platform/clock": true, "POST /platform/clock": true,
-	"GET /clients": true, "POST /clients": true,
-	"DELETE /clients/{clientId}": true, "PUT /clients/{clientId}/secret": true,
-	"GET /oauth/keys/trusted": true, "POST /oauth/keys/trusted": true,
+	"GET /account":         true,
+	"GET /platform/clock":  true,
+	"POST /platform/clock": true,
+
+	"GET /clients":                   true,
+	"POST /clients":                  true,
+	"DELETE /clients/{clientId}":     true,
+	"PUT /clients/{clientId}/secret": true,
+
+	"GET /oauth/keys/trusted":                     true,
+	"POST /oauth/keys/trusted":                    true,
 	"DELETE /oauth/keys/trusted/{keyId}":          true,
-	"POST /oauth/keys/trusted/{keyId}/invalidate": true, "POST /oauth/keys/trusted/{keyId}/reactivate": true,
-	"POST /oauth/keys/keypair": true, "GET /oauth/keys/keypair/current": true,
+	"POST /oauth/keys/trusted/{keyId}/invalidate": true,
+	"POST /oauth/keys/trusted/{keyId}/reactivate": true,
+	"POST /oauth/keys/keypair":                    true,
+	"GET /oauth/keys/keypair/current":             true,
 	"DELETE /oauth/keys/keypair/{keyId}":          true,
-	"POST /oauth/keys/keypair/{keyId}/invalidate": true, "POST /oauth/keys/keypair/{keyId}/reactivate": true,
+	"POST /oauth/keys/keypair/{keyId}/invalidate": true,
+	"POST /oauth/keys/keypair/{keyId}/reactivate": true,
 }
 
 // IsAllowListed reports whether method pattern is reachable without

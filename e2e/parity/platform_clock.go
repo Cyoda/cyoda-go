@@ -19,8 +19,8 @@ import (
 // every record is stamped with, so each scenario runs on a stack of its own
 // (FreshStackFixture) on a fresh store with clock control on. A fixture
 // without that capability skips them. The scenarios set the clock as the
-// platform operator and do everything else as a tenant of the stack, and use only the parts of
-// the behaviour that do not need a compute node. The deeper behaviour (rate,
+// platform operator and do everything else as a tenant of the stack. They
+// cover only the behaviour that needs no compute node. The deeper behaviour (rate,
 // ordering across tenants, an interrupted move, callouts, the cluster) is the
 // e2e suite's, internal/e2e/platform_clock_test.go.
 
@@ -122,11 +122,11 @@ func (s *clockStack) clock(t *testing.T, method, body string) clockAnswer {
 func (s *clockStack) startAt(t *testing.T, at time.Time) {
 	t.Helper()
 	a := s.clock(t, http.MethodPost, fmt.Sprintf(`{"time":%q}`, at.Format(time.RFC3339Nano)))
-	clockNear2(t, "clock after the set", a.Now, at)
+	requireWithinClockNear(t, "clock after the set", a.Now, at)
 }
 
-// clockNear2 fails unless got lies within clockNear of want.
-func clockNear2(t *testing.T, what string, got, want time.Time) {
+// requireWithinClockNear fails unless got lies within clockNear of want.
+func requireWithinClockNear(t *testing.T, what string, got, want time.Time) {
 	t.Helper()
 	if d := got.Sub(want); d < -clockNear || d > clockNear {
 		t.Fatalf("%s = %s; want within %s of %s (off by %s)", what,
@@ -225,8 +225,8 @@ func RunPlatformClockPastStart(t *testing.T, fixture BackendFixture) {
 	if err != nil {
 		t.Fatalf("GetEntity: %v", err)
 	}
-	clockNear2(t, "creationDate", got.Meta.CreationDate, clockParityStart)
-	clockNear2(t, "lastUpdateTime", got.Meta.LastUpdateTime, clockParityStart)
+	requireWithinClockNear(t, "creationDate", got.Meta.CreationDate, clockParityStart)
+	requireWithinClockNear(t, "lastUpdateTime", got.Meta.LastUpdateTime, clockParityStart)
 
 	events, err := s.c.GetAuditEvents(t, id)
 	if err != nil {
@@ -236,11 +236,11 @@ func RunPlatformClockPastStart(t *testing.T, fixture BackendFixture) {
 		t.Fatalf("entity %s has no audit events", id)
 	}
 	for _, ev := range events.Items {
-		clockNear2(t, fmt.Sprintf("audit %s utcTime", ev.AuditEventType), ev.UtcTime, clockParityStart)
+		requireWithinClockNear(t, fmt.Sprintf("audit %s utcTime", ev.AuditEventType), ev.UtcTime, clockParityStart)
 	}
 
-	clockNear2(t, "consistency time", s.consistencyTime(t), clockParityStart)
-	clockNear2(t, "GET /platform/clock", s.clock(t, http.MethodGet, "").Now, clockParityStart)
+	requireWithinClockNear(t, "consistency time", s.consistencyTime(t), clockParityStart)
+	requireWithinClockNear(t, "GET /platform/clock", s.clock(t, http.MethodGet, "").Now, clockParityStart)
 }
 
 // RunPlatformClockAdvanceOneDay: a move of one day fires the transition due
@@ -259,7 +259,7 @@ func RunPlatformClockAdvanceOneDay(t *testing.T, fixture BackendFixture) {
 
 	day2 := clockParityStart.Add(24 * time.Hour)
 	moved := s.clock(t, http.MethodPost, fmt.Sprintf(`{"advanceByMs":%d}`, (24*time.Hour).Milliseconds()))
-	clockNear2(t, "clock after the move", moved.Now, day2)
+	requireWithinClockNear(t, "clock after the move", moved.Now, day2)
 
 	s.awaitState(t, id, "Done")
 	var armed, fired time.Time
@@ -291,7 +291,7 @@ func RunPlatformClockAdvanceOneDay(t *testing.T, fixture BackendFixture) {
 	if armed.IsZero() || fired.IsZero() {
 		t.Fatalf("entity %s: arm event at %s, fire event at %s; want both", id, armed, fired)
 	}
-	clockNear2(t, "armed due time", armed, clockParityStart.Add(3*time.Hour))
+	requireWithinClockNear(t, "armed due time", armed, clockParityStart.Add(3*time.Hour))
 	// The fire is recorded at the due time, not at the end of the move: a
 	// move that jumped would record it hours late.
 	if d := fired.Sub(armed); d < 0 || d > clockNear {
@@ -309,7 +309,7 @@ func RunPlatformClockAdvanceOneDay(t *testing.T, fixture BackendFixture) {
 	if got.Meta.State != "Done" {
 		t.Fatalf("state after the update = %s; want Done", got.Meta.State)
 	}
-	clockNear2(t, "new revision lastUpdateTime", got.Meta.LastUpdateTime, day2)
+	requireWithinClockNear(t, "new revision lastUpdateTime", got.Meta.LastUpdateTime, day2)
 
 	// Point-in-time reads answer on the platform's timeline.
 	for _, c := range []struct {
@@ -327,7 +327,7 @@ func RunPlatformClockAdvanceOneDay(t *testing.T, fixture BackendFixture) {
 			t.Fatalf("state at %s = %s; want %s", c.at.Format(time.RFC3339), at.Meta.State, c.want)
 		}
 	}
-	clockNear2(t, "GET /platform/clock", s.clock(t, http.MethodGet, "").Now, day2)
+	requireWithinClockNear(t, "GET /platform/clock", s.clock(t, http.MethodGet, "").Now, day2)
 }
 
 // RunPlatformClockBeforeRecordedTime409: setting the clock before the latest
@@ -363,7 +363,7 @@ func RunPlatformClockBeforeRecordedTime409(t *testing.T, fixture BackendFixture)
 		t.Fatalf("detail %q; want it to name the latest recorded time on 2015-03-01", pd.Detail)
 	}
 	// The refused set left the clock where it was.
-	if now := s.clock(t, http.MethodGet, "").Now; now.Before(clockParityStart.Add(-clockNear)) || now.Before(earlier.Add(time.Hour)) {
+	if now := s.clock(t, http.MethodGet, "").Now; now.Before(clockParityStart) {
 		t.Fatalf("clock after the refused set = %s; want it unmoved from %s", now, clockParityStart)
 	}
 }

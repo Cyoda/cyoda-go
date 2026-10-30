@@ -25,12 +25,6 @@ type AsyncSearchStore struct {
 	data  map[spi.TenantID]map[string]*searchJobEntry
 }
 
-// NewAsyncSearchStore creates a new in-memory AsyncSearchStore using the wall clock.
-// Prefer newAsyncSearchStore for internal construction so the factory clock is shared.
-func NewAsyncSearchStore() *AsyncSearchStore {
-	return newAsyncSearchStore(wallClock{}, wallClock{})
-}
-
 // newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given
 // physical and business clocks.
 func newAsyncSearchStore(clock, biz Clock) *AsyncSearchStore {

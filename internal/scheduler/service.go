@@ -34,7 +34,8 @@ type Deps struct {
 	Store     spi.StoreFactory
 	TxManager spi.TransactionManager
 	Firer     Firer
-	// Clock is the pnode clock: the one that set scheduledTime at arm.
+	// Clock is the platform clock, injected: the one that set scheduledTime
+	// at arm.
 	Clock spi.Clock
 	// HealthFlag is the process-wide flag a recovered panic latches false.
 	HealthFlag *atomic.Bool
