@@ -2,6 +2,7 @@ package sqlite_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -31,7 +32,8 @@ func TestConformance(t *testing.T) {
 			f, err := sqlite.NewStoreFactoryForTest(context.Background(), p,
 				sqlite.WithClock(clock), sqlite.WithBusinessClock(c))
 			if err != nil {
-				t.Fatalf("create clock factory: %v", err)
+				// Called from a subtest's goroutine: panic, as the postgres harness does.
+				panic(fmt.Sprintf("Harness.ClockFactory: %v", err))
 			}
 			return f, func() { _ = f.Close() }
 		},

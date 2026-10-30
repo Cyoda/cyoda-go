@@ -8,6 +8,8 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // progressEvery bounds how often a move logs its progress.
@@ -193,7 +195,7 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 	ticker *time.Ticker, p *progress) (spi.SchedulerActivityReport, error) {
 	for {
 		if err := ctx.Err(); err != nil {
-			return spi.SchedulerActivityReport{}, fmt.Errorf("platform clock move stopped: %w", err)
+			return spi.SchedulerActivityReport{}, common.ClientGone(fmt.Errorf("platform clock move stopped: %w", err))
 		}
 		rep, err := store.SchedulerActivity(ctx)
 		if err != nil {
@@ -212,7 +214,7 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 		}
 		select {
 		case <-ctx.Done():
-			return spi.SchedulerActivityReport{}, fmt.Errorf("platform clock move stopped: %w", ctx.Err())
+			return spi.SchedulerActivityReport{}, common.ClientGone(fmt.Errorf("platform clock move stopped: %w", ctx.Err()))
 		case <-ticker.C:
 		}
 	}

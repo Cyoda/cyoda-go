@@ -50,24 +50,8 @@ func NewServer() *Server {
 // and it travels no further than the Unimplemented fallback.
 
 // ---------------------------------------------------------------------------
-// Entity delegation (15 methods)
+// Entity delegation (20 methods)
 // ---------------------------------------------------------------------------
-
-func (s *Server) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
-	if s.PlatformClock != nil {
-		s.PlatformClock.GetPlatformClock(w, r)
-		return
-	}
-	s.Unimplemented.GetPlatformClock(w, r)
-}
-
-func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
-	if s.PlatformClock != nil {
-		s.PlatformClock.ChangePlatformClock(w, r)
-		return
-	}
-	s.Unimplemented.ChangePlatformClock(w, r)
-}
 
 func (s *Server) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
 	if s.Entity != nil {
@@ -226,6 +210,26 @@ func (s *Server) Create(w http.ResponseWriter, r *http.Request, format genapi.Cr
 		return
 	}
 	s.Unimplemented.Create(w, r, format, entityName, modelVersion, params)
+}
+
+// ---------------------------------------------------------------------------
+// Platform clock delegation (2 methods)
+// ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.GetPlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.GetPlatformClock(w, r)
+}
+
+func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.ChangePlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.ChangePlatformClock(w, r)
 }
 
 // ---------------------------------------------------------------------------

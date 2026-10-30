@@ -10,6 +10,8 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+
+	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 const testPoll = time.Millisecond
@@ -278,6 +280,21 @@ func TestMove_WaitsWhileRunning(t *testing.T) {
 	}
 	if got := f.pub.starts(); len(got) != 1 {
 		t.Fatalf("published starts = %v", got)
+	}
+}
+
+func TestMove_CancelIsClientGone(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	f.sched.due = []time.Time{base.Add(time.Hour)}
+	f.sched.fire = false
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.pub.hook = func(Setting) { cancel() }
+	target := base.Add(2 * time.Hour)
+	_, err := f.svc.Change(ctx, Change{At: &target})
+	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
 	}
 }
 
@@ -629,5 +646,12 @@ func TestSetBack_PendingOnFreshClockServesNothing(t *testing.T) {
 	}
 	if got := servedSetting(t, ex); got == nil || *got != f.clock.Setting() {
 		t.Fatalf("served %+v after publish, want %+v", got, f.clock.Setting())
+	}
+}
+
+func TestClassify_ClientGoneKeepsMarker(t *testing.T) {
+	e := classify(common.ClientGone(context.Canceled))
+	if !errors.Is(e.Err, common.ErrClientGone) {
+		t.Fatalf("classified error lost the client-gone marker: %v", e.Err)
 	}
 }
