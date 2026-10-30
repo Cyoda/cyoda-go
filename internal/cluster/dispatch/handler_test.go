@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"io"
 	"log/slog"
 	"net/http"
@@ -306,7 +307,7 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, platformclock.Real())
 
 	auth := newAEAD(t)
 	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))
@@ -675,7 +676,7 @@ func TestHandler_AScheduledFiresIdentityArrivesAsSent(t *testing.T) {
 		}
 		reg, cnode := attachedCnode(t, "tenant-1", "python")
 		local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, platformclock.Real())
 		auth := newAEAD(t)
 		if resp := postHandOver(t, newHandlerMux(t, local, auth), auth, scheduled(t)); resp.Outcome != OutcomeOK {
 			t.Fatalf("%+v", resp)

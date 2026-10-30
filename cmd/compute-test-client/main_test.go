@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 // TestCatalog_NoopReturnsEntityUnchanged verifies the noop processor
@@ -500,5 +504,32 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
 		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
 		t.Fatal("a refused write must fail the processor")
+	}
+}
+
+// An absolute schedule is computed from the request's time attribute, which is
+// platform time, not from the test client's own clock.
+func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {
+	cat := newCatalog(nil, nil)
+	fn, _ := cat.function("sched-fn-resolve")
+	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
+	ce := &cepb.CloudEvent{Attributes: map[string]*cepb.CloudEvent_CloudEventAttributeValue{
+		"time": {Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.New(at)}},
+	}}
+	ctx := withRequestTime(context.Background(), ce)
+
+	_, result, err := fn(ctx, &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result["fireAt"], at.UnixMilli()+1000; got != want {
+		t.Errorf("fireAt = %v, want %v", got, want)
+	}
+
+	// Without the attribute (an older server) the client's own clock stands in.
+	before := time.Now().UnixMilli()
+	_, result, _ = fn(withRequestTime(context.Background(), &cepb.CloudEvent{}), &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
+	if got := result["fireAt"].(int64); got < before+1000 {
+		t.Errorf("fallback fireAt = %d, want about now+1000", got)
 	}
 }

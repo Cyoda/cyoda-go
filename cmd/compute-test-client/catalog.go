@@ -280,7 +280,8 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 			// entity.Data carries the funcSchedData shape above, and returns
 			// the matching resolveSchedule Schedule result:
 			//
-			//   - "absolute":     fireAt = now + offsetMs (default 300ms)
+			//   - "absolute":     fireAt = now + offsetMs (default 300ms); now is the
+			//                     request's time attribute (platform time)
 			//   - "relative":     fireAfterMs = offsetMs (default 300ms)
 			//   - "bornExpired":  fireAfterMs = offsetMs (default 1000ms),
 			//                     expireAfterMs = 0 — expiry == fire time,
@@ -300,7 +301,7 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				if err := json.Unmarshal(entity.Data, &data); err != nil {
 					return "", nil, fmt.Errorf("sched-fn-resolve: decode entity data: %w", err)
 				}
-				now := time.Now().UnixMilli()
+				now := platformNow(ctx).UnixMilli()
 				switch data.SchedMode {
 				case "absolute":
 					offset := data.OffsetMs

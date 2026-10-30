@@ -345,8 +345,30 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 	return reply, false, err
 }
 
+type requestTimeKey struct{}
+
+// withRequestTime carries the request's CloudEvents time attribute (platform
+// time) to the catalog function that serves it.
+func withRequestTime(ctx context.Context, msg *cepb.CloudEvent) context.Context {
+	if a, ok := msg.GetAttributes()["time"]; ok && a.GetCeTimestamp() != nil {
+		return context.WithValue(ctx, requestTimeKey{}, a.GetCeTimestamp().AsTime())
+	}
+	return ctx
+}
+
+// platformNow is the time of the request being served: platform time as the
+// server stamped it. Only a request from an older server has none, and the
+// client's own clock stands in.
+func platformNow(ctx context.Context) time.Time {
+	if t, ok := ctx.Value(requestTimeKey{}).(time.Time); ok {
+		return t
+	}
+	return time.Now()
+}
+
 // answer serves one request from the catalog.
 func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage, pass string) (*cepb.CloudEvent, error) {
+	ctx = withRequestTime(ctx, msg)
 	switch msg.Type {
 	case ceTypeCriteriaRequest:
 		return d.handleCriteriaRequest(ctx, payload, pass)

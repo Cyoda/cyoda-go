@@ -90,7 +90,7 @@ service CloudEventsService {
 
 **entityManageCollection** — server-streaming RPC for batch entity operations. Accepts: `EntityCreateCollectionRequest`, `EntityUpdateCollectionRequest`, `EntityDeleteAllRequest`. Streams one response CloudEvent per entity.
 
-**entitySearch** — unary RPC for single-answer retrieval. Accepts: `EntityGetRequest`, `EntityConsistencyTimeGetRequest`, `EntitySnapshotSearchRequest`, `SnapshotGetStatusRequest`, `SnapshotCancelRequest`.
+**entitySearch** — unary RPC for single-answer retrieval. Accepts: `EntityGetRequest`, `EntityConsistencyTimeGetRequest`, `PlatformClockGetRequest`, `EntitySnapshotSearchRequest`, `SnapshotGetStatusRequest`, `SnapshotCancelRequest`.
 
 **entitySearchCollection** — server-streaming RPC for collection retrieval. Accepts: `EntityGetAllRequest`, `EntitySearchRequest`, `SnapshotGetRequest`, `EntityStatsGetRequest`, `EntityStatsByStateGetRequest`, `EntityChangesMetadataGetRequest`. Streams results.
 
@@ -186,6 +186,7 @@ The full CloudEvent envelope for an ack:
 
 - `EntityGetRequest` / `EntityResponse`
 - `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused with `POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; a refusal's message text carries the current one. Payload fields: `cyoda help cloudevents json`. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
+- `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only. Payload fields: `cyoda help cloudevents json`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`
@@ -485,6 +486,14 @@ that receives `CALLOUT_SUPERSEDED` must stop working on that request. While a
 compute node's request is in progress it has the transaction to itself: API
 requests under one token run one at a time, and cyoda does not interrupt one
 because its client went away.
+
+**Platform time on dispatched events:**
+
+Every processor, criterion and schedule-function request carries the platform
+clock's time at the moment it was built, as the standard CloudEvents `time`
+attribute (a timestamp). A compute node that computes an absolute time for a
+schedule reads it from there, not from its own clock, so the result agrees with
+the platform clock when that clock has been set.
 
 **Auth context on dispatched events:**
 

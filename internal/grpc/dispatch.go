@@ -10,8 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go-spi/strictjson"
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -31,12 +34,14 @@ type ProcessorDispatcher struct {
 	answerLimitDefault time.Duration
 	answerLimitMax     time.Duration
 	passAllowance      time.Duration
+	clock              spi.Clock
 }
 
-// NewProcessorDispatcher creates a new ProcessorDispatcher. It holds no node
+// NewProcessorDispatcher creates a new ProcessorDispatcher. Every request it
+// sends carries clock's time as the CloudEvents time attribute. It holds no node
 // identity of its own: the owner a pass names is the callout's, whichever
 // pnode is running the try.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration, clock spi.Clock) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
@@ -44,6 +49,7 @@ func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, s
 		answerLimitDefault: answerLimitDefault,
 		answerLimitMax:     answerLimitMax,
 		passAllowance:      passAllowance,
+		clock:              clock,
 	}
 }
 
@@ -125,6 +131,23 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 	}
 }
 
+// buildCalloutEvent builds the request CloudEvent of a callout: the request body
+// and the platform time as the CloudEvents time attribute. A compute node reads
+// platform time there; its own clock is not the platform's.
+func (d *ProcessorDispatcher) buildCalloutEvent(call Callout) (*cepb.CloudEvent, error) {
+	ce, err := NewCloudEvent(call.eventType, call.buildRequest(call.RequestID))
+	if err != nil {
+		return nil, err
+	}
+	if ce.Attributes == nil {
+		ce.Attributes = map[string]*cepb.CloudEvent_CloudEventAttributeValue{}
+	}
+	ce.Attributes["time"] = &cepb.CloudEvent_CloudEventAttributeValue{
+		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.New(d.clock.Now())},
+	}
+	return ce, nil
+}
+
 // dispatchCalloutToMember makes one try: it wraps the callout's request in a
 // CloudEvent carrying the auth context and pass, tracks the request, hands it
 // to the member's writer, and waits for the tracked response or the answer
@@ -158,7 +181,7 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 	label, name, requestID := call.Kind.String(), call.Name, call.RequestID
 	limitMs := call.AnswerLimit.Milliseconds()
 
-	ce, err := NewCloudEvent(call.eventType, call.buildRequest(requestID))
+	ce, err := d.buildCalloutEvent(call)
 	if err != nil {
 		return CalloutResult{}, terminalFailure(fmt.Errorf("failed to build %s cloud event: %w", label, err), member.ID, requestID), false, nil
 	}

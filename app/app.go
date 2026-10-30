@@ -390,7 +390,11 @@ func New(cfg Config) *App {
 	// entity service and every callout judge a callback by the same state.
 	a.txGate = txgate.New()
 	a.fence = fence.New(a.txGate)
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
+	// clk is the platform clock: one source of business time shared by the
+	// search service, the engine, the scheduler, the domain handlers and the
+	// callout dispatcher, so all agree on "now".
+	clk := platformclock.Real()
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance, clk)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",
@@ -407,10 +411,6 @@ func New(cfg Config) *App {
 	// single-node deployments, where the broadcaster is nil, receive
 	// invalidations at all. Per-(tenant, ref) bucketed otter caches
 	// isolate cross-tenant eviction.
-	// clk is the platform clock: one source of business time shared by the
-	// search service, the engine, the scheduler and the domain handlers, so all
-	// agree on "now".
-	clk := platformclock.Real()
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
@@ -568,6 +568,7 @@ func New(cfg Config) *App {
 	// PLATFORM tenant, and a move polls the store's scheduled tasks. The
 	// change is not yet broadcast to peers: cluster propagation is wired by
 	// the clock configuration.
+	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
 	if cfg.ClockControlEnabled {
 		testClock := platformclock.NewTest(a.selfNodeID, nil)
 		storeFactory, txMgr := a.storeFactory, a.transactionManager
@@ -583,6 +584,7 @@ func New(cfg Config) *App {
 			storeFactory.ScheduledTaskStore,
 			func(platformclock.Setting) {},
 			100*time.Millisecond)
+		clockState = clockSvc.State
 		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
 	} else {
 		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
@@ -751,7 +753,7 @@ func New(cfg Config) *App {
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency)
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
 
 	return a
 }

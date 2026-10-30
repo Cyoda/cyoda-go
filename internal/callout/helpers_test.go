@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"sync"
 	"testing"
 	"time"
@@ -63,7 +64,7 @@ func newEnv(t *testing.T, cfg Config) *env {
 	gate := txgate.New()
 	f := fence.New(gate)
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 30*time.Second, 60*time.Second, 30*time.Second)
+		signer, 30*time.Second, 60*time.Second, 30*time.Second, platformclock.Real())
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}
