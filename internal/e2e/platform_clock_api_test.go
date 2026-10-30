@@ -167,6 +167,16 @@ func TestPlatformClock_Post_AdvancePastYear9999_400(t *testing.T) {
 	}
 }
 
+// Once the clock has run past the year 9999, a rate alone would re-anchor it
+// there, so it is refused.
+func TestPlatformClock_Post_RateOnlyPastYear9999_400(t *testing.T) {
+	h := clockStack(t, true)
+	decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"time":"9999-12-31T23:59:59.9Z"}`))
+	time.Sleep(200 * time.Millisecond)
+	assertProblemJSON(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2}`),
+		http.StatusBadRequest, "BAD_REQUEST")
+}
+
 func TestPlatformClock_Post_RateThenGet(t *testing.T) {
 	h := clockStack(t, true)
 	c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2.5}`))
