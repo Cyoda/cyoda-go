@@ -622,22 +622,24 @@ func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 // LocalState and MergeRemoteState carry the optional push/pull state set by
 // Gossip.SetStateExchange; with none registered they do nothing.
 func (d *gossipDelegate) LocalState(bool) []byte {
-	d.exMu.RLock()
-	local := d.exLocal
-	d.exMu.RUnlock()
-	if local == nil {
-		return nil
+	// The callbacks run outside the lock.
+	if local, _ := d.exchange(); local != nil {
+		return local()
 	}
-	return local()
+	return nil
 }
 
 func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
-	d.exMu.RLock()
-	merge := d.exMerge
-	d.exMu.RUnlock()
-	if merge != nil {
+	if _, merge := d.exchange(); merge != nil {
 		merge(buf)
 	}
+}
+
+// exchange returns the callbacks registered by SetStateExchange.
+func (d *gossipDelegate) exchange() (local func() []byte, merge func([]byte)) {
+	d.exMu.RLock()
+	defer d.exMu.RUnlock()
+	return d.exLocal, d.exMerge
 }
 
 func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {
