@@ -703,8 +703,9 @@ revision dates, submit times, audit event times, consistency times, model
 update dates, search-job times, scheduled-transition due times and the point-in-time
 "now". It comes from one `spi.Clock`. In production the engine, the scheduler,
 the domain services and the callout dispatcher get the real clock, and the
-storage plugin is given none and uses its own: the database clock for postgres,
-the physical clock for memory and sqlite. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
+storage plugin is given none and uses its own: postgres stamps from the database
+clock and computes its retention and reap cutoffs on the process clock; memory
+and sqlite use their physical clock. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
 controllable `platformclock.Test`, hands it to the storage plugin with
 `spi.WithClock` and to every other reader of business time, and serves
 `GET`/`POST /api/platform/clock` (and `PlatformClockGetRequest` over gRPC).

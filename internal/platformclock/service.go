@@ -180,8 +180,14 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) er
 	for {
 		rep, err := s.awaitIdle(ctx, store, ticker, p)
 		if err != nil {
-			slog.Info("platform clock move stopped", "pkg", "platformclock",
-				"target", stamp(target), "now", stamp(s.c.Now()), "error", err.Error())
+			// Where the move stopped is this line's event. The cause rides
+			// along only for a departed client, whose error the door logs at
+			// DEBUG; any other failure reaches the door's ERROR line.
+			attrs := []any{"pkg", "platformclock", "target", stamp(target), "now", stamp(s.c.Now())}
+			if errors.Is(err, common.ErrClientGone) {
+				attrs = append(attrs, "cause", err.Error())
+			}
+			slog.Info("platform clock move stopped", attrs...)
 			return err
 		}
 		e := time.UnixMilli(rep.EarliestWaitingMs)
