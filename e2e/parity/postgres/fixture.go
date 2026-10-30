@@ -5,6 +5,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -106,7 +107,8 @@ func (f *postgresFixture) NewFreshStack(t *testing.T, env map[string]string) par
 
 	u, err := url.Parse(f.connStr)
 	if err != nil {
-		t.Fatalf("parse connection string: %v", err)
+		// errors.Unwrap: *url.Error renders the URL, which carries the password.
+		t.Fatalf("parse connection string: %v", errors.Unwrap(err))
 	}
 	u.Path = "/" + name
 	return fixtureutil.LaunchFreshStack(t, f.keySet, []string{

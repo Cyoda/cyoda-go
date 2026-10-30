@@ -51,7 +51,8 @@ func dsnWithParam(t *testing.T, dsn, key, value string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+		// errors.Unwrap: *url.Error renders the URL, which carries the password.
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
 	}
 	q := u.Query()
 	q.Set(key, value)
