@@ -299,13 +299,10 @@ func repoRoot(t *testing.T) string {
 func TestTimeReads_AllClassified(t *testing.T) {
 	root := repoRoot(t)
 	skipDirs := map[string]bool{
-		"cmd/compute-test-client": true,
-		"internal/testing":        true,
-		"test":                    true,
-		".git":                    true,
-		".worktrees":              true,
-		".superpowers":            true,
-		"node_modules":            true,
+		".git":         true,
+		".worktrees":   true,
+		".superpowers": true,
+		"node_modules": true,
 	}
 	// The real-clock implementations themselves.
 	skipFiles := map[string]bool{
