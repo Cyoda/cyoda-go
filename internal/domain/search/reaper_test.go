@@ -75,7 +75,7 @@ func createStaleReclaimJob(t *testing.T, clock *memory.TestClock, store spi.Asyn
 		ModelRef:   ref,
 		Condition:  condJSON,
 		SearchOpts: optsJSON,
-		CreateTime: time.Now().Add(-time.Hour),
+		CreateTime: clock.Now(),
 	}
 	if err := store.CreateJob(tenantCtx(string(tenant)), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
@@ -316,7 +316,7 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	// Stale by heartbeat baseline (CreateTime an hour in the past) so the
+	// Stale by heartbeat (the test clock advanced an hour after creation) so the
 	// FIRST ClaimStale below actually claims it in the ordinary way; the
 	// point under test is what happens to it AFTER that claim.
 	createStaleReclaimJob(t, clock, store, "tenant-a", "job-clear-err", ref, cond, time.Now())

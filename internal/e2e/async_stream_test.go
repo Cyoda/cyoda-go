@@ -44,7 +44,7 @@ package e2e_test
 //     TestExecutor_HeartbeatFencingAborts in executor_test.go); e2e
 //     TestE2E_AsyncSearch_OrphanReExecuted (this file) — synthesises the
 //     owner-is-gone shape (a RUNNING row with no executor behind it,
-//     created_at backdated past SearchJobStaleAfter, real entities seeded
+//     heartbeat_time backdated past SearchJobStaleAfter, real entities seeded
 //     behind its model) and asserts app.New's wired reaper ticker (app.go's
 //     startSearchReapers claim loop calling ReclaimStaleJobs) CLAIMS, ClearResults,
 //     re-enqueues, and completes it SUCCESSFUL with the direct-search result
@@ -637,7 +637,7 @@ func TestE2E_AsyncSearch_CrashMidSave_PartialCleared(t *testing.T) {
 	// result set are unmistakably leftovers.
 	partial := []string{"stale-partial-0", "stale-partial-1", "stale-partial-2"}
 	insertPartialResultRows(t, jobID, partial)
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if st := a.waitTerminal(t, jobID, 20*time.Second); st != "SUCCESSFUL" {
 		t.Fatalf("status = %s, want SUCCESSFUL (reclaim never re-executed the crashed-mid-save job)", st)
@@ -731,8 +731,8 @@ func reaperFastCadence(cfg *app.Config) {
 // executor is GONE — the node holding it crashed or was killed — so nothing
 // will ever heartbeat it, complete it, or write its terminal status. That
 // shape is synthesised directly, by writing the job row the postgres store's
-// CreateJob writes (RUNNING, epoch 1, heartbeat_time NULL) with no executor
-// behind it and a created_at backdated far past SearchJobStaleAfter, with real
+// CreateJob writes (RUNNING, epoch 1, heartbeat_time stamped at creation) with no executor
+// behind it and a heartbeat_time backdated far past SearchJobStaleAfter, with real
 // entities seeded behind its model so the re-execution has something to return.
 // Nothing in this process owns the job, so the ONLY thing that can move it off
 // RUNNING is the app-wired reaper — which claims it, ClearResults, re-enqueues
@@ -768,7 +768,7 @@ func TestE2E_AsyncSearch_OrphanReExecuted(t *testing.T) {
 	}
 
 	jobID := insertOrphanRunningJob(t, model, consistentInstant(t, doAuth, model))
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "SUCCESSFUL" {
 		t.Fatalf("status = %s, want SUCCESSFUL (reaper never re-executed the orphaned job)", status)
@@ -850,7 +850,7 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 	// cap. (0 is also the default, but seed it explicitly so intent survives a
 	// change to the default MaxAttempts.)
 	jobID := insertRunningJobRow(t, model, 0, time.Now().Add(-time.Minute))
-	backdateJobCreatedAt(t, jobID, time.Hour)
+	backdateJobLiveness(t, jobID, time.Hour)
 
 	if status := h.waitForAsyncTerminal(t, jobID, 15*time.Second); status != "FAILED" {
 		t.Fatalf("status = %s, want FAILED (attempt cap not enforced)", status)
@@ -870,8 +870,8 @@ func TestE2E_AsyncSearch_AttemptCap_Fails(t *testing.T) {
 // behind it — the crashed-or-killed-node shape spi.AsyncSearchStore.ClaimStale
 // exists to recover — straight into the shared testcontainer. The column set
 // and values mirror the postgres store's CreateJob exactly (epoch persisted
-// as 1 per its contract, heartbeat_time left NULL so staleness is measured
-// from created_at, the SPI's documented baseline), so the row is
+// as 1 per its contract, heartbeat_time stamped at creation, the only column
+// staleness is measured from), so the row is
 // indistinguishable from one a real submit produced; what is missing is only
 // the executor, which is the point.
 //
@@ -964,8 +964,8 @@ func insertRunningJobRow(t *testing.T, model string, staleClaims int64, pit time
 	defer pool.Close()
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, calc_ms, epoch, stale_claims)
-		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, $6, 0, '', now(), 0, 1, $7)`,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, heartbeat_time, calc_ms, epoch, stale_claims)
+		 VALUES ($1, $2, 'RUNNING', $3, '1', $4, $5, $6, 0, '', now(), now(), 0, 1, $7)`,
 		jobID, tenantID, model,
 		[]byte(`{"type":"group","operator":"AND","conditions":[]}`),
 		pit,
@@ -1001,12 +1001,11 @@ func insertPartialResultRows(t *testing.T, jobID string, entityIDs []string) {
 	}
 }
 
-// backdateJobCreatedAt pushes a search job's created_at back by age via a
-// direct connection to the shared testcontainer, so the reaper's staleness
-// check (HeartbeatTime, or CreateTime as the baseline when never
-// heartbeated) treats it as long orphaned without waiting real wall-clock
-// time.
-func backdateJobCreatedAt(t *testing.T, jobID string, age time.Duration) {
+// backdateJobLiveness pushes a search job's heartbeat_time (the only column
+// ClaimStale judges staleness by) and created_at back by age via a direct
+// connection to the shared testcontainer, so the reaper treats the job as long
+// orphaned without waiting real wall-clock time.
+func backdateJobLiveness(t *testing.T, jobID string, age time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1015,7 +1014,8 @@ func backdateJobCreatedAt(t *testing.T, jobID string, age time.Duration) {
 		t.Fatalf("open backdater pool: %v", err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, `UPDATE search_jobs SET created_at = created_at - ($2 * interval '1 microsecond') WHERE id = $1`,
+	if _, err := pool.Exec(ctx, `UPDATE search_jobs SET created_at = created_at - ($2 * interval '1 microsecond'),
+			heartbeat_time = heartbeat_time - ($2 * interval '1 microsecond') WHERE id = $1`,
 		jobID, age.Microseconds()); err != nil {
 		t.Fatalf("backdate search job %s: %v", jobID, err)
 	}
