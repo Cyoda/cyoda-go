@@ -290,3 +290,19 @@ func TestHandler_Post_ResultBeyondYear9999_Is500(t *testing.T) {
 		t.Errorf("no ticket in %v", body)
 	}
 }
+
+// A JSON number big.Rat refuses (an exponent beyond its cap) is a number out
+// of range, not "not a number".
+func TestHandler_Post_HugeExponentRate_IsOutOfRange(t *testing.T) {
+	f := newFake()
+	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+	rec := httptest.NewRecorder()
+	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"rate":1e999999999}`))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	_, body := problem(t, rec)
+	if detail, _ := body["detail"].(string); !strings.Contains(detail, "from 0.1 to 100") {
+		t.Fatalf("detail = %q, want the range", detail)
+	}
+}

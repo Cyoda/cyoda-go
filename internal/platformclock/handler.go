@@ -130,9 +130,10 @@ func ratePPM(lit string) (int64, *common.AppError) {
 	if len(lit) > maxRateLiteral {
 		return 0, badRequest("rate is not a number from 0.1 to 100 with at most six fractional digits")
 	}
+	// lit is a JSON number; one big.Rat refuses has an exponent past its cap.
 	r, ok := new(big.Rat).SetString(lit)
 	if !ok {
-		return 0, badRequest("rate is not a number")
+		return 0, badRequest("rate is not a number from 0.1 to 100 with at most six fractional digits")
 	}
 	r.Mul(r, big.NewRat(1_000_000, 1))
 	if !r.IsInt() {

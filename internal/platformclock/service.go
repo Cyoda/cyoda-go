@@ -129,8 +129,10 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 	if err != nil {
 		return st, err
 	}
+	att, exe := spi.AttributionFor(ctx)
 	slog.Info("platform clock changed", "pkg", "platformclock",
-		"now", stamp(st.Now), "ratePPM", st.RatePPM)
+		"now", stamp(st.Now), "ratePPM", st.RatePPM,
+		"attributedId", att.ID, "attributedKind", string(att.Kind), "executorId", exe.ID, "executorKind", string(exe.Kind))
 	return st, nil
 }
 
