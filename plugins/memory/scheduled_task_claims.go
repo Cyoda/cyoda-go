@@ -243,3 +243,24 @@ func (s *scheduledTaskStore) claimCandidatesLocked(req spi.ClaimRequest) []spi.S
 	}
 	return cands
 }
+
+// SchedulerActivity reports, across all tenants, the earliest NextAttemptTime
+// of a WAITING task and whether any task is RUNNING. Read under entityMu, the
+// lock every claim and commit holds.
+func (s *scheduledTaskStore) SchedulerActivity(_ context.Context) (spi.SchedulerActivityReport, error) {
+	s.f.entityMu.Lock()
+	defer s.f.entityMu.Unlock()
+	var r spi.SchedulerActivityReport
+	for _, t := range s.f.scheduledTasks {
+		switch t.Status {
+		case spi.ScheduledTaskWaiting:
+			if !r.HasWaiting || t.NextAttemptTime < r.EarliestWaitingMs {
+				r.EarliestWaitingMs = t.NextAttemptTime
+				r.HasWaiting = true
+			}
+		case spi.ScheduledTaskRunning:
+			r.Running = true
+		}
+	}
+	return r, nil
+}

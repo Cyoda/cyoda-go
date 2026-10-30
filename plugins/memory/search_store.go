@@ -93,6 +93,10 @@ func (s *AsyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	copied := copySearchJob(*job)
 	copied.Epoch = 1
 	copied.StaleClaims = 0
+	// Liveness starts at creation, on the store's physical clock; ClaimStale
+	// measures staleness from HeartbeatTime alone.
+	hb := s.clock.Now()
+	copied.HeartbeatTime = &hb
 	tenantJobs[job.ID] = &searchJobEntry{job: copied}
 	return nil
 }
@@ -385,11 +389,7 @@ func (s *AsyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 				continue
 			}
 			if !entry.released {
-				baseline := entry.job.CreateTime
-				if entry.job.HeartbeatTime != nil {
-					baseline = *entry.job.HeartbeatTime
-				}
-				if !baseline.Before(cutoff) {
+				if !entry.job.HeartbeatTime.Before(cutoff) {
 					continue
 				}
 			}
