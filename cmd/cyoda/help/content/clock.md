@@ -42,7 +42,7 @@ POST /api/platform/clock      {"rate": 1}
 
 **Restrictions.**
 - Keep the system idle while the clock changes; nothing guards activity during a change.
-- Cluster nodes need synchronised real clocks, and all use the same value of the setting.
+- Cluster nodes need synchronised real clocks, and all use the same value of `CYODA_CLOCK_CONTROL_ENABLED`.
 - A node that restarts while other nodes run takes their setting. Only a full restart (no node left running, or a single-node deployment) returns the clock to real time, and that startup fails if the store holds times more than 1 s later than real time: start over with a fresh store.
 - Mock IAM lets any admin act as platform operator.
 

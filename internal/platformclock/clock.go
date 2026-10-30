@@ -1,4 +1,6 @@
-// Package platformclock provides the platform's clock implementations.
+// Package platformclock holds the platform clock: the real and the test
+// clock, the service that changes the test clock, its gossip carriage between
+// nodes, and the HTTP handler for /platform/clock.
 package platformclock
 
 import (
