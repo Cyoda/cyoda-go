@@ -549,11 +549,22 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return nil
 }
 
+// SetStateExchange registers the push/pull state a joining or syncing peer
+// exchanges: local supplies this node's state, merge receives a peer's. merge
+// runs on memberlist's goroutine and must not block. Without it the exchange
+// carries nothing.
+func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
+	g.delegate.exMu.Lock()
+	defer g.delegate.exMu.Unlock()
+	g.delegate.exLocal, g.delegate.exMerge = local, merge
+}
+
 // gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
 // identity (id, addresses, tag list version); NotifyMsg/GetBroadcasts
 // implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
 // Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
-// are no-ops — we don't use the push/pull anti-entropy state channel.
+// carry the optional state set by Gossip.SetStateExchange and are no-ops
+// without it.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte
@@ -568,6 +579,11 @@ type gossipDelegate struct {
 	queue  *memberlist.TransmitLimitedQueue
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
+
+	// exLocal/exMerge are the optional push/pull state exchange hooks.
+	exMu    sync.RWMutex
+	exLocal func() []byte
+	exMerge func([]byte)
 }
 
 func (d *gossipDelegate) updateMeta(meta []byte) {
@@ -602,8 +618,27 @@ func (d *gossipDelegate) NotifyMsg(msg []byte) {
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 	return d.queue.GetBroadcasts(overhead, limit)
 }
-func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
-func (d *gossipDelegate) MergeRemoteState([]byte, bool) {}
+
+// LocalState and MergeRemoteState carry the optional push/pull state set by
+// Gossip.SetStateExchange; with none registered they do nothing.
+func (d *gossipDelegate) LocalState(bool) []byte {
+	d.exMu.RLock()
+	local := d.exLocal
+	d.exMu.RUnlock()
+	if local == nil {
+		return nil
+	}
+	return local()
+}
+
+func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
+	d.exMu.RLock()
+	merge := d.exMerge
+	d.exMu.RUnlock()
+	if merge != nil {
+		merge(buf)
+	}
+}
 
 func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {
 	d.subsMu.Lock()

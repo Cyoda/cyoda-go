@@ -30,3 +30,6 @@ func (g *Gossip) Crash() {
 		}
 	})
 }
+
+// LocalStateForTest returns what memberlist would send in a push/pull exchange.
+func (g *Gossip) LocalStateForTest() []byte { return g.delegate.LocalState(false) }
