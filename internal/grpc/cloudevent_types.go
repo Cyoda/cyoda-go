@@ -83,4 +83,7 @@ const (
 
 	EntityConsistencyTimeGetRequest = "EntityConsistencyTimeGetRequest"
 	EntityConsistencyTimeResponse   = "EntityConsistencyTimeResponse"
+
+	PlatformClockGetRequest = "PlatformClockGetRequest"
+	PlatformClockResponse   = "PlatformClockResponse"
 )

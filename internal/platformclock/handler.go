@@ -52,15 +52,18 @@ func bodyOf(st State) clockBody {
 	return clockBody{Now: st.Now.UTC(), Rate: float64(st.RatePPM) / 1e6, Controllable: st.Controllable}
 }
 
+// StateOf is the state both doors answer: svc's state when clock control is
+// enabled, else real time at rate 1, not controllable (svc is not used).
+func StateOf(svc interface{ State() State }, enabled bool) State {
+	if !enabled {
+		return State{Now: Real().Now(), RatePPM: 1_000_000, Controllable: false}
+	}
+	return svc.State()
+}
+
 // GetPlatformClock implements GET /platform/clock.
 func (h *Handler) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
-	if !h.enabled {
-		common.WriteJSON(w, http.StatusOK, bodyOf(State{
-			Now: Real().Now(), RatePPM: 1_000_000, Controllable: false,
-		}))
-		return
-	}
-	common.WriteJSON(w, http.StatusOK, bodyOf(h.svc.State()))
+	common.WriteJSON(w, http.StatusOK, bodyOf(StateOf(h.svc, h.enabled)))
 }
 
 // member is a body member that records it was present and refuses JSON null:

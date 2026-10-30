@@ -8,7 +8,7 @@
 //     build time (e.g. cyoda-docs)
 //
 // The directory layout mirrors the URL scheme used in `$id` values:
-// `common/…`, `entity/…`, `model/…`, `processing/…`, `search/…`.
+// `common/…`, `entity/…`, `model/…`, `platform/…`, `processing/…`, `search/…`.
 // `common/statemachine/` is a nested sub-category for state-machine
 // metadata (WorkflowInfo, TransitionInfo, ProcessorInfo).
 package cyodaschemas
@@ -16,11 +16,11 @@ package cyodaschemas
 import "embed"
 
 // FS is the embedded filesystem rooted at this directory. The root has
-// five top-level entries (common, entity, model, processing, search);
+// six top-level entries (common, entity, model, platform, processing, search);
 // recursion into `common/statemachine/` is automatic per go:embed
 // directory semantics.
 //
-//go:embed common entity model processing search
+//go:embed common entity model platform processing search
 var FS embed.FS
 
 // BaseID is the URL prefix used in every schema's `$id` field. Exposed

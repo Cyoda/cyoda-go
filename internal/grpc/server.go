@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // CloudEventsServiceImpl implements the Cyoda CloudEventsService gRPC service.
@@ -32,6 +33,7 @@ type CloudEventsServiceImpl struct {
 	modelHandler      *model.Handler
 	searchService     *search.SearchService
 	cons              *consistency.Service
+	clockState        func() platformclock.State
 	keepAliveInterval time.Duration
 	keepAliveTimeout  time.Duration
 }
@@ -70,6 +72,7 @@ type KeepAliveConfig struct {
 // healthFlag is the same flag the HTTP Recovery middleware stores into — a
 // panic recovered on either door marks the node unhealthy. May be nil in
 // tests that don't care about health-flag observation.
+// clockState answers PlatformClockGetRequest; it is the state GET /platform/clock answers.
 func NewServer(
 	authSvc contract.AuthenticationService,
 	m2mStore auth.M2MClientStore,
@@ -88,9 +91,13 @@ func NewServer(
 	healthFlag *atomic.Bool,
 	keepAlive KeepAliveConfig,
 	cons *consistency.Service,
+	clockState func() platformclock.State,
 ) *Server {
 	if cons == nil {
 		panic("grpc.NewServer: nil consistency service")
+	}
+	if clockState == nil {
+		panic("grpc.NewServer: nil platform clock state")
 	}
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
@@ -134,6 +141,7 @@ func NewServer(
 	grpcServer := googlegrpc.NewServer(opts...)
 	svc := &CloudEventsServiceImpl{
 		cons:              cons,
+		clockState:        clockState,
 		registry:          registry,
 		authSvc:           authSvc,
 		m2mStore:          m2mStore,

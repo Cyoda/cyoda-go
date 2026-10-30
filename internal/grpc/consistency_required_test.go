@@ -1,6 +1,10 @@
 package grpc
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+)
 
 func TestNewServer_NilConsistencyPanics(t *testing.T) {
 	defer func() {
@@ -8,5 +12,5 @@ func TestNewServer_NilConsistencyPanics(t *testing.T) {
 			t.Fatal("NewServer with a nil consistency service did not panic")
 		}
 	}()
-	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, nil, KeepAliveConfig{}, nil)
+	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, nil, KeepAliveConfig{}, nil, func() platformclock.State { return platformclock.State{} })
 }

@@ -59,6 +59,9 @@
     "EntityChangesMetadataGetRequest",
     "EntityChangesMetadataResponse",
     "EntityConsistencyTimeGetRequest",
-    "EntityConsistencyTimeResponse"
+    "EntityConsistencyTimeResponse",
+
+    "PlatformClockGetRequest",
+    "PlatformClockResponse"
   ]
 }
