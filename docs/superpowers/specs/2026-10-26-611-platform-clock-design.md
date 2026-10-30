@@ -545,7 +545,7 @@ No new store reads, locks, checks or background work run in production.
   on-behalf-of tokens) on a node with the feature on. The feature is off by
   default.
 - **Instance-wide by design.** The clock is the same for every tenant. It
-  holds no tenant data. The startup WARN and the help topic say so.
+  holds no tenant data, but while a move runs the stepped clock lands on the due times of scheduled tasks in every tenant, so any caller reading the clock sees those times (not which tenant they belong to). The startup WARN and the help topic say so.
 - **Credentials.** No credential, key or token validity reads the platform
   clock.
 - **Input validation:**

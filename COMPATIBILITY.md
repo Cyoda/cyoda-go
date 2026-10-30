@@ -199,7 +199,7 @@ store), `TransactionManager.LatestRecordedTime`, a `CreateJob` that stamps
 `HeartbeatTime` with `ClaimStale` judged on it alone, and honours `WithClock`
 for every business stamp. Its conformance harness sets `ClockFactory` and its
 parity fixture implements `parity.FreshStackFixture`; without them the clock
-cases and scenarios skip. A cyoda-go-cassandra issue tracks it.
+cases and scenarios skip. [cyoda-go-cassandra#117](https://github.com/Cyoda/cyoda-go-cassandra/issues/117) tracks it.
 
 ## Helm chart × binary
 

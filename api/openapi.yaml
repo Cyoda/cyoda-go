@@ -1102,8 +1102,9 @@ paths:
         "409":
           description: >-
             CLOCK_BEFORE_RECORDED_TIME — the store has recorded a time later
-            than the requested `time`; the detail names the latest one. The
-            clock is unchanged.
+            than the requested `time`; the detail names the latest one, and the
+            problem's `properties.latestRecordedTime` carries it as an RFC 3339
+            timestamp. The clock is unchanged.
           content:
             application/problem+json:
               schema:

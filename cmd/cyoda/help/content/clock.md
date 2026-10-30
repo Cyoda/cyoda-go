@@ -30,7 +30,7 @@ POST /api/platform/clock      {"rate": 1}
 
 ## DESCRIPTION
 
-**Test feature, not for production.** The clock is instance-wide: one setting applies to every tenant.
+**Test feature, not for production.** The clock is instance-wide: one setting applies to every tenant. While a move runs, the clock lands on the due times of scheduled tasks in every tenant, so any caller reading the clock then sees those times (not which tenant they belong to).
 
 **What it affects.** Business times: entity and revision dates, audit event times, consistency times, model update dates, search-job times, scheduled-transition due times, the point-in-time "now", and the `time` attribute of callout requests, so a schedule function can compute an absolute fire time on the platform's clock. **What stays on real time:** token and key validity, timeouts and deadlines, leases, heartbeats and keep-alives.
 

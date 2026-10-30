@@ -1,5 +1,7 @@
 # The platform clock — Cloud twin-alignment spec
 
+CaaS ticket: [CP-3992](https://cyoda1.atlassian.net/browse/CP-3992)
+
 This document is the contract Cyoda Cloud implements to stay aligned with
 cyoda-go's controllable platform clock. cyoda-go is the authoritative
 implementation. Cloud has no controllable clock today: its clock control is
@@ -41,8 +43,8 @@ node id) wins; a node that joins takes it from its peers.
 | Status | Code | When |
 |---|---|---|
 | 403 | `CLOCK_CONTROL_DISABLED` | the feature is off |
-| 400 | strict-body and validation codes | unknown member, no member, both `time` and `advanceByMs`, `advanceByMs <= 0`, `rate` outside 0.1 to 100, `time` not RFC 3339 or outside 1970 to 9999 |
-| 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest time the store has recorded; the detail names it |
+| 400 | strict-body and validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs <= 0`, `advanceByMs` that moves the clock past the year 9999, `rate` outside 0.1 to 100 or with more than six fractional digits, `time` not RFC 3339 or outside 1970 to 9999 |
+| 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest time the store has recorded; the detail names it, and `properties.latestRecordedTime` carries it as an RFC 3339 timestamp |
 | 503 | store unavailable | the store did not answer the check or the move's task query |
 
 ## 4. Behaviour

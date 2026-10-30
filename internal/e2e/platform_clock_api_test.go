@@ -202,6 +202,17 @@ func TestPlatformClock_BeforeRecordedTime409(t *testing.T) {
 	if pd.Properties["errorCode"] != "CLOCK_BEFORE_RECORDED_TIME" || !strings.Contains(pd.Detail, "latest recorded time") {
 		t.Fatalf("problem %s", raw)
 	}
+	latest, _ := pd.Properties["latestRecordedTime"].(string)
+	lt, err := time.Parse(time.RFC3339, latest)
+	if err != nil {
+		t.Fatalf("latestRecordedTime %q is not RFC 3339: %v (%s)", latest, err, raw)
+	}
+	if !strings.HasSuffix(pd.Detail, latest) {
+		t.Fatalf("detail %q does not name latestRecordedTime %q", pd.Detail, latest)
+	}
+	if !lt.After(earlier) {
+		t.Fatalf("latestRecordedTime %s is not later than the requested %s", lt, earlier)
+	}
 	// The refused set left the clock where it was.
 	if g := decodeClock(t, h.clockAs(t, h.token(t), http.MethodGet, "", "")); g.Now.Before(earlier.Add(time.Hour).Add(-time.Minute)) {
 		t.Fatalf("clock moved by a refused set: %s", g.Now)
