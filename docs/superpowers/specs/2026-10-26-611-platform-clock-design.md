@@ -614,7 +614,8 @@ No new store reads, locks, checks or background work run in production.
 | Operational checks stay on the physical clock with an injected clock far from real time (owner not swept, running search job not reclaimed) | | | | | ✓ |
 | With a past clock: an async search's results are not reaped early; `GetSubmitTime` still answers | | ✓ | ✓ | | ✓ |
 | `CLOCK_BEFORE_RECORDED_TIME` after a write, with the latest time in the detail | ✓ | ✓ | ✓ | | |
-| Interrupted move: the clock stays where the last step put it; repeating the move continues | | ✓ | | | |
+| Interrupted move: the clock stays where the last step put it | | ✓ | | | |
+| Repeating an interrupted move continues from where the last step put the clock | ✓ | | | | |
 | In-transaction read of a new entity under a test clock returns platform-time placeholder dates (postgres) | | ✓ | | | |
 | `SchedulerActivity`: earliest WAITING across two tenants, the RUNNING flag, an empty store | | | | | ✓ |
 | Search-job liveness: a new job carries `HeartbeatTime` at insert and is not reclaimed before it is stale on the store's clock | | | | | ✓ |

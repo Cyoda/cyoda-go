@@ -686,3 +686,83 @@ func TestMove_CancelStopsWithUserContext(t *testing.T) {
 		t.Fatalf("err = %v, want ErrClientGone wrapping context.Canceled", err)
 	}
 }
+
+// A task due exactly at the target fires at the target, and the clock runs on
+// while it fires; the final step then finds the clock past the target and must
+// not move it back.
+func TestMove_DueAtTarget_DoesNotMoveBack(t *testing.T) {
+	f := newFixture(t)
+	target := f.t0.Truncate(time.Millisecond).Add(time.Hour)
+	f.sched.due = []time.Time{target}
+	f.sched.onFire = func(time.Time) []time.Time { f.src.advance(time.Millisecond); return nil }
+	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	starts := f.pub.starts()
+	if len(starts) == 0 || !starts[len(starts)-1].Equal(target) {
+		t.Fatalf("published starts = %v, want them to end at %v", starts, target)
+	}
+	if f.clock.Now().Before(target.Add(time.Millisecond)) {
+		t.Fatalf("clock = %v, behind the fire at %v", f.clock.Now(), target.Add(time.Millisecond))
+	}
+}
+
+func TestMove_DueAtTarget_WithRate_RateAppliesAtEnd(t *testing.T) {
+	f := newFixture(t)
+	target := f.t0.Truncate(time.Millisecond).Add(time.Hour)
+	f.sched.due = []time.Time{target}
+	f.sched.onFire = func(time.Time) []time.Time { f.src.advance(time.Millisecond); return nil }
+	st, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(3_000_000))})
+	if err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	f.pub.mu.Lock()
+	sets := append([]Setting(nil), f.pub.sets...)
+	f.pub.mu.Unlock()
+	if len(sets) < 2 {
+		t.Fatalf("published = %+v, want the step and the rate", sets)
+	}
+	if sets[0].StartUnixMicro != target.UnixMicro() || sets[0].RatePPM != 1_000_000 {
+		t.Fatalf("first published = %+v, want the step at the target", sets[0])
+	}
+	last := sets[len(sets)-1]
+	if last.RatePPM != 3_000_000 || last.StartUnixMicro < target.Add(time.Millisecond).UnixMicro() {
+		t.Fatalf("last published = %+v, want rate 3000000 starting no earlier than the fire", last)
+	}
+	if st.RatePPM != 3_000_000 || st.Now.Before(target.Add(time.Millisecond)) {
+		t.Fatalf("state = %+v", st)
+	}
+}
+
+// Repeating a cancelled move continues from where the last step put the clock.
+func TestMove_RepeatAfterCancelContinues(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	h1, h2, h3 := base.Add(time.Hour), base.Add(2*time.Hour), base.Add(3*time.Hour)
+	target := base.Add(4 * time.Hour)
+	f.sched.due = []time.Time{h1, h2, h3}
+	f.sched.fire = false
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.pub.hook = func(Setting) { cancel() }
+	if _, err := f.svc.Change(ctx, Change{At: &target}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("first move err = %v, want context.Canceled", err)
+	}
+	if !f.clock.Now().Equal(h1) {
+		t.Fatalf("clock after cancel = %v, want %v", f.clock.Now(), h1)
+	}
+	f.pub.hook = nil
+	f.sched.mu.Lock()
+	f.sched.fire = true
+	f.sched.mu.Unlock()
+	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
+		t.Fatalf("repeated move: %v", err)
+	}
+	want := []time.Time{h1, h2, h3, target}
+	if got := f.pub.starts(); !sameTimes(got, want) {
+		t.Fatalf("published starts = %v, want %v", got, want)
+	}
+	if !f.clock.Now().Equal(target) {
+		t.Fatalf("clock = %v, want %v", f.clock.Now(), target)
+	}
+}
