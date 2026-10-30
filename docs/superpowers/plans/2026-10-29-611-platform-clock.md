@@ -24,6 +24,7 @@
 - **No issue IDs** (`#NNN`) in code, comments, logs, OpenAPI or help text.
 - **TDD per task**, Gate 1. Use `make test` while iterating; never add `-count=1`; never run `make test-full` or `make race` locally (CI runs them).
 - **SPI changes** follow `../cyoda-go-spi/MAINTAINING.md`: a PR into SPI `main`, a pseudo-pin in all four `go.mod` files in one commit, no tag.
+- **Time reads:** every non-test `time.Now`/`Since`/`Until`, and every `now()`/`CURRENT_TIMESTAMP`/`clock_timestamp()` in postgres SQL, either uses the injected clock or carries `realtime: <reason>`. Task 8b's guard test enforces this.
 - **One clock type in the host.** `scheduler.Clock`, `scheduler.NewRealClock` and `workflow.WithScheduledClock(func() time.Time)` are deleted, not kept beside it. Exit check: `grep -rn 'NewRealClock\|WithScheduledClock(' --include='*.go' .` returns only the new option.
 
 ## Review Focus
@@ -229,6 +230,35 @@
 - [ ] **Step 4:** The exit check from Global Constraints returns nothing old. Then `grep -rn 'time\.Now()' internal/domain/entity/service.go internal/domain/model/service.go internal/domain/search/service.go internal/domain/search/reaper.go` → empty.
 - [ ] **Step 5:** `make test` → PASS.
 - [ ] **Step 6:** Commit `refactor: one injected clock for every business time read`.
+
+### Task 8b: Time-read guard and agent rule
+
+Runs after Tasks 4, 5, 6 and 8: it scans their code.
+
+**Files:**
+- Create: `internal/platformclock/time_reads_test.go`. It is AST-based, on the pattern of `internal/fence/check_call_sites_test.go` and `internal/txgate/suspend_call_sites_test.go`.
+- Create: `.claude/rules/time-reads.md`
+- Modify: every unmarked real-time site the test reports (marker comments only)
+
+**Rule the test enforces:**
+- **Go calls.** In non-test `.go` files of the root module and of `plugins/memory`, `plugins/sqlite` and `plugins/postgres` (read by path; the plugins are separate modules), every call to `time.Now`, `time.Since` and `time.Until` carries a comment `// realtime: <reason>` on the same line or the line above. The reason must be non-empty.
+  - Excluded: `_test.go` files, `cmd/compute-test-client`, `internal/testing`, `test/`, and the real-clock implementations themselves (`platformclock.Real`, the plugins' `wallClock`).
+- **SQL.** In string literals of `plugins/postgres/*.go` and in `plugins/postgres/migrations/*.up.sql`, every `now()`, `CURRENT_TIMESTAMP` and `clock_timestamp()` carries `-- realtime: <reason>` (in SQL) or `// realtime: <reason>` (on the Go line).
+  - Excluded: the bodies of `cyoda_stamp` and `cyoda_consistency_time`, which are the documented production stamp source, and migrations numbered below 000017 (history, not edited).
+- **Failure message,** naming file and line: "business time must come from the injected clock; if this call measures real time (timeout, lease, heartbeat, auth, metrics), mark it `// realtime: <reason>`".
+
+**The rule file** `.claude/rules/time-reads.md`, a few lines only:
+- business time comes from the injected `spi.Clock`;
+- real time needs the marker and a reason;
+- the database clock is for liveness and the production commit stamp only;
+- `internal/platformclock/time_reads_test.go` enforces this.
+
+- [ ] **Step 1: Write the guard test.** Its self-tests are `TestTimeReadGuard_FlagsUnmarked` and `TestTimeReadGuard_AcceptsMarked`, run on small in-memory sources, plus the repository scan `TestTimeReads_AllClassified`.
+- [ ] **Step 2:** `go test ./internal/platformclock/ -run TimeRead` → the self-tests pass, and the repository scan FAILS, listing the operational sites (about 150, the inventory in the research notes).
+- [ ] **Step 3:** Add a `realtime:` marker with a one-line reason at each listed site. If a site turns out to be business time, it switches to the injected clock instead, and gets a test in the package that owns it.
+- [ ] **Step 4:** The scan passes. Run `make test` → PASS.
+- [ ] **Step 5:** Write `.claude/rules/time-reads.md`.
+- [ ] **Step 6:** Commit `test: every time read is the injected clock or marked real time`.
 
 ### Task 9: Gossip carriage of the setting
 
