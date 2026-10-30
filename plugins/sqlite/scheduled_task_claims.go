@@ -381,9 +381,12 @@ func (s *scheduledTaskStore) SweepMarks(ctx context.Context) error {
 
 // SchedulerActivity reports, across all tenants, the earliest next_attempt_time
 // of a WAITING task and whether any task is RUNNING. Read under the commit
-// gate, as ClaimDue's reads are, so it sees no half-committed claim.
+// gate, as ClaimDue's reads are, so it sees no half-committed claim. A pure
+// read abandons nothing, so its wait for the gate honours ctx.
 func (s *scheduledTaskStore) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
-	_ = s.tm.acquireCommitGate(context.Background())
+	if err := s.tm.acquireCommitGate(ctx); err != nil {
+		return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read the scheduler activity: %w", err)
+	}
 	defer s.tm.releaseCommitGate()
 
 	var r spi.SchedulerActivityReport
