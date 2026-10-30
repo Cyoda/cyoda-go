@@ -14,6 +14,7 @@ import (
 func TestConformance(t *testing.T) {
 	clock := memory.NewTestClock()
 	factory := memory.NewStoreFactory(memory.WithClock(clock))
+	t.Cleanup(func() { _ = factory.Close() })
 	spitest.StoreFactoryConformance(t, spitest.Harness{
 		Factory:      factory,
 		AdvanceClock: clock.Advance,
@@ -22,7 +23,7 @@ func TestConformance(t *testing.T) {
 		// TestClock, so AdvanceClock ages liveness stamps without touching c.
 		ClockFactory: func(c spi.Clock) (spi.StoreFactory, func()) {
 			f := memory.NewStoreFactory(memory.WithClock(clock), memory.WithBusinessClock(c))
-			return f, func() {}
+			return f, func() { _ = f.Close() }
 		},
 	})
 }
