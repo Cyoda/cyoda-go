@@ -441,14 +441,17 @@ Production keeps the database clock (decision 5). With a test clock:
   (`entity_store.go:613-614`), so they must be platform time. They come from
   two places:
   - the `SELECT CURRENT_TIMESTAMP` at `entity_store.go:242`, `:774`;
-  - column defaults that the inserts rely on: `entities.creation_date` and
+  - columns whose inserts wrote no value and took the column default: `entities.creation_date` and
     `last_modified` (`entity_store.go:298-310`; `000012_commit_instant.up.sql:20-22`)
     and `entity_versions.transaction_time` (`entity_store.go:372-380`, `:836`;
     `000001:35`).
 
   With a test clock, the select takes the clock's time, and the inserts write
   these columns explicitly from that value. Without one, the inserts write the
-  same `CURRENT_TIMESTAMP` value the defaults give today.
+  `CURRENT_TIMESTAMP` value. Migration 000017 drops the placeholder-date
+  `DEFAULT`s on `entities.creation_date` and `last_modified` and on
+  `entity_versions.transaction_time` and `creation_date`
+  (`000017…up.sql:74-83`), because every insert now writes them.
 - **Submit-time pruning and search-job reaping.** Today these compare business
   stamps with Go's `time.Now()` (`transaction_manager.go:354`, `:543-560`;
   `search_store.go:587`). With a test clock they use it, so both sides are
@@ -521,11 +524,15 @@ ways and no others.
    the same as the column defaults give today.
 5. **Search-job liveness.** On all backends, a new job's liveness baseline is
    the store's clock at insert, not the engine's `CreateTime`.
-6. **Dead defaults and columns** are dropped.
+6. **Dead and placeholder defaults, and dead columns** are dropped. Migration
+   000017 drops the placeholder-date `DEFAULT`s on `entities.creation_date`
+   and `last_modified` and on `entity_versions.transaction_time` and
+   `creation_date`, because every insert now writes them.
 7. **Sqlite snapshot time.** `Begin` reads its snapshot time inside the commit
    gate, so the recorded SnapshotTime can be later by the gate wait.
 8. **Search-job heartbeat backfill.** Postgres 000017 and sqlite 000013 set
-   `heartbeat_time` from the creation time for existing rows.
+   `heartbeat_time` from the creation time for existing rows, and 000017 then
+   makes `search_jobs.heartbeat_time` `NOT NULL`.
 
 **Additions that production does not exercise:**
 - `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`

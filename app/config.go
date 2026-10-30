@@ -75,7 +75,7 @@ type Config struct {
 	SearchJobHeartbeatInterval time.Duration
 	// SearchJobStaleAfter is how long a RUNNING async-search job may go
 	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
-	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
+	// baseline — HeartbeatTime, stamped at CreateJob)
 	// before the reaper (internal/domain/search.ReclaimStaleJobs, wired into
 	// the reclaim ticker in app.go) claims it and re-executes it on a live
 	// node (or fails it past the attempt cap). Must dominate
