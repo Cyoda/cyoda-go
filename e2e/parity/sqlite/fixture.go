@@ -71,6 +71,21 @@ func (f *sqliteFixture) StartComputeClient(t *testing.T, spec parity.ComputeClie
 	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
+var _ parity.FreshStackFixture = (*sqliteFixture)(nil)
+
+// NewFreshStack implements parity.FreshStackFixture: a stack on a database
+// file of its own, in a directory the test removes.
+func (f *sqliteFixture) NewFreshStack(t *testing.T, env map[string]string) (string, string, func()) {
+	t.Helper()
+	dbPath := filepath.Join(t.TempDir(), "fresh.db")
+	base, stop := fixtureutil.LaunchFreshStack(t, f.keySet, []string{
+		"CYODA_STORAGE_BACKEND=sqlite",
+		"CYODA_SQLITE_PATH=" + dbPath,
+		"CYODA_SQLITE_AUTO_MIGRATE=true",
+	}, env)
+	return base, fixtureutil.MintPlatformClockJWT(t, f.keySet).Token, stop
+}
+
 // setup creates a temp directory for the SQLite database, builds
 // binaries, launches subprocesses, and waits for readiness. It returns
 // a teardown function that kills subprocesses and removes the temp dir.

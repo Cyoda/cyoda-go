@@ -10,7 +10,7 @@ import (
 // wantParityScenarioCount is the number of entries in allTests, which the
 // registry.go header comment states too. Change both in the same change that
 // adds or removes a scenario; TestParityScenarioCount fails until they agree.
-const wantParityScenarioCount = 250
+const wantParityScenarioCount = 254
 
 // headerCount finds the count in the registry.go header comment.
 var headerCount = regexp.MustCompile(`// allTests holds (\d+) scenarios`)

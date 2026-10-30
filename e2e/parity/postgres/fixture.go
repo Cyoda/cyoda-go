@@ -6,6 +6,9 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/url"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +31,10 @@ type postgresFixture struct {
 	computeBin   string
 	// logs is the cyoda node's captured output (parity.SchedulerWaitFixture).
 	logs *fixtureutil.SyncBuffer
+	// container and connStr are the shared database server, from which a
+	// fresh stack gets a database of its own (NewFreshStack).
+	container *tcpostgres.PostgresContainer
+	connStr   string
 }
 
 var _ parity.ComputeClientFixture = (*postgresFixture)(nil)
@@ -69,6 +76,45 @@ func (f *postgresFixture) PlatformOperator(t *testing.T) parity.Tenant {
 func (f *postgresFixture) StartComputeClient(t *testing.T, spec parity.ComputeClientSpec) parity.ComputeClient {
 	t.Helper()
 	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
+}
+
+var _ parity.FreshStackFixture = (*postgresFixture)(nil)
+
+// freshDBSeq numbers the databases fresh stacks create.
+var freshDBSeq atomic.Int64
+
+// NewFreshStack implements parity.FreshStackFixture: a stack on a database of
+// its own on the fixture's server, dropped when the test ends.
+func (f *postgresFixture) NewFreshStack(t *testing.T, env map[string]string) (string, string, func()) {
+	t.Helper()
+	ctx := context.Background()
+	name := fmt.Sprintf("cyoda_fresh_%d_%d", time.Now().UnixNano(), freshDBSeq.Add(1)) // realtime: a unique name
+	psql := func(sql string) {
+		t.Helper()
+		code, out, err := f.container.Exec(ctx, []string{"psql", "-U", "testuser", "-d", "cyoda_parity_test", "-v", "ON_ERROR_STOP=1", "-c", sql})
+		if err != nil || code != 0 {
+			var msg []byte
+			if out != nil {
+				msg, _ = io.ReadAll(out)
+			}
+			t.Fatalf("psql %q: exit %d, %v: %s", sql, code, err, msg)
+		}
+	}
+	psql("CREATE DATABASE " + name)
+	// Registered before the node starts, so it runs after the node stops.
+	t.Cleanup(func() { psql("DROP DATABASE IF EXISTS " + name + " WITH (FORCE)") })
+
+	u, err := url.Parse(f.connStr)
+	if err != nil {
+		t.Fatalf("parse connection string: %v", err)
+	}
+	u.Path = "/" + name
+	base, stop := fixtureutil.LaunchFreshStack(t, f.keySet, []string{
+		"CYODA_STORAGE_BACKEND=postgres",
+		"CYODA_POSTGRES_URL=" + u.String(),
+		"CYODA_POSTGRES_AUTO_MIGRATE=true",
+	}, env)
+	return base, fixtureutil.MintPlatformClockJWT(t, f.keySet).Token, stop
 }
 
 // setup boots a Postgres testcontainer, builds binaries, launches
@@ -129,6 +175,8 @@ func setup() (*postgresFixture, func(), error) {
 		computeCreds: fixtureutil.NewComputeCredentials(ks),
 		computeBin:   result.ComputeBin,
 		logs:         result.Logs,
+		container:    pgContainer,
+		connStr:      connStr,
 	}
 
 	return fix, cleanup, nil

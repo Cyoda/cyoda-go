@@ -2,7 +2,7 @@ package parity
 
 import "testing"
 
-// allTests holds 250 scenarios in this package: the entries of its literal
+// allTests holds 254 scenarios in this package: the entries of its literal
 // below, and those that files of this package add with Register from init()
 // (callback_txjoin_conflict.go, ifmatch_callback_self_write.go).
 // TestParityScenarioCount (registry_count_test.go) checks the number: change
@@ -476,6 +476,13 @@ var allTests = []NamedTest{
 	{"SigningKeyPairLifecycle", RunSigningKeyPairLifecycle},
 	{"KeyPairNoAudience", RunKeyPairNoAudience},
 	{"PlatformOperatorGate", RunPlatformOperatorGate},
+
+	// The platform clock, each scenario on a fresh stack of its own with
+	// clock control on (FreshStackFixture); skipped on a fixture without it.
+	{"PlatformClockPastStart", RunPlatformClockPastStart},
+	{"PlatformClockAdvanceOneDay", RunPlatformClockAdvanceOneDay},
+	{"PlatformClockBeforeRecordedTime409", RunPlatformClockBeforeRecordedTime409},
+	{"PlatformClockPastStartAsyncSearch", RunPlatformClockPastStartAsyncSearch},
 
 	// M2M clients in each backend's own spi.KeyValueStore: create, token,
 	// list, reset and delete, with another tenant's id answering 404 on

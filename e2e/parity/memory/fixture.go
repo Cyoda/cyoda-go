@@ -65,6 +65,16 @@ func (f *memoryFixture) StartComputeClient(t *testing.T, spec parity.ComputeClie
 	return fixtureutil.StartComputeClientForFixture(t, f.computeCreds, f.computeBin, f.grpcEndpoint, f.baseURL, spec)
 }
 
+var _ parity.FreshStackFixture = (*memoryFixture)(nil)
+
+// NewFreshStack implements parity.FreshStackFixture: a memory stack of its own
+// (the store is the process's).
+func (f *memoryFixture) NewFreshStack(t *testing.T, env map[string]string) (string, string, func()) {
+	t.Helper()
+	base, stop := fixtureutil.LaunchFreshStack(t, f.keySet, []string{"CYODA_STORAGE_BACKEND=memory"}, env)
+	return base, fixtureutil.MintPlatformClockJWT(t, f.keySet).Token, stop
+}
+
 // setup builds binaries, launches subprocesses, and waits for readiness.
 // It returns a teardown function that kills the subprocesses.
 func setup() (*memoryFixture, func(), error) {

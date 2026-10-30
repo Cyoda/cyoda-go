@@ -57,6 +57,20 @@ type BackendFixture interface {
 	PlatformOperator(t *testing.T) Tenant
 }
 
+// FreshStackFixture is an OPTIONAL capability: a fixture that implements it
+// starts a cyoda-go stack of its own on a fresh store, for a scenario that
+// changes something instance-wide (the platform clock) and so cannot share
+// the fixture's server. Like ComputeClientFixture it is not part of
+// BackendFixture: a scenario that needs it skips on a fixture without it.
+type FreshStackFixture interface {
+	// NewFreshStack starts a stack with no compute client, on a store no
+	// other stack uses, with CYODA_CLOCK_CONTROL_ENABLED=true and env set
+	// on top of the fixture's own settings. It returns the HTTP base URL
+	// (as BaseURL) and a platform-operator M2M token (ROLE_ADMIN and ROLE_M2M in PLATFORM, which the clock requires), and a stop function that
+	// the fixture also registers with t.Cleanup. It t.Fatals on failure.
+	NewFreshStack(t *testing.T, env map[string]string) (baseURL string, token string, stop func())
+}
+
 // Tenant identifies a fresh tenant scope for a single test, plus the JWT
 // the test uses to authenticate API calls within that scope.
 type Tenant struct {
