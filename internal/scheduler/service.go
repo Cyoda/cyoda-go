@@ -144,8 +144,11 @@ type Service struct {
 	drainOnce sync.Once
 }
 
-// New builds a service. Start begins claiming.
+// New builds a service. Start begins claiming. A nil deps.Clock panics.
 func New(cfg Config, deps Deps) *Service {
+	if deps.Clock == nil {
+		panic("scheduler.New: nil clock")
+	}
 	return &Service{
 		cfg:            cfg,
 		deps:           deps,
