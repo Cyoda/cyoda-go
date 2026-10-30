@@ -104,10 +104,11 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	}
 	// Enforce context tenant — never trust the struct field. Epoch is always
 	// persisted as 1 regardless of job.Epoch (spi.AsyncSearchStore.CreateJob
-	// contract) — heartbeat_time is left NULL (never stamped).
+	// contract). heartbeat_time is stamped with the database's now(): liveness
+	// starts at creation, and ClaimStale measures staleness from it alone.
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, epoch)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1)`,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, epoch, heartbeat_time)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, now())`,
 		job.ID, string(tid), job.Status,
 		job.ModelRef.EntityName, job.ModelRef.ModelVersion,
 		job.Condition, job.PointInTime,
@@ -627,7 +628,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		`WITH claimed AS (
 		   SELECT tenant_id, id, released FROM search_jobs
 		   WHERE status = 'RUNNING'
-		     AND (released OR COALESCE(heartbeat_time, created_at) < now() - ($1 * interval '1 microsecond'))
+		     AND (released OR heartbeat_time < now() - ($1 * interval '1 microsecond'))
 		   ORDER BY created_at
 		   LIMIT $2
 		   FOR UPDATE SKIP LOCKED

@@ -1211,3 +1211,23 @@ func (s *scheduledTaskStore) SweepMarks(ctx context.Context) error {
 	}
 	return nil
 }
+
+// SchedulerActivity reads, in one statement and so one snapshot, the earliest
+// next_attempt_time of a WAITING task and whether any task is RUNNING, across
+// all tenants (the scheduler tables carry no row-level security, like
+// ClaimDue's cross-tenant reads). It runs on the scheduler pool.
+func (s *scheduledTaskStore) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
+	var earliest *int64
+	var running bool
+	if err := s.sched.QueryRow(ctx,
+		`SELECT (SELECT min(next_attempt_time) FROM scheduled_tasks WHERE status = 'WAITING'),
+		        EXISTS (SELECT 1 FROM scheduled_tasks WHERE status = 'RUNNING')`).Scan(&earliest, &running); err != nil {
+		return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read the scheduler activity: %w", err)
+	}
+	r := spi.SchedulerActivityReport{Running: running}
+	if earliest != nil {
+		r.HasWaiting = true
+		r.EarliestWaitingMs = *earliest
+	}
+	return r, nil
+}
