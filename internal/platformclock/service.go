@@ -38,6 +38,9 @@ type State struct {
 	Controllable bool
 }
 
+// Rate is RatePPM as the multiplier both doors answer (1 is real time).
+func (s State) Rate() float64 { return float64(s.RatePPM) / 1e6 }
+
 // BeforeRecordedTimeError refuses a set-back: the store has recorded a time
 // later than the requested start. Latest is that time.
 type BeforeRecordedTimeError struct {

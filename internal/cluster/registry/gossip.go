@@ -554,9 +554,13 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 // runs on memberlist's goroutine and must not block. Without it the exchange
 // carries nothing.
 func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
-	g.delegate.exMu.Lock()
-	defer g.delegate.exMu.Unlock()
-	g.delegate.exLocal, g.delegate.exMerge = local, merge
+	g.delegate.ex.Store(&stateExchange{local: local, merge: merge})
+}
+
+// stateExchange is the push/pull state hooks SetStateExchange registers.
+type stateExchange struct {
+	local func() []byte
+	merge func([]byte)
 }
 
 // gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
@@ -580,10 +584,9 @@ type gossipDelegate struct {
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
 
-	// exLocal/exMerge are the optional push/pull state exchange hooks.
-	exMu    sync.RWMutex
-	exLocal func() []byte
-	exMerge func([]byte)
+	// ex holds the optional push/pull state exchange hooks; nil until
+	// SetStateExchange, and an atomic load on every push/pull.
+	ex atomic.Pointer[stateExchange]
 }
 
 func (d *gossipDelegate) updateMeta(meta []byte) {
@@ -622,24 +625,16 @@ func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 // LocalState and MergeRemoteState carry the optional push/pull state set by
 // Gossip.SetStateExchange; with none registered they do nothing.
 func (d *gossipDelegate) LocalState(bool) []byte {
-	// The callbacks run outside the lock.
-	if local, _ := d.exchange(); local != nil {
-		return local()
+	if ex := d.ex.Load(); ex != nil && ex.local != nil {
+		return ex.local()
 	}
 	return nil
 }
 
 func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
-	if _, merge := d.exchange(); merge != nil {
-		merge(buf)
+	if ex := d.ex.Load(); ex != nil && ex.merge != nil {
+		ex.merge(buf)
 	}
-}
-
-// exchange returns the callbacks registered by SetStateExchange.
-func (d *gossipDelegate) exchange() (local func() []byte, merge func([]byte)) {
-	d.exMu.RLock()
-	defer d.exMu.RUnlock()
-	return d.exLocal, d.exMerge
 }
 
 func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {

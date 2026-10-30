@@ -180,7 +180,7 @@ func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Conte
 		return platformClockError(ctx, ce.Id, appErr)
 	}
 	now := st.Now.UTC()
-	rate := float64(st.RatePPM) / 1e6
+	rate := st.Rate()
 	diag := common.GetDiagnostics(ctx)
 	resp := events.PlatformClockResponseJson{
 		ID:           ce.Id,

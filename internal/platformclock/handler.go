@@ -49,7 +49,7 @@ type clockBody struct {
 }
 
 func bodyOf(st State) clockBody {
-	return clockBody{Now: st.Now.UTC(), Rate: float64(st.RatePPM) / 1e6, Controllable: st.Controllable}
+	return clockBody{Now: st.Now.UTC(), Rate: st.Rate(), Controllable: st.Controllable}
 }
 
 // StateOf is the state both doors answer: svc's state when clock control is
@@ -105,7 +105,7 @@ type rateLiteral string
 
 func (l *rateLiteral) UnmarshalJSON(data []byte) error {
 	if data[0] == '"' || data[0] == 't' || data[0] == 'f' ||
-		data[0] == '{' || data[0] == '[' || data[0] == 'n' {
+		data[0] == '{' || data[0] == '[' {
 		return errors.New("rate must be a number")
 	}
 	*l = rateLiteral(data)
@@ -220,8 +220,8 @@ func classify(err error) *common.AppError {
 	if errors.As(err, &before) {
 		e := common.Operational(http.StatusConflict, common.ErrCodeClockBeforeRecordedTime,
 			fmt.Sprintf("the store has recorded a time later than the requested time; latest recorded time %s",
-				before.Latest.UTC().Format(time.RFC3339Nano)))
-		e.Props = map[string]any{"latestRecordedTime": before.Latest.UTC().Format(time.RFC3339Nano)}
+				stamp(before.Latest)))
+		e.Props = map[string]any{"latestRecordedTime": stamp(before.Latest)}
 		return e
 	}
 	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) {

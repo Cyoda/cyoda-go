@@ -65,18 +65,13 @@ func (s *state) platformMicro(now time.Time) int64 {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	// elapsed*rate can exceed 64 bits; use a 128-bit product. The rate is
-	// validated positive wherever a setting is made or received.
+	// elapsed*rate can exceed 64 bits; use a 128-bit product. Elapsed is at
+	// most a Duration's range (time.Sub saturates) and the rate is validated
+	// to at most maxRatePPM wherever a setting is made or received, so the
+	// quotient is below 2^60 and, added to a start before the year 10000,
+	// fits an int64.
 	hi, lo := bits.Mul64(uint64(elapsed), uint64(s.setting.RatePPM))
-	var scaled uint64
-	if hi >= 1_000_000 {
-		scaled = 1<<63 - 1 // quotient would not fit; saturate
-	} else {
-		scaled, _ = bits.Div64(hi, lo, 1_000_000)
-	}
-	if scaled > 1<<62 {
-		scaled = 1 << 62
-	}
+	scaled, _ := bits.Div64(hi, lo, 1_000_000)
 	return s.setting.StartUnixMicro + int64(scaled)
 }
 
