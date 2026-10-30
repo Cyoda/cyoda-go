@@ -38,7 +38,7 @@ POST /api/platform/clock      {"rate": 1}
 
 **Moving forward.** A move does not jump. It steps through the scheduled transitions that come due on the way, and each fires at its own due time, within about one scan interval (`CYODA_SCHEDULER_SCAN_INTERVAL`) times the rate. Due order holds for due times further apart than that; closer ones run together. The cost is one step per distinct due time, including retries and schedules that re-arm themselves. A move waits while a due task is pending (for example when no node runs a scheduler), so allow for that when you wait for the answer. Make one change at a time. A move that is interrupted leaves the clock where it got to; repeat it to continue.
 
-**Rate.** From 0.1 to 100; 1 is recommended. A rate other than 1 makes retries and time limits pass faster or slower in platform time, and multiplies any difference between node clocks.
+**Rate.** From 0.1 to 100; 1 is recommended. A rate other than 1 makes retries and time limits pass faster or slower in platform time, and multiplies any difference between node clocks. A `rate` sent with a later `time` or with `advanceByMs` takes effect when the move finishes. A clock that runs past the year 9999 makes reads fail; start a new store.
 
 **Restrictions.**
 - Keep the system idle while the clock changes; nothing guards activity during a change.

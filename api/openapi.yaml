@@ -1055,6 +1055,9 @@ paths:
 
         - `rate` alone changes the speed from now on; the time does not jump.
 
+        - A `rate` sent with a later `time` or with `advanceByMs` takes effect
+        when the move finishes.
+
 
         At most one of `time` and `advanceByMs`, and at least one member.
 

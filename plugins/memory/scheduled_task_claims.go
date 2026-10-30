@@ -248,8 +248,8 @@ func (s *scheduledTaskStore) claimCandidatesLocked(req spi.ClaimRequest) []spi.S
 // of a WAITING task and whether any task is RUNNING. Read under entityMu, the
 // lock every claim and commit holds.
 func (s *scheduledTaskStore) SchedulerActivity(_ context.Context) (spi.SchedulerActivityReport, error) {
-	s.f.entityMu.Lock()
-	defer s.f.entityMu.Unlock()
+	s.f.entityMu.RLock()
+	defer s.f.entityMu.RUnlock()
 	var r spi.SchedulerActivityReport
 	for _, t := range s.f.scheduledTasks {
 		switch t.Status {
