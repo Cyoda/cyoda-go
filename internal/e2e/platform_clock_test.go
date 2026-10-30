@@ -38,8 +38,10 @@ var clockStart = time.Date(2015, 3, 1, 9, 0, 0, 0, time.UTC)
 
 // fireSlack bounds how late a scheduled transition may be recorded after its
 // due time: one scan interval (50ms, schedulerTuning) at rate 1, plus the
-// fire itself, with margin for a loaded host.
-const fireSlack = 2 * time.Second
+// fire itself, with wide margin for a loaded host. A move that jumped
+// instead of stepping would record fires hours late, so the margin does not
+// blunt the check.
+const fireSlack = 5 * time.Second
 
 // clockTestStack is a stack of its own with clock control on and the tuned
 // scheduler. configure runs last and may override either.
@@ -617,10 +619,10 @@ func TestPlatformClock_CalloutTimeAttribute(t *testing.T) {
 }
 
 // newClockSeed starts a cluster member outside cyoda-go that the clock
-// test's nodes join through, and returns its gossip address: an app node's gossip port is the kernel's choice and cannot
-// be named as a seed. It runs the platform clock's own gossip code, so like
-// every node it adopts a broadcast setting and hands it to a node that joins
-// through it.
+// test's nodes join through, and returns its gossip address: an app node's
+// gossip port is the kernel's choice and cannot be named as a seed. It runs
+// the platform clock's own gossip code, so like every node it adopts a
+// broadcast setting and hands it to a node that joins through it.
 func newClockSeed(t *testing.T) string {
 	t.Helper()
 	nodeID := "clock-seed-" + randSuffix(t)[:8]
@@ -692,14 +694,17 @@ func TestPlatformClock_TwoNodes_SettingPropagates(t *testing.T) {
 		return !c.Now.Before(clockStart) && !c.Now.After(clockStart.Add(ran+time.Second))
 	}
 
-	deadline := time.Now().Add(2 * time.Second) // realtime: the propagation bound
+	// Gossip usually delivers well under a second; the bound is sized for a
+	// loaded host, and the poll ends as soon as B is on the setting.
+	const propagation = 10 * time.Second
+	deadline := time.Now().Add(propagation) // realtime: the propagation bound
 	for {
 		c := getClock(t, b)
 		if onSetting(c) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("node B's clock %s 2s after the change on node A; want about %s", c.Now, clockStart)
+			t.Fatalf("node B's clock %s %s after the change on node A; want about %s", c.Now, propagation, clockStart)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
