@@ -1,7 +1,7 @@
 package platformclock
 
 // Rate bounds for Setting.RatePPM (parts per million; 1_000_000 is real time).
-// Set does not enforce them; the API layer validates before calling Set.
+// The clock does not enforce them; the API layer validates before changing it.
 const (
 	MinRatePPM = 100_000
 	MaxRatePPM = 100_000_000

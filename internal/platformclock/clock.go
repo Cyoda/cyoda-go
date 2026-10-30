@@ -84,7 +84,15 @@ func (s *state) platformMicro(now time.Time) int64 {
 
 // Now returns the current platform time.
 func (c *Test) Now() time.Time {
-	return time.UnixMicro(c.st.Load().platformMicro(c.src()))
+	now, _ := c.reading()
+	return now
+}
+
+// reading returns the platform time and the setting it was computed from, off
+// one load of the state.
+func (c *Test) reading() (time.Time, Setting) {
+	st := c.st.Load()
+	return time.UnixMicro(st.platformMicro(c.src())), st.setting
 }
 
 // Setting returns the current setting.
@@ -109,17 +117,17 @@ func (c *Test) Apply(s Setting) bool {
 	}
 }
 
-// Set makes a local change: at (nil keeps the current platform time) and
+// set makes a local change: at (nil keeps the current platform time) and
 // ratePPM (nil keeps the rate). RatePPM must lie within [MinRatePPM,
-// MaxRatePPM]; callers validate, Set does not. It bumps the version, stamps
+// MaxRatePPM]; callers validate, set does not. It bumps the version, stamps
 // Writer with this node's id and returns the new setting.
-func (c *Test) Set(at *time.Time, ratePPM *int64) Setting {
-	_, next := c.set(at, ratePPM)
+func (c *Test) set(at *time.Time, ratePPM *int64) Setting {
+	_, next := c.setState(at, ratePPM)
 	return next.setting
 }
 
-// set is Set returning the state it replaced and the state it installed.
-func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
+// setState is set returning the state it replaced and the state it installed.
+func (c *Test) setState(at *time.Time, ratePPM *int64) (prev, next *state) {
 	prev, next, _ = c.install(func(current int64) (int64, bool) {
 		if at == nil {
 			return current, true

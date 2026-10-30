@@ -57,7 +57,7 @@ func TestTest_SetPast_RunsAtRate(t *testing.T) {
 	c := NewTest("n1", s.now)
 	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	rate := int64(2_000_000)
-	c.Set(&start, &rate)
+	c.set(&start, &rate)
 	if !near(c.Now(), start, time.Millisecond) {
 		t.Fatalf("Now = %v want %v", c.Now(), start)
 	}
@@ -72,11 +72,11 @@ func TestTest_RateChangeDoesNotJump(t *testing.T) {
 	c := NewTest("n1", s.now)
 	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	rate := int64(2_000_000)
-	c.Set(&start, &rate)
+	c.set(&start, &rate)
 	s.advance(10 * time.Second)
 	before := c.Now()
 	r2 := int64(500_000)
-	c.Set(nil, &r2)
+	c.set(nil, &r2)
 	if !near(c.Now(), before, time.Millisecond) {
 		t.Fatalf("jump: %v -> %v", before, c.Now())
 	}
@@ -90,7 +90,7 @@ func TestTest_ApplyIgnoresOlder(t *testing.T) {
 	s := newFakeSrc()
 	c := NewTest("n1", s.now)
 	r := int64(3_000_000)
-	newer := c.Set(nil, &r)
+	newer := c.set(nil, &r)
 	if c.Apply(Setting{Version: 0, Writer: "z", RatePPM: 1_000_000}) {
 		t.Fatal("older setting applied")
 	}
@@ -105,7 +105,7 @@ func TestTest_ApplyConvertsAnchor(t *testing.T) {
 	b := NewTest("b", s2.now)
 	start := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
 	rate := int64(2_000_000)
-	set := a.Set(&start, &rate)
+	set := a.set(&start, &rate)
 	if !b.Apply(set) {
 		t.Fatal("apply refused")
 	}
@@ -129,7 +129,7 @@ func TestTest_HugeElapsedNoOverflow(t *testing.T) {
 	c := NewTest("n1", s.now)
 	start := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 	rate := int64(MaxRatePPM)
-	c.Set(&start, &rate)
+	c.set(&start, &rate)
 	s.advance(100 * 365 * 24 * time.Hour)
 	want := time.UnixMicro(start.UnixMicro() + int64(100*365*24*time.Hour/time.Microsecond)*100)
 	if !near(c.Now(), want, time.Millisecond) {
@@ -158,7 +158,7 @@ func TestTest_ConcurrentUse(t *testing.T) {
 			r := int64(1_500_000)
 			for j := 0; j < 200; j++ {
 				c.Now()
-				c.Set(nil, &r)
+				c.set(nil, &r)
 				c.Apply(c.Setting())
 			}
 		}()

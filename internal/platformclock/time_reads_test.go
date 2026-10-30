@@ -312,7 +312,6 @@ func TestTimeReads_AllClassified(t *testing.T) {
 		"internal/platformclock/clock.go": true,
 		"plugins/memory/clock.go":         true,
 		"plugins/sqlite/clock.go":         true,
-		"plugins/postgres/clock.go":       true,
 	}
 	migNum := regexp.MustCompile(`^(\d+)_`)
 

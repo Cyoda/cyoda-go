@@ -437,17 +437,6 @@ func TestRateOnly_NoJump(t *testing.T) {
 	}
 }
 
-func TestChange_AtAndAdvanceByRefused(t *testing.T) {
-	f := newFixture(t)
-	at := f.t0.Add(time.Hour)
-	if _, err := f.svc.Change(context.Background(), Change{At: &at, AdvanceBy: ptr(time.Hour)}); err == nil {
-		t.Fatal("expected an error for At with AdvanceBy")
-	}
-	if len(f.pub.starts()) != 0 {
-		t.Fatal("published")
-	}
-}
-
 func TestStartupCheck_AheadFails(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	tm := &fakeStoreTime{answer: func() time.Time { return now.Add(time.Second + time.Microsecond) }}

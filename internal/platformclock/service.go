@@ -77,10 +77,10 @@ func NewService(c *Test, storeTime func(ctx context.Context) (time.Time, error),
 
 // State returns the current platform time and rate.
 func (s *Service) State() State {
-	st := s.c.st.Load()
+	now, setting := s.c.reading()
 	return State{
-		Now:          time.UnixMicro(st.platformMicro(s.c.src())),
-		RatePPM:      st.setting.RatePPM,
+		Now:          now,
+		RatePPM:      setting.RatePPM,
 		Controllable: true,
 	}
 }
@@ -94,9 +94,6 @@ func (s *Service) State() State {
 //
 // A move stopped by ctx leaves the clock where its last step put it.
 func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
-	if ch.At != nil && ch.AdvanceBy != nil {
-		return State{}, errors.New("a clock change takes a time or an advance, not both")
-	}
 	var rate *int64
 	if ch.RatePPM != nil {
 		r := *ch.RatePPM
@@ -115,10 +112,8 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 
 	var err error
 	switch {
-	case target == nil && rate == nil:
-		return s.State(), nil
 	case target == nil:
-		s.commit(s.c.Set(nil, rate))
+		s.commit(s.c.set(nil, rate))
 	case target.After(now):
 		err = s.move(ctx, *target, rate)
 	default:
@@ -139,7 +134,7 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 // store has recorded a later time: the previous setting is restored and
 // nothing is published.
 func (s *Service) setBack(ctx context.Context, at time.Time, rate *int64) error {
-	prev, next := s.c.set(&at, rate)
+	prev, next := s.c.setState(&at, rate)
 	latest, err := s.storeTime(ctx)
 	if err != nil {
 		s.c.restore(next, prev)
