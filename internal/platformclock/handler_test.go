@@ -69,6 +69,11 @@ func TestHandler_Post_400(t *testing.T) {
 		{"rate_above", `{"rate":100.1}`},
 		{"rate_seven_digits", `{"rate":1.1234567}`},
 		{"rate_not_number", `{"rate":"2"}`},
+		{"rate_below_ppm", `{"rate":0.0999999}`},
+		{"rate_just_above_max", `{"rate":100.000001}`},
+		{"rate_null", `{"rate":null,"advanceByMs":5}`},
+		{"time_null", `{"time":null,"rate":2}`},
+		{"advance_null", `{"advanceByMs":null,"rate":2}`},
 		{"time_not_rfc3339", `{"time":"yesterday"}`},
 		{"time_before_1970", `{"time":"1969-12-31T23:59:59Z"}`},
 		{"time_after_9999", `{"time":"9999-12-31T23:59:59-01:00"}`},
@@ -123,7 +128,7 @@ func TestHandler_Post_Accepted(t *testing.T) {
 		}
 	})
 	t.Run("rate bounds", func(t *testing.T) {
-		for body, want := range map[string]int64{`{"rate":0.1}`: 100_000, `{"rate":100}`: 100_000_000} {
+		for body, want := range map[string]int64{`{"rate":0.1}`: 100_000, `{"rate":100}`: 100_000_000, `{"rate":1.000001}`: 1_000_001} {
 			f := newFake()
 			h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
 			rec := httptest.NewRecorder()

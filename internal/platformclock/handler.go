@@ -2,6 +2,7 @@ package platformclock
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"fmt"
 	"math/big"
@@ -62,12 +63,30 @@ func (h *Handler) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
 	common.WriteJSON(w, http.StatusOK, bodyOf(h.svc.State()))
 }
 
+// member is a body member that records it was present and refuses JSON null:
+// a member given as null is refused, not read as absent.
+type member[T any] struct {
+	v       T
+	present bool
+}
+
+func (m *member[T]) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		return errors.New("a member must not be null")
+	}
+	if err := json.Unmarshal(data, &m.v); err != nil {
+		return err
+	}
+	m.present = true
+	return nil
+}
+
 // rateLiteral keeps a JSON number as written.
 type rateLiteral string
 
 func (l *rateLiteral) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 || data[0] == '"' || data[0] == 't' || data[0] == 'f' ||
-		data[0] == '{' || data[0] == '[' {
+		data[0] == '{' || data[0] == '[' || data[0] == 'n' {
 		return errors.New("rate must be a number")
 	}
 	*l = rateLiteral(data)
@@ -75,9 +94,9 @@ func (l *rateLiteral) UnmarshalJSON(data []byte) error {
 }
 
 type changeRequest struct {
-	Time        *time.Time   `json:"time"`
-	AdvanceByMs *int64       `json:"advanceByMs"`
-	Rate        *rateLiteral `json:"rate"`
+	Time        member[time.Time]   `json:"time"`
+	AdvanceByMs member[int64]       `json:"advanceByMs"`
+	Rate        member[rateLiteral] `json:"rate"`
 }
 
 // maxAdvanceMs is the largest advance whose duration fits time.Duration.
@@ -114,21 +133,21 @@ func ratePPM(lit string) (int64, *common.AppError) {
 // parseChange validates the body against now and returns the change.
 func parseChange(req changeRequest, now time.Time) (Change, *common.AppError) {
 	var ch Change
-	if req.Time == nil && req.AdvanceByMs == nil && req.Rate == nil {
+	if !req.Time.present && !req.AdvanceByMs.present && !req.Rate.present {
 		return ch, badRequest("the body names no change: give time, advanceByMs or rate")
 	}
-	if req.Time != nil && req.AdvanceByMs != nil {
+	if req.Time.present && req.AdvanceByMs.present {
 		return ch, badRequest("give time or advanceByMs, not both")
 	}
-	if req.Time != nil {
-		t := req.Time.UTC()
+	if req.Time.present {
+		t := req.Time.v.UTC()
 		if t.Before(minTime) || t.After(maxTime) {
 			return ch, badRequest("time must lie in the years 1970 to 9999")
 		}
 		ch.At = &t
 	}
-	if req.AdvanceByMs != nil {
-		ms := *req.AdvanceByMs
+	if req.AdvanceByMs.present {
+		ms := req.AdvanceByMs.v
 		if ms < 1 || ms > maxAdvanceMs {
 			return ch, badRequest("advanceByMs must be a positive number of milliseconds that fits a duration")
 		}
@@ -138,8 +157,8 @@ func parseChange(req changeRequest, now time.Time) (Change, *common.AppError) {
 		}
 		ch.AdvanceBy = &d
 	}
-	if req.Rate != nil {
-		ppm, appErr := ratePPM(string(*req.Rate))
+	if req.Rate.present {
+		ppm, appErr := ratePPM(string(req.Rate.v))
 		if appErr != nil {
 			return ch, appErr
 		}
