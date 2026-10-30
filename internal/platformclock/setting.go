@@ -1,5 +1,14 @@
 package platformclock
 
+import "time"
+
+// The platform clock lies within the years 1970 to 9999, the range a stored
+// timestamp carries. Every bound in this package derives from these two.
+var (
+	minTime = time.Unix(0, 0).UTC()
+	maxTime = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
+)
+
 // Rate bounds for Setting.RatePPM (parts per million; 1_000_000 is real time).
 // The clock does not enforce them; the API layer validates before changing it.
 const (

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
@@ -21,8 +20,8 @@ type StateExchanger interface {
 }
 
 var (
-	minMicro = int64(0)
-	maxMicro = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC).UnixMicro()
+	minMicro = minTime.UnixMicro()
+	maxMicro = maxTime.UnixMicro()
 )
 
 // decode parses and validates a setting received from the network.

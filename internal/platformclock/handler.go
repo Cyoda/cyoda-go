@@ -65,7 +65,7 @@ func StateOf(svc interface{ State() State }, enabled bool) State {
 // past the year 9999, which a timestamp cannot carry, else nil. Every door
 // calls it on the state before it writes an answer.
 func CheckReadable(st State) *common.AppError {
-	if st.Now.UTC().Year() > 9999 {
+	if st.Now.UTC().Year() > maxTime.Year() {
 		return common.Internal("failed to read the platform clock",
 			fmt.Errorf("the platform clock is beyond the year 9999: %s", stamp(st.Now)))
 	}
@@ -120,11 +120,6 @@ type changeRequest struct {
 
 // maxAdvanceMs is the largest advance whose duration fits time.Duration.
 const maxAdvanceMs = int64(1<<63-1) / int64(time.Millisecond)
-
-var (
-	minTime = time.Unix(0, 0).UTC()
-	maxTime = time.Date(9999, 12, 31, 23, 59, 59, 999999000, time.UTC)
-)
 
 func badRequest(msg string) *common.AppError {
 	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
