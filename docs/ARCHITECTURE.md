@@ -94,6 +94,9 @@ internal/
   fence/                  Which compute member holds a callout's work; refuses
                           the rest
   scheduler/              Scheduled-transition claim loop, heartbeat and watchdog (§4.8)
+  platformclock/          The platform's business clock: the real clock or the controllable
+                          test clock, its gossip carriage, the move service and the HTTP
+                          handler (§3.9)
   domain/
     entity/               Entity CRUD, state machine integration, transaction scope
     model/                Model descriptors, import/export, locking
@@ -140,13 +143,14 @@ Three importable packages:
   - Store interfaces: `StoreFactory`, `EntityStore`, `ModelStore`, `KeyValueStore`, `MessageStore`, `WorkflowStore`, `StateMachineAuditStore`, `ScheduledTaskStore`, `AsyncSearchStore`, `SelfExecutingSearchStore`
   - `EntityStore` includes `Search` (bounded-or-fail predicate pushdown) and `Iterate` (streamed predicate pushdown, yielding an `Iterator`); there is no whole-model read
   - Optional capability interfaces a store may also implement: `GroupedAggregator`, `CompositeUniqueKeyCapable`
-  - `TransactionManager` interface (Begin/Commit/Rollback/Join/GetSubmitTime/Savepoint/RollbackToSavepoint/ReleaseSavepoint)
+  - `TransactionManager` interface (Begin/Commit/Rollback/Join/GetSubmitTime/ConsistencyTime/LatestRecordedTime/Savepoint/RollbackToSavepoint/ReleaseSavepoint)
+  - `Clock` interface (`Now() time.Time`) — the business clock a plugin stamps from. `WithClock` hands it to a plugin and `FactoryConfig.Clock()` returns it, nil when none was given. cyoda-go gives none in production: postgres then stamps from the database clock, memory and sqlite from their physical clock (§3.9)
   - Value types: `Entity`, `EntityMeta`, `EntityVersion`, `ModelRef`, `ModelDescriptor`, `WorkflowDefinition`, `StateDefinition`, `TransitionDefinition`, `TransitionSchedule`, `ScheduleFunction`, `ScheduledTask`, `StateMachineEvent`, `TransactionState`, `MessageHeader`, `MessageMetaData`, `ProcessorDefinition`, `SearchJob`, `Principal`, `WriteAttribution`
   - Context: `UserContext`, `Tenant`, `TenantID`, `WithUserContext`/`GetUserContext`, `WithTransaction`/`GetTransaction`
   - Sentinel errors, including `ErrNotFound`, `ErrConflict`, `ErrEpochMismatch`, the transaction-state family (`ErrTxNotFound`, `ErrTxRolledBack`, `ErrTxAlreadyCommitted`, `ErrTxTenantMismatch`, …) and `ErrSearchResultLimitExceeded`
   - `UUIDGenerator` interface — returns `[16]byte` so plugins are not bound to a particular UUID package (callers use the zero-cost `uuid.UUID(x)` conversion if they want the google/uuid type)
   - `ClusterBroadcaster` interface — fire-and-forget, best-effort topic broadcast
-  - Plugin machinery: `Plugin`, `DescribablePlugin`, `Startable`, `ConfigVar`, `FactoryOption`, `FactoryConfig`, `WithClusterBroadcaster`, `ApplyFactoryOptions`, `Register`, `GetPlugin`, `RegisteredPlugins`
+  - Plugin machinery: `Plugin`, `DescribablePlugin`, `Startable`, `ConfigVar`, `FactoryOption`, `FactoryConfig`, `WithClusterBroadcaster`, `WithClock`, `ApplyFactoryOptions`, `Register`, `GetPlugin`, `RegisteredPlugins`
   - Helper: `DefaultSaveAll` (sequential fallback for `EntityStore.SaveAll`, over an `iter.Seq[*Entity]`)
 - **`predicate`** — search AST types and JSON parse/marshal:
   - `Condition` (interface), `GroupCondition`, `SimpleCondition`, `ArrayCondition`, `LifecycleCondition`, `FunctionCondition` + operator constants
@@ -182,6 +186,7 @@ type ConfigVar struct {
 type FactoryOption func(*factoryConfig)
 
 func WithClusterBroadcaster(b ClusterBroadcaster) FactoryOption
+func WithClock(c Clock) FactoryOption   // the business clock; FactoryConfig.Clock() is nil without it
 func ApplyFactoryOptions(opts []FactoryOption) FactoryConfig
 
 func Register(p Plugin)               // panics on duplicate Name() — init-time error
@@ -347,6 +352,8 @@ type TransactionManager interface {
     Rollback(ctx context.Context, txID string) error
     Join(ctx context.Context, txID string) (txCtx context.Context, err error)
     GetSubmitTime(ctx context.Context, txID string) (time.Time, error)
+    ConsistencyTime(ctx context.Context) (time.Time, error)
+    LatestRecordedTime(ctx context.Context) (time.Time, error)
     Savepoint(ctx context.Context, txID string) (savepointID string, err error)
     RollbackToSavepoint(ctx context.Context, txID string, savepointID string) error
     ReleaseSavepoint(ctx context.Context, txID string, savepointID string) error
@@ -358,7 +365,9 @@ type TransactionManager interface {
 - `Join`: Attaches to an existing active transaction by txID. Used when a proxied CRUD request arrives at the transaction-owning node. Verifies tenant match.
 - `Commit`: Validates, flushes, records. Returns `common.ErrConflict` on serialization failure (Snapshot Isolation with first-committer-wins (SI+FCW); see [docs/CONSISTENCY.md](CONSISTENCY.md) for the full contract and per-plugin implementation).
 - `Rollback`: Marks transaction rolled back, clears from active map. Waits for in-flight operations via `OpMu`.
-- `GetSubmitTime`: Returns the database timestamp captured at commit. Used for temporal ordering.
+- `GetSubmitTime`: Returns the instant the transaction committed, the same instant stamped on every row it wrote, answerable by any node. Used for temporal ordering. The store takes it from its business clock (§3.9).
+- `ConsistencyTime`: Returns the tenant's consistency time `C` (§4.7). It never returns a guessed instant: a store that cannot certify `C` returns an error wrapping `ErrConsistencyTimeUnavailable`.
+- `LatestRecordedTime`: Returns the store's floor, a time at or above the latest submit time, snapshot time or consistency time it has issued, or the zero time if it has issued none. It does not move the floor and does not wait. The platform clock checks a set-back against it (§3.9).
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
 - `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails (§3.8).
 
@@ -687,6 +696,37 @@ is what the `idempotent` declaration is about.
 
 ---
 
+### 3.9 Business Time and Real Time
+
+Business time is the time cyoda records and compares as data: entity and
+revision dates, submit times, audit event times, consistency times, model
+update dates, search-job times, scheduled-transition due times and the point-in-time
+"now". It comes from one `spi.Clock`. In production no clock is injected and the
+store uses its own: the database clock for postgres, the physical clock for memory and sqlite. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
+controllable `platformclock.Test`, hands it to the storage plugin with
+`spi.WithClock` and to every other reader of business time, and serves
+`GET`/`POST /api/platform/clock` (and `PlatformClockGetRequest` over gRPC).
+The test clock is a test feature, instance-wide across tenants: one setting
+(start, anchor, rate) applies to every tenant.
+
+Real time stays real: token and key validity, timeouts and deadlines, leases,
+heartbeats, scheduler-owner liveness, metrics and throttling. A plugin given a
+business clock keeps its own physical clock for the liveness stamps and
+timeouts it applies.
+
+A read of the wall clock or of the database clock is either the injected clock
+or carries a `// realtime: <reason>` marker (`-- realtime:` in `.sql`) on its
+line or the line above. `internal/platformclock/time_reads_test.go` enforces
+this on the root module, the three in-tree plugins and the postgres migrations
+from 000017 on.
+
+Setting the clock earlier than the store has recorded is refused
+(`CLOCK_BEFORE_RECORDED_TIME`), checked against `LatestRecordedTime`; a move
+forward steps through scheduled due times (§4.8); the setting is shared between
+nodes by gossip (§4.1). `cyoda help clock` has the usage.
+
+---
+
 ## 4. Multi-Node Routing Architecture
 
 Multi-node cluster mode is **opt-in** via `CYODA_CLUSTER_ENABLED` (default: `false`). The `false` default is an onboarding affordance — it does not make cluster/HA features secondary. Multi-node correctness (proxy routing, tx-affinity, cross-node callback join, peer failover) is a primary design target. See `.claude/rules/multi-node-primary.md`. The routing, gossip, and transaction forwarding described in this section are only active when cluster mode is enabled.
@@ -721,6 +761,8 @@ type nodeMeta struct {
 Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and refuses to start past memberlist's `MetaMaxSize` (512 bytes).
 
 **Tag lists** (tenant → compute tags) do not ride in the metadata. Each node holds one list per peer. The version a node announces in its own metadata is the authority for which of its lists is current; versions are compared for equality and ordered only within one epoch, so a node restarted under the same id — with a clock that stepped backwards, even — is never taken for an older self. On a change a node bumps `seq`, re-advertises its metadata and sends `{nodeID, version, tags}` to every alive peer with `memberlist.SendReliable` (topic `cluster.tags`). A peer stores a list whose version equals the announced one, or is a later `seq` of the announced epoch. A peer that holds no list for a node, or another version than the announced one, sends `cluster.tags.request` and the node answers with its list: on `NotifyJoin`, on `NotifyUpdate`, and from a periodic scan of all members that is the floor under both. `NotifyLeave` drops the node's list. memberlist's event callbacks run under its node lock and are the only place a member can be read safely, so they do nothing but copy: the member (name, address, metadata) into the registry's own directory of alive members, and a nudge into a bounded queue. Everything else — `List`, `Lookup`, the fan-out, the scan — reads that directory and never `memberlist.Members()`, whose nodes memberlist rewrites under a lock no caller can take. One worker goroutine stores lists, and every send runs on a goroutine of its own. `NodeRegistry.Changed()` is closed when a list arrives with different tags, when a peer joins and when one leaves.
+
+**Platform clock.** With clock control on, the test clock's setting travels on the `platform.clock` topic: a change is published after it is applied locally, and a peer applies a setting with a newer version, dropping an invalid payload with a WARN. The setting also rides memberlist's push/pull state exchange (`Gossip.SetStateExchange`, `LocalState`/`MergeRemoteState`), at join and periodically, so a node that joins or missed a broadcast converges on its peers' setting. The topic and the exchange are registered only when clock control is on (`platformclock.Attach`, before the node registers). Only a shareable setting is served: one published or adopted from a peer. A set-back still awaiting the store's answer is never served, because it may yet be undone (§3.9).
 
 **Bootstrap algorithm:**
 
@@ -1546,7 +1588,8 @@ current state and do not involve `C`. `GET /entity/consistency-time` and
 ### 4.8 Scheduled Transitions
 
 A scheduled transition is stored as a task in `ScheduledTaskStore`
-(`cyoda-go-spi`). `internal/scheduler` runs one claim loop per node, with a
+(`cyoda-go-spi`), whose `SchedulerActivity` reports, across all tenants, the
+earliest due time of any `WAITING` task and whether any task is `RUNNING`. `internal/scheduler` runs one claim loop per node, with a
 heartbeat goroutine and a watchdog. No node assigns work to another: every node
 claims due tasks and runs them itself, so the node that decides is the node that
 runs, and no node reads a cluster view to schedule.
@@ -1590,6 +1633,8 @@ partial commit, or `CYODA_SCHEDULER_MAX_LOST_OWNERS` lost owners end the task
 `FAILED`. With `timeoutMs` set, a first attempt past `scheduledTime +
 timeoutMs` is expired and removed; a later attempt more than
 `CYODA_SCHEDULER_RETRY_DELAY` past it ends `FAILED`.
+
+**Platform clock.** Scheduled due times are business time. A platform clock move forward steps through the due times of the `WAITING` tasks (`SchedulerActivity`), waiting for none to be due or running before each step, so each scheduled transition fires at its own due time. The scheduler's owner liveness (heartbeats, stale-after, sweeps) stays on the store's physical clock (§3.9).
 
 **Fencing.** A run re-reads its task at the start of every segment and ends
 `superseded` if the life or the claim changed. Every commit of a run writes the
@@ -2264,6 +2309,12 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be `> 0`; startup fails otherwise. |
 | `CYODA_CALLOUT_HANDOVER_ALLOWANCE` | `30s` | What the owning node allows a callout hand-over on top of `tries left × answer limit`; also the last term of a callout's overall deadline. Must be `> 0`; startup fails otherwise. |
 | `CYODA_CALLOUT_PASS_ALLOWANCE` | `30s` | How long the transaction token given to a compute member outlives its try's answer limit. Must be `> 0`; startup fails otherwise. |
+
+### Platform clock
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CYODA_CLOCK_CONTROL_ENABLED` | `false` | Build a controllable clock, give it to the storage backend and to everything that reads business time, and accept `POST /platform/clock`. With `false`, `POST /platform/clock` answers `403 CLOCK_CONTROL_DISABLED` and `GET /platform/clock` answers real time at rate 1. A test feature, not for production: startup logs a WARN when it is on. The clock is instance-wide. Use the same value on every node; nodes share the setting through gossip and need synchronised real clocks. See `cyoda help config clock` |
 
 ### Scheduler
 
