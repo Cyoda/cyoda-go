@@ -9,8 +9,8 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
 
-// Topic is the gossip broadcast topic carrying the test clock's setting.
-const Topic = "platform.clock"
+// topic is the gossip broadcast topic carrying the test clock's setting.
+const topic = "platform.clock"
 
 // StateExchanger is the gossip push/pull state channel: local supplies this
 // node's state to a peer, merge receives a peer's. merge runs on the gossip
@@ -31,7 +31,7 @@ func decode(payload []byte) (Setting, error) {
 		return Setting{}, errors.New("undecodable payload")
 	}
 	switch {
-	case s.RatePPM < minRatePPM || s.RatePPM > MaxRatePPM:
+	case s.RatePPM < minRatePPM || s.RatePPM > maxRatePPM:
 		return Setting{}, errors.New("rate out of range")
 	case s.AnchorUnixMicro < minMicro || s.AnchorUnixMicro > maxMicro:
 		return Setting{}, errors.New("anchor out of range")
@@ -60,7 +60,7 @@ func receive(c *Test, payload []byte) {
 // finishes joining. The join-time exchange only covers a node that calls
 // Attach before Register.
 func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
-	b.Subscribe(Topic, func(payload []byte) { receive(c, payload) })
+	b.Subscribe(topic, func(payload []byte) { receive(c, payload) })
 	ex.SetStateExchange(
 		func() []byte {
 			// Only a published or adopted setting: a local change still
@@ -94,5 +94,5 @@ func Publish(b spi.ClusterBroadcaster, s Setting) {
 			"pkg", "platformclock", "error", fmt.Sprint(err))
 		return
 	}
-	b.Broadcast(Topic, raw)
+	b.Broadcast(topic, raw)
 }

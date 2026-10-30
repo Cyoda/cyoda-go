@@ -367,7 +367,7 @@ type TransactionManager interface {
 - `Rollback`: Marks transaction rolled back, clears from active map. Waits for in-flight operations via `OpMu`.
 - `GetSubmitTime`: Returns the instant the transaction committed, the same instant stamped on every row it wrote, answerable by any node. Used for temporal ordering. The store takes it from its business clock (§3.9).
 - `ConsistencyTime`: Returns the tenant's consistency time `C` (§4.7). It never returns a guessed instant: a store that cannot certify `C` returns an error wrapping `ErrConsistencyTimeUnavailable`.
-- `LatestRecordedTime`: Returns the store's floor, a time at or above the latest submit time, snapshot time or consistency time it has issued, or the zero time if it has issued none. It does not move the floor and does not wait. The platform clock checks a set-back against it (§3.9).
+- `LatestRecordedTime`: Returns the store's floor, a time at or above the latest submit time, snapshot time or consistency time it has issued, or the zero time if it has issued none. It does not move the floor and does not wait. A node starting with clock control on reads it (§3.9).
 - `Savepoint` / `RollbackToSavepoint` / `ReleaseSavepoint`: nested-savepoint support used by the workflow engine's `ASYNC_NEW_TX` execution mode. The plugin returns a savepoint ID that the caller passes back for rollback or release. Plugins that don't support savepoints may return `common.ErrUnsupported`.
 - `LostRace`: reports whether the transaction has already lost a write race — another transaction committed, after this one's snapshot, an entity or task row this one writes — so that Commit will refuse it. The answer is the same on every backend: PostgreSQL reads the 40001/40P01 it recorded when it refused the losing write; memory and sqlite run the write half of their commit-time check, plus a lost write a savepoint rollback discarded. Read-only and tenant-checked. The workflow engine asks it after a processor that could call back into the transaction fails (§3.8).
 
@@ -701,8 +701,10 @@ is what the `idempotent` declaration is about.
 Business time is the time cyoda records and compares as data: entity and
 revision dates, submit times, audit event times, consistency times, model
 update dates, search-job times, scheduled-transition due times and the point-in-time
-"now". It comes from one `spi.Clock`. In production no clock is injected and the
-store uses its own: the database clock for postgres, the physical clock for memory and sqlite. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
+"now". It comes from one `spi.Clock`. In production the engine, the scheduler,
+the domain services and the callout dispatcher get the real clock, and the
+storage plugin is given none and uses its own: the database clock for postgres,
+the physical clock for memory and sqlite. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
 controllable `platformclock.Test`, hands it to the storage plugin with
 `spi.WithClock` and to every other reader of business time, and serves
 `GET`/`POST /api/platform/clock` (and `PlatformClockGetRequest` over gRPC).
@@ -720,10 +722,19 @@ line or the line above. `internal/platformclock/time_reads_test.go` enforces
 this on the root module, the three in-tree plugins and the postgres migrations
 from 000017 on.
 
-Setting the clock earlier than the store has recorded is refused
-(`CLOCK_BEFORE_RECORDED_TIME`), checked against `LatestRecordedTime`; a move
-forward steps through scheduled due times (§4.8); the setting is shared between
-nodes by gossip (§4.1). `cyoda help clock` has the usage.
+Setting the clock to a time at or before its current reading applies the
+setting locally and then reads `ConsistencyTime` as the PLATFORM tenant, which
+the store answers from the new clock and its floor. An answer later than the new
+reading means the store has recorded a later time: the previous setting is
+restored and the change is refused (`CLOCK_BEFORE_RECORDED_TIME`). The read
+raises the floor to the time set, so the check records the setting itself. A
+move forward steps through scheduled due times (§4.8). The setting is shared
+between nodes by gossip (§4.1).
+
+A node that starts with clock control on and takes no setting from a peer runs
+on real time. It reads `LatestRecordedTime`, which does not raise the floor,
+and fails to start when that is more than 1 s later than real time.
+`cyoda help clock` has the usage.
 
 ---
 

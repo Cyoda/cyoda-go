@@ -13,7 +13,7 @@ var (
 // The clock does not enforce them; the API layer validates before changing it.
 const (
 	minRatePPM = 100_000
-	MaxRatePPM = 100_000_000
+	maxRatePPM = 100_000_000
 )
 
 // Setting is a replicable description of the test clock: at the wall instant

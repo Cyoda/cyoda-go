@@ -124,7 +124,7 @@ func (c *Test) Apply(s Setting) bool {
 
 // set makes a local change: at (nil keeps the current platform time) and
 // ratePPM (nil keeps the rate). RatePPM must lie within [minRatePPM,
-// MaxRatePPM]; callers validate, set does not. It bumps the version, stamps
+// maxRatePPM]; callers validate, set does not. It bumps the version, stamps
 // Writer with this node's id and returns the new setting.
 func (c *Test) set(at *time.Time, ratePPM *int64) Setting {
 	_, next := c.setState(at, ratePPM)
