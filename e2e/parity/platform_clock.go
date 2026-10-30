@@ -311,6 +311,20 @@ func RunPlatformClockAdvanceOneDay(t *testing.T, fixture BackendFixture) {
 	}
 	requireWithinClockNear(t, "new revision lastUpdateTime", got.Meta.LastUpdateTime, day2)
 
+	// The update's audit event and the consistency time are dated day 2.
+	after, err := s.c.GetAuditEvents(t, id)
+	if err != nil {
+		t.Fatalf("GetAuditEvents after the update: %v", err)
+	}
+	var newest time.Time
+	for _, ev := range after.Items {
+		if ev.UtcTime.After(newest) {
+			newest = ev.UtcTime
+		}
+	}
+	requireWithinClockNear(t, "update audit event utcTime", newest, day2)
+	requireWithinClockNear(t, "consistency time after the update", s.consistencyTime(t), day2)
+
 	// Point-in-time reads answer on the platform's timeline.
 	for _, c := range []struct {
 		at   time.Time

@@ -16,7 +16,10 @@ import (
 const progressEvery = 10 * time.Second
 
 // startupTolerance is how far the store's latest recorded time may lie ahead
-// of real time when a node starts on real time.
+// of real time when a node starts on real time. It is coupled to sqlite, which
+// persists its consistency floor up to 1 s ahead (consistencyHighStep in
+// plugins/sqlite/txmanager.go); a host wall clock that steps back across a
+// restart can therefore fail startup, which fails closed.
 const startupTolerance = time.Second
 
 // Change is one request to change the test clock. At and AdvanceBy are
@@ -35,10 +38,10 @@ type State struct {
 	Controllable bool
 }
 
-// ErrBeforeRecordedTime is matched (errors.Is) by a refused set-back: the
+// errBeforeRecordedTime is matched (errors.Is) by a refused set-back: the
 // store has recorded a time later than the requested start. errors.As into
 // *BeforeRecordedTimeError gives that time.
-var ErrBeforeRecordedTime = errors.New("the store holds a time later than the requested start")
+var errBeforeRecordedTime = errors.New("the store holds a time later than the requested start")
 
 // BeforeRecordedTimeError names the latest time the store has recorded.
 type BeforeRecordedTimeError struct {
@@ -47,10 +50,10 @@ type BeforeRecordedTimeError struct {
 
 func (e *BeforeRecordedTimeError) Error() string {
 	return fmt.Sprintf("%s: latest recorded time %s",
-		ErrBeforeRecordedTime.Error(), stamp(e.Latest))
+		errBeforeRecordedTime.Error(), stamp(e.Latest))
 }
 
-func (e *BeforeRecordedTimeError) Unwrap() error { return ErrBeforeRecordedTime }
+func (e *BeforeRecordedTimeError) Unwrap() error { return errBeforeRecordedTime }
 
 // Service changes the test clock: it sets it (into the past only when the
 // store allows), moves it forward through every scheduled due time on the
@@ -68,7 +71,8 @@ type Service struct {
 // NewService returns a Service changing c. storeTime returns the store's
 // consistency time; the caller builds it with the tenant ConsistencyTime
 // requires. tasks resolves the scheduled-task store a move polls; it and the
-// store's cross-tenant SchedulerActivity get the caller's context as is.
+// store's cross-tenant SchedulerActivity get the request's cancellation without
+// its user context.
 // publish broadcasts each new setting; poll is the interval between
 // scheduler polls during a move.
 func NewService(c *Test, storeTime func(ctx context.Context) (time.Time, error),

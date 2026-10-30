@@ -1075,7 +1075,7 @@ paths:
           description: >-
             Bad request. `properties.errorCode` is BAD_REQUEST: a query
             parameter the operation does not declare; a body that is not JSON
-            or has an unknown member; no member; both `time` and
+            or has an unknown member; a member given as null; no member; both `time` and
             `advanceByMs`; `advanceByMs` not positive, not an integer or
             beyond the year 9999; `rate` outside 0.1 to 100 or with more than
             six fractional digits; `time` not RFC 3339 or outside the years

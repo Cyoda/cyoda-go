@@ -12,7 +12,7 @@ var (
 // Rate bounds for Setting.RatePPM (parts per million; 1_000_000 is real time).
 // The clock does not enforce them; the API layer validates before changing it.
 const (
-	MinRatePPM = 100_000
+	minRatePPM = 100_000
 	MaxRatePPM = 100_000_000
 )
 

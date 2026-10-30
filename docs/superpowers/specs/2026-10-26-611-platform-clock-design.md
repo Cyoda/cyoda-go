@@ -452,7 +452,7 @@ Production keeps the database clock (decision 5). With a test clock:
   `DEFAULT`s on `entities.creation_date` and `last_modified` and on
   `entity_versions.transaction_time` and `creation_date`
   (`000017…up.sql:74-77`), because every insert now writes them. The heartbeat
-  backfill and `NOT NULL` are at `:79-81`.
+  backfill and `NOT NULL` are at `000017…up.sql:79-80`.
 - **Submit-time pruning and search-job reaping.** Today these compare business
   stamps with Go's `time.Now()` (`transaction_manager.go:354`, `:543-560`;
   `search_store.go:587`). With a test clock they use it, so both sides are

@@ -306,6 +306,27 @@ func TestPlatformClock_AdvanceOneDay(t *testing.T) {
 	}
 	assertNear(t, "new revision lastUpdateTime", parseStamp(t, "lastUpdateTime", meta["lastUpdateTime"]), day2, 10*time.Second)
 
+	// The update's audit event and the consistency time are dated day 2.
+	var newest time.Time
+	for _, ev := range h.GetAllAuditEvents(t, id) {
+		if ts := smEventTime(t, ev); ts.After(newest) {
+			newest = ts
+		}
+	}
+	assertNear(t, "update audit event utcTime", newest, day2, 10*time.Second)
+	ctResp := h.DoAuth(t, http.MethodGet, "/api/entity/consistency-time", "", "")
+	ctBody := h.readBody(t, ctResp)
+	if ctResp.StatusCode != http.StatusOK {
+		t.Fatalf("consistency time: %d %s", ctResp.StatusCode, ctBody)
+	}
+	var ct struct {
+		ConsistencyTime time.Time `json:"consistencyTime"`
+	}
+	if err := json.Unmarshal([]byte(ctBody), &ct); err != nil {
+		t.Fatal(err)
+	}
+	assertNear(t, "consistency time after the update", ct.ConsistencyTime, day2, 10*time.Second)
+
 	// Point-in-time reads answer on the platform's timeline.
 	if st := entityAt(t, h, h.token(t), id, clockStart.Add(2*time.Hour))["state"]; st != "Open" {
 		t.Fatalf("state at day 1 11:00 = %v; want Open", st)

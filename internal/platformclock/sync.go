@@ -31,7 +31,7 @@ func decode(payload []byte) (Setting, error) {
 		return Setting{}, errors.New("undecodable payload")
 	}
 	switch {
-	case s.RatePPM < MinRatePPM || s.RatePPM > MaxRatePPM:
+	case s.RatePPM < minRatePPM || s.RatePPM > MaxRatePPM:
 		return Setting{}, errors.New("rate out of range")
 	case s.AnchorUnixMicro < minMicro || s.AnchorUnixMicro > maxMicro:
 		return Setting{}, errors.New("anchor out of range")

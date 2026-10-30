@@ -138,7 +138,7 @@ func ratePPM(lit string) (int64, *common.AppError) {
 	if !r.IsInt() {
 		return 0, badRequest("rate has more than six fractional digits")
 	}
-	if r.Cmp(big.NewRat(MinRatePPM, 1)) < 0 || r.Cmp(big.NewRat(MaxRatePPM, 1)) > 0 {
+	if r.Cmp(big.NewRat(minRatePPM, 1)) < 0 || r.Cmp(big.NewRat(MaxRatePPM, 1)) > 0 {
 		return 0, badRequest("rate must be from 0.1 to 100")
 	}
 	return r.Num().Int64(), nil
