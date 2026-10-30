@@ -625,14 +625,14 @@ func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 // LocalState and MergeRemoteState carry the optional push/pull state set by
 // Gossip.SetStateExchange; with none registered they do nothing.
 func (d *gossipDelegate) LocalState(bool) []byte {
-	if ex := d.ex.Load(); ex != nil && ex.local != nil {
+	if ex := d.ex.Load(); ex != nil {
 		return ex.local()
 	}
 	return nil
 }
 
 func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
-	if ex := d.ex.Load(); ex != nil && ex.merge != nil {
+	if ex := d.ex.Load(); ex != nil {
 		ex.merge(buf)
 	}
 }

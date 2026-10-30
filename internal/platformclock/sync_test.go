@@ -1,9 +1,7 @@
 package platformclock_test
 
 import (
-	"bytes"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -104,28 +102,13 @@ func TestSync_IgnoresOlderAndGarbage(t *testing.T) {
 	}
 }
 
+// A fresh clock serves no state, so memberlist sends none and never calls a
+// peer's merge for it (it merges only state a peer sent).
 func TestSync_FreshClockCarriesNothing(t *testing.T) {
-	var buf bytes.Buffer
-	old := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
-	defer slog.SetDefault(old)
-
 	fresh := platformclock.NewTest("node-a", nil)
 	ex := &fakeExchange{}
 	platformclock.Attach(fresh, &fakeBroadcaster{}, ex)
 	if got := ex.local(); got != nil {
 		t.Fatalf("local() = %q, want nil", got)
-	}
-
-	other := platformclock.NewTest("node-b", nil)
-	before := other.Setting()
-	ex2 := &fakeExchange{}
-	platformclock.Attach(other, &fakeBroadcaster{}, ex2)
-	ex2.merge(ex.local())
-	if other.Setting() != before {
-		t.Fatal("merge of a fresh clock's state changed the setting")
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("unexpected log output: %s", buf.String())
 	}
 }

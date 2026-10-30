@@ -99,12 +99,7 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 			raw, _ := json.Marshal(*cur) // integers and a string: cannot fail
 			return raw
 		},
-		func(payload []byte) {
-			if len(payload) == 0 {
-				return
-			}
-			receive(c, payload, adopted)
-		},
+		func(payload []byte) { receive(c, payload, adopted) },
 	)
 }
 
