@@ -7,44 +7,58 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
-	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 )
 
-func TestNewProcessorDispatcher_NilClockPanics(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("NewProcessorDispatcher with a nil clock did not panic")
-		}
-	}()
-	NewProcessorDispatcher(NewMemberRegistry(), nil, nil, time.Second, time.Second, time.Second, nil)
-}
-
-// A processor, criterion or schedule-function request carries the platform
-// clock's time as the CloudEvents time attribute.
-func TestDispatch_CalloutCarriesClockTime(t *testing.T) {
+// A processor, criterion or schedule-function request carries the callout's
+// platform time — the time the owner took it up — as the CloudEvents time
+// attribute, not anything a clock of the dispatching pnode reads.
+func TestDispatch_CalloutCarriesItsPlatformTime(t *testing.T) {
 	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 	reg := NewMemberRegistry()
-	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, fakeclock.New(at))
+	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second)
 
-	criterion := json.RawMessage(`{"type":"function","function":{"name":"c","config":{"calculationNodesTags":"python"}}}`)
-	crit, failure := NewCriteriaCallout(testTenantID, testEntity(), criterion, "transition", "wf", "t", "p", "tx")
-	if failure != nil {
-		t.Fatalf("criterion callout: %v", failure)
-	}
-	calls := map[string]Callout{
-		"processor":         NewProcessorCallout(testTenantID, testEntity(), spi.ProcessorDefinition{Name: "p"}, "wf", "t", "tx"),
-		"criterion":         crit,
-		"schedule function": NewFunctionCallout(testTenantID, testEntity(), spi.ScheduleFunction{Name: "f"}, "wf", "t", "tx"),
-	}
-	for name, call := range calls {
+	for name, call := range calloutsOfEveryKind(t) {
 		t.Run(name, func(t *testing.T) {
 			call.RequestID = "r1"
+			call.At = at
 			ce, err := d.buildCalloutEvent(call)
 			if err != nil {
 				t.Fatalf("buildCalloutEvent: %v", err)
 			}
 			assertEventTime(t, ce, at)
 		})
+	}
+}
+
+// A callout without a platform time is not sent: the dispatching pnode has no
+// time of its own to put in its place.
+func TestDispatch_CalloutWithoutPlatformTimeIsRefused(t *testing.T) {
+	reg := NewMemberRegistry()
+	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second)
+
+	for name, call := range calloutsOfEveryKind(t) {
+		t.Run(name, func(t *testing.T) {
+			call.RequestID = "r1"
+			if ce, err := d.buildCalloutEvent(call); err == nil {
+				t.Fatalf("buildCalloutEvent built %s with no platform time", ce.Type)
+			}
+		})
+	}
+}
+
+// calloutsOfEveryKind is one processor, one criterion and one schedule-function
+// callout, by name.
+func calloutsOfEveryKind(t *testing.T) map[string]Callout {
+	t.Helper()
+	criterion := json.RawMessage(`{"type":"function","function":{"name":"c","config":{"calculationNodesTags":"python"}}}`)
+	crit, failure := NewCriteriaCallout(testTenantID, testEntity(), criterion, "transition", "wf", "t", "p", "tx")
+	if failure != nil {
+		t.Fatalf("criterion callout: %v", failure)
+	}
+	return map[string]Callout{
+		"processor":         NewProcessorCallout(testTenantID, testEntity(), spi.ProcessorDefinition{Name: "p"}, "wf", "t", "tx"),
+		"criterion":         crit,
+		"schedule function": NewFunctionCallout(testTenantID, testEntity(), spi.ScheduleFunction{Name: "f"}, "wf", "t", "tx"),
 	}
 }
 

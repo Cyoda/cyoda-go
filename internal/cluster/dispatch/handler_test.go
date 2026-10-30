@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"io"
 	"log/slog"
 	"net/http"
@@ -319,7 +318,7 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	reg, cnode := attachedCnode(t, "tenant-1", "python")
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, platformclock.Real())
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
 
 	auth := newAEAD(t)
 	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, validRequest(t, "processor"))
@@ -342,6 +341,31 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	if len(claims.Outer) != 1 || claims.Outer[0] != (token.Pair{Callout: "outer-rid", Major: 3, Minor: 1}) {
 		t.Errorf("pass Outer = %+v, want the hand-over's enclosing pairs", claims.Outer)
+	}
+}
+
+// The receiving pnode sends the platform time the hand-over carries, the time
+// the owner took the callout up, whatever its own clock reads: a peer that has
+// not yet adopted a clock move must not send the compute node an older time
+// than the owner records for the same callout. The real local procedure builds
+// the request.
+func TestHandler_TheCnodeIsSentTheOwnersPlatformTime(t *testing.T) {
+	signer, err := token.NewSigner(testSecret32)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	reg, cnode := attachedCnode(t, "tenant-1", "python")
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+
+	auth := newAEAD(t)
+	req := validRequest(t, "processor")
+	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, req)
+	if resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+	if got, want := cnode.onlyTime(t), time.UnixMicro(req.AtUnixMicro); !got.Equal(want) {
+		t.Errorf("the cnode was sent time %v, want the owner's platform time %v", got, want)
 	}
 }
 
@@ -688,7 +712,7 @@ func TestHandler_AScheduledFiresIdentityArrivesAsSent(t *testing.T) {
 		}
 		reg, cnode := attachedCnode(t, "tenant-1", "python")
 		local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second, platformclock.Real())
+			signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
 		auth := newAEAD(t)
 		if resp := postHandOver(t, newHandlerMux(t, local, auth), auth, scheduled(t)); resp.Outcome != OutcomeOK {
 			t.Fatalf("%+v", resp)

@@ -181,7 +181,7 @@ func New(cfg Config) *App {
 
 	// clk is the platform clock: one source of business time shared by the
 	// search service, the engine, the scheduler, the domain handlers and the
-	// callout dispatcher, so all agree on "now". It is the real clock unless
+	// owner's callout loop, so all agree on "now". It is the real clock unless
 	// clock control is on; then it is one test clock for the process, attached
 	// to gossip before the node registers so the join-time state exchange
 	// brings the cluster's setting. The storage plugin gets it (spi.WithClock)
@@ -410,7 +410,7 @@ func New(cfg Config) *App {
 	// entity service and every callout judge a callback by the same state.
 	a.txGate = txgate.New()
 	a.fence = fence.New(a.txGate)
-	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance, clk)
+	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
 		slog.Error("startup failure",

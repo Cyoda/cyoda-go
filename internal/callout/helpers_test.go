@@ -15,7 +15,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
@@ -72,7 +71,7 @@ func newEnv(t *testing.T, cfg Config) *env {
 	gate := txgate.New()
 	f := fence.New(gate)
 	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
-		signer, 30*time.Second, 60*time.Second, 30*time.Second, platformclock.Real())
+		signer, 30*time.Second, 60*time.Second, 30*time.Second)
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}
@@ -87,6 +86,16 @@ type cnode struct {
 	passes     []string
 	// auth is the auth context of each request, by attribute name.
 	auth []map[string]string
+	// times is the CloudEvents time attribute of each request.
+	times []time.Time
+}
+
+// timesSeen returns the CloudEvents time attribute of each request the cnode
+// was sent.
+func (n *cnode) timesSeen() []time.Time {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]time.Time(nil), n.times...)
 }
 
 // authSeen returns the auth context of each request the cnode was sent.
@@ -171,6 +180,7 @@ func (e *env) attach(t *testing.T, id string, tenant spi.TenantID, tag string, s
 				}
 			}
 			n.auth = append(n.auth, auth)
+			n.times = append(n.times, ce.Attributes["time"].GetCeTimestamp().AsTime())
 		}()
 		if s != nil {
 			if m := e.reg.Get(id); m != nil {

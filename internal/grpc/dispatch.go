@@ -34,17 +34,13 @@ type ProcessorDispatcher struct {
 	answerLimitDefault time.Duration
 	answerLimitMax     time.Duration
 	passAllowance      time.Duration
-	clock              spi.Clock
 }
 
-// NewProcessorDispatcher creates a new ProcessorDispatcher. Every request it
-// sends carries clock's time as the CloudEvents time attribute. It holds no node
-// identity of its own: the owner a pass names is the callout's, whichever
-// pnode is running the try.
-func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration, clock spi.Clock) *ProcessorDispatcher {
-	if clock == nil {
-		panic("grpc.NewProcessorDispatcher: nil clock")
-	}
+// NewProcessorDispatcher creates a new ProcessorDispatcher. It holds no node
+// identity and no platform clock of its own: the owner a pass names, and the
+// platform time every request carries, are the callout's, whichever pnode is
+// running the try.
+func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration) *ProcessorDispatcher {
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
@@ -52,7 +48,6 @@ func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, s
 		answerLimitDefault: answerLimitDefault,
 		answerLimitMax:     answerLimitMax,
 		passAllowance:      passAllowance,
-		clock:              clock,
 	}
 }
 
@@ -135,9 +130,14 @@ func buildEntityPayload(entity *spi.Entity) *events.DataPayloadJson {
 }
 
 // buildCalloutEvent builds the request CloudEvent of a callout: the request body
-// and the platform time as the CloudEvents time attribute. A compute node reads
-// platform time there; its own clock is not the platform's.
+// and the callout's platform time — the time the owner took it up — as the
+// CloudEvents time attribute. A compute node reads platform time there; its own
+// clock is not the platform's. A callout with no platform time is refused: no
+// clock of this pnode stands in for the owner's.
 func (d *ProcessorDispatcher) buildCalloutEvent(call Callout) (*cepb.CloudEvent, error) {
+	if call.At.IsZero() {
+		return nil, errors.New("the callout has no platform time")
+	}
 	ce, err := NewCloudEvent(call.eventType, call.buildRequest(call.RequestID))
 	if err != nil {
 		return nil, err
@@ -146,7 +146,7 @@ func (d *ProcessorDispatcher) buildCalloutEvent(call Callout) (*cepb.CloudEvent,
 		ce.Attributes = map[string]*cepb.CloudEvent_CloudEventAttributeValue{}
 	}
 	ce.Attributes["time"] = &cepb.CloudEvent_CloudEventAttributeValue{
-		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.New(d.clock.Now())},
+		Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.New(call.At)},
 	}
 	return ce, nil
 }

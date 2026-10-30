@@ -284,6 +284,40 @@ func TestOwner_PlatformTimeIsTakenOnceAndEveryHandOverCarriesIt(t *testing.T) {
 	}
 }
 
+// Every try the owner makes itself sends the platform time it took the callout
+// up at, and so does every hand-over: a retry after the clock moved on sends
+// the same time as the first try.
+func TestOwner_EveryTrySendsThePlatformTimeTakenOnce(t *testing.T) {
+	router := newScriptedRouter("p-1")
+	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
+	movesThenDetaches := func(reg *internalgrpc.MemberRegistry, m *internalgrpc.Member, requestID string) {
+		e.clock.Advance(24 * time.Hour)
+		detaches()(reg, m, requestID)
+	}
+	first := e.attach(t, "m-1", tenantA, "x", movesThenDetaches)
+	second := e.attach(t, "m-2", tenantA, "x", movesThenDetaches)
+	router.script("p-1", movesTheClock(e, peerAnswers("cnode-on-p-1")))
+
+	by, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if err != nil || by != "cnode-on-p-1" {
+		t.Fatalf("answered by %q, err %v; want p-1's cnode after both local cnodes went away", by, err)
+	}
+	want := envStart.Truncate(time.Microsecond)
+	sent := append(first.timesSeen(), second.timesSeen()...)
+	if len(sent) != 2 {
+		t.Fatalf("local tries sent %d requests, want 2", len(sent))
+	}
+	for i, at := range sent {
+		if !at.Equal(want) {
+			t.Errorf("local try %d sent time %v, want %v: the owner's time when it took the callout up", i+1, at, want)
+		}
+	}
+	if calls := router.made(); len(calls) != 1 || !calls[0].at.Equal(want) {
+		t.Errorf("hand-overs = %+v, want one carrying %v", calls, want)
+	}
+}
+
 // assertClientGone checks that err is the caller's own cancellation, marked as
 // its departure: what a door's error funnel needs to log it quietly and without
 // a ticket instead of guessing from the cancellation on the chain.
