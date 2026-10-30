@@ -93,7 +93,7 @@ func runPostgresMigrate(ctx context.Context) int {
 		return 1
 	}
 
-	start := time.Now()
+	start := time.Now() // realtime: migration duration log
 	if err := pgMigrate(ctx, dsn); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			slog.Error("migration timed out", "err", err)
@@ -102,7 +102,7 @@ func runPostgresMigrate(ctx context.Context) int {
 		slog.Error("migration failed", "err", err)
 		return 1
 	}
-	slog.Info("migrations applied", "duration", time.Since(start))
+	slog.Info("migrations applied", "duration", time.Since(start)) // realtime: migration duration log
 	return 0
 }
 

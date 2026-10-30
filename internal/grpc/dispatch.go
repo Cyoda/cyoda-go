@@ -91,7 +91,7 @@ func (d *ProcessorDispatcher) mintPass(call Callout, major, minor uint32) (strin
 	pass, err := d.signer.Issue(token.Claims{
 		NodeID:    call.OwnerNodeID,
 		TxRef:     call.TxID,
-		ExpiresAt: time.Now().Add(call.AnswerLimit + d.passAllowance).Unix(),
+		ExpiresAt: time.Now().Add(call.AnswerLimit + d.passAllowance).Unix(), // realtime: dispatch token expiry
 		Callout:   call.RequestID,
 		Major:     major,
 		Minor:     minor,

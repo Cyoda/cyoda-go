@@ -545,7 +545,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 	}`, delayMs)
 	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"k":1}`, wf)
 
-	createdAt := time.Now()
+	createdAt := time.Now() // realtime: elapsed wall time of a test wait
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
@@ -557,7 +557,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 	}
 
 	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
-	elapsed := time.Since(createdAt)
+	elapsed := time.Since(createdAt) // realtime: elapsed wall time of a test wait
 	if elapsed < minElapsedForCorrectReArm {
 		t.Errorf("entity fired %s after creation — too soon: expected the loopback to re-arm the task to fire "+
 			"around %s (loopback offset + delay), not the original %dms", elapsed, loopbackOffset+delayMs*time.Millisecond, delayMs)

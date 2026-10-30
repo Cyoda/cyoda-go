@@ -42,7 +42,7 @@ func (h *Handler) IssueJwtKeyPair(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeUnsupportedAlgorithm, "only RS256 supported in this version"))
 		return
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC() // realtime: auth key and token validity
 	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
@@ -247,7 +247,7 @@ func (h *Handler) ReactivateJwtKeyPair(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
 		return
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom

@@ -118,7 +118,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		cfg.ListScanInterval = time.Second
 	}
 	// The epoch only has to differ between two lives of this pnode.
-	epoch := time.Now().UnixNano()
+	epoch := time.Now().UnixNano() // realtime: gossip membership timing
 	metaBytes, err := marshalMeta(cfg, listVersion{Epoch: epoch})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
@@ -250,7 +250,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		maxBackoff     = 10 * time.Second
 	)
 
-	start := time.Now()
+	start := time.Now() // realtime: gossip membership timing
 	backoff := initialBackoff
 	// The duplicate the last attempt that found one saw. It is what the
 	// operator is told when the budget runs out, in preference to a bare
@@ -262,7 +262,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			if duplicate != nil {
 				return duplicate
 			}
-			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
+			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err) // realtime: gossip membership timing
 		}
 
 		// Each attempt asks about the cluster as it is now. A record that has
@@ -332,19 +332,19 @@ func (g *Gossip) awaitStability(ctx context.Context, start time.Time) error {
 	}
 	const pollInterval = 200 * time.Millisecond
 	lastCount := g.list.NumMembers()
-	stableSince := time.Now()
-	for time.Since(stableSince) < g.cfg.StabilityWindow {
+	stableSince := time.Now()                             // realtime: gossip membership timing
+	for time.Since(stableSince) < g.cfg.StabilityWindow { // realtime: gossip membership timing
 		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
+			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err()) // realtime: gossip membership timing
 		case <-timer.C:
 		}
 		current := g.list.NumMembers()
 		if current != lastCount {
 			lastCount = current
-			stableSince = time.Now()
+			stableSince = time.Now() // realtime: gossip membership timing
 		}
 	}
 	return nil

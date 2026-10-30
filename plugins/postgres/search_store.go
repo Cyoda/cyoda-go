@@ -112,6 +112,7 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	// persisted as 1 regardless of job.Epoch (spi.AsyncSearchStore.CreateJob
 	// contract). heartbeat_time is stamped with the database's now(): liveness
 	// starts at creation, and ClaimStale measures staleness from it alone.
+	// realtime: search job heartbeat starts at creation
 	_, err = s.q.Exec(ctx,
 		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, epoch, heartbeat_time)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, now())`,
@@ -240,6 +241,7 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 		return err
 	}
 
+	// realtime: search job heartbeat liveness
 	tag, err := s.sched.Exec(ctx,
 		`UPDATE search_jobs SET heartbeat_time = now()
 		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
@@ -630,6 +632,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
 	}
 
+	// realtime: stale-claim measurement on the database clock
 	rows, err := s.sched.Query(ctx,
 		`WITH claimed AS (
 		   SELECT tenant_id, id, released FROM search_jobs

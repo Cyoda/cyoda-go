@@ -43,7 +43,7 @@ func RunSigningKeyPairLifecycle(t *testing.T, fixture BackendFixture) {
 	if code, body, _ := c.CurrentKeyPairRaw(t); code != http.StatusOK || jsonHasKID(body, kp.KeyId) {
 		t.Fatalf("current after invalidate: %d %s, want 200 and a different key", code, body)
 	}
-	if code, body, _ := c.ReactivateKeyPairRaw(t, kp.KeyId, time.Now().Add(time.Hour)); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) {
+	if code, body, _ := c.ReactivateKeyPairRaw(t, kp.KeyId, time.Now().Add(time.Hour)); code != http.StatusOK || !jsonHasKID(body, kp.KeyId) { // realtime: key validity window handed to the server auth check
 		t.Fatalf("reactivate: %d %s", code, body)
 	}
 	if code, body, _ := c.DeleteKeyPairRaw(t, kp.KeyId); code != http.StatusOK {

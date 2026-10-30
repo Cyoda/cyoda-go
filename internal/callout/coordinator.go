@@ -155,7 +155,7 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// cause of its own, never the caller's: that is how the local procedure
 	// tells "this callout ran out of time" — the try in progress is NoAnswer —
 	// from "the caller went away".
-	start := time.Now()
+	start := time.Now() // realtime: callout wait and deadline
 	deadline := start.Add(time.Duration(tries)*limit + c.cfg.Patience + c.cfg.HandoverAllowance)
 	cctx, cancel := context.WithDeadlineCause(cctx, deadline, contract.ErrCalloutDeadline)
 	defer cancel()
@@ -175,7 +175,7 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 			"kind", call.Kind.String(), "name", call.Name, "tenantId", string(call.TenantID), "tags", call.Tags,
 			"entityId", call.EntityID, "requestId", call.RequestID,
 			"tries", used, "handOvers", len(p.stats.HandOvers),
-			"waitedMs", p.stats.Waited.Milliseconds(), "elapsedMs", time.Since(start).Milliseconds(),
+			"waitedMs", p.stats.Waited.Milliseconds(), "elapsedMs", time.Since(start).Milliseconds(), // realtime: callout wait and deadline
 			"succeeded", err == nil)
 	}
 	return result, withHandOffProof(err, p.handedOff)
@@ -287,7 +287,7 @@ func (c *Coordinator) askPeers(cctx context.Context, call internalgrpc.Callout, 
 			break
 		}
 		wait := time.Duration(p.triesLeft)*call.AnswerLimit + c.cfg.HandoverAllowance
-		hctx, cancel := context.WithDeadlineCause(cctx, time.Now().Add(wait), contract.ErrCalloutDeadline)
+		hctx, cancel := context.WithDeadlineCause(cctx, time.Now().Add(wait), contract.ErrCalloutDeadline) // realtime: callout wait and deadline
 		slog.Debug("callout hand-over", "pkg", "callout", "kind", call.Kind.String(), "name", call.Name,
 			"requestId", call.RequestID, "peer", peer.NodeID, "triesLeft", p.triesLeft, "major", major)
 		a := c.peers.HandOver(hctx, peer, call, p.triesLeft, major)
@@ -417,18 +417,18 @@ func (p *progress) stop(cctx context.Context) error {
 // a change starts a new pass even when that leaves no patience at all — the
 // change is what the patience was being spent on.
 func waitForChange(ctx context.Context, localChanged, peersChanged <-chan struct{}, patienceLeft time.Duration) (time.Duration, bool) {
-	start := time.Now()
+	start := time.Now() // realtime: callout wait and deadline
 	timer := time.NewTimer(patienceLeft)
 	defer timer.Stop()
 	select {
 	case <-localChanged:
-		return min(time.Since(start), patienceLeft), true
+		return min(time.Since(start), patienceLeft), true // realtime: callout wait and deadline
 	case <-peersChanged:
-		return min(time.Since(start), patienceLeft), true
+		return min(time.Since(start), patienceLeft), true // realtime: callout wait and deadline
 	case <-timer.C:
 		return patienceLeft, false
 	case <-ctx.Done():
-		return min(time.Since(start), patienceLeft), false
+		return min(time.Since(start), patienceLeft), false // realtime: callout wait and deadline
 	}
 }
 

@@ -88,7 +88,7 @@ func (h *Handler) RegisterTrustedKey(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, errCode, jwkErr.Error()))
 		return
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	validFrom := now
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
@@ -307,7 +307,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo required"))
 		return
 	}
-	validFrom := time.Now()
+	validFrom := time.Now() // realtime: auth key and token validity
 	if req.ValidFrom != nil {
 		validFrom = *req.ValidFrom
 	}
@@ -315,7 +315,7 @@ func (h *Handler) ReactivateTrustedKey(w http.ResponseWriter, r *http.Request, k
 	if !storableWindow(w, r, validFrom, validTo) {
 		return
 	}
-	if !validTo.After(time.Now()) {
+	if !validTo.After(time.Now()) { // realtime: auth key and token validity
 		common.WriteError(w, r, common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, "validTo must be in the future"))
 		return
 	}

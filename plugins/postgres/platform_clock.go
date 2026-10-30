@@ -38,7 +38,7 @@ func placeholderAtArg(c spi.Clock) *time.Time {
 // reading, or the process clock without one.
 func businessNow(c spi.Clock) time.Time {
 	if c == nil {
-		return time.Now()
+		return time.Now() // realtime: no business clock configured; process clock fallback
 	}
 	return c.Now()
 }

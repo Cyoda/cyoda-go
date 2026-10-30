@@ -28,7 +28,7 @@ type Clock interface {
 
 type realClock struct{}
 
-func (realClock) Now() time.Time { return time.Now() }
+func (realClock) Now() time.Time { return time.Now() } // realtime: model cache lease
 
 // CachingModelStore wraps an spi.ModelStore. Zero-value not safe — use New.
 type CachingModelStore struct {

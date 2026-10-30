@@ -1154,7 +1154,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	defer cancel(nil)
 	defer s.deregisterJobHandle(jobID, handle)
 
-	start := time.Now()
+	start := time.Now() // realtime: search job duration
 
 	// A panic anywhere in this function (or anything it calls) runs with no
 	// HTTP handler above it to recover it — net/http's per-connection
@@ -1188,7 +1188,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1207,7 +1207,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// common.Internal always returns a non-nil *AppError, and only its
 		// Message reaches the persisted job record — never its Detail.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), s.clock.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1215,7 +1215,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1227,7 +1227,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds()) // realtime: search job duration
 		return
 	}
 
@@ -1315,7 +1315,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 	}
 
 	finishTime := s.clock.Now()
-	calcTimeMs := time.Since(start).Milliseconds()
+	calcTimeMs := time.Since(start).Milliseconds() // realtime: search job duration
 
 	switch {
 	case jobCtx.Err() != nil:

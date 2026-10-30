@@ -557,7 +557,7 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 // compares submit times, which are business stamps, so it is taken from the
 // business clock.
 func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
-	now := time.Now()
+	now := time.Now() // realtime: prune rate limit is housekeeping
 	last := tm.lastSubmitTimePruneNano.Load()
 	if now.Sub(time.Unix(0, last)) < submitTimePruneInterval {
 		return
