@@ -1,7 +1,7 @@
 ---
 topic: errors.CLOCK_BEFORE_RECORDED_TIME
 title: "CLOCK_BEFORE_RECORDED_TIME — the requested time is earlier than a time the store has recorded"
-stability: stable
+stability: experimental
 see_also:
   - errors
   - errors.CLOCK_CONTROL_DISABLED

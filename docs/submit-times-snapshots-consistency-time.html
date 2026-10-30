@@ -292,7 +292,7 @@ th{font-family:var(--cond);font-weight:600}
   <p>One commit gate serializes the whole commit path. A commit takes the gate before its submit time. It holds the gate until its database commit is complete. f(X) is the moment that the database commit of X is complete and X releases the gate.</p>
   <p><code>Begin</code> and <code>ConsistencyTime</code> take the same gate. So no commit is in flight while they hold it. A read outside a transaction does not take the gate. It sees X from f(X).</p>
   <figure>
-    <svg viewBox="0 0 1100 330" role="img" aria-label="sqlite: commit X holds the commit gate from before its submit time until its database commit is complete. The Begin of transaction A reads the clock, waits for the gate, sets SnapshotTime, and sees X. ConsistencyTime waits for the gate, reserves C, and writes a high-water mark when needed.">
+    <svg viewBox="0 0 1100 330" role="img" aria-label="sqlite: commit X holds the commit gate from before its submit time until its database commit is complete. The Begin of transaction A waits for the gate, reads the clock under it, sets SnapshotTime, and sees X. ConsistencyTime waits for the gate, reserves C, and writes a high-water mark when needed.">
       <defs><marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
       <rect class="lane" x="0" y="30" width="1100" height="60"/><rect class="lane" x="0" y="210" width="1100" height="70"/>
       <text class="lbl" x="14" y="64">Commit X</text>
@@ -305,10 +305,10 @@ th{font-family:var(--cond);font-weight:600}
       <!-- A -->
       <circle cx="300" cy="150" r="6" style="fill:currentColor"/>
       <text class="txt" x="300" y="134" text-anchor="middle">Begin</text>
-      <text class="sm" x="300" y="172" text-anchor="middle">reads clock</text>
+      <text class="sm" x="300" y="172" text-anchor="middle">called</text>
       <line class="wait" x1="306" y1="150" x2="440" y2="150"/><text class="txt" x="373" y="140" text-anchor="middle">waits for gate</text>
       <rect class="lock" x="440" y="138" width="22" height="24" rx="3"/>
-      <text class="sm" x="444" y="186">SnapshotTime = max(clock reading, floor)</text>
+      <text class="sm" x="444" y="186">reads clock; SnapshotTime = max(clock, floor)</text>
       <line class="read" x1="520" y1="150" x2="640" y2="150"/><text class="txt" x="580" y="140" text-anchor="middle">read</text>
       <text class="vis" x="652" y="154">sees X: s(X) ≤ T(A)</text>
       <!-- C -->
@@ -322,7 +322,7 @@ th{font-family:var(--cond);font-weight:600}
       <text class="sm mut" x="1080" y="324" text-anchor="end">time</text>
     </svg>
     <figcaption>
-      <p><b>Begin</b> reads the clock and then waits for the gate. Under the gate, it sets SnapshotTime = max(that clock reading, floor), and then sets the floor to SnapshotTime. T(A) = SnapshotTime. X held the gate from before s(X) until f(X), so <code>Begin</code> got the gate after f(X). So the commits with s(X) ≤ T(A) are exactly the commits that are complete at m(A). A sees X.</p>
+      <p><b>Begin</b> waits for the gate. Under the gate, it reads the clock, sets SnapshotTime = max(clock, floor), and then sets the floor to SnapshotTime. T(A) = SnapshotTime. X held the gate from before s(X) until f(X), so <code>Begin</code> got the gate after f(X). So the commits with s(X) ≤ T(A) are exactly the commits that are complete at m(A). A sees X.</p>
       <p><b>ConsistencyTime</b> waits for the gate, so it waits for the commit in progress. Then it reserves C. When necessary, it writes a high-water mark of at least C + 1 s to the table <code>consistency_floor</code>. After a restart, the floor starts at or above that mark. So C does not go back after a restart, also when the clock goes back.</p>
     </figcaption>
   </figure>

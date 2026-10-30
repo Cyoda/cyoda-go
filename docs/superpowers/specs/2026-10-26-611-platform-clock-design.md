@@ -537,6 +537,11 @@ ways and no others.
 8. **Search-job heartbeat backfill.** Postgres 000017 and sqlite 000013 set
    `heartbeat_time` from the creation time for existing rows, and 000017 then
    makes `search_jobs.heartbeat_time` `NOT NULL`.
+9. **Wording and construction.** The `ErrClientGone` message, logged at DEBUG
+   only, reads "the request's client went away". The scheduler reads the
+   clock before taking its lock. Every business-time constructor and option
+   refuses a nil clock with a panic at startup. `memory.NewAsyncSearchStore`
+   is removed.
 
 **Additions that production does not exercise:**
 - `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`

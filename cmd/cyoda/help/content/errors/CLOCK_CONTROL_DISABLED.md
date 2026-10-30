@@ -1,7 +1,7 @@
 ---
 topic: errors.CLOCK_CONTROL_DISABLED
 title: "CLOCK_CONTROL_DISABLED — clock control is not enabled on this node"
-stability: stable
+stability: experimental
 see_also:
   - errors
   - errors.CLOCK_BEFORE_RECORDED_TIME

@@ -217,7 +217,8 @@ ends.
 records and sweeps never join the caller's transaction. They run on a pool of
 their own, sized by `CYODA_POSTGRES_SCHEDULER_CONNS` connections (default
 `10`, floor `2`), so entity transactions cannot starve them. The async-search
-heartbeat and claim run there too. The scheduler heartbeat has one more
+heartbeat and claim run there too, as does the cross-tenant
+`ScheduledTaskStore.SchedulerActivity` read a platform clock move polls. The scheduler heartbeat has one more
 connection of its own, used only for `ScheduledTaskStore.Heartbeat`. Every
 scheduler connection uses `READ COMMITTED`, `statement_timeout` 30s,
 `idle_in_transaction_session_timeout` 10s and `lock_timeout` 2s — fixed
