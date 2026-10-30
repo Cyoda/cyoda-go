@@ -3,6 +3,8 @@ package fixtureutil
 import (
 	"sort"
 	"testing"
+
+	"github.com/cyoda-platform/cyoda-go/e2e/parity"
 )
 
 // FreshStackEnv returns the environment of a fresh clock-controlled stack:
@@ -24,12 +26,36 @@ func FreshStackEnv(backendEnv []string, env map[string]string) []string {
 	return out
 }
 
+// FreshStack is a running fresh stack: it mints tokens signed with the key the
+// stack trusts, as a BackendFixture does (parity.FreshStack).
+type FreshStack struct {
+	baseURL string
+	ks      *JWTKeySet
+}
+
+var _ parity.FreshStack = (*FreshStack)(nil)
+
+// BaseURL implements parity.FreshStack.
+func (s *FreshStack) BaseURL() string { return s.baseURL }
+
+// NewTenant implements parity.FreshStack.
+func (s *FreshStack) NewTenant(t *testing.T) parity.Tenant {
+	t.Helper()
+	return MintTenantJWT(t, s.ks)
+}
+
+// PlatformOperator implements parity.FreshStack.
+func (s *FreshStack) PlatformOperator(t *testing.T) parity.Tenant {
+	t.Helper()
+	return MintPlatformOperatorJWT(t, s.ks)
+}
+
 // LaunchFreshStack starts one cyoda-go node on the stock binary with
-// FreshStackEnv and no compute client, signed by ks, and returns its base URL
-// and a stop function that is also registered with t.Cleanup. The caller
-// supplies a store of its own in backendEnv and releases it in its own
-// cleanup, registered before this call so that it runs after the node stops.
-func LaunchFreshStack(t *testing.T, ks *JWTKeySet, backendEnv []string, env map[string]string) (baseURL string, stop func()) {
+// FreshStackEnv and no compute client, signed by ks, and stops it with
+// t.Cleanup. The caller supplies a store of its own in backendEnv and
+// releases it in its own cleanup, registered before this call so that it runs
+// after the node stops.
+func LaunchFreshStack(t *testing.T, ks *JWTKeySet, backendEnv []string, env map[string]string) *FreshStack {
 	t.Helper()
 	bin, err := BuildCyodaBinary()
 	if err != nil {
@@ -40,5 +66,5 @@ func LaunchFreshStack(t *testing.T, ks *JWTKeySet, backendEnv []string, env map[
 		t.Fatalf("fresh stack: %v", err)
 	}
 	t.Cleanup(node.Kill)
-	return node.BaseURL, node.Kill
+	return &FreshStack{baseURL: node.BaseURL, ks: ks}
 }

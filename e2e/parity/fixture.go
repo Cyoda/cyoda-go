@@ -65,10 +65,20 @@ type BackendFixture interface {
 type FreshStackFixture interface {
 	// NewFreshStack starts a stack with no compute client, on a store no
 	// other stack uses, with CYODA_CLOCK_CONTROL_ENABLED=true and env set
-	// on top of the fixture's own settings. It returns the HTTP base URL
-	// (as BaseURL) and a platform-operator M2M token (ROLE_ADMIN and ROLE_M2M in PLATFORM, which the clock requires), and a stop function that
-	// the fixture also registers with t.Cleanup. It t.Fatals on failure.
-	NewFreshStack(t *testing.T, env map[string]string) (baseURL string, token string, stop func())
+	// on top of the fixture's own settings. The fixture stops it with
+	// t.Cleanup. It t.Fatals on failure.
+	NewFreshStack(t *testing.T, env map[string]string) FreshStack
+}
+
+// FreshStack is a running fresh stack. It mints tokens as a BackendFixture
+// does, for tenants of its own store.
+type FreshStack interface {
+	// BaseURL is the stack's HTTP base URL, as BackendFixture.BaseURL.
+	BaseURL() string
+	// NewTenant is BackendFixture.NewTenant on this stack.
+	NewTenant(t *testing.T) Tenant
+	// PlatformOperator is BackendFixture.PlatformOperator on this stack.
+	PlatformOperator(t *testing.T) Tenant
 }
 
 // Tenant identifies a fresh tenant scope for a single test, plus the JWT

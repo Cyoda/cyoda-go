@@ -12,11 +12,12 @@ import (
 // allowList names the authenticated operations a caller may reach without
 // ROLE_M2M, as "METHOD /path" in the generated router's patterns (base path
 // excluded). Each one is decided by its own rule instead: the admin rule
-// (clients, trusted keys), the operator rule (key pairs), or none (GET
-// /account). The /admin routes app.go registers on its own mux are
+// (clients, trusted keys), the operator rule (key pairs, POST
+// /platform/clock), or none (GET /account, GET /platform/clock). The /admin routes app.go registers on its own mux are
 // operator-guarded and never wrapped, so they are not listed here.
 var allowList = map[string]bool{
-	"GET /account": true,
+	"GET /account":        true,
+	"GET /platform/clock": true, "POST /platform/clock": true,
 	"GET /clients": true, "POST /clients": true,
 	"DELETE /clients/{clientId}": true, "PUT /clients/{clientId}/secret": true,
 	"GET /oauth/keys/trusted": true, "POST /oauth/keys/trusted": true,

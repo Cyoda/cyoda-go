@@ -18,8 +18,8 @@ import (
 // The platform clock on every backend: the instance-wide clock changes what
 // every record is stamped with, so each scenario runs on a stack of its own
 // (FreshStackFixture) on a fresh store with clock control on. A fixture
-// without that capability skips them. The scenarios run as the platform
-// operator, who is an admin of the PLATFORM tenant, and use only the parts of
+// without that capability skips them. The scenarios set the clock as the
+// platform operator and do everything else as a tenant of the stack, and use only the parts of
 // the behaviour that do not need a compute node. The deeper behaviour (rate,
 // ordering across tenants, an interrupted move, callouts, the cluster) is the
 // e2e suite's, internal/e2e/platform_clock_test.go.
@@ -40,12 +40,13 @@ const (
 	clockSampleDoc = `{"name": "Test Order", "amount": 100, "status": "draft"}`
 )
 
-// clockStack is a fresh clock-controlled stack and a client on it, as the
-// platform operator.
+// clockStack is a fresh clock-controlled stack, a client on it as a tenant
+// admin, and the platform operator's token for the clock.
 type clockStack struct {
-	base  string
-	token string
-	c     *client.Client
+	base     string
+	operator string
+	tenant   string
+	c        *client.Client
 }
 
 // newClockStack starts a fresh stack, or skips when the fixture cannot.
@@ -55,12 +56,18 @@ func newClockStack(t *testing.T, fixture BackendFixture, env map[string]string) 
 	if !ok {
 		t.Skip("the fixture does not implement FreshStackFixture: the platform clock needs a stack of its own")
 	}
-	base, token, _ := f.NewFreshStack(t, env)
-	return &clockStack{base: base, token: token, c: client.NewClient(base, token)}
+	stack := f.NewFreshStack(t, env)
+	tenant := stack.NewTenant(t).Token
+	return &clockStack{
+		base:     stack.BaseURL(),
+		operator: stack.PlatformOperator(t).Token,
+		tenant:   tenant,
+		c:        client.NewClient(stack.BaseURL(), tenant),
+	}
 }
 
-// do sends a request to the stack as the platform operator.
-func (s *clockStack) do(t *testing.T, method, path, body string) (int, []byte) {
+// do sends a request to the stack with bearer.
+func (s *clockStack) do(t *testing.T, bearer, method, path, body string) (int, []byte) {
 	t.Helper()
 	var rd io.Reader
 	if body != "" {
@@ -70,7 +77,7 @@ func (s *clockStack) do(t *testing.T, method, path, body string) (int, []byte) {
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
-	req.Header.Set("Authorization", "Bearer "+s.token)
+	req.Header.Set("Authorization", "Bearer "+bearer)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -96,7 +103,11 @@ type clockAnswer struct {
 // clock sends method to /platform/clock and decodes a 200 answer.
 func (s *clockStack) clock(t *testing.T, method, body string) clockAnswer {
 	t.Helper()
-	status, raw := s.do(t, method, "/api/platform/clock", body)
+	bearer := s.tenant // anyone reads the clock
+	if method == http.MethodPost {
+		bearer = s.operator
+	}
+	status, raw := s.do(t, bearer, method, "/api/platform/clock", body)
 	if status != http.StatusOK {
 		t.Fatalf("%s /platform/clock %s: %d %s", method, body, status, raw)
 	}
@@ -143,7 +154,7 @@ func (s *clockStack) setupModel(t *testing.T, name, workflow string) {
 // consistencyTime reads GET /entity/consistency-time.
 func (s *clockStack) consistencyTime(t *testing.T) time.Time {
 	t.Helper()
-	status, raw := s.do(t, http.MethodGet, "/api/entity/consistency-time", "")
+	status, raw := s.do(t, s.tenant, http.MethodGet, "/api/entity/consistency-time", "")
 	if status != http.StatusOK {
 		t.Fatalf("consistency time: %d %s", status, raw)
 	}
@@ -333,7 +344,7 @@ func RunPlatformClockBeforeRecordedTime409(t *testing.T, fixture BackendFixture)
 	}
 
 	earlier := clockParityStart.Add(-time.Hour)
-	status, raw := s.do(t, http.MethodPost, "/api/platform/clock", fmt.Sprintf(`{"time":%q}`, earlier.Format(time.RFC3339Nano)))
+	status, raw := s.do(t, s.operator, http.MethodPost, "/api/platform/clock", fmt.Sprintf(`{"time":%q}`, earlier.Format(time.RFC3339Nano)))
 	if status != http.StatusConflict {
 		t.Fatalf("set before the recorded time: %d %s; want 409", status, raw)
 	}
@@ -426,7 +437,7 @@ func RunPlatformClockPastStartAsyncSearch(t *testing.T, fixture BackendFixture) 
 	if !hasResult() {
 		t.Fatalf("the async search's results are gone after a later commit")
 	}
-	status, raw := s.do(t, http.MethodGet, "/api/entity/"+id.String()+"/transitions?transactionId="+url.QueryEscape(txID), "")
+	status, raw := s.do(t, s.tenant, http.MethodGet, "/api/entity/"+id.String()+"/transitions?transactionId="+url.QueryEscape(txID), "")
 	if status != http.StatusOK {
 		t.Fatalf("transitions by transactionId: %d %s", status, raw)
 	}

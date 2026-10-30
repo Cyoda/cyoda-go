@@ -85,7 +85,7 @@ var freshDBSeq atomic.Int64
 
 // NewFreshStack implements parity.FreshStackFixture: a stack on a database of
 // its own on the fixture's server, dropped when the test ends.
-func (f *postgresFixture) NewFreshStack(t *testing.T, env map[string]string) (string, string, func()) {
+func (f *postgresFixture) NewFreshStack(t *testing.T, env map[string]string) parity.FreshStack {
 	t.Helper()
 	ctx := context.Background()
 	name := fmt.Sprintf("cyoda_fresh_%d_%d", time.Now().UnixNano(), freshDBSeq.Add(1)) // realtime: a unique name
@@ -109,12 +109,11 @@ func (f *postgresFixture) NewFreshStack(t *testing.T, env map[string]string) (st
 		t.Fatalf("parse connection string: %v", err)
 	}
 	u.Path = "/" + name
-	base, stop := fixtureutil.LaunchFreshStack(t, f.keySet, []string{
+	return fixtureutil.LaunchFreshStack(t, f.keySet, []string{
 		"CYODA_STORAGE_BACKEND=postgres",
 		"CYODA_POSTGRES_URL=" + u.String(),
 		"CYODA_POSTGRES_AUTO_MIGRATE=true",
 	}, env)
-	return base, fixtureutil.MintPlatformClockJWT(t, f.keySet).Token, stop
 }
 
 // setup boots a Postgres testcontainer, builds binaries, launches

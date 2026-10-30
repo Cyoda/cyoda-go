@@ -413,7 +413,7 @@ func (h *callbackHarness) computeBearer(t *testing.T) string {
 func (h *callbackHarness) platformToken(t *testing.T) string {
 	t.Helper()
 	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "platform-operator",
-		string(auth.PlatformTenantID), "platform-operator", []string{"ROLE_ADMIN", "ROLE_M2M"})
+		string(auth.PlatformTenantID), "platform-operator", []string{"ROLE_ADMIN"})
 	if err != nil {
 		t.Fatalf("sign platform token: %v", err)
 	}

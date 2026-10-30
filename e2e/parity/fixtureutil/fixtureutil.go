@@ -190,20 +190,6 @@ func MintPlatformOperatorJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	return parity.Tenant{ID: string(auth.PlatformTenantID), Token: token}
 }
 
-// MintPlatformClockJWT mints the token of a platform-operator M2M client:
-// ROLE_ADMIN and ROLE_M2M in the PLATFORM tenant. The platform clock accepts
-// only that principal (a person token, as MintPlatformOperatorJWT signs, is
-// refused). The fresh stack of a scenario uses it as the scenario's only
-// token, for the clock and for the stack's data alike.
-func MintPlatformClockJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
-	t.Helper()
-	token, err := mintTenantAdminJWT(ks, string(auth.PlatformTenantID), "platform-operator")
-	if err != nil {
-		t.Fatalf("failed to mint platform clock JWT: %v", err)
-	}
-	return parity.Tenant{ID: string(auth.PlatformTenantID), Token: token}
-}
-
 // ComputeTenantID is the tenant of the fixture's own compute-test-client: it
 // authenticates as an M2M client of this tenant (ProvisionComputeClient).
 // Processor/criteria dispatch is tenant-scoped, so tests exercising gRPC

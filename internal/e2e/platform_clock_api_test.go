@@ -62,6 +62,23 @@ func TestPlatformClock_Get_FeatureOn(t *testing.T) {
 	}
 }
 
+// TestPlatformClock_NoM2MRole: the clock is not a ROLE_M2M operation. A
+// platform operator without ROLE_M2M changes it, and an authenticated caller
+// without ROLE_M2M reads it.
+func TestPlatformClock_NoM2MRole(t *testing.T) {
+	h := clockStack(t, true)
+	if c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2}`)); c.Rate != 2 {
+		t.Fatalf("rate after the operator's change = %v; want 2", c.Rate)
+	}
+	tok, err := signServiceToken(h.signKey, "cyoda-callback-test", h.audience, "plain-user", "plain-tenant", "plain-user", []string{"ROLE_USER"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := decodeClock(t, h.clockAs(t, tok, http.MethodGet, "", "")); c.Rate != 2 {
+		t.Fatalf("rate read by a caller without ROLE_M2M = %v; want 2", c.Rate)
+	}
+}
+
 func TestPlatformClock_Post_Disabled403(t *testing.T) {
 	h := clockStack(t, false)
 	resp := h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2}`)

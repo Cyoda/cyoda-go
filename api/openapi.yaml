@@ -1017,8 +1017,8 @@ paths:
         - Platform Clock
       summary: Get the platform clock
       description: >-
-        Returns this node's platform time and its rate. Any caller with
-        ROLE_M2M, of any tenant, may read it. On a node without clock control the
+        Returns this node's platform time and its rate. Any authenticated
+        caller, of any tenant, may read it. On a node without clock control the
         time is real time, the rate is 1 and `controllable` is false.
       operationId: getPlatformClock
       responses:
@@ -1032,8 +1032,6 @@ paths:
                 $ref: "#/components/schemas/PlatformClockDto"
         "401":
           $ref: '#/components/responses/Unauthorized'
-        "403":
-          $ref: '#/components/responses/Forbidden'
         default:
           $ref: '#/components/responses/InternalServerError'
     post:
@@ -1093,8 +1091,8 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           description: >-
-            Forbidden. `properties.errorCode` is FORBIDDEN when the caller lacks
-            ROLE_M2M, is not a platform operator or acts on behalf of a user, and
+            Forbidden. `properties.errorCode` is FORBIDDEN when the caller is not a
+            platform operator or acts on behalf of a user, and
             CLOCK_CONTROL_DISABLED when the node was not started with clock
             control enabled.
           content:

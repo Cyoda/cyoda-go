@@ -69,10 +69,9 @@ var _ parity.FreshStackFixture = (*memoryFixture)(nil)
 
 // NewFreshStack implements parity.FreshStackFixture: a memory stack of its own
 // (the store is the process's).
-func (f *memoryFixture) NewFreshStack(t *testing.T, env map[string]string) (string, string, func()) {
+func (f *memoryFixture) NewFreshStack(t *testing.T, env map[string]string) parity.FreshStack {
 	t.Helper()
-	base, stop := fixtureutil.LaunchFreshStack(t, f.keySet, []string{"CYODA_STORAGE_BACKEND=memory"}, env)
-	return base, fixtureutil.MintPlatformClockJWT(t, f.keySet).Token, stop
+	return fixtureutil.LaunchFreshStack(t, f.keySet, []string{"CYODA_STORAGE_BACKEND=memory"}, env)
 }
 
 // setup builds binaries, launches subprocesses, and waits for readiness.
