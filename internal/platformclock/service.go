@@ -38,22 +38,16 @@ type State struct {
 	Controllable bool
 }
 
-// errBeforeRecordedTime is matched (errors.Is) by a refused set-back: the
-// store has recorded a time later than the requested start. errors.As into
-// *BeforeRecordedTimeError gives that time.
-var errBeforeRecordedTime = errors.New("the store holds a time later than the requested start")
-
-// BeforeRecordedTimeError names the latest time the store has recorded.
+// BeforeRecordedTimeError refuses a set-back: the store has recorded a time
+// later than the requested start. Latest is that time.
 type BeforeRecordedTimeError struct {
 	Latest time.Time
 }
 
 func (e *BeforeRecordedTimeError) Error() string {
-	return fmt.Sprintf("%s: latest recorded time %s",
-		errBeforeRecordedTime.Error(), stamp(e.Latest))
+	return fmt.Sprintf("the store holds a time later than the requested start: latest recorded time %s",
+		stamp(e.Latest))
 }
-
-func (e *BeforeRecordedTimeError) Unwrap() error { return errBeforeRecordedTime }
 
 // Service changes the test clock: it sets it (into the past only when the
 // store allows), moves it forward through every scheduled due time on the

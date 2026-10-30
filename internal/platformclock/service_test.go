@@ -383,8 +383,8 @@ func TestSetBack_RefusedWhenRecordedLater(t *testing.T) {
 	prev := f.clock.Setting()
 	at := f.t0.Add(-24 * time.Hour)
 	_, err := f.svc.Change(context.Background(), Change{At: &at})
-	if !errors.Is(err, errBeforeRecordedTime) {
-		t.Fatalf("err = %v, want errBeforeRecordedTime", err)
+	if before := (*BeforeRecordedTimeError)(nil); !errors.As(err, &before) {
+		t.Fatalf("err = %v, want *BeforeRecordedTimeError", err)
 	}
 	var be *BeforeRecordedTimeError
 	if !errors.As(err, &be) || !be.Latest.Equal(recorded) {
@@ -447,8 +447,8 @@ func TestSetBack_ToleranceIsCallDurationTimesRate(t *testing.T) {
 		f.src.advance(50 * time.Millisecond)
 		return at.Add(50*time.Millisecond + time.Microsecond)
 	}
-	if _, err := f.svc.Change(context.Background(), Change{At: &at}); !errors.Is(err, errBeforeRecordedTime) {
-		t.Fatalf("err = %v, want errBeforeRecordedTime", err)
+	if _, err := f.svc.Change(context.Background(), Change{At: &at}); !errors.As(err, new(*BeforeRecordedTimeError)) {
+		t.Fatalf("err = %v, want *BeforeRecordedTimeError", err)
 	}
 }
 
@@ -658,8 +658,8 @@ func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 		t.Fatalf("served %+v while the set-back is pending, want %+v", got, published)
 	}
 	release <- f.clock.Now().Add(time.Hour) // the store holds a later time
-	if err := <-done; !errors.Is(err, errBeforeRecordedTime) {
-		t.Fatalf("err = %v, want errBeforeRecordedTime", err)
+	if err := <-done; !errors.As(err, new(*BeforeRecordedTimeError)) {
+		t.Fatalf("err = %v, want *BeforeRecordedTimeError", err)
 	}
 	if got := servedSetting(t, ex); got == nil || *got != published {
 		t.Fatalf("served %+v after the refusal, want %+v", got, published)
