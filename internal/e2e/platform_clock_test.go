@@ -217,6 +217,16 @@ func firedTransition(t *testing.T, events []map[string]any, what, transition str
 	}
 }
 
+// onlyEvent returns the one event of eventType, failing otherwise.
+func onlyEvent(t *testing.T, events []map[string]any, eventType string) map[string]any {
+	t.Helper()
+	found := smEventsOfType(events, eventType)
+	if len(found) != 1 {
+		t.Fatalf("%d %s events, want 1: %+v", len(found), eventType, events)
+	}
+	return found[0]
+}
+
 // awaitStateAs polls the entity's state as bearer until it is want.
 func awaitStateAs(t *testing.T, h *callbackHarness, bearer, id, want string) {
 	t.Helper()
@@ -318,6 +328,8 @@ func TestPlatformClock_MoveOrderAcrossTenants(t *testing.T) {
 	hour := time.Hour.Milliseconds()
 
 	modelA1, modelA4, modelB := uniq("clk-a1"), uniq("clk-a4"), uniq("clk-b2")
+	modelA5 := uniq("clk-a5")
+	setupModelAs(t, h, tokA, modelA5, fireOpenToDone("clk-a5-wf", 5*hour, 0))
 	setupModelAs(t, h, tokA, modelA1, fireOpenToDone("clk-a1-wf", hour, 0))
 	setupModelAs(t, h, tokA, modelA4, fireOpenToDone("clk-a4-wf", 4*hour, 0))
 	// Open -[Fire, +2h]-> Mid -[Then, +1h]-> Done: the fire arms a transition
@@ -334,9 +346,19 @@ func TestPlatformClock_MoveOrderAcrossTenants(t *testing.T) {
 	b2, _ := createAs(t, h, tokB, modelB)
 	a4, _ := createAs(t, h, tokA, modelA4)
 
-	moved := advanceClock(t, h, 5*time.Hour)
-	if moved.Now.Before(clockStart.Add(5 * time.Hour)) {
-		t.Fatalf("clock after the move = %s; want at or after +5h", moved.Now)
+	// a5 is due at +5h, and the move's target is exactly that due time: the
+	// fire must not leave the clock behind the time it fired at.
+	a5, _ := createAs(t, h, tokA, modelA5)
+	a5Armed := smEventScheduledTime(t, onlyEvent(t, smEventsAs(t, h, tokA, a5), "SCHEDULED_TRANSITION_ARM"))
+	moved := postClock(t, h, fmt.Sprintf(`{"time":%q}`, a5Armed.UTC().Format(time.RFC3339Nano)))
+	if moved.Now.Before(a5Armed) {
+		t.Fatalf("clock after the move = %s; want at or after the target %s", moved.Now, a5Armed)
+	}
+	awaitStateAs(t, h, tokA, a5, "Done")
+	a5Fire := firedTransition(t, smEventsAs(t, h, tokA, a5), "tenant A +5h (due at the target)", "Fire")
+	assertFiredOnTime(t, a5Fire.what, a5Fire.fire, a5Fire.due)
+	if now := getClock(t, h).Now; now.Before(a5Armed) || now.Before(a5Fire.fire) {
+		t.Fatalf("clock after the fire = %s; want at or after the target %s and the fire at %s", now, a5Armed, a5Fire.fire)
 	}
 	awaitStateAs(t, h, tokA, a1, "Done")
 	awaitStateAs(t, h, tokB, b2, "Done")
