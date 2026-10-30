@@ -1,7 +1,9 @@
 package platformclock_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -53,7 +55,7 @@ func TestSync_BroadcastAppliesNewer(t *testing.T) {
 	platformclock.Attach(c, b, ex)
 
 	s := validSetting(5)
-	platformclock.Publish(c, b, s)
+	platformclock.Publish(b, s)
 	if got := c.Setting(); got != s {
 		t.Fatalf("setting = %+v, want %+v", got, s)
 	}
@@ -99,5 +101,31 @@ func TestSync_IgnoresOlderAndGarbage(t *testing.T) {
 	}
 	if got := c.Setting(); got != s {
 		t.Fatalf("setting changed to %+v, want %+v", got, s)
+	}
+}
+
+func TestSync_FreshClockCarriesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	defer slog.SetDefault(old)
+
+	fresh := platformclock.NewTest("node-a", nil)
+	ex := &fakeExchange{}
+	platformclock.Attach(fresh, &fakeBroadcaster{}, ex)
+	if got := ex.local(); got != nil {
+		t.Fatalf("local() = %q, want nil", got)
+	}
+
+	other := platformclock.NewTest("node-b", nil)
+	before := other.Setting()
+	ex2 := &fakeExchange{}
+	platformclock.Attach(other, &fakeBroadcaster{}, ex2)
+	ex2.merge(ex.local())
+	if other.Setting() != before {
+		t.Fatal("merge of a fresh clock's state changed the setting")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("unexpected log output: %s", buf.String())
 	}
 }

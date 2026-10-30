@@ -58,12 +58,17 @@ func receive(c *Test, payload []byte) {
 
 // Attach subscribes c to settings broadcast on b and registers c's setting
 // with the push/pull state exchange, so a joining node converges before it
-// finishes joining.
+// finishes joining. The join-time exchange only covers a node that calls
+// Attach before Register.
 func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 	b.Subscribe(Topic, func(payload []byte) { receive(c, payload) })
 	ex.SetStateExchange(
 		func() []byte {
-			raw, err := json.Marshal(c.Setting())
+			cur := c.Setting()
+			if cur.Version == 0 {
+				return nil // never set: identity, nothing to carry
+			}
+			raw, err := json.Marshal(cur)
 			if err != nil {
 				slog.Warn("cannot encode platform clock setting",
 					"pkg", "platformclock", "error", fmt.Sprint(err))
@@ -81,7 +86,7 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 }
 
 // Publish broadcasts s to the cluster.
-func Publish(c *Test, b spi.ClusterBroadcaster, s Setting) {
+func Publish(b spi.ClusterBroadcaster, s Setting) {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		slog.Warn("cannot encode platform clock setting",
