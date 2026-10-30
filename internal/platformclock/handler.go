@@ -104,7 +104,7 @@ func (m *member[T]) UnmarshalJSON(data []byte) error {
 type rateLiteral string
 
 func (l *rateLiteral) UnmarshalJSON(data []byte) error {
-	if len(data) == 0 || data[0] == '"' || data[0] == 't' || data[0] == 'f' ||
+	if data[0] == '"' || data[0] == 't' || data[0] == 'f' ||
 		data[0] == '{' || data[0] == '[' || data[0] == 'n' {
 		return errors.New("rate must be a number")
 	}

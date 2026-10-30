@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -97,12 +96,7 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 			if cur == nil {
 				return nil // nothing published or adopted: nothing to carry
 			}
-			raw, err := json.Marshal(*cur)
-			if err != nil {
-				slog.Warn("cannot encode platform clock setting",
-					"pkg", "platformclock", "error", fmt.Sprint(err))
-				return nil
-			}
+			raw, _ := json.Marshal(*cur) // integers and a string: cannot fail
 			return raw
 		},
 		func(payload []byte) {
@@ -116,11 +110,6 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 
 // Publish broadcasts s to the cluster.
 func Publish(b spi.ClusterBroadcaster, s Setting) {
-	raw, err := json.Marshal(s)
-	if err != nil {
-		slog.Warn("cannot encode platform clock setting",
-			"pkg", "platformclock", "error", fmt.Sprint(err))
-		return
-	}
+	raw, _ := json.Marshal(s) // integers and a string: cannot fail
 	b.Broadcast(topic, raw)
 }
