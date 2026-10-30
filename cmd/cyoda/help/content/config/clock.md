@@ -1,7 +1,7 @@
 ---
 topic: config.clock
 title: "cyoda platform clock configuration"
-stability: stable
+stability: experimental
 see_also:
   - config
   - config.auth

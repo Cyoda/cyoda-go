@@ -52,8 +52,8 @@ func (s *SearchService) ReclaimStaleJobs(ctx context.Context, staleAfter time.Du
 	// identical type-assertion guard (service.go), which skips the in-process
 	// execution goroutine for the same reason: calling SaveResults,
 	// UpdateJobStatus or ClearResults on one of these stores is an error, and
-	// their jobs never receive an engine heartbeat after the one CreateJob
-	// stamps, so ClaimStale's heartbeat baseline would make every healthy job
+	// their jobs never receive an engine heartbeat after the stamp the store
+	// makes at CreateJob, so ClaimStale's heartbeat baseline would make every healthy job
 	// of theirs look stale by construction. Fail closed: skip entirely.
 	if _, ok := s.searchStore.(spi.SelfExecutingSearchStore); ok {
 		return 0, nil

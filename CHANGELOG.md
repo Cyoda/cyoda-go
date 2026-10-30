@@ -6,6 +6,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`memory.NewAsyncSearchStore` is removed** from the memory plugin module;
+  the async search store comes from the store factory.
+
 - **Storage plugins: three new obligations for the platform clock.**
   `ScheduledTaskStore.SchedulerActivity` returns the earliest waiting task's
   `NextAttemptTime` and whether any task is running, across all tenants.
@@ -1510,8 +1513,14 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 - **memory and sqlite plugins: `WithClock` sets the physical clock** (liveness
   and timeouts), and the new `WithBusinessClock` sets the business clock
   (stamps and retention), which defaults to the physical one, so a caller that
-  sets only `WithClock` sees no change. `memory.NewAsyncSearchStore` is
-  removed; the async search store comes from the store factory.
+  sets only `WithClock` sees no change.
+
+- **The search reapers start after the cluster join,** so the snapshot-TTL
+  and stale-job sweeps never run before the node has its peers' settings.
+
+- **SQLite `Begin` reads the clock for a snapshot time after it takes the
+  commit gate,** not before waiting for it, so the snapshot time is not older
+  than a commit that landed during the wait.
 
 - **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
   follows the platform clock.**
