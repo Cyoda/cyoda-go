@@ -36,7 +36,7 @@ The canonical schema tree lives at `docs/cyoda/schema/` in this repo and is embe
 - **Code generation** via `scripts/generate-events.sh` — the Go types in `api/grpc/events/types.go` are derived from this tree.
 - **Downstream tooling**: documentation pipelines and SDK generators extract the tree from the binary (see `cyoda help cloudevents json`), so every version of cyoda ships with a matching, self-describing schema bundle.
 
-**Platform time.** A processor, criterion or schedule-function request carries the platform clock's time in the CloudEvent `time` attribute (see `cyoda help clock`), so a schedule function computes an absolute fire time on the platform's clock, not its own.
+**Platform time.** A processor, criterion or schedule-function request carries a platform time in the CloudEvent `time` attribute (see `cyoda help clock`), so a schedule function computes an absolute fire time on the platform's clock, not its own. It is the platform time at which the node that owns the callout took it up, the same on every try of one callout and on every node that makes a try.
 
 **Two ids.** The CloudEvent envelope's `id` is unique per event. A calculation request's payload carries its own `id` and `requestId`, and these are **the same on every try of one callout**: when a callout is given to a second compute member, the second request is a new event with the same `requestId`. A compute member correlates its response by `requestId`, and may use it as the key that makes an outside action safe to repeat. See `cyoda help grpc` and `cyoda help workflows`.
 

@@ -702,7 +702,7 @@ Business time is the time cyoda records and compares as data: entity and
 revision dates, submit times, audit event times, consistency times, model
 update dates, search-job times, scheduled-transition due times and the point-in-time
 "now". It comes from one `spi.Clock`. In production the engine, the scheduler,
-the domain services and the callout dispatcher get the real clock, and the
+the domain services and the owner's callout loop get the real clock, and the
 storage plugin is given none and uses its own: postgres stamps from the database
 clock and computes its retention and reap cutoffs on the process clock; memory
 and sqlite use their physical clock. With `CYODA_CLOCK_CONTROL_ENABLED=true` cyoda builds the
@@ -716,6 +716,12 @@ Real time stays real: token and key validity, timeouts and deadlines, leases,
 heartbeats, scheduler-owner liveness, metrics and throttling. A plugin given a
 business clock keeps its own physical clock for the liveness stamps and
 timeouts it applies.
+
+A callout's platform time, the CloudEvents `time` attribute of each request
+to a compute node, is read once by the owner when it takes the callout up
+(`callout.Coordinator`). Every try and every hand-over carries that value, so a
+peer that has not yet adopted a clock change sends the owner's time, not its
+own clock's.
 
 A read of the wall clock or of the database clock is either the injected clock
 or carries a `// realtime: <reason>` marker (`-- realtime:` in `.sql`) on its
@@ -947,7 +953,7 @@ tries        = 1 for retryPolicy NONE, else 1 + CYODA_RETRY_FIXED_NUM_RETRIES
 answer limit = the callout's responseTimeoutMs, else CYODA_CALLOUT_RESPONSE_TIMEOUT_MS
 deadline     = now + tries × answer limit + CYODA_DISPATCH_WAIT_TIMEOUT
                    + CYODA_CALLOUT_HANDOVER_ALLOWANCE
-one request id for the whole callout; fence.Begin, ended on every exit path
+one request id and one platform time for the whole callout; fence.Begin, ended on every exit path
 loop (one pass):
   take MemberRegistry.Changed() and NodeRegistry.Changed()  # before looking, so no signal is lost
   RunLocal(call, tries left): the node's own matching members, one after
@@ -1070,7 +1076,8 @@ POST /internal/dispatch/callout
 **Dispatch request/response types** (`internal/cluster/dispatch/types.go`): the
 request carries the entity payload and meta, the workflow/transition names,
 the callout's txID, the tenant, the callout's attributed and executor principals and the executor's roles (all four principal fields required), a request id the
-owner mints and uses for every try, how many tries and how long an answer may
+owner mints and uses for every try, the callout's platform time (`atUnixMicro`,
+required), how many tries and how long an answer may
 take, the owner's node id and the fencing number the peer's tries are numbered
 under, the enclosing callouts (empty unless the callout was made from inside a
 callback), whether the work may be given to a second compute member after a

@@ -21,7 +21,9 @@ times, consistency times, model update dates, search-job times,
 scheduled-transition arm, due and fire times, the point-in-time "now", and the
 CloudEvent `time` attribute on processor, criterion and schedule-function
 requests (so a schedule function computes an absolute fire time on the
-platform's clock).
+platform's clock). That attribute is the platform time at which the owning
+node took the callout up: it is read once, and every try of the callout, on
+every node, sends the same time.
 
 **Operational time, real time:** token and key validity, timeouts and
 deadlines, leases, heartbeats, keep-alives, metrics.

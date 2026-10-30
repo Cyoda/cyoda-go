@@ -158,7 +158,12 @@ have the starting inventory.
 
 - **What carries it:** processor, criterion and schedule-function requests to
   compute nodes carry the standard CloudEvents `time` attribute.
-- **Its value:** the clock's time when the request is built.
+- **Its value:** the platform time at which the owning node took the callout
+  up. The owner reads its clock once, before the first try, to the
+  microsecond; every try sends that value, and a hand-over carries it
+  (`atUnixMicro`, required), so a peer sends the owner's time and never its
+  own clock's reading. Retries and hand-overs send the same time. A callout
+  without one is not sent.
 - **Why:** a schedule function that returns an absolute fire time computes it
   on the platform's clock, not the compute node's.
 - **Cloud:** it sets this attribute from its JVM clock
@@ -637,6 +642,7 @@ No new store reads, locks, checks or background work run in production.
 | Cluster: a change through node A reaches node B; a node that joins later takes the setting | ✓ | ✓ | | | |
 | Restart alone on a store with times ahead of real time → the check returns an error; behind → starts on real time | ✓ | waived: startup failure exits the process (`app.New`, `os.Exit(1)`), and e2e runs the app in-process; the check function is unit-tested on a real store | | | |
 | Callout `time` attribute carries the clock's time; an absolute schedule-function fire time computed from it is due at the right platform time | ✓ | ✓ | | | |
+| Callout `time` attribute is the owner's platform time when it took the callout up: a retry and a hand-over send the same value; a peer sends the hand-over's time, not its own clock's; a hand-over without one is refused | ✓ | | | | |
 | Stale reclaim of a never-heartbeated job judged on the database clock | | | | | ✓ |
 | gRPC `PlatformClockGetRequest`: success, unauthenticated | | | | ✓ | |
 

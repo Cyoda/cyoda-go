@@ -1216,9 +1216,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   `POST /platform/clock`; `GET /platform/clock` (and the gRPC
   `PlatformClockGetRequest`) read it. Revision, audit, consistency and
   scheduled times follow the clock, and a move fires each scheduled
-  transition at its due time. Callout requests carry the platform time in
-  the CloudEvent `time` attribute. Authentication, timeouts and leases stay
-  on real time. The clock is instance-wide. See `cyoda help clock`.
+  transition at its due time. Callout requests carry, in the CloudEvent
+  `time` attribute, the platform time at which the owning node took the
+  callout up, the same on every try and every node. Authentication,
+  timeouts and leases stay on real time. The clock is instance-wide. See
+  `cyoda help clock`.
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
   error (500) already carried it (a UUID, also written to the server log with
