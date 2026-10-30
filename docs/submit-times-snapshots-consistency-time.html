@@ -102,7 +102,7 @@ th{font-family:var(--cond);font-weight:600}
     </dd>
 
     <dt>store clock</dt>
-    <dd>The clock that the store reads to calculate its times. memory and sqlite read the clock of the cyoda-go process. postgres reads the clock of the database server, with <code>clock_timestamp()</code>.</dd>
+    <dd>The clock that the store reads to calculate its times. memory and sqlite read the clock of the cyoda-go process. postgres reads the clock of the database server, with <code>clock_timestamp()</code>. With the platform clock under test control, all three take their business stamps from it instead (<code>cyoda help clock</code>).</dd>
 
     <dt>floor</dt>
     <dd>A time value, to the microsecond, that the store keeps. The floor never goes back. memory and sqlite keep one floor per store instance, in memory (<code>lastSubmitTime</code>). postgres keeps one floor per database, in the sequence <code>cyoda_stamp_floor</code>. All nodes and all tenants share it.</dd>
