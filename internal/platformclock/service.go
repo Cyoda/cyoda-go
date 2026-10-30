@@ -78,10 +78,21 @@ type Service struct {
 // store's cross-tenant SchedulerActivity get the request's cancellation without
 // its user context.
 // publish broadcasts each new setting; poll is the interval between
-// scheduler polls during a move.
+// scheduler polls during a move. It panics on a nil clock, storeTime, tasks or
+// publish.
 func NewService(c *Test, storeTime func(ctx context.Context) (time.Time, error),
 	tasks func(ctx context.Context) (spi.ScheduledTaskStore, error),
 	publish func(Setting), poll time.Duration) *Service {
+	switch {
+	case c == nil:
+		panic("platformclock.NewService: nil clock")
+	case storeTime == nil:
+		panic("platformclock.NewService: nil store time")
+	case tasks == nil:
+		panic("platformclock.NewService: nil scheduled-task store")
+	case publish == nil:
+		panic("platformclock.NewService: nil publish")
+	}
 	return &Service{c: c, storeTime: storeTime, tasks: tasks, publish: publish, poll: poll}
 }
 

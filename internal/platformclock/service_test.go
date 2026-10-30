@@ -174,6 +174,31 @@ func sameTimes(a, b []time.Time) bool {
 	return true
 }
 
+// A Service missing a collaborator is refused when it is built, not at the
+// first change that needs it.
+func TestNewService_NilCollaboratorPanics(t *testing.T) {
+	c := NewTest("n1", newFakeSrc().now)
+	storeTime := (&fakeStoreTime{}).storeTime
+	tasks := func(context.Context) (spi.ScheduledTaskStore, error) { return nil, nil }
+	publish := (&publishLog{}).publish
+	tests := map[string]func(){
+		"clock":      func() { NewService(nil, storeTime, tasks, publish, testPoll) },
+		"store time": func() { NewService(c, nil, tasks, publish, testPoll) },
+		"tasks":      func() { NewService(c, storeTime, nil, publish, testPoll) },
+		"publish":    func() { NewService(c, storeTime, tasks, nil, testPoll) },
+	}
+	for name, build := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("NewService with a nil %s did not panic", name)
+				}
+			}()
+			build()
+		})
+	}
+}
+
 func TestMove_NoTasks_SetsTargetImmediately(t *testing.T) {
 	f := newFixture(t)
 	target := f.t0.Add(4 * time.Hour).Truncate(time.Millisecond)

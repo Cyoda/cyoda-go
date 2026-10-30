@@ -2,8 +2,11 @@ package registry_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
@@ -22,7 +25,14 @@ func TestGossip_StateExchangeOnJoin(t *testing.T) {
 	platformclock.Attach(c1, r1, r1)
 	// A setting made through the service is shareable. Its broadcast is
 	// dropped here, so the joiner can only learn it by the state exchange.
-	svc := platformclock.NewService(c1, nil, nil, func(platformclock.Setting) {}, time.Second)
+	svc := platformclock.NewService(c1,
+		func(context.Context) (time.Time, error) {
+			return time.Time{}, errors.New("a rate change does not read the store's time")
+		},
+		func(context.Context) (spi.ScheduledTaskStore, error) {
+			return nil, errors.New("a rate change does not read the scheduled tasks")
+		},
+		func(platformclock.Setting) {}, time.Second)
 	rate := int64(2_000_000)
 	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
 		t.Fatal(err)

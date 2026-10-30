@@ -15,10 +15,22 @@ import (
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
+
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
+
+// unusedStoreTime and unusedTasks stand in for a Service's store lookups where
+// the test only changes the rate, which reads neither.
+func unusedStoreTime(context.Context) (time.Time, error) {
+	return time.Time{}, fmt.Errorf("a rate change does not read the store's time")
+}
+
+func unusedTasks(context.Context) (spi.ScheduledTaskStore, error) {
+	return nil, fmt.Errorf("a rate change does not read the scheduled tasks")
+}
 
 // clockNode builds an app with the memory plugin and the context path
 // removed, and serves its handler.
@@ -198,7 +210,7 @@ func TestClockWiring_OnClusterJoinAdoptsPeerSetting(t *testing.T) {
 	// A published setting; its broadcast is dropped (no publish), so the
 	// node can learn it only by the join-time exchange.
 	rate := int64(3_000_000)
-	svc := platformclock.NewService(held, nil, nil, func(platformclock.Setting) {}, time.Second)
+	svc := platformclock.NewService(held, unusedStoreTime, unusedTasks, func(platformclock.Setting) {}, time.Second)
 	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
 		t.Fatal(err)
 	}
