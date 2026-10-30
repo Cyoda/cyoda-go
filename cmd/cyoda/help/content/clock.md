@@ -26,7 +26,7 @@ POST /api/platform/clock      {"advanceByMs": 86400000}
 POST /api/platform/clock      {"rate": 1}
 ```
 
-`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`.
+`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`. A `time` later than now is a move (see below), not only a set in the past.
 
 ## DESCRIPTION
 
@@ -43,7 +43,7 @@ POST /api/platform/clock      {"rate": 1}
 **Restrictions.**
 - Keep the system idle while the clock changes; nothing guards activity during a change.
 - Cluster nodes need synchronised real clocks, and all use the same value of the setting.
-- A restart returns the clock to real time. Startup fails if the store holds times more than 1 s later than real time: start over with a fresh store.
+- A node that restarts while other nodes run takes their setting. Only a full restart (no node left running, or a single-node deployment) returns the clock to real time, and that startup fails if the store holds times more than 1 s later than real time: start over with a fresh store.
 - Mock IAM lets any admin act as platform operator.
 
 ## SEE ALSO
