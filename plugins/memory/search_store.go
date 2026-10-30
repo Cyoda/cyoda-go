@@ -20,20 +20,23 @@ type searchJobEntry struct {
 // AsyncSearchStore is a tenant-scoped, in-memory implementation of spi.AsyncSearchStore.
 type AsyncSearchStore struct {
 	mu    sync.RWMutex
-	clock Clock
+	clock Clock // physical: liveness (heartbeats, stale reclaim)
+	biz   Clock // business: reaping cutoff against FinishTime
 	data  map[spi.TenantID]map[string]*searchJobEntry
 }
 
 // NewAsyncSearchStore creates a new in-memory AsyncSearchStore using the wall clock.
 // Prefer newAsyncSearchStore for internal construction so the factory clock is shared.
 func NewAsyncSearchStore() *AsyncSearchStore {
-	return newAsyncSearchStore(wallClock{})
+	return newAsyncSearchStore(wallClock{}, wallClock{})
 }
 
-// newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given clock.
-func newAsyncSearchStore(clock Clock) *AsyncSearchStore {
+// newAsyncSearchStore creates a new in-memory AsyncSearchStore with the given
+// physical and business clocks.
+func newAsyncSearchStore(clock, biz Clock) *AsyncSearchStore {
 	return &AsyncSearchStore{
 		clock: clock,
+		biz:   biz,
 		data:  make(map[spi.TenantID]map[string]*searchJobEntry),
 	}
 }
@@ -349,8 +352,8 @@ func (s *AsyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 }
 
 // ClaimStale atomically claims up to limit RUNNING jobs, across ALL
-// tenants, whose staleness baseline — HeartbeatTime, falling back to
-// CreateTime when never heartbeated — is older than staleAfter (measured
+// tenants, whose staleness baseline — HeartbeatTime, stamped at
+// CreateJob — is older than staleAfter (measured
 // against the store's clock, the same domain Heartbeat stamps into). A
 // claimed job has its Epoch bumped and HeartbeatTime refreshed to now, so a
 // concurrent or immediately-following claim cannot re-take it. Terminal
@@ -468,7 +471,7 @@ func (s *AsyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	cutoff := s.clock.Now().Add(-ttl)
+	cutoff := s.biz.Now().Add(-ttl)
 	reaped := 0
 
 	for _, tenantJobs := range s.data {
