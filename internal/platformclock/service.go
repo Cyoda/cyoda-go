@@ -180,6 +180,8 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) er
 	for {
 		rep, err := s.awaitIdle(ctx, store, ticker, p)
 		if err != nil {
+			slog.Info("platform clock move stopped", "pkg", "platformclock",
+				"target", stamp(target), "now", stamp(s.c.Now()))
 			return err
 		}
 		e := time.UnixMilli(rep.EarliestWaitingMs)

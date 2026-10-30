@@ -3,9 +3,9 @@ package search_test
 // TestReclaimStaleJobs_SelfExecutingStore_NeverClaimsOrWrites pins that the
 // stale-job reclaim sweep keeps the self-executing-store guard SubmitAsync
 // already has. A self-executing store's jobs never receive an engine
-// heartbeat (SubmitAsync skips its background goroutine for these stores), so
-// ClaimStale's COALESCE(heartbeat_time, created_at) baseline would make every
-// healthy job of theirs look stale after staleAfter by construction — and,
+// heartbeat after the one CreateJob stamps (SubmitAsync skips its background
+// goroutine for these stores), so ClaimStale's heartbeat baseline would make
+// every healthy job of theirs look stale after staleAfter by construction — and,
 // absent this guard, ReclaimStaleJobs would claim them and clear/re-run or
 // FAIL them out from under the store's own recovery pipeline. Fail closed:
 // skip reclaim entirely for a spi.SelfExecutingSearchStore, exactly as

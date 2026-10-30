@@ -329,8 +329,9 @@ CREATE TABLE entity_versions (
   holding the column non-null until the commit-phase stamp overwrites it:
   `CURRENT_TIMESTAMP`, fixed at transaction start and exactly the value the
   stamp exists to replace, or a test clock's reading when there is one. The
-  same provisional value fills `valid_time`, `creation_date` and
-  `last_modified`. This is the value read back as `lastUpdateTime`.
+  same provisional value fills `valid_time` and `last_modified`, and
+  `creation_date` on an entity's first revision (later revisions keep the
+  entity's original creation date). This is the value read back as `lastUpdateTime`.
 - `wall_clock_time` — `clock_timestamp()` at the inserting statement: the
   physical moment the row was written, independent of the transaction and
   never restamped, kept for debugging and analysis. Nothing reads it. Under
