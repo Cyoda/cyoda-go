@@ -2,6 +2,7 @@
 package platformclock
 
 import (
+	"math"
 	"math/bits"
 	"sync/atomic"
 	"time"
@@ -108,7 +109,11 @@ func (c *Test) Apply(s Setting) bool {
 			return false
 		}
 		now := c.src()
-		skew := time.Duration(now.UnixMicro()-s.AnchorUnixMicro) * time.Microsecond
+		// The skew saturates at the Duration range (about 292 years): an anchor
+		// further away than that would overflow the multiplication.
+		const maxSkewMicro = int64(math.MaxInt64 / int64(time.Microsecond))
+		skewMicro := max(-maxSkewMicro, min(maxSkewMicro, now.UnixMicro()-s.AnchorUnixMicro))
+		skew := time.Duration(skewMicro) * time.Microsecond
 		next := &state{setting: s, anchor: now.Add(-skew)}
 		if c.st.CompareAndSwap(cur, next) {
 			c.share(s)

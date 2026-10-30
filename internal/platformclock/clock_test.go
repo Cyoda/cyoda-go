@@ -165,3 +165,33 @@ func TestTest_ConcurrentUse(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// A peer anchor far from local time must not overflow the skew: an anchor in
+// 9999 has had no elapsed time yet, one in 1970 has had the whole interval.
+func TestApply_FarAnchors(t *testing.T) {
+	start := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name   string
+		anchor time.Time
+		want   func(now time.Time) time.Time
+	}{
+		{"year 9999", time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC),
+			func(time.Time) time.Time { return start }},
+		{"year 1970", time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC),
+			func(now time.Time) time.Time {
+				return start.Add(now.Sub(time.Date(1970, 1, 1, 0, 0, 0, 0, time.UTC)))
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := newFakeSrc()
+			c := NewTest("n1", src.now)
+			if !c.Apply(Setting{StartUnixMicro: start.UnixMicro(), AnchorUnixMicro: tc.anchor.UnixMicro(),
+				RatePPM: 1_000_000, Version: 1, Writer: "peer"}) {
+				t.Fatal("setting not taken")
+			}
+			if got, want := c.Now(), tc.want(src.now()); !near(got, want, time.Second) {
+				t.Fatalf("Now = %v, want %v", got, want)
+			}
+		})
+	}
+}
