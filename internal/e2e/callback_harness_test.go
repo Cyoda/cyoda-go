@@ -702,6 +702,12 @@ func (h *callbackHarness) parseCalcRequest(evtType string, ce *cepb.CloudEvent, 
 		if k == internalgrpc.TxTokenAttr {
 			continue // the pass lives in rc.token only
 		}
+		// A timestamp attribute (the CloudEvents time: platform time) is
+		// recorded as RFC 3339 text.
+		if ts := v.GetCeTimestamp(); ts != nil {
+			req.rc.attrs[k] = ts.AsTime().UTC().Format(time.RFC3339Nano)
+			continue
+		}
 		req.rc.attrs[k] = v.GetCeString()
 	}
 	if body.Payload != nil {
