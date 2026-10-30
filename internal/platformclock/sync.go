@@ -64,11 +64,13 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 	b.Subscribe(Topic, func(payload []byte) { receive(c, payload) })
 	ex.SetStateExchange(
 		func() []byte {
-			cur := c.Setting()
-			if cur.Version == 0 {
-				return nil // never set: identity, nothing to carry
+			// Only a published or adopted setting: a local change still
+			// pending (a set-back awaiting the store) may yet be undone.
+			cur := c.shareable()
+			if cur == nil {
+				return nil // nothing published or adopted: nothing to carry
 			}
-			raw, err := json.Marshal(cur)
+			raw, err := json.Marshal(*cur)
 			if err != nil {
 				slog.Warn("cannot encode platform clock setting",
 					"pkg", "platformclock", "error", fmt.Sprint(err))

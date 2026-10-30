@@ -2,6 +2,7 @@ package platformclock
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"sync"
@@ -27,15 +28,20 @@ type fakeScheduler struct {
 	onFire   func(e time.Time) []time.Time // returns tasks armed by the fire
 	lastSeen time.Time                     // platform time at the latest poll
 	polls    int
+	failAt   int // from this poll on, SchedulerActivity fails with failErr
+	failErr  error
 }
 
 func (f *fakeScheduler) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
-	if uc := spi.GetUserContext(ctx); uc == nil || uc.Tenant.ID != "PLATFORM" {
-		return spi.SchedulerActivityReport{}, errors.New("no PLATFORM tenant")
+	if spi.GetUserContext(ctx) != nil {
+		return spi.SchedulerActivityReport{}, errors.New("cross-tenant call given a tenant context")
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.polls++
+	if f.failAt > 0 && f.polls >= f.failAt {
+		return spi.SchedulerActivityReport{}, f.failErr
+	}
 	now := f.clock.Now()
 	f.lastSeen = now
 	var rep spi.SchedulerActivityReport
@@ -71,19 +77,15 @@ func (f *fakeScheduler) seen() time.Time {
 	return f.lastSeen
 }
 
-// fakeTM is a TransactionManager whose only live method is ConsistencyTime.
-type fakeTM struct {
-	spi.TransactionManager
+// fakeStoreTime answers the store's consistency time.
+type fakeStoreTime struct {
 	answer func() time.Time
 	err    error
 	calls  int
 }
 
-func (f *fakeTM) ConsistencyTime(ctx context.Context) (time.Time, error) {
+func (f *fakeStoreTime) storeTime(context.Context) (time.Time, error) {
 	f.calls++
-	if uc := spi.GetUserContext(ctx); uc == nil || uc.Tenant.ID != "PLATFORM" {
-		return time.Time{}, errors.New("no PLATFORM tenant")
-	}
 	if f.err != nil {
 		return time.Time{}, f.err
 	}
@@ -121,7 +123,7 @@ type fixture struct {
 	src   *fakeSrc
 	clock *Test
 	sched *fakeScheduler
-	tm    *fakeTM
+	tm    *fakeStoreTime
 	pub   *publishLog
 	svc   *Service
 	t0    time.Time // platform time at fixture creation
@@ -135,12 +137,17 @@ func newFixture(t *testing.T) *fixture {
 		src:   src,
 		clock: c,
 		sched: &fakeScheduler{clock: c, fire: true},
-		tm:    &fakeTM{answer: func() time.Time { return time.UnixMicro(0) }},
+		tm:    &fakeStoreTime{answer: func() time.Time { return time.UnixMicro(0) }},
 		pub:   &publishLog{},
 		t0:    c.Now(),
 	}
-	f.svc = NewService(c, f.tm,
-		func(context.Context) (spi.ScheduledTaskStore, error) { return f.sched, nil },
+	f.svc = NewService(c, f.tm.storeTime,
+		func(ctx context.Context) (spi.ScheduledTaskStore, error) {
+			if spi.GetUserContext(ctx) != nil {
+				return nil, errors.New("cross-tenant lookup given a tenant context")
+			}
+			return f.sched, nil
+		},
 		f.pub.publish, testPoll)
 	return f
 }
@@ -300,7 +307,7 @@ func TestMove_SchedulerErrorFails(t *testing.T) {
 	c := NewTest("n1", src.now)
 	pub := &publishLog{}
 	boom := errors.New("store down")
-	svc := NewService(c, &fakeTM{},
+	svc := NewService(c, (&fakeStoreTime{}).storeTime,
 		func(context.Context) (spi.ScheduledTaskStore, error) { return nil, boom },
 		pub.publish, testPoll)
 	target := c.Now().Add(time.Hour)
@@ -443,8 +450,8 @@ func TestChange_AtAndAdvanceByRefused(t *testing.T) {
 
 func TestStartupCheck_AheadFails(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
-	tm := &fakeTM{answer: func() time.Time { return now.Add(time.Second + time.Microsecond) }}
-	if err := StartupCheck(context.Background(), tm, now); err == nil {
+	tm := &fakeStoreTime{answer: func() time.Time { return now.Add(time.Second + time.Microsecond) }}
+	if err := StartupCheck(context.Background(), tm.storeTime, now); err == nil {
 		t.Fatal("expected a startup error")
 	}
 }
@@ -452,8 +459,8 @@ func TestStartupCheck_AheadFails(t *testing.T) {
 func TestStartupCheck_BehindPasses(t *testing.T) {
 	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
 	for _, c := range []time.Time{now.Add(-48 * time.Hour), now.Add(time.Second)} {
-		tm := &fakeTM{answer: func() time.Time { return c }}
-		if err := StartupCheck(context.Background(), tm, now); err != nil {
+		tm := &fakeStoreTime{answer: func() time.Time { return c }}
+		if err := StartupCheck(context.Background(), tm.storeTime, now); err != nil {
 			t.Fatalf("C=%v: %v", c, err)
 		}
 	}
@@ -461,7 +468,168 @@ func TestStartupCheck_BehindPasses(t *testing.T) {
 
 func TestStartupCheck_StoreErrorFails(t *testing.T) {
 	boom := errors.New("down")
-	if err := StartupCheck(context.Background(), &fakeTM{err: boom}, time.Unix(0, 0)); !errors.Is(err, boom) {
+	if err := StartupCheck(context.Background(), (&fakeStoreTime{err: boom}).storeTime, time.Unix(0, 0)); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want %v", err, boom)
+	}
+}
+
+// steppingSrc advances by step on every read, so the clock moves between any
+// two reads the service makes.
+type steppingSrc struct {
+	mu   sync.Mutex
+	base time.Time
+	off  time.Duration
+	step time.Duration
+}
+
+func (s *steppingSrc) now() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.off += s.step
+	return s.base.Add(s.off)
+}
+
+// TestMove_StepSkippedWhenClockPassedDueTime: the clock runs past e between
+// the activity read and the set; setting it to e then would move it back.
+// Each k places the due time at a different read, so some k lands e between
+// the read that found it not yet due and the step.
+func TestMove_StepSkippedWhenClockPassedDueTime(t *testing.T) {
+	const step = time.Minute
+	for k := 1; k <= 8; k++ {
+		src := &steppingSrc{base: time.Now(), step: step} // realtime: monotonic base for the fake source
+		c := NewTest("n1", src.now)
+		t0 := c.Now()
+		sched := &fakeScheduler{clock: c, fire: true,
+			due: []time.Time{t0.Truncate(time.Millisecond).Add(time.Duration(k) * step)}}
+		prev := c.Setting()
+		var backward []string
+		publish := func(s Setting) {
+			// The previous setting's reading at the new anchor instant.
+			was := prev.StartUnixMicro + (s.AnchorUnixMicro-prev.AnchorUnixMicro)*prev.RatePPM/1_000_000
+			if s.StartUnixMicro < was {
+				backward = append(backward, time.UnixMicro(s.StartUnixMicro).String())
+			}
+			prev = s
+		}
+		svc := NewService(c, (&fakeStoreTime{}).storeTime,
+			func(context.Context) (spi.ScheduledTaskStore, error) { return sched, nil }, publish, testPoll)
+		target := t0.Add(10 * time.Hour)
+		if _, err := svc.Change(context.Background(), Change{At: &target}); err != nil {
+			t.Fatalf("k=%d: Change: %v", k, err)
+		}
+		if len(backward) > 0 {
+			t.Errorf("k=%d: published backward starts %v", k, backward)
+		}
+	}
+}
+
+func TestMove_SchedulerErrorMidMove(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	h1, h2, target := base.Add(time.Hour), base.Add(2*time.Hour), base.Add(3*time.Hour)
+	f.sched.due = []time.Time{h1, h2}
+	boom := errors.New("store down")
+	f.sched.failAt = 3 // poll 1: step to h1; poll 2: h1 due, fired; poll 3: fails
+	f.sched.failErr = boom
+	_, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(2_000_000))})
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want wrapped %v", err, boom)
+	}
+	f.pub.mu.Lock()
+	sets := append([]Setting(nil), f.pub.sets...)
+	f.pub.mu.Unlock()
+	if len(sets) != 1 || sets[0].StartUnixMicro != h1.UnixMicro() || sets[0].RatePPM != 1_000_000 {
+		t.Fatalf("published = %+v, want one complete step to %v at the old rate", sets, h1)
+	}
+	if got := f.clock.Setting(); got != sets[0] {
+		t.Fatalf("clock setting = %+v, want the last published %+v", got, sets[0])
+	}
+}
+
+type nopBroadcaster struct{}
+
+func (nopBroadcaster) Broadcast(string, []byte)       {}
+func (nopBroadcaster) Subscribe(string, func([]byte)) {}
+
+type capturedExchange struct{ local func() []byte }
+
+func (e *capturedExchange) SetStateExchange(l func() []byte, _ func([]byte)) { e.local = l }
+
+func servedSetting(t *testing.T, ex *capturedExchange) *Setting {
+	t.Helper()
+	raw := ex.local()
+	if raw == nil {
+		return nil
+	}
+	var s Setting
+	if err := json.Unmarshal(raw, &s); err != nil {
+		t.Fatalf("served state undecodable: %v", err)
+	}
+	return &s
+}
+
+// TestSetBack_PendingSettingNeverServed: while a set-back waits for the
+// store, and after it is refused, the state exchange serves only the setting
+// last published, never the pending one.
+func TestSetBack_PendingSettingNeverServed(t *testing.T) {
+	f := newFixture(t)
+	ex := &capturedExchange{}
+	Attach(f.clock, nopBroadcaster{}, ex)
+
+	if _, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))}); err != nil {
+		t.Fatalf("rate change: %v", err)
+	}
+	published := f.clock.Setting()
+	if got := servedSetting(t, ex); got == nil || *got != published {
+		t.Fatalf("served %+v, want the published %+v", got, published)
+	}
+
+	called := make(chan struct{})
+	release := make(chan time.Time)
+	f.tm.answer = func() time.Time {
+		close(called)
+		return <-release
+	}
+	done := make(chan error, 1)
+	at := f.t0.Add(-time.Hour)
+	go func() {
+		_, err := f.svc.Change(context.Background(), Change{At: &at})
+		done <- err
+	}()
+	<-called
+	if pending := f.clock.Setting(); pending == published {
+		t.Fatal("set-back not applied locally before the store call")
+	}
+	if got := servedSetting(t, ex); got == nil || *got != published {
+		t.Fatalf("served %+v while the set-back is pending, want %+v", got, published)
+	}
+	release <- f.clock.Now().Add(time.Hour) // the store holds a later time
+	if err := <-done; !errors.Is(err, ErrBeforeRecordedTime) {
+		t.Fatalf("err = %v, want ErrBeforeRecordedTime", err)
+	}
+	if got := servedSetting(t, ex); got == nil || *got != published {
+		t.Fatalf("served %+v after the refusal, want %+v", got, published)
+	}
+}
+
+// TestSetBack_PendingOnFreshClockServesNothing: before anything is
+// published the exchange serves nothing, even while a set-back is pending;
+// once accepted and published, it serves that setting.
+func TestSetBack_PendingOnFreshClockServesNothing(t *testing.T) {
+	f := newFixture(t)
+	ex := &capturedExchange{}
+	Attach(f.clock, nopBroadcaster{}, ex)
+	f.tm.answer = func() time.Time {
+		if raw := ex.local(); raw != nil {
+			t.Errorf("served %q while the first set-back is pending", raw)
+		}
+		return f.clock.Now()
+	}
+	at := f.t0.Add(-time.Hour)
+	if _, err := f.svc.Change(context.Background(), Change{At: &at}); err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	if got := servedSetting(t, ex); got == nil || *got != f.clock.Setting() {
+		t.Fatalf("served %+v after publish, want %+v", got, f.clock.Setting())
 	}
 }

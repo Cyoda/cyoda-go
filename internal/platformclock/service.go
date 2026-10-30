@@ -8,9 +8,6 @@ import (
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
-
-	"github.com/cyoda-platform/cyoda-go/internal/auth"
-	"github.com/cyoda-platform/cyoda-go/internal/common"
 )
 
 // progressEvery bounds how often a move logs its progress.
@@ -48,7 +45,7 @@ type BeforeRecordedTimeError struct {
 
 func (e *BeforeRecordedTimeError) Error() string {
 	return fmt.Sprintf("%s: latest recorded time %s",
-		ErrBeforeRecordedTime.Error(), e.Latest.UTC().Format(time.RFC3339Nano))
+		ErrBeforeRecordedTime.Error(), stamp(e.Latest))
 }
 
 func (e *BeforeRecordedTimeError) Unwrap() error { return ErrBeforeRecordedTime }
@@ -59,20 +56,23 @@ func (e *BeforeRecordedTimeError) Unwrap() error { return ErrBeforeRecordedTime 
 // One change at a time is the caller's restriction; the service does not
 // detect concurrent changes.
 type Service struct {
-	c       *Test
-	tm      spi.TransactionManager
-	tasks   func(ctx context.Context) (spi.ScheduledTaskStore, error)
-	publish func(Setting)
-	poll    time.Duration
+	c         *Test
+	storeTime func(ctx context.Context) (time.Time, error)
+	tasks     func(ctx context.Context) (spi.ScheduledTaskStore, error)
+	publish   func(Setting)
+	poll      time.Duration
 }
 
-// NewService returns a Service changing c. tasks resolves the scheduled-task
-// store a move polls, publish broadcasts each new setting, and poll is the
-// interval between scheduler polls during a move.
-func NewService(c *Test, tm spi.TransactionManager,
+// NewService returns a Service changing c. storeTime returns the store's
+// consistency time; the caller builds it with the tenant ConsistencyTime
+// requires. tasks resolves the scheduled-task store a move polls; it and the
+// store's cross-tenant SchedulerActivity get the caller's context as is.
+// publish broadcasts each new setting; poll is the interval between
+// scheduler polls during a move.
+func NewService(c *Test, storeTime func(ctx context.Context) (time.Time, error),
 	tasks func(ctx context.Context) (spi.ScheduledTaskStore, error),
 	publish func(Setting), poll time.Duration) *Service {
-	return &Service{c: c, tm: tm, tasks: tasks, publish: publish, poll: poll}
+	return &Service{c: c, storeTime: storeTime, tasks: tasks, publish: publish, poll: poll}
 }
 
 // State returns the current platform time and rate.
@@ -113,13 +113,12 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 		target = &t
 	}
 
-	ctx = platformContext(ctx)
 	var err error
 	switch {
 	case target == nil && rate == nil:
 		return s.State(), nil
 	case target == nil:
-		s.publish(s.c.Set(nil, rate))
+		s.commit(s.c.Set(nil, rate))
 	case target.After(now):
 		err = s.move(ctx, *target, rate)
 	default:
@@ -130,7 +129,7 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 		return st, err
 	}
 	slog.Info("platform clock changed", "pkg", "platformclock",
-		"now", st.Now.UTC().Format(time.RFC3339Nano), "ratePPM", st.RatePPM)
+		"now", stamp(st.Now), "ratePPM", st.RatePPM)
 	return st, nil
 }
 
@@ -141,7 +140,7 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 // nothing is published.
 func (s *Service) setBack(ctx context.Context, at time.Time, rate *int64) error {
 	prev, next := s.c.set(&at, rate)
-	latest, err := s.tm.ConsistencyTime(ctx)
+	latest, err := s.storeTime(ctx)
 	if err != nil {
 		s.c.restore(next, prev)
 		return fmt.Errorf("failed to read the store's consistency time: %w", err)
@@ -152,12 +151,20 @@ func (s *Service) setBack(ctx context.Context, at time.Time, rate *int64) error 
 		s.c.restore(next, prev)
 		return &BeforeRecordedTimeError{Latest: latest}
 	}
-	s.publish(next.setting)
+	s.commit(next.setting)
 	return nil
 }
 
+// commit makes a setting already applied locally shareable and broadcasts it.
+func (s *Service) commit(st Setting) {
+	s.c.share(st)
+	s.publish(st)
+}
+
 // move runs the step-through loop towards target. The clock keeps running
-// throughout, so each step sets it only forward.
+// throughout, so each step sets it only forward (setForward compares and
+// sets atomically). A step failing to read the store leaves the clock at
+// the last step, which was published whole.
 func (s *Service) move(ctx context.Context, target time.Time, rate *int64) error {
 	store, err := s.tasks(ctx)
 	if err != nil {
@@ -165,39 +172,30 @@ func (s *Service) move(ctx context.Context, target time.Time, rate *int64) error
 	}
 	ticker := time.NewTicker(s.poll)
 	defer ticker.Stop()
-	lastLog := s.c.src()
+	p := &progress{src: s.c.src, last: s.c.src(), target: target}
 	for {
-		rep, err := s.awaitIdle(ctx, store, ticker)
+		rep, err := s.awaitIdle(ctx, store, ticker, p)
 		if err != nil {
 			return err
 		}
-		now := s.c.Now()
 		e := time.UnixMilli(rep.EarliestWaitingMs)
 		if !rep.HasWaiting || e.After(target) {
-			switch {
-			case now.Before(target):
-				s.publish(s.c.Set(&target, rate))
-			case rate != nil:
-				s.publish(s.c.Set(nil, rate))
+			if st, ok := s.c.setForward(target, rate); ok {
+				s.commit(st)
 			}
 			return nil
 		}
-		if now.Before(e) {
-			s.publish(s.c.Set(&e, nil))
+		if st, ok := s.c.setForward(e, nil); ok {
+			s.commit(st)
 		}
-		if src := s.c.src(); src.Sub(lastLog) >= progressEvery {
-			lastLog = src
-			slog.Info("platform clock move in progress", "pkg", "platformclock",
-				"now", s.c.Now().UTC().Format(time.RFC3339Nano),
-				"target", target.UTC().Format(time.RFC3339Nano))
-		}
+		p.log("platform clock move in progress", "now", stamp(s.c.Now()))
 	}
 }
 
 // awaitIdle polls store until no scheduled task is RUNNING and none WAITING
 // is due on the clock, and returns that report.
 func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
-	ticker *time.Ticker) (spi.SchedulerActivityReport, error) {
+	ticker *time.Ticker, p *progress) (spi.SchedulerActivityReport, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return spi.SchedulerActivityReport{}, fmt.Errorf("platform clock move stopped: %w", err)
@@ -206,8 +204,15 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 		if err != nil {
 			return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read scheduler activity: %w", err)
 		}
-		due := rep.HasWaiting && !time.UnixMilli(rep.EarliestWaitingMs).After(s.c.Now())
-		if !rep.Running && !due {
+		earliest := time.UnixMilli(rep.EarliestWaitingMs)
+		due := rep.HasWaiting && !earliest.After(s.c.Now())
+		switch {
+		case rep.Running:
+			p.log("platform clock move waiting for a running scheduled task", "now", stamp(s.c.Now()))
+		case due:
+			p.log("platform clock move waiting for a due scheduled task to fire",
+				"due", stamp(earliest), "now", stamp(s.c.Now()))
+		default:
 			return rep, nil
 		}
 		select {
@@ -218,23 +223,36 @@ func (s *Service) awaitIdle(ctx context.Context, store spi.ScheduledTaskStore,
 	}
 }
 
+// progress throttles a move's INFO lines to one per progressEvery, measured
+// on the clock's source (real time).
+type progress struct {
+	src    func() time.Time
+	last   time.Time
+	target time.Time
+}
+
+func (p *progress) log(msg string, args ...any) {
+	now := p.src()
+	if now.Sub(p.last) < progressEvery {
+		return
+	}
+	p.last = now
+	slog.Info(msg, append([]any{"pkg", "platformclock", "target", stamp(p.target)}, args...)...)
+}
+
+func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+
 // StartupCheck fails when the store's consistency time is more than one
 // second later than now: a node starting on real time over a store that
 // holds later times would record history out of order.
-func StartupCheck(ctx context.Context, tm spi.TransactionManager, now time.Time) error {
-	latest, err := tm.ConsistencyTime(platformContext(ctx))
+func StartupCheck(ctx context.Context, storeTime func(ctx context.Context) (time.Time, error), now time.Time) error {
+	latest, err := storeTime(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to read the store's consistency time: %w", err)
 	}
 	if latest.After(now.Add(startupTolerance)) {
 		return fmt.Errorf("the store holds times later than real time; start over with a fresh store (latest recorded time %s, real time %s)",
-			latest.UTC().Format(time.RFC3339Nano), now.UTC().Format(time.RFC3339Nano))
+			stamp(latest), stamp(now))
 	}
 	return nil
-}
-
-// platformContext puts the system principal of the platform tenant on ctx:
-// ConsistencyTime requires a tenant, and the clock belongs to the platform.
-func platformContext(ctx context.Context) context.Context {
-	return spi.WithUserContext(ctx, common.SystemUserContextValue(auth.PlatformTenantID))
 }

@@ -19,9 +19,15 @@ func TestGossip_StateExchangeOnJoin(t *testing.T) {
 	defer r1.Deregister(ctx, "st-1")
 
 	c1 := platformclock.NewTest("st-1", nil)
-	rate := int64(2_000_000)
-	want := c1.Set(nil, &rate)
 	platformclock.Attach(c1, r1, r1)
+	// A setting made through the service is shareable. Its broadcast is
+	// dropped here, so the joiner can only learn it by the state exchange.
+	svc := platformclock.NewService(c1, nil, nil, func(platformclock.Setting) {}, time.Second)
+	rate := int64(2_000_000)
+	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
+		t.Fatal(err)
+	}
+	want := c1.Setting()
 	if err := r1.Register(ctx, "st-1", "localhost:18190"); err != nil {
 		t.Fatal(err)
 	}

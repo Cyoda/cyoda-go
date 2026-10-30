@@ -33,6 +33,10 @@ type Test struct {
 	nodeID string
 	src    func() time.Time
 	st     atomic.Pointer[state]
+	// shared is the newest setting this node may hand to a peer: one it
+	// published or adopted from a peer, never a local change still pending.
+	// nil until there is one.
+	shared atomic.Pointer[Setting]
 }
 
 // NewTest returns an identity test clock (platform time tracks src). src
@@ -87,7 +91,8 @@ func (c *Test) Now() time.Time {
 func (c *Test) Setting() Setting { return c.st.Load().setting }
 
 // Apply adopts s if it is newer than the current setting, converting its wall
-// anchor once into a local monotonic anchor. It reports whether s was taken.
+// anchor once into a local monotonic anchor, and records s as shareable with
+// peers. It reports whether s was taken.
 func (c *Test) Apply(s Setting) bool {
 	for {
 		cur := c.st.Load()
@@ -98,6 +103,7 @@ func (c *Test) Apply(s Setting) bool {
 		skew := time.Duration(now.UnixMicro()-s.AnchorUnixMicro) * time.Microsecond
 		next := &state{setting: s, anchor: now.Add(-skew)}
 		if c.st.CompareAndSwap(cur, next) {
+			c.share(s)
 			return true
 		}
 	}
@@ -114,12 +120,43 @@ func (c *Test) Set(at *time.Time, ratePPM *int64) Setting {
 
 // set is Set returning the state it replaced and the state it installed.
 func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
+	prev, next, _ = c.install(func(current int64) (int64, bool) {
+		if at == nil {
+			return current, true
+		}
+		return at.UnixMicro(), true
+	}, ratePPM)
+	return prev, next
+}
+
+// setForward sets the clock to at if at is still ahead of it and applies
+// ratePPM (nil keeps the rate). The comparison and the change are one atomic
+// step, so the clock never moves back. With at not ahead, the rate alone is
+// applied at the current time; with no rate either, nothing changes and it
+// reports false.
+func (c *Test) setForward(at time.Time, ratePPM *int64) (Setting, bool) {
+	_, next, ok := c.install(func(current int64) (int64, bool) {
+		if at.UnixMicro() > current {
+			return at.UnixMicro(), true
+		}
+		return current, ratePPM != nil
+	}, ratePPM)
+	if !ok {
+		return Setting{}, false
+	}
+	return next.setting, true
+}
+
+// install replaces the state in one compare-and-swap. start is given the
+// current platform time (Unix microseconds) and returns the new start and
+// whether to change at all; ratePPM nil keeps the rate.
+func (c *Test) install(start func(current int64) (int64, bool), ratePPM *int64) (prev, next *state, ok bool) {
 	for {
 		cur := c.st.Load()
 		now := c.src()
-		start := cur.platformMicro(now)
-		if at != nil {
-			start = at.UnixMicro()
+		begin, change := start(cur.platformMicro(now))
+		if !change {
+			return cur, nil, false
 		}
 		rate := cur.setting.RatePPM
 		if ratePPM != nil {
@@ -127,7 +164,7 @@ func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
 		}
 		next := &state{
 			setting: Setting{
-				StartUnixMicro:  start,
+				StartUnixMicro:  begin,
 				AnchorUnixMicro: now.UnixMicro(),
 				RatePPM:         rate,
 				Version:         cur.setting.Version + 1,
@@ -136,7 +173,7 @@ func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
 			anchor: now,
 		}
 		if c.st.CompareAndSwap(cur, next) {
-			return cur, next
+			return cur, next, true
 		}
 	}
 }
@@ -145,4 +182,23 @@ func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
 // local change that was never published. A setting adopted since is kept.
 func (c *Test) restore(installed, prev *state) {
 	c.st.CompareAndSwap(installed, prev)
+}
+
+// share records s as shareable with peers unless a newer one already is.
+func (c *Test) share(s Setting) {
+	for {
+		cur := c.shared.Load()
+		if cur != nil && !s.Newer(*cur) {
+			return
+		}
+		if c.shared.CompareAndSwap(cur, &s) {
+			return
+		}
+	}
+}
+
+// shareable returns the newest setting this node published or adopted from
+// a peer, or nil when there is none.
+func (c *Test) shareable() *Setting {
+	return c.shared.Load()
 }
