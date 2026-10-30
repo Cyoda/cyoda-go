@@ -52,13 +52,11 @@ func (e *BeforeRecordedTimeError) Error() string {
 		stamp(e.Latest))
 }
 
-// OutOfRangeError refuses a change that would put the clock past the year
-// 9999: an advance whose target lies beyond it, or a rate alone once the clock
-// has run past it.
+// OutOfRangeError refuses an advance whose target lies past the year 9000.
 type OutOfRangeError struct{}
 
 func (*OutOfRangeError) Error() string {
-	return "the change would put the clock beyond the year 9999"
+	return "advanceByMs moves the clock beyond the year 9000"
 }
 
 // Service changes the test clock: it sets it (into the past only when the
@@ -121,9 +119,8 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 		t := now.Add(*ch.AdvanceBy)
 		target = &t
 	}
-	// An advance is resolved here, against the clock it moves; a rate alone
-	// re-anchors at now. Either may not start the clock past the year 9999.
-	if (ch.AdvanceBy != nil && target.After(maxTime)) || (target == nil && now.After(maxTime)) {
+	// An advance is resolved here, against the clock it moves.
+	if ch.AdvanceBy != nil && target.After(maxSetTime) {
 		return s.State(), &OutOfRangeError{}
 	}
 

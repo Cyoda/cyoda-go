@@ -351,7 +351,7 @@ Errors, in the order they are checked:
 | 401 | — | missing or invalid credentials | ✓ | ✓ |
 | 403 | existing operator refusal | not a platform operator, or on behalf of a user | — | ✓ |
 | 403 | `CLOCK_CONTROL_DISABLED` | the feature is off on this node | — | ✓ |
-| 400 | existing strict-body / validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0`, overflowing or moving the clock past 9999, `rate` outside 0.1–100, `rate` alone once the clock has run past 9999, `time` not RFC 3339 or outside 1970–9999 | — | ✓ |
+| 400 | existing strict-body / validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0`, overflowing or moving the clock past 9000, `rate` outside 0.1–100, `time` not RFC 3339 or outside 1970–9000 | — | ✓ |
 | 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest recorded time; the detail names it | — | ✓ |
 | 503 | existing store-unavailable | the store did not answer the consistency-time check or the move's task query | — | ✓ |
 | 500 | generic + ticket | anything else | ✓ | ✓ |
@@ -568,7 +568,7 @@ No new store reads, locks, checks or background work run in production.
 - **Input validation:**
   - strict body;
   - rate within 0.1–100;
-  - times RFC 3339 within 1970–9999;
+  - times RFC 3339 within 1970–9000, and an advance may not move the clock past 9000;
   - problem details name the refused member.
 - **Information in errors.** `CLOCK_BEFORE_RECORDED_TIME` names the latest
   recorded time. Any caller can read that already as a consistency time.

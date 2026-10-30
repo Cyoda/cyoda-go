@@ -1316,7 +1316,7 @@ type PlatformClockChangeDto struct {
 	// Rate Platform seconds per real second, with at most six fractional digits.
 	Rate *float32 `json:"rate,omitempty"`
 
-	// Time The platform time to go to; RFC 3339, in the years 1970 to 9999. Exclusive with `advanceByMs`.
+	// Time The platform time to go to; RFC 3339, in the years 1970 to 9000. Exclusive with `advanceByMs`.
 	Time *time.Time `json:"time,omitempty"`
 }
 

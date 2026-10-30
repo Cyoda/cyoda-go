@@ -25,7 +25,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // EntitySearch handles unary search CloudEvents by calling service methods directly.
@@ -166,8 +165,7 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 // handlePlatformClockGetRequest answers this node's platform time, rate and
 // controllability, the same state GET /platform/clock answers. It reads no
 // store, so no failure a request can cause exists besides authentication,
-// which the interceptor refuses before the handler, and a clock past the year
-// 9999, which a timestamp cannot carry.
+// which the interceptor refuses before the handler.
 func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
 	var req events.PlatformClockGetRequestJson
 	if err := strictjson.Decode(payload, &req); err != nil {
@@ -175,10 +173,6 @@ func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Conte
 	}
 
 	st := s.clockState()
-	if appErr := platformclock.CheckReadable(st); appErr != nil {
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockGetRequest, "ceId", ce.Id, "error", appErr.Err.Error())
-		return platformClockError(ctx, ce.Id, appErr)
-	}
 	now := st.Now.UTC()
 	rate := st.Rate()
 	diag := common.GetDiagnostics(ctx)

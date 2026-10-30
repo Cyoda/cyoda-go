@@ -61,25 +61,9 @@ func StateOf(svc interface{ State() State }, enabled bool) State {
 	return svc.State()
 }
 
-// CheckReadable returns the generic internal error when st's clock has run
-// past the year 9999, which a timestamp cannot carry, else nil. Every door
-// calls it on the state before it writes an answer.
-func CheckReadable(st State) *common.AppError {
-	if st.Now.UTC().Year() > maxTime.Year() {
-		return common.Internal("failed to read the platform clock",
-			fmt.Errorf("the platform clock is beyond the year 9999: %s", stamp(st.Now)))
-	}
-	return nil
-}
-
 // GetPlatformClock implements GET /platform/clock.
 func (h *Handler) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
-	st := StateOf(h.svc, h.enabled)
-	if appErr := CheckReadable(st); appErr != nil {
-		common.WriteError(w, r, appErr)
-		return
-	}
-	common.WriteJSON(w, http.StatusOK, bodyOf(st))
+	common.WriteJSON(w, http.StatusOK, bodyOf(StateOf(h.svc, h.enabled)))
 }
 
 // member is a body member that records it was present and refuses JSON null:
@@ -157,8 +141,8 @@ func parseChange(req changeRequest) (Change, *common.AppError) {
 	}
 	if req.Time.present {
 		t := req.Time.v.UTC()
-		if t.Before(minTime) || t.After(maxTime) {
-			return ch, badRequest("time must lie in the years 1970 to 9999")
+		if t.Before(minTime) || t.After(maxSetTime) {
+			return ch, badRequest("time must lie in the years 1970 to 9000")
 		}
 		ch.At = &t
 	}
@@ -204,10 +188,6 @@ func (h *Handler) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 	st, err := h.svc.Change(r.Context(), ch)
 	if err != nil {
 		common.WriteError(w, r, classify(err))
-		return
-	}
-	if appErr := CheckReadable(st); appErr != nil {
-		common.WriteError(w, r, appErr)
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, bodyOf(st))

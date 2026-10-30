@@ -76,7 +76,7 @@ func TestHandler_Post_400(t *testing.T) {
 		{"advance_null", `{"advanceByMs":null,"rate":2}`},
 		{"time_not_rfc3339", `{"time":"yesterday"}`},
 		{"time_before_1970", `{"time":"1969-12-31T23:59:59Z"}`},
-		{"time_after_9999", `{"time":"9999-12-31T23:59:59-01:00"}`},
+		{"time_after_9000", `{"time":"9001-01-01T00:00:00Z"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,47 +244,6 @@ func TestHandler_Get(t *testing.T) {
 			t.Fatalf("%+v", got)
 		}
 	})
-}
-
-// A clock that has run past the year 9999 cannot be written as a timestamp:
-// the read answers the generic 5xx, with a ticket, and no 200 header.
-func TestHandler_Get_BeyondYear9999_Is500(t *testing.T) {
-	f := newFake()
-	f.now = time.Date(10000, 1, 1, 0, 0, 1, 0, time.UTC)
-	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
-	rec := httptest.NewRecorder()
-	h.GetPlatformClock(rec, httptest.NewRequest(http.MethodGet, "/platform/clock", nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
-	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body %q: %v", rec.Body.String(), err)
-	}
-	if body["ticket"] == nil {
-		t.Errorf("no ticket in %v", body)
-	}
-}
-
-// A change whose resulting clock is past the year 9999 cannot be answered as
-// a timestamp: the write has happened, and the response is the generic 5xx
-// with a ticket, never a 200 with an empty body.
-func TestHandler_Post_ResultBeyondYear9999_Is500(t *testing.T) {
-	f := newFake()
-	f.now = time.Date(10000, 1, 1, 0, 0, 1, 0, time.UTC)
-	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
-	rec := httptest.NewRecorder()
-	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"rate":2}`))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
-	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("body %q: %v", rec.Body.String(), err)
-	}
-	if body["ticket"] == nil {
-		t.Errorf("no ticket in %v", body)
-	}
 }
 
 // A JSON number big.Rat refuses (an exponent beyond its cap) is a number out

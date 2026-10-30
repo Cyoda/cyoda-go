@@ -95,20 +95,3 @@ func TestPlatformClock_GRPC_Unauthenticated(t *testing.T) {
 		t.Fatalf("err = %v, want Unauthenticated", err)
 	}
 }
-
-// A clock past the year 9999 cannot be written as a timestamp: the answer is
-// an error envelope with the generic server error, not a transport error.
-func TestPlatformClock_GRPC_BeyondYear9999(t *testing.T) {
-	svc := &CloudEventsServiceImpl{clockState: func() platformclock.State {
-		return platformclock.State{Now: time.Date(10000, 1, 1, 0, 0, 1, 0, time.UTC), RatePPM: 1_000_000, Controllable: true}
-	}}
-	ce, err := svc.EntitySearch(consistencyTimeCtx(), makeCE(PlatformClockGetRequest, map[string]any{"id": "pc-4"}))
-	if err != nil {
-		t.Fatalf("transport error: %v", err)
-	}
-	var env events.PlatformClockResponseJson
-	validateResponse(t, ce, &env)
-	if env.Success || env.Error == nil || env.Error.Code != "SERVER_ERROR" {
-		t.Fatalf("want a SERVER_ERROR envelope, got %+v", env)
-	}
-}

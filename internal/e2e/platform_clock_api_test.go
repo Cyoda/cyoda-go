@@ -146,7 +146,7 @@ func TestPlatformClock_Post_400(t *testing.T) {
 		"rate_seven_digits":     `{"rate":1.1234567}`,
 		"time_not_rfc3339":      `{"time":"yesterday"}`,
 		"time_before_1970":      `{"time":"1969-12-31T23:59:59Z"}`,
-		"time_after_9999":       `{"time":"9999-12-31T23:59:59-01:00"}`,
+		"time_after_9000":       `{"time":"9001-01-01T00:00:00Z"}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -160,26 +160,16 @@ func TestPlatformClock_Post_400(t *testing.T) {
 	}
 }
 
-// An advance whose target lies past the year 9999 is refused, and the clock
+// An advance whose target lies past the year 9000 is refused, and the clock
 // stays where it was.
-func TestPlatformClock_Post_AdvancePastYear9999_400(t *testing.T) {
+func TestPlatformClock_Post_AdvancePastYear9000_400(t *testing.T) {
 	h := clockStack(t, true)
-	near := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"time":"9999-12-31T23:59:00Z"}`)).Now
+	near := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"time":"9000-12-31T23:59:00Z"}`)).Now
 	assertProblemJSON(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"advanceByMs":120000}`),
 		http.StatusBadRequest, "BAD_REQUEST")
-	if c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodGet, "", "")); c.Now.Year() != 9999 || c.Now.Sub(near) > time.Minute {
+	if c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodGet, "", "")); c.Now.Year() != 9000 || c.Now.Sub(near) > time.Minute {
 		t.Fatalf("clock after the refusal = %s, want just after %s", c.Now, near)
 	}
-}
-
-// Once the clock has run past the year 9999, a rate alone would re-anchor it
-// there, so it is refused.
-func TestPlatformClock_Post_RateOnlyPastYear9999_400(t *testing.T) {
-	h := clockStack(t, true)
-	decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"time":"9999-12-31T23:59:59.9Z"}`))
-	time.Sleep(200 * time.Millisecond)
-	assertProblemJSON(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2}`),
-		http.StatusBadRequest, "BAD_REQUEST")
 }
 
 func TestPlatformClock_Post_RateThenGet(t *testing.T) {
