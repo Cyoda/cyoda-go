@@ -539,8 +539,9 @@ ways and no others.
    makes `search_jobs.heartbeat_time` `NOT NULL`.
 9. **Wording and construction.** The `ErrClientGone` message, logged at DEBUG
    only, reads "the request's client went away". The scheduler reads the
-   clock before taking its lock. Every business-time constructor and option
-   refuses a nil clock with a panic at startup. `memory.NewAsyncSearchStore`
+   clock before taking its lock. Every host-side business-time constructor and
+   option refuses a nil clock with a panic at startup; a plugin given no clock
+   uses its own, as production postgres does. `memory.NewAsyncSearchStore`
    is removed.
 
 **Additions that production does not exercise:**
