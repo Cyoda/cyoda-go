@@ -1519,8 +1519,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   and stale-job sweeps never run before the node has its peers' settings.
 
 - **SQLite `Begin` reads the clock for a snapshot time after it takes the
-  commit gate,** not before waiting for it, so the snapshot time is not older
-  than a commit that landed during the wait.
+  commit gate,** not before waiting for it, so the recorded snapshot time is
+  the reading at that moment and can be later by the gate wait.
 
 - **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
   follows the platform clock.**
