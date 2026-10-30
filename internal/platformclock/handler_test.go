@@ -63,6 +63,7 @@ func TestHandler_Post_400(t *testing.T) {
 		{"empty", `{}`},
 		{"both_time_and_advance", `{"time":"2031-01-01T00:00:00Z","advanceByMs":5}`},
 		{"advance_zero", `{"advanceByMs":0}`},
+		{"advance_not_integer", `{"advanceByMs":1.5}`},
 		{"advance_overflow", `{"advanceByMs":9223372036854775807}`},
 		{"advanceByMs_past_9999", `{"advanceByMs":1000000000000}`},
 		{"rate_below", `{"rate":0.09}`},

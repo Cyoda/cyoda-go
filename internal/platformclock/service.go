@@ -181,7 +181,7 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) er
 		rep, err := s.awaitIdle(ctx, store, ticker, p)
 		if err != nil {
 			slog.Info("platform clock move stopped", "pkg", "platformclock",
-				"target", stamp(target), "now", stamp(s.c.Now()))
+				"target", stamp(target), "now", stamp(s.c.Now()), "error", err.Error())
 			return err
 		}
 		e := time.UnixMilli(rep.EarliestWaitingMs)

@@ -28,8 +28,9 @@ const (
 // joined request whose context ended while it queued for the transaction's
 // lock, having touched nothing; internal/callout, for a callout whose caller's
 // context ended during or between tries; and internal/platformclock, for a
-// clock move whose caller's context ended between steps, which leaves the
-// clock at the last step it applied and published. A door's error funnel files
+// clock move whose caller's context ended between steps or during a store call
+// it was waiting on, which leaves the clock at the last step it applied and
+// published. A door's error funnel files
 // a departed client on this marker and on nothing else, because a cancellation
 // somewhere on an error's chain says only that something was called off, not
 // that this is what went wrong — see isClientGoneCancellation.
@@ -39,12 +40,13 @@ const (
 var ErrClientGone = errors.New("the request's client went away")
 
 // ClientGone marks err — a context error a layer read off the caller's own
-// context — as that client's departure. Only a layer that was waiting on the
-// client may call it: internal/domain/txjoin, for a joined request whose
-// context ended while it queued for the transaction's lock, internal/callout,
-// for a callout whose caller's context ended during or between tries, and
-// internal/platformclock, for a clock move whose caller's context ended
-// between steps. Everything under the marker is left intact, so errors.Is still
+// context, or the error of a call that context's end interrupted — as that
+// client's departure. Only a layer that was waiting on the client may call it:
+// internal/domain/txjoin, for a joined request whose context ended while it
+// queued for the transaction's lock, internal/callout, for a callout whose
+// caller's context ended during or between tries, and internal/platformclock,
+// for a clock move whose caller's context ended between steps or during a
+// store call. Everything under the marker is left intact, so errors.Is still
 // finds the context error and status.FromContextError still reads the right
 // gRPC code off it.
 func ClientGone(err error) error {

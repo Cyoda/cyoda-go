@@ -1322,8 +1322,9 @@ type AsyncSearchStore interface {
 ```
 
 `SearchJob` additionally carries `HeartbeatTime *time.Time` (the last
-liveness stamp; `nil` means never stamped, in which case staleness is
-measured from `CreateTime`) and `Epoch int64` (the claim/attempt counter —
+liveness stamp, from the store's physical clock; `CreateJob` stamps it, so it
+is never `nil` on a stored job, and `ClaimStale` measures staleness from it
+alone) and `Epoch int64` (the claim/attempt counter —
 `CreateJob` always persists `1`; `ClaimStale` increments it on every
 successful claim).
 
@@ -1845,7 +1846,7 @@ When the member responds, the streaming handler matches the response's `requestI
 
 **Model management:** `EntityModelImportRequest/Response`, `EntityModelExportRequest/Response`, `EntityModelTransitionRequest/Response`, `EntityModelDeleteRequest/Response`, `EntityModelGetAllRequest/Response`, `EntityModelSetUniqueKeysRequest/Response`
 
-**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntityConsistencyTimeGetRequest/EntityConsistencyTimeResponse`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`
+**Search/query:** `EntityGetRequest`, `EntityGetAllRequest`, `EntityConsistencyTimeGetRequest/EntityConsistencyTimeResponse`, `EntitySnapshotSearchRequest/Response`, `EntityResponse`, `EntitySearchRequest`, `EntityStatsGetRequest/EntityStatsResponse`, `EntityStatsByStateGetRequest/EntityStatsByStateResponse`, `EntityChangesMetadataGetRequest/EntityChangesMetadataResponse`, `PlatformClockGetRequest/PlatformClockResponse`
 
 **Snapshot lifecycle (no dedicated response CloudEvent type):**
 `SnapshotCancelRequest`, `SnapshotGetRequest`, `SnapshotGetStatusRequest`
