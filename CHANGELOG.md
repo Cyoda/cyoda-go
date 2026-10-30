@@ -1527,7 +1527,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   - PostgreSQL `000017`:
     - re-creates `cyoda_stamp` and `cyoda_consistency_time` with an optional
       time argument; with none they read the database clock as before.
-      Re-creating them gives `PUBLIC` its default `EXECUTE` again;
+      Re-creating them gives `PUBLIC` its default `EXECUTE` again, so a
+      deployment that revoked it re-applies its revoke after migrating;
     - drops the column defaults on `entities.creation_date`,
       `entities.last_modified`, `entity_versions.transaction_time`,
       `entity_versions.creation_date` and `search_jobs.created_at` (every

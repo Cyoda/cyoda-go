@@ -441,7 +441,7 @@ func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId op
 }
 
 // ---------------------------------------------------------------------------
-// Account delegation (24 methods)
+// Account delegation (17 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) AccountGet(w http.ResponseWriter, r *http.Request) {
