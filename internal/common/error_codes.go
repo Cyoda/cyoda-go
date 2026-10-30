@@ -164,6 +164,13 @@ const (
 	// certify a consistency time within its wait budget, typically because a
 	// save of the tenant is held in its commit phase. 503, retryable.
 	ErrCodeConsistencyTimeUnavailable = "CONSISTENCY_TIME_UNAVAILABLE"
+	// ErrCodeClockControlDisabled is returned by POST /platform/clock on a
+	// node not started with clock control enabled. 403, not retryable.
+	ErrCodeClockControlDisabled = "CLOCK_CONTROL_DISABLED"
+	// ErrCodeClockBeforeRecordedTime is returned by POST /platform/clock when
+	// the requested time is earlier than the latest time the store has
+	// recorded. 409, not retryable as sent; the clock is unchanged.
+	ErrCodeClockBeforeRecordedTime = "CLOCK_BEFORE_RECORDED_TIME"
 	// ErrCodeServerBusy is returned when the node has no capacity left for
 	// the bounded work a request needs within the wait — today, a
 	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
@@ -302,6 +309,8 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeCompositeKeyUnsupported:          {},
 	ErrCodeComputeMemberDisconnected:        {},
 	ErrCodeConditionTypeMismatch:            {},
+	ErrCodeClockBeforeRecordedTime:          {},
+	ErrCodeClockControlDisabled:             {},
 	ErrCodeConflict:                         {},
 	ErrCodeConsistencyTimeUnavailable:       {},
 	ErrCodeDeleteNotConverged:               {},

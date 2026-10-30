@@ -27,16 +27,19 @@ type Config struct {
 	LogLevel          string
 	// Version is the ldflag-injected binary version string reported in the
 	// REST /help payload. Defaults to "dev" when unset.
-	Version            string
-	IAM                IAMConfig
-	GRPC               GRPCConfig
-	Admin              AdminConfig
-	CORS               CORSConfig
-	StorageBackend     string
-	StartupTimeout     time.Duration
-	Cluster            cluster.Config
-	SearchSnapshotTTL  time.Duration
-	SearchReapInterval time.Duration
+	Version        string
+	IAM            IAMConfig
+	GRPC           GRPCConfig
+	Admin          AdminConfig
+	CORS           CORSConfig
+	StorageBackend string
+	// ClockControlEnabled builds the controllable test clock and accepts
+	// POST /platform/clock.
+	ClockControlEnabled bool
+	StartupTimeout      time.Duration
+	Cluster             cluster.Config
+	SearchSnapshotTTL   time.Duration
+	SearchReapInterval  time.Duration
 	// ModelCacheLease is the baseline TTL for cached LOCKED model
 	// descriptors. Actual expiry is jittered ±10% to prevent cross-
 	// node herding. Defaults to 5m; tune via CYODA_MODEL_CACHE_LEASE.

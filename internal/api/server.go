@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // Server composes domain handlers with an Unimplemented fallback for any
@@ -29,6 +30,7 @@ type Server struct {
 	Messaging      *messaging.Handler
 	Account        *account.Handler
 	ScheduledTasks *scheduledtask.Handler
+	PlatformClock  *platformclock.Handler
 }
 
 // NewServer returns a Server with the Unimplemented fallback initialised.
@@ -50,6 +52,22 @@ func NewServer() *Server {
 // ---------------------------------------------------------------------------
 // Entity delegation (15 methods)
 // ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.GetPlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.GetPlatformClock(w, r)
+}
+
+func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.ChangePlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.ChangePlatformClock(w, r)
+}
 
 func (s *Server) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
 	if s.Entity != nil {

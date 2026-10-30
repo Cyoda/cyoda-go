@@ -563,6 +563,31 @@ func New(cfg Config) *App {
 	accountHandler := account.New(accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
 	server.Account = accountHandler
 
+	// The platform clock API. With clock control on, POST /platform/clock
+	// changes a test clock; the store's consistency time is read as the
+	// PLATFORM tenant, and a move polls the store's scheduled tasks. The
+	// change is not yet broadcast to peers: cluster propagation is wired by
+	// the clock configuration.
+	if cfg.ClockControlEnabled {
+		testClock := platformclock.NewTest(a.selfNodeID, nil)
+		storeFactory, txMgr := a.storeFactory, a.transactionManager
+		clockSvc := platformclock.NewService(testClock,
+			func(ctx context.Context) (time.Time, error) {
+				return txMgr.ConsistencyTime(spi.WithUserContext(ctx, &spi.UserContext{
+					UserID:   "platform-clock",
+					UserName: "Platform clock",
+					Kind:     spi.PrincipalSystem,
+					Tenant:   spi.Tenant{ID: auth.PlatformTenantID, Name: "Platform"},
+				}))
+			},
+			storeFactory.ScheduledTaskStore,
+			func(platformclock.Setting) {},
+			100*time.Millisecond)
+		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
+	} else {
+		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
+	}
+
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
