@@ -23,6 +23,9 @@ type Handler struct {
 
 // New returns a new Handler wired to the given StoreFactory and the clock that stamps model update dates.
 func New(factory spi.StoreFactory, clock spi.Clock) *Handler {
+	if clock == nil {
+		panic("model.New: nil clock")
+	}
 	return &Handler{factory: factory, clock: clock}
 }
 

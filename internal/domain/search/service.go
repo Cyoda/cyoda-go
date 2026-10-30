@@ -305,6 +305,9 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 	if cons == nil {
 		panic("search.NewSearchService: nil consistency service")
 	}
+	if clock == nil {
+		panic("search.NewSearchService: nil clock")
+	}
 	return &SearchService{
 		cons:        cons,
 		factory:     factory,

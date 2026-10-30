@@ -91,6 +91,9 @@ func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDG
 	if cons == nil {
 		panic("entity.New: nil consistency service")
 	}
+	if clock == nil {
+		panic("entity.New: nil clock")
+	}
 	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, cons: cons, clock: clock}
 }
 

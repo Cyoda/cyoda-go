@@ -9,6 +9,7 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -78,3 +79,14 @@ func TestEntityPreCommitDatesFromClock(t *testing.T) {
 		}
 	}
 }
+
+func TestNew_NilClockPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("entity.New with a nil clock did not panic")
+		}
+	}()
+	New(nil, nil, nil, nil, nil, consistency.New(nilClockTM{}), nil)
+}
+
+type nilClockTM struct{ spi.TransactionManager }

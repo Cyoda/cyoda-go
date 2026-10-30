@@ -1,10 +1,11 @@
 package grpc
 
 import (
-	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
+	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
@@ -12,22 +13,42 @@ type fixedClock struct{ at time.Time }
 
 func (c fixedClock) Now() time.Time { return c.at }
 
+func TestNewProcessorDispatcher_NilClockPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("NewProcessorDispatcher with a nil clock did not panic")
+		}
+	}()
+	NewProcessorDispatcher(NewMemberRegistry(), nil, nil, time.Second, time.Second, time.Second, nil)
+}
+
 // A processor, criterion or schedule-function request carries the platform
 // clock's time as the CloudEvents time attribute.
 func TestDispatch_CalloutCarriesClockTime(t *testing.T) {
 	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 	reg := NewMemberRegistry()
 	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, fixedClock{at})
-	call := Callout{
-		Kind: ProcessorCallout, Name: "p", AnswerLimit: time.Second, RequestID: "r1",
-		eventType:    EntityProcessorCalculationRequest,
-		buildRequest: func(id string) any { return map[string]any{"requestId": id} },
+
+	criterion := json.RawMessage(`{"type":"function","function":{"name":"c","config":{"calculationNodesTags":"python"}}}`)
+	crit, failure := NewCriteriaCallout(testTenantID, testEntity(), criterion, "transition", "wf", "t", "p", "tx")
+	if failure != nil {
+		t.Fatalf("criterion callout: %v", failure)
 	}
-	ce, err := d.buildCalloutEvent(call)
-	if err != nil {
-		t.Fatalf("buildCalloutEvent: %v", err)
+	calls := map[string]Callout{
+		"processor":         NewProcessorCallout(testTenantID, testEntity(), spi.ProcessorDefinition{Name: "p"}, "wf", "t", "tx"),
+		"criterion":         crit,
+		"schedule function": NewFunctionCallout(testTenantID, testEntity(), spi.ScheduleFunction{Name: "f"}, "wf", "t", "tx"),
 	}
-	assertEventTime(t, ce, at)
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			call.RequestID = "r1"
+			ce, err := d.buildCalloutEvent(call)
+			if err != nil {
+				t.Fatalf("buildCalloutEvent: %v", err)
+			}
+			assertEventTime(t, ce, at)
+		})
+	}
 }
 
 func assertEventTime(t *testing.T, ce *cepb.CloudEvent, want time.Time) {
@@ -36,10 +57,7 @@ func assertEventTime(t *testing.T, ce *cepb.CloudEvent, want time.Time) {
 	if !ok {
 		t.Fatalf("no time attribute on %s", ce.Type)
 	}
-	got := a.GetCeTimestamp().AsTime()
-	if !got.Equal(want) {
+	if got := a.GetCeTimestamp().AsTime(); !got.Equal(want) {
 		t.Fatalf("time = %v, want %v", got, want)
 	}
 }
-
-var _ = context.Background

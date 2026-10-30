@@ -42,6 +42,9 @@ type ProcessorDispatcher struct {
 // identity of its own: the owner a pass names is the callout's, whichever
 // pnode is running the try.
 func NewProcessorDispatcher(registry *MemberRegistry, selector MemberSelector, signer *token.Signer, answerLimitDefault, answerLimitMax, passAllowance time.Duration, clock spi.Clock) *ProcessorDispatcher {
+	if clock == nil {
+		panic("grpc.NewProcessorDispatcher: nil clock")
+	}
 	return &ProcessorDispatcher{
 		registry:           registry,
 		selector:           selector,
