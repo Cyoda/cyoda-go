@@ -301,7 +301,11 @@ func newCatalog(cb *callbackClient, gcb *grpcCallbackClient) *catalog {
 				if err := json.Unmarshal(entity.Data, &data); err != nil {
 					return "", nil, fmt.Errorf("sched-fn-resolve: decode entity data: %w", err)
 				}
-				now := platformNow(ctx).UnixMilli()
+				at, err := platformNow(ctx)
+				if err != nil {
+					return "", nil, fmt.Errorf("sched-fn-resolve: %w", err)
+				}
+				now := at.UnixMilli()
 				switch data.SchedMode {
 				case "absolute":
 					offset := data.OffsetMs

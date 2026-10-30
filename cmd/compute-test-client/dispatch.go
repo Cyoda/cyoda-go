@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -357,13 +358,14 @@ func withRequestTime(ctx context.Context, msg *cepb.CloudEvent) context.Context 
 }
 
 // platformNow is the time of the request being served: platform time as the
-// server stamped it. Only a request from an older server has none, and the
-// client's own clock stands in.
-func platformNow(ctx context.Context) time.Time {
-	if t, ok := ctx.Value(requestTimeKey{}).(time.Time); ok {
-		return t
+// server stamped it. A request without it is an error, never the client's own
+// clock standing in.
+func platformNow(ctx context.Context) (time.Time, error) {
+	t, ok := ctx.Value(requestTimeKey{}).(time.Time)
+	if !ok {
+		return time.Time{}, errors.New("request carries no time attribute")
 	}
-	return time.Now()
+	return t, nil
 }
 
 // answer serves one request from the catalog.

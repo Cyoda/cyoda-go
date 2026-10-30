@@ -328,7 +328,10 @@ func TestCatalog_SchedFnResolve(t *testing.T) {
 
 	call := func(t *testing.T, data string) map[string]any {
 		t.Helper()
-		_, result, err := fn(context.Background(), &Entity{ID: "e-1", Data: json.RawMessage(data)}, nil)
+		ce := &cepb.CloudEvent{Attributes: map[string]*cepb.CloudEvent_CloudEventAttributeValue{
+			"time": {Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.Now()}},
+		}}
+		_, result, err := fn(withRequestTime(context.Background(), ce), &Entity{ID: "e-1", Data: json.RawMessage(data)}, nil)
 		if err != nil {
 			t.Fatalf("sched-fn-resolve(%s): %v", data, err)
 		}
@@ -526,10 +529,9 @@ func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {
 		t.Errorf("fireAt = %v, want %v", got, want)
 	}
 
-	// Without the attribute (an older server) the client's own clock stands in.
-	before := time.Now().UnixMilli()
-	_, result, _ = fn(withRequestTime(context.Background(), &cepb.CloudEvent{}), &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
-	if got := result["fireAt"].(int64); got < before+1000 {
-		t.Errorf("fallback fireAt = %d, want about now+1000", got)
+	// Without the attribute there is no time to compute from: an error.
+	_, _, err = fn(withRequestTime(context.Background(), &cepb.CloudEvent{}), &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
+	if err == nil {
+		t.Error("a request without a time attribute must fail")
 	}
 }
