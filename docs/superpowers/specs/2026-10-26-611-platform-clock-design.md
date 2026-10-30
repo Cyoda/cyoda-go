@@ -451,7 +451,8 @@ Production keeps the database clock (decision 5). With a test clock:
   `CURRENT_TIMESTAMP` value. Migration 000017 drops the placeholder-date
   `DEFAULT`s on `entities.creation_date` and `last_modified` and on
   `entity_versions.transaction_time` and `creation_date`
-  (`000017…up.sql:74-83`), because every insert now writes them.
+  (`000017…up.sql:74-77`), because every insert now writes them. The heartbeat
+  backfill and `NOT NULL` are at `:79-81`.
 - **Submit-time pruning and search-job reaping.** Today these compare business
   stamps with Go's `time.Now()` (`transaction_manager.go:354`, `:543-560`;
   `search_store.go:587`). With a test clock they use it, so both sides are
@@ -520,6 +521,8 @@ ways and no others.
    attribute.
 3. **Postgres stamp functions** are re-created by migration 000017 with an
    extra argument, NULL in production. They take the same branch as today.
+   A re-created function gets the default `EXECUTE` for `PUBLIC` again, so a
+   deployment that revoked it re-applies its grant.
 4. **Postgres inserts** write the placeholder dates explicitly. The values are
    the same as the column defaults give today.
 5. **Search-job liveness.** On all backends, a new job's liveness baseline is
