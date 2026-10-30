@@ -85,6 +85,8 @@ github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018153646-e3b384c2cc9b h1:T
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018153646-e3b384c2cc9b/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018180211-97ff6210e982 h1:CRWDnx+Ef3T1CXekVl0pnAuJJ1TI9ATdp+vCK9Z5NoQ=
 github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261018180211-97ff6210e982/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261030074619-2c4d64edc7c5 h1:GLKpFIDOPugPGVqdWu1N5n7mVLzQ9YE/WEitLM0PVHs=
+github.com/cyoda-platform/cyoda-go-spi v0.8.5-0.20261030074619-2c4d64edc7c5/go.mod h1:AjUU/919ziLBvx3Ohsq5NYtaVWfxEL1EFi1NWignu9M=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261007022456-3782e66713e1 h1:EPjw9d3KFSe3Yz3cMzrRzusmDdvSlT7fHs/z+QXdQf0=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261007022456-3782e66713e1/go.mod h1:D55krs7Rers+UcqfreJR4IveQifQYApeKLXUaz9r1o4=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261017033526-57e11b1b191b h1:vYsqsZOhmzAAMVaoMxfDR6hGv5zaKD2dXdd59jUl0sk=
