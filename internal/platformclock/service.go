@@ -13,8 +13,8 @@ import (
 // progressEvery bounds how often a move logs its progress.
 const progressEvery = 10 * time.Second
 
-// startupTolerance is how far the store's consistency time may lie ahead of
-// real time when a node starts on real time.
+// startupTolerance is how far the store's latest recorded time may lie ahead
+// of real time when a node starts on real time.
 const startupTolerance = time.Second
 
 // Change is one request to change the test clock. At and AdvanceBy are
@@ -242,13 +242,16 @@ func (p *progress) log(msg string, args ...any) {
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
 
-// StartupCheck fails when the store's consistency time is more than one
-// second later than now: a node starting on real time over a store that
-// holds later times would record history out of order.
-func StartupCheck(ctx context.Context, storeTime func(ctx context.Context) (time.Time, error), now time.Time) error {
-	latest, err := storeTime(ctx)
+// StartupCheck fails when the latest time the store has recorded is more
+// than one second later than now: a node starting on real time over a store
+// that holds later times would record history out of order. latestRecorded
+// reads the store's floor without moving it (spi.TransactionManager's
+// LatestRecordedTime); a read that raised the floor to now would refuse every
+// later start in the past.
+func StartupCheck(ctx context.Context, latestRecorded func(ctx context.Context) (time.Time, error), now time.Time) error {
+	latest, err := latestRecorded(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to read the store's consistency time: %w", err)
+		return fmt.Errorf("failed to read the store's latest recorded time: %w", err)
 	}
 	if latest.After(now.Add(startupTolerance)) {
 		return fmt.Errorf("the store holds times later than real time; start over with a fresh store (latest recorded time %s, real time %s)",

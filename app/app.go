@@ -179,6 +179,24 @@ func New(cfg Config) *App {
 		factoryOpts = append(factoryOpts, spi.WithClusterBroadcaster(gossipReg))
 	}
 
+	// clk is the platform clock: one source of business time shared by the
+	// storage plugin, the search service, the engine, the scheduler, the
+	// domain handlers and the callout dispatcher, so all agree on "now". It
+	// is the real clock unless clock control is on; then it is one test clock
+	// for the process, attached to gossip before the node registers so the
+	// join-time state exchange brings the cluster's setting.
+	var testClock *platformclock.Test
+	clk := platformclock.Real()
+	if cfg.ClockControlEnabled {
+		slog.Warn(clockControlWarning, "pkg", "app")
+		testClock = platformclock.NewTest(a.selfNodeID, nil)
+		clk = testClock
+		factoryOpts = append(factoryOpts, spi.WithClock(testClock))
+		if gossipReg != nil {
+			platformclock.Attach(testClock, gossipReg, gossipReg)
+		}
+	}
+
 	// startupCtx carries a deadline so unreachable infrastructure fails fast
 	// instead of hanging in pgxpool or gocql.
 	startupCtx, cancel := context.WithTimeout(context.Background(), cfg.StartupTimeout)
@@ -390,10 +408,6 @@ func New(cfg Config) *App {
 	// entity service and every callout judge a callback by the same state.
 	a.txGate = txgate.New()
 	a.fence = fence.New(a.txGate)
-	// clk is the platform clock: one source of business time shared by the
-	// search service, the engine, the scheduler, the domain handlers and the
-	// callout dispatcher, so all agree on "now".
-	clk := platformclock.Real()
 	localDispatcher := internalgrpc.NewProcessorDispatcher(a.memberRegistry, internalgrpc.NewRoundRobinSelector(a.memberRegistry), a.tokenSigner, cfg.Callout.ResponseTimeout, cfg.Callout.ResponseTimeoutMax, cfg.Callout.PassAllowance, clk)
 	searchStore, err := a.storeFactory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -425,12 +439,10 @@ func New(cfg Config) *App {
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
-
-	a.auditService = skeleton.NewAuditService()
-	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
-
-	// Cluster components
+	// Cluster membership. The node joins before any background loop starts
+	// (the search reapers and the scheduler below), so with clock control on
+	// it has merged the cluster's clock setting before anything reads the
+	// clock in the background.
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
@@ -448,6 +460,20 @@ func New(cfg Config) *App {
 	} else {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
+
+	// With clock control on and no setting taken from a peer, the node starts
+	// on real time; a store holding later times fails the start.
+	if testClock != nil {
+		if err := checkClockAtStartup(startupCtx, testClock, platformLatestRecordedTime(a.transactionManager), time.Now()); err != nil { // realtime: a restart compares the store with real time
+			slog.Error("startup failure", "phase", "platform-clock", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
+
+	a.auditService = skeleton.NewAuditService()
+	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
 
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
@@ -564,26 +590,16 @@ func New(cfg Config) *App {
 	server.Account = accountHandler
 
 	// The platform clock API. With clock control on, POST /platform/clock
-	// changes a test clock; the store's consistency time is read as the
-	// PLATFORM tenant, and a move polls the store's scheduled tasks. The
-	// change is not yet broadcast to peers: cluster propagation is wired by
-	// the clock configuration.
+	// changes the test clock: a move polls the store's scheduled tasks, and
+	// in cluster mode each new setting is broadcast to the peers.
 	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
-	if cfg.ClockControlEnabled {
-		testClock := platformclock.NewTest(a.selfNodeID, nil)
-		storeFactory, txMgr := a.storeFactory, a.transactionManager
-		clockSvc := platformclock.NewService(testClock,
-			func(ctx context.Context) (time.Time, error) {
-				return txMgr.ConsistencyTime(spi.WithUserContext(ctx, &spi.UserContext{
-					UserID:   "platform-clock",
-					UserName: "Platform clock",
-					Kind:     spi.PrincipalSystem,
-					Tenant:   spi.Tenant{ID: auth.PlatformTenantID, Name: "Platform"},
-				}))
-			},
-			storeFactory.ScheduledTaskStore,
-			func(platformclock.Setting) {},
-			100*time.Millisecond)
+	if testClock != nil {
+		publish := func(platformclock.Setting) {}
+		if gossipReg != nil {
+			publish = func(s platformclock.Setting) { platformclock.Publish(gossipReg, s) }
+		}
+		clockSvc := platformclock.NewService(testClock, platformConsistencyTime(a.transactionManager), a.storeFactory.ScheduledTaskStore,
+			publish, 100*time.Millisecond)
 		clockState = clockSvc.State
 		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
 	} else {

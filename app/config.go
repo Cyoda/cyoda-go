@@ -33,8 +33,10 @@ type Config struct {
 	Admin          AdminConfig
 	CORS           CORSConfig
 	StorageBackend string
-	// ClockControlEnabled builds the controllable test clock and accepts
-	// POST /platform/clock.
+	// ClockControlEnabled builds the controllable test clock, gives it to the
+	// storage plugin and every business-time reader, and accepts POST
+	// /platform/clock. A test feature: CYODA_CLOCK_CONTROL_ENABLED, default
+	// false.
 	ClockControlEnabled bool
 	StartupTimeout      time.Duration
 	Cluster             cluster.Config
@@ -388,13 +390,14 @@ func DefaultConfig() Config {
 				AllowedOrigins: origins,
 			}
 		}(),
-		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
-		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
-		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
-		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
-		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
-		StatsGroupMax:      statsGroupMax,
-		SearchMaxSortKeys:  maxSortKeys,
+		SearchSnapshotTTL:   envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
+		SearchReapInterval:  envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
+		ModelCacheLease:     envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
+		OTelEnabled:         envBool("CYODA_OTEL_ENABLED", false),
+		StorageBackend:      envString("CYODA_STORAGE_BACKEND", "memory"),
+		ClockControlEnabled: envBool("CYODA_CLOCK_CONTROL_ENABLED", false),
+		StatsGroupMax:       statsGroupMax,
+		SearchMaxSortKeys:   maxSortKeys,
 		SearchAsync: SearchAsyncConfig{
 			Workers:      asyncWorkers,
 			QueueLen:     envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),

@@ -461,8 +461,17 @@ func TestStartupCheck_BehindPasses(t *testing.T) {
 	for _, c := range []time.Time{now.Add(-48 * time.Hour), now.Add(time.Second)} {
 		tm := &fakeStoreTime{answer: func() time.Time { return c }}
 		if err := StartupCheck(context.Background(), tm.storeTime, now); err != nil {
-			t.Fatalf("C=%v: %v", c, err)
+			t.Fatalf("latest recorded %v: %v", c, err)
 		}
+	}
+}
+
+// A fresh store has recorded nothing: the zero time.
+func TestStartupCheck_FreshStorePasses(t *testing.T) {
+	now := time.Date(2026, 10, 29, 12, 0, 0, 0, time.UTC)
+	tm := &fakeStoreTime{answer: func() time.Time { return time.Time{} }}
+	if err := StartupCheck(context.Background(), tm.storeTime, now); err != nil {
+		t.Fatalf("fresh store: %v", err)
 	}
 }
 

@@ -12,8 +12,7 @@ import (
 )
 
 // The API contract of GET and POST /platform/clock through the full HTTP
-// stack. Stamps are not asserted here: they follow the clock only where the
-// storage plugin is given it.
+// stack. What the clock does to stamps is not asserted here.
 
 type clockBody struct {
 	Now          time.Time `json:"now"`
