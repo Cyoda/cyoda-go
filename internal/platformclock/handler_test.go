@@ -141,7 +141,6 @@ func TestHandler_Post_Accepted(t *testing.T) {
 }
 
 func TestHandler_Post_OrderOfChecks(t *testing.T) {
-	f := newFake()
 	// Not an operator: 403 FORBIDDEN before the disabled refusal.
 	h := platformclock.NewHandler(nil, auth.OperatorGuard{}, false)
 	r := httptest.NewRequest(http.MethodPost, "/platform/clock", strings.NewReader(`{`))
@@ -159,7 +158,6 @@ func TestHandler_Post_OrderOfChecks(t *testing.T) {
 	if code, _ := problem(t, rec); rec.Code != 403 || code != "CLOCK_CONTROL_DISABLED" {
 		t.Fatalf("disabled: %d %s", rec.Code, code)
 	}
-	_ = f
 }
 
 func TestHandler_409_BeforeRecordedTime(t *testing.T) {

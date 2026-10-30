@@ -1507,6 +1507,22 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   store also stops mapping a zero `PointInTime` to `NULL` and persists the
   instant as PostgreSQL always has.
 
+- **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
+  follows the platform clock.**
+  - PostgreSQL `000017`:
+    - re-creates `cyoda_stamp` and `cyoda_consistency_time` with an optional
+      time argument; with none they read the database clock as before.
+      Re-creating them gives `PUBLIC` its default `EXECUTE` again;
+    - drops the column defaults on `entities.creation_date`,
+      `entities.last_modified`, `entity_versions.transaction_time`,
+      `entity_versions.creation_date` and `search_jobs.created_at` (every
+      insert writes them);
+    - backfills `search_jobs.heartbeat_time` from `created_at` and makes it
+      `NOT NULL`;
+    - drops the unused `model_schema_extensions.created_at`.
+  - SQLite `000012` drops `model_schema_extensions.created_at`, and `000013`
+    backfills `search_jobs.heartbeat_time` from `create_time`.
+
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
   on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two
   funnels every error response and envelope goes through. Nothing was wrong

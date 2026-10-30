@@ -180,13 +180,13 @@ func New(cfg Config) *App {
 	}
 
 	// clk is the platform clock: one source of business time shared by the
-	// search service, the engine, the scheduler, the
-	// domain handlers and the callout dispatcher, so all agree on "now". The storage plugin gets it
-	// (spi.WithClock) only when clock control is on; production postgres keeps
-	// the database clock. It
-	// is the real clock unless clock control is on; then it is one test clock
-	// for the process, attached to gossip before the node registers so the
-	// join-time state exchange brings the cluster's setting.
+	// search service, the engine, the scheduler, the domain handlers and the
+	// callout dispatcher, so all agree on "now". It is the real clock unless
+	// clock control is on; then it is one test clock for the process, attached
+	// to gossip before the node registers so the join-time state exchange
+	// brings the cluster's setting. The storage plugin gets it (spi.WithClock)
+	// only when clock control is on; production postgres keeps the database
+	// clock.
 	var testClock *platformclock.Test
 	clk := platformclock.Real()
 	if cfg.ClockControlEnabled {

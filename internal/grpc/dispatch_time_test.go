@@ -7,11 +7,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 )
-
-type fixedClock struct{ at time.Time }
-
-func (c fixedClock) Now() time.Time { return c.at }
 
 func TestNewProcessorDispatcher_NilClockPanics(t *testing.T) {
 	defer func() {
@@ -27,7 +24,7 @@ func TestNewProcessorDispatcher_NilClockPanics(t *testing.T) {
 func TestDispatch_CalloutCarriesClockTime(t *testing.T) {
 	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 	reg := NewMemberRegistry()
-	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, fixedClock{at})
+	d := NewProcessorDispatcher(reg, NewRoundRobinSelector(reg), nil, time.Second, time.Second, time.Second, fakeclock.New(at))
 
 	criterion := json.RawMessage(`{"type":"function","function":{"name":"c","config":{"calculationNodesTags":"python"}}}`)
 	crit, failure := NewCriteriaCallout(testTenantID, testEntity(), criterion, "transition", "wf", "t", "p", "tx")
