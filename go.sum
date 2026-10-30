@@ -97,6 +97,8 @@ github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030074757-42e429
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030074757-42e4298867da/go.mod h1:nQLmS2G0JkfGJxj67XfQFneUxlf55rvrLF6i+BrDgHc=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030094145-cd278800091b h1:xHIY0ZY5yZbjzK6zP/PatUmcfqhEEdSIAPbxdsUlfTU=
 github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030094145-cd278800091b/go.mod h1:nQLmS2G0JkfGJxj67XfQFneUxlf55rvrLF6i+BrDgHc=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030112021-1da05c3bcc93 h1:IcGjDujBdD+BNiSfMvKEPyQkNg75eZqUOnHLbjJ8uzs=
+github.com/cyoda-platform/cyoda-go/plugins/memory v0.8.5-0.20261030112021-1da05c3bcc93/go.mod h1:nQLmS2G0JkfGJxj67XfQFneUxlf55rvrLF6i+BrDgHc=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261007022456-3782e66713e1 h1:F+dA4LiOeS71lBW0iPmwtd0USO0ki39WE7bS+By4RE4=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261007022456-3782e66713e1/go.mod h1:h4Dh390XUe/Pl7jNpjx/y0vjd1ruaRImuCaWkginUhA=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261017033526-57e11b1b191b h1:MvzjF4AtB5kyzpiej7fEzO5VYbO226hBM6HkDQhrx6U=
@@ -107,6 +109,8 @@ github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030074757-42e4
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030074757-42e4298867da/go.mod h1:xK5zoFlRCNxuVeY7+GXK/ojBNoYZ5/A3lOMMAtwDlWw=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030094145-cd278800091b h1:CJ9aYrES1Zy7CI0afc/Af+Ut3g5iyCODnSo8sxNddzk=
 github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030094145-cd278800091b/go.mod h1:xK5zoFlRCNxuVeY7+GXK/ojBNoYZ5/A3lOMMAtwDlWw=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030112021-1da05c3bcc93 h1:oqjTIjymuy/oacs7k9rFbL8a79jhd291oAwIBhp4CJg=
+github.com/cyoda-platform/cyoda-go/plugins/postgres v0.8.5-0.20261030112021-1da05c3bcc93/go.mod h1:xK5zoFlRCNxuVeY7+GXK/ojBNoYZ5/A3lOMMAtwDlWw=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261007022456-3782e66713e1 h1:cTbjcTcI4At9lS4WDTkG0OYalCPKO2KEDnlCc7xx2y8=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261007022456-3782e66713e1/go.mod h1:mkkeWOejqNKw/WtlMn8YuNmDQmd1kV/CSPNS5W1yP8k=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261017033526-57e11b1b191b h1:mTtFfa/GdNXU7q8v+J2GiDoYQwRvCngnHHoqGLUO+wI=
@@ -117,6 +121,8 @@ github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030074757-42e429
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030074757-42e4298867da/go.mod h1:QR/5yLP5gP+dXoMVJNKVTI0OZbaPoC4SUBvaxgR8+QE=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030094145-cd278800091b h1:3UcLXhQ+uLwkZtG+eyiH+quCEjcbmIRh82R6xAvVZ/w=
 github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030094145-cd278800091b/go.mod h1:QR/5yLP5gP+dXoMVJNKVTI0OZbaPoC4SUBvaxgR8+QE=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030112021-1da05c3bcc93 h1:Rv41ig8katZVlJeXSaJ4gOfXr4AL1QYEanzxrXZOTh0=
+github.com/cyoda-platform/cyoda-go/plugins/sqlite v0.8.5-0.20261030112021-1da05c3bcc93/go.mod h1:QR/5yLP5gP+dXoMVJNKVTI0OZbaPoC4SUBvaxgR8+QE=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/dhui/dktest v0.4.6 h1:+DPKyScKSEp3VLtbMDHcUq6V5Lm5zfZZVb0Sk7Ahom4=
