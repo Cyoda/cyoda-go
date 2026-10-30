@@ -1507,6 +1507,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   store also stops mapping a zero `PointInTime` to `NULL` and persists the
   instant as PostgreSQL always has.
 
+- **memory and sqlite plugins: `WithClock` sets the physical clock** (liveness
+  and timeouts), and the new `WithBusinessClock` sets the business clock
+  (stamps and retention), which defaults to the physical one, so a caller that
+  sets only `WithClock` sees no change. `memory.NewAsyncSearchStore` is
+  removed; the async search store comes from the store factory.
+
 - **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
   follows the platform clock.**
   - PostgreSQL `000017`:
