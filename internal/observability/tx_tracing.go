@@ -119,6 +119,12 @@ func (t *TracingTransactionManager) ConsistencyTime(ctx context.Context) (time.T
 	return ct, err
 }
 
+// LatestRecordedTime forwards to the wrapped manager; it reads without
+// waiting, so it has no span.
+func (t *TracingTransactionManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return t.inner.LatestRecordedTime(ctx)
+}
+
 func (t *TracingTransactionManager) Savepoint(ctx context.Context, txID string) (string, error) {
 	ctx, span := t.tracer.Start(ctx, "tx.savepoint", trace.WithAttributes(AttrTxID.String(txID)))
 	defer span.End()

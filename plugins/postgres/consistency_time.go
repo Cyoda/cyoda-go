@@ -249,3 +249,19 @@ func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, e
 	}
 	return time.Time{}, fmt.Errorf("ConsistencyTime: %w", classifyError(qerr))
 }
+
+// LatestRecordedTime implements spi.TransactionManager: the last value of the
+// cyoda_stamp_floor sequence, the highest stamp or consistency time issued
+// (migration 000016). A plain read: it takes no advisory lock, does not move
+// the floor and waits for nothing. The floor is shared by all tenants, so ctx
+// needs no tenant. 0, the sequence's start, is the zero time.
+func (tm *TransactionManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	var micros int64
+	if err := tm.pool.QueryRow(ctx, `SELECT last_value FROM cyoda_stamp_floor`).Scan(&micros); err != nil {
+		return time.Time{}, fmt.Errorf("LatestRecordedTime: %w", classifyError(err))
+	}
+	if micros == 0 {
+		return time.Time{}, nil
+	}
+	return time.UnixMicro(micros), nil
+}

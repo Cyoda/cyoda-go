@@ -819,6 +819,10 @@ func (t *txLeakTracker) ConsistencyTime(ctx context.Context) (time.Time, error) 
 	return time.Time{}, errors.New("not used by this test")
 }
 
+func (t *txLeakTracker) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (t *txLeakTracker) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return t.inner.GetSubmitTime(ctx, txID)
 }

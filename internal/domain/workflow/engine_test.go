@@ -2200,6 +2200,10 @@ func (m *countingTxManager) ConsistencyTime(ctx context.Context) (time.Time, err
 	return time.Time{}, errors.New("not used by this test")
 }
 
+func (m *countingTxManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (m *countingTxManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return m.inner.GetSubmitTime(ctx, txID)
 }

@@ -1406,6 +1406,20 @@ func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, er
 	return time.UnixMicro(nowMicro), nil
 }
 
+// LatestRecordedTime implements spi.TransactionManager: the in-process
+// submit-time floor (lastSubmitTime, seeded on open from everything the
+// database has stamped or handed out), read under mu without raising it and
+// without taking the commit gate. The floor is shared by all tenants, so ctx
+// needs no tenant. Zero on a fresh database.
+func (m *transactionManager) LatestRecordedTime(_ context.Context) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.lastSubmitTime == 0 {
+		return time.Time{}, nil
+	}
+	return time.UnixMicro(m.lastSubmitTime), nil
+}
+
 // CommittedLogLen returns the current length of the committed log.
 // Exported for testing only.
 func (m *transactionManager) CommittedLogLen() int {
