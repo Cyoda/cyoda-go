@@ -144,7 +144,7 @@ func (s *Service) setBack(ctx context.Context, at time.Time, rate *int64) error 
 	latest, err := s.storeTime(ctx)
 	if err != nil {
 		s.c.restore(next, prev)
-		return fmt.Errorf("failed to read the store's consistency time: %w", err)
+		return clientGoneOr(ctx, fmt.Errorf("failed to read the store's consistency time: %w", err))
 	}
 	// The new setting's own reading is at plus the elapsed source time
 	// times its rate: the tolerance for the time the call took.

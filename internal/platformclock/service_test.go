@@ -805,3 +805,25 @@ func TestMove_RepeatAfterCancelContinues(t *testing.T) {
 		t.Fatalf("clock = %v, want %v", f.clock.Now(), target)
 	}
 }
+
+func TestSetBack_ClientLeavingDuringStoreCallIsClientGone(t *testing.T) {
+	f := newFixture(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.svc.storeTime = func(ctx context.Context) (time.Time, error) {
+		cancel()
+		return time.Time{}, fmt.Errorf("store call: %w", context.Canceled)
+	}
+	prev := f.clock.Setting()
+	at := f.t0.Add(-time.Hour)
+	_, err := f.svc.Change(ctx, Change{At: &at})
+	if !errors.Is(err, common.ErrClientGone) {
+		t.Fatalf("err = %v, want ErrClientGone", err)
+	}
+	if got := f.clock.Setting(); got != prev {
+		t.Fatalf("setting = %+v, want restored %+v", got, prev)
+	}
+	if len(f.pub.starts()) != 0 {
+		t.Fatal("published despite the departure")
+	}
+}
