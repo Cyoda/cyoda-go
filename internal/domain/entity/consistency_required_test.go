@@ -5,6 +5,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -24,7 +25,7 @@ func mustPanic(t *testing.T, name string, f func()) {
 
 func TestNew_NilConsistencyPanics(t *testing.T) {
 	mustPanic(t, "entity.New", func() {
-		entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil)
+		entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), nil, platformclock.Real())
 	})
 }
 

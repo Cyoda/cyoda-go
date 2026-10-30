@@ -21,6 +21,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -83,9 +84,9 @@ func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.D
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(extProc))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, gate, newTestConsistency(t, factory))
-	modelHandler := model.New(factory)
+	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, gate, newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(factory, platformclock.Real())
 	workflowHandler := workflow.New(factory, engine, 60*time.Second)
 
 	svc := &CloudEventsServiceImpl{

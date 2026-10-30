@@ -49,6 +49,7 @@ type Handler struct {
 	engine  *wfengine.Engine
 	gate    *txgate.Registry
 	cons    *consistency.Service
+	clock   spi.Clock
 	// maxDeleteCycles overrides deleteCycleBudget's built-in bound on how
 	// many selection cycles one streamed batched delete may run. Zero (the
 	// normal case) means the built-in default; tests lower it so the
@@ -86,11 +87,11 @@ func (h *Handler) deleteCycleBudget() int {
 	return defaultMaxDeleteCycles
 }
 
-func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, cons *consistency.Service) *Handler {
+func New(factory spi.StoreFactory, txMgr spi.TransactionManager, uuids spi.UUIDGenerator, engine *wfengine.Engine, gate *txgate.Registry, cons *consistency.Service, clock spi.Clock) *Handler {
 	if cons == nil {
 		panic("entity.New: nil consistency service")
 	}
-	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, cons: cons}
+	return &Handler{factory: factory, txMgr: txMgr, uuids: uuids, engine: engine, gate: gate, cons: cons, clock: clock}
 }
 
 // beginOrJoin decides whether this inbound request OWNS a fresh transaction or

@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -347,7 +348,7 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_BlockingStore_408(t *testing.T) {
 	txMgr := realFactory.GetTransactionManager()
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory)
+	modelHandler := model.New(realFactory, platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
 	blocking := &blockingEntityStore{}
@@ -355,8 +356,8 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_BlockingStore_408(t *testing.T) {
 
 	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
+	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -424,13 +425,13 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_CommitWins_Success(t *testing.T) 
 	}
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory)
+	modelHandler := model.New(realFactory, platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
 	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory))
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory))
+	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -485,13 +486,13 @@ func TestRPC_EntityUpdateCollection_TransactionTimeoutMs_LoopHeadStopsSecondItem
 	rtm := &onCommitTxMgr{TransactionManager: realTxMgr}
 
 	ctx := newTimeoutTestUserCtx()
-	modelHandler := model.New(realFactory)
+	modelHandler := model.New(realFactory, platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
 	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory))
-	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory))
+	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
+	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

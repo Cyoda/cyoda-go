@@ -161,7 +161,7 @@ func newRunEnvWith(t *testing.T, ext contract.ExternalProcessingService,
 		engineTx = wrapTx(txMgr)
 	}
 	clock, advance := steppableClock(runStartMs)
-	opts := []EngineOption{WithScheduledClock(clock)}
+	opts := []EngineOption{WithClock(funcClock(clock))}
 	if ext != nil {
 		opts = append(opts, WithExternalProcessing(ext))
 	}

@@ -255,7 +255,7 @@ func ownerCtx(ctx context.Context, job *spi.SearchJob) context.Context {
 // failAttemptsExhausted fails a claimed job that has reached the attempt cap,
 // at its claimed epoch, and reports whether the write landed.
 func (s *SearchService) failAttemptsExhausted(ctx context.Context, job *spi.SearchJob) bool {
-	if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, time.Now(), 0); werr != nil {
+	if werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobAttemptsExhausted, s.clock.Now(), 0); werr != nil {
 		if fencedRefusal(werr) {
 			slog.Debug("capped job is no longer this claim's to fail", "pkg", "search", "jobID", job.ID, "err", werr)
 			return false
@@ -289,7 +289,7 @@ func (s *SearchService) reenqueueClaimed(job *spi.SearchJob) (started bool, unru
 		// condition: fail it at the claimed epoch rather than loop on it.
 		slog.Error("failed to decode claimed search job; failing", "pkg", "search", "jobID", job.ID, "err", decErr)
 		return false, func(ctx context.Context) {
-			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, time.Now(), 0)
+			werr := s.searchStore.UpdateJobStatus(ownerCtx(ctx, job), job.ID, job.Epoch, "FAILED", 0, jobFailureFallback, s.clock.Now(), 0)
 			switch {
 			case werr == nil:
 			case fencedRefusal(werr):

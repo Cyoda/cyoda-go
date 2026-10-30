@@ -13,6 +13,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -87,7 +88,7 @@ func TestSearch_SchemaLoadFails_FailsClosedInsteadOfAnswering(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -144,7 +145,7 @@ func TestSearch_ModelCarriesNoSchema_RejectsTheDataPath(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: nil},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -248,7 +249,7 @@ func TestAsyncSearch_SchemaBreaksAfterSubmit_JobFails(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).WithAsyncPool(pool)
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).WithAsyncPool(pool)
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.name",
@@ -303,7 +304,7 @@ func TestSearch_LifecycleOnlyCondition_DoesNotNeedTheSchema(t *testing.T) {
 		modelStore:   &brokenSchemaModelStore{ref: ref, schema: []byte(`{"this is": not valid json`)},
 	}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "state",

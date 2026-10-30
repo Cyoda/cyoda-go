@@ -17,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -94,7 +95,7 @@ func TestSearchEntityAuditEvents_PushesTimeWindowToStore(t *testing.T) {
 	}
 	spyFactory := &versionMetadataSpyFactory{StoreFactory: base}
 	engine := wfengine.NewEngine(spyFactory, common.NewDefaultUUIDGenerator(), txMgr)
-	eh := entity.New(spyFactory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, spyFactory))
+	eh := entity.New(spyFactory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, spyFactory), platformclock.Real())
 
 	res, err := eh.CreateEntity(ctx, entity.CreateEntityInput{
 		EntityName:   ref.EntityName,

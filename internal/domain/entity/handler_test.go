@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	_ "github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -143,7 +144,7 @@ func TestCreateEntity_JSONArrayCreatesBatch(t *testing.T) {
 }
 
 func TestNewHandler(t *testing.T) {
-	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newFixedConsistency())
+	h := entity.New(nil, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newFixedConsistency(), platformclock.Real())
 	if h == nil {
 		t.Fatal("expected non-nil handler")
 	}

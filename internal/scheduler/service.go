@@ -35,7 +35,7 @@ type Deps struct {
 	TxManager spi.TransactionManager
 	Firer     Firer
 	// Clock is the pnode clock: the one that set scheduledTime at arm.
-	Clock Clock
+	Clock spi.Clock
 	// HealthFlag is the process-wide flag a recovered panic latches false.
 	HealthFlag *atomic.Bool
 	Meter      metric.Meter
@@ -588,6 +588,9 @@ func (s *Service) claim() {
 // claimRequest builds the next claim, or reports that none may be made: the
 // pnode is unhealthy, latched or draining, or every run slot is taken.
 func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
+	// Read the clock before taking s.mu: the clock is an injected collaborator
+	// and must not run under the service lock.
+	nowMs := s.deps.Clock.Now().UnixMilli()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.healthy || s.latchedLocked() || s.draining {
@@ -604,7 +607,7 @@ func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
 	}
 	return spi.ClaimRequest{
 		Owner:            s.incarnation,
-		NowMs:            s.deps.Clock.Now().UnixMilli(),
+		NowMs:            nowMs,
 		StaleAfter:       s.cfg.StaleAfter,
 		Limit:            free,
 		PerTenantLimit:   s.cfg.MaxRunsPerTenant,

@@ -189,6 +189,7 @@ type SearchService struct {
 	uuids       spi.UUIDGenerator
 	searchStore spi.AsyncSearchStore
 	cons        *consistency.Service
+	clock       spi.Clock
 
 	// pathCache is an optional negative cache for unknown field-path
 	// validation. nil-safe: when unset, validation falls back to the
@@ -300,7 +301,7 @@ const (
 )
 
 // NewSearchService creates a SearchService backed by the given store factory.
-func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore, cons *consistency.Service) *SearchService {
+func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchStore spi.AsyncSearchStore, cons *consistency.Service, clock spi.Clock) *SearchService {
 	if cons == nil {
 		panic("search.NewSearchService: nil consistency service")
 	}
@@ -309,6 +310,7 @@ func NewSearchService(factory spi.StoreFactory, uuids spi.UUIDGenerator, searchS
 		factory:     factory,
 		uuids:       uuids,
 		searchStore: searchStore,
+		clock:       clock,
 	}
 }
 
@@ -964,7 +966,7 @@ func (s *SearchService) SubmitAsync(ctx context.Context, modelRef spi.ModelRef, 
 	}
 
 	jobID := uuid.UUID(s.uuids.NewTimeUUID()).String()
-	now := time.Now()
+	now := s.clock.Now()
 
 	// The job record carries the client's condition in DOMAIN wire syntax,
 	// untranslated, by design. A SelfExecutingSearchStore is its only reader
@@ -1180,13 +1182,13 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// must land regardless — writeAsyncFailure strips cancellation
 			// itself (keeping the UserContext value), so a store that aborts
 			// in-flight work on ctx.Err() still accepts it.
-			s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, time.Now(), 0)
+			s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureFallback, s.clock.Now(), 0)
 		}
 	}()
 
 	modelStore, err := s.factory.ModelStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds())
 		return
 	}
 	// Fail the job rather than answering without the schema. This load is
@@ -1205,7 +1207,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// common.Internal always returns a non-nil *AppError, and only its
 		// Message reaches the persisted job record — never its Detail.
 		appErr := common.Internal("failed to load model schema for condition validation", fieldsErr)
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(appErr), s.clock.Now(), time.Since(start).Milliseconds())
 		return
 	}
 	filter, translateErr := spi.ConditionToFilter(cond, fields)
@@ -1213,7 +1215,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		// Ordinary error handling, not a designed branch: a condition that
 		// translated at submission translates here (schema changes after
 		// locking are additive). Anything else is an unexpected failure.
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(common.Internal("failed to translate search condition", translateErr)), s.clock.Now(), time.Since(start).Milliseconds())
 		return
 	}
 
@@ -1225,7 +1227,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 
 	entityStore, err := s.factory.EntityStore(jobCtx)
 	if err != nil {
-		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), time.Now(), time.Since(start).Milliseconds())
+		s.writeAsyncFailure(jobCtx, jobID, epoch, jobFailureMessage(err), s.clock.Now(), time.Since(start).Milliseconds())
 		return
 	}
 
@@ -1312,7 +1314,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 		}()
 	}
 
-	finishTime := time.Now()
+	finishTime := s.clock.Now()
 	calcTimeMs := time.Since(start).Milliseconds()
 
 	switch {
@@ -1493,7 +1495,7 @@ func (s *SearchService) CancelAsync(ctx context.Context, jobID string) (CancelRe
 		return CancelResult{Cancelled: false, CurrentStatus: job.Status}, nil
 	}
 
-	finishTime := time.Now()
+	finishTime := s.clock.Now()
 	if err := s.searchStore.Cancel(ctx, jobID, finishTime); err != nil {
 		return CancelResult{}, fmt.Errorf("failed to cancel job: %w", err)
 	}

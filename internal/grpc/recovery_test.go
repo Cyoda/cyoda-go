@@ -29,6 +29,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -372,7 +373,7 @@ func (env *recoveryTestServer) importAndLockModel(t *testing.T, entityName, vers
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
 	}
-	mh := model.New(env.raw)
+	mh := model.New(env.raw, platformclock.Real())
 	if _, err := mh.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   entityName,
 		ModelVersion: version,
@@ -489,9 +490,9 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
-	modelHandler := model.New(factory)
+	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(factory, platformclock.Real())
 
 	uc := &spi.UserContext{
 		UserID:   "recovery-test-user",

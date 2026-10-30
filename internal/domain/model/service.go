@@ -192,7 +192,7 @@ func (h *Handler) ImportModel(ctx context.Context, input ImportModelInput) (*Imp
 	desc := &spi.ModelDescriptor{
 		Ref:        ref,
 		State:      spi.ModelUnlocked,
-		UpdateDate: time.Now(),
+		UpdateDate: h.clock.Now(),
 		Schema:     schemaBytes,
 	}
 	if existing != nil {

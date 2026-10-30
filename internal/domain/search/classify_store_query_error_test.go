@@ -17,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -236,7 +237,7 @@ func TestSearch_BareLeafField_RealMemoryPlugin_Bounded_MapsTo400(t *testing.T) {
 	saveBareLeafModel(t, ctx, base, ref, "score")
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base))
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
 	_, err := svc.Search(ctx, ref, cond, search.SearchOptions{Limit: 10})
@@ -282,7 +283,7 @@ func TestAsyncSearchJob_BareLeafField_RendersInvalidConditionMessage(t *testing.
 	saveBareLeafModel(t, ctx, base, ref, "score")
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base))
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.score", OperatorType: "EQUALS", Value: float64(5)}
 	jobID, err := svc.SubmitAsync(ctx, ref, cond, search.SearchOptions{Limit: 10})

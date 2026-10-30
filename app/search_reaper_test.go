@@ -12,6 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -37,7 +38,7 @@ func newReclaimService(t *testing.T, factory *memory.StoreFactory, store spi.Asy
 	t.Helper()
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).WithAsyncPool(pool)
+	return search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).WithAsyncPool(pool)
 }
 
 // TestReclaimStaleTick_RecoversPanicAndLatchesHealth pins that one reclaim

@@ -15,6 +15,11 @@ import (
 
 // fixedClock returns a clock function pinned to a fixed instant, for
 // deterministic scheduledTime/armedAt assertions.
+// funcClock adapts a time function to spi.Clock.
+type funcClock func() time.Time
+
+func (f funcClock) Now() time.Time { return f() }
+
 func fixedClock(ms int64) func() time.Time {
 	t := time.UnixMilli(ms)
 	return func() time.Time { return t }
@@ -27,7 +32,7 @@ func setupEngineWithClock(t *testing.T, nowMs int64) (*Engine, spi.StoreFactory)
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(fixedClock(nowMs)))
+	engine := NewEngine(factory, uuids, txMgr, WithClock(funcClock(fixedClock(nowMs))))
 	return engine, factory
 }
 
@@ -54,7 +59,7 @@ func setupEngineWithSteppableClock(t *testing.T, initialMs int64) (*Engine, spi.
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 	clock, advance := steppableClock(initialMs)
-	engine := NewEngine(factory, uuids, txMgr, WithScheduledClock(clock))
+	engine := NewEngine(factory, uuids, txMgr, WithClock(funcClock(clock)))
 	return engine, factory, advance
 }
 
@@ -649,7 +654,7 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			t.Cleanup(func() { base.Close() })
 			uuids := common.NewTestUUIDGenerator()
 			txMgr := base.NewTransactionManager(uuids)
-			engine := NewEngine(tc.wrap(base), uuids, txMgr, WithScheduledClock(fixedClock(nowMs)))
+			engine := NewEngine(tc.wrap(base), uuids, txMgr, WithClock(funcClock(fixedClock(nowMs))))
 
 			ctx := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sched-infra", ModelVersion: "1.0"}

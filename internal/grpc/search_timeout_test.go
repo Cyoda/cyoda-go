@@ -9,6 +9,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -162,7 +163,7 @@ func TestEntitySearch_DirectSearch_TimeoutExpires_SearchTimeoutNoElements(t *tes
 	blocking := &searchTimeoutEntityStore{}
 	factory := &searchTimeoutStoreFactory{StoreFactory: base, entityStore: blocking}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	millis := 1
 	ce := makeCE(EntitySearchRequest, map[string]any{

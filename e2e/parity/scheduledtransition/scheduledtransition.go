@@ -9,7 +9,7 @@
 // e2e/parity/contracts.go — "no storage handle... verification is
 // API-only") and every backend under it runs cyoda-go as a real OS
 // subprocess (e2e/parity/fixtureutil.LaunchCyodaAndCompute), so there is
-// no in-process engine or clock to inject — WithScheduledClock (used by
+// no in-process engine or clock to inject — WithClock (used by
 // internal/domain/workflow's unit tests) is not reachable from here, and
 // never will be for any backend under this harness, including memory.
 // Exact scheduledTime, lateness, retry-delay and deadline arithmetic is

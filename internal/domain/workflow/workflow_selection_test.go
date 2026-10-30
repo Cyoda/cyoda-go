@@ -867,7 +867,7 @@ func TestFireScheduled_EntityMovedOnRemoveFailureIsSurfaced(t *testing.T) {
 	clock, advance := steppableClock(armMs)
 	deleteErr := errors.New("scheduled task store unavailable")
 	engine := NewEngine(&failingDeleteTaskFactory{StoreFactory: realFactory, err: deleteErr},
-		uuids, txMgr, WithScheduledClock(clock))
+		uuids, txMgr, WithClock(funcClock(clock)))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "fire-del-fail", ModelVersion: "1.0"}

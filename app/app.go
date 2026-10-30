@@ -48,6 +48,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -406,13 +407,17 @@ func New(cfg Config) *App {
 	// single-node deployments, where the broadcaster is nil, receive
 	// invalidations at all. Per-(tenant, ref) bucketed otter caches
 	// isolate cross-tenant eviction.
+	// clk is the platform clock: one source of business time shared by the
+	// search service, the engine, the scheduler and the domain handlers, so all
+	// agree on "now".
+	clk := platformclock.Real()
 	pathValidationCache := search.NewPathValidationCache()
 	cachingStoreFactory.SubscribeLocal(pathValidationCache.InvalidateRef)
 	// Bounded async-search worker pool, sized from config (validated by
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
-		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency).
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthFlag(a.healthFlag).
@@ -490,13 +495,10 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
-	// schedClock is the pnode clock, shared by the engine's arm and fire math
-	// and the scheduler, so both agree on "now".
-	schedClock := scheduler.NewRealClock()
 	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
 		workflow.WithExternalProcessing(extProc),
 		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
-		workflow.WithScheduledClock(schedClock.Now))
+		workflow.WithClock(clk))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -518,7 +520,7 @@ func New(cfg Config) *App {
 		Store:              a.storeFactory,
 		TxManager:          a.transactionManager,
 		Firer:              a.workflowEngine,
-		Clock:              schedClock,
+		Clock:              clk,
 		HealthFlag:         a.healthFlag,
 		Meter:              observability.Meter(),
 		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
@@ -540,8 +542,8 @@ func New(cfg Config) *App {
 	a.joiner = joiner
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency)
-	modelHandler := model.New(a.storeFactory)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency, clk)
+	modelHandler := model.New(a.storeFactory, clk)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
 	server.Model = modelHandler

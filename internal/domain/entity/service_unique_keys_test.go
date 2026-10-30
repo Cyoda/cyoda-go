@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -166,7 +167,7 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -214,7 +215,7 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	registerProductModel(t, ctx, spy)
@@ -373,7 +374,7 @@ func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, factory)
 	return h, ctx
@@ -393,7 +394,7 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
 	return h, ctx, rec
