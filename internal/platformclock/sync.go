@@ -52,7 +52,10 @@ func receive(c *Test, payload []byte) {
 			"pkg", "platformclock", "reason", err.Error(), "size", len(payload))
 		return
 	}
-	c.Apply(s)
+	if c.Apply(s) {
+		slog.Info("platform clock setting adopted", "pkg", "platformclock",
+			"version", s.Version, "writer", s.Writer, "now", stamp(c.Now()))
+	}
 }
 
 // Attach subscribes c to settings broadcast on b and registers c's setting

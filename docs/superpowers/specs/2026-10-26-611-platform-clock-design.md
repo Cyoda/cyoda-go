@@ -269,7 +269,8 @@ If a fire near the end ran past `T`, the move ends with the clock where it is.
   wins.
 - **Interruption.** If the request is cancelled or the node stops, the clock
   stays where the last step put it, running at its rate. Repeating the move
-  continues from there.
+  with the same `time` continues from there; `advanceByMs` counts from the
+  clock's reading at the request.
 - **Cost:**
   - one step per distinct due time in the window, including retries and
     schedules that re-arm themselves;

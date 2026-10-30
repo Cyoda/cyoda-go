@@ -721,7 +721,7 @@ A read of the wall clock or of the database clock is either the injected clock
 or carries a `// realtime: <reason>` marker (`-- realtime:` in `.sql`) on its
 line or the line above. `internal/platformclock/time_reads_test.go` enforces
 this on the root module, the three in-tree plugins and the postgres migrations
-from 000017 on.
+from 000017 on (up migrations).
 
 Setting the clock to a time at or before its current reading applies the
 setting locally and then reads `ConsistencyTime` as the PLATFORM tenant, which
