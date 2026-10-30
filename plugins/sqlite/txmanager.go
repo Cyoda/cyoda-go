@@ -666,7 +666,7 @@ func (m *transactionManager) releaseCommitGate() {
 func (m *transactionManager) nextSubmitTime() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	nowMicro := m.factory.clock.Now().UnixMicro()
+	nowMicro := m.factory.bizClock.Now().UnixMicro()
 	if nowMicro <= m.lastSubmitTime {
 		nowMicro = m.lastSubmitTime + 1
 	}
@@ -752,7 +752,6 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 	}
 
 	txID := uuid.UUID(m.uuids.NewTimeUUID()).String()
-	nowMicro := m.factory.clock.Now().UnixMicro()
 
 	tx := &spi.TransactionState{
 		ID:                txID,
@@ -799,6 +798,9 @@ func (m *transactionManager) Begin(ctx context.Context) (string, context.Context
 		defer m.releaseCommitGate()
 		m.mu.Lock()
 		defer m.mu.Unlock()
+		// Read inside the gate and mutex, as ConsistencyTime does: a clock
+		// read taken before the wait is stale by the time the floor is set.
+		nowMicro := m.factory.bizClock.Now().UnixMicro()
 		if nowMicro < m.lastSubmitTime {
 			nowMicro = m.lastSubmitTime
 		}
@@ -983,7 +985,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 		m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tx.TenantID}
 
 		// Evict old submit times beyond TTL.
-		evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+		evictBefore := m.factory.bizClock.Now().Add(-submitTimeTTL)
 		for id, e := range m.submitTimes {
 			if e.submitTime.Before(evictBefore) {
 				delete(m.submitTimes, id)
@@ -995,7 +997,7 @@ func (m *transactionManager) Commit(ctx context.Context, txID string) error {
 	}()
 
 	// Prune old submit_times from SQLite (best-effort).
-	evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+	evictBefore := m.factory.bizClock.Now().Add(-submitTimeTTL)
 	_, _ = m.factory.db.ExecContext(ctx,
 		"DELETE FROM submit_times WHERE submit_time < ?",
 		timeToMicro(evictBefore))
@@ -1376,7 +1378,7 @@ func (m *transactionManager) ConsistencyTime(ctx context.Context) (time.Time, er
 		return time.Time{}, fmt.Errorf("ConsistencyTime: %w", err)
 	}
 	defer m.releaseCommitGate()
-	nowMicro := m.factory.clock.Now().UnixMicro()
+	nowMicro := m.factory.bizClock.Now().UnixMicro()
 	needHigh := func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()

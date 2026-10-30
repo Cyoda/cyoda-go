@@ -35,7 +35,11 @@ func (p *plugin) NewFactory(
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}
 
-	factory, err := newStoreFactory(ctx, cfg)
+	var storeOpts []Option
+	if c := spi.ApplyFactoryOptions(opts).Clock(); c != nil {
+		storeOpts = append(storeOpts, WithBusinessClock(c))
+	}
+	factory, err := newStoreFactory(ctx, cfg, storeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: %w", err)
 	}

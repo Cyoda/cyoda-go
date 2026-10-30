@@ -23,7 +23,8 @@ type asyncSearchStore struct {
 	// sole connection.
 	readDB *sql.DB
 
-	clock Clock
+	clock Clock // physical: liveness (heartbeats, stale reclaim)
+	biz   Clock // business: reaping cutoff against finish_time
 }
 
 func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {
@@ -333,7 +334,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime 
 }
 
 func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
-	cutoff := s.clock.Now().Add(-ttl)
+	cutoff := s.biz.Now().Add(-ttl)
 	cutoffMicro := cutoff.UnixMicro()
 
 	tx, err := s.db.BeginTx(ctx, nil)
