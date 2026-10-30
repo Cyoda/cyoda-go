@@ -78,6 +78,10 @@ type TransactionManager struct {
 	// independent housekeeping statement on the pool, not the maps tm.mu
 	// protects, so a plain atomic keeps the common (skip) path lock-free.
 	lastSubmitTimePruneNano atomic.Int64
+	// clock is the business clock (see StoreFactory.clock); nil in
+	// production. It supplies commit stamps and consistency times
+	// (stampAtArg) and the retention cutoff of submit times.
+	clock spi.Clock
 }
 
 // TransactionManagerOption configures a TransactionManager at construction.
@@ -104,6 +108,12 @@ func withStatementTimeout(d time.Duration) TransactionManagerOption {
 // Without it the manager has a cache of its own.
 func withTenantKeys(k *tenantKeys) TransactionManagerOption {
 	return func(tm *TransactionManager) { tm.keys = k }
+}
+
+// withBusinessClock gives the manager the factory's business clock; nil keeps
+// the database clock.
+func withBusinessClock(c spi.Clock) TransactionManagerOption {
+	return func(tm *TransactionManager) { tm.clock = c }
 }
 
 // NewTransactionManager creates a new PostgreSQL-backed TransactionManager.
@@ -351,7 +361,7 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 		tm.mu.Lock()
 		defer tm.mu.Unlock()
 		tm.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: state.tenantID}
-		evictBefore := time.Now().Add(-submitTimeTTL)
+		evictBefore := businessNow(tm.clock).Add(-submitTimeTTL)
 		for id, e := range tm.submitTimes {
 			if e.submitTime.Before(evictBefore) {
 				delete(tm.submitTimes, id)
@@ -369,10 +379,11 @@ func (tm *TransactionManager) Commit(ctx context.Context, txID string) error {
 //
 // CURRENT_TIMESTAMP is fixed at transaction START, so it dates a write when
 // the transaction opened rather than when it became visible. The stamp is
-// taken here instead, by cyoda_stamp (migration 000016): the DB clock, raised
-// above the stamp floor so it is above every consistency time already
-// returned. It also takes the in-flight marker a consistency-time call waits
-// for, held until this transaction ends.
+// taken here instead, by cyoda_stamp (migrations 000016, 000017): the DB
+// clock, or the business clock's reading when there is one, raised above the
+// stamp floor so it is above every consistency time already returned. It also
+// takes the in-flight marker a consistency-time call waits for, held until
+// this transaction ends.
 //
 // The rows are found by transaction_id rather than from the in-memory write
 // set, which is not authoritative: after a savepoint rollback the write set
@@ -408,11 +419,13 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 	// sm_audit_events UPDATE matches this transaction's own label; see its
 	// comment), so a consistency-time call waiting on the marker cannot
 	// deadlock with it. markerKey was resolved at Begin, outside this
-	// transaction (see tenantKeys). The argument is typed, as at every call
+	// transaction (see tenantKeys). The arguments are typed, as at every call
 	// of the two functions: an untyped one would let an overload another role
 	// created in the functions' schema be chosen and run with this
-	// connection's rights (see cyoda_consistency_time's call).
-	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::pg_catalog.int4)", markerKey).Scan(&instant); err != nil {
+	// connection's rights (see cyoda_consistency_time's call). The second is
+	// NULL without a business clock (stampAtArg).
+	if err := tx.QueryRow(ctx, "SELECT cyoda_stamp($1::pg_catalog.int4, $2::pg_catalog.int8)",
+		markerKey, stampAtArg(tm.clock)).Scan(&instant); err != nil {
 		return time.Time{}, fmt.Errorf("read commit instant: %w", classifyStampError(err))
 	}
 	tid := string(tenantID)
@@ -539,6 +552,10 @@ func (tm *TransactionManager) stampCommitInstant(ctx context.Context, tx pgx.Tx,
 // the policy would admit no row, this would delete nothing on every run,
 // and nothing would say so: zero rows deleted is not an error, and the
 // error path here is swallowed by design.
+//
+// The rate limit is housekeeping and runs on the process clock; the cutoff
+// compares submit times, which are business stamps, so it is taken from the
+// business clock.
 func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
 	now := time.Now()
 	last := tm.lastSubmitTimePruneNano.Load()
@@ -557,7 +574,7 @@ func (tm *TransactionManager) pruneSubmitTimes(ctx context.Context) {
 	defer cancel()
 	if _, err := tm.pool.Exec(pruneCtx,
 		`DELETE FROM submit_times WHERE submit_time < $1`,
-		now.Add(-submitTimeTTL)); err != nil {
+		businessNow(tm.clock).Add(-submitTimeTTL)); err != nil {
 		slog.Warn("prune submit_times failed", "pkg", "postgres", "err", err)
 	}
 }

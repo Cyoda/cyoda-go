@@ -175,11 +175,12 @@ func (tm *TransactionManager) waitBudgetMillis() int64 {
 }
 
 // ConsistencyTime implements spi.TransactionManager by "reserve, then wait"
-// (cyoda_consistency_time, migration 000016): it raises the stamp floor to
-// C = max(DB clock, highest stamp issued), so every later stamp is above C,
-// then waits for each of the tenant's in-flight markers — commits that hold a
-// stamp at or below C and have not yet ended. The markers are found by the
-// tenant's key (tenantKeys), resolved on the same connection first.
+// (cyoda_consistency_time, migrations 000016, 000017): it raises the stamp
+// floor to C = max(DB clock or business clock, highest stamp issued), so
+// every later stamp is above C, then waits for each of the tenant's in-flight
+// markers — commits that hold a stamp at or below C and have not yet ended.
+// The markers are found by the tenant's key (tenantKeys), resolved on the
+// same connection first.
 //
 // It runs on a pool connection of its own, in autocommit, never on the
 // transaction in ctx, so it is safe to call from inside one. The acquire is
@@ -215,14 +216,17 @@ func (tm *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, e
 
 	budget := tm.waitBudgetMillis()
 	var c time.Time
-	// Both arguments are typed, as at both cyoda_stamp calls. The plugin
+	// Every argument is typed, as at both cyoda_stamp calls. The plugin
 	// names its functions without a schema, and a role that may create in
 	// their schema can add an overload with other argument types. For an
 	// untyped parameter PostgreSQL would prefer such an overload (float8,
 	// say) and run it with this connection's rights, or find the call
 	// ambiguous; with exact types the real function wins, since no other
-	// function in the schema can have its signature.
-	qerr := conn.QueryRow(ctx, `SELECT cyoda_consistency_time($1::pg_catalog.int4, $2::pg_catalog.int8)`, key, budget).Scan(&c)
+	// function in the schema can have its signature. The last argument is
+	// NULL without a business clock (stampAtArg).
+	qerr := conn.QueryRow(ctx,
+		`SELECT cyoda_consistency_time($1::pg_catalog.int4, $2::pg_catalog.int8, $3::pg_catalog.int8)`,
+		key, budget, stampAtArg(tm.clock)).Scan(&c)
 	if qerr == nil {
 		conn.Release()
 		return c, nil

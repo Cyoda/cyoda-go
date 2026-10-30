@@ -47,6 +47,12 @@ type asyncSearchStore struct {
 	// job-record reads and writes and belong under the interactive ceiling like
 	// every other short statement.
 	searchStatementTimeout time.Duration
+
+	// clock is the factory's business clock (StoreFactory.clock); nil in
+	// production. ReapExpired's cutoff is taken from it, because finished_at
+	// is a business time. Liveness (Heartbeat, ClaimStale, CreateJob's
+	// heartbeat stamp) stays on the database clock.
+	clock spi.Clock
 }
 
 // acquireContext bounds SaveResults' per-chunk Begin. See newAcquireContext
@@ -585,7 +591,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime 
 
 func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
 	// ReapExpired runs cross-tenant — no tenant context required.
-	cutoff := time.Now().UTC().Add(-ttl)
+	cutoff := businessNow(s.clock).Add(-ttl)
 	tag, err := s.q.Exec(ctx,
 		`DELETE FROM search_jobs WHERE status != 'RUNNING' AND finished_at IS NOT NULL AND finished_at < $1`,
 		cutoff)
@@ -595,8 +601,8 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	return int(tag.RowsAffected()), nil
 }
 
-// ClaimStale atomically claims up to limit RUNNING jobs whose heartbeat (or
-// created_at, when heartbeat_time is NULL) is older than staleAfter, bumping
+// ClaimStale atomically claims up to limit RUNNING jobs whose heartbeat_time —
+// stamped at CreateJob, so never NULL — is older than staleAfter, bumping
 // epoch and refreshing heartbeat_time on every winner in the same statement
 // that selected them.
 //

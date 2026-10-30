@@ -143,11 +143,12 @@ func newTestFactory(t *testing.T) *postgres.StoreFactory {
 
 // TestConformance runs the SPI conformance harness against the postgres plugin.
 //
-// AdvanceClock is time.Sleep(d) — postgres uses CURRENT_TIMESTAMP and
-// clock_timestamp() DB-side for version and transaction timestamps. These
-// are load-bearing for correctness (tx-stable timestamps) so we do not
-// refactor plugin timekeeping. The DB's monotonic wall clock satisfies the
-// harness contract under wall-clock advance at 1ms granularity.
+// AdvanceClock is time.Sleep(d). Without a business clock this plugin
+// stamps every commit from the database clock (cyoda_stamp, which takes
+// clock_timestamp() raised above the stamp floor), and the liveness stamps
+// are the database's now(), so real time is the only clock to advance. The
+// DB's wall clock satisfies the harness contract under wall-clock advance at
+// 1ms granularity.
 //
 // Now is overridden to read the DATABASE clock. It must NOT be left at the
 // default (time.Now): the harness uses Now to capture as-at markers that are
@@ -194,6 +195,17 @@ func TestConformance(t *testing.T) {
 				d = 100 * time.Millisecond
 			}
 			time.Sleep(d)
+		},
+		// A fresh database per call, through the plugin's own NewFactory with
+		// spi.WithClock(c). Its physical clock is the database's, the same one
+		// AdvanceClock sleeps through, so liveness ages without touching c.
+		ClockFactory: func(c spi.Clock) (spi.StoreFactory, func()) {
+			f, closeF, err := openPluginFactory(spi.WithClock(c))
+			if err != nil {
+				// Called from a subtest's goroutine: panic, as Now does.
+				panic(fmt.Sprintf("Harness.ClockFactory: %v", err))
+			}
+			return f, closeF
 		},
 		Skip: map[string]string{
 			// pgx.Tx aborts surface as ErrConflict via SQLSTATE 25P02
