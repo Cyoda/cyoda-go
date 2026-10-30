@@ -186,7 +186,7 @@ The full CloudEvent envelope for an ack:
 
 - `EntityGetRequest` / `EntityResponse`
 - `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused with `POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; a refusal's message text carries the current one. Payload fields: `cyoda help cloudevents json`. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
-- `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only; `controllable` is true only on a node started with clock control (`cyoda help config clock`). Payload fields: `cyoda help cloudevents json`.
+- `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only; like every gRPC operation the read requires `ROLE_M2M`, which HTTP `GET /platform/clock` does not; `controllable` is true only on a node started with clock control (`cyoda help config clock`). Payload fields: `cyoda help cloudevents json`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`

@@ -364,7 +364,9 @@ cause.
   `PlatformClockResponse` (`now`, `rate`, `controllable`), next to
   `EntityConsistencyTimeGetRequest` (`internal/grpc/cloudevent_types.go:84-85`).
   Each has a published JSON schema (#626).
-- Error classes: unauthenticated.
+- Error classes: unauthenticated. Like every gRPC operation, the read
+  requires `ROLE_M2M` (`PermissionDenied` otherwise); HTTP `GET /platform/clock`
+  does not.
 - Changing the clock is HTTP-only, like the other operator controls.
 
 ## Configuration
@@ -520,6 +522,10 @@ ways and no others.
 5. **Search-job liveness.** On all backends, a new job's liveness baseline is
    the store's clock at insert, not the engine's `CreateTime`.
 6. **Dead defaults and columns** are dropped.
+7. **Sqlite snapshot time.** `Begin` reads its snapshot time inside the commit
+   gate, so the recorded SnapshotTime can be later by the gate wait.
+8. **Search-job heartbeat backfill.** Postgres 000017 and sqlite 000013 set
+   `heartbeat_time` from the creation time for existing rows.
 
 **Additions that production does not exercise:**
 - `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`
