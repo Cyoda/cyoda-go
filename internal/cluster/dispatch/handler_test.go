@@ -364,7 +364,7 @@ func TestHandler_TheCnodeIsSentTheOwnersPlatformTime(t *testing.T) {
 	if resp.Outcome != OutcomeOK {
 		t.Fatalf("%+v", resp)
 	}
-	if got, want := cnode.onlyTime(t), time.UnixMicro(req.AtUnixMicro); !got.Equal(want) {
+	if got, want := cnode.onlyTime(t), time.UnixMicro(*req.AtUnixMicro); !got.Equal(want) {
 		t.Errorf("the cnode was sent time %v, want the owner's platform time %v", got, want)
 	}
 }

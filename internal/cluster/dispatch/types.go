@@ -71,8 +71,9 @@ type DispatchCalloutRequest struct {
 	// AtUnixMicro is the callout's platform time, in microseconds since the
 	// Unix epoch: the time at which the owner took the callout up. The
 	// receiving pnode sends it on every try as the CloudEvents time attribute,
-	// in place of anything its own clock reads.
-	AtUnixMicro int64 `json:"atUnixMicro"`
+	// in place of anything its own clock reads. Required: nil means the owner
+	// sent none, and 0 is the Unix epoch, a valid platform time.
+	AtUnixMicro *int64 `json:"atUnixMicro"`
 
 	// Processor is set when Kind == "processor".
 	Processor *spi.ProcessorDefinition `json:"processor,omitempty"`

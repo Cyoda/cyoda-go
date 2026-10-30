@@ -43,7 +43,7 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 		ExecutorID:     "C9",
 		ExecutorKind:   spi.PrincipalService,
 		Roles:          []string{"admin", "editor"},
-		AtUnixMicro:    1_425_202_200_123_456,
+		AtUnixMicro:    atMicro(1_425_202_200_123_456),
 	}
 
 	b, err := json.Marshal(req)
@@ -74,8 +74,8 @@ func TestDispatchCalloutRequest_ProcessorJSONRoundTrip(t *testing.T) {
 	if got.Tags != req.Tags {
 		t.Errorf("Tags = %q, want %q", got.Tags, req.Tags)
 	}
-	if got.AtUnixMicro != req.AtUnixMicro {
-		t.Errorf("AtUnixMicro = %d, want %d", got.AtUnixMicro, req.AtUnixMicro)
+	if got.AtUnixMicro == nil || *got.AtUnixMicro != *req.AtUnixMicro {
+		t.Errorf("AtUnixMicro = %v, want %d", got.AtUnixMicro, *req.AtUnixMicro)
 	}
 	if got.AttributedID != "alice" || got.AttributedKind != spi.PrincipalUser {
 		t.Errorf("attributed = %q/%q, want alice/user", got.AttributedID, got.AttributedKind)

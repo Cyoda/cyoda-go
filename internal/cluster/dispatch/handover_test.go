@@ -87,8 +87,8 @@ func TestNewHandOverRequest(t *testing.T) {
 				len(req.Roles) != 1 || req.Roles[0] != "ROLE_M2M" {
 				t.Errorf("identity fields wrong: %+v", req)
 			}
-			if req.AtUnixMicro != ownerAt.UnixMicro() {
-				t.Errorf("AtUnixMicro = %d, want the owner's platform time %d", req.AtUnixMicro, ownerAt.UnixMicro())
+			if req.AtUnixMicro == nil || *req.AtUnixMicro != ownerAt.UnixMicro() {
+				t.Errorf("AtUnixMicro = %v, want the owner's platform time %d", req.AtUnixMicro, ownerAt.UnixMicro())
 			}
 			switch kind {
 			case "processor":
@@ -146,6 +146,15 @@ func validRequest(t *testing.T, kind string) DispatchCalloutRequest {
 	return req
 }
 
+// The Unix epoch is a valid platform time: an absent time is a nil field, not 0.
+func TestRequestValidate_EpochPlatformTimeAccepted(t *testing.T) {
+	req := validRequest(t, "processor")
+	req.AtUnixMicro = ptrInt64(0)
+	if err := req.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+}
+
 func TestRequestValidate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -167,8 +176,8 @@ func TestRequestValidate(t *testing.T) {
 		{"no attributed kind", func(r *DispatchCalloutRequest) { r.AttributedKind = "" }},
 		{"no executor id", func(r *DispatchCalloutRequest) { r.ExecutorID = "" }},
 		{"no executor kind", func(r *DispatchCalloutRequest) { r.ExecutorKind = "" }},
-		{"no platform time", func(r *DispatchCalloutRequest) { r.AtUnixMicro = 0 }},
-		{"platform time before 1970", func(r *DispatchCalloutRequest) { r.AtUnixMicro = -1 }},
+		{"no platform time", func(r *DispatchCalloutRequest) { r.AtUnixMicro = nil }},
+		{"platform time before 1970", func(r *DispatchCalloutRequest) { r.AtUnixMicro = ptrInt64(-1) }},
 		{"processor missing", func(r *DispatchCalloutRequest) { r.Processor = nil }},
 		{"no entity id", func(r *DispatchCalloutRequest) { r.EntityMeta.ID = "" }},
 		{"no entity", func(r *DispatchCalloutRequest) { r.Entity = nil }},
