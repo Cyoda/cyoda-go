@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -36,7 +37,7 @@ func newIfMatchFixture(t *testing.T, name string, dispatch func(ctx context.Cont
 	}
 	f := &ifMatchFixture{
 		factory: factory, txMgr: txMgr, ctx: ctxWithTenant(testTenant),
-		engine:   NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock)),
+		engine:   NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock)),
 		modelRef: spi.ModelRef{EntityName: name, ModelVersion: "1.0"},
 		id:       name + "-1",
 	}

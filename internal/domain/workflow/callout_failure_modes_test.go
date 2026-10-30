@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"net/http"
 	"testing"
 
@@ -39,7 +40,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 			return nil, failure
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := common.WithDiagnostics(ctxWithTenant(testTenant))
 	modelRef := spi.ModelRef{EntityName: "callout-mode-" + mode, ModelVersion: "1.0"}

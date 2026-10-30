@@ -741,7 +741,7 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 
 	proc := &stubExternalProc{}
 	engineCAS := &casHookFactory{StoreFactory: raw}
-	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker,
+	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(proc))
 
 	armed := &armedFactory{StoreFactory: raw}

@@ -94,7 +94,7 @@ func TestSearchEntityAuditEvents_PushesTimeWindowToStore(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	spyFactory := &versionMetadataSpyFactory{StoreFactory: base}
-	engine := wfengine.NewEngine(spyFactory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(spyFactory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	eh := entity.New(spyFactory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, spyFactory), platformclock.Real())
 
 	res, err := eh.CreateEntity(ctx, entity.CreateEntityInput{

@@ -49,7 +49,7 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	tm := &consistencyTimeTM{TransactionManager: txMgr}
 	cons := consistency.New(tm)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)

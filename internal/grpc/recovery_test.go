@@ -483,7 +483,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	tracker := &recoveryTrackingTxMgr{TransactionManager: realTxMgr}
 
 	localProc := localproc.New()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker,
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(localProc))
 
 	searchStore, err := factory.AsyncSearchStore(context.Background())

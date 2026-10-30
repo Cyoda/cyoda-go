@@ -32,7 +32,7 @@ func setupEngineWithClock(t *testing.T, nowMs int64) (*Engine, spi.StoreFactory)
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr, WithClock(funcClock(fixedClock(nowMs))))
+	engine := NewEngine(factory, uuids, txMgr, funcClock(fixedClock(nowMs)))
 	return engine, factory
 }
 
@@ -59,7 +59,7 @@ func setupEngineWithSteppableClock(t *testing.T, initialMs int64) (*Engine, spi.
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 	clock, advance := steppableClock(initialMs)
-	engine := NewEngine(factory, uuids, txMgr, WithClock(funcClock(clock)))
+	engine := NewEngine(factory, uuids, txMgr, funcClock(clock))
 	return engine, factory, advance
 }
 
@@ -654,7 +654,7 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			t.Cleanup(func() { base.Close() })
 			uuids := common.NewTestUUIDGenerator()
 			txMgr := base.NewTransactionManager(uuids)
-			engine := NewEngine(tc.wrap(base), uuids, txMgr, WithClock(funcClock(fixedClock(nowMs))))
+			engine := NewEngine(tc.wrap(base), uuids, txMgr, funcClock(fixedClock(nowMs)))
 
 			ctx := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sched-infra", ModelVersion: "1.0"}

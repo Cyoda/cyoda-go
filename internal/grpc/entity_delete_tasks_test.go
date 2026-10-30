@@ -38,7 +38,7 @@ func newTaskDeleteEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context, *
 		Roles:  []string{"ADMIN"},
 	})
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

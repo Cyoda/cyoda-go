@@ -170,7 +170,7 @@ func newReqTimeoutHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.Tran
 		Roles:    []string{"user"},
 	})
 
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	node := schema.NewObjectNode()
@@ -903,7 +903,7 @@ func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	}
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
-	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
 	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []CollectionItem{
@@ -976,7 +976,7 @@ func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	}
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
-	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
 	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []UpdateCollectionItem{

@@ -130,7 +130,7 @@ func newDeleteStreamCtx(t *testing.T, factory spi.StoreFactory, ref spi.ModelRef
 // buildDeleteBatchedHandler (service_delete_batched_test.go).
 func buildDeleteStreamHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 }
 

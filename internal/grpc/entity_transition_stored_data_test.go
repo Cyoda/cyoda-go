@@ -63,7 +63,7 @@ func newTransitionTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Contex
 	txMgr := base.GetTransactionManager()
 	factory := &firstReadFactory{StoreFactory: base}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),

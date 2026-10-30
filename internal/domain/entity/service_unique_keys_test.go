@@ -166,7 +166,7 @@ func TestCreateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
@@ -214,7 +214,7 @@ func TestUpdateEntityCollection_MixedModels_PerItemKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)
@@ -373,7 +373,7 @@ func newOrderTestHandler(t *testing.T) (*Handler, context.Context) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, factory)
@@ -393,7 +393,7 @@ func newOrderTestHandlerWithSpy(t *testing.T) (*Handler, context.Context, *ctxRe
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := wfengine.NewEngine(spy, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	h := New(spy, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	registerOrderModel(t, ctx, spy)

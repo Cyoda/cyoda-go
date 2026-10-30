@@ -82,7 +82,7 @@ func newTestEnvWithOwner(t *testing.T, answerLimitDefault, answerLimitMax time.D
 	gate := txgate.New()
 	extProc := NewOwnerForTest(dispatcher, registry, fence.New(gate), owner)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(extProc))
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(extProc))
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, gate, newTestConsistency(t, factory), platformclock.Real())

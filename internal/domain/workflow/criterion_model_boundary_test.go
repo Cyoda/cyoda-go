@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"strings"
 	"sync"
 	"testing"
@@ -130,7 +131,7 @@ func TestEvaluateCriterion_TemporalMetaUnderTextOperatorIsRefused(t *testing.T) 
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}
@@ -284,7 +285,7 @@ func TestEvaluateCriterion_PathAddedByAPeerIsNotRefused(t *testing.T) {
 		refreshQueue: []*spi.ModelDescriptor{fresh},
 	}
 	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
@@ -327,7 +328,7 @@ func TestEvaluateCriterion_PathAddedByAPeer_OperatorTypeChecked(t *testing.T) {
 		refreshQueue: []*spi.ModelDescriptor{fresh},
 	}
 	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})
@@ -448,7 +449,7 @@ func TestEvaluateCriterion_FailedRefreshIsInfraNotClientFault(t *testing.T) {
 		refreshErr: wantCause,
 	}
 	factory := &refreshingModelStoreFactory{StoreFactory: baseFactory, store: ms}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", ref, map[string]any{"peer_field": 10})

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -66,7 +67,7 @@ func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 				}
 				return e, nil
 			}}
-			engine := NewEngine(factory, uuids, tc.mgr, WithExternalProcessing(ext))
+			engine := NewEngine(factory, uuids, tc.mgr, platformclock.Real(), WithExternalProcessing(ext))
 			base := ctxWithTenant(testTenant)
 			modelRef := spi.ModelRef{EntityName: "sp-fatal", ModelVersion: "1.0"}
 			saveWorkflow(t, factory, base, modelRef, []spi.WorkflowDefinition{{

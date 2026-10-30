@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -196,7 +197,7 @@ func newSupersedeEnv(t *testing.T, succeedAfterRelease bool) *supersedeEnv {
 	ext := &innerCoordinator{f: f, entered: make(chan struct{}), proceed: make(chan struct{}), succeedAfterRelease: succeedAfterRelease}
 	factory := watchedFactory{StoreFactory: mem, ops: ops}
 	env := &supersedeEnv{base: ctxWithTenant(testTenant), factory: factory, txMgr: txMgr, gate: gate, f: f, ext: ext, ops: ops,
-		engine: NewEngine(factory, uuids, txMgr, WithExternalProcessing(ext))}
+		engine: NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext))}
 	var err error
 	env.txID, env.txCtx, err = txMgr.Begin(env.base)
 	if err != nil {

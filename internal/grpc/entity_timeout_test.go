@@ -354,7 +354,7 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_BlockingStore_408(t *testing.T) {
 	blocking := &blockingEntityStore{}
 	factory := &blockingStoreFactory{StoreFactory: realFactory, entityStore: blocking}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
 	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
@@ -428,7 +428,7 @@ func TestRPC_EntityCreate_TransactionTimeoutMs_CommitWins_Success(t *testing.T) 
 	modelHandler := model.New(realFactory, platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
-	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
+	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
 	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())
@@ -489,7 +489,7 @@ func TestRPC_EntityUpdateCollection_TransactionTimeoutMs_LoopHeadStopsSecondItem
 	modelHandler := model.New(realFactory, platformclock.Real())
 	importLockPerson(t, modelHandler, ctx)
 
-	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm)
+	engine := workflow.NewEngine(realFactory, common.NewDefaultUUIDGenerator(), rtm, platformclock.Real())
 	searchStore, _ := realFactory.AsyncSearchStore(context.Background())
 	searchService := search.NewSearchService(realFactory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, realFactory), platformclock.Real())
 	entityHandler := entity.New(realFactory, rtm, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, realFactory), platformclock.Real())

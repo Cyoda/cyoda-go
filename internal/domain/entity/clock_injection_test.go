@@ -58,7 +58,7 @@ func TestEntityPreCommitDatesFromClock(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", err)
 	}
 	clk := fakeclock.New(at)
-	engine := wfengine.NewEngine(f, common.NewDefaultUUIDGenerator(), txMgr, wfengine.WithClock(clk))
+	engine := wfengine.NewEngine(f, common.NewDefaultUUIDGenerator(), txMgr, clk)
 	h := New(f, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), clk)
 
 	if _, err := h.CreateEntity(ctx, CreateEntityInput{

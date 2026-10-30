@@ -21,7 +21,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 var tracer = otel.Tracer("github.com/cyoda-platform/cyoda-go/workflow")
@@ -155,7 +154,7 @@ type Engine struct {
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
 	// and for FireScheduledTransition's deadline decisions, and stamps the audit
-	// trail. Defaults to the real clock; overridden via WithClock.
+	// trail. Injected via NewEngine.
 	clock spi.Clock
 	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
 	// commit (common.ShieldedCommitWithBudget). Defaults to
@@ -169,9 +168,16 @@ type Engine struct {
 }
 
 // NewEngine creates a new workflow engine. txMgr is required and must not be
-// nil: the engine takes savepoints and rolls back segments through it.
-func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: platformclock.Real(), commitBudget: common.CommitBudget}
+// nil: the engine takes savepoints and rolls back segments through it. clock
+// is required and must not be nil: it is the platform clock behind
+// reconcileScheduledTasks' scheduledTime/armedAt computation,
+// FireScheduledTransition's deadline decisions and audit-event timestamps.
+// There is no default; a missing clock fails at construction.
+func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, clock spi.Clock, opts ...EngineOption) *Engine {
+	if clock == nil {
+		panic("workflow.NewEngine: nil clock")
+	}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: clock, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -202,19 +208,6 @@ func WithMaxStateVisits(n int) EngineOption {
 		if n > 0 {
 			e.maxStateVisits = n
 		}
-	}
-}
-
-// WithClock overrides the engine's clock, used for reconcileScheduledTasks'
-// scheduledTime/armedAt computation, FireScheduledTransition's deadline
-// decisions and audit-event timestamps. Defaults to platformclock.Real();
-// tests inject a deterministic clock instead. A nil clock panics.
-func WithClock(clock spi.Clock) EngineOption {
-	if clock == nil {
-		panic("workflow.WithClock: nil clock")
-	}
-	return func(e *Engine) {
-		e.clock = clock
 	}
 }
 

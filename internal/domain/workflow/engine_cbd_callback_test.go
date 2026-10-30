@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -55,7 +56,7 @@ func newCallbackEnv(t *testing.T, procs []spi.ProcessorDefinition, dispatch func
 	for _, w := range wrapTx {
 		engineTx = w(engineTx)
 	}
-	engine := NewEngine(factory, uuids, engineTx, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, engineTx, platformclock.Real(), WithExternalProcessing(mock))
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-callback", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, modelRef, map[string]schema.DataType{

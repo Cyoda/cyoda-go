@@ -51,7 +51,7 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
 	factory := &txAbortedSaveFactory{StoreFactory: inner}
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	svc.txMgr = txMgr
 	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
 	svc.modelHandler = model.New(inner, platformclock.Real())
@@ -134,7 +134,7 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 		}
 		return nil, errors.New("the processor failed after its joined write")
 	})
-	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
+	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp))
 	svc.txMgr = txMgr
 	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, inner), platformclock.Real())
 	svc.modelHandler = model.New(inner, platformclock.Real())
