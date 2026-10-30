@@ -270,3 +270,24 @@ func TestHandler_Get_BeyondYear9999_Is500(t *testing.T) {
 		t.Errorf("no ticket in %v", body)
 	}
 }
+
+// A change whose resulting clock is past the year 9999 cannot be answered as
+// a timestamp: the write has happened, and the response is the generic 5xx
+// with a ticket, never a 200 with an empty body.
+func TestHandler_Post_ResultBeyondYear9999_Is500(t *testing.T) {
+	f := newFake()
+	f.now = time.Date(10000, 1, 1, 0, 0, 1, 0, time.UTC)
+	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+	rec := httptest.NewRecorder()
+	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"rate":2}`))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500; body %q", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+	if body["ticket"] == nil {
+		t.Errorf("no ticket in %v", body)
+	}
+}

@@ -25,6 +25,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/logging"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // EntitySearch handles unary search CloudEvents by calling service methods directly.
@@ -174,10 +175,9 @@ func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Conte
 	}
 
 	st := s.clockState()
-	if st.Now.UTC().Year() > 9999 {
-		err := fmt.Errorf("the platform clock is beyond the year 9999: %s", st.Now.UTC().Format(time.RFC3339Nano))
-		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockGetRequest, "ceId", ce.Id, "error", err.Error())
-		return platformClockError(ctx, ce.Id, common.Internal("failed to read the platform clock", err))
+	if appErr := platformclock.CheckReadable(st); appErr != nil {
+		slog.Error("operation failed", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockGetRequest, "ceId", ce.Id, "error", appErr.Err.Error())
+		return platformClockError(ctx, ce.Id, appErr)
 	}
 	now := st.Now.UTC()
 	rate := float64(st.RatePPM) / 1e6

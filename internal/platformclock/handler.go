@@ -61,22 +61,21 @@ func StateOf(svc interface{ State() State }, enabled bool) State {
 	return svc.State()
 }
 
-// ReadableState returns the state both doors answer, or the generic internal
-// error when the clock has run past the year 9999, which a timestamp cannot
-// carry. The check comes before any answer is written.
-func ReadableState(svc interface{ State() State }, enabled bool) (State, *common.AppError) {
-	st := StateOf(svc, enabled)
+// CheckReadable returns the generic internal error when st's clock has run
+// past the year 9999, which a timestamp cannot carry, else nil. Every door
+// calls it on the state before it writes an answer.
+func CheckReadable(st State) *common.AppError {
 	if st.Now.UTC().Year() > 9999 {
-		return st, common.Internal("failed to read the platform clock",
+		return common.Internal("failed to read the platform clock",
 			fmt.Errorf("the platform clock is beyond the year 9999: %s", stamp(st.Now)))
 	}
-	return st, nil
+	return nil
 }
 
 // GetPlatformClock implements GET /platform/clock.
 func (h *Handler) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
-	st, appErr := ReadableState(h.svc, h.enabled)
-	if appErr != nil {
+	st := StateOf(h.svc, h.enabled)
+	if appErr := CheckReadable(st); appErr != nil {
 		common.WriteError(w, r, appErr)
 		return
 	}
@@ -211,6 +210,10 @@ func (h *Handler) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 	st, err := h.svc.Change(r.Context(), ch)
 	if err != nil {
 		common.WriteError(w, r, classify(err))
+		return
+	}
+	if appErr := CheckReadable(st); appErr != nil {
+		common.WriteError(w, r, appErr)
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, bodyOf(st))
