@@ -23,11 +23,13 @@ func TestValidateInChunks_EmptyIDs(t *testing.T) {
 func TestValidateInChunks_SingleChunk(t *testing.T) {
 	tm, pool := newTestTxManager(t)
 	ctx := ctxWithTenant("t1")
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		VALUES ('t1', 'e1', 'M', '1', 3, false, '{}'::jsonb),
-		       ('t1', 'e2', 'M', '1', 7, false, '{}'::jsonb)
-	`)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		VALUES ('t1', 'e1', 'M', '1', 3, false, '{}'::jsonb, now(), now()),
+		       ('t1', 'e2', 'M', '1', 7, false, '{}'::jsonb, now(), now())
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1", []string{"e1", "e2"}, 100)
@@ -43,10 +45,12 @@ func TestValidateInChunks_MultipleChunks(t *testing.T) {
 	tm, pool := newTestTxManager(t)
 	ctx := ctxWithTenant("t1")
 	for i, id := range []string{"a", "b", "c", "d", "e"} {
-		_, _ = pool.Exec(ctx, `
-			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-			VALUES ('t1', $1, 'M', '1', $2, false, '{}'::jsonb)
-		`, id, int64(i+1))
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+			VALUES ('t1', $1, 'M', '1', $2, false, '{}'::jsonb, now(), now())
+		`, id, int64(i+1)); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
 	}
 	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
@@ -63,11 +67,13 @@ func TestValidateInChunks_MultipleChunks(t *testing.T) {
 func TestValidateInChunks_TenantScoped(t *testing.T) {
 	tm, pool := newTestTxManager(t)
 	ctx := ctxWithTenant("t1")
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb),
-		       ('t2', 'e1', 'M', '1', 99, false, '{}'::jsonb)
-	`)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb, now(), now()),
+		       ('t2', 'e1', 'M', '1', 99, false, '{}'::jsonb, now(), now())
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 	txID, txCtx := beginGuarded(t, tm, ctx)
 	tx, _ := tm.LookupTx(txID)
 	current, err := postgres.ValidateInChunksForTest(tm, txCtx, tx, "t1", []string{"e1"}, 100)

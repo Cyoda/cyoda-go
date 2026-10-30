@@ -319,3 +319,10 @@ const ClaimTenantsSQLForTest = claimTenantsSQL
 
 // PairKeyForTest is pairKey.
 var PairKeyForTest = pairKey
+
+// NewStoreFactoryWithClockForTest builds a factory with business clock c
+// through the same internal constructor Plugin.NewFactory uses, on a pool the
+// caller configured. Call InitTransactionManager on it before use. Test-only.
+func NewStoreFactoryWithClockForTest(pool *pgxpool.Pool, c spi.Clock) *StoreFactory {
+	return newStoreFactory(pool, defaultStoreConfig(), c)
+}

@@ -10,6 +10,16 @@
 -- function rather than replacing the old one, so the old signatures are
 -- dropped first and exactly one function of each name remains.
 --
+-- The placeholder dates lose their DEFAULT CURRENT_TIMESTAMP:
+-- entities.creation_date and last_modified, entity_versions.transaction_time
+-- and creation_date. Every insert writes them from the plugin's placeholder
+-- value, which is the business clock's time under a test clock; a default
+-- would put the database clock there instead without a word.
+--
+-- search_jobs.heartbeat_time becomes NOT NULL: CreateJob stamps it, and stale
+-- reclaim measures from it alone. A job written before that has none; it is
+-- given its created_at, the baseline it was measured from until now.
+--
 -- Two dead objects go: the DEFAULT on search_jobs.created_at, which every
 -- insert supplies, and model_schema_extensions.created_at, which nothing
 -- writes or reads.
@@ -60,6 +70,14 @@ BEGIN
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
 END $$;
+
+ALTER TABLE entities ALTER COLUMN creation_date DROP DEFAULT,
+                     ALTER COLUMN last_modified DROP DEFAULT;
+ALTER TABLE entity_versions ALTER COLUMN transaction_time DROP DEFAULT,
+                            ALTER COLUMN creation_date DROP DEFAULT;
+
+UPDATE search_jobs SET heartbeat_time = created_at WHERE heartbeat_time IS NULL;
+ALTER TABLE search_jobs ALTER COLUMN heartbeat_time SET NOT NULL;
 
 ALTER TABLE search_jobs ALTER COLUMN created_at DROP DEFAULT;
 ALTER TABLE model_schema_extensions DROP COLUMN created_at;

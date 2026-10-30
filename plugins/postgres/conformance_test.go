@@ -196,16 +196,22 @@ func TestConformance(t *testing.T) {
 			}
 			time.Sleep(d)
 		},
-		// A fresh database per call, through the plugin's own NewFactory with
-		// spi.WithClock(c). Its physical clock is the database's, the same one
-		// AdvanceClock sleeps through, so liveness ages without touching c.
+		// A fresh database per call, with business clock c (openClockFactory).
+		// Its physical clock is the database's, the same one AdvanceClock
+		// sleeps through, so liveness ages without touching c.
 		ClockFactory: func(c spi.Clock) (spi.StoreFactory, func()) {
-			f, closeF, err := openPluginFactory(spi.WithClock(c))
+			f, closeF, err := openClockFactory(c)
 			if err != nil {
 				// Called from a subtest's goroutine: panic, as Now does.
 				panic(fmt.Sprintf("Harness.ClockFactory: %v", err))
 			}
-			return f, closeF
+			return f, func() {
+				// t is the enclosing TestConformance, still running; Errorf
+				// is safe from any goroutine.
+				if err := closeF(); err != nil {
+					t.Errorf("Harness.ClockFactory close: %v", err)
+				}
+			}
 		},
 		Skip: map[string]string{
 			// pgx.Tx aborts surface as ErrConflict via SQLSTATE 25P02

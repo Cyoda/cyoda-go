@@ -304,10 +304,10 @@ CREATE TABLE entity_versions (
     model_version    TEXT        NOT NULL,
     version          BIGINT      NOT NULL,
     valid_time       TIMESTAMPTZ NOT NULL,
-    transaction_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    transaction_time TIMESTAMPTZ NOT NULL,                     -- no default since 000017
     wall_clock_time  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     transaction_id   TEXT        NOT NULL DEFAULT '',            -- 000012
-    creation_date    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- 000012
+    creation_date    TIMESTAMPTZ NOT NULL,                     -- 000012; no default since 000017
     doc              JSONB       NOT NULL,
     PRIMARY KEY (tenant_id, entity_id, version),
     FOREIGN KEY (tenant_id, entity_id)

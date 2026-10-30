@@ -1,4 +1,5 @@
--- Restores migration 000016's stamp functions, the DEFAULT on
+-- Restores migration 000016's stamp functions, the placeholder-date
+-- defaults, a nullable search_jobs.heartbeat_time, the DEFAULT on
 -- search_jobs.created_at and model_schema_extensions.created_at.
 DROP FUNCTION cyoda_stamp(int4, bigint);
 DROP FUNCTION cyoda_consistency_time(int4, bigint, bigint);
@@ -47,6 +48,13 @@ BEGIN
   END LOOP;
   RETURN 'epoch'::timestamptz + c * interval '1 microsecond';
 END $$;
+
+ALTER TABLE entities ALTER COLUMN creation_date SET DEFAULT CURRENT_TIMESTAMP,
+                     ALTER COLUMN last_modified SET DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE entity_versions ALTER COLUMN transaction_time SET DEFAULT CURRENT_TIMESTAMP,
+                            ALTER COLUMN creation_date SET DEFAULT CURRENT_TIMESTAMP;
+
+ALTER TABLE search_jobs ALTER COLUMN heartbeat_time DROP NOT NULL;
 
 ALTER TABLE search_jobs ALTER COLUMN created_at SET DEFAULT now();
 ALTER TABLE model_schema_extensions ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP;

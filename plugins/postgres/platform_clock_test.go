@@ -4,17 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/plugins/postgres"
 )
 
 // fixedClock is a business clock that reads one instant.
@@ -26,81 +24,184 @@ func (c fixedClock) Now() time.Time { return c.t }
 // database clock instead of the supplied one is plain to see.
 var clockStart = time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
 
-// openPluginFactory builds a factory through the plugin's own NewFactory — the
-// production wiring, which runs the migrations — on a database of its own, so
-// a stamp floor moved by another test cannot reach it. The returned func
-// closes the factory and drops the database. It takes no *testing.T: the
-// conformance harness calls it from its subtests through ClockFactory.
-func openPluginFactory(opts ...spi.FactoryOption) (spi.StoreFactory, func(), error) {
-	base := os.Getenv("CYODA_TEST_DB_URL")
-	if base == "" {
-		return nil, nil, errors.New("CYODA_TEST_DB_URL is empty — TestMain must provision a database")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	name := "cyoda_clock_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
-	quoted := pgx.Identifier{name}.Sanitize()
-	admin, err := pgx.Connect(ctx, base)
+// openClockFactory builds a factory with business clock c on a database of
+// its own, so a stamp floor moved by another test cannot reach it. The pool
+// has the conformance pool's settings — health check off, for the pgxpool
+// close race newConformancePool describes — and the clock goes in through the
+// internal constructor Plugin.NewFactory uses; TestPlugin_NewFactoryPassesClock
+// covers that wiring. The returned func closes the factory and drops the
+// database. It takes no *testing.T: the conformance harness calls it from its
+// subtests through ClockFactory.
+func openClockFactory(c spi.Clock) (*postgres.StoreFactory, func() error, error) {
+	dsn, drop, err := postgres.CreateTestDatabase(os.Getenv("CYODA_TEST_DB_URL"), "cyoda_clock_")
 	if err != nil {
-		return nil, nil, fmt.Errorf("open admin connection: %w", err)
+		return nil, nil, err
 	}
-	defer func() { _ = admin.Close(context.Background()) }()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
-		return nil, nil, fmt.Errorf("create %s: %w", name, err)
+	fail := func(err error) (*postgres.StoreFactory, func() error, error) {
+		return nil, nil, errors.Join(err, drop())
 	}
-	drop := func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer dropCancel()
-		c, err := pgx.Connect(dropCtx, base)
-		if err != nil {
-			return
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return fail(errors.New("parse the clock database DSN"))
+	}
+	cfg.MaxConns = 10
+	cfg.MinConns = 0
+	cfg.MaxConnIdleTime = 30 * time.Second
+	cfg.HealthCheckPeriod = 24 * time.Hour
+	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	if err != nil {
+		return fail(fmt.Errorf("create the clock pool: %w", err))
+	}
+	if err := postgres.Migrate(pool); err != nil {
+		pool.Close()
+		return fail(fmt.Errorf("migrate the clock database: %w", err))
+	}
+	f := postgres.NewStoreFactoryWithClockForTest(pool, c)
+	f.InitTransactionManager(newTestUUIDGenerator())
+	closeF := func() error {
+		postgres.CloseSchedulerPoolsForTest(f)
+		pool.Close()
+		return drop()
+	}
+	return f, closeF, nil
+}
+
+// mustOpenClockFactory is openClockFactory for a test of its own.
+func mustOpenClockFactory(t *testing.T, c spi.Clock) *postgres.StoreFactory {
+	t.Helper()
+	f, closeF, err := openClockFactory(c)
+	if err != nil {
+		t.Fatalf("open clock factory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := closeF(); err != nil {
+			t.Errorf("close clock factory: %v", err)
 		}
-		defer func() { _ = c.Close(context.Background()) }()
-		_, _ = c.Exec(dropCtx, "DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)")
-	}
+	})
+	return f
+}
 
-	u, err := url.Parse(base)
+// mustOpenPluginFactory builds a factory through the plugin's own NewFactory —
+// the production wiring, which runs the migrations — with opts, on a database
+// of its own.
+func mustOpenPluginFactory(t *testing.T, opts ...spi.FactoryOption) spi.StoreFactory {
+	t.Helper()
+	dsn, drop, err := postgres.CreateTestDatabase(testDBURL(t), "cyoda_plugin_")
 	if err != nil {
-		drop()
-		// errors.Unwrap: *url.Error renders the URL, which may carry a password.
-		return nil, nil, fmt.Errorf("parse CYODA_TEST_DB_URL: %w", errors.Unwrap(err))
+		t.Fatalf("fresh database: %v", err)
 	}
-	u.Path = "/" + name
+	t.Cleanup(func() {
+		if err := drop(); err != nil {
+			t.Errorf("%v", err)
+		}
+	})
 	env := map[string]string{
-		"CYODA_POSTGRES_URL":             u.String(),
+		"CYODA_POSTGRES_URL":             dsn,
 		"CYODA_POSTGRES_MAX_CONNS":       "10",
 		"CYODA_POSTGRES_MIN_CONNS":       "0",
 		"CYODA_POSTGRES_SCHEDULER_CONNS": "2",
 	}
 	p, ok := spi.GetPlugin("postgres")
 	if !ok {
-		drop()
-		return nil, nil, errors.New("postgres plugin not registered")
+		t.Fatal("postgres plugin not registered")
 	}
-	f, err := p.NewFactory(ctx, func(k string) string { return env[k] }, opts...)
+	f, err := p.NewFactory(context.Background(), func(k string) string { return env[k] }, opts...)
 	if err != nil {
-		drop()
-		return nil, nil, fmt.Errorf("NewFactory: %w", err)
+		t.Fatalf("NewFactory: %v", err)
 	}
-	return f, func() { _ = f.Close(); drop() }, nil
+	t.Cleanup(func() {
+		if err := f.Close(); err != nil {
+			t.Errorf("close factory: %v", err)
+		}
+	})
+	return f
 }
 
-func mustOpenPluginFactory(t *testing.T, opts ...spi.FactoryOption) spi.StoreFactory {
-	t.Helper()
-	f, closeF, err := openPluginFactory(opts...)
-	if err != nil {
-		t.Fatalf("open plugin factory: %v", err)
+// Plugin.NewFactory hands spi.WithClock's clock to every store that takes
+// business time from it: the transaction manager (a commit's stamp), the
+// entity store (the stamp of a write with no transaction) and the async
+// search store (the reaping cutoff).
+func TestPlugin_NewFactoryPassesClock(t *testing.T) {
+	f := mustOpenPluginFactory(t, spi.WithClock(fixedClock{clockStart}))
+	ctx := ctxWithTenant(ctTenant)
+	near := func(what string, got time.Time) {
+		t.Helper()
+		if d := got.Sub(clockStart); d < -time.Second || d > time.Second {
+			t.Errorf("%s = %v, want within 1s of the clock's %v", what, got, clockStart)
+		}
 	}
-	t.Cleanup(closeF)
-	return f
+
+	tm, err := f.TransactionManager(ctx)
+	if err != nil {
+		t.Fatalf("TransactionManager: %v", err)
+	}
+	txID, txCtx, err := tm.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	txStore, err := f.EntityStore(txCtx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	if _, err := txStore.Save(txCtx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: uuid.NewString(), ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		t.Fatalf("Save in a transaction: %v", err)
+	}
+	if err := tm.Commit(ctx, txID); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	submit, err := tm.GetSubmitTime(ctx, txID)
+	if err != nil {
+		t.Fatalf("GetSubmitTime: %v", err)
+	}
+	near("the transaction manager's commit stamp", submit)
+
+	es, err := f.EntityStore(ctx)
+	if err != nil {
+		t.Fatalf("EntityStore: %v", err)
+	}
+	id := uuid.NewString()
+	if _, err := es.Save(ctx, &spi.Entity{
+		Meta: spi.EntityMeta{ID: id, ModelRef: ctModel}, Data: []byte(`{"n":1}`),
+	}); err != nil {
+		t.Fatalf("Save without a transaction: %v", err)
+	}
+	got, err := es.Get(ctx, id)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	near("the entity store's own commit stamp", got.Meta.CreationDate)
+
+	// A job finished at the clock's now is not expired by a one-hour TTL on
+	// that clock; on physical time it would be years old.
+	as, err := f.AsyncSearchStore(ctx)
+	if err != nil {
+		t.Fatalf("AsyncSearchStore: %v", err)
+	}
+	jobID := uuid.NewString()
+	if err := as.CreateJob(ctx, &spi.SearchJob{
+		ID: jobID, TenantID: ctTenant, Status: "RUNNING", ModelRef: ctModel,
+		PointInTime: clockStart, CreateTime: clockStart,
+	}); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+	if err := as.UpdateJobStatus(ctx, jobID, 1, "SUCCESSFUL", 0, "", clockStart, 0); err != nil {
+		t.Fatalf("UpdateJobStatus: %v", err)
+	}
+	if _, err := as.ReapExpired(context.Background(), time.Hour); err != nil {
+		t.Fatalf("ReapExpired: %v", err)
+	}
+	if _, err := as.GetJob(ctx, jobID); err != nil {
+		t.Errorf("the async search store reaped a job finished at the clock's now: %v", err)
+	}
 }
 
 // Placeholder dates fill a row until the commit stamp replaces them, and a
 // read inside the same transaction sees them. Under a business clock they are
 // that clock's time, not the database's.
 func TestClock_PlaceholderDatesInsideTx(t *testing.T) {
-	f := mustOpenPluginFactory(t, spi.WithClock(fixedClock{clockStart}))
+	f := mustOpenClockFactory(t, fixedClock{clockStart})
 	ctx := ctxWithTenant(ctTenant)
 	tm, err := f.TransactionManager(ctx)
 	if err != nil {
