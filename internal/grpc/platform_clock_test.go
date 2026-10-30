@@ -48,6 +48,19 @@ func TestPlatformClock_GRPC_Success(t *testing.T) {
 	}
 }
 
+// A payload with a member the request does not declare is refused before the
+// clock is read.
+func TestPlatformClock_GRPC_InvalidPayload(t *testing.T) {
+	svc := &CloudEventsServiceImpl{clockState: func() platformclock.State {
+		t.Fatal("clock read for an invalid payload")
+		return platformclock.State{}
+	}}
+	_, err := svc.EntitySearch(consistencyTimeCtx(), makeCE(PlatformClockGetRequest, map[string]any{"id": "pc-x", "extra": 1}))
+	if st, ok := status.FromError(err); !ok || st.Code() != codes.InvalidArgument {
+		t.Fatalf("err = %v, want InvalidArgument", err)
+	}
+}
+
 // With clock control off the answer is real time at rate 1, not controllable —
 // the same answer GET /platform/clock gives.
 func TestPlatformClock_GRPC_FeatureOff(t *testing.T) {

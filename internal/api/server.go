@@ -233,7 +233,7 @@ func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 }
 
 // ---------------------------------------------------------------------------
-// Model delegation (8 methods)
+// Model delegation (9 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) GetAvailableEntityModels(w http.ResponseWriter, r *http.Request) {
