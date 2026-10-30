@@ -827,3 +827,46 @@ func TestSetBack_ClientLeavingDuringStoreCallIsClientGone(t *testing.T) {
 		t.Fatal("published despite the departure")
 	}
 }
+
+// The service resolves advanceByMs against the clock it moves, so it is the
+// one that refuses a target past the year 9999: nothing changes and nothing
+// is published.
+func TestChange_AdvancePastYear9999_Refused(t *testing.T) {
+	f := newFixture(t)
+	near := time.Date(9999, 12, 31, 23, 59, 0, 0, time.UTC)
+	if _, err := f.svc.Change(context.Background(), Change{At: &near}); err != nil {
+		t.Fatalf("set near the end: %v", err)
+	}
+	published := len(f.pub.starts())
+	d := 2 * time.Minute
+	_, err := f.svc.Change(context.Background(), Change{AdvanceBy: &d})
+	if !errors.As(err, new(*OutOfRangeError)) {
+		t.Fatalf("err = %v, want *OutOfRangeError", err)
+	}
+	if got := len(f.pub.starts()); got != published {
+		t.Fatalf("published %d settings after the refusal, want %d", got, published)
+	}
+	if f.clock.Now().After(maxTime) {
+		t.Fatalf("clock = %v, beyond the year 9999", f.clock.Now())
+	}
+}
+
+// A rate alone re-anchors at now; once the clock has run past the year 9999
+// that start could not be published, so the change is refused.
+func TestChange_RateOnlyPastYear9999_Refused(t *testing.T) {
+	f := newFixture(t)
+	end := maxTime
+	if _, err := f.svc.Change(context.Background(), Change{At: &end}); err != nil {
+		t.Fatalf("set the end: %v", err)
+	}
+	f.src.advance(2 * time.Second)
+	published := len(f.pub.starts())
+	rate := int64(2_000_000)
+	_, err := f.svc.Change(context.Background(), Change{RatePPM: &rate})
+	if !errors.As(err, new(*OutOfRangeError)) {
+		t.Fatalf("err = %v, want *OutOfRangeError", err)
+	}
+	if got := len(f.pub.starts()); got != published {
+		t.Fatalf("published %d settings after the refusal, want %d", got, published)
+	}
+}

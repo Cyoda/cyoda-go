@@ -155,6 +155,18 @@ func TestPlatformClock_Post_400(t *testing.T) {
 	}
 }
 
+// An advance whose target lies past the year 9999 is refused, and the clock
+// stays where it was.
+func TestPlatformClock_Post_AdvancePastYear9999_400(t *testing.T) {
+	h := clockStack(t, true)
+	near := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"time":"9999-12-31T23:59:00Z"}`)).Now
+	assertProblemJSON(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"advanceByMs":120000}`),
+		http.StatusBadRequest, "BAD_REQUEST")
+	if c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodGet, "", "")); c.Now.Year() != 9999 || c.Now.Sub(near) > time.Minute {
+		t.Fatalf("clock after the refusal = %s, want just after %s", c.Now, near)
+	}
+}
+
 func TestPlatformClock_Post_RateThenGet(t *testing.T) {
 	h := clockStack(t, true)
 	c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2.5}`))

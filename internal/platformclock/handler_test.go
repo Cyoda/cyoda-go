@@ -65,7 +65,6 @@ func TestHandler_Post_400(t *testing.T) {
 		{"advance_zero", `{"advanceByMs":0}`},
 		{"advance_not_integer", `{"advanceByMs":1.5}`},
 		{"advance_overflow", `{"advanceByMs":9223372036854775807}`},
-		{"advanceByMs_past_9999", `{"advanceByMs":1000000000000}`},
 		{"rate_below", `{"rate":0.09}`},
 		{"rate_above", `{"rate":100.1}`},
 		{"rate_seven_digits", `{"rate":1.1234567}`},
@@ -82,9 +81,6 @@ func TestHandler_Post_400(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
-			if tc.name == "advanceByMs_past_9999" {
-				f.now = time.Date(9990, 1, 1, 0, 0, 0, 0, time.UTC)
-			}
 			h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
 			rec := httptest.NewRecorder()
 			h.ChangePlatformClock(rec, operatorReq(http.MethodPost, tc.body))
@@ -304,5 +300,17 @@ func TestHandler_Post_HugeExponentRate_IsOutOfRange(t *testing.T) {
 	_, body := problem(t, rec)
 	if detail, _ := body["detail"].(string); !strings.Contains(detail, "from 0.1 to 100") {
 		t.Fatalf("detail = %q, want the range", detail)
+	}
+}
+
+// The service's range refusal is a 400.
+func TestHandler_Post_OutOfRange_Is400(t *testing.T) {
+	f := newFake()
+	f.err = &platformclock.OutOfRangeError{}
+	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+	rec := httptest.NewRecorder()
+	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"advanceByMs":1000}`))
+	if code, _ := problem(t, rec); rec.Code != http.StatusBadRequest || code != "BAD_REQUEST" {
+		t.Fatalf("got %d %s: %s", rec.Code, code, rec.Body.String())
 	}
 }

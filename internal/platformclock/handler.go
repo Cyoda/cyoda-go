@@ -145,8 +145,9 @@ func ratePPM(lit string) (int64, *common.AppError) {
 	return r.Num().Int64(), nil
 }
 
-// parseChange validates the body against now and returns the change.
-func parseChange(req changeRequest, now time.Time) (Change, *common.AppError) {
+// parseChange validates the body and returns the change. The service
+// resolves an advance against the clock it moves and checks its range.
+func parseChange(req changeRequest) (Change, *common.AppError) {
 	var ch Change
 	if !req.Time.present && !req.AdvanceByMs.present && !req.Rate.present {
 		return ch, badRequest("the body names no change: give time, advanceByMs or rate")
@@ -167,9 +168,6 @@ func parseChange(req changeRequest, now time.Time) (Change, *common.AppError) {
 			return ch, badRequest("advanceByMs must be a positive number of milliseconds that fits a duration")
 		}
 		d := time.Duration(ms) * time.Millisecond
-		if now.UTC().After(maxTime.Add(-d)) {
-			return ch, badRequest("advanceByMs moves the clock beyond the year 9999")
-		}
 		ch.AdvanceBy = &d
 	}
 	if req.Rate.present {
@@ -198,7 +196,7 @@ func (h *Handler) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, common.InvalidBody(err))
 		return
 	}
-	ch, appErr := parseChange(req, h.svc.State().Now)
+	ch, appErr := parseChange(req)
 	if appErr != nil {
 		common.WriteError(w, r, appErr)
 		return
@@ -223,6 +221,9 @@ func classify(err error) *common.AppError {
 				stamp(before.Latest)))
 		e.Props = map[string]any{"latestRecordedTime": stamp(before.Latest)}
 		return e
+	}
+	if errors.As(err, new(*OutOfRangeError)) {
+		return badRequest(err.Error())
 	}
 	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeConsistencyTimeUnavailable,

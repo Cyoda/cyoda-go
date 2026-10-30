@@ -52,6 +52,15 @@ func (e *BeforeRecordedTimeError) Error() string {
 		stamp(e.Latest))
 }
 
+// OutOfRangeError refuses a change that would put the clock past the year
+// 9999: an advance whose target lies beyond it, or a rate alone once the clock
+// has run past it.
+type OutOfRangeError struct{}
+
+func (*OutOfRangeError) Error() string {
+	return "the change would put the clock beyond the year 9999"
+}
+
 // Service changes the test clock: it sets it (into the past only when the
 // store allows), moves it forward through every scheduled due time on the
 // way, and changes its rate. Every change is applied locally and published.
@@ -112,6 +121,11 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 		t := now.Add(*ch.AdvanceBy)
 		target = &t
 	}
+	// An advance is resolved here, against the clock it moves; a rate alone
+	// re-anchors at now. Either may not start the clock past the year 9999.
+	if (ch.AdvanceBy != nil && target.After(maxTime)) || (target == nil && now.After(maxTime)) {
+		return s.State(), &OutOfRangeError{}
+	}
 
 	var err error
 	switch {
@@ -166,6 +180,7 @@ func (s *Service) commit(st Setting) {
 // sets atomically). A step failing to read the store leaves the clock at
 // the last step, which was published whole.
 func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) error {
+	att, exe := spi.AttributionFor(reqCtx)
 	// The store calls span tenants, so they carry no user context. A request
 	// context has no deadline, and its cancellation still stops the move.
 	ctx := spi.WithUserContext(reqCtx, nil)
@@ -182,7 +197,8 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) er
 			// Where the move stopped is this line's event. The cause rides
 			// along only for a departed client, whose error the door logs at
 			// DEBUG; any other failure reaches the door's ERROR line.
-			attrs := []any{"pkg", "platformclock", "target", stamp(target), "now", stamp(s.c.Now())}
+			attrs := []any{"pkg", "platformclock", "target", stamp(target), "now", stamp(s.c.Now()),
+				"attributedId", att.ID, "attributedKind", string(att.Kind), "executorId", exe.ID, "executorKind", string(exe.Kind)}
 			if errors.Is(err, common.ErrClientGone) {
 				attrs = append(attrs, "cause", err.Error())
 			}
