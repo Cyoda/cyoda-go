@@ -22,13 +22,13 @@ const progressEvery = 10 * time.Second
 // restart can therefore fail startup, which fails closed.
 const startupTolerance = time.Second
 
-// Change is one request to change the test clock. At and AdvanceBy are
-// exclusive; either may be combined with RatePPM. The service does not check
-// ranges: the API layer validates them.
+// Change is one request to change the test clock. At and AdvanceByMs are
+// exclusive; either may be combined with RatePPM. The API layer validates At
+// and RatePPM; the service resolves an advance and checks its target.
 type Change struct {
-	At        *time.Time
-	AdvanceBy *time.Duration
-	RatePPM   *int64
+	At          *time.Time
+	AdvanceByMs *int64
+	RatePPM     *int64
 }
 
 // State is the clock as a caller sees it.
@@ -115,13 +115,14 @@ func (s *Service) Change(ctx context.Context, ch Change) (State, error) {
 	case ch.At != nil:
 		t := *ch.At
 		target = &t
-	case ch.AdvanceBy != nil:
-		t := now.Add(*ch.AdvanceBy)
+	case ch.AdvanceByMs != nil:
+		// Checked in milliseconds before the target is formed, so no advance
+		// can overflow on the way to the year-9000 refusal.
+		if *ch.AdvanceByMs > (maxSetTime.UnixMicro()-now.UnixMicro())/1000 {
+			return s.State(), &OutOfRangeError{}
+		}
+		t := time.UnixMicro(now.UnixMicro() + *ch.AdvanceByMs*1000)
 		target = &t
-	}
-	// An advance is resolved here, against the clock it moves.
-	if ch.AdvanceBy != nil && target.After(maxSetTime) {
-		return s.State(), &OutOfRangeError{}
 	}
 
 	var err error

@@ -102,9 +102,6 @@ type changeRequest struct {
 	Rate        member[rateLiteral] `json:"rate"`
 }
 
-// maxAdvanceMs is the largest advance whose duration fits time.Duration.
-const maxAdvanceMs = int64(1<<63-1) / int64(time.Millisecond)
-
 func badRequest(msg string) *common.AppError {
 	return common.Operational(http.StatusBadRequest, common.ErrCodeBadRequest, msg)
 }
@@ -141,18 +138,17 @@ func parseChange(req changeRequest) (Change, *common.AppError) {
 	}
 	if req.Time.present {
 		t := req.Time.v.UTC()
-		if t.Before(minTime) || t.After(maxSetTime) {
+		if t.Before(minTime) || t.UnixMicro() > maxSetTime.UnixMicro() {
 			return ch, badRequest("time must lie in the years 1970 to 9000")
 		}
 		ch.At = &t
 	}
 	if req.AdvanceByMs.present {
 		ms := req.AdvanceByMs.v
-		if ms < 1 || ms > maxAdvanceMs {
-			return ch, badRequest("advanceByMs must be a positive number of milliseconds that fits a duration")
+		if ms < 1 {
+			return ch, badRequest("advanceByMs must be a positive number of milliseconds")
 		}
-		d := time.Duration(ms) * time.Millisecond
-		ch.AdvanceBy = &d
+		ch.AdvanceByMs = &ms
 	}
 	if req.Rate.present {
 		ppm, appErr := ratePPM(string(req.Rate.v))

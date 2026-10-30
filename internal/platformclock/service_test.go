@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"testing"
@@ -190,7 +191,7 @@ func TestMove_NoTasks_SetsTargetImmediately(t *testing.T) {
 
 func TestMove_AdvanceBy_TargetsNowPlusDuration(t *testing.T) {
 	f := newFixture(t)
-	_, err := f.svc.Change(context.Background(), Change{AdvanceBy: ptr(2 * time.Hour)})
+	_, err := f.svc.Change(context.Background(), Change{AdvanceByMs: ptr(int64(2 * time.Hour / time.Millisecond))})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
@@ -838,8 +839,8 @@ func TestChange_AdvancePastYear9000_Refused(t *testing.T) {
 		t.Fatalf("set near the end: %v", err)
 	}
 	published := len(f.pub.starts())
-	d := 2 * time.Minute
-	_, err := f.svc.Change(context.Background(), Change{AdvanceBy: &d})
+	ms := int64(2 * time.Minute / time.Millisecond)
+	_, err := f.svc.Change(context.Background(), Change{AdvanceByMs: &ms})
 	if !errors.As(err, new(*OutOfRangeError)) {
 		t.Fatalf("err = %v, want *OutOfRangeError", err)
 	}
@@ -867,5 +868,33 @@ func TestChange_RateOnlyPastSetLimit_Applies(t *testing.T) {
 	}
 	if got := len(f.pub.starts()); got != published+1 {
 		t.Fatalf("published %d settings, want %d", got, published+1)
+	}
+}
+
+// The largest advance a body can carry is refused as past the year 9000; the
+// check runs before any arithmetic that could overflow.
+func TestChange_HugeAdvance_Refused(t *testing.T) {
+	f := newFixture(t)
+	published := len(f.pub.starts())
+	ms := int64(math.MaxInt64)
+	_, err := f.svc.Change(context.Background(), Change{AdvanceByMs: &ms})
+	if !errors.As(err, new(*OutOfRangeError)) {
+		t.Fatalf("err = %v, want *OutOfRangeError", err)
+	}
+	if got := len(f.pub.starts()); got != published {
+		t.Fatalf("published %d settings after the refusal, want %d", got, published)
+	}
+}
+
+// An advance longer than a Go duration (about 292 years) is accepted when its
+// target lies before the end of the year 9000.
+func TestChange_AdvanceLongerThanDuration_Applies(t *testing.T) {
+	f := newFixture(t)
+	ms := int64(10_000_000_000_000) // about 317 years
+	if _, err := f.svc.Change(context.Background(), Change{AdvanceByMs: &ms}); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	if years := f.clock.Now().Year() - f.t0.Year(); years < 316 || years > 318 {
+		t.Fatalf("clock moved %d years, to %v from %v; want about 317", years, f.clock.Now(), f.t0)
 	}
 }

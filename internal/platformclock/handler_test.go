@@ -64,7 +64,6 @@ func TestHandler_Post_400(t *testing.T) {
 		{"both_time_and_advance", `{"time":"2031-01-01T00:00:00Z","advanceByMs":5}`},
 		{"advance_zero", `{"advanceByMs":0}`},
 		{"advance_not_integer", `{"advanceByMs":1.5}`},
-		{"advance_overflow", `{"advanceByMs":9223372036854775807}`},
 		{"rate_below", `{"rate":0.09}`},
 		{"rate_above", `{"rate":100.1}`},
 		{"rate_seven_digits", `{"rate":1.1234567}`},
@@ -108,7 +107,7 @@ func TestHandler_Post_Accepted(t *testing.T) {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
 		c := f.calls[0]
-		if c.AdvanceBy == nil || *c.AdvanceBy != 5*time.Millisecond || c.RatePPM == nil || *c.RatePPM != 1_234_567 {
+		if c.AdvanceByMs == nil || *c.AdvanceByMs != 5 || c.RatePPM == nil || *c.RatePPM != 1_234_567 {
 			t.Fatalf("change %+v", c)
 		}
 	})
@@ -125,15 +124,24 @@ func TestHandler_Post_Accepted(t *testing.T) {
 			t.Fatalf("change %+v", c)
 		}
 	})
+	t.Run("advance longer than a Go duration", func(t *testing.T) {
+		f := newFake()
+		h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+		rec := httptest.NewRecorder()
+		h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"advanceByMs":10000000000000}`))
+		if rec.Code != 200 {
+			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+		}
+	})
 	t.Run("time at the limit", func(t *testing.T) {
 		f := newFake()
 		h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
 		rec := httptest.NewRecorder()
-		h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"time":"9000-12-31T23:59:59.999999Z"}`))
+		h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"time":"9000-12-31T23:59:59.9999995Z"}`))
 		if rec.Code != 200 {
 			t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
 		}
-		if c := f.calls[0]; c.At == nil || !c.At.Equal(time.Date(9000, 12, 31, 23, 59, 59, 999999000, time.UTC)) {
+		if c := f.calls[0]; c.At == nil || !c.At.Equal(time.Date(9000, 12, 31, 23, 59, 59, 999999500, time.UTC)) {
 			t.Fatalf("change %+v", c)
 		}
 	})

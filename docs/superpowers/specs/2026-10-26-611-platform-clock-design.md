@@ -351,7 +351,7 @@ Errors, in the order they are checked:
 | 401 | — | missing or invalid credentials | ✓ | ✓ |
 | 403 | existing operator refusal | not a platform operator, or on behalf of a user | — | ✓ |
 | 403 | `CLOCK_CONTROL_DISABLED` | the feature is off on this node | — | ✓ |
-| 400 | existing strict-body / validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0`, overflowing or moving the clock past 9000, `rate` outside 0.1–100, `time` not RFC 3339 or outside 1970–9000 | — | ✓ |
+| 400 | existing strict-body / validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0` or moving the clock past 9000, `rate` outside 0.1–100, `time` not RFC 3339 or outside 1970–9000 | — | ✓ |
 | 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest recorded time; the detail names it | — | ✓ |
 | 503 | existing store-unavailable | the store did not answer the consistency-time check or the move's task query | — | ✓ |
 | 500 | generic + ticket | anything else | ✓ | ✓ |
