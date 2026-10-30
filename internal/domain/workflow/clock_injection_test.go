@@ -102,3 +102,12 @@ func TestArm_ScheduledTimeFromClock(t *testing.T) {
 		t.Errorf("ArmedAt = %d, want %d", task.ArmedAt, want)
 	}
 }
+
+func TestWithClock_NilPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("WithClock(nil) did not panic")
+		}
+	}()
+	WithClock(nil)(&Engine{})
+}

@@ -208,12 +208,13 @@ func WithMaxStateVisits(n int) EngineOption {
 // WithClock overrides the engine's clock, used for reconcileScheduledTasks'
 // scheduledTime/armedAt computation, FireScheduledTransition's deadline
 // decisions and audit-event timestamps. Defaults to platformclock.Real();
-// tests inject a deterministic clock instead.
+// tests inject a deterministic clock instead. A nil clock panics.
 func WithClock(clock spi.Clock) EngineOption {
+	if clock == nil {
+		panic("workflow.WithClock: nil clock")
+	}
 	return func(e *Engine) {
-		if clock != nil {
-			e.clock = clock
-		}
+		e.clock = clock
 	}
 }
 
