@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +15,8 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -51,8 +52,15 @@ type env struct {
 	gate   *txgate.Registry
 	fence  *fence.Fence
 	signer *token.Signer
-	owner  *Coordinator
+	// clock is the owner's platform clock.
+	clock *fakeclock.Clock
+	owner *Coordinator
 }
+
+// envStart is the platform time an env's clock starts at: not the real time,
+// and finer than a microsecond, so a test can tell the owner's clock from any
+// other and see the time as the wire carries it.
+var envStart = time.Date(2015, 3, 1, 9, 30, 0, 123_456_789, time.UTC)
 
 func newEnv(t *testing.T, cfg Config) *env {
 	t.Helper()
@@ -68,7 +76,8 @@ func newEnv(t *testing.T, cfg Config) *env {
 	if cfg.SelfNodeID == "" {
 		cfg.SelfNodeID = "node-owner"
 	}
-	return &env{reg: reg, gate: gate, fence: f, signer: signer, owner: New(local, reg, nil, f, common.NewTestUUIDGenerator(), cfg)}
+	clk := fakeclock.New(envStart)
+	return &env{reg: reg, gate: gate, fence: f, signer: signer, clock: clk, owner: New(local, reg, nil, f, common.NewTestUUIDGenerator(), clk, cfg)}
 }
 
 // cnode records what one scripted cnode was sent.

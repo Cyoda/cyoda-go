@@ -68,13 +68,20 @@ type Coordinator struct {
 	peers PeerRouter
 	fence *fence.Fence
 	uuids spi.UUIDGenerator
+	// clock is the platform clock: the owner reads the platform time of each
+	// callout from it, once.
+	clock spi.Clock
 	cfg   Config
 }
 
 // New builds the owner's loop. peers is nil on a single pnode — pass an untyped
-// nil, not a nil *dispatch.PeerRouter, which would be a non-nil interface.
-func New(local *internalgrpc.ProcessorDispatcher, members *internalgrpc.MemberRegistry, peers PeerRouter, f *fence.Fence, uuids spi.UUIDGenerator, cfg Config) *Coordinator {
-	return &Coordinator{local: local, members: members, peers: peers, fence: f, uuids: uuids, cfg: cfg}
+// nil, not a nil *dispatch.PeerRouter, which would be a non-nil interface. It
+// panics on a nil clock.
+func New(local *internalgrpc.ProcessorDispatcher, members *internalgrpc.MemberRegistry, peers PeerRouter, f *fence.Fence, uuids spi.UUIDGenerator, clock spi.Clock, cfg Config) *Coordinator {
+	if clock == nil {
+		panic("callout.New: nil clock")
+	}
+	return &Coordinator{local: local, members: members, peers: peers, fence: f, uuids: uuids, clock: clock, cfg: cfg}
 }
 
 // triesFor is the number of tries retryPolicy selects.
@@ -140,6 +147,11 @@ func (c *Coordinator) run(ctx context.Context, call internalgrpc.Callout) (inter
 	// local tries and every hand-over carry this one value, and a peer
 	// attaches it as received.
 	call.Identity = internalgrpc.IdentityFrom(ctx)
+	// The platform time of the callout, taken once here when the owner takes
+	// it up: every try, here or on a peer, sends this one value, whatever the
+	// clock reads by then. It is cut to the microsecond a hand-over carries,
+	// so a local try and a peer's try send the same instant.
+	call.At = time.UnixMicro(c.clock.Now().UnixMicro()).UTC()
 	number := &majorCounter{fence: c.fence, calloutID: call.RequestID}
 	call.Number = number
 

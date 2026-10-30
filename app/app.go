@@ -513,7 +513,7 @@ func New(cfg Config) *App {
 			}
 			peers = peerRouter
 		}
-		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), callout.Config{
+		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), clk, callout.Config{
 			SelfNodeID:        a.selfNodeID,
 			FixedNumRetries:   cfg.Callout.FixedNumRetries,
 			Patience:          cfg.Cluster.DispatchWaitTimeout,

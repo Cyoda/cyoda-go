@@ -28,6 +28,7 @@ type handOver struct {
 	major     uint32
 	wait      time.Duration // the deadline on ctx, from the moment of the call
 	identity  internalgrpc.CalloutIdentity
+	at        time.Time
 }
 
 // scriptedRouter stands for the other pnodes: which exist, and what each
@@ -79,7 +80,7 @@ func (r *scriptedRouter) HandOver(ctx context.Context, peer contract.NodeInfo, c
 	next := func() func(context.Context) dispatch.HandOverAnswer {
 		r.mu.Lock()
 		defer r.mu.Unlock()
-		r.calls = append(r.calls, handOver{peer: peer.NodeID, requestID: call.RequestID, triesLeft: triesLeft, major: major, wait: time.Until(deadline), identity: call.Identity})
+		r.calls = append(r.calls, handOver{peer: peer.NodeID, requestID: call.RequestID, triesLeft: triesLeft, major: major, wait: time.Until(deadline), identity: call.Identity, at: call.At})
 		queue := r.answers[peer.NodeID]
 		if len(queue) == 0 {
 			return nil
@@ -196,7 +197,7 @@ func peerNotConnected() func(context.Context) dispatch.HandOverAnswer {
 func newClusterEnv(t *testing.T, cfg Config, router PeerRouter) *env {
 	t.Helper()
 	e := newEnv(t, cfg)
-	e.owner = New(e.owner.local, e.reg, router, e.fence, common.NewTestUUIDGenerator(), e.owner.cfg)
+	e.owner = New(e.owner.local, e.reg, router, e.fence, common.NewTestUUIDGenerator(), e.clock, e.owner.cfg)
 	return e
 }
 
@@ -244,6 +245,42 @@ func TestOwner_LocalCnodeAnswers_NoHandOver(t *testing.T) {
 	}
 	if calls := router.made(); len(calls) != 0 {
 		t.Errorf("hand-overs = %+v, want none: the owner runs the local procedure first", calls)
+	}
+}
+
+// movesTheClock is a peer answer that moves the owner's platform clock on by a
+// day before it answers, as a clock move that publishes a step does while the
+// callout is in flight.
+func movesTheClock(e *env, answer func(context.Context) dispatch.HandOverAnswer) func(context.Context) dispatch.HandOverAnswer {
+	return func(ctx context.Context) dispatch.HandOverAnswer {
+		e.clock.Advance(24 * time.Hour)
+		return answer(ctx)
+	}
+}
+
+// The platform time of a callout is taken once, by the owner, when it takes the
+// callout up, to the microsecond the wire carries: every hand-over carries that
+// one time, although the owner's clock moves on between them.
+func TestOwner_PlatformTimeIsTakenOnceAndEveryHandOverCarriesIt(t *testing.T) {
+	router := newScriptedRouter("p-1", "p-2")
+	e := newClusterEnv(t, Config{FixedNumRetries: 3, HandoverAllowance: time.Second}, router)
+	router.script("p-1", movesTheClock(e, losesTheAnswer(1)))
+	router.script("p-2", movesTheClock(e, peerAnswers("cnode-on-p-2")))
+
+	by, err := e.dispatchFunction(userCtx(tenantA), "x", "")
+
+	if err != nil || by != "cnode-on-p-2" {
+		t.Fatalf("answered by %q, err %v; want p-2's cnode", by, err)
+	}
+	calls := router.made()
+	if len(calls) != 2 {
+		t.Fatalf("hand-overs = %+v, want two", calls)
+	}
+	want := envStart.Truncate(time.Microsecond)
+	for _, c := range calls {
+		if !c.at.Equal(want) {
+			t.Errorf("hand-over to %s carries platform time %v, want %v: the owner's time when it took the callout up", c.peer, c.at, want)
+		}
 	}
 }
 

@@ -267,6 +267,18 @@ func TestHandler_TheCalloutCarriesTheIdentityAsReceived(t *testing.T) {
 	}
 }
 
+// The callout the receiving pnode runs carries the platform time the owner took
+// it up at, exactly as received.
+func TestHandler_TheCalloutCarriesThePlatformTimeAsReceived(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
+
+	if got := runner.gotCall.At; !got.Equal(ownerAt) {
+		t.Errorf("callout platform time = %v, want the owner's %v", got, ownerAt)
+	}
+}
+
 // A hand-over that does not name both principals of the callout's identity is
 // refused before any cnode is tried: the receiving pnode never substitutes a
 // principal for one the owner did not send.

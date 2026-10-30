@@ -42,8 +42,13 @@ func ownerCallout(t *testing.T, kind string) internalgrpc.Callout {
 	call.OwnerNodeID = "owner-node"
 	call.Outer = []token.Pair{{Callout: "outer-rid", Major: 3, Minor: 1}}
 	call.Identity = ownerIdentity()
+	call.At = ownerAt
 	return call
 }
+
+// ownerAt is the platform time the owner took ownerCallout up at: not the real
+// time, so a test can tell it from any clock of the receiving pnode.
+var ownerAt = time.Date(2015, 3, 1, 9, 30, 0, 123_456_000, time.UTC)
 
 // ownerIdentity is the identity the owner computed for ownerCallout: work for
 // alice, executed by the compute client C9.
@@ -82,6 +87,9 @@ func TestNewHandOverRequest(t *testing.T) {
 				len(req.Roles) != 1 || req.Roles[0] != "ROLE_M2M" {
 				t.Errorf("identity fields wrong: %+v", req)
 			}
+			if req.AtUnixMicro != ownerAt.UnixMicro() {
+				t.Errorf("AtUnixMicro = %d, want the owner's platform time %d", req.AtUnixMicro, ownerAt.UnixMicro())
+			}
 			switch kind {
 			case "processor":
 				if req.Processor == nil || req.Processor.Name != "myProcessor" {
@@ -116,6 +124,7 @@ func TestNewHandOverRequest_RefusesWhatCannotBeHandedOver(t *testing.T) {
 		{"no fencing number", func(*internalgrpc.Callout) {}, 1, 0},
 		{"no source", func(c *internalgrpc.Callout) { c.Source = internalgrpc.CalloutSource{} }, 1, 1},
 		{"no identity", func(c *internalgrpc.Callout) { c.Identity = internalgrpc.CalloutIdentity{} }, 1, 1},
+		{"no platform time", func(c *internalgrpc.Callout) { c.At = time.Time{} }, 1, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -158,6 +167,8 @@ func TestRequestValidate(t *testing.T) {
 		{"no attributed kind", func(r *DispatchCalloutRequest) { r.AttributedKind = "" }},
 		{"no executor id", func(r *DispatchCalloutRequest) { r.ExecutorID = "" }},
 		{"no executor kind", func(r *DispatchCalloutRequest) { r.ExecutorKind = "" }},
+		{"no platform time", func(r *DispatchCalloutRequest) { r.AtUnixMicro = 0 }},
+		{"platform time before 1970", func(r *DispatchCalloutRequest) { r.AtUnixMicro = -1 }},
 		{"processor missing", func(r *DispatchCalloutRequest) { r.Processor = nil }},
 		{"no entity id", func(r *DispatchCalloutRequest) { r.EntityMeta.ID = "" }},
 		{"no entity", func(r *DispatchCalloutRequest) { r.Entity = nil }},

@@ -8,11 +8,12 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 func init() {
 	internalgrpc.NewOwnerForTest = func(local *internalgrpc.ProcessorDispatcher, members *internalgrpc.MemberRegistry, f *fence.Fence, cfg internalgrpc.OwnerTestConfig) contract.ExternalProcessingService {
-		return callout.New(local, members, nil, f, common.NewDefaultUUIDGenerator(), callout.Config{
+		return callout.New(local, members, nil, f, common.NewDefaultUUIDGenerator(), platformclock.Real(), callout.Config{
 			SelfNodeID:        "node-test",
 			FixedNumRetries:   cfg.FixedNumRetries,
 			Patience:          cfg.Patience,
