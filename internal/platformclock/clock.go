@@ -108,6 +108,12 @@ func (c *Test) Apply(s Setting) bool {
 // MaxRatePPM]; callers validate, Set does not. It bumps the version, stamps
 // Writer with this node's id and returns the new setting.
 func (c *Test) Set(at *time.Time, ratePPM *int64) Setting {
+	_, next := c.set(at, ratePPM)
+	return next.setting
+}
+
+// set is Set returning the state it replaced and the state it installed.
+func (c *Test) set(at *time.Time, ratePPM *int64) (prev, next *state) {
 	for {
 		cur := c.st.Load()
 		now := c.src()
@@ -130,7 +136,13 @@ func (c *Test) Set(at *time.Time, ratePPM *int64) Setting {
 			anchor: now,
 		}
 		if c.st.CompareAndSwap(cur, next) {
-			return next.setting
+			return cur, next
 		}
 	}
+}
+
+// restore puts prev back if installed is still the current state, undoing a
+// local change that was never published. A setting adopted since is kept.
+func (c *Test) restore(installed, prev *state) {
+	c.st.CompareAndSwap(installed, prev)
 }
