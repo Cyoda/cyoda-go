@@ -530,7 +530,7 @@ ways and no others.
 3. **Postgres stamp functions** are re-created by migration 000017 with an
    extra argument, NULL in production. They take the same branch as today.
    A re-created function gets the default `EXECUTE` for `PUBLIC` again, so a
-   deployment that revoked it re-applies its grant.
+   deployment that revoked it re-applies its revoke.
 4. **Postgres inserts** write the placeholder dates explicitly. The values are
    the same as the column defaults give today.
 5. **Search-job liveness.** On all backends, a new job's liveness baseline is

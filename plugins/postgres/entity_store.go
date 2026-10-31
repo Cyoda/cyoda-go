@@ -240,8 +240,10 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// replace; it is kept here because it must be non-null before the stamp
 	// lands, and because it ties every row a transaction writes to one
 	// valid_time in the interim exactly as it does afterwards. With a business
-	// clock it is that clock's reading (placeholderAtArg), because a read
-	// inside the transaction sees it and must see platform time.
+	// clock it is that clock's reading at each save (placeholderAtArg), because
+	// a read inside the transaction sees it and must see platform time; the
+	// rows of one transaction then carry different provisional dates until the
+	// commit stamp, which finds them by transaction id, equalises them.
 	//
 	// clock_timestamp() is a deliberately different value: wall_clock_time is
 	// the physical moment of insertion by design, and no stamp ever rewrites it.
