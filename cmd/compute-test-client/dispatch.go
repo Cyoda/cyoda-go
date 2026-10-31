@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -345,8 +346,31 @@ func (d *dispatcher) handleCallout(ctx context.Context, msg *cepb.CloudEvent, pa
 	return reply, false, err
 }
 
+type requestTimeKey struct{}
+
+// withRequestTime carries the request's CloudEvents time attribute (platform
+// time) to the catalog function that serves it.
+func withRequestTime(ctx context.Context, msg *cepb.CloudEvent) context.Context {
+	if a, ok := msg.GetAttributes()["time"]; ok && a.GetCeTimestamp() != nil {
+		return context.WithValue(ctx, requestTimeKey{}, a.GetCeTimestamp().AsTime())
+	}
+	return ctx
+}
+
+// platformNow is the time of the request being served: platform time as the
+// server stamped it. A request without it is an error, never the client's own
+// clock standing in.
+func platformNow(ctx context.Context) (time.Time, error) {
+	t, ok := ctx.Value(requestTimeKey{}).(time.Time)
+	if !ok {
+		return time.Time{}, errors.New("request carries no time attribute")
+	}
+	return t, nil
+}
+
 // answer serves one request from the catalog.
 func (d *dispatcher) answer(ctx context.Context, msg *cepb.CloudEvent, payload json.RawMessage, pass string) (*cepb.CloudEvent, error) {
+	ctx = withRequestTime(ctx, msg)
 	switch msg.Type {
 	case ceTypeCriteriaRequest:
 		return d.handleCriteriaRequest(ctx, payload, pass)

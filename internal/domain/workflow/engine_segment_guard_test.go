@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"path/filepath"
 	"testing"
 
@@ -503,7 +504,7 @@ func newSegmentGuardHarness(t *testing.T, backend string, extraOpts ...EngineOpt
 	h.txMgr = &countingTxMgr{TransactionManager: tm}
 	h.factory = &hookedFactory{StoreFactory: inner, h: h}
 	opts := append([]EngineOption{WithExternalProcessing(&segmentGuardProc{h: h})}, extraOpts...)
-	h.engine = NewEngine(h.factory, common.NewTestUUIDGenerator(), h.txMgr, opts...)
+	h.engine = NewEngine(h.factory, common.NewTestUUIDGenerator(), h.txMgr, platformclock.Real(), opts...)
 
 	h.wf = spi.WorkflowDefinition{
 		Version: "1.1", Name: "SegmentGuardWF", InitialState: "A", Active: true,

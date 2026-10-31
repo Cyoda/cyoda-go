@@ -29,6 +29,12 @@ type StoreFactory struct {
 	// for their non-transactional writes, and InitTransactionManager hands
 	// the same cache to the manager it builds.
 	keys *tenantKeys
+	// clock is the business clock given by spi.WithClock: the time of commit
+	// stamps, consistency times, placeholder dates and the retention and
+	// reaping cutoffs. nil — production — leaves those on the database clock
+	// (and the cutoffs on the process clock), as they were before the option
+	// existed. Liveness never reads it.
+	clock spi.Clock
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema
@@ -231,6 +237,7 @@ func (f *StoreFactory) EntityStore(ctx context.Context) (spi.EntityStore, error)
 		pool:           f.pool,
 		acquireTimeout: f.cfg.AcquireTimeout,
 		keys:           f.keys,
+		clock:          f.clock,
 	}, nil
 }
 
@@ -289,6 +296,7 @@ func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore
 		pool:                   f.pool,
 		acquireTimeout:         f.cfg.AcquireTimeout,
 		searchStatementTimeout: f.cfg.SearchStatementTimeout,
+		clock:                  f.clock,
 	}, nil
 }
 
@@ -332,8 +340,12 @@ func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionM
 }
 
 // newStoreFactory is the unexported constructor called by Plugin.NewFactory.
-func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
-	return newStoreFactoryWithConfig(pool, cfg)
+// clock is the business clock from spi.WithClock, nil when none was given; set
+// before InitTransactionManager, which hands it to the manager.
+func newStoreFactory(pool *pgxpool.Pool, cfg config, clock spi.Clock) *StoreFactory {
+	f := newStoreFactoryWithConfig(pool, cfg)
+	f.clock = clock
+	return f
 }
 
 // InitTransactionManager installs a TransactionManager on the factory using
@@ -347,7 +359,7 @@ func newStoreFactory(pool *pgxpool.Pool, cfg config) *StoreFactory {
 func (f *StoreFactory) InitTransactionManager(uuids spi.UUIDGenerator) {
 	tm := NewTransactionManager(f.pool, uuids,
 		WithAcquireTimeout(f.cfg.AcquireTimeout), withStatementTimeout(f.cfg.StatementTimeout),
-		withTenantKeys(f.keys))
+		withTenantKeys(f.keys), withBusinessClock(f.clock))
 	f.setTransactionManager(tm)
 }
 

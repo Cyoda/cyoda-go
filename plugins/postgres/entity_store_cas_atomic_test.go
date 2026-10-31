@@ -131,7 +131,8 @@ func TestNonTxCompareAndSave_SetsTenantGUCForRLS(t *testing.T) {
 
 	probeURL, err := url.Parse(testDBURL(t))
 	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+		// errors.Unwrap: *url.Error renders the URL, which carries the password.
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
 	}
 	probeURL.User = url.UserPassword(probeRole, "probe")
 	probePool, err := pgxpool.New(context.Background(), probeURL.String())

@@ -104,7 +104,7 @@ func (s *Signer) Verify(tok string) (*Claims, error) {
 		}
 	}
 
-	if time.Now().Unix() > claims.ExpiresAt {
+	if time.Now().Unix() > claims.ExpiresAt { // realtime: auth key and token validity
 		return nil, ErrTokenExpired
 	}
 

@@ -34,6 +34,7 @@ func makeProcessorReq() dispatch.DispatchCalloutRequest {
 		AttributedKind: spi.PrincipalUser,
 		ExecutorID:     "C9",
 		ExecutorKind:   spi.PrincipalService,
+		AtUnixMicro:    atMicro(1_425_202_200_123_456),
 	}
 }
 
@@ -52,6 +53,7 @@ func makeCriteriaReq() dispatch.DispatchCalloutRequest {
 		AttributedKind: spi.PrincipalUser,
 		ExecutorID:     "C9",
 		ExecutorKind:   spi.PrincipalService,
+		AtUnixMicro:    atMicro(1_425_202_200_123_456),
 	}
 }
 
@@ -364,3 +366,5 @@ func TestHTTPForwarder_TruncatedAnswerRefused(t *testing.T) {
 		t.Errorf("refused for the wrong reason: %v", err)
 	}
 }
+
+func atMicro(v int64) *int64 { return &v }

@@ -34,7 +34,7 @@ func RunAuditNUL_HandOverAnswerRefused(t *testing.T, fixture MultiNodeFixture) {
 	// Wait until the owner can route to the peer (see mnWarmUp).
 	warmModel := "mn-warm-" + warmTag
 	cbRouteSetupModel(t, owner, warmModel, cbRouteSampleNoWriteback, mnWorkflow(warmModel+"-wf", mnProc("noop", "SYNC", warmTag, "", nil)))
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // realtime: test poll deadline
 	for {
 		status, body, err := owner.CreateEntityRaw(t, warmModel, 1, mnSample)
 		if err != nil {
@@ -43,7 +43,7 @@ func RunAuditNUL_HandOverAnswerRefused(t *testing.T, fixture MultiNodeFixture) {
 		if status == http.StatusOK {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("30s after it attached to pnode 1 the owner still cannot route to tag %s: %d %s", warmTag, status, body)
 		}
 		time.Sleep(200 * time.Millisecond)

@@ -245,6 +245,14 @@ A workflow transition with a `schedule` fires automatically after a delay. The d
 | `CYODA_SCHEDULER_RETRY_DELAY_MAX` | `15m` | The retry delay never grows past this. |
 | `CYODA_SCHEDULER_SHUTDOWN_DRAIN` | `20s` | On shutdown, how long a node waits for its runs before it cancels them. |
 
+## Platform clock (test feature)
+
+A test can move business time — entity and audit dates, transition times, scheduled due times — through `POST /platform/clock`. Off by default; never for production. The clock is instance-wide and affects every tenant. See `cyoda help config clock`.
+
+| Env var | Default | Effect |
+|---------|---------|--------|
+| `CYODA_CLOCK_CONTROL_ENABLED` | `false` | Build a controllable platform clock and accept `POST /platform/clock`. Use the same value on every node. |
+
 ## Compute-node callouts
 
 A processor, criterion or function request to a compute member is a *callout*.

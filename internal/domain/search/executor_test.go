@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -161,7 +162,7 @@ func TestExecutor_ResultOrder_DefaultAndExplicit(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(base, uuids, searchStore, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, uuids, searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
@@ -246,7 +247,7 @@ func TestExecutor_StreamsIncrementally(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(factory, uuids, observer, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, observer, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(200 * time.Millisecond)
 
@@ -334,7 +335,7 @@ func TestExecutor_CancelMidFlight(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 
@@ -412,7 +413,7 @@ func TestExecutor_HeartbeatRecordedWhileQueuedAndScanning(t *testing.T) {
 	<-started
 
 	const heartbeatInterval = 20 * time.Millisecond
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(heartbeatInterval)
 
@@ -480,7 +481,7 @@ func TestExecutor_HeartbeatFencingAborts(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	pool := newTinyPool(t)
 	const heartbeatInterval = 15 * time.Millisecond
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(heartbeatInterval)
 
@@ -571,7 +572,7 @@ func TestExecutor_OrConditionCompletesAndSaves(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	pool := newTinyPool(t)
-	svc := search.NewSearchService(base, uuids, searchStore, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, uuids, searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 
@@ -666,7 +667,7 @@ func TestExecutor_SubmitAsync_QueueFullCleansUp(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	uuids := common.NewTestUUIDGenerator()
-	svc := search.NewSearchService(base, uuids, observer, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, uuids, observer, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 
@@ -715,7 +716,7 @@ func TestExecutor_ReleasedJobWritesNothing(t *testing.T) {
 	})
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(newTinyPool(t)).WithHeartbeat(15 * time.Millisecond)
 
 	cond := &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}

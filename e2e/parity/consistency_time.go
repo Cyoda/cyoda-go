@@ -46,7 +46,7 @@ func ctCreate(t *testing.T, c *client.Client, name string) uuid.UUID {
 // ts (a server stamp) and returns that reading verbatim.
 func ctWaitConsistentAt(t *testing.T, c *client.Client, ts time.Time) string {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // realtime: test poll deadline
 	for {
 		s, err := c.GetConsistencyTime(t)
 		if err != nil {
@@ -55,7 +55,7 @@ func ctWaitConsistentAt(t *testing.T, c *client.Client, ts time.Time) string {
 		if got, perr := time.Parse(time.RFC3339Nano, s); perr == nil && !got.Before(ts) {
 			return s
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("consistency time did not reach %s within 30s (last %s)", ts.Format(time.RFC3339Nano), s)
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -245,14 +245,14 @@ func RunConsistencyTimeStatsAsAt(t *testing.T, fixture BackendFixture) {
 	// a save is at or before the midpoint and counts with the first.
 	atOrBefore := 1
 	var tB time.Time
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(2 * time.Second) // realtime: test poll deadline
 	for i := 0; ; i++ {
 		b := ctCreate(t, c, fmt.Sprintf("b%d", i))
 		tB = LatestChangeTime(t, c, b)
 		if tB.After(tA) {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("no save was stamped after %s within 2s (last %s)", tA.Format(time.RFC3339Nano), tB.Format(time.RFC3339Nano))
 		}
 		atOrBefore++

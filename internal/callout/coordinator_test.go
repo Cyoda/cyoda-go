@@ -19,6 +19,17 @@ import (
 
 var _ contract.ExternalProcessingService = (*Coordinator)(nil)
 
+// The owner reads every callout's platform time from its clock: one without a
+// clock is refused when it is built.
+func TestNew_NilClockPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New with a nil clock did not panic")
+		}
+	}()
+	New(nil, nil, nil, nil, nil, nil, Config{})
+}
+
 // --- the number of tries ---
 
 func TestOwner_RetryPolicyNone_OneTry_OnEveryKindOfCallout(t *testing.T) {

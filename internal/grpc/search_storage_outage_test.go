@@ -28,6 +28,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -61,7 +62,7 @@ func newOutageSearchEnv(t *testing.T) (*CloudEventsServiceImpl, *search.Handler,
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svcSearch := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base}, newTestConsistency(t, factory))
+	svcSearch := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), &outageSearchStore{AsyncSearchStore: base}, newTestConsistency(t, factory), platformclock.Real())
 
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "test-user",

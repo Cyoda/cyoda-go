@@ -51,7 +51,7 @@ func (p *plugin) NewFactory(
 		return nil, err
 	}
 
-	factory := newStoreFactory(pool, cfg)
+	factory := newStoreFactory(pool, cfg, spi.ApplyFactoryOptions(opts).Clock())
 	if err := factory.openSchedulerPools(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres: %w", err)

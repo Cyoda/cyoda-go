@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -78,7 +79,7 @@ func TestEngineResult_FinalTxID_PostSegmentOnCBDCascade(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-segmented", ModelVersion: "1.0"}

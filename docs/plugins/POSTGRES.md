@@ -68,8 +68,9 @@ Full transaction-lifecycle implementation
   "Consistency time and commit stamping") and applies it to every row the
   transaction wrote, by narrow-column
   `UPDATE`s over `entity_versions`, `entities` and the audit events
-  labelled with the transaction. The column default `CURRENT_TIMESTAMP` is
-  fixed at transaction *start*; the commit-phase stamp is what dates a write.
+  labelled with the transaction. The provisional value each insert writes,
+  `CURRENT_TIMESTAMP`, is fixed at transaction *start*; the commit-phase
+  stamp is what dates a write.
   See "Bi-temporal versioning" below for which values move.
 - **Submit-time bookkeeping:** the same instant is the transaction's
   submit time. It is recorded both in an in-process map (the fast path)
@@ -133,20 +134,24 @@ two functions. The contract they implement is `docs/CONSISTENCY.md` §1a.
   the start of a consistency-time call); a commit's own transaction never
   reads the table. A failed lookup fails the operation. The table carries the
   same tenant row-level security policy as the other tenant-scoped tables.
-- `cyoda_stamp(tenant_key)` — called once per commit, at the top level of the
+- `cyoda_stamp(tenant_key, at_us)` — called once per commit, at the top level of the
   commit transaction, by `stampCommitInstant` and `stampOwnCommitInstant` in
   place of `clock_timestamp()`. It returns `max(clock, floor + 1)` and moves
   the floor there, so no two commits share a stamp and stamps never go back.
   It also takes a transaction-level advisory lock `(tenant_key, xact_key)` —
   the commit's in-flight marker — held until the transaction ends, after its
   rows are visible.
-- `cyoda_consistency_time(tenant_key, wait_budget_ms)` — raises the floor to
+- `cyoda_consistency_time(tenant_key, wait_budget_ms, at_us)` — raises the floor to
   `C = max(clock, floor)` so every later stamp is above `C`, then takes and
   releases a shared lock on each of the tenant's in-flight markers, waiting
   for those commits to end. The call runs on its own pool connection in
   autocommit, never on a transaction's connection. The wait budget is 10 s,
   or `CYODA_POSTGRES_STATEMENT_TIMEOUT` when that is above 0 and lower; a
   budget that runs out (`55P03` or `57014`) is `ErrConsistencyTimeUnavailable`.
+
+`clock` is `clock_timestamp()` when `at_us` is NULL, which is every call in
+production. A test clock (migration `000017`) passes its own time in
+microseconds as `at_us`; the floor, locks and timeouts are unchanged.
 
 Advisory keys use the two-int form (`objsubid = 2`), which nothing else in the
 plugin uses (the scheduler and the migrator use the one-bigint form):
@@ -212,7 +217,8 @@ ends.
 records and sweeps never join the caller's transaction. They run on a pool of
 their own, sized by `CYODA_POSTGRES_SCHEDULER_CONNS` connections (default
 `10`, floor `2`), so entity transactions cannot starve them. The async-search
-heartbeat and claim run there too. The scheduler heartbeat has one more
+heartbeat and claim run there too, as does the cross-tenant
+`ScheduledTaskStore.SchedulerActivity` read a platform clock move polls. The scheduler heartbeat has one more
 connection of its own, used only for `ScheduledTaskStore.Heartbeat`. Every
 scheduler connection uses `READ COMMITTED`, `statement_timeout` 30s,
 `idle_in_transaction_session_timeout` 10s and `lock_timeout` 2s — fixed
@@ -299,10 +305,10 @@ CREATE TABLE entity_versions (
     model_version    TEXT        NOT NULL,
     version          BIGINT      NOT NULL,
     valid_time       TIMESTAMPTZ NOT NULL,
-    transaction_time TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    transaction_time TIMESTAMPTZ NOT NULL,                     -- no default since 000017
     wall_clock_time  TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     transaction_id   TEXT        NOT NULL DEFAULT '',            -- 000012
-    creation_date    TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP, -- 000012
+    creation_date    TIMESTAMPTZ NOT NULL,                     -- 000012; no default since 000017
     doc              JSONB       NOT NULL,
     PRIMARY KEY (tenant_id, entity_id, version),
     FOREIGN KEY (tenant_id, entity_id)
@@ -320,15 +326,19 @@ CREATE TABLE entity_versions (
   case the bi-temporal model reserves them for, and that is **not
   implemented**.
 - `transaction_time` — the commit instant of the same transaction: when
-  the revision became visible. The `DEFAULT CURRENT_TIMESTAMP` is a
-  provisional value only, holding the column non-null between the insert
-  and the commit-phase stamp that overwrites it; `CURRENT_TIMESTAMP` is
-  fixed at transaction start and is exactly the value the stamp exists to
-  replace. This is the value read back as `lastUpdateTime`.
+  the revision became visible. The insert writes a provisional value only,
+  holding the column non-null until the commit-phase stamp overwrites it:
+  `CURRENT_TIMESTAMP`, fixed at transaction start and exactly the value the
+  stamp exists to replace, or a test clock's reading when there is one. The
+  same provisional value fills `entity_versions.valid_time` and
+  `entities.last_modified`, and `entities.creation_date` on an entity's first
+  revision; every revision's `creation_date` copies `entities.creation_date`.
+  This is the value read back as `lastUpdateTime`.
 - `wall_clock_time` — `clock_timestamp()` at the inserting statement: the
   physical moment the row was written, independent of the transaction and
-  never restamped. It is the one column that answers "when was this row
-  actually written", which a commit-phase stamp cannot.
+  never restamped, kept for debugging and analysis. Nothing reads it. Under
+  a test clock it keeps physical time, so it differs from the business
+  times.
 - `transaction_id` — the transaction that committed the row, stamped by
   the store and never taken from the caller; the empty string for a
   non-transactional write. The commit phase finds its own rows by it

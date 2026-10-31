@@ -70,7 +70,7 @@ func MintOperatorToken(ctx context.Context, key *rsa.PrivateKey, req OperatorTok
 	}
 	now := req.Now
 	if now.IsZero() {
-		now = time.Now()
+		now = time.Now() // realtime: auth key and token validity
 	}
 	roles := append([]string(nil), req.Roles...)
 	claims := map[string]any{

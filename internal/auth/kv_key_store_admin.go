@@ -114,7 +114,7 @@ func (s *KVKeyStore) siblingWrites(ctx context.Context, newKID string, grace int
 	if err != nil {
 		return nil, fmt.Errorf("failed to list signing keys: %w", err)
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	end := func(r *signingRecord, validTo *time.Time) {
 		r.Active = false
 		r.ValidTo = fmtTimePtr(graceExpiry(validTo, now, grace))
@@ -216,7 +216,7 @@ func (s *KVKeyStore) updateState(ctx context.Context, kid string, change func(r 
 func (s *KVKeyStore) Invalidate(ctx context.Context, kid string, graceSec int64) error {
 	_, err := s.updateState(ctx, kid, func(r *signingRecord, pair KeyPair) {
 		r.Active = false
-		r.ValidTo = fmtTimePtr(graceExpiry(pair.ValidTo, time.Now(), graceSec))
+		r.ValidTo = fmtTimePtr(graceExpiry(pair.ValidTo, time.Now(), graceSec)) // realtime: auth key and token validity
 	})
 	if err == nil && kid == s.boot.kid {
 		s.logRevokedBootstrap(slog.LevelWarn)

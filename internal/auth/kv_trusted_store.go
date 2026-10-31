@@ -170,7 +170,7 @@ func (s *KVTrustedKeyStore) Register(ctx context.Context, tk *TrustedKey, invali
 	if err != nil {
 		return err
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	if !invalidatePrevious && capReached(keys, tk.KID, s.maxPerTenant, now) {
 		return errTrustedKeyCapReached()
 	}
@@ -220,7 +220,7 @@ func (s *KVTrustedKeyStore) GetForVerification(ctx context.Context, tenantID spi
 	if err != nil {
 		return nil, err
 	}
-	if !tk.Verifies(time.Now()) {
+	if !tk.Verifies(time.Now()) { // realtime: auth key and token validity
 		return nil, fmt.Errorf("%w: %s", ErrTrustedKeyNotFound, kid)
 	}
 	return tk, nil
@@ -257,7 +257,7 @@ func (s *KVTrustedKeyStore) Invalidate(ctx context.Context, tenantID spi.TenantI
 		return err
 	}
 	tk.Active = false
-	tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), 0)
+	tk.ValidTo = graceExpiry(tk.ValidTo, time.Now(), 0) // realtime: auth key and token validity
 	return s.write(ctx, tk)
 }
 
@@ -270,7 +270,7 @@ func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantI
 	if validTo.IsZero() {
 		return fmt.Errorf("validTo required for reactivation")
 	}
-	if !validTo.After(time.Now()) {
+	if !validTo.After(time.Now()) { // realtime: auth key and token validity
 		return fmt.Errorf("validTo must be in the future")
 	}
 	if !validTo.After(validFrom) {
@@ -287,7 +287,7 @@ func (s *KVTrustedKeyStore) Reactivate(ctx context.Context, tenantID spi.TenantI
 	if err != nil {
 		return err
 	}
-	if capReached(keys, kid, s.maxPerTenant, time.Now()) {
+	if capReached(keys, kid, s.maxPerTenant, time.Now()) { // realtime: auth key and token validity
 		return errTrustedKeyCapReached()
 	}
 	vt := validTo

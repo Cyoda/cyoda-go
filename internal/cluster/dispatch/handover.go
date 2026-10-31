@@ -92,6 +92,8 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 		return DispatchCalloutRequest{}, fmt.Errorf("tries left is %d", triesLeft)
 	case major < 1:
 		return DispatchCalloutRequest{}, errors.New("hand-over has no fencing number")
+	case call.At.IsZero():
+		return DispatchCalloutRequest{}, errors.New("callout has no platform time")
 	}
 	req := DispatchCalloutRequest{
 		Kind:           call.Kind.String(),
@@ -113,6 +115,7 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 		OwnerNodeID:    ownerNodeID,
 		Major:          major,
 		RepeatSafe:     call.RepeatSafe,
+		AtUnixMicro:    ptrInt64(call.At.UnixMicro()),
 		Processor:      src.Processor,
 		Criterion:      src.Criterion,
 		Target:         src.Target,
@@ -148,7 +151,8 @@ func newHandOverRequest(ownerNodeID string, call internalgrpc.Callout, triesLeft
 // a cnode is given to answer are the owner's decisions, run as sent. The
 // callout's identity is one of those values: both principals must be named,
 // since the receiving pnode attaches them as received and has nothing to
-// substitute for one that is missing.
+// substitute for one that is missing. So is the callout's platform time: the
+// receiving pnode sends it on every try and never substitutes its own clock's.
 func (req *DispatchCalloutRequest) validate() error {
 	switch {
 	case req.TenantID == "":
@@ -179,6 +183,10 @@ func (req *DispatchCalloutRequest) validate() error {
 		return errors.New("executorID is empty")
 	case req.ExecutorKind == "":
 		return errors.New("executorKind is empty")
+	case req.AtUnixMicro == nil:
+		return errors.New("atUnixMicro is missing")
+	case *req.AtUnixMicro < 0:
+		return errors.New("atUnixMicro is before 1970")
 	}
 	if len(req.Outer) > maxOuterPairs {
 		return errors.New("the hand-over names more enclosing callouts than can be sane")
@@ -221,7 +229,8 @@ func noEntity(payload []byte) bool {
 // toCallout builds, on the receiving pnode, the Callout the owner built — with
 // the same builder — and fills what the hand-over carried: the request id, the
 // answer limit, whether it is repeat-safe, the owner's id for the passes, the
-// enclosing pairs, the identity the owner computed, and a numberer that counts
+// enclosing pairs, the identity the owner computed, the platform time the owner
+// took the callout up at, and a numberer that counts
 // minor = 1, 2, … under the hand-over's major. The request must have passed
 // validate.
 func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.CalloutFailure) {
@@ -262,6 +271,7 @@ func (req *DispatchCalloutRequest) toCallout() (internalgrpc.Callout, *contract.
 		Executor:   spi.Principal{ID: req.ExecutorID, Kind: req.ExecutorKind},
 		Roles:      req.Roles,
 	}
+	call.At = time.UnixMicro(*req.AtUnixMicro).UTC()
 	for _, p := range req.Outer {
 		call.Outer = append(call.Outer, token.Pair{Callout: p.Callout, Major: p.Major, Minor: p.Minor})
 	}
@@ -560,3 +570,5 @@ func provedBeforeConnecting(err error) HandOverAnswer {
 	appErr := common.Internal("the callout could not be handed over", nil).WithCause(err)
 	return HandOverAnswer{Failure: &contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}}
 }
+
+func ptrInt64(v int64) *int64 { return &v }

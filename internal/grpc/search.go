@@ -45,6 +45,9 @@ func (s *CloudEventsServiceImpl) EntitySearch(ctx context.Context, ce *cepb.Clou
 	case EntityConsistencyTimeGetRequest:
 		return s.handleConsistencyTimeGetRequest(ctx, ce, payload)
 
+	case PlatformClockGetRequest:
+		return s.handlePlatformClockGetRequest(ctx, ce, payload)
+
 	case EntitySnapshotSearchRequest:
 		return s.handleSnapshotSearchRequest(ctx, ce, payload)
 
@@ -157,6 +160,33 @@ func (s *CloudEventsServiceImpl) handleConsistencyTimeGetRequest(ctx context.Con
 	}
 	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", EntityConsistencyTimeResponse, "ceId", ce.Id, "success", true)
 	return NewCloudEvent(EntityConsistencyTimeResponse, resp)
+}
+
+// handlePlatformClockGetRequest answers this node's platform time, rate and
+// controllability, the same state GET /platform/clock answers. It reads no
+// store, so the only failures a request can cause are authentication, which
+// the interceptor refuses before the handler, and an invalid payload.
+func (s *CloudEventsServiceImpl) handlePlatformClockGetRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {
+	var req events.PlatformClockGetRequestJson
+	if err := strictjson.Decode(payload, &req); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid payload: %v", err)
+	}
+
+	st := s.clockState()
+	now := st.Now.UTC()
+	rate := st.Rate()
+	diag := common.GetDiagnostics(ctx)
+	resp := events.PlatformClockResponseJson{
+		ID:           ce.Id,
+		Success:      true,
+		Warnings:     diag.GetWarnings(),
+		RequestID:    ce.Id,
+		Now:          &now,
+		Rate:         &rate,
+		Controllable: &st.Controllable,
+	}
+	slog.Debug("CloudEvent response", "pkg", "grpc", "rpc", "entitySearch", "type", PlatformClockResponse, "ceId", ce.Id, "success", true)
+	return NewCloudEvent(PlatformClockResponse, resp)
 }
 
 func (s *CloudEventsServiceImpl) handleSnapshotSearchRequest(ctx context.Context, ce *cepb.CloudEvent, payload json.RawMessage) (*cepb.CloudEvent, error) {

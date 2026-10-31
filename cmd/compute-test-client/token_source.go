@@ -51,7 +51,7 @@ func newTokenSource(httpBase, tenant, clientID, clientSecret string) *tokenSourc
 func (s *tokenSource) Token() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	now := time.Now()
+	now := time.Now() // realtime: token refresh is measured against real time
 	if s.token != "" && now.Before(s.refreshAt) {
 		return s.token, nil
 	}

@@ -118,7 +118,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		cfg.ListScanInterval = time.Second
 	}
 	// The epoch only has to differ between two lives of this pnode.
-	epoch := time.Now().UnixNano()
+	epoch := time.Now().UnixNano() // realtime: gossip membership timing
 	metaBytes, err := marshalMeta(cfg, listVersion{Epoch: epoch})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
@@ -250,7 +250,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		maxBackoff     = 10 * time.Second
 	)
 
-	start := time.Now()
+	start := time.Now() // realtime: gossip membership timing
 	backoff := initialBackoff
 	// The duplicate the last attempt that found one saw. It is what the
 	// operator is told when the budget runs out, in preference to a bare
@@ -262,7 +262,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			if duplicate != nil {
 				return duplicate
 			}
-			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
+			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err) // realtime: gossip membership timing
 		}
 
 		// Each attempt asks about the cluster as it is now. A record that has
@@ -332,19 +332,19 @@ func (g *Gossip) awaitStability(ctx context.Context, start time.Time) error {
 	}
 	const pollInterval = 200 * time.Millisecond
 	lastCount := g.list.NumMembers()
-	stableSince := time.Now()
-	for time.Since(stableSince) < g.cfg.StabilityWindow {
+	stableSince := time.Now()                             // realtime: gossip membership timing
+	for time.Since(stableSince) < g.cfg.StabilityWindow { // realtime: gossip membership timing
 		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
+			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err()) // realtime: gossip membership timing
 		case <-timer.C:
 		}
 		current := g.list.NumMembers()
 		if current != lastCount {
 			lastCount = current
-			stableSince = time.Now()
+			stableSince = time.Now() // realtime: gossip membership timing
 		}
 	}
 	return nil
@@ -549,11 +549,26 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return nil
 }
 
+// SetStateExchange registers the push/pull state a joining or syncing peer
+// exchanges: local supplies this node's state, merge receives a peer's. merge
+// runs on memberlist's goroutine and must not block. Without it the exchange
+// carries nothing.
+func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
+	g.delegate.ex.Store(&stateExchange{local: local, merge: merge})
+}
+
+// stateExchange is the push/pull state hooks SetStateExchange registers.
+type stateExchange struct {
+	local func() []byte
+	merge func([]byte)
+}
+
 // gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
 // identity (id, addresses, tag list version); NotifyMsg/GetBroadcasts
 // implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
 // Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
-// are no-ops — we don't use the push/pull anti-entropy state channel.
+// carry the optional state set by Gossip.SetStateExchange and are no-ops
+// without it.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte
@@ -568,6 +583,10 @@ type gossipDelegate struct {
 	queue  *memberlist.TransmitLimitedQueue
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
+
+	// ex holds the optional push/pull state exchange hooks; nil until
+	// SetStateExchange, and an atomic load on every push/pull.
+	ex atomic.Pointer[stateExchange]
 }
 
 func (d *gossipDelegate) updateMeta(meta []byte) {
@@ -602,8 +621,21 @@ func (d *gossipDelegate) NotifyMsg(msg []byte) {
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 	return d.queue.GetBroadcasts(overhead, limit)
 }
-func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
-func (d *gossipDelegate) MergeRemoteState([]byte, bool) {}
+
+// LocalState and MergeRemoteState carry the optional push/pull state set by
+// Gossip.SetStateExchange; with none registered they do nothing.
+func (d *gossipDelegate) LocalState(bool) []byte {
+	if ex := d.ex.Load(); ex != nil {
+		return ex.local()
+	}
+	return nil
+}
+
+func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
+	if ex := d.ex.Load(); ex != nil {
+		ex.merge(buf)
+	}
+}
 
 func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {
 	d.subsMu.Lock()

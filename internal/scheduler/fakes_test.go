@@ -17,6 +17,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -349,7 +350,7 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 		Store:              testFactory{StoreFactory: mem, sts: fs},
 		TxManager:          mem.NewTransactionManager(common.NewTestUUIDGenerator()),
 		Firer:              firer,
-		Clock:              NewRealClock(),
+		Clock:              platformclock.Real(),
 		HealthFlag:         flag,
 		CalloutDeadlineMax: time.Second,
 	})

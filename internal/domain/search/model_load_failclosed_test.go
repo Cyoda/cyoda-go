@@ -8,6 +8,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -56,7 +57,7 @@ func TestSearch_FailsClosedOnGenuineModelLoadError(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond, err := predicate.ParseCondition([]byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_THAN","value":5}`))
 	if err != nil {

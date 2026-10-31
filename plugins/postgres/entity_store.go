@@ -71,6 +71,11 @@ type entityStore struct {
 	// holds one.
 	keys      *tenantKeys
 	markerKey int32
+
+	// clock is the factory's business clock (StoreFactory.clock); nil in
+	// production. It supplies the placeholder dates (placeholderAtArg) and the
+	// stamp of a write with no SPI transaction (stampAtArg).
+	clock spi.Clock
 }
 
 // inOwnTx returns the copy of s that runs inside tx, a transaction this plugin
@@ -226,20 +231,27 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 		entity.Meta.TransactionID = tx.ID
 	}
 
-	// dbNow is a PROVISIONAL stamp only. Both temporal columns it feeds are
+	// dbNow is a PROVISIONAL stamp only. Every temporal column it feeds is
 	// corrected to the transaction's real instant immediately before that
 	// transaction commits — TransactionManager.Commit's stampCommitInstant for
 	// a caller's transaction, stampOwnCommitInstant below for a write that has
-	// none. CURRENT_TIMESTAMP is this transaction's START, which is precisely
-	// the value those stamps exist to replace; it is kept here because it must
-	// be non-null before the stamp lands, and because it ties every row a
-	// transaction writes to one valid_time in the interim exactly as it does
-	// afterwards.
+	// none. Without a business clock it is CURRENT_TIMESTAMP, this
+	// transaction's START, which is precisely the value those stamps exist to
+	// replace; it is kept here because it must be non-null before the stamp
+	// lands, and because it ties every row a transaction writes to one
+	// valid_time in the interim exactly as it does afterwards. With a business
+	// clock it is that clock's reading at each save (placeholderAtArg), because
+	// a read inside the transaction sees it and must see platform time; the
+	// rows of one transaction then carry different provisional dates until the
+	// commit stamp, which finds them by transaction id, equalises them.
 	//
 	// clock_timestamp() is a deliberately different value: wall_clock_time is
 	// the physical moment of insertion by design, and no stamp ever rewrites it.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
+		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return 0, fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -282,22 +294,21 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// incoming one. A conflicting row whose model differs matches neither the
 	// INSERT (the row exists) nor the UPDATE (the WHERE fails), so the
 	// statement returns no rows — translated to the sentinel below.
-	// last_modified is set explicitly in the UPDATE half, to dbNow — the same
-	// provisional value the row already carries from creation_date's
-	// migration DEFAULT — so an updated row's LastModifiedDate actually
-	// advances (Get/GetPage/Search project this column, entity_store.go) and
-	// the intermediate state before a later commit-phase stamp lands matches
-	// what migrations/000012's comment documents: "stale by up to the
-	// transaction's own lifetime", not "never updated at all". A freshly
-	// INSERTed row needs no equivalent here — its last_modified column
-	// already gets DEFAULT CURRENT_TIMESTAMP, which is the same instant this
-	// transaction's dbNow reads (the column default and dbNow are both
-	// CURRENT_TIMESTAMP, fixed at the same transaction start).
+	// creation_date and last_modified are written explicitly from dbNow, the
+	// provisional value, on insert; the UPDATE half sets last_modified to it
+	// as well — and never creation_date — so an updated row's
+	// LastModifiedDate actually advances (Get/GetPage/Search project this
+	// column, entity_store.go) and the intermediate state before a later
+	// commit-phase stamp lands matches what migrations/000012's comment
+	// documents: "stale by up to the transaction's own lifetime", not "never
+	// updated at all". Without a business clock dbNow is the value the column
+	// defaults would give (CURRENT_TIMESTAMP); with one, the defaults would be
+	// the wrong clock.
 	var nextVersion int64
 	var isNew bool
 	err := s.q.QueryRow(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb)
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		 VALUES ($1, $2, $3, $4, 1, false, 'null'::jsonb, $5, $5)
 		 ON CONFLICT (tenant_id, entity_id) DO UPDATE SET
 		   version = entities.version + 1,
 		   deleted = false,
@@ -357,7 +368,13 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 		return 0, fmt.Errorf("failed to update entity doc: %w", err)
 	}
 
-	// Insert version row (explicit wall_clock_time to match _meta value).
+	// Insert version row. valid_time and transaction_time take dbNow, the
+	// provisional value, until the commit stamp replaces them.
+	//
+	// wall_clock_time records the physical moment of insertion, for debugging
+	// and analysis; nothing reads it. Under a test clock (spi.WithClock) it
+	// keeps physical time, so it differs from the business times.
+	//
 	// creation_date is sourced from the entities row's own creation_date via
 	// a sub-select on (tenant_id, entity_id) rather than dbNow: dbNow is THIS
 	// transaction's stamp, correct for a version-1 insert (the entities row
@@ -370,8 +387,8 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 	// any UPDATE — see the entities upsert above, which never sets
 	// creation_date on conflict).
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, transaction_id, creation_date, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
 		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
 		         $9)`,
 		tid, eid,
@@ -407,7 +424,7 @@ func (s *entityStore) saveOn(ctx context.Context, entity *spi.Entity) (int64, er
 // caller's transaction. A non-transactional Save, Delete or CompareAndSave
 // opens its own transaction (save's and Delete's non-tx branches,
 // CompareAndSave's) with no SPI transaction and no transaction id, so it never
-// passes through there. Without this, such a row keeps the column default —
+// passes through there. Without this, such a row keeps its provisional date —
 // CURRENT_TIMESTAMP, its transaction's START — as its permanent recorded time,
 // which is the exact defect commit stamping exists to remove: the fix would be
 // correct for transactional writes and a no-op for every other one.
@@ -427,9 +444,11 @@ func (s *entityStore) stampOwnCommitInstant(ctx context.Context, tid, entityID s
 	// floor (see stampCommitInstant). Nothing after this statement waits on a
 	// lock: the two UPDATEs below address by primary key rows this transaction
 	// already wrote and locks. s.markerKey was resolved before this
-	// transaction began (see the keys field). The argument is typed for the
-	// reason given at stampCommitInstant's call.
-	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::pg_catalog.int4)`, s.markerKey).Scan(&instant); err != nil {
+	// transaction began (see the keys field). The arguments are typed for the
+	// reason given at stampCommitInstant's call; the second is NULL without a
+	// business clock (stampAtArg).
+	if err := s.q.QueryRow(ctx, `SELECT cyoda_stamp($1::pg_catalog.int4, $2::pg_catalog.int8)`,
+		s.markerKey, stampAtArg(s.clock)).Scan(&instant); err != nil {
 		return fmt.Errorf("failed to read commit instant: %w", classifyStampError(err))
 	}
 	if _, err := s.q.Exec(ctx,
@@ -771,7 +790,10 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// transaction commits — exactly as in saveOn, whose comment on the same
 	// statement carries the reasoning.
 	var dbNow, wallClockTime time.Time
-	if err := s.q.QueryRow(ctx, `SELECT CURRENT_TIMESTAMP, clock_timestamp()`).Scan(&dbNow, &wallClockTime); err != nil {
+	if err := s.q.QueryRow(ctx, `SELECT coalesce($1::pg_catalog.timestamptz,
+		CURRENT_TIMESTAMP), -- realtime: no test clock configured; production's business clock is the database clock, a test clock is passed as $1
+		clock_timestamp() -- realtime: wall_clock_time is the physical insertion time, kept for analysis`,
+		placeholderAtArg(s.clock)).Scan(&dbNow, &wallClockTime); err != nil {
 		return fmt.Errorf("failed to get DB timestamps: %w", err)
 	}
 
@@ -833,8 +855,8 @@ func (s *entityStore) deleteOn(ctx context.Context, entityID string) error {
 	// statement's comment. The tombstone must report when the entity was
 	// CREATED, not when it was deleted.
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, wall_clock_time, transaction_id, creation_date, doc)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+		`INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, wall_clock_time, transaction_id, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8,
 		         (SELECT creation_date FROM entities WHERE tenant_id = $1 AND entity_id = $2),
 		         $9)`,
 		tid, entityID,

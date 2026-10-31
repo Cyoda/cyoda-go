@@ -833,8 +833,8 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 	// match-all async scans this fixture backs stay unaffected, since they
 	// filter on nothing at all.
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, creation_date, last_modified, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted, creation_date, last_modified,
 		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
 		                 '{name}', '"search-ceiling-fill"')
 		FROM entities, generate_series(1, $1) AS g
@@ -848,9 +848,9 @@ func seedEntityVersions(t *testing.T, model string, n int) {
 	// writes the same marshaled doc to both rows.
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
-		                             valid_time, transaction_time, wall_clock_time, doc)
+		                             valid_time, transaction_time, wall_clock_time, creation_date, doc)
 		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
-		       valid_time, transaction_time, wall_clock_time,
+		       valid_time, transaction_time, wall_clock_time, creation_date,
 		       jsonb_set(jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g)),
 		                 '{name}', '"search-ceiling-fill"')
 		FROM entity_versions, generate_series(1, $1) AS g

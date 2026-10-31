@@ -14,6 +14,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/scheduledtask"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // Server composes domain handlers with an Unimplemented fallback for any
@@ -29,6 +30,7 @@ type Server struct {
 	Messaging      *messaging.Handler
 	Account        *account.Handler
 	ScheduledTasks *scheduledtask.Handler
+	PlatformClock  *platformclock.Handler
 }
 
 // NewServer returns a Server with the Unimplemented fallback initialised.
@@ -48,7 +50,7 @@ func NewServer() *Server {
 // and it travels no further than the Unimplemented fallback.
 
 // ---------------------------------------------------------------------------
-// Entity delegation (15 methods)
+// Entity delegation (20 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
@@ -211,7 +213,27 @@ func (s *Server) Create(w http.ResponseWriter, r *http.Request, format genapi.Cr
 }
 
 // ---------------------------------------------------------------------------
-// Model delegation (8 methods)
+// Platform clock delegation (2 methods)
+// ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.GetPlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.GetPlatformClock(w, r)
+}
+
+func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	if s.PlatformClock != nil {
+		s.PlatformClock.ChangePlatformClock(w, r)
+		return
+	}
+	s.Unimplemented.ChangePlatformClock(w, r)
+}
+
+// ---------------------------------------------------------------------------
+// Model delegation (9 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) GetAvailableEntityModels(w http.ResponseWriter, r *http.Request) {
@@ -419,7 +441,7 @@ func (s *Server) GetMessage(w http.ResponseWriter, r *http.Request, messageId op
 }
 
 // ---------------------------------------------------------------------------
-// Account delegation (24 methods)
+// Account delegation (17 methods)
 // ---------------------------------------------------------------------------
 
 func (s *Server) AccountGet(w http.ResponseWriter, r *http.Request) {

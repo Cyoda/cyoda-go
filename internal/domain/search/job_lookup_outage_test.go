@@ -18,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // outageDSN stands in for the connection detail a real pool error carries.
@@ -77,7 +78,7 @@ func (s *stubSearchStore) GetResultIDs(_ context.Context, _ string, _, _ int) ([
 
 func stubService(store spi.AsyncSearchStore) *search.SearchService {
 	// factory and uuid generator are untouched on every path exercised here.
-	return search.NewSearchService(nil, nil, store, newFixedConsistency())
+	return search.NewSearchService(nil, nil, store, newFixedConsistency(), platformclock.Real())
 }
 
 // ---------------------------------------------------------------------------
@@ -332,7 +333,7 @@ func (f *hydrateFactory) EntityStore(context.Context) (spi.EntityStore, error) {
 
 func hydrateService(ids []string, errs map[string]error) *search.SearchService {
 	return search.NewSearchService(
-		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids}, newFixedConsistency())
+		&hydrateFactory{store: &hydrateEntityStore{errs: errs}}, nil, &resultIDsStore{ids: ids}, newFixedConsistency(), platformclock.Real())
 }
 
 // A storage outage during hydration used to be logged and skipped, so the caller

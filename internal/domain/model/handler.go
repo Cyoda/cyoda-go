@@ -18,11 +18,15 @@ import (
 // Handler implements the model management HTTP endpoints.
 type Handler struct {
 	factory spi.StoreFactory
+	clock   spi.Clock
 }
 
-// New returns a new Handler wired to the given StoreFactory.
-func New(factory spi.StoreFactory) *Handler {
-	return &Handler{factory: factory}
+// New returns a new Handler wired to the given StoreFactory and the clock that stamps model update dates.
+func New(factory spi.StoreFactory, clock spi.Clock) *Handler {
+	if clock == nil {
+		panic("model.New: nil clock")
+	}
+	return &Handler{factory: factory, clock: clock}
 }
 
 // modelRef builds a ModelRef from the path parameters.

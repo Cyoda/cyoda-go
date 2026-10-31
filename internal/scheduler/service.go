@@ -34,8 +34,9 @@ type Deps struct {
 	Store     spi.StoreFactory
 	TxManager spi.TransactionManager
 	Firer     Firer
-	// Clock is the pnode clock: the one that set scheduledTime at arm.
-	Clock Clock
+	// Clock is the platform clock, injected: the one that set scheduledTime
+	// at arm.
+	Clock spi.Clock
 	// HealthFlag is the process-wide flag a recovered panic latches false.
 	HealthFlag *atomic.Bool
 	Meter      metric.Meter
@@ -143,8 +144,11 @@ type Service struct {
 	drainOnce sync.Once
 }
 
-// New builds a service. Start begins claiming.
+// New builds a service. Start begins claiming. A nil deps.Clock panics.
 func New(cfg Config, deps Deps) *Service {
+	if deps.Clock == nil {
+		panic("scheduler.New: nil clock")
+	}
 	return &Service{
 		cfg:            cfg,
 		deps:           deps,
@@ -341,7 +345,7 @@ func (s *Service) stepFourBound() time.Duration {
 	var longest time.Duration
 	for _, r := range s.runs {
 		if since, inFlight := r.unsafe.Since(); inFlight {
-			longest = max(longest, s.deps.CalloutDeadlineMax-time.Since(since))
+			longest = max(longest, s.deps.CalloutDeadlineMax-time.Since(since)) // realtime: scheduler watchdog, health and lease timing
 		}
 	}
 	return longest + s.stepFourMargin
@@ -408,7 +412,7 @@ func (s *Service) heartbeatLoop() {
 // heartbeat records the moment before the call acquires its connection; the
 // store's stamp is never earlier.
 func (s *Service) heartbeat() {
-	started := time.Now()
+	started := time.Now() // realtime: scheduler watchdog, health and lease timing
 	ctx, cancel := context.WithTimeout(context.Background(), heartbeatBudget(s.cfg.HeartbeatInterval))
 	err := s.store.Heartbeat(ctx, s.incarnation)
 	cancel()
@@ -416,7 +420,7 @@ func (s *Service) heartbeat() {
 }
 
 func (s *Service) heartbeatDone(started time.Time, err error) {
-	if err == nil && time.Since(started) >= s.window {
+	if err == nil && time.Since(started) >= s.window { // realtime: scheduler watchdog, health and lease timing
 		err = errHeartbeatLate
 	}
 	s.mu.Lock()
@@ -449,7 +453,7 @@ func (s *Service) watchdogLoop() {
 			timer.Stop()
 			return
 		case at := <-s.wdArm:
-			timer.Reset(time.Until(at))
+			timer.Reset(time.Until(at)) // realtime: scheduler watchdog, health and lease timing
 		case <-timer.C:
 			s.selfCancel()
 		}
@@ -469,7 +473,7 @@ func (s *Service) watchdogLoop() {
 func (s *Service) selfCancel() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if time.Now().Before(s.wdDeadline) {
+	if time.Now().Before(s.wdDeadline) { // realtime: scheduler watchdog, health and lease timing
 		return
 	}
 	s.healthy, s.healthySince = false, time.Time{}
@@ -588,6 +592,9 @@ func (s *Service) claim() {
 // claimRequest builds the next claim, or reports that none may be made: the
 // pnode is unhealthy, latched or draining, or every run slot is taken.
 func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
+	// Read the clock before taking s.mu: the clock is an injected collaborator
+	// and must not run under the service lock.
+	nowMs := s.deps.Clock.Now().UnixMilli()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.healthy || s.latchedLocked() || s.draining {
@@ -604,12 +611,12 @@ func (s *Service) claimRequest() (req spi.ClaimRequest, free int, ok bool) {
 	}
 	return spi.ClaimRequest{
 		Owner:            s.incarnation,
-		NowMs:            s.deps.Clock.Now().UnixMilli(),
+		NowMs:            nowMs,
 		StaleAfter:       s.cfg.StaleAfter,
 		Limit:            free,
 		PerTenantLimit:   s.cfg.MaxRunsPerTenant,
 		TenantInProgress: inProgress,
-		AllowLostOwner:   time.Since(s.healthySince) >= s.cfg.StaleAfter,
+		AllowLostOwner:   time.Since(s.healthySince) >= s.cfg.StaleAfter, // realtime: scheduler watchdog, health and lease timing
 	}, free, true
 }
 
@@ -628,7 +635,7 @@ func (s *Service) register(tasks []spi.ScheduledTask, free int) (runs []*liveRun
 	if s.draining {
 		return nil, false
 	}
-	if s.latchedLocked() || !time.Now().Before(s.wdDeadline) {
+	if s.latchedLocked() || !time.Now().Before(s.wdDeadline) { // realtime: scheduler watchdog, health and lease timing
 		return nil, len(tasks) > 0
 	}
 	s.filled = len(tasks) >= free
@@ -681,7 +688,7 @@ func (s *Service) sweep() {
 // the claim is kept and the node latches (§6.5).
 func (s *Service) run(r *liveRun) {
 	defer s.runExited(r)
-	start := time.Now()
+	start := time.Now() // realtime: run duration metric
 	defer s.recoverBookkeeping(r, start)
 	ctx, span := observability.Tracer().Start(r.ctx, "scheduler.run")
 	defer span.End()
@@ -717,7 +724,7 @@ func (s *Service) run(r *liveRun) {
 	}
 	s.finish(r, bk, err)
 	span.SetAttributes(attribute.String("outcome", outcome))
-	s.m.runEnded(outcome, time.Since(start))
+	s.m.runEnded(outcome, time.Since(start)) // realtime: run duration metric
 }
 
 // runExited counts a run goroutine out, and wakes a drain waiting for runs to
@@ -757,7 +764,7 @@ func (s *Service) recoverBookkeeping(r *liveRun, start time.Time) {
 		"err", fmt.Errorf("panic: %v", v), "stack", string(debug.Stack()))
 	s.keepRun(r)
 	s.latchAndCancel()
-	s.m.runEnded(outcomePanicked, time.Since(start))
+	s.m.runEnded(outcomePanicked, time.Since(start)) // realtime: run duration metric
 }
 
 // markEnded records that r's fire has returned, and reads why it was
@@ -858,8 +865,8 @@ func (s *Service) book(r *liveRun, bk Bookkeeping) error {
 			return err
 		}
 		s.m.bookkeepingRetried()
-		if time.Since(warned) >= warnEvery {
-			warned = time.Now()
+		if time.Since(warned) >= warnEvery { // realtime: log throttle
+			warned = time.Now() // realtime: log throttle
 			slog.Warn("scheduled run outcome not recorded; retrying", "pkg", "scheduler",
 				"taskId", r.task.ID, "tenant", string(r.task.TenantID), "err", err)
 		}

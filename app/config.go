@@ -27,16 +27,21 @@ type Config struct {
 	LogLevel          string
 	// Version is the ldflag-injected binary version string reported in the
 	// REST /help payload. Defaults to "dev" when unset.
-	Version            string
-	IAM                IAMConfig
-	GRPC               GRPCConfig
-	Admin              AdminConfig
-	CORS               CORSConfig
-	StorageBackend     string
-	StartupTimeout     time.Duration
-	Cluster            cluster.Config
-	SearchSnapshotTTL  time.Duration
-	SearchReapInterval time.Duration
+	Version        string
+	IAM            IAMConfig
+	GRPC           GRPCConfig
+	Admin          AdminConfig
+	CORS           CORSConfig
+	StorageBackend string
+	// ClockControlEnabled builds the controllable test clock, gives it to the
+	// storage plugin and every business-time reader, and accepts POST
+	// /platform/clock. A test feature: CYODA_CLOCK_CONTROL_ENABLED, default
+	// false.
+	ClockControlEnabled bool
+	StartupTimeout      time.Duration
+	Cluster             cluster.Config
+	SearchSnapshotTTL   time.Duration
+	SearchReapInterval  time.Duration
 	// ModelCacheLease is the baseline TTL for cached LOCKED model
 	// descriptors. Actual expiry is jittered ±10% to prevent cross-
 	// node herding. Defaults to 5m; tune via CYODA_MODEL_CACHE_LEASE.
@@ -70,7 +75,7 @@ type Config struct {
 	SearchJobHeartbeatInterval time.Duration
 	// SearchJobStaleAfter is how long a RUNNING async-search job may go
 	// without a heartbeat (spi.AsyncSearchStore.ClaimStale's staleness
-	// baseline — HeartbeatTime, or CreateTime when never heartbeated)
+	// baseline — HeartbeatTime, stamped at CreateJob)
 	// before the reaper (internal/domain/search.ReclaimStaleJobs, wired into
 	// the reclaim ticker in app.go) claims it and re-executes it on a live
 	// node (or fails it past the attempt cap). Must dominate
@@ -385,13 +390,14 @@ func DefaultConfig() Config {
 				AllowedOrigins: origins,
 			}
 		}(),
-		SearchSnapshotTTL:  envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
-		SearchReapInterval: envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
-		ModelCacheLease:    envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
-		OTelEnabled:        envBool("CYODA_OTEL_ENABLED", false),
-		StorageBackend:     envString("CYODA_STORAGE_BACKEND", "memory"),
-		StatsGroupMax:      statsGroupMax,
-		SearchMaxSortKeys:  maxSortKeys,
+		SearchSnapshotTTL:   envDuration("CYODA_SEARCH_SNAPSHOT_TTL", 1*time.Hour),
+		SearchReapInterval:  envDuration("CYODA_SEARCH_REAP_INTERVAL", 5*time.Minute),
+		ModelCacheLease:     envDuration("CYODA_MODEL_CACHE_LEASE", 5*time.Minute),
+		OTelEnabled:         envBool("CYODA_OTEL_ENABLED", false),
+		StorageBackend:      envString("CYODA_STORAGE_BACKEND", "memory"),
+		ClockControlEnabled: envBool("CYODA_CLOCK_CONTROL_ENABLED", false),
+		StatsGroupMax:       statsGroupMax,
+		SearchMaxSortKeys:   maxSortKeys,
 		SearchAsync: SearchAsyncConfig{
 			Workers:      asyncWorkers,
 			QueueLen:     envInt("CYODA_SEARCH_ASYNC_QUEUE", 256),

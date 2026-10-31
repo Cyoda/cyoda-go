@@ -297,3 +297,14 @@ func TestConfig_SearchJobMaxAttempts_Override(t *testing.T) {
 		t.Fatalf("override = %d, want 5", got)
 	}
 }
+
+func TestDefaultConfig_ClockControlEnabled(t *testing.T) {
+	t.Setenv("CYODA_CLOCK_CONTROL_ENABLED", "")
+	if DefaultConfig().ClockControlEnabled {
+		t.Fatal("clock control is on by default")
+	}
+	t.Setenv("CYODA_CLOCK_CONTROL_ENABLED", "true")
+	if !DefaultConfig().ClockControlEnabled {
+		t.Fatal("CYODA_CLOCK_CONTROL_ENABLED=true did not turn clock control on")
+	}
+}

@@ -314,6 +314,10 @@ tags:
     description: API to retrieve information about user accounts and their subscriptions.
   - name: SQL-Schema
     description: Operations for managing SQL schemas and tables
+  - name: Platform Clock
+    description: >-
+      Read the platform clock and, on a node started with clock control
+      enabled, change it. A test feature.
 paths:
   /account:
     get:
@@ -1003,6 +1007,111 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         "403":
           $ref: '#/components/responses/Forbidden'
+        "503":
+          $ref: '#/components/responses/ServiceUnavailable'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+  /platform/clock:
+    get:
+      tags:
+        - Platform Clock
+      summary: Get the platform clock
+      description: >-
+        Returns this node's platform time and its rate. Any authenticated
+        caller, of any tenant, may read it. On a node without clock control the
+        time is real time, the rate is 1 and `controllable` is false.
+      operationId: getPlatformClock
+      responses:
+        "400":
+          $ref: "#/components/responses/QueryParameterRefused"
+        "200":
+          description: The platform clock.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformClockDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        default:
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags:
+        - Platform Clock
+      summary: Change the platform clock
+      description: >-
+        Sets, moves or re-rates the clock of the whole instance, which every
+        tenant shares. A test feature: it works only on a node started with
+        clock control enabled.
+
+
+        - `time` not later than now sets the clock there. It is refused with
+        409 CLOCK_BEFORE_RECORDED_TIME when the store has recorded a later
+        time.
+
+        - A later target (`time`, or now plus `advanceByMs`) moves the clock
+        forward through every scheduled due time on the way, firing each
+        scheduled transition at its due time, and answers when the target is
+        reached.
+
+        - `rate` alone changes the speed from now on; the time does not jump.
+
+        - A `rate` sent with a later `time` or with `advanceByMs` takes effect
+        when the move finishes.
+
+
+        At most one of `time` and `advanceByMs`, and at least one member.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
+      operationId: changePlatformClock
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlatformClockChangeDto"
+      responses:
+        "400":
+          description: >-
+            Bad request. `properties.errorCode` is BAD_REQUEST: a query
+            parameter the operation does not declare; a body that is not JSON
+            or has an unknown member; a member given as null; no member; both `time` and
+            `advanceByMs`; `advanceByMs` not positive, not an integer or
+            beyond the year 9000; `rate` not a number, outside 0.1 to 100 or
+            with more than six fractional digits; `time` not RFC 3339 or
+            outside the years 1970 to 9000.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "200":
+          description: The clock after the change.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformClockDto"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          description: >-
+            Forbidden. `properties.errorCode` is FORBIDDEN when the caller is not a
+            platform operator or acts on behalf of a user, and
+            CLOCK_CONTROL_DISABLED when the node was not started with clock
+            control enabled.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "409":
+          description: >-
+            CLOCK_BEFORE_RECORDED_TIME — the store has recorded a time later
+            than the requested `time`; the detail names the latest one, and the
+            problem's `properties.latestRecordedTime` carries it as an RFC 3339
+            timestamp. The clock is unchanged.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
         "503":
           $ref: '#/components/responses/ServiceUnavailable'
         default:
@@ -11060,6 +11169,46 @@ components:
           description: >-
             The consistency time, at the store's full precision. Pass it
             unchanged as pointInTime.
+    PlatformClockDto:
+      type: object
+      required:
+        - now
+        - rate
+        - controllable
+      properties:
+        now:
+          type: string
+          format: date-time
+          description: This node's platform time.
+        rate:
+          type: number
+          description: Platform seconds per real second; 1 without clock control.
+        controllable:
+          type: boolean
+          description: Whether this node accepts changes to the clock.
+    PlatformClockChangeDto:
+      type: object
+      properties:
+        time:
+          type: string
+          format: date-time
+          description: >-
+            The platform time to go to; RFC 3339, in the years 1970 to 9000.
+            Exclusive with `advanceByMs`.
+        advanceByMs:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >-
+            Milliseconds to move the clock forward from now; the target may not
+            lie past the year 9000. Exclusive with `time`.
+        rate:
+          type: number
+          minimum: 0.1
+          maximum: 100
+          description: >-
+            Platform seconds per real second, with at most six fractional
+            digits.
     ModelStatsDto:
       type: object
       properties:

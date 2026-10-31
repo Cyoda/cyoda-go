@@ -23,25 +23,32 @@ const (
 )
 
 // ErrClientGone marks an error as the request's own client having gone away
-// before the request did anything — not a server fault. Only a layer that was
+// while a layer waited on it — not a server fault. Only a layer that was
 // waiting on the client may mark a cause with it: internal/domain/txjoin, for a
 // joined request whose context ended while it queued for the transaction's
-// lock, having touched nothing, and internal/callout, for a callout whose
-// caller's context ended during or between tries. A door's error funnel files
+// lock, having touched nothing; internal/callout, for a callout whose caller's
+// context ended during or between tries; and internal/platformclock, for a
+// clock move whose caller's context ended between steps or during a store call
+// it was waiting on, which leaves the clock at the last step it applied and
+// published, or for a set-back whose caller's context ended during its
+// consistency-time read, which restores the previous setting. A door's error funnel files
 // a departed client on this marker and on nothing else, because a cancellation
 // somewhere on an error's chain says only that something was called off, not
 // that this is what went wrong — see isClientGoneCancellation.
 //
 // An error marked with it is logged at DEBUG and carries no ticket: there is
 // nobody left to quote one to.
-var ErrClientGone = errors.New("the request's client went away before the request ran")
+var ErrClientGone = errors.New("the request's client went away")
 
 // ClientGone marks err — a context error a layer read off the caller's own
-// context — as that client's departure. Only a layer that was waiting on the
-// client may call it: internal/domain/txjoin, for a joined request whose
-// context ended while it queued for the transaction's lock, and
-// internal/callout, for a callout whose caller's context ended during or
-// between tries. Everything under the marker is left intact, so errors.Is still
+// context, or the error of a call that context's end interrupted — as that
+// client's departure. Only a layer that was waiting on the client may call it:
+// internal/domain/txjoin, for a joined request whose context ended while it
+// queued for the transaction's lock, internal/callout, for a callout whose
+// caller's context ended during or between tries, and internal/platformclock,
+// for a clock move whose caller's context ended between steps or during a
+// store call, or a clock set-back whose caller's context ended during its
+// consistency-time read. Everything under the marker is left intact, so errors.Is still
 // finds the context error and status.FromContextError still reads the right
 // gRPC code off it.
 func ClientGone(err error) error {
@@ -305,7 +312,7 @@ type ProblemDetail struct {
 }
 
 // isClientGoneCancellation reports whether appErr's cause is the request's
-// client having gone away before the request did anything, rather than a
+// client having gone away while a layer waited on it, rather than a
 // genuine server fault. It asks the one question that settles it: did the layer
 // that was waiting on the client SAY so, by marking the cause ErrClientGone?
 //

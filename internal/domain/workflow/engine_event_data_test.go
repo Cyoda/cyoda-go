@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"reflect"
 	"testing"
 
@@ -133,7 +134,7 @@ func TestEngineEventData_CancelVisitLimit(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), WithMaxStateVisits(2))
+	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithMaxStateVisits(2))
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "event-data-cancel", ModelVersion: "1"}
 	saveWorkflow(t, factory, ctx, ref, []spi.WorkflowDefinition{{
@@ -198,7 +199,7 @@ func TestEngineEventData_PauseProcessNamesInPipelineOrder(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
-	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), WithExternalProcessing(&mockExternalProcessing{
+	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(&mockExternalProcessing{
 		dispatchFunc: func(_ context.Context, entity *spi.Entity, _ spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
 			return entity, nil
 		},

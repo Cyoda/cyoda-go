@@ -378,3 +378,27 @@ func (s *scheduledTaskStore) SweepMarks(ctx context.Context) error {
 	}
 	return nil
 }
+
+// SchedulerActivity reports, across all tenants, the earliest next_attempt_time
+// of a WAITING task and whether any task is RUNNING. Read under the commit
+// gate, as ClaimDue's reads are, so it sees no half-committed claim. A pure
+// read abandons nothing, so its wait for the gate honours ctx.
+func (s *scheduledTaskStore) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
+	if err := s.tm.acquireCommitGate(ctx); err != nil {
+		return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read the scheduler activity: %w", err)
+	}
+	defer s.tm.releaseCommitGate()
+
+	var r spi.SchedulerActivityReport
+	var earliest sql.NullInt64
+	var running int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT (SELECT MIN(next_attempt_time) FROM scheduled_tasks WHERE status = 'WAITING'),
+		        EXISTS (SELECT 1 FROM scheduled_tasks WHERE status = 'RUNNING')`).Scan(&earliest, &running); err != nil {
+		return r, fmt.Errorf("failed to read the scheduler activity: %w", err)
+	}
+	r.HasWaiting = earliest.Valid
+	r.EarliestWaitingMs = earliest.Int64
+	r.Running = running == 1
+	return r, nil
+}

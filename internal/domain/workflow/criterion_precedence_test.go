@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -22,7 +23,7 @@ func newEngineWithFailingModelStore(t *testing.T) (*Engine, *spi.Entity, *criter
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := baseFactory.NewTransactionManager(uuids)
 	factory := &errModelStoreFactory{StoreFactory: baseFactory, err: errors.New("model store down")}
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1.0"}

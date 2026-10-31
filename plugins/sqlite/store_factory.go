@@ -22,10 +22,18 @@ import (
 // Option is a functional option for newStoreFactory.
 type Option func(*StoreFactory)
 
-// WithClock injects a custom Clock into the factory.
-// Used by conformance tests to advance time deterministically.
+// WithClock injects the PHYSICAL clock into the factory: the clock behind
+// liveness (scheduler owner heartbeats and sweeps, search-job heartbeats and
+// stale reclaim). Used by conformance tests to advance time deterministically.
 func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
+}
+
+// WithBusinessClock injects the BUSINESS clock: the one behind submit time,
+// snapshot time, consistency time and retention cutoffs. It defaults to the
+// physical clock.
+func WithBusinessClock(c Clock) Option {
+	return func(f *StoreFactory) { f.bizClock = c }
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema and
@@ -61,7 +69,8 @@ type StoreFactory struct {
 	db        *sql.DB
 	readDB    *sql.DB
 	fileLock  *flock.Flock
-	clock     Clock
+	clock     Clock // physical: liveness
+	bizClock  Clock // business: stamps and retention; defaults to clock
 	cfg       config
 	tm        *transactionManager
 	applyFunc ApplyFunc
@@ -191,6 +200,9 @@ func newStoreFactory(ctx context.Context, cfg config, opts ...Option) (*StoreFac
 	}
 	for _, o := range opts {
 		o(f)
+	}
+	if f.bizClock == nil {
+		f.bizClock = f.clock
 	}
 	f.startWALMaintenance()
 	return f, nil
@@ -399,7 +411,7 @@ func (f *StoreFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMac
 }
 
 func (f *StoreFactory) AsyncSearchStore(_ context.Context) (spi.AsyncSearchStore, error) {
-	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock}, nil
+	return &asyncSearchStore{db: f.db, readDB: f.readDB, clock: f.clock, biz: f.bizClock}, nil
 }
 
 // ScheduledTaskStore returns the scheduled-task store. No tenant is resolved

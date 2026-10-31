@@ -1308,6 +1308,30 @@ type PagedEntityResultsDto struct {
 	Page    *PageMetadataDto   `json:"page,omitempty"`
 }
 
+// PlatformClockChangeDto defines model for PlatformClockChangeDto.
+type PlatformClockChangeDto struct {
+	// AdvanceByMs Milliseconds to move the clock forward from now; the target may not lie past the year 9000. Exclusive with `time`.
+	AdvanceByMs *int64 `json:"advanceByMs,omitempty"`
+
+	// Rate Platform seconds per real second, with at most six fractional digits.
+	Rate *float32 `json:"rate,omitempty"`
+
+	// Time The platform time to go to; RFC 3339, in the years 1970 to 9000. Exclusive with `advanceByMs`.
+	Time *time.Time `json:"time,omitempty"`
+}
+
+// PlatformClockDto defines model for PlatformClockDto.
+type PlatformClockDto struct {
+	// Controllable Whether this node accepts changes to the clock.
+	Controllable bool `json:"controllable"`
+
+	// Now This node's platform time.
+	Now time.Time `json:"now"`
+
+	// Rate Platform seconds per real second; 1 without clock control.
+	Rate float32 `json:"rate"`
+}
+
 // Prize defines model for Prize.
 type Prize struct {
 	Category  string        `json:"category"`
@@ -2857,6 +2881,9 @@ type RegisterTrustedKeyJSONRequestBody = RegisterTrustedKeyRequestDto
 // ReactivateTrustedKeyJSONRequestBody defines body for ReactivateTrustedKey for application/json ContentType.
 type ReactivateTrustedKeyJSONRequestBody = ReactivateKeyRequestDto
 
+// ChangePlatformClockJSONRequestBody defines body for ChangePlatformClock for application/json ContentType.
+type ChangePlatformClockJSONRequestBody = PlatformClockChangeDto
+
 // SubmitAsyncSearchJobJSONRequestBody defines body for SubmitAsyncSearchJob for application/json ContentType.
 type SubmitAsyncSearchJobJSONRequestBody = QueryConditionDto
 
@@ -3110,6 +3137,12 @@ type ServerInterface interface {
 	// Fetch available transitions (platform-library format)
 	// (GET /platform-api/entity/fetch/transitions)
 	FetchEntityTransitions(w http.ResponseWriter, r *http.Request, params FetchEntityTransitionsParams)
+	// Get the platform clock
+	// (GET /platform/clock)
+	GetPlatformClock(w http.ResponseWriter, r *http.Request)
+	// Change the platform clock
+	// (POST /platform/clock)
+	ChangePlatformClock(w http.ResponseWriter, r *http.Request)
 	// List the tenant's scheduled tasks
 	// (GET /scheduled-tasks)
 	ListScheduledTasks(w http.ResponseWriter, r *http.Request, params ListScheduledTasksParams)
@@ -6290,6 +6323,46 @@ func (siw *ServerInterfaceWrapper) FetchEntityTransitions(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// GetPlatformClock operation middleware
+func (siw *ServerInterfaceWrapper) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPlatformClock(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ChangePlatformClock operation middleware
+func (siw *ServerInterfaceWrapper) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ChangePlatformClock(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListScheduledTasks operation middleware
 func (siw *ServerInterfaceWrapper) ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 
@@ -7038,6 +7111,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/invalidate", wrapper.InvalidateTrustedKey)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/oauth/keys/trusted/{keyId}/reactivate", wrapper.ReactivateTrustedKey)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform/clock", wrapper.GetPlatformClock)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/platform/clock", wrapper.ChangePlatformClock)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/async/{entityName}/{modelVersion}", wrapper.SubmitAsyncSearchJob)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search/async/{jobId}", wrapper.GetAsyncSearchResults)

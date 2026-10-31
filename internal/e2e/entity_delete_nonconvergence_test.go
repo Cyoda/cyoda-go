@@ -13,6 +13,7 @@ import (
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -61,6 +62,7 @@ func newLowBudgetDeleteServer(t *testing.T, maxCycles int) string {
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
 		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
+		platformclock.Real(),
 	).WithMaxDeleteCycles(maxCycles)
 
 	spec, err := genapi.GetSwagger()

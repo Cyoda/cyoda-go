@@ -8,6 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -53,7 +54,7 @@ func newListEntitiesFixture(t *testing.T, tenantID spi.TenantID, ref spi.ModelRe
 		}
 	}
 
-	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base))
+	h := entity.New(base, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base), platformclock.Real())
 	return ctx, h, base
 }
 

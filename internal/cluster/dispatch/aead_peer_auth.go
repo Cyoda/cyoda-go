@@ -121,7 +121,7 @@ type AEADPeerAuth struct {
 // the other. selfNodeID is this node's own id, which is what every inbound
 // envelope must have been sealed for.
 func NewAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration) (*AEADPeerAuth, error) {
-	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, time.Now)
+	return newAEADPeerAuth(sharedSecret, selfNodeID, skew, time.Now) // realtime: peer auth freshness window
 }
 
 func newAEADPeerAuth(sharedSecret []byte, selfNodeID string, skew time.Duration, clockFn func() time.Time) (*AEADPeerAuth, error) {

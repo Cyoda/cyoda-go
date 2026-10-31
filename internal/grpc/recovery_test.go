@@ -29,6 +29,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -372,7 +373,7 @@ func (env *recoveryTestServer) importAndLockModel(t *testing.T, entityName, vers
 	if err != nil {
 		t.Fatalf("marshal sample data: %v", err)
 	}
-	mh := model.New(env.raw)
+	mh := model.New(env.raw, platformclock.Real())
 	if _, err := mh.ImportModel(ctx, model.ImportModelInput{
 		EntityName:   entityName,
 		ModelVersion: version,
@@ -482,16 +483,16 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	tracker := &recoveryTrackingTxMgr{TransactionManager: realTxMgr}
 
 	localProc := localproc.New()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker,
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(localProc))
 
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
-	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
-	modelHandler := model.New(factory)
+	searchSvc := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(factory, platformclock.Real())
 
 	uc := &spi.UserContext{
 		UserID:   "recovery-test-user",
@@ -512,7 +513,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool,
 	registry := NewMemberRegistry()
 	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag, ka, newFixedConsistency())
+		false, 0, true, healthFlag, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} })
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

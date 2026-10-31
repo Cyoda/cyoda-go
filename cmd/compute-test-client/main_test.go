@@ -9,6 +9,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"google.golang.org/protobuf/types/known/timestamppb"
+
+	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
 )
 
 // TestCatalog_NoopReturnsEntityUnchanged verifies the noop processor
@@ -324,7 +328,10 @@ func TestCatalog_SchedFnResolve(t *testing.T) {
 
 	call := func(t *testing.T, data string) map[string]any {
 		t.Helper()
-		_, result, err := fn(context.Background(), &Entity{ID: "e-1", Data: json.RawMessage(data)}, nil)
+		ce := &cepb.CloudEvent{Attributes: map[string]*cepb.CloudEvent_CloudEventAttributeValue{
+			"time": {Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.Now()}},
+		}}
+		_, result, err := fn(withRequestTime(context.Background(), ce), &Entity{ID: "e-1", Data: json.RawMessage(data)}, nil)
 		if err != nil {
 			t.Fatalf("sched-fn-resolve(%s): %v", data, err)
 		}
@@ -500,5 +507,31 @@ func TestCatalog_WriteSelf_WritesThroughTheCallbackAndReturnsNoData(t *testing.T
 	if _, err := proc(context.Background(), &Entity{ID: "ent", Data: []byte(`{}`)},
 		cbConfig{Marker: "written"}, "the-pass", newCallbackClient(failing.URL, staticToken("bearer"))); err == nil {
 		t.Fatal("a refused write must fail the processor")
+	}
+}
+
+// An absolute schedule is computed from the request's time attribute, which is
+// platform time, not from the test client's own clock.
+func TestCatalog_SchedFnResolve_UsesRequestTime(t *testing.T) {
+	cat := newCatalog(nil, nil)
+	fn, _ := cat.function("sched-fn-resolve")
+	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
+	ce := &cepb.CloudEvent{Attributes: map[string]*cepb.CloudEvent_CloudEventAttributeValue{
+		"time": {Attr: &cepb.CloudEvent_CloudEventAttributeValue_CeTimestamp{CeTimestamp: timestamppb.New(at)}},
+	}}
+	ctx := withRequestTime(context.Background(), ce)
+
+	_, result, err := fn(ctx, &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result["fireAt"], at.UnixMilli()+1000; got != want {
+		t.Errorf("fireAt = %v, want %v", got, want)
+	}
+
+	// Without the attribute there is no time to compute from: an error.
+	_, _, err = fn(withRequestTime(context.Background(), &cepb.CloudEvent{}), &Entity{ID: "e-1", Data: json.RawMessage(`{"schedMode":"absolute","offsetMs":1000}`)}, nil)
+	if err == nil {
+		t.Error("a request without a time attribute must fail")
 	}
 }

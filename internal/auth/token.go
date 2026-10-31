@@ -66,7 +66,7 @@ const InvalidClientFloor = 500 * time.Millisecond
 
 // holdUntil waits until deadline, or until the client leaves.
 func holdUntil(ctx context.Context, deadline time.Time) {
-	d := time.Until(deadline)
+	d := time.Until(deadline) // realtime: auth rate limit and latency
 	if d <= 0 {
 		return
 	}
@@ -129,7 +129,7 @@ func (h *tokenHandler) withAudience(claims map[string]any) map[string]any {
 // what the tenant holds. Refusals made without a read (no credentials, a
 // malformed id) and successful answers are not held.
 func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
+	start := time.Now() // realtime: auth rate limit and latency
 	tenant, ok := tenantroute.Addressed(r.Context())
 	if !ok {
 		writeTokenServerError(w, "tenantroute.Addressed", errors.New("token handler reached outside the tenant route group"))
@@ -208,7 +208,7 @@ func (h *tokenHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // bucket answers 429 slow_down with Retry-After: the whole seconds until a
 // token is there, at least one; the caller then stops.
 func (h *tokenHandler) takeToken(w http.ResponseWriter, client *M2MClient) bool {
-	ok, wait := h.buckets.allow(clientKey{client.TenantID, client.ClientID}, time.Now())
+	ok, wait := h.buckets.allow(clientKey{client.TenantID, client.ClientID}, time.Now()) // realtime: auth rate limit and latency
 	if !ok {
 		writeTokenRetry(w, http.StatusTooManyRequests, "slow_down", int(math.Ceil(wait.Seconds())))
 	}
@@ -225,7 +225,7 @@ func (h *tokenHandler) handleClientCredentials(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	claims := map[string]any{
 		"sub":          client.ClientID,
 		"caas_user_id": client.UserID,
@@ -298,7 +298,7 @@ func (h *tokenHandler) handleTokenExchange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	assertionExp, ok := h.assertionClaimsAcceptable(parsed.Claims, now)
 	if !ok {
 		writeTokenError(w, http.StatusBadRequest, "invalid_request", "subject token claims rejected")

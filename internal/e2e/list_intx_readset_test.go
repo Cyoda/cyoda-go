@@ -8,6 +8,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -59,6 +60,7 @@ func newListHandler(t *testing.T) *entity.Handler {
 		common.NewDefaultUUIDGenerator(),
 		testApp.WorkflowEngine(),
 		txgate.New(), newTestConsistency(t, testApp.StoreFactory()),
+		platformclock.Real(),
 	)
 }
 

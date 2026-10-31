@@ -6,6 +6,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`memory.NewAsyncSearchStore` is removed** from the memory plugin module;
+  the async search store comes from the store factory.
+
+- **Storage plugins: three new obligations for the platform clock.**
+  `ScheduledTaskStore.SchedulerActivity` returns the earliest waiting task's
+  `NextAttemptTime` and whether any task is running, across all tenants.
+  `TransactionManager.LatestRecordedTime` returns the store's floor without
+  raising it (zero on a fresh store). `CreateJob` stamps `HeartbeatTime` from
+  the store's physical clock, and stale-job reclaim no longer falls back to
+  `CreateTime`. Out-of-tree plugins must implement the first two and follow
+  the third; see `COMPATIBILITY.md`.
+
 - **Only M2M clients reach cyoda-go; an application acts for its users
   through an on-behalf-of client.** cyoda-go has no per-user permissions: an
   on-behalf-of client exchanges a user assertion its application signed for
@@ -1198,6 +1210,18 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Added
 
+- **A controllable platform clock, a test feature (off by default).** With
+  `CYODA_CLOCK_CONTROL_ENABLED=true`, a platform operator can set the clock
+  to a past or future time, change its rate, or move it forward through
+  `POST /platform/clock`; `GET /platform/clock` (and the gRPC
+  `PlatformClockGetRequest`) read it. Revision, audit, consistency and
+  scheduled times follow the clock, and a move fires each scheduled
+  transition at its due time. Callout requests carry, in the CloudEvent
+  `time` attribute, the platform time at which the owning node took the
+  callout up, the same on every try and every node. Authentication,
+  timeouts and leases stay on real time. The clock is instance-wide. See
+  `cyoda help clock`.
+
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
   error (500) already carried it (a UUID, also written to the server log with
   the failure); the schema now types it for generated clients. No other
@@ -1487,6 +1511,35 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the table for the change, inside the migration's transaction; the SQLite
   store also stops mapping a zero `PointInTime` to `NULL` and persists the
   instant as PostgreSQL always has.
+
+- **memory and sqlite plugins: `WithClock` sets the physical clock** (liveness
+  and timeouts), and the new `WithBusinessClock` sets the business clock
+  (stamps and retention), which defaults to the physical one, so a caller that
+  sets only `WithClock` sees no change.
+
+- **The search reapers start after the cluster join,** so the snapshot-TTL
+  and stale-job sweeps never run before the node has its peers' settings.
+
+- **SQLite `Begin` reads the clock for a snapshot time after it takes the
+  commit gate,** not before waiting for it, so the recorded snapshot time is
+  the reading at that moment and can be later by the gate wait.
+
+- **PostgreSQL migration `000017`, SQLite `000012` and `000013`: storage
+  follows the platform clock.**
+  - PostgreSQL `000017`:
+    - re-creates `cyoda_stamp` and `cyoda_consistency_time` with an optional
+      time argument; with none they read the database clock as before.
+      Re-creating them gives `PUBLIC` its default `EXECUTE` again, so a
+      deployment that revoked it re-applies its revoke after migrating;
+    - drops the column defaults on `entities.creation_date`,
+      `entities.last_modified`, `entity_versions.transaction_time`,
+      `entity_versions.creation_date` and `search_jobs.created_at` (every
+      insert writes them);
+    - backfills `search_jobs.heartbeat_time` from `created_at` and makes it
+      `NOT NULL`;
+    - drops the unused `model_schema_extensions.created_at`.
+  - SQLite `000012` drops `model_schema_extensions.created_at`, and `000013`
+    backfills `search_jobs.heartbeat_time` from `create_time`.
 
 - **A client that goes away mid-request is logged at DEBUG, with no ticket** —
   on HTTP (`common.WriteError`) and in gRPC (`buildErrorFields`), the two

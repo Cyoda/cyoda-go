@@ -132,6 +132,9 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SCHEDULER_RETRY_DELAY", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Delay before the first retry of a scheduled run that failed safely; it doubles on each further failure. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_SCHEDULER_RETRY_DELAY_MAX", Topic: "scheduler", Type: "duration", Default: "15m", Description: "The retry delay never grows past this. Must be >= CYODA_SCHEDULER_RETRY_DELAY; startup fails otherwise."},
 	{Name: "CYODA_SCHEDULER_SHUTDOWN_DRAIN", Topic: "scheduler", Type: "duration", Default: "20s", Description: "On shutdown, how long a node waits for its scheduled runs before it cancels them; a run with an unsafe processor callout in flight is not cancelled. Must be >= 0; startup fails otherwise."},
+
+	// --- clock ---
+	{Name: "CYODA_CLOCK_CONTROL_ENABLED", Topic: "clock", Type: "bool", Default: "false", Description: "Test feature: build a controllable platform clock and accept POST /platform/clock. Instance-wide; never for production. Use the same value on every node."},
 }
 
 // RootConfigVars returns a copy of the root var table.

@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 	"time"
 
@@ -80,7 +81,7 @@ func TestAsyncNewTx_FailedProcessorsWriteLandsBeforeSavepointIsUndone(t *testing
 			return nil, errors.New("the cnode answered: failed")
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(ext))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext))
 
 	saveWorkflow(t, factory, base, modelRef, []spi.WorkflowDefinition{{
 		Version: "1.1", Name: "FenceWaitWF", InitialState: "INITIAL", Active: true,

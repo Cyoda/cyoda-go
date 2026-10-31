@@ -94,7 +94,7 @@ func mnWarmUp(t *testing.T, fixture MultiNodeFixture, owner *client.Client, tena
 	model := "mn-warm-" + warmTag
 	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback, mnWorkflow(model+"-wf", mnProc("noop", "SYNC", warmTag, "", nil)))
 	cc := StartComputeClientOrSkip(t, fixture, node, parity.ComputeClientSpec{TenantID: tenant.ID, Tags: append([]string{warmTag}, extraTags...)})
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // realtime: test poll deadline
 	for {
 		status, body, err := owner.CreateEntityRaw(t, model, 1, mnSample)
 		if err != nil {
@@ -103,7 +103,7 @@ func mnWarmUp(t *testing.T, fixture MultiNodeFixture, owner *client.Client, tena
 		if status == http.StatusOK {
 			return cc
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("30s after it attached to pnode %d the owner still cannot route to tag %s: %d %s", node, warmTag, status, body)
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -185,11 +185,11 @@ func RunCallout_HandOverTwoTriesInOneExchange(t *testing.T, fixture MultiNodeFix
 	cbRouteSetupModel(t, owner, model, cbRouteSampleNoWriteback,
 		mnWorkflow("mn-ho-two-wf", mnProc("noop", "SYNC", tag, "", map[string]any{"idempotent": true, "responseTimeoutMs": 500})))
 
-	start := time.Now()
+	start := time.Now() // realtime: elapsed wall time against a callout timeout
 	if _, err := owner.CreateEntity(t, model, 1, mnSample); err != nil {
 		t.Fatalf("create through the owner: %v", err)
 	}
-	elapsed := time.Since(start)
+	elapsed := time.Since(start) // realtime: elapsed wall time against a callout timeout
 	if elapsed < 500*time.Millisecond || elapsed > 10*time.Second {
 		t.Errorf("create took %v; want at least the 500ms limit of the silent try and far less than the 30s default", elapsed)
 	}

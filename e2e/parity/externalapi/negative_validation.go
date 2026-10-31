@@ -126,7 +126,7 @@ func RunExternalAPI_12_04_GetEntityAtTimeBeforeCreation(t *testing.T, fixture pa
 		t.Fatalf("lock: %v", err)
 	}
 	// Pin a timestamp clearly before any entity creation.
-	beforeCreate := time.Now().UTC().Add(-1 * time.Hour)
+	beforeCreate := time.Now().UTC().Add(-1 * time.Hour) // realtime: pins an instant before the server clock reads, which a parity run leaves identity
 	if _, err := d.CreateEntity("neg4", 1, `{"k":1}`); err != nil {
 		t.Fatalf("create entity: %v", err)
 	}
