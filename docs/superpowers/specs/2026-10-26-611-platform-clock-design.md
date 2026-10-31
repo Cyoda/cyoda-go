@@ -166,8 +166,10 @@ have the starting inventory.
   without one is not sent.
 - **Why:** a schedule function that returns an absolute fire time computes it
   on the platform's clock, not the compute node's.
-- **Cloud:** it sets this attribute from its JVM clock
-  (`~/dev/cyoda/backend/src/main/kotlin/net/cyoda/saas/grpc/ProtobufMessageConverter.kt:153`).
+- **Cloud:** it stamps every CloudEvent with its JVM clock at conversion
+  (`~/dev/cyoda/backend/src/main/kotlin/net/cyoda/saas/grpc/ProtobufMessageConverter.kt:153`),
+  a new value on each try; aligning means one value per callout, kept across
+  retries.
 - **Other CloudEvents** (keep-alives, API responses, errors) are unchanged.
 
 ## The setting across a cluster

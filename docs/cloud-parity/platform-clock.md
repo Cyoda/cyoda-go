@@ -66,8 +66,12 @@ node id) wins; a node that joins takes it from its peers.
 
 ## 5. What Cloud does
 
-Cloud has no such control; this is a cyoda-go test feature. Cloud adopts the
-CloudEvent `time` attribute behaviour (it already sets it) and the
+Cloud has no such control; this is a cyoda-go test feature. Cloud aligns the
+CloudEvent `time` attribute on callout requests: it stamps every CloudEvent
+with its JVM clock at conversion
+(`backend/src/main/kotlin/net/cyoda/saas/grpc/ProtobufMessageConverter.kt:153`),
+a new value on each try, and the contract is one value per callout, taken when
+the callout is taken up and sent unchanged on every retry. Cloud adopts the
 `PlatformClockGetRequest` read if it wants twin test tooling. Plugin authors
 must implement `ScheduledTaskStore.SchedulerActivity` and
 `TransactionManager.LatestRecordedTime`, and judge a never-heartbeated search

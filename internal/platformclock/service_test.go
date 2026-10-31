@@ -182,16 +182,17 @@ func TestNewService_NilCollaboratorPanics(t *testing.T) {
 	tasks := func(context.Context) (spi.ScheduledTaskStore, error) { return nil, nil }
 	publish := (&publishLog{}).publish
 	tests := map[string]func(){
-		"clock":      func() { NewService(nil, storeTime, tasks, publish, testPoll) },
-		"store time": func() { NewService(c, nil, tasks, publish, testPoll) },
-		"tasks":      func() { NewService(c, storeTime, nil, publish, testPoll) },
-		"publish":    func() { NewService(c, storeTime, tasks, nil, testPoll) },
+		"a nil clock":      func() { NewService(nil, storeTime, tasks, publish, testPoll) },
+		"a nil store time": func() { NewService(c, nil, tasks, publish, testPoll) },
+		"nil tasks":        func() { NewService(c, storeTime, nil, publish, testPoll) },
+		"a nil publish":    func() { NewService(c, storeTime, tasks, nil, testPoll) },
+		"a zero poll":      func() { NewService(c, storeTime, tasks, publish, 0) },
 	}
 	for name, build := range tests {
 		t.Run(name, func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
-					t.Fatalf("NewService with a nil %s did not panic", name)
+					t.Fatalf("NewService with %s did not panic", name)
 				}
 			}()
 			build()

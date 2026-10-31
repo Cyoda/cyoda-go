@@ -92,6 +92,8 @@ func NewService(c *Test, storeTime func(ctx context.Context) (time.Time, error),
 		panic("platformclock.NewService: nil scheduled-task store")
 	case publish == nil:
 		panic("platformclock.NewService: nil publish")
+	case poll <= 0:
+		panic("platformclock.NewService: poll interval not positive")
 	}
 	return &Service{c: c, storeTime: storeTime, tasks: tasks, publish: publish, poll: poll}
 }
