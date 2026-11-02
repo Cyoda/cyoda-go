@@ -63,7 +63,7 @@ Every change, and every step of a move, is pushed to every node of the cluster, 
 Advice for a test run:
 
 - Set the start in the past before you write any data or import any model; earlier activity raises the earliest allowed start.
-- Retention follows platform time: after a move, expired async search results and recorded submit times are dropped as the new time dictates.
+- Retention follows platform time: after a move, the next reap drops async search results that are past their retention at the new time, and later commits drop recorded submit times that are.
 - A move needs a running scheduler and the compute nodes that its scheduled tasks call; without them it waits.
 - A node that starts or shuts down while a change runs can make the change fail.
 - Cluster nodes need synchronised host clocks.
@@ -71,6 +71,8 @@ Advice for a test run:
 ## SEE ALSO
 
 - config.clock
+- config.cluster
+- errors.CLOCK_NOT_CONFIRMED
 - scheduled-tasks
 - workflows
 - crud

@@ -78,4 +78,4 @@ the callout is taken up and sent unchanged on every retry. Cloud adopts the
 `PlatformClockGetRequest` read if it wants twin test tooling. Plugin authors
 must implement `ScheduledTaskStore.SchedulerActivity` and
 `TransactionManager.LatestRecordedTime`, and judge a never-heartbeated search
-job's liveness from `HeartbeatTime`, which `CreateJob` now stamps.
+job's liveness from `HeartbeatTime`, which `CreateJob` stamps.
