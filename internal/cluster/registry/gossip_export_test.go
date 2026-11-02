@@ -54,3 +54,10 @@ func (g *Gossip) MemberStateForTest(name string) (lifecycle.State, bool) {
 	}
 	return memberState(m.Meta)
 }
+
+// HoldsAnnouncedListForTest reports whether this node holds the tag list the
+// member called name announces in its metadata.
+func (g *Gossip) HoldsAnnouncedListForTest(name string) bool {
+	_, announced, ok := g.announced(name)
+	return ok && g.tags.current(name, announced)
+}

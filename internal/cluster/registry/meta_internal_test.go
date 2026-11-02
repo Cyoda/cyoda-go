@@ -117,6 +117,8 @@ func (b *metaBuilder) held() (listVersion, lifecycle.State) {
 	return b.version, b.state
 }
 
+// TestSetState_ConcurrentWithUpdateTags guards against a torn version/state
+// pairing under -race; a correct implementation passes it by design.
 func TestSetState_ConcurrentWithUpdateTags(t *testing.T) {
 	g := startInternalGossip(t, "meta-concurrent", time.Hour)
 

@@ -126,13 +126,34 @@ func awaitPeerState(t *testing.T, r *registry.Gossip, name string, want lifecycl
 	})
 }
 
+// quietChanged returns r's Changed channel once a snapshot of it stays open
+// for 200 ms, within 5 s.
+func quietChanged(t *testing.T, r *registry.Gossip) <-chan struct{} {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		ch := r.Changed()
+		if !closedWithin(ch, 200*time.Millisecond) {
+			return ch
+		}
+	}
+	t.Fatal("Changed kept firing for 5s in a cluster with nothing changing")
+	return nil
+}
+
 func TestSetState_ReadvertisedToPeer(t *testing.T) {
 	a := startGossip(t, gossipCfg("state-adv-a"))
 	b := startGossipSeededBy(t, "state-adv-b", a)
 	awaitPeerState(t, a, "state-adv-b", lifecycle.Starting)
 
-	time.Sleep(time.Second) // the join and the first list fetch settle
-	ch := a.Changed()
+	// The join fired Changed, and so does the arrival of B's first list. Both
+	// are over once A holds the list B announces; the fire for the arrival
+	// follows the store by a moment, so the snapshot is retaken until one
+	// stays open.
+	eventually(t, 5*time.Second, "A holds the list B announces", func() bool {
+		return a.HoldsAnnouncedListForTest("state-adv-b")
+	})
+	ch := quietChanged(t, a)
 
 	if err := b.SetState(lifecycle.Draining); err != nil {
 		t.Fatal(err)
