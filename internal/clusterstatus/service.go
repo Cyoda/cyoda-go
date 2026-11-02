@@ -188,7 +188,7 @@ func (s *Service) askOne(ctx context.Context, m Member) (NodeStatus, bool) {
 	defer cancel()
 	st, err := s.ask.AskStatus(actx, m.ID, m.Addr)
 	if err != nil {
-		slog.Debug("cluster status: member did not answer", "pkg", "clusterstatus", "memberId", m.ID, "addr", m.Addr, "error", err)
+		slog.Debug("cluster status: member did not answer", "pkg", "clusterstatus", "memberId", m.ID, "addr", m.Addr, "err", err)
 		return NodeStatus{}, false
 	}
 	return st, true

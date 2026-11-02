@@ -93,7 +93,7 @@ func (s *Self) Status(ctx context.Context) NodeStatus {
 	defer cancel()
 	db := true
 	if err := s.store.Ping(pctx); err != nil {
-		slog.Warn("cluster status: database ping failed", "error", err)
+		slog.Warn("cluster status: database ping failed", "pkg", "clusterstatus", "err", err)
 		db = false
 	}
 	return NodeStatus{State: s.lc.State(), Database: db, Version: s.version, Clock: s.clock()}
