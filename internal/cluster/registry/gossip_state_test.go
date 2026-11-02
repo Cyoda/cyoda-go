@@ -3,13 +3,16 @@ package registry_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
@@ -110,5 +113,79 @@ func TestGossip_StateSentOnlyOnJoin(t *testing.T) {
 	}
 	if got := g.LocalStateForTest(true); string(got) != "state" {
 		t.Fatalf("a join exchange sent %q, want %q", got, "state")
+	}
+}
+
+// awaitPeerState waits until r's directory shows the member called name in
+// state want.
+func awaitPeerState(t *testing.T, r *registry.Gossip, name string, want lifecycle.State) {
+	t.Helper()
+	eventually(t, 5*time.Second, fmt.Sprintf("%s shows %s", name, want), func() bool {
+		s, ok := r.MemberStateForTest(name)
+		return ok && s == want
+	})
+}
+
+func TestSetState_ReadvertisedToPeer(t *testing.T) {
+	a := startGossip(t, gossipCfg("state-adv-a"))
+	b := startGossipSeededBy(t, "state-adv-b", a)
+	awaitPeerState(t, a, "state-adv-b", lifecycle.Starting)
+
+	time.Sleep(time.Second) // the join and the first list fetch settle
+	ch := a.Changed()
+
+	if err := b.SetState(lifecycle.Draining); err != nil {
+		t.Fatal(err)
+	}
+	awaitPeerState(t, a, "state-adv-b", lifecycle.Draining)
+
+	// A state change is not a change of the cluster view callouts wait on.
+	select {
+	case <-ch:
+		t.Fatal("a peer's state change fired Changed")
+	default:
+	}
+}
+
+// TestDeregister_RunsPendingReadvertise pins that a state stored right before
+// Deregister still reaches the peers: the re-advertiser runs a pending poke
+// before it stops. B's re-advertiser is kept busy with the NORMAL broadcast,
+// so the DRAINING poke is the one still pending when Deregister stops it.
+func TestDeregister_RunsPendingReadvertise(t *testing.T) {
+	a := startGossip(t, gossipCfg("state-dereg-a"))
+	b := startGossipSeededBy(t, "state-dereg-b", a)
+	awaitPeerState(t, a, "state-dereg-b", lifecycle.Starting)
+
+	if err := b.SetState(lifecycle.Normal); err != nil {
+		t.Fatal(err)
+	}
+	awaitPeerState(t, a, "state-dereg-b", lifecycle.Normal)
+
+	var sawDraining atomic.Bool
+	sampled := make(chan struct{})
+	go func() {
+		defer close(sampled)
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			s, ok := a.MemberStateForTest("state-dereg-b")
+			if !ok {
+				return // B left
+			}
+			if s == lifecycle.Draining {
+				sawDraining.Store(true)
+			}
+			time.Sleep(time.Millisecond)
+		}
+	}()
+
+	if err := b.SetState(lifecycle.Draining); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Deregister(context.Background(), "state-dereg-b"); err != nil {
+		t.Fatal(err)
+	}
+	<-sampled
+	if !sawDraining.Load() {
+		t.Fatal("B left without its peer ever seeing DRAINING")
 	}
 }

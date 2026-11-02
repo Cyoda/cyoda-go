@@ -1,6 +1,10 @@
 package registry
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+)
 
 // LocalAddr exposes the address memberlist derived for this node, for tests
 // only: a node bound on an ephemeral port must be looked up after the fact
@@ -38,4 +42,15 @@ func (g *Gossip) LocalStateForTest(join bool) []byte { return g.delegate.LocalSt
 // MergeRemoteStateForTest delivers a push/pull payload as memberlist would.
 func (g *Gossip) MergeRemoteStateForTest(buf []byte, join bool) {
 	g.delegate.MergeRemoteState(buf, join)
+}
+
+// MemberStateForTest returns the lifecycle state this node's directory holds
+// for the member called name; false when the member is not alive here or its
+// metadata names no valid state.
+func (g *Gossip) MemberStateForTest(name string) (lifecycle.State, bool) {
+	m, ok := g.dir.get(name)
+	if !ok {
+		return "", false
+	}
+	return memberState(m.Meta)
 }

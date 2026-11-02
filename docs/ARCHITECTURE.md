@@ -765,18 +765,19 @@ drops a message.
 
 **Encryption:** AES-GCM encrypted gossip keyed by the shared secret `CYODA_HMAC_SECRET`. The same secret is used for gossip encryption and transaction token signing; the documented and chart-generated form is 32 hex-decoded bytes, which selects AES-256.
 
-**Node metadata** (JSON, serialized in memberlist node meta) is identity plus a list version:
+**Node metadata** (JSON, serialized in memberlist node meta) is identity, a list version and the node's lifecycle state:
 
 ```go
 type nodeMeta struct {
-    ID       string      `json:"id"`                 // stable, operator-assigned
-    Addr     string      `json:"addr"`               // HTTP address (e.g., "http://node-1:8123")
-    GRPCAddr string      `json:"grpcAddr,omitempty"` // gRPC address, when advertised
-    Tags     listVersion `json:"tv"`                 // {epoch: process start, unix nanos; seq: change counter}
+    ID       string          `json:"id"`                 // stable, operator-assigned
+    Addr     string          `json:"addr"`               // HTTP address (e.g., "http://node-1:8123")
+    GRPCAddr string          `json:"grpcAddr,omitempty"` // gRPC address, when advertised
+    Tags     listVersion     `json:"tv"`                 // {epoch: process start, unix nanos; seq: change counter}
+    State    lifecycle.State `json:"st"`                 // STARTING, NORMAL, DRAINING or UNHEALTHY
 }
 ```
 
-Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and refuses to start past memberlist's `MetaMaxSize` (512 bytes).
+Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and the longest state (`UNHEALTHY`), and refuses to start past memberlist's `MetaMaxSize` (512 bytes). One builder holds the list version and the state under one lock and marshals both, so a change to either never stores a stale copy of the other; the app feeds every lifecycle change into it through `Gossip.SetState`, which stores the metadata and asks the re-advertiser to gossip it without blocking. A re-advertise still pending when `Deregister` stops the re-advertiser runs before it returns, so a node's `DRAINING` reaches its peers before it leaves.
 
 **Tag lists** (tenant → compute tags) do not ride in the metadata. Each node holds one list per peer. The version a node announces in its own metadata is the authority for which of its lists is current; versions are compared for equality and ordered only within one epoch, so a node restarted under the same id — with a clock that stepped backwards, even — is never taken for an older self. On a change a node bumps `seq`, re-advertises its metadata and sends `{nodeID, version, tags}` to every alive peer with `memberlist.SendReliable` (topic `cluster.tags`). A peer stores a list whose version equals the announced one, or is a later `seq` of the announced epoch. A peer that holds no list for a node, or another version than the announced one, sends `cluster.tags.request` and the node answers with its list: on `NotifyJoin`, on `NotifyUpdate`, and from a periodic scan of all members that is the floor under both. `NotifyLeave` drops the node's list. memberlist's event callbacks run under its node lock and are the only place a member can be read safely, so they do nothing but copy: the member (name, address, metadata) into the registry's own directory of alive members, and a nudge into a bounded queue. Everything else — `List`, `Lookup`, the fan-out, the scan — reads that directory and never `memberlist.Members()`, whose nodes memberlist rewrites under a lock no caller can take. One worker goroutine stores lists, and every send runs on a goroutine of its own. `NodeRegistry.Changed()` is closed when a list arrives with different tags, when a peer joins and when one leaves.
 
@@ -2660,7 +2661,7 @@ This section describes where Cyoda-Go is expected to encounter limits. These are
 | Parameter | Default | Hard Limit | Notes |
 |-----------|---------|------------|-------|
 | PG connections per node | 36: 25 main + 10 scheduler + 1 heartbeat | Configurable (`CYODA_POSTGRES_MAX_CONNS`, `CYODA_POSTGRES_SCHEDULER_CONNS`; the heartbeat pool is fixed at 1), bounded by PG `max_connections` | Each in-flight transaction holds one main-pool connection. |
-| Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity and a list version only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
+| Gossip metadata size | ~100–150 bytes per node | memberlist `MetaMaxSize` = 512 bytes | Identity, a list version and the lifecycle state only; tenants and tags travel by reliable message and are unbounded. A node whose identity does not fit refuses to start. Alert on `cyoda.cluster.tags.lists_outstanding` staying non-zero. |
 | Search snapshot TTL | 1 hour | Configurable | Snapshots older than TTL are reaped. Increase for long-running batch workflows. |
 | Transaction lifetime | 5 minutes idle | Configurable | Enforced by PostgreSQL via `CYODA_POSTGRES_IDLE_IN_TX_TIMEOUT`. The callout deadline must fit under it (§4.3). |
 | Max cascade depth | 100 | Hardcoded | Total cascade steps across all states in one engine invocation. |

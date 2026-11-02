@@ -254,22 +254,45 @@ func ScanIntervalFor(patience time.Duration) time.Duration {
 // broadcast to reach a peer, which the worker must not wait for; and it is
 // ONE goroutine because UpdateNode reads this pnode's own address and port
 // while another call to it writes them, so two at once is a data race inside
-// memberlist. A poke that arrives while a re-advertise is running is dropped:
-// UpdateNode reads the metadata when it starts, so the next one carries
-// whatever the newest list is, and the metadata is always stored before the
-// poke is offered.
+// memberlist. While a re-advertise is running, one poke waits in the slot and
+// any more are dropped: UpdateNode reads the metadata when it starts, so the
+// waiting one carries whatever the newest metadata is, and the metadata is
+// always stored before the poke is offered.
+//
+// A poke still pending at the stop is run before the goroutine returns: the
+// state a node sets right before it leaves — DRAINING — is the last thing its
+// peers should see of it, and select picks at random between two ready cases.
 func (g *Gossip) runReadvertiser() {
 	defer close(g.advertised)
 	for {
 		select {
 		case <-g.stop:
+			select {
+			case <-g.readvertise:
+				g.readvertiseNow()
+			default:
+			}
 			return
 		case <-g.readvertise:
-			if err := g.list.UpdateNode(metaBroadcastTimeout); err != nil {
-				slog.Debug("metadata broadcast still queued",
-					"pkg", "cluster/registry", "nodeId", g.cfg.NodeID, "err", err)
-			}
+			g.readvertiseNow()
 		}
+	}
+}
+
+func (g *Gossip) readvertiseNow() {
+	if err := g.list.UpdateNode(metaBroadcastTimeout); err != nil {
+		slog.Debug("metadata broadcast still queued",
+			"pkg", "cluster/registry", "nodeId", g.cfg.NodeID, "err", err)
+	}
+}
+
+// requestReadvertise asks the re-advertiser to gossip the stored metadata. It
+// never blocks: when a re-advertise is already pending, that one reads the
+// newest metadata.
+func (g *Gossip) requestReadvertise() {
+	select {
+	case g.readvertise <- struct{}{}:
+	default:
 	}
 }
 
@@ -277,10 +300,7 @@ func (g *Gossip) runReadvertiser() {
 // and sends the list to every other alive pnode. Neither waits on the worker.
 func (g *Gossip) publishOwnList() {
 	version, tags := g.tags.ownList()
-	select {
-	case g.readvertise <- struct{}{}:
-	default: // a re-advertise is pending or running; it reads the newest metadata
-	}
+	g.requestReadvertise()
 	msg := encodeTagMsg(topicTags, tagListMsg{NodeID: g.cfg.NodeID, Version: version, Tags: tags})
 	peers := 0
 	for _, m := range g.dir.all() {

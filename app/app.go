@@ -166,6 +166,13 @@ func New(cfg Config) *App {
 		validateClusterConfig(cfg.Cluster)
 		a.selfNodeID = cfg.Cluster.NodeID
 		gossipReg = mustNewGossip(cfg.Cluster)
+		// Peers read this node's lifecycle state from its gossip metadata.
+		// SetState runs under the lifecycle's lock and never blocks.
+		a.lifecycle.OnChange(func(s lifecycle.State) {
+			if err := gossipReg.SetState(s); err != nil {
+				slog.Error("failed to advertise the lifecycle state", "pkg", "cluster", "state", s, "err", err)
+			}
+		})
 	} else {
 		secret = make([]byte, 32)
 		if _, err := rand.Read(secret); err != nil {
