@@ -70,8 +70,9 @@ life on both grants.
 
 - Every data operation, HTTP and gRPC, requires `ROLE_M2M` in the caller's
   roles: `403 FORBIDDEN` / `PermissionDenied` otherwise. The exceptions are
-  `GET /account`, the client and trusted-key operations (tenant admin) and
-  the key-pair operations (platform operator).
+  `GET /account`, the client and trusted-key operations (tenant admin),
+  the key-pair operations (platform operator) and `GET /platform/cluster`
+  (platform operator; see `cluster-status.md`).
 - An OBO token never administers: client, trusted-key, key-pair and
   platform-operator operations answer it `403 FORBIDDEN` whatever its roles.
 - An OBO token never opens a compute stream (`PermissionDenied`). A stream

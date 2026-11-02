@@ -4,10 +4,12 @@ cyoda-go **defines** the contract; Cyoda Cloud aligns to it.
 
 ## What cyoda-go does
 
-- **Five OpenAPI operations need a platform operator, not a tenant admin.**
+- **Seven OpenAPI operations need a platform operator, not a tenant admin.**
   The five key-pair operations (`issueJwtKeyPair`, `getCurrentJwtKeyPair`,
-  `invalidateJwtKeyPair`, `reactivateJwtKeyPair`, `deleteJwtKeyPair`) require
-  `ROLE_ADMIN` in the tenant (legal entity) `PLATFORM`. An admin of any other
+  `invalidateJwtKeyPair`, `reactivateJwtKeyPair`, `deleteJwtKeyPair`),
+  `changePlatformClock` (see `platform-clock.md`) and `getPlatformCluster`
+  (see `cluster-status.md`) require `ROLE_ADMIN` in the tenant (legal entity)
+  `PLATFORM`. An admin of any other
   tenant gets `403 FORBIDDEN`, with the detail "platform operator required". A
   request without a token gets `401`.
 - **An on-behalf-of token is never a platform operator.** The operator rule,
@@ -69,11 +71,12 @@ Tracked in CP-3981.
 1. Meet the two prerequisites above before adopting the rule: bind every
    token's legal entity to its stored client, and make `PLATFORM` and
    `SYSTEM` unclaimable by any token but the platform's own.
-2. Require `ROLE_ADMIN` in the tenant `PLATFORM` on the five operator
-   operations, and answer `403` for a tenant admin — not the `401` that
+2. Require `ROLE_ADMIN` in the tenant `PLATFORM` on the five key-pair
+   operations (the platform clock and the cluster status read have their own
+   pages), and answer `403` for a tenant admin — not the `401` that
    `TdbRestControllerAdvice` answers for a role denial today, which
    disagrees with Cloud's own OpenAPI (this fix is general, not limited to
-   the five operator operations).
+   the five key-pair operations).
 3. Refuse an on-behalf-of token on every operator and tenant-admin
    operation.
 4. Fix the key-pair lookups to be tenant-scoped, so they cannot reach another

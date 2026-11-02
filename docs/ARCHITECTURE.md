@@ -94,6 +94,12 @@ internal/
   fence/                  Which compute member holds a callout's work; refuses
                           the rest
   scheduler/              Scheduled-transition claim loop, heartbeat and watchdog (§4.8)
+  health/                 The health latch: one-way, trips on the first panic recovered
+                          in engine or store work (§3.4)
+  lifecycle/              The node's lifecycle state (STARTING, NORMAL, DRAINING,
+                          UNHEALTHY) from its start, drain and latch (§4.1)
+  clusterstatus/          GET /platform/cluster: a node's own status, the rounds over
+                          the directory and the wait (§4.1)
   platformclock/          The platform's business clock: the real clock or the controllable
                           test clock, its peer push and join-time exchange, the move service and the HTTP
                           handler (§3.9)
@@ -122,6 +128,8 @@ internal/
                           beside the metadata (tags.go, tags_worker.go)
     modelcache/           Model-store caching decorator with gossip invalidation
     dispatch/             Cross-node compute dispatch (dispatcher, selector, forwarder)
+                          and the sealed peer routes: callout hand-over, clock push,
+                          status ask
     peeraddr/             Peer-address SSRF validation
   testing/localproc/      In-process processor for E2E tests
   e2e/                    Full-HTTP-stack E2E suite
@@ -140,7 +148,7 @@ scripts/                  Dev and multi-node cluster scripts
 Three importable packages:
 
 - **`spi`** (the module root) — storage-plugin interfaces and value types:
-  - Store interfaces: `StoreFactory`, `EntityStore`, `ModelStore`, `KeyValueStore`, `MessageStore`, `WorkflowStore`, `StateMachineAuditStore`, `ScheduledTaskStore`, `AsyncSearchStore`, `SelfExecutingSearchStore`
+  - Store interfaces: `StoreFactory` (which also has `Ping`, whether the store answers: within `ctx`, and an error after `Close`), `EntityStore`, `ModelStore`, `KeyValueStore`, `MessageStore`, `WorkflowStore`, `StateMachineAuditStore`, `ScheduledTaskStore`, `AsyncSearchStore`, `SelfExecutingSearchStore`
   - `EntityStore` includes `Search` (bounded-or-fail predicate pushdown) and `Iterate` (streamed predicate pushdown, yielding an `Iterator`); there is no whole-model read
   - Optional capability interfaces a store may also implement: `GroupedAggregator`, `CompositeUniqueKeyCapable`
   - `TransactionManager` interface (Begin/Commit/Rollback/Join/GetSubmitTime/ConsistencyTime/LatestRecordedTime/Savepoint/RollbackToSavepoint/ReleaseSavepoint)
@@ -391,19 +399,21 @@ contract.
 
 **Release on every exit path.** An entity write flow opens its transaction through a deferred scope (`txScope`, `internal/domain/entity/txscope.go`) that rolls back the segment currently open unless the flow committed it. One deferred `Release` covers every return, every error branch, and a panic unwinding the stack, so a transaction is never abandoned open with its pooled connection unreturned. A joined callback never rolls back its owner's transaction, and never moves off it: the engine refuses a `COMMIT_BEFORE_DISPATCH` processor on a joined chain (`409 COMMIT_IN_JOINED_TRANSACTION`) before the transaction is flushed or committed, so a joined call opens no segment of its own. The workflow engine carries the same guard for the segments it opens itself, since those are its own until handed back.
 
-**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, both independently panic-latching), and the scheduler's goroutines — the claim loop, each run, the heartbeat and the watchdog. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for the scheduler's claim loop, heartbeat and watchdog — which also cancel every scheduled run in progress — and a task ended FAILED with `RUN_PANICKED` for a scheduled run, which has no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. A scheduled run is engine work like any request, so its panic latches the node too, and its task is not given back: running it again on another node would spread the problem. It ends FAILED `RUN_PANICKED`; if that record has not landed when the process exits, or the panic was in recording the run's outcome, which records nothing, the task stays `RUNNING` under this owner, another node reclaims it after `CYODA_SCHEDULER_STALE_AFTER` as a lost owner, and `CYODA_SCHEDULER_MAX_LOST_OWNERS` bounds any repeat (§4.8).
+**Panic containment.** Five recovery sites wrap code that runs the engine or the store on the application's behalf and latch the node unhealthy: the HTTP `Recovery` middleware (outermost on the API server), the gRPC server (unary and stream interceptors), the async-search executor, the search reaper (the snapshot-TTL sweep on `SearchReapInterval` and the stale-job reclaim sweep on the finer `SearchJobHeartbeatInterval` run on two separate tickers, and the reclaim sweep's second pass on a goroutine of its own, each independently panic-latching), and the scheduler's goroutines — the claim loop, each run, the heartbeat and the watchdog. All five log the value and stack, record a sanitized outcome (a ticket-carrying error on the request doors, a `FAILED` job for async search, a log line for the reaper and for the scheduler's claim loop, heartbeat and watchdog — which also cancel every scheduled run in progress — and a task ended FAILED with `RUN_PANICKED` for a scheduled run, which has no caller to answer), and mark the node unhealthy. The criterion is what the recovered code was doing, not where it entered from: a panic inside engine or store code leaves state nothing has verified. A scheduled run is engine work like any request, so its panic latches the node too, and its task is not given back: running it again on another node would spread the problem. It ends FAILED `RUN_PANICKED`; if that record has not landed when the process exits, or the panic was in recording the run's outcome, which records nothing, the task stays `RUNNING` under this owner, another node reclaims it after `CYODA_SCHEDULER_STALE_AFTER` as a lost owner, and `CYODA_SCHEDULER_MAX_LOST_OWNERS` bounds any repeat (§4.8).
 
 Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health latch (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the signing-key copy's gossip-ping handler and its re-read (`handlePing` and `reconcileOnce` in `internal/auth/replica.go`, and the run loop in `internal/auth/coalesce.go`); and each per-member gRPC stream's four per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`), the keep-alive loop (`keepAliveLoop`) and the client re-check loop (`clientRecheckLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing, liveness or credential bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out on the next event, the signing-key copy on the next ping or reconcile tick, the four per-member goroutines by the client reconnecting as a fresh member.
 
+The latch is `health.Latch` (`internal/health/latch.go`). `Trip` marks it tripped for good; the first call starts every callback registered with `OnTrip` on a goroutine of its own, so a recovery path never blocks on a reader, and later calls do nothing. Its readers are `GET /health`, `App.ReadinessCheck` (`/readyz` and the gRPC health `Check`), the scheduler, which stops claiming, and the node's lifecycle (§4.1), which turns a trip into `UNHEALTHY`.
+
 Nothing resets the latch: it trips on the first panic recovered in engine or store work, and `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` once latched — while the admin listener's `/readyz` (§7.5) reads the same latch and reports `503` for the same reason, and also while the node drains, which `/health` does not. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the latch. `/health` and `/readyz` serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
 
-What the flag actually stops, and what it does not:
+What the latch actually stops, and what it does not:
 
 - **Stops:** new client connections arriving through the Kubernetes Service. The chart's readiness probe (5s period, 3 failures) drops the pod from the Service endpoints in ~10-15s, and both the Gateway `HTTPRoute` and the `Ingress` route through that Service.
-- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The node's own scheduler stops claiming when the flag latches, whichever site latched it, but keeps heartbeating unless the heartbeat itself panicked, so the runs it has in progress are not taken over while they may still commit. Only a panic recovered inside the scheduler also cancels those runs (§4.8). Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
-- **Does not restart it.** `/livez` is unconditional and does not read the flag, deliberately: a deterministic panic (a poisoned entity, a bad workflow definition) would otherwise recur on the next request and turn a restart into a loop. Replacing a drained node is an operator action.
+- **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The node's own scheduler stops claiming when the latch trips, whichever site tripped it, but keeps heartbeating unless the heartbeat itself panicked, so the runs it has in progress are not taken over while they may still commit. Only a panic recovered inside the scheduler also cancels those runs (§4.8). Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
+- **Does not restart it.** `/livez` is unconditional and does not read the latch, deliberately: a deterministic panic (a poisoned entity, a bad workflow definition) would otherwise recur on the next request and turn a restart into a loop. Replacing a drained node is an operator action.
 
-`/readyz` fails for three independent reasons — storage not initialised, a recovered panic, or shutdown having begun (the node is draining, from the start of the drain, so load balancers stop sending it requests) — and reports which in the server-side log while answering the probe generically.
+`/readyz` fails for three independent reasons — storage not initialised, a recovered panic, or shutdown having begun (the node is draining, from the start of the drain, so load balancers stop sending it requests) — and reports which in the server-side log while answering the probe generically; when the latch has tripped and the node also drains, the panic is the reason given. The gRPC health `Check` answers the same check (§6.6).
 
 **Storage ceilings** (postgres plugin, §9):
 
@@ -765,6 +775,8 @@ drops a message.
 
 **Encryption:** AES-GCM encrypted gossip keyed by the shared secret `CYODA_HMAC_SECRET`. The same secret is used for gossip encryption and transaction token signing; the documented and chart-generated form is 32 hex-decoded bytes, which selects AES-256.
 
+**Node lifecycle.** A node is in one of four states, which `lifecycle.Lifecycle` (`internal/lifecycle/lifecycle.go`) derives from three one-way facts, by the precedence `UNHEALTHY` > `DRAINING` > `STARTING` > `NORMAL`: the node is `STARTING` until `app.New` has finished building it (`MarkStarted`), `DRAINING` from the first of `DrainScheduler`, `Shutdown` and `Close` (`BeginDraining`), and `UNHEALTHY` once the health latch trips (§3.4). No fact is undone, so no transition is either. `OnChange` delivers each change, in order, under the lifecycle's lock; in cluster mode the app registers the gossip registry's `SetState` there, so the state rides in the node metadata below. `ReadinessCheck` reads the draining fact, so `/readyz` fails from the start of shutdown.
+
 **Node metadata** (JSON, serialized in memberlist node meta) is identity, a list version and the node's lifecycle state:
 
 ```go
@@ -777,11 +789,13 @@ type nodeMeta struct {
 }
 ```
 
-Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and the longest state (`UNHEALTHY`), and refuses to start past memberlist's `MetaMaxSize` (512 bytes). One builder holds the list version and the state under one lock and marshals both, so a change to either never stores a stale copy of the other; the app feeds every lifecycle change into it through `Gossip.SetState`, which stores the metadata and asks the re-advertiser to gossip it without blocking. A re-advertise still pending when `Deregister` stops the re-advertiser runs before it returns, so a node's `DRAINING` reaches its peers before it leaves.
+Its size depends only on operator settings. `NewGossip` measures it with the longest version there can be and the longest state (`UNHEALTHY`), and refuses to start past memberlist's `MetaMaxSize` (512 bytes): the framing, that version and that state take 106 bytes, which leaves 406 for `CYODA_NODE_ID`, `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR` together. One builder holds the list version and the state under one lock and marshals both, so a change to either never stores a stale copy of the other; the app feeds every lifecycle change into it through `Gossip.SetState`, which stores the metadata and asks the re-advertiser to gossip it without blocking. A re-advertise still pending when `Deregister` stops the re-advertiser runs before it returns, so a node's `DRAINING` reaches its peers before it leaves.
 
 **Tag lists** (tenant → compute tags) do not ride in the metadata. Each node holds one list per peer. The version a node announces in its own metadata is the authority for which of its lists is current; versions are compared for equality and ordered only within one epoch, so a node restarted under the same id — with a clock that stepped backwards, even — is never taken for an older self. On a change a node bumps `seq`, re-advertises its metadata and sends `{nodeID, version, tags}` to every alive peer with `memberlist.SendReliable` (topic `cluster.tags`). A peer stores a list whose version equals the announced one, or is a later `seq` of the announced epoch. A peer that holds no list for a node, or another version than the announced one, sends `cluster.tags.request` and the node answers with its list: on `NotifyJoin`, on `NotifyUpdate`, and from a periodic scan of all members that is the floor under both. `NotifyLeave` drops the node's list. memberlist's event callbacks run under its node lock and are the only place a member can be read safely, so they do nothing but copy: the member (name, address, metadata) into the registry's own directory of alive members, and a nudge into a bounded queue. Everything else — `List`, `Lookup`, the fan-out, the scan — reads that directory and never `memberlist.Members()`, whose nodes memberlist rewrites under a lock no caller can take. One worker goroutine stores lists, and every send runs on a goroutine of its own. `NodeRegistry.Changed()` is closed when a list arrives with different tags, when a peer joins and when one leaves.
 
 **Platform clock.** With clock control on, the handling node pushes each new setting to every member of its directory over `POST /internal/dispatch/clock`, sealed for the recipient and the path like a callout hand-over, all peers in parallel within `CYODA_PROXY_TIMEOUT`. A peer applies the setting if it is newer and echoes the setting it holds; only an exact echo confirms. `POST /platform/clock` answers 200 with the nodes (its own included) when every node confirmed; otherwise it answers 503 `CLOCK_NOT_CONFIRMED` naming the nodes that did not, and nothing is rolled back. Every step of a move is confirmed the same way. Memberlist's push/pull state exchange (`Gossip.SetStateExchange`, `LocalState`/`MergeRemoteState`) carries the setting on a join only (`join` true; memberlist passes the joiner's flag to the node that answers), so a joining node takes the cluster's setting and a periodic push/pull carries none; it is registered only when clock control is on (`platformclock.Attach`, before the node registers). Only a pushed or adopted setting is offered to a joining node (this is not what `GET /platform/clock` reads): a set-back still awaiting the store's answer is never served, because it may yet be undone (§3.9).
+
+**Cluster status.** `GET /platform/cluster` (platform operator, §7.6; `internal/clusterstatus`) runs rounds over the directory. A round lists every member of the gossip directory, this node included, with the state its metadata names, and asks each one with an address for its status over `POST /internal/dispatch/status`, sealed for the recipient and the path like a callout hand-over and counted in the same replay cache, all in parallel, each ask bounded by `CYODA_PROXY_TIMEOUT`. The answering node reports its lifecycle state, its store's `Ping` (bounded by half of its own `CYODA_PROXY_TIMEOUT`, so the answer returns inside the asker's bound), its build version and its clock setting without its times; the asker validates the answer's state and bounds its text fields. A member that answers is `UP`; one that does not, or has no usable address, is `DOWN` with its metadata's state. Without clustering the directory is the one member `local`, read in process. With `waitForNodes` the read runs a new round on every directory change and at least once a second, until a round has that many `UP`/`NORMAL` members or `timeoutMs` passes; a round still running at the deadline is called off, and the answer is the last completed round. `operational` (every member `UP`, `NORMAL` and with its database up, one version and one clock across them, and at least `waitForNodes` of them) decides `200` or `503`, with the same body. Addresses and error text go to the log only. The contract is `docs/cloud-parity/cluster-status.md`.
 
 **Bootstrap algorithm:**
 
@@ -808,7 +822,7 @@ itself and it proceeds as a cluster of one.
 
 **Failure detection:** Automatic via SWIM protocol. Dead nodes are evicted from the membership list within seconds. No manual intervention required.
 
-**Graceful leave:** `Deregister()` calls `list.Leave(5s)` then `list.Shutdown()`, giving peers time to update their membership views.
+**Graceful leave:** `Deregister()` first runs any re-advertise still pending, so the node's `DRAINING` state reaches its peers, then calls `list.Leave(5s)` and `list.Shutdown()`, giving peers time to update their membership views.
 
 ### 4.2 Transaction Routing
 
@@ -1046,9 +1060,10 @@ identically for every peer, so the loop stops rather than trying the next one.
 ```
 POST /internal/dispatch/callout
 POST /internal/dispatch/clock
+POST /internal/dispatch/status
 ```
 
-The bullets below describe the callout route. The clock route carries a platform clock setting under the same peer seal (§4.1, Platform clock).
+The bullets below describe the callout route. The clock route carries a platform clock setting, and the status route a node's own status, under the same peer seal (§4.1, Platform clock and Cluster status).
 
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
@@ -1213,7 +1228,7 @@ Segment-boundary observations:
 | L4 | Node B <-> Node A | Internal proxy (HTTP) |
 | L5 | Node A <-> PostgreSQL | TCP (pgx connection) |
 | L6 | Node B <-> PostgreSQL | TCP (pgx connection). Carries no part of this cascade: Node B holds none of tx-123, and it resolves the proxy target from its own local member directory (§4.1), not from PostgreSQL |
-| L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over); POST /internal/dispatch/clock (platform clock push) |
+| L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over); POST /internal/dispatch/clock (platform clock push); POST /internal/dispatch/status (cluster status ask) |
 
 ---
 
@@ -1737,7 +1752,8 @@ fired entity through a joined callback and answer with no data
 written payload, keeps its own state, and persists over that write
 (`cmd/cyoda/help/content/workflows.md`).
 
-**Shutdown.** Before the servers drain the scheduler stops claiming, waits
+**Shutdown.** The node is `DRAINING` (§4.1) from the signal on, so `/readyz`
+fails at once. Before the servers drain the scheduler stops claiming, waits
 `CYODA_SCHEDULER_SHUTDOWN_DRAIN`, cancels the runs still going except one whose
 unsafe callout is in flight, waits for outcomes, gives back what ended without
 one, stops the heartbeat and, when no run still holds a claim, retires the
@@ -1922,6 +1938,20 @@ are one-way request events; replies are carried on the generic
 `EntityResponse` / `EventAckResponse` envelopes rather than dedicated
 `*Response` types. See `internal/grpc/cloudevent_types.go`.
 
+### 6.6 gRPC Health
+
+Beside `CloudEventsService`, the server registers the standard
+`grpc.health.v1.Health` service (`internal/grpc/health.go`). Only `Check` is
+served, and only for the empty service name; another name answers
+`NotFound`. `Check` answers `SERVING` while `App.ReadinessCheck` returns nil
+and `NOT_SERVING` otherwise — the check `/readyz` answers (§3.4) — with no
+reason. It is the one method reached without a token: the auth and
+`ROLE_M2M` interceptors pass `/grpc.health.v1.Health/Check` through by exact
+full-method name (`isUnauthenticatedMethod`, `internal/grpc/interceptor.go`).
+Recovery still wraps it. `Watch` and `List` stay unimplemented and are
+authenticated and role-checked like every other method, then answer
+`Unimplemented`.
+
 ---
 
 ## 7. Authentication & Authorization
@@ -2022,7 +2052,7 @@ operator, needed for the signing key-pair endpoints and the runtime controls
 
 Authorization is done by route guards.
 
-**`ROLE_M2M` on every data route.** Every authenticated route requires `ROLE_M2M` in the caller's roles, except an allow-list (`internal/api/route_guard.go`): `GET /account`, the client and trusted-key operations (guarded by `RequireAdmin`) and the key-pair operations (guarded by the operator guard). The generated router wraps every other operation in `RequireM2M` (`internal/api/chimux.go`); the hand-registered data route (grouped statistics) is wrapped too, and the `/admin/*` routes, which are not, carry the operator guard. A caller without the role gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") before the transaction-join middleware runs, so it joins nothing. Over gRPC, `UnaryRequireM2M` and `StreamRequireM2M` refuse every method and stream with `PermissionDenied`; gRPC has no allow-listed method. Tests check every OpenAPI operation and hand-registered route against the rule (`app/route_classification_test.go`), and every gRPC method and stream (`internal/grpc/role_interceptor_test.go`).
+**`ROLE_M2M` on every data route.** Every authenticated route requires `ROLE_M2M` in the caller's roles, except an allow-list (`internal/api/route_guard.go`): `GET /account` and `GET /platform/clock`, the client and trusted-key operations (guarded by `RequireAdmin`), and the key-pair operations, `POST /platform/clock` and `GET /platform/cluster` (guarded by the operator guard). The generated router wraps every other operation in `RequireM2M` (`internal/api/chimux.go`); the hand-registered data route (grouped statistics) is wrapped too, and the `/admin/*` routes, which are not, carry the operator guard. A caller without the role gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") before the transaction-join middleware runs, so it joins nothing. Over gRPC, `UnaryRequireM2M` and `StreamRequireM2M` refuse every method and stream with `PermissionDenied`, except the health `Check`, which needs no token at all (§6.6). Tests check every OpenAPI operation and hand-registered route against the rule (`app/route_classification_test.go`), and every gRPC method and stream (`internal/grpc/role_interceptor_test.go`).
 
 **Admin and operator guards.** `RequireAdmin` (tenant admin: `ROLE_ADMIN`) and the operator guard (§7.6) refuse any principal with an `Executor` — an OBO token — with `403 FORBIDDEN` ("on-behalf-of tokens cannot administer"), whatever its roles. `POST /clients` refuses `onBehalfOf=true` together with `withAdminRole=true` — `400 BAD_REQUEST` when `CYODA_IAM_M2M_ADMIN_ROLE_ENABLED=true`, and `404 FEATURE_DISABLED` first when it is off — and `onBehalfOf=true` in the tenant `PLATFORM` (`400 BAD_REQUEST`), so no OBO client holds `ROLE_ADMIN` or exists in `PLATFORM`.
 
@@ -2037,7 +2067,7 @@ The admin listener (`/livez`, `/readyz`, `/metrics` on
 main API listener and has its own authentication policy. This is
 where the deployment probes live. `/readyz` fails after a recovered
 panic and from the start of shutdown; `GET /health` on the main API
-listener (§3.4) reads the panic-recovery flag alone and is a plain
+listener (§3.4) reads the health latch alone and is a plain
 summary for humans and simple scripts, not the orchestrator contract:
 
 - **`/livez` and `/readyz`** are always unauthenticated. Kubelet
@@ -2067,8 +2097,9 @@ namespace.
 
 ### 7.6 Platform operator
 
-Some endpoints change state every tenant shares: the signing key-pair
-endpoints (`/oauth/keys/keypair*`) and
+Some endpoints change or read state every tenant shares: the signing
+key-pair endpoints (`/oauth/keys/keypair*`), `POST /platform/clock`,
+`GET /platform/cluster` and
 `GET`/`POST /api/admin/log-level` and `/api/admin/trace-sampler` (main API
 listener, §11 — distinct from the admin listener in §7.5). Only a **platform
 operator** may call them: a caller whose `UserContext` carries `ROLE_ADMIN`
@@ -2443,6 +2474,8 @@ OpenTelemetry is integrated end-to-end. The OTel SDK is initialised in `internal
 **Workflow and dispatch:** spans for `workflow.execute`, `workflow.manual_transition`, `workflow.loopback`, `workflow.cascade`; `dispatch.processor`, `dispatch.criteria` and `dispatch.function` with `cyoda.dispatch.duration`, `cyoda.dispatch.count`, `cyoda.callout.tries` and `cyoda.callout.wait.duration` metrics. These are active when `CYODA_OTEL_ENABLED=true`. Two more `cyoda.callout.*` counters are registered elsewhere and are exposed regardless of it: `cyoda.callout.handovers` on the peer router, in cluster mode, and `cyoda.callout.superseded` where a compute member's callback joins its transaction. The `cmd/cyoda/help/content/telemetry.md` help topic is the full reference.
 
 **Scheduler:** `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration` (by `outcome`), `cyoda.scheduler.runs.in_progress`, `cyoda.scheduler.claims` (by `reason`), `cyoda.scheduler.heartbeat.failures` and `cyoda.scheduler.bookkeeping.retries`, from `observability.Meter()` and so exposed at `/metrics` on every node that runs the scheduler, regardless of `CYODA_OTEL_ENABLED`; a `scheduler.run` span per run. No tenant attribute. The `cmd/cyoda/help/content/telemetry.md` help topic lists the `outcome` and `reason` values.
+
+**Cluster membership:** `cyoda.cluster.tags.send_failures`, `cyoda.cluster.tags.lists_outstanding` and `cyoda.cluster.member.count` (live members, this node included, per lifecycle state, labelled `cyoda.cluster.member.state`; every state observed on each collection, `0` for one no member holds), registered by the gossip registry (`internal/cluster/registry/metrics.go`) from `observability.Meter()`, so exposed at `/metrics` in cluster mode regardless of `CYODA_OTEL_ENABLED`.
 
 **Plugin-level instrumentation:** plugins are free to add their own
 spans and metrics under a plugin-specific namespace. The `memory`

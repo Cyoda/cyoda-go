@@ -29,9 +29,9 @@ The token names a person: `sub` and `caas_user_id` are `--user`, `caas_org_id` i
 
 The token serves HTTP calls and unary gRPC calls. It never opens a compute-node stream, whatever its roles: a stream opens only with an M2M client's own `client_credentials` token. A compute node uses an M2M client, which can fetch new tokens itself.
 
-The token carries exactly the roles it is signed with. The default, `ROLE_ADMIN`, reaches `GET /account` and the admin operations: clients, trusted keys and, in `PLATFORM`, key pairs and `/admin/*`. Every other operation — entities, models, search, messages, audit, scheduled tasks, every gRPC call — requires `ROLE_M2M` and answers `403 FORBIDDEN` (gRPC `PermissionDenied`) without it. To reach data, sign with `--roles ROLE_ADMIN,ROLE_M2M`.
+The token carries exactly the roles it is signed with. The default, `ROLE_ADMIN`, reaches `GET /account`, `GET /platform/clock` and the admin operations: clients, trusted keys and, in `PLATFORM`, key pairs, `POST /platform/clock`, `GET /platform/cluster` and `/admin/*`. Every other operation — entities, models, search, messages, audit, scheduled tasks, every gRPC call but the health `Check`, which needs no token — requires `ROLE_M2M` and answers `403 FORBIDDEN` (gRPC `PermissionDenied`) without it. To reach data, sign with `--roles ROLE_ADMIN,ROLE_M2M`.
 
-The key-pair endpoints and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
+The key-pair endpoints, `POST /platform/clock`, `GET /platform/cluster` and the runtime controls (`/admin/log-level`, `/admin/trace-sampler`) need a platform operator: `ROLE_ADMIN` in the tenant `PLATFORM`. Use `cyoda token --tenant PLATFORM` for them.
 
 ## WHEN THE TOKEN IS REFUSED
 

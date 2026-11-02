@@ -693,7 +693,8 @@ paths:
         call; otherwise the answer is `404` with error code
         `FEATURE_DISABLED`. Any tenant admin can create an admin client in
         its own tenant. An admin client created in the tenant `PLATFORM` is a
-        platform operator and reaches the key-pair and `/admin/*` endpoints.
+        platform operator and reaches the key-pair, `POST /platform/clock`,
+        `GET /platform/cluster` and `/admin/*` endpoints.
 
 
         When `onBehalfOf` is `true`, the client may only exchange user
