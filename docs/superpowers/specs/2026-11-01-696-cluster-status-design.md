@@ -159,7 +159,12 @@ required).
 `clock` is the node's clock setting without its times: `controllable` is
 clock control on that node, and `version` and `writer` are the setting's
 (`internal/platformclock/setting.go:24-30`). A node with clock control off
-answers `controllable: false`, `version: 0`, `writer: ""`.
+answers `controllable: false`, `version: 0`, `writer: ""`. Every clock
+change installs a new setting with a new version and the handling node as
+writer, and answers 200 only when every node holds it (#611 spec, "Every
+change ends by installing and confirming a fresh setting"). So after a
+change, nodes agree on (`version`, `writer`) only when every one holds that
+change's setting, and the comparison below detects a node that does not.
 
 **`operational`** is true only when all of these hold:
 
@@ -235,14 +240,17 @@ response, not the shared `ServiceUnavailable` problem response.
 
 | State | Meaning |
 |---|---|
-| `STARTING` | in the process, not yet serving: the node is in gossip before its listeners open |
-| `NORMAL` | serving |
+| `STARTING` | inside `App.New`: the node is in gossip and not yet built |
+| `NORMAL` | `App.New` has finished |
 | `DRAINING` | shutdown has begun |
 | `UNHEALTHY` | the health latch has tripped: a panic was recovered in engine or store work |
 
 The state is computed from three facts, with precedence
 `UNHEALTHY` > `DRAINING` > `STARTING` > `NORMAL`: the health latch tripped;
-draining begun; started. None is ever undone.
+draining begun; `App.New` finished. None is ever undone. cyoda-go sets
+every transition itself; an embedder that calls `app.New` and runs its own
+servers, as the commercial cassandra binary does
+(`cyoda-go-cassandra/cmd/cyoda-go/main.go:60-104`), calls nothing extra.
 
 ### Where each transition is set
 
@@ -250,17 +258,24 @@ draining begun; started. None is ever undone.
   `NewGossip` (`internal/cluster/registry/gossip.go:113-123`) already carries
   it, so a node is `STARTING` from its first appearance in gossip
   (`app/app.go:455`).
-- **`STARTING` → `NORMAL`:** a new `App` method (name is the builder's call)
-  that marks the node started. The binary calls it once its listeners are
-  open: after `listenAll` returns (`cmd/cyoda/main.go:173-182`) and before
-  `runServers` (`main.go:184`). The in-process harnesses call it once their
-  server is up: `internal/e2e` (`internal/e2e/e2e_test.go:192-212`,
-  `internal/e2e/callback_harness_test.go:273`, and the other `app.New` sites
-  in that package) and `test/recon` (`test/recon/recon_test.go:25-26`).
-- **`DRAINING`:** set at the start of `DrainScheduler` (`app/app.go:921`) and
-  at the start of `Shutdown` (`app/app.go:1051`). The binary calls
-  `DrainScheduler` first on a signal (`cmd/cyoda/run.go:128-131`); `Close`
-  calls it too (`app/app.go:1004`), so every teardown path drains first.
+- **`STARTING` → `NORMAL`:** set by `App.New` itself as its last step, before
+  it returns (`app/app.go:775`). There is no method for an embedder to call.
+- **Between `App.New` returning and the listeners opening** the node is
+  `NORMAL` in gossip but cannot answer a status ask: its peer route is on the
+  HTTP handler, which is not yet served (`cmd/cyoda/main.go:173`, `:184`). The
+  status read lists it `DOWN`/`NORMAL`, so `waitForNodes`, which counts only
+  `UP`/`NORMAL`, keeps waiting until the node answers. A `STARTING` node is
+  likewise always `DOWN`: nothing serves its peer route while `App.New` runs.
+- **`DRAINING`:** set inside the app at the start of every shutdown method an
+  embedder can call:
+  - `DrainScheduler` (`app/app.go:921`). The binary calls it first on a
+    signal (`cmd/cyoda/run.go:128-131`).
+  - `Shutdown` (`app/app.go:1051`). It does not call `DrainScheduler`; it
+    stops the scheduler itself (`app/app.go:1055-1057`), so it sets the state
+    on its own.
+  - `Close` (`app/app.go:999`), through the `DrainScheduler` call it makes
+    first (`app/app.go:1004`). The cassandra binary stops its HTTP server and
+    then calls only `Close` (`cyoda-go-cassandra/cmd/cyoda-go/main.go:96-102`).
 - **`UNHEALTHY`:** the health flag becomes a latch type that notifies when it
   trips. It replaces the `*atomic.Bool` (`app/app.go:94-104`, created at
   `:128`) everywhere it is passed. Six sites trip it today:
@@ -414,7 +429,9 @@ Ping(ctx context.Context) error
 | Two cluster nodes: 200, both `UP`/`NORMAL`, A's own entry answered over the peer channel | ✓ | ✓ | | | |
 | A member whose address serves nothing: 503, `DOWN` with the state from its metadata; the body holds no address | ✓ | ✓ | | | |
 | A node that has left is absent | ✓ | ✓ | | | |
-| A node not yet marked started: 503, `UP`/`STARTING` | ✓ | ✓ | | | |
+| A node inside `App.New`: `DOWN`/`STARTING`; after `App.New` and before its listeners open: `DOWN`/`NORMAL`, and `waitForNodes` keeps waiting | ✓ | waived: both windows lie before the in-process harness serves the node; status-service tests drive metadata in each state | | | |
+| `App.New` returns with the state `NORMAL`, with no call from the embedder | ✓ | | | | |
+| `DRAINING` is set by `DrainScheduler`, by `Shutdown`, and by `Close` alone | ✓ | | | | |
 | A node draining (`DrainScheduler` called): 503, `UP`/`DRAINING` | ✓ | ✓ | | | |
 | A node with the latch tripped: 503, `UP`/`UNHEALTHY` | ✓ | waived: no e2e can force a recovered panic; the status service is tested with a tripped latch | | | |
 | A node whose `Ping` fails: 503, `database` false; the body holds no database error text | ✓ | waived: no e2e stops the database mid-test; the exchange is tested with a failing `Ping` | | | |
@@ -459,8 +476,8 @@ The parity row covers what differs per backend, the `Ping` behind
    stays ready until the process exits. `GET /health` is unchanged.
 4. The health flag is a latch type; tripping it behaves as today.
 5. Every plugin implements `Ping`; only the status read calls it.
-6. The binary marks the node started after its listeners open. No background
-   work, store reads or locks are added.
+6. `App.New` sets the node `NORMAL` before it returns. No background work,
+   store reads or locks are added, and an embedder changes nothing.
 
 **Clustering on**, in addition:
 1. Gossip metadata carries the state, up to 17 more bytes
