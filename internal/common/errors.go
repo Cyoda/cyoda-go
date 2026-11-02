@@ -27,16 +27,18 @@ const (
 // waiting on the client may mark a cause with it: internal/domain/txjoin, for a
 // joined request whose context ended while it queued for the transaction's
 // lock, having touched nothing; internal/callout, for a callout whose caller's
-// context ended during or between tries; and internal/platformclock, for a
+// context ended during or between tries; internal/platformclock, for a
 // clock move whose caller's context ended between steps or during a store call
 // it was waiting on, which leaves the clock at the last step it applied and
 // confirmed, for a set-back whose caller's context ended during its
 // consistency-time read, which restores the previous setting, or for a
 // confirmation round whose caller's context ended while the cluster's nodes
-// were confirming a clock change. A door's error funnel files a departed
-// client on this marker and on nothing else, because a cancellation somewhere
-// on an error's chain says only that something was called off, not that this
-// is what went wrong — see isClientGoneCancellation.
+// were confirming a clock change; and internal/clusterstatus, for a cluster
+// status read whose caller's context ended during a round or while it waited
+// for nodes. A door's error funnel files a departed client on this marker and
+// on nothing else, because a cancellation somewhere on an error's chain says
+// only that something was called off, not that this is what went wrong — see
+// isClientGoneCancellation.
 //
 // An error marked with it is logged at DEBUG and carries no ticket: there is
 // nobody left to quote one to.
@@ -46,14 +48,16 @@ var ErrClientGone = errors.New("the request's client went away")
 // context, or the error of a call that context's end interrupted — as that
 // client's departure. Only a layer that was waiting on the client may call it:
 // internal/domain/txjoin, for a joined request whose context ended while it
-// queued for the transaction's lock, internal/callout, for a callout whose
-// caller's context ended during or between tries, and internal/platformclock,
+// queued for the transaction's lock; internal/callout, for a callout whose
+// caller's context ended during or between tries; internal/platformclock,
 // for a clock move whose caller's context ended between steps or during a
 // store call, or a clock set-back whose caller's context ended during its
 // consistency-time read, or a clock change whose caller's context ended while
-// the cluster's nodes were confirming it. Everything under the marker is left intact, so errors.Is still
-// finds the context error and status.FromContextError still reads the right
-// gRPC code off it.
+// the cluster's nodes were confirming it; and internal/clusterstatus, for a
+// cluster status read whose caller's context ended during a round or while it
+// waited for nodes. Everything under the marker is left intact, so errors.Is
+// still finds the context error and status.FromContextError still reads the
+// right gRPC code off it.
 func ClientGone(err error) error {
 	return fmt.Errorf("%w: %w", ErrClientGone, err)
 }
