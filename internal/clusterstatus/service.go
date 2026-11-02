@@ -3,7 +3,6 @@ package clusterstatus
 import (
 	"cmp"
 	"context"
-	"fmt"
 	"log/slog"
 	"slices"
 	"sync"
@@ -29,9 +28,10 @@ type Member struct {
 	State    lifecycle.State
 }
 
-// Directory lists every directory member, this node included.
+// Directory lists every directory member, this node included. Listing cannot
+// fail: it reads the node's own view of the directory.
 type Directory interface {
-	Members(ctx context.Context) ([]Member, error)
+	Members() []Member
 	Changed() <-chan struct{}
 }
 
@@ -86,8 +86,8 @@ func NewService(dir Directory, ask Asker, askTimeout time.Duration) *Service {
 // Read answers the cluster status. With waitFor 0 it answers after one round.
 // Otherwise it runs rounds until one has at least waitFor UP/NORMAL entries, or
 // until timeout has passed, when it answers with the last completed round. The
-// first round always completes. A caller's context that ends is returned as
-// common.ClientGone.
+// first round always completes. Its only error is common.ClientGone, when the
+// caller's context ends.
 func (s *Service) Read(ctx context.Context, waitFor int, timeout time.Duration) (Report, error) {
 	// realtime: the wait for waitFor nodes is bounded by a wall-clock timeout
 	deadline := time.Now().Add(timeout)
@@ -138,12 +138,6 @@ func (s *Service) roundBefore(ctx context.Context, deadline time.Time) (entries 
 	// realtime: a round still running at the wait's deadline is called off
 	rctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	if rctx.Err() != nil {
-		if ctx.Err() != nil {
-			return nil, false, common.ClientGone(ctx.Err())
-		}
-		return nil, true, nil
-	}
 	entries, err = s.round(rctx)
 	if ctx.Err() != nil {
 		return nil, false, common.ClientGone(ctx.Err())
@@ -155,16 +149,10 @@ func (s *Service) roundBefore(ctx context.Context, deadline time.Time) (entries 
 }
 
 // round lists the members and asks each one with an address for its status,
-// all in parallel. A member that does not answer, or answers out of bounds, is
-// DOWN with its directory state.
+// all in parallel. A member that does not answer is DOWN with its directory
+// state. The only error is ClientGone, when ctx ends during the round.
 func (s *Service) round(ctx context.Context) ([]Entry, error) {
-	members, err := s.dir.Members(ctx)
-	if ctx.Err() != nil {
-		return nil, common.ClientGone(ctx.Err())
-	}
-	if err != nil {
-		return nil, fmt.Errorf("failed to list the cluster members: %w", err)
-	}
+	members := s.dir.Members()
 	entries := make([]Entry, len(members))
 	var wg sync.WaitGroup
 	for i, m := range members {
@@ -187,16 +175,15 @@ func (s *Service) round(ctx context.Context) ([]Entry, error) {
 	return entries, nil
 }
 
-// askOne asks one member under the ask bound. The address and the error text
-// go to the log only: they can name hosts and ports.
+// askOne asks one member under the ask bound. An ask error covers an answer out
+// of bounds: the peer asker validates the answer it receives, and the
+// in-process asker answers this node's own status. The address and the error
+// text go to the log only: they can name hosts and ports.
 func (s *Service) askOne(ctx context.Context, m Member) (NodeStatus, bool) {
 	// realtime: each member's ask is bounded by a wall-clock timeout
 	actx, cancel := context.WithTimeout(ctx, s.askTimeout)
 	defer cancel()
 	st, err := s.ask.AskStatus(actx, m.ID, m.Addr)
-	if err == nil {
-		err = st.Validate()
-	}
 	if err != nil {
 		slog.Debug("cluster status: member did not answer", "pkg", "clusterstatus", "memberId", m.ID, "addr", m.Addr, "error", err)
 		return NodeStatus{}, false
@@ -236,7 +223,8 @@ func operational(entries []Entry, waitFor int) bool {
 }
 
 // counts gives one item per (reachability, state) present: UP before DOWN,
-// then in lifecycle.States() order, with the stateless item last.
+// then in lifecycle.States() order, with the stateless item last. With no
+// entries it is empty, never nil: the answer's counts is a required array.
 func counts(entries []Entry) []Count {
 	rank := func(st lifecycle.State) int {
 		if i := slices.Index(lifecycle.States(), st); i >= 0 {
@@ -250,7 +238,7 @@ func counts(entries []Entry) []Count {
 		}
 		return 1
 	}
-	var out []Count
+	out := []Count{}
 	for _, e := range entries {
 		i := slices.IndexFunc(out, func(c Count) bool { return c.Reachability == e.Reachability && c.State == e.State })
 		if i < 0 {
@@ -283,8 +271,8 @@ func LocalDirectory(lc *lifecycle.Lifecycle) Directory { return localDirectory{l
 
 // Members lists the one local member. Its address is a placeholder: the
 // in-process asker ignores it, and an empty address would read as unusable.
-func (d localDirectory) Members(context.Context) ([]Member, error) {
-	return []Member{{ID: localNodeID, Addr: "in-process", State: d.lc.State()}}, nil
+func (d localDirectory) Members() []Member {
+	return []Member{{ID: localNodeID, Addr: "in-process", State: d.lc.State()}}
 }
 
 // Changed returns a nil channel, which never fires.

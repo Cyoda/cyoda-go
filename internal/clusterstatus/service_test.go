@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,17 +22,16 @@ type fakeDir struct {
 	mu      sync.Mutex
 	members []Member
 	changed chan struct{}
-	err     error
 }
 
 func newFakeDir(ms ...Member) *fakeDir {
 	return &fakeDir{members: ms, changed: make(chan struct{})}
 }
 
-func (d *fakeDir) Members(context.Context) ([]Member, error) {
+func (d *fakeDir) Members() []Member {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]Member(nil), d.members...), d.err
+	return append([]Member(nil), d.members...)
 }
 
 func (d *fakeDir) Changed() <-chan struct{} {
@@ -237,22 +237,6 @@ func TestRound_InvalidAnswerIsDown(t *testing.T) {
 			t.Fatalf("got %+v, want %+v", got, want)
 		}
 	})
-	t.Run("asker returns an answer that does not validate", func(t *testing.T) {
-		ask := func(_ context.Context, id string, _ int) (NodeStatus, error) {
-			if id == "b" {
-				return NodeStatus{State: "BOGUS", Database: true, Version: "v1"}, nil
-			}
-			return okStatus(), nil
-		}
-		s := NewService(newFakeDir(member("a", lifecycle.Normal), member("b", lifecycle.Normal)), newFakeAsker(ask), time.Second)
-		r := read(t, s, 0, 0)
-		if got, want := r.Nodes[1], downEntry("b", lifecycle.Normal); !reflect.DeepEqual(got, want) {
-			t.Fatalf("got %+v, want %+v", got, want)
-		}
-		if r.Operational {
-			t.Fatal("Operational should be false")
-		}
-	})
 }
 
 func TestRound_HangingPeerBoundedByAskTimeout(t *testing.T) {
@@ -295,16 +279,6 @@ func TestRound_AskErrorLoggedNotReported(t *testing.T) {
 	}
 }
 
-func TestRound_ListingErrorFails(t *testing.T) {
-	d := newFakeDir()
-	d.err = errors.New("directory unavailable")
-	s := NewService(d, newFakeAsker(allOK), time.Second)
-	_, err := s.Read(context.Background(), 0, 0)
-	if err == nil || errors.Is(err, common.ErrClientGone) {
-		t.Fatalf("got %v, want a listing failure that is not ClientGone", err)
-	}
-}
-
 func TestOperational_Table(t *testing.T) {
 	with := func(f func(*NodeStatus)) NodeStatus { s := okStatus(); f(&s); return s }
 	cases := []struct {
@@ -336,6 +310,13 @@ func TestOperational_Table(t *testing.T) {
 	t.Run("no entries", func(t *testing.T) {
 		if operational(nil, 0) {
 			t.Fatal("operational over no entries should be false")
+		}
+		if c := counts(nil); c == nil || len(c) != 0 {
+			t.Fatalf("counts over no entries = %#v, want an empty slice, not nil", c)
+		}
+		r := read(t, NewService(newFakeDir(), newFakeAsker(allOK), time.Second), 0, 0)
+		if r.Operational || r.Counts == nil || r.Nodes == nil || len(r.Counts) != 0 || len(r.Nodes) != 0 {
+			t.Fatalf("report over no members = %#v, want not operational with empty, non-nil counts and nodes", r)
 		}
 	})
 	t.Run("a DOWN entry", func(t *testing.T) {
@@ -406,17 +387,22 @@ func TestRead_TimeoutAnswersLastCompletedRound(t *testing.T) {
 // TestRead_DeadlineCancelsRunningRound: a round still running at the deadline
 // is called off, and the answer is the last completed round.
 func TestRead_DeadlineCancelsRunningRound(t *testing.T) {
+	var startedLive atomic.Bool
 	ask := func(ctx context.Context, _ string, call int) (NodeStatus, error) {
 		if call == 1 {
 			return okStatus(), nil
 		}
+		startedLive.Store(ctx.Err() == nil)
 		<-ctx.Done()
 		return NodeStatus{}, ctx.Err()
 	}
 	d := newFakeDir(member("a", lifecycle.Normal))
-	s := NewService(d, newFakeAsker(ask), 10*time.Second)
+	a := newFakeAsker(ask)
+	s := NewService(d, a, 10*time.Second)
 	go func() {
-		time.Sleep(50 * time.Millisecond)
+		for a.called("a") < 1 {
+			time.Sleep(5 * time.Millisecond)
+		}
 		d.add(Member{ID: "b"}) // fires Changed(): a second round starts and hangs on "a"
 	}()
 	var r Report
@@ -427,6 +413,12 @@ func TestRead_DeadlineCancelsRunningRound(t *testing.T) {
 	want := []Entry{upEntry("a", okStatus())}
 	if !reflect.DeepEqual(r.Nodes, want) {
 		t.Fatalf("got %+v, want the first round %+v", r.Nodes, want)
+	}
+	if n := a.called("a"); n != 2 {
+		t.Fatalf("a asked %d times, want 2: the second round must have run and been cut", n)
+	}
+	if !startedLive.Load() {
+		t.Fatal("the second round started after the deadline; want it running when the deadline cut it")
 	}
 }
 
