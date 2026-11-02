@@ -15,6 +15,10 @@ import (
 // maxAnswerText bounds the free-text fields of a peer's answer.
 const maxAnswerText = 256
 
+// maxQuotedState is how much of a refused state an error quotes. Quoting can
+// escape each byte to four, so the error stays well under maxAnswerText.
+const maxQuotedState = 32
+
 // Clock summarises a node's platform clock setting.
 type Clock struct {
 	Controllable bool   `json:"controllable"`
@@ -33,7 +37,7 @@ type NodeStatus struct {
 // Validate applies the bounds on a peer's answer.
 func (s NodeStatus) Validate() error {
 	if !s.State.Valid() {
-		return fmt.Errorf("invalid lifecycle state %q", string(s.State))
+		return fmt.Errorf("invalid lifecycle state %s", quoteBounded(string(s.State)))
 	}
 	if err := checkText("version", s.Version); err != nil {
 		return err
@@ -45,6 +49,15 @@ func (s NodeStatus) Validate() error {
 		return fmt.Errorf("clock version %d exceeds the int64 range", s.Clock.Version)
 	}
 	return nil
+}
+
+// quoteBounded quotes v, or its first maxQuotedState bytes and its length when
+// it is longer: the value is a peer's, bounded only by the envelope.
+func quoteBounded(v string) string {
+	if len(v) <= maxQuotedState {
+		return fmt.Sprintf("%q", v)
+	}
+	return fmt.Sprintf("%q... (%d bytes)", v[:maxQuotedState], len(v))
 }
 
 func checkText(field, v string) error {

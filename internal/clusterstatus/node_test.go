@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
 	"strings"
@@ -108,5 +109,39 @@ func TestNodeStatus_Validate(t *testing.T) {
 				t.Fatalf("err=%v, wantErr=%v", err, c.wantErr)
 			}
 		})
+	}
+}
+
+// A peer's answer is bounded only by the envelope; the error that refuses it
+// must not carry it whole into the asker's error and log line.
+func TestNodeStatus_Validate_ErrorIsBounded(t *testing.T) {
+	for name, v := range map[string]string{
+		"printable state": strings.Repeat("x", 10<<10),
+		"escaped state":   strings.Repeat("\x00", 10<<10),
+		"long version":    strings.Repeat("\x00", 10<<10),
+		"long writer":     strings.Repeat("\xff", 10<<10),
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := NodeStatus{State: lifecycle.Normal}
+			switch name {
+			case "long version":
+				s.Version = v
+			case "long writer":
+				s.Clock.Writer = v
+			default:
+				s.State = lifecycle.State(v)
+			}
+			err := s.Validate()
+			if err == nil || len(err.Error()) >= 300 {
+				t.Fatalf("err = %d bytes (%v), want a refusal under 300 bytes", len(fmt.Sprint(err)), err != nil)
+			}
+		})
+	}
+}
+
+func TestNodeStatus_Validate_ShortStateIsQuoted(t *testing.T) {
+	err := NodeStatus{State: "bogus"}.Validate()
+	if err == nil || !strings.Contains(err.Error(), `"bogus"`) {
+		t.Fatalf("err = %v, want the state quoted", err)
 	}
 }

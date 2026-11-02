@@ -85,9 +85,9 @@ func TestStatusRoute_RefusesEnvelopeForAnotherNode(t *testing.T) {
 }
 
 func TestStatusRoute_ReplayCacheFullIsSealedRefusal(t *testing.T) {
-	inner := newAEAD(t)
+	inner := nodeAuth(t, testSelfNodeID)
 	src := &fakeStatusSource{status: sampleStatus()}
-	req, binding := signedRequestWithBinding(t, newAEAD(t), http.MethodPost, StatusPath, []byte("{}"))
+	req, binding := signedRequestWithBinding(t, nodeAuth(t, testSelfNodeID), http.MethodPost, StatusPath, []byte("{}"))
 	rec := httptest.NewRecorder()
 	statusMux(replayFullAuth{inner}, src).ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || src.calls != 0 {
@@ -105,8 +105,8 @@ func TestStatusRoute_ReplayCacheFullIsSealedRefusal(t *testing.T) {
 
 func TestAskStatus_SealedRefusalIsError(t *testing.T) {
 	src := &fakeStatusSource{status: sampleStatus()}
-	srv := statusServer(t, replayFullAuth{newAEAD(t)}, src)
-	_, err := NewHTTPForwarder(newAEAD(t), time.Second).AllowLoopbackForTesting().AskStatus(context.Background(), testSelfNodeID, srv.URL)
+	srv := statusServer(t, replayFullAuth{nodeAuth(t, testSelfNodeID)}, src)
+	_, err := NewHTTPForwarder(nodeAuth(t, testSelfNodeID), time.Second).AllowLoopbackForTesting().AskStatus(context.Background(), testSelfNodeID, srv.URL)
 	if err == nil || !strings.Contains(err.Error(), "replay cache") {
 		t.Fatalf("err = %v, want the replay-cache refusal", err)
 	}
@@ -116,7 +116,7 @@ func TestAskStatus_SealedRefusalIsError(t *testing.T) {
 }
 
 func TestAskStatus_AnswerWithoutStatusIsError(t *testing.T) {
-	auth := newAEAD(t)
+	auth := nodeAuth(t, testSelfNodeID)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _, binding, err := auth.Verify(r)
 		if err != nil {
@@ -126,7 +126,7 @@ func TestAskStatus_AnswerWithoutStatusIsError(t *testing.T) {
 		writeSealed(w, auth, binding, StatusAnswer{})
 	}))
 	t.Cleanup(srv.Close)
-	_, err := NewHTTPForwarder(newAEAD(t), time.Second).AllowLoopbackForTesting().AskStatus(context.Background(), testSelfNodeID, srv.URL)
+	_, err := NewHTTPForwarder(nodeAuth(t, testSelfNodeID), time.Second).AllowLoopbackForTesting().AskStatus(context.Background(), testSelfNodeID, srv.URL)
 	if err == nil || !strings.Contains(err.Error(), "no status") {
 		t.Fatalf("err = %v, want an answer-without-status error", err)
 	}
@@ -162,7 +162,7 @@ func TestAskStatus_HonoursContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	start := time.Now() // realtime: measures that the call returns promptly
-	_, err := NewHTTPForwarder(newAEAD(t), 10*time.Second).AllowLoopbackForTesting().AskStatus(ctx, testSelfNodeID, srv.URL)
+	_, err := NewHTTPForwarder(nodeAuth(t, testSelfNodeID), 10*time.Second).AllowLoopbackForTesting().AskStatus(ctx, testSelfNodeID, srv.URL)
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want a deadline error", err)
 	}
