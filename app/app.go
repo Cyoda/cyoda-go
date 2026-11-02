@@ -809,9 +809,6 @@ func New(cfg Config) *App {
 	return a
 }
 
-// Lifecycle returns the node's lifecycle holder.
-func (a *App) Lifecycle() *lifecycle.Lifecycle { return a.lifecycle }
-
 // latchOnPanic recovers a panic beneath a reaper sweep and trips healthLatch,
 // exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
@@ -946,7 +943,6 @@ func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	// A nil latch (an App not built by New()) reads as not tripped.
 	if a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
