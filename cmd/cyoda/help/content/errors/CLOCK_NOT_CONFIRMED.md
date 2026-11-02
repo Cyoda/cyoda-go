@@ -29,7 +29,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `no`.
 
 The detail names the nodes that did not confirm. Nothing is rolled back: the nodes that confirmed keep the setting, so the cluster may hold different clocks. Start over by restarting the cluster with a fresh store.
 
-The clock is a test feature for a static cluster that is idle, with one change at a time. Repeating the request does not repair a cluster in this state.
+The clock is a test feature for a static cluster that is idle, with one change at a time. A later change that answers 200 puts every node on one setting again, but it does not undo what ran while the nodes held different clocks.
 
 ## SEE ALSO
 
