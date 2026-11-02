@@ -201,8 +201,11 @@ machine keeps time locally.
 Every kind of change runs the same order: a set, a set-back, a rate-only
 change, and each step of a move.
 
-1. **Apply locally.** The handling node installs the setting in its own clock.
-   A set-back first runs its store check (`internal/platformclock/service.go:166-181`);
+1. **Apply locally.** The handling node installs a new setting in its own
+   clock. Every install bumps the version and stamps the handling node as
+   writer (`Test.install`, `internal/platformclock/clock.go:157-186`), so
+   every change ends with a fresh setting. A set-back first runs its store
+   check (`internal/platformclock/service.go:166-181`);
    when the check refuses, the previous setting is restored and nothing is
    pushed.
 2. **Push.** The node marks the setting shareable (`Test.share`,
@@ -218,6 +221,21 @@ change, and each step of a move.
    confirmed it. The handling node's own scheduler may fire a step's tasks
    before the peers hold that step; this is accepted, because the system is
    idle (decision 2) and nothing else runs in that moment.
+
+**Every change ends by installing and confirming a fresh setting.** A node's
+starting setting has version 0, an empty writer, and a start and anchor taken
+from that node's own `time.Now()` (`NewTest`, `clock.go:45-62`); each node's
+differs, and validation refuses an empty writer (`sync.go:42-43`). So the
+handling node never confirms a setting it did not install in this change.
+Where a change would otherwise end without a new setting — a move whose last
+step made none (`setForward` reports no change,
+`internal/platformclock/service.go:220-224`), such as a short advance whose
+target the clock has already passed or a move with no due tasks — the
+handling node installs a new setting re-anchored at its current platform
+time, with the requested rate, or the current one when none is requested
+(`Test.set` with no time, `clock.go:119-126`). That setting is the one every
+node must confirm. So a 200 always means every node holds the same setting,
+and every change bumps the version.
 
 **Every other live member** is every member in the handling node's gossip
 directory (`internal/cluster/registry/directory.go:11-29`) except itself. A
@@ -361,10 +379,12 @@ If a fire near the end ran past `T`, the move ends with the clock where it is.
 - **Each step** is an ordinary change: applied locally, pushed, and confirmed
   by every other node before the move waits for that step's tasks. A step
   that is not confirmed stops the move there with 503 `CLOCK_NOT_CONFIRMED`.
-- **The end of a move** confirms the setting the handling node holds at that
-  point, even when the last step made no new setting (`setForward` reports no
-  change, `internal/platformclock/service.go:220-224`). So every move answers
-  200 only with the final setting confirmed by every node.
+- **The end of a move** installs and confirms a fresh setting when the last
+  step made none (`setForward` reports no change,
+  `internal/platformclock/service.go:220-224`): re-anchored at the current
+  platform time, with the requested rate, and a new version (see "Every
+  change ends by installing and confirming a fresh setting"). So every move
+  answers 200 only with a final setting of its own, confirmed by every node.
 - **The scheduler** on every node then fires what is due, as it does on real
   time. A fire is recorded at `e` plus the scan latency times the rate. The
   default scan interval is 1 s, so at rate 1 a fire is recorded within about
@@ -830,7 +850,10 @@ No new store reads, locks, checks or background work run in production.
 | 503 `CLOCK_NOT_CONFIRMED`, a peer echoes a different setting | ✓ | waived: needs two concurrent changes, which the preconditions exclude; the service test drives a peer that echoes a newer setting | | | |
 | 503 `CLOCK_NOT_CONFIRMED`, a member whose metadata does not parse | ✓ | waived: no cyoda-go node advertises such metadata; registry and service unit tests | | | |
 | 503 `CLOCK_NOT_CONFIRMED` on a move step: the move stops at that step, the clock stays there | ✓ | | | | |
-| A move confirms each step before it waits for that step's tasks, and confirms the final setting when the last step made no new one | ✓ | | | | |
+| A move confirms each step before it waits for that step's tasks, and installs and confirms a fresh final setting when the last step made none | ✓ | | | | |
+| A short advance on a fresh cluster (the target already passed when the move ends) answers 200: a fresh setting with a new version is confirmed by every node | ✓ | ✓ | | | |
+| A move with no due tasks answers 200 with a fresh setting confirmed by every node | ✓ | ✓ | | | |
+| Every change bumps the version and stamps the handling node as writer; the starting setting (version 0, empty writer) is never pushed | ✓ | | | | |
 | A set-back refused by the store pushes nothing | ✓ | | | | |
 | A client that leaves during a confirmation round: `ClientGone`, logged at DEBUG | ✓ | waived: an e2e cannot read an answer its client has abandoned | | | |
 | Peer route: refusal with clock control off; refusal of a setting that fails validation; an envelope sealed for another path or node is refused | ✓ | | | | |
