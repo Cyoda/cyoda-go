@@ -665,10 +665,11 @@ func TestPlatformClock_CalloutTimeAttribute(t *testing.T) {
 	assertFiredOnTime(t, "AutoClose", f.fire, f.due)
 }
 
-// clockSeed is a cluster member outside cyoda-go that the clock tests' nodes
-// join through: an app node's gossip port is the kernel's choice and cannot be
-// named as a seed. gossip is its gossip address, nodeID its node id and clock
-// the test clock it holds.
+// clockSeed is a bare cluster member outside cyoda-go that the clock tests'
+// nodes join through. It holds a test clock that a change must reach, and it
+// serves the sealed clock route or serves nothing, so a test controls whether
+// a push to it succeeds. gossip is its gossip address, nodeID its node id and
+// clock the test clock it holds.
 type clockSeed struct {
 	gossip, nodeID string
 	clock          *platformclock.Test

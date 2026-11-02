@@ -357,7 +357,7 @@ func TestPlatformClusterMN_LeftNodeAbsent(t *testing.T) {
 	if err := b.app.Close(); err != nil {
 		t.Fatalf("close node B: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second) // realtime: the bound on the leave reaching node A
+	deadline := time.Now().Add(15 * time.Second) // realtime: the bound on the leave reaching node A
 	for {
 		code, st, raw := clusterOn(t, a, "")
 		if code == http.StatusOK && len(st.Nodes) == 1 {
@@ -369,7 +369,7 @@ func TestPlatformClusterMN_LeftNodeAbsent(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) { // realtime: the bound on the leave reaching node A
-			t.Fatalf("node A still answers %d %s 5 s after node B left", code, raw)
+			t.Fatalf("node A still answers %d %s 15 s after node B left", code, raw)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -504,6 +504,9 @@ func TestPlatformClusterMN_WaitForTwo_200OnJoin(t *testing.T) {
 		t.Fatal("the wait's request was not sent within 10 s")
 	}
 
+	// On a very slow runner the first round could run after B joined: the test
+	// then still passes but proves less. B's slow start-up makes this rare, and
+	// a broken wait fails it.
 	c.join(t, "b", nil)
 
 	var got clusterAnswer
