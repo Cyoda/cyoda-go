@@ -81,6 +81,9 @@ func (f *CachingStoreFactory) TransactionManager(ctx context.Context) (spi.Trans
 }
 func (f *CachingStoreFactory) Close() error { return f.inner.Close() }
 
+// Ping forwards to the inner factory.
+func (f *CachingStoreFactory) Ping(ctx context.Context) error { return f.inner.Ping(ctx) }
+
 // SupportsCompositeUniqueKeys forwards the optional capability check to the
 // inner factory. Returns false if the inner factory does not implement
 // spi.CompositeUniqueKeyCapable.

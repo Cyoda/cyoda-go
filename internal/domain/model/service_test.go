@@ -133,7 +133,8 @@ func (f *fakeStoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledT
 func (f *fakeStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, errUnused
 }
-func (f *fakeStoreFactory) Close() error { return nil }
+func (f *fakeStoreFactory) Close() error               { return nil }
+func (f *fakeStoreFactory) Ping(context.Context) error { return nil }
 
 // TestImportModel_StaleCacheAfterRemoteDelete_ProceedsAfterRefresh verifies
 // that when the cached ModelStore.Get returns a stale LOCKED descriptor

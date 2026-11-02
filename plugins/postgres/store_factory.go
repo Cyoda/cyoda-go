@@ -321,6 +321,13 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 	}, nil
 }
 
+// Ping implements spi.StoreFactory. It checks the main pool only; the
+// scheduler pools are not consulted. After Close the pool is closed and the
+// ping fails.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	return f.pool.Ping(ctx)
+}
+
 func (f *StoreFactory) Close() error {
 	if f.unregisterMetrics != nil {
 		f.unregisterMetrics()

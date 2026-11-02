@@ -41,6 +41,7 @@ func (f *countingStoreFactory) ScheduledTaskStore(context.Context) (spi.Schedule
 func (f *countingStoreFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
+func (f *countingStoreFactory) Ping(context.Context) error { return nil }
 func (f *countingStoreFactory) Close() error {
 	f.closeCalls.Add(1)
 	return nil

@@ -76,7 +76,8 @@ func (nilVersionStoreFactory) ScheduledTaskStore(context.Context) (spi.Scheduled
 func (nilVersionStoreFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
-func (nilVersionStoreFactory) Close() error { return nil }
+func (nilVersionStoreFactory) Close() error               { return nil }
+func (nilVersionStoreFactory) Ping(context.Context) error { return nil }
 
 func TestGetEntity_ByTransactionID_NilEntityVersion_Returns404(t *testing.T) {
 	h := &Handler{factory: nilVersionStoreFactory{}}

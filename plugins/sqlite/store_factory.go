@@ -430,6 +430,13 @@ func (f *StoreFactory) TransactionManager(_ context.Context) (spi.TransactionMan
 	return f.tm, nil
 }
 
+// Ping implements spi.StoreFactory. It checks the read handle, which is a
+// separate pool from the writer and so answers while a write is in progress.
+// After Close the handle is closed and the ping fails.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	return f.readDB.PingContext(ctx)
+}
+
 func (f *StoreFactory) Close() error {
 	f.closeMu.Lock()
 	defer f.closeMu.Unlock()
