@@ -11364,7 +11364,7 @@ components:
             - NORMAL
             - DRAINING
             - UNHEALTHY
-          description: The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+          description: The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse or names no valid state.
         count:
           type: integer
           format: int32
@@ -11398,7 +11398,7 @@ components:
           description: >-
             The node's lifecycle state: from its answer when `UP`, from its
             gossip metadata when `DOWN`. Absent for a `DOWN` node whose
-            metadata does not parse.
+            metadata does not parse or names no valid state.
         database:
           type: boolean
           description: Whether the node's database check passed. Only when `UP`.
@@ -12913,8 +12913,12 @@ components:
       description: >-
         Forbidden — caller does not have permission for this resource;
         `properties.errorCode` is FORBIDDEN. Among the causes: the caller lacks
-        ROLE_M2M, which every operation requires except `GET /account` and the
-        client, trusted-key and key-pair operations.
+        ROLE_M2M, which every operation requires except `GET /account`,
+        `GET /platform/clock` and the admin and platform-operator operations
+        (client, trusted-key and key-pair operations, `POST /platform/clock`,
+        `GET /platform/cluster`); or the operation needs a platform operator
+        (`ROLE_ADMIN` in the tenant `PLATFORM`); or an on-behalf-of token
+        reaches an admin or platform-operator operation.
       content:
         application/problem+json:
           schema:

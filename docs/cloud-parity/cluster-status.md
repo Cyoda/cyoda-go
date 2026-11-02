@@ -29,7 +29,7 @@ version and clock setting from the answer. A member that does not answer — no
 answer within the ask bound, a connection that does not open, an answer that
 does not authenticate or validate, or no usable address — is `DOWN`, with the
 state its membership metadata names, or no state when that metadata does not
-parse. A node that has left the directory is not listed. Without clustering
+parse or names no valid state. A node that has left the directory is not listed. Without clustering
 the one entry has the id `local` and is read in process.
 
 **The wait.** With `waitForNodes`, the node runs rounds until one has at least
@@ -96,7 +96,7 @@ open.
 ## 3. Readiness during shutdown
 
 - `/readyz` (the admin listener's readiness probe) fails after a recovered
-  panic, as before, and also from the start of shutdown, so a load balancer
+  panic and from the start of shutdown, so a load balancer
   stops sending the node new requests while it drains. The body stays
   generic; the reason goes to the server log.
 - `GET /health` reflects the recovered-panic condition only: it stays

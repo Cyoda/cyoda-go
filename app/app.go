@@ -94,10 +94,11 @@ type App struct {
 	// registered on this node.
 	searchPool   *search.WorkerPool
 	grpcStopOnce sync.Once
-	// healthLatch trips on the first recovered panic at any of the six sites
-	// that run engine or store work: the search reaper sweep, the gRPC
-	// recovery interceptors, the scheduler, the HTTP recovery middleware, the
-	// async-search goroutine and the search reaper's second pass.
+	// healthLatch trips on the first recovered panic at any of the five sites
+	// that run engine or store work: the HTTP recovery middleware, the gRPC
+	// recovery interceptors, the async-search goroutine, the search reaper
+	// (its snapshot sweep, its stale-job reclaim sweep and that sweep's second
+	// pass) and the scheduler.
 	// Notification-callback recoveries (member-registry onChange, auth
 	// key-store reconcile broadcast) deliberately do not. Nothing resets it: a
 	// node that has panicked has state nothing has verified. Read by

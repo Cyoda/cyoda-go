@@ -926,7 +926,7 @@ type ClusterNodeStatusDto struct {
 	// Reachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
 	Reachability ClusterNodeStatusDtoReachability `json:"reachability"`
 
-	// State The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse.
+	// State The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse or names no valid state.
 	State *ClusterNodeStatusDtoState `json:"state,omitempty"`
 
 	// Version The node's build version. Only when `UP`.
@@ -936,7 +936,7 @@ type ClusterNodeStatusDto struct {
 // ClusterNodeStatusDtoReachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
 type ClusterNodeStatusDtoReachability string
 
-// ClusterNodeStatusDtoState The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse.
+// ClusterNodeStatusDtoState The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse or names no valid state.
 type ClusterNodeStatusDtoState string
 
 // ClusterStateCountDto defines model for ClusterStateCountDto.
@@ -947,14 +947,14 @@ type ClusterStateCountDto struct {
 	// Reachability Whether the nodes counted answered.
 	Reachability ClusterStateCountDtoReachability `json:"reachability"`
 
-	// State The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+	// State The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse or names no valid state.
 	State *ClusterStateCountDtoState `json:"state,omitempty"`
 }
 
 // ClusterStateCountDtoReachability Whether the nodes counted answered.
 type ClusterStateCountDtoReachability string
 
-// ClusterStateCountDtoState The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+// ClusterStateCountDtoState The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse or names no valid state.
 type ClusterStateCountDtoState string
 
 // ClusterStatusDto defines model for ClusterStatusDto.
