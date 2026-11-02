@@ -281,9 +281,11 @@ func (r *kvReplica[R]) Start() bool {
 	// the loop's own clock starts now, not at construction time.
 	r.stampOK()
 	done := make(chan struct{})
-	r.loopMu.Lock()
-	r.loopDone = done
-	r.loopMu.Unlock()
+	func() {
+		r.loopMu.Lock()
+		defer r.loopMu.Unlock()
+		r.loopDone = done
+	}()
 	go func() {
 		defer close(done)
 		for {
@@ -307,9 +309,11 @@ func (r *kvReplica[R]) Start() bool {
 // arrives after this returns a safe no-op, so Wait does not need to guard
 // against one arriving later.
 func (r *kvReplica[R]) Wait() {
-	r.loopMu.Lock()
-	done := r.loopDone
-	r.loopMu.Unlock()
+	done := func() chan struct{} {
+		r.loopMu.Lock()
+		defer r.loopMu.Unlock()
+		return r.loopDone
+	}()
 	if done != nil {
 		<-done
 	}

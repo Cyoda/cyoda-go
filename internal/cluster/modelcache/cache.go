@@ -349,9 +349,11 @@ func (c *CachingModelStore) SubscribeLocal(h func(tenant string, ref spi.ModelRe
 }
 
 func (c *CachingModelStore) notifyLocalSubscribers(tenant string, ref spi.ModelRef) {
-	c.localSubMu.Lock()
-	subs := append([]func(string, spi.ModelRef){}, c.localSubs...)
-	c.localSubMu.Unlock()
+	subs := func() []func(string, spi.ModelRef) {
+		c.localSubMu.Lock()
+		defer c.localSubMu.Unlock()
+		return append([]func(string, spi.ModelRef){}, c.localSubs...)
+	}()
 	for _, h := range subs {
 		h(tenant, ref)
 	}
