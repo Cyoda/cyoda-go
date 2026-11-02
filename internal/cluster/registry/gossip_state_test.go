@@ -23,9 +23,9 @@ func TestGossip_StateExchangeOnJoin(t *testing.T) {
 	defer r1.Deregister(ctx, "st-1")
 
 	c1 := platformclock.NewTest("st-1", nil)
-	platformclock.Attach(c1, r1, r1)
-	// A setting made through the service is shareable. Its broadcast is
-	// dropped here, so the joiner can only learn it by the state exchange.
+	platformclock.Attach(c1, r1)
+	// A setting made through the service is shareable. It is confirmed by
+	// this node alone, so the joiner can only learn it by the state exchange.
 	svc := platformclock.NewService(c1,
 		func(context.Context) (time.Time, error) {
 			return time.Time{}, errors.New("a rate change does not read the store's time")
@@ -49,7 +49,7 @@ func TestGossip_StateExchangeOnJoin(t *testing.T) {
 	}
 	defer r2.Deregister(ctx, "st-2")
 	c2 := platformclock.NewTest("st-2", nil)
-	platformclock.Attach(c2, r2, r2)
+	platformclock.Attach(c2, r2)
 	if err := r2.Register(ctx, "st-2", "localhost:18191"); err != nil {
 		t.Fatal(err)
 	}

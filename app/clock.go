@@ -6,6 +6,8 @@ import (
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	clusterdispatch "github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
@@ -51,4 +53,25 @@ func checkClockAtStartup(ctx context.Context, c *platformclock.Test,
 		return nil
 	}
 	return platformclock.StartupCheck(ctx, latestRecorded, now)
+}
+
+// clockPeers returns the nodes a clock change is pushed to: every member of
+// the gossip directory, read afresh for each confirmation round. The list
+// includes this node; the round skips it.
+func clockPeers(g *registry.Gossip) func() []platformclock.Peer {
+	return func() []platformclock.Peer {
+		members := g.Members()
+		peers := make([]platformclock.Peer, len(members))
+		for i, m := range members {
+			peers[i] = platformclock.Peer{NodeID: m.NodeID, Addr: m.Addr}
+		}
+		return peers
+	}
+}
+
+// clockPush pushes a clock setting to one peer over the sealed peer channel.
+func clockPush(f *clusterdispatch.HTTPForwarder) platformclock.Push {
+	return func(ctx context.Context, peer platformclock.Peer, s platformclock.Setting) (platformclock.Setting, error) {
+		return f.PushClock(ctx, peer.NodeID, peer.Addr, s)
+	}
 }

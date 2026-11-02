@@ -658,11 +658,6 @@ func TestMove_SchedulerErrorMidMove(t *testing.T) {
 	}
 }
 
-type nopBroadcaster struct{}
-
-func (nopBroadcaster) Broadcast(string, []byte)       {}
-func (nopBroadcaster) Subscribe(string, func([]byte)) {}
-
 type capturedExchange struct{ local func() []byte }
 
 func (e *capturedExchange) SetStateExchange(l func() []byte, _ func([]byte)) { e.local = l }
@@ -686,7 +681,7 @@ func servedSetting(t *testing.T, ex *capturedExchange) *Setting {
 func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 	f := newFixture(t)
 	ex := &capturedExchange{}
-	Attach(f.clock, nopBroadcaster{}, ex)
+	Attach(f.clock, ex)
 
 	if _, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))}); err != nil {
 		t.Fatalf("rate change: %v", err)
@@ -730,7 +725,7 @@ func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 func TestSetBack_PendingOnFreshClockServesNothing(t *testing.T) {
 	f := newFixture(t)
 	ex := &capturedExchange{}
-	Attach(f.clock, nopBroadcaster{}, ex)
+	Attach(f.clock, ex)
 	f.tm.answer = func() time.Time {
 		if raw := ex.local(); raw != nil {
 			t.Errorf("served %q while the first set-back is pending", raw)

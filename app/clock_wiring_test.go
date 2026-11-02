@@ -203,12 +203,12 @@ func TestClockWiring_OnClusterJoinAdoptsPeerSetting(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = probe.Deregister(ctx, "clock-probe") })
 	held := platformclock.NewTest("clock-probe", nil)
-	platformclock.Attach(held, probe, probe)
+	platformclock.Attach(held, probe)
 	if err := probe.Register(ctx, "clock-probe", "http://127.0.0.1:1"); err != nil {
 		t.Fatal(err)
 	}
-	// A published setting; its broadcast is dropped (no publish), so the
-	// node can learn it only by the join-time exchange.
+	// A setting confirmed by the probe alone, so the node can learn it only
+	// by the join-time exchange.
 	rate := int64(3_000_000)
 	svc := platformclock.NewService(held, unusedStoreTime, unusedTasks, platformclock.SingleNode("clock-probe"), time.Second)
 	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
@@ -261,5 +261,41 @@ func TestClockWiring_StartupOrder(t *testing.T) {
 	}
 	if !regexp.MustCompile(`(?s)if cfg\.ClockControlEnabled \{[^}]*platformclock\.Attach\(`).Match(src) {
 		t.Error("app.go: platformclock.Attach is not guarded by the clock-control feature")
+	}
+}
+
+// In cluster mode every node pushes a clock change to its peers over the
+// sealed peer channel and serves the peer route, whether clock control is on
+// or off. Neither is observable without a hook in production code; this pins
+// the source as TestClockWiring_StartupOrder does. The forwarder is built
+// before the external-processing branch, so a node with external processing
+// still has one; the clock route is built once, for whichever mux serves the
+// root; nothing broadcasts a setting.
+func TestClockWiring_ForwarderAndClockRouteInClusterMode(t *testing.T) {
+	src, err := os.ReadFile("app.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		s    string
+		want int
+	}{
+		{`clusterdispatch.NewHTTPForwarder(`, 1},
+		{`if cfg.ExternalProcessing != nil`, 1},
+		{`clusterdispatch.NewClockHandler(`, 1},
+	} {
+		if n := bytes.Count(src, []byte(c.s)); n != c.want {
+			t.Errorf("app.go has %q %d times, want %d", c.s, n, c.want)
+		}
+	}
+	// A regexp, so this test's own source does not match the repository's
+	// exit check for the removed broadcast.
+	if n := len(regexp.MustCompile(`platformclock\.Publish\(`).FindAll(src, -1)); n != 0 {
+		t.Errorf("app.go broadcasts the clock setting %d times, want none", n)
+	}
+	fwd := bytes.Index(src, []byte(`clusterdispatch.NewHTTPForwarder(`))
+	ext := bytes.Index(src, []byte(`if cfg.ExternalProcessing != nil`))
+	if fwd < 0 || ext < 0 || fwd > ext {
+		t.Error("app.go: the forwarder is not built before the external-processing branch")
 	}
 }

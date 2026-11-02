@@ -183,10 +183,11 @@ func New(cfg Config) *App {
 	// search service, the engine, the scheduler, the domain handlers and the
 	// owner's callout loop, so all agree on "now". It is the real clock unless
 	// clock control is on; then it is one test clock for the process, attached
-	// to gossip before the node registers so the join-time state exchange
-	// brings the cluster's setting. The storage plugin gets it (spi.WithClock)
-	// only when clock control is on; production postgres keeps the database
-	// clock.
+	// to gossip's state exchange before the node registers so the join-time
+	// exchange brings the cluster's setting. A change reaches the running
+	// nodes by its push over the peer channel, not by gossip. The storage
+	// plugin gets it (spi.WithClock) only when clock control is on; production
+	// postgres keeps the database clock.
 	var testClock *platformclock.Test
 	clk := platformclock.Real()
 	if cfg.ClockControlEnabled {
@@ -195,7 +196,7 @@ func New(cfg Config) *App {
 		clk = testClock
 		factoryOpts = append(factoryOpts, spi.WithClock(testClock))
 		if gossipReg != nil {
-			platformclock.Attach(testClock, gossipReg, gossipReg)
+			platformclock.Attach(testClock, gossipReg)
 		}
 	}
 
@@ -482,8 +483,13 @@ func New(cfg Config) *App {
 	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
 	// the shared cluster secret. 30-second timestamp skew window. This node's
 	// id is what every inbound envelope must have been sealed for. Constructed
-	// once and shared by forwarder and handler so rotation is atomic.
-	var peerAuth clusterdispatch.PeerAuth
+	// once and shared by forwarder and handler so rotation is atomic. The
+	// forwarder carries a callout hand-over and a platform clock push, so it is
+	// built in cluster mode whatever serves external processing.
+	var (
+		peerAuth  clusterdispatch.PeerAuth
+		forwarder *clusterdispatch.HTTPForwarder
+	)
 	if cfg.Cluster.Enabled {
 		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, a.selfNodeID, 30*time.Second)
 		if err != nil {
@@ -491,6 +497,12 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		peerAuth = auth
+		forwarder = clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
+		if cfg.Cluster.DispatchAllowLoopback {
+			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+			// Never set in production (SSRF guard stays active by default).
+			forwarder = forwarder.AllowLoopbackForTesting()
+		}
 	}
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
@@ -499,12 +511,6 @@ func New(cfg Config) *App {
 		// router: peers stays a nil interface (a nil *PeerRouter would not be).
 		var peers callout.PeerRouter
 		if cfg.Cluster.Enabled {
-			forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
-			if cfg.Cluster.DispatchAllowLoopback {
-				// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-				// Never set in production (SSRF guard stays active by default).
-				forwarder = forwarder.AllowLoopbackForTesting()
-			}
 			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
 				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
 			if err != nil {
@@ -592,17 +598,14 @@ func New(cfg Config) *App {
 
 	// The platform clock API. With clock control on, POST /platform/clock
 	// changes the test clock: a move polls the store's scheduled tasks, and
-	// each new setting is confirmed before the change goes on.
+	// each new setting is confirmed before the change goes on. In cluster mode
+	// the setting is pushed to every member of the gossip directory over the
+	// peer channel, and each must echo it within CYODA_PROXY_TIMEOUT.
 	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
 	if testClock != nil {
 		confirm := platformclock.SingleNode(a.selfNodeID)
-		if gossipReg != nil {
-			// Until the peers confirm over the peer channel, the setting is
-			// broadcast and only this node is known to hold it.
-			confirm = func(_ context.Context, s platformclock.Setting) ([]string, error) {
-				platformclock.Publish(gossipReg, s)
-				return []string{a.selfNodeID}, nil
-			}
+		if cfg.Cluster.Enabled {
+			confirm = platformclock.Cluster(a.selfNodeID, clockPeers(gossipReg), clockPush(forwarder), cfg.Cluster.ProxyTimeout)
 		}
 		clockSvc := platformclock.NewService(testClock, platformConsistencyTime(a.transactionManager), a.storeFactory.ScheduledTaskStore,
 			confirm, 100*time.Millisecond)
@@ -724,33 +727,27 @@ func New(cfg Config) *App {
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
+	rootMux := mux
 	if contextPath != "" {
 		outerMux := http.NewServeMux()
 		outerMux.Handle(contextPath+"/", http.StripPrefix(contextPath, mux))
-		// Discovery routes at root (no auth, no context path)
-		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
-		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(outerMux)
-		}
-		a.handler = outerMux
-	} else {
-		// No context path — discovery routes on the main mux
-		internalapi.RegisterDiscoveryRoutes(mux, "")
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
-		// Internal dispatch routes (AEAD-authenticated)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(mux)
-		}
-		a.handler = mux
+		rootMux = outerMux
 	}
+	// Discovery routes at root (no auth, no context path)
+	internalapi.RegisterDiscoveryRoutes(rootMux, contextPath)
+	// Help routes — unauthenticated, public content embedded in the binary
+	// (OSS base merged with any plugin-registered overlays).
+	internalapi.RegisterHelpRoutes(rootMux, help.BuildTree(), contextPath, cfg.Version)
+	// Internal dispatch routes at root, not under the context path, sealed by
+	// the peer channel: the callout hand-over and the platform clock push. The
+	// clock route is served whether clock control is on or off: with it off
+	// (testClock nil) every push is refused, so a change fails on that node
+	// rather than passing it by.
+	if cfg.Cluster.Enabled {
+		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
+		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
+	}
+	a.handler = rootMux
 
 	// Cluster routing sits directly over the mux: a request carrying a
 	// transaction token for another node is forwarded before auth runs here

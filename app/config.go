@@ -925,17 +925,22 @@ func ValidateCallout(c CalloutConfig) error {
 	return nil
 }
 
-// ValidateDispatch rejects dispatch durations that cannot be honoured. The
+// ValidateDispatch rejects peer-call durations that cannot be honoured. The
 // patience may be zero (waiting disabled) but not negative; the connect
-// timeout bounds a network call and must be positive. They are checked
-// whether or not clustering is enabled: a value that would fail the moment
-// clustering is switched on is a configuration error today.
+// timeout bounds a network call and must be positive; the proxy timeout
+// bounds a proxied request and a platform clock confirmation round, and must
+// be positive. They are checked whether or not clustering is enabled: a value
+// that would fail the moment clustering is switched on is a configuration
+// error today.
 func ValidateDispatch(c cluster.Config) error {
 	if c.DispatchWaitTimeout < 0 {
 		return fmt.Errorf("CYODA_DISPATCH_WAIT_TIMEOUT must not be negative (0 disables waiting), got %s", c.DispatchWaitTimeout)
 	}
 	if c.DispatchConnectTimeout <= 0 {
 		return fmt.Errorf("CYODA_DISPATCH_CONNECT_TIMEOUT must be > 0, got %s", c.DispatchConnectTimeout)
+	}
+	if c.ProxyTimeout <= 0 {
+		return fmt.Errorf("CYODA_PROXY_TIMEOUT must be > 0, got %s", c.ProxyTimeout)
 	}
 	return nil
 }

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/app"
 	"github.com/cyoda-platform/cyoda-go/internal/auth"
+	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
@@ -70,11 +73,12 @@ func getClock(t *testing.T, h *callbackHarness) clockBody {
 }
 
 // startClockAt sets the clock to at, on a store that has recorded nothing
-// yet.
-func startClockAt(t *testing.T, h *callbackHarness, at time.Time) {
+// yet, and returns the answer.
+func startClockAt(t *testing.T, h *callbackHarness, at time.Time) clockBody {
 	t.Helper()
 	c := postClock(t, h, fmt.Sprintf(`{"time":%q}`, at.Format(time.RFC3339Nano)))
 	assertNear(t, "clock after the set", c.Now, at, 5*time.Second)
+	return c
 }
 
 // advanceClock moves the clock forward by d and returns the answer.
@@ -661,33 +665,55 @@ func TestPlatformClock_CalloutTimeAttribute(t *testing.T) {
 	assertFiredOnTime(t, "AutoClose", f.fire, f.due)
 }
 
-// newClockSeed starts a cluster member outside cyoda-go that the clock
-// test's nodes join through, and returns its gossip address: an app node's
-// gossip port is the kernel's choice and cannot be named as a seed. It runs
-// the platform clock's own gossip code, so like every node it adopts a
-// broadcast setting and hands it to a node that joins through it.
-func newClockSeed(t *testing.T) string {
+// clockSeed is a cluster member outside cyoda-go that the clock tests' nodes
+// join through: an app node's gossip port is the kernel's choice and cannot be
+// named as a seed. gossip is its gossip address, nodeID its node id and clock
+// the test clock it holds.
+type clockSeed struct {
+	gossip, nodeID string
+	clock          *platformclock.Test
+}
+
+// newClockSeed starts a clock seed. It runs the platform clock's own code, so
+// like every node it hands its setting to a node that joins through it. With
+// serve it also serves the sealed clock route, as a node with clock control
+// on does, and advertises that server as its address; without it, its
+// address serves nothing, so a push to it fails.
+func newClockSeed(t *testing.T, serve bool) clockSeed {
 	t.Helper()
-	nodeID := "clock-seed-" + randSuffix(t)[:8]
+	nodeID := "clock-s-" + randSuffix(t)[:8]
+	clock := platformclock.NewTest(nodeID, nil)
+	nodeAddr := "http://127.0.0.1:1"
+	if serve {
+		auth, err := dispatch.NewAEADPeerAuth(clusterHMACSecret32, nodeID, 30*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mux := http.NewServeMux()
+		dispatch.NewClockHandler(auth, platformclock.NewHolder(clock)).Register(mux)
+		srv := httptest.NewServer(mux)
+		t.Cleanup(srv.Close)
+		nodeAddr = srv.URL
+	}
 	for attempt := 1; ; attempt++ {
 		port := freeLoopbackPort(t)
 		g, err := registry.NewGossip(registry.GossipConfig{
 			NodeID:           nodeID,
-			NodeAddr:         "http://127.0.0.1:1",
+			NodeAddr:         nodeAddr,
 			BindAddr:         "127.0.0.1",
 			BindPort:         port,
 			SecretKey:        clusterHMACSecret32,
 			ListScanInterval: 100 * time.Millisecond,
 		})
 		if err == nil {
-			platformclock.Attach(platformclock.NewTest(nodeID, nil), g, g)
+			platformclock.Attach(clock, g)
 			t.Cleanup(func() { _ = g.Deregister(context.Background(), nodeID) })
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			if err := g.Register(ctx, nodeID, ""); err != nil {
 				t.Fatalf("clock seed could not start: %v", err)
 			}
-			return net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port))
+			return clockSeed{gossip: net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", port)), nodeID: nodeID, clock: clock}
 		}
 		if attempt == 5 {
 			t.Fatalf("clock seed could not bind a gossip port: %v", err)
@@ -695,14 +721,14 @@ func newClockSeed(t *testing.T) string {
 	}
 }
 
-// clockClusterNode is a cluster node with clock control on, on database s,
-// joining through seed. Every node signs with key, so one token serves all.
-func clockClusterNode(t *testing.T, s *schedDB, key *rsa.PrivateKey, nodeID, seed string) *callbackHarness {
+// clockClusterNode is a cluster node on database s, joining through seed, with
+// clock control on or off. Every node signs with key, so one token serves all.
+func clockClusterNode(t *testing.T, s *schedDB, key *rsa.PrivateKey, nodeID, seed string, clockOn bool) *callbackHarness {
 	t.Helper()
 	return newCalloutHarnessWithKey(t, key, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_URL", s.url)
 		schedulerTuning(cfg)
-		cfg.ClockControlEnabled = true
+		cfg.ClockControlEnabled = clockOn
 		cfg.Cluster.Enabled = true
 		cfg.Cluster.NodeID = nodeID
 		cfg.Cluster.NodeAddr = fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPPort)
@@ -714,47 +740,189 @@ func clockClusterNode(t *testing.T, s *schedDB, key *rsa.PrivateKey, nodeID, see
 	})
 }
 
-// TestPlatformClock_TwoNodes_SettingPropagates: a change through node A
-// reaches node B within gossip latency, and a node that joins afterwards
-// starts on the cluster's setting.
-func TestPlatformClock_TwoNodes_SettingPropagates(t *testing.T) {
+// awaitMembers returns once h's node knows every node in ids. A change
+// requires a static cluster (a test precondition): the node handling it must
+// know every member before it starts.
+func awaitMembers(t *testing.T, h *callbackHarness, ids ...string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second) // realtime: the membership bound
+	for {
+		nodes, err := h.app.NodeRegistry().List(context.Background())
+		if err != nil {
+			t.Fatalf("list cluster nodes: %v", err)
+		}
+		known := map[string]bool{}
+		for _, n := range nodes {
+			known[n.NodeID] = true
+		}
+		missing := slices.DeleteFunc(slices.Clone(ids), func(id string) bool { return known[id] })
+		if len(missing) == 0 {
+			return
+		}
+		if time.Now().After(deadline) { // realtime: the membership bound
+			t.Fatalf("the node does not know %v (nodes: %+v)", missing, nodes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// sortedIDs returns ids ascending, as a change's answer lists its nodes.
+func sortedIDs(ids ...string) []string {
+	out := slices.Clone(ids)
+	slices.Sort(out)
+	return out
+}
+
+// postClockNotConfirmed sends a change as the platform operator, requires a 503
+// CLOCK_NOT_CONFIRMED and returns its detail and raw body.
+func postClockNotConfirmed(t *testing.T, h *callbackHarness, body string) (detail, raw string) {
+	t.Helper()
+	resp := h.clockAs(t, h.platformToken(t), http.MethodPost, "", body)
+	raw = readBody(t, resp)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status %d: %s; want 503", resp.StatusCode, raw)
+	}
+	var pd struct {
+		Detail     string         `json:"detail"`
+		Properties map[string]any `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(raw), &pd); err != nil {
+		t.Fatalf("decode %q: %v", raw, err)
+	}
+	if pd.Properties["errorCode"] != "CLOCK_NOT_CONFIRMED" {
+		t.Fatalf("problem %s; want errorCode CLOCK_NOT_CONFIRMED", raw)
+	}
+	return pd.Detail, raw
+}
+
+// TestPlatformClock_Cluster_ConfirmedByEveryNode: a change through node A
+// answers once every node holds it, lists every node, and another node reads
+// it at once; a rate-only change is confirmed the same way; a node that joins
+// afterwards starts on the cluster's setting.
+func TestPlatformClock_Cluster_ConfirmedByEveryNode(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := newSchedDB(t)
-	seed := newClockSeed(t)
+	seed := newClockSeed(t, true)
 	sfx := randSuffix(t)[:8]
-	a := clockClusterNode(t, s, key, "clock-a-"+sfx, seed)
-	b := clockClusterNode(t, s, key, "clock-b-"+sfx, seed)
+	aID, bID := "clock-a-"+sfx, "clock-b-"+sfx
+	a := clockClusterNode(t, s, key, aID, seed.gossip, true)
+	b := clockClusterNode(t, s, key, bID, seed.gossip, true)
+	awaitMembers(t, a, seed.nodeID, aID, bID)
+	all := sortedIDs(seed.nodeID, aID, bID)
 
-	// onSetting reports whether a node's clock is on the setting: at
+	// onSetting reports whether a clock reading is on the setting: at
 	// clockStart plus at most the real time since the change began.
 	posted := time.Now() // realtime: bounds how far the clock can have run since the change
-	startClockAt(t, a, clockStart)
-	onSetting := func(c clockBody) bool {
+	onSetting := func(now time.Time) bool {
 		ran := time.Since(posted) // realtime: how far the clock can have run since the change
-		return !c.Now.Before(clockStart) && !c.Now.After(clockStart.Add(ran+time.Second))
+		return !now.Before(clockStart) && !now.After(clockStart.Add(ran+time.Second))
+	}
+	if got := startClockAt(t, a, clockStart); !slices.Equal(got.Nodes, all) {
+		t.Fatalf("set answered nodes %v; want %v", got.Nodes, all)
+	}
+	if got := getClock(t, b); !onSetting(got.Now) {
+		t.Fatalf("node B's clock %s right after the set on node A; want about %s", got.Now, clockStart)
+	}
+	if now := seed.clock.Now(); !onSetting(now) {
+		t.Fatalf("the seed's clock %s right after the set on node A; want about %s", now, clockStart)
 	}
 
-	// Gossip usually delivers well under a second; the bound is sized for a
-	// loaded host, and the poll ends as soon as B is on the setting.
-	const propagation = 10 * time.Second
-	deadline := time.Now().Add(propagation) // realtime: the propagation bound
-	for {
-		c := getClock(t, b)
-		if onSetting(c) {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("node B's clock %s %s after the change on node A; want about %s", c.Now, propagation, clockStart)
-		}
-		time.Sleep(20 * time.Millisecond)
+	if got := postClock(t, a, `{"rate":2}`); !slices.Equal(got.Nodes, all) {
+		t.Fatalf("rate change answered nodes %v; want %v", got.Nodes, all)
+	}
+	if got := getClock(t, b); got.Rate != 2 {
+		t.Fatalf("node B's rate %v right after the change on node A; want 2", got.Rate)
 	}
 
-	c := clockClusterNode(t, s, key, "clock-c-"+sfx, seed)
-	if got := getClock(t, c); !onSetting(got) {
-		t.Fatalf("node C's first clock read %s; want about %s", got.Now, clockStart)
+	c := clockClusterNode(t, s, key, "clock-c-"+sfx, seed.gossip, true)
+	if got := getClock(t, c); got.Rate != 2 || got.Now.Before(clockStart) {
+		t.Fatalf("node C's first clock read %+v; want rate 2 and not before %s", got, clockStart)
+	}
+}
+
+// TestPlatformClock_Cluster_FreshShortAdvanceAndIdleMove: on a cluster where
+// nothing was set, a 1 ms advance and an idle one-hour move each end with a
+// fresh setting of the handling node that every node confirms.
+func TestPlatformClock_Cluster_FreshShortAdvanceAndIdleMove(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSchedDB(t)
+	seed := newClockSeed(t, true)
+	aID := "clock-a-" + randSuffix(t)[:8]
+	a := clockClusterNode(t, s, key, aID, seed.gossip, true)
+	awaitMembers(t, a, seed.nodeID, aID)
+	both := sortedIDs(seed.nodeID, aID)
+
+	if got := advanceClock(t, a, time.Millisecond); !slices.Equal(got.Nodes, both) {
+		t.Fatalf("1 ms advance answered nodes %v; want %v", got.Nodes, both)
+	}
+	first := seed.clock.Setting()
+	if first.Version < 1 || first.Writer != aID {
+		t.Fatalf("the seed holds %+v after the 1 ms advance; want a setting of %s", first, aID)
+	}
+
+	if got := advanceClock(t, a, time.Hour); !slices.Equal(got.Nodes, both) {
+		t.Fatalf("one-hour move answered nodes %v; want %v", got.Nodes, both)
+	}
+	if v := seed.clock.Setting().Version; v <= first.Version {
+		t.Fatalf("the seed's version %d after the move; want above %d", v, first.Version)
+	}
+	assertNear(t, "node A's clock after the move", getClock(t, a).Now, seed.clock.Now(), 5*time.Second)
+}
+
+// TestPlatformClock_Cluster_UnreachablePeer503: a peer that cannot be reached
+// fails the change with 503 naming it and not its address; the handling node
+// keeps the setting.
+func TestPlatformClock_Cluster_UnreachablePeer503(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSchedDB(t)
+	seed := newClockSeed(t, false)
+	aID := "clock-a-" + randSuffix(t)[:8]
+	a := clockClusterNode(t, s, key, aID, seed.gossip, true)
+	awaitMembers(t, a, seed.nodeID, aID)
+
+	detail, raw := postClockNotConfirmed(t, a, `{"rate":2}`)
+	if !strings.Contains(detail, seed.nodeID) {
+		t.Fatalf("detail %q does not name the unreachable node %s", detail, seed.nodeID)
+	}
+	if strings.Contains(raw, "127.0.0.1:1") {
+		t.Fatalf("the answer carries the peer's address: %s", raw)
+	}
+	if got := getClock(t, a); got.Rate != 2 {
+		t.Fatalf("node A's rate %v after the 503; want 2 (no rollback)", got.Rate)
+	}
+}
+
+// TestPlatformClock_Cluster_PeerClockOff503: a peer with clock control off
+// refuses the setting, which fails the change with 503 naming that peer
+// alone; the peers that confirmed keep the setting.
+func TestPlatformClock_Cluster_PeerClockOff503(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newSchedDB(t)
+	seed := newClockSeed(t, true)
+	sfx := randSuffix(t)[:8]
+	aID, bID := "clock-a-"+sfx, "clock-b-"+sfx
+	a := clockClusterNode(t, s, key, aID, seed.gossip, true)
+	clockClusterNode(t, s, key, bID, seed.gossip, false)
+	awaitMembers(t, a, seed.nodeID, aID, bID)
+
+	detail, _ := postClockNotConfirmed(t, a, `{"rate":2}`)
+	if !strings.Contains(detail, bID) || strings.Contains(detail, seed.nodeID) {
+		t.Fatalf("detail %q; want it to name %s and not %s", detail, bID, seed.nodeID)
+	}
+	if got := seed.clock.Setting().RatePPM; got != 2_000_000 {
+		t.Fatalf("the seed's rate %d ppm after the 503; want 2000000 (no rollback)", got)
 	}
 }
 

@@ -8,12 +8,7 @@ import (
 	"log/slog"
 	"sync"
 	"time"
-
-	spi "github.com/cyoda-platform/cyoda-go-spi"
 )
-
-// topic is the gossip broadcast topic carrying the test clock's setting.
-const topic = "platform.clock"
 
 // StateExchanger is the gossip push/pull state channel: local supplies this
 // node's state to a peer, merge receives a peer's. merge runs on the gossip
@@ -61,7 +56,7 @@ func receive(c *Test, payload []byte, adopted *adoptLog) {
 }
 
 // adoptLog throttles the adopted-setting INFO line to one per progressEvery
-// (real time), as a move throttles its own: a move publishes one setting per
+// (real time), as a move throttles its own: a move pushes one setting per
 // step, and every peer adopts each of them. The lines in between are DEBUG.
 type adoptLog struct {
 	mu   sync.Mutex
@@ -82,32 +77,26 @@ func (a *adoptLog) log(src func() time.Time, s Setting, now time.Time) {
 		"version", s.Version, "writer", s.Writer, "now", stamp(now))
 }
 
-// Attach subscribes c to settings broadcast on b and registers c's setting
-// with the push/pull state exchange, so a joining node converges before it
-// finishes joining. The join-time exchange only covers a node that calls
-// Attach before Register.
-func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
+// Attach registers c's setting with the push/pull state exchange, so a
+// joining node takes the cluster's setting before it finishes joining. The
+// exchange merges a peer's setting on a join only: a change reaches the
+// running nodes by its push, never by the periodic exchange. The join-time
+// exchange only covers a node that calls Attach before Register.
+func Attach(c *Test, ex StateExchanger) {
 	adopted := &adoptLog{}
-	b.Subscribe(topic, func(payload []byte) { receive(c, payload, adopted) })
 	ex.SetStateExchange(
 		func() []byte {
-			// Only a published or adopted setting: a local change still
+			// Only a pushed or adopted setting: a local change still
 			// pending (a set-back awaiting the store) may yet be undone.
 			cur := c.shareable()
 			if cur == nil {
-				return nil // nothing published or adopted: nothing to carry
+				return nil // nothing pushed or adopted: nothing to carry
 			}
 			raw, _ := json.Marshal(*cur) // integers and a string: cannot fail
 			return raw
 		},
 		func(payload []byte) { receive(c, payload, adopted) },
 	)
-}
-
-// Publish broadcasts s to the cluster.
-func Publish(b spi.ClusterBroadcaster, s Setting) {
-	raw, _ := json.Marshal(s) // integers and a string: cannot fail
-	b.Broadcast(topic, raw)
 }
 
 // ErrClockControlOff is what a node refuses a pushed setting with when it does

@@ -1,6 +1,7 @@
 // Package platformclock holds the platform clock: the real and the test
-// clock, the service that changes the test clock, its gossip carriage between
-// nodes, and the HTTP handler for /platform/clock.
+// clock, the service that changes the test clock, its carriage between nodes
+// (a change pushed to every peer, a joining node's adoption in the gossip join
+// exchange), and the HTTP handler for /platform/clock.
 package platformclock
 
 import (
@@ -24,7 +25,7 @@ func (realClock) Now() time.Time { return time.Now() }
 // Real returns a clock backed by time.Now().
 func Real() spi.Clock { return realClock{} }
 
-// state is immutable once published.
+// state is never modified once stored in Test.st.
 type state struct {
 	setting Setting
 	anchor  time.Time // local anchor carrying a monotonic reading
@@ -37,7 +38,7 @@ type Test struct {
 	src    func() time.Time
 	st     atomic.Pointer[state]
 	// shared is the newest setting this node may hand to a peer: one it
-	// published or adopted from a peer, never a local change still pending.
+	// pushed or adopted from a peer, never a local change still pending.
 	// nil until there is one.
 	shared atomic.Pointer[Setting]
 }
@@ -186,7 +187,7 @@ func (c *Test) install(start func(current int64) (int64, bool), ratePPM *int64) 
 }
 
 // restore puts prev back if installed is still the current state, undoing a
-// local change that was never published. A setting adopted since is kept.
+// local change that was never pushed. A setting adopted since is kept.
 func (c *Test) restore(installed, prev *state) {
 	c.st.CompareAndSwap(installed, prev)
 }
@@ -204,8 +205,8 @@ func (c *Test) share(s Setting) {
 	}
 }
 
-// shareable returns the newest setting this node published or adopted from
-// a peer, or nil when there is none.
+// shareable returns the newest setting this node pushed or adopted from a
+// peer, or nil when there is none.
 func (c *Test) shareable() *Setting {
 	return c.shared.Load()
 }
