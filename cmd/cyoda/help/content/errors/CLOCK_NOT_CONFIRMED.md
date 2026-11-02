@@ -23,7 +23,7 @@ HTTP: `503` `Service Unavailable`. Retryable: `no`.
 `POST /api/platform/clock` pushes every new clock setting to all other nodes of the cluster and answers only when each of them has echoed exactly that setting back. A node is reported when, within `CYODA_PROXY_TIMEOUT`:
 
 - it did not answer;
-- it refused the setting, because clock control is off there or the setting failed its validation;
+- it refused the setting (for example, clock control is off there or the setting failed its validation);
 - it answered a different setting than the one sent;
 - it has no usable address.
 

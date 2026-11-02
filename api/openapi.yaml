@@ -1119,8 +1119,8 @@ paths:
             consistency-time check or the move's task query, and
             CLOCK_NOT_CONFIRMED when a node of the cluster did not confirm the
             change or one of a move's steps within CYODA_PROXY_TIMEOUT — it did
-            not answer, refused (clock control is off there, or the setting
-            failed its validation), answered a different setting, or has no
+            not answer, refused (for example, clock control is off there, or the
+            setting failed its validation), answered a different setting, or has no
             usable address. The detail names those nodes. CLOCK_NOT_CONFIRMED is
             not retryable: nothing is rolled back; start over with a fresh store.
           content:
