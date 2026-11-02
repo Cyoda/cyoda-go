@@ -62,11 +62,11 @@ Every change, and every step of a move, is pushed to every node of the cluster, 
 
 Advice for a test run:
 
-- Set the start in the past before you write any data or import any model; earlier activity raises the earliest allowed start.
-- Retention follows platform time: after a move, the next reap drops async search results that are past their retention at the new time, and later commits drop recorded submit times that are.
+- Set a start in the past first, before you write any data or import any model: see **Starting in the past**.
+- Allow for retention after a move and at a rate above 1: see **Rate**.
 - A move needs a running scheduler and the compute nodes that its scheduled tasks call; without them it waits.
-- A node that starts or shuts down while a change runs can make the change fail.
-- Cluster nodes need synchronised host clocks.
+- A node that starts or shuts down while a change runs can make the change fail, or the change can miss it: a node that joins after the change has read the list of nodes is not pushed the setting and is not in `nodes`. Check `nodes` against the nodes you run.
+- Synchronise the real clocks of the cluster nodes and give every node the same `CYODA_CLOCK_CONTROL_ENABLED`: see **Restrictions**.
 
 ## SEE ALSO
 
