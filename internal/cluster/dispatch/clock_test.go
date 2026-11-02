@@ -88,12 +88,17 @@ func TestClockPush_ClockOffIsSealedRefusal(t *testing.T) {
 
 func TestClockPush_InvalidSettingIsSealedRefusal(t *testing.T) {
 	c := platformclock.NewTest("node-b", nil)
+	held := clockSetting(3)
+	c.Apply(held)
 	srv := clockServer(t, newAEAD(t), platformclock.NewHolder(c))
 	s := clockSetting(5)
 	s.Writer = ""
 	_, err := clockSender(t).PushClock(context.Background(), testSelfNodeID, srv.URL, s)
 	if err == nil || !strings.Contains(err.Error(), "empty writer") {
 		t.Fatalf("err = %v, want empty writer", err)
+	}
+	if c.Setting() != held {
+		t.Fatalf("peer setting = %+v, want unchanged %+v", c.Setting(), held)
 	}
 }
 

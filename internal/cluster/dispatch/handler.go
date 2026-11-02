@@ -70,7 +70,8 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		// because there is no request to bind that answer to but the one the
 		// replay copies.
 		slog.Warn("hand-over refused by the replay cache", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "reason", err)
-		writeSealed(w, h.auth, binding, refusal(noCnodeFailure()), "requestId", "", "outcome", "refused")
+		resp := refusal(noCnodeFailure())
+		writeSealed(w, h.auth, binding, resp, "requestId", "", "outcome", resp.Outcome)
 		return
 	case err != nil:
 		slog.Warn("dispatch request auth failed", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "err", err)
@@ -116,7 +117,8 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding, requestID string, err error) {
 	slog.Error("hand-over refused", "pkg", "dispatch", "requestId", boundLine(requestID), "err", err)
 	appErr := common.Internal("the hand-over was refused", err)
-	writeSealed(w, h.auth, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}), "requestId", boundLine(requestID), "outcome", "refused")
+	resp := refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr})
+	writeSealed(w, h.auth, binding, resp, "requestId", boundLine(requestID), "outcome", resp.Outcome)
 }
 
 // buildContext constructs the context.Context the callout runs under: a

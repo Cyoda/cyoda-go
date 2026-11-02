@@ -151,7 +151,7 @@ func (f *HTTPForwarder) PushClock(ctx context.Context, peerNodeID, addr string, 
 		return platformclock.Setting{}, err
 	}
 	if answer.Refused != "" {
-		return platformclock.Setting{}, fmt.Errorf("the peer refused the clock setting: %s", answer.Refused)
+		return platformclock.Setting{}, fmt.Errorf("the peer refused the clock setting: %s", boundLine(answer.Refused))
 	}
 	if answer.Held == nil {
 		return platformclock.Setting{}, errors.New("the peer's answer carries no clock setting")
