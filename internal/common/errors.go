@@ -30,13 +30,13 @@ const (
 // context ended during or between tries; and internal/platformclock, for a
 // clock move whose caller's context ended between steps or during a store call
 // it was waiting on, which leaves the clock at the last step it applied and
-// published, or for a set-back whose caller's context ended during its
-// consistency-time read, which restores the previous setting, or for a confirmation round whose
-// caller's context ended while the cluster's nodes were confirming a clock
-// change. A door's error funnel files
-// a departed client on this marker and on nothing else, because a cancellation
-// somewhere on an error's chain says only that something was called off, not
-// that this is what went wrong — see isClientGoneCancellation.
+// confirmed, for a set-back whose caller's context ended during its
+// consistency-time read, which restores the previous setting, or for a
+// confirmation round whose caller's context ended while the cluster's nodes
+// were confirming a clock change. A door's error funnel files a departed
+// client on this marker and on nothing else, because a cancellation somewhere
+// on an error's chain says only that something was called off, not that this
+// is what went wrong — see isClientGoneCancellation.
 //
 // An error marked with it is logged at DEBUG and carries no ticket: there is
 // nobody left to quote one to.
