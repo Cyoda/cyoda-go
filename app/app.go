@@ -47,6 +47,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
@@ -100,6 +101,10 @@ type App struct {
 	// node that has panicked has state nothing has verified. Read by
 	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
 	healthLatch *health.Latch
+
+	// lifecycle derives the node's STARTING/NORMAL/DRAINING/UNHEALTHY state
+	// from the latch and the app's own start and drain steps.
+	lifecycle *lifecycle.Lifecycle
 }
 
 func New(cfg Config) *App {
@@ -125,6 +130,7 @@ func New(cfg Config) *App {
 	// Created before anything that can latch it: the async-search goroutine
 	// is wired below, well ahead of the HTTP mux and the gRPC server.
 	a.healthLatch = health.NewLatch()
+	a.lifecycle = lifecycle.New(a.healthLatch)
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -772,8 +778,12 @@ func New(cfg Config) *App {
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
 	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
 
+	a.lifecycle.MarkStarted()
 	return a
 }
+
+// Lifecycle returns the node's lifecycle holder.
+func (a *App) Lifecycle() *lifecycle.Lifecycle { return a.lifecycle }
 
 // latchOnPanic recovers a panic beneath a reaper sweep and trips healthLatch,
 // exactly as the async-search executor's own recovery does: a reaper
@@ -917,6 +927,7 @@ func (a *App) ReadinessCheck() error {
 // compute-node streams and callback routes. Shutdown and Close drain it again;
 // every call after the first does nothing.
 func (a *App) DrainScheduler(ctx context.Context) {
+	a.lifecycle.BeginDraining()
 	if a.scheduler != nil {
 		a.scheduler.Drain(ctx)
 	}
@@ -1047,6 +1058,7 @@ func (a *App) StopGRPC() {
 // followed by Close() (the runServers sequence) close the factory
 // exactly once.
 func (a *App) Shutdown() {
+	a.lifecycle.BeginDraining()
 	// A server failed, or the binary did not drain the scheduler first: the
 	// same steps run here, after the servers stopped, with no outside
 	// deadline. After a DrainScheduler this does nothing.
