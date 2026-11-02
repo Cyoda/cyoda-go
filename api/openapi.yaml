@@ -1142,11 +1142,12 @@ paths:
         Lists every member of the cluster directory, this node included, with
         its reachability and lifecycle state and, for a member that answered,
         its database check, version and clock setting, and says whether the
-        cluster is operational. The node that serves the request asks every
-        member, itself included, for its status over the peer channel; each
-        ask is bounded by `CYODA_PROXY_TIMEOUT`. A member that does not answer
-        is `DOWN`, with the state its gossip metadata names. Without
-        clustering (`CYODA_CLUSTER_ENABLED=false`) the one member is `local`.
+        cluster is operational. In cluster mode, the node that serves the
+        request asks every member, itself included, over the peer channel,
+        each ask bounded by `CYODA_PROXY_TIMEOUT`; a member that does not
+        answer is `DOWN`, with the state its gossip metadata names. Without
+        clustering (`CYODA_CLUSTER_ENABLED=false`) it reads its own status in
+        process, and the one member is `local`.
 
 
         `operational` is true only when every node is `UP` and `NORMAL` with
@@ -1195,12 +1196,13 @@ paths:
         "400":
           description: >-
             Bad request. `properties.errorCode` is BAD_REQUEST, and
-            `properties.parameter` names the parameter, except for a query
-            string that does not parse: a query string that does not parse; a
-            query parameter the operation does not declare; a parameter given
-            more than once; a value that is not an integer or is outside the
-            32-bit range; `waitForNodes` outside 1 to 1000; `timeoutMs`
-            outside 1 to 600000; `timeoutMs` without `waitForNodes`.
+            `properties.parameter` names the parameter for every refusal
+            except a query string that does not parse. Refused: a query string
+            that does not parse; a query parameter the operation does not
+            declare; a parameter given more than once; a value that is not an
+            integer or is outside the 32-bit range; `waitForNodes` outside 1
+            to 1000; `timeoutMs` outside 1 to 600000; `timeoutMs` without
+            `waitForNodes`.
           content:
             application/problem+json:
               schema:

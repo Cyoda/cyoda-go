@@ -88,7 +88,7 @@ The body is the same for 200 and 503, and is a status, not a problem:
 - `counts` — one item per combination of `reachability` and `state` present, with its `count`.
 - `operational` — true only when every node is `UP` and `NORMAL` with `database` true, all nodes have the same `version` and the same `clock`, and, with `waitForNodes`, at least that many nodes are `UP` and `NORMAL`. So with `waitForNodes`, an extra `DOWN` node still makes the cluster not operational.
 
-The answer is `200` when `operational` is true and `503` when it is false. A malformed or out-of-range parameter, an undeclared one, or a lone `timeoutMs` is `400 BAD_REQUEST`, with `properties.parameter` naming it. The body never holds node addresses, peer URLs or error text; those go to the log of the node that saw them. A client that leaves during the wait gets no answer, and the node logs it at DEBUG.
+The answer is `200` when `operational` is true and `503` when it is false. A query string that does not parse is `400 BAD_REQUEST`. So is a parameter that is not an integer, out of range, undeclared or given more than once, and a lone `timeoutMs`; for these, `properties.parameter` names the parameter. The body never holds node addresses, peer URLs or error text; those go to the log of the node that saw them. A client that leaves during the wait gets no answer, and the node logs it at DEBUG.
 
 A node's state is one of four, with the precedence `UNHEALTHY` > `DRAINING` > `STARTING` > `NORMAL`; no transition is undone:
 
