@@ -1325,7 +1325,7 @@ type PlatformClockChangeResultDto struct {
 	// Controllable Whether this node accepts changes to the clock.
 	Controllable bool `json:"controllable"`
 
-	// Nodes The ids of every node that holds the new setting, this node included, in ascending order; `["local"]` on a single node.
+	// Nodes The ids of every node that holds the new setting, this node included, in ascending order; `["local"]` without clustering (`CYODA_CLUSTER_ENABLED=false`).
 	Nodes []string `json:"nodes"`
 
 	// Now This node's platform time.
