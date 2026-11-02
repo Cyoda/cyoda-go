@@ -6,6 +6,9 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Breaking
 
+- **`CYODA_PROXY_TIMEOUT` must be greater than zero;** startup fails
+  otherwise. It also bounds a platform clock confirmation round.
+
 - **`memory.NewAsyncSearchStore` is removed** from the memory plugin module;
   the async search store comes from the store factory.
 
@@ -1219,8 +1222,10 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   transition at its due time. Callout requests carry, in the CloudEvent
   `time` attribute, the platform time at which the owning node took the
   callout up, the same on every try and every node. Authentication,
-  timeouts and leases stay on real time. The clock is instance-wide. See
-  `cyoda help clock`.
+  timeouts and leases stay on real time. The clock is instance-wide. A
+  change answers only once every node of a cluster holds the new setting;
+  the answer lists the nodes, and a node that does not confirm fails the
+  change with `503 CLOCK_NOT_CONFIRMED`. See `cyoda help clock`.
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
   error (500) already carried it (a UUID, also written to the server log with

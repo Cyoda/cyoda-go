@@ -95,7 +95,7 @@ internal/
                           the rest
   scheduler/              Scheduled-transition claim loop, heartbeat and watchdog (§4.8)
   platformclock/          The platform's business clock: the real clock or the controllable
-                          test clock, its gossip carriage, the move service and the HTTP
+                          test clock, its peer push and join-time exchange, the move service and the HTTP
                           handler (§3.9)
   domain/
     entity/               Entity CRUD, state machine integration, transaction scope
@@ -735,8 +735,8 @@ the store answers from the new clock and its floor. An answer later than the new
 reading means the store has recorded a later time: the previous setting is
 restored and the change is refused (`CLOCK_BEFORE_RECORDED_TIME`). The read
 raises the floor to the time set, so the check records the setting itself. A
-move forward steps through scheduled due times (§4.8). The setting is shared
-between nodes by gossip (§4.1).
+move forward steps through scheduled due times (§4.8). A change is pushed to
+every node over the peer channel and confirmed before it answers (§4.1).
 
 A node that starts with clock control on and takes no setting from a peer runs
 on real time. It reads `LatestRecordedTime`, which does not raise the floor,
@@ -780,7 +780,7 @@ Its size depends only on operator settings. `NewGossip` measures it with the lon
 
 **Tag lists** (tenant → compute tags) do not ride in the metadata. Each node holds one list per peer. The version a node announces in its own metadata is the authority for which of its lists is current; versions are compared for equality and ordered only within one epoch, so a node restarted under the same id — with a clock that stepped backwards, even — is never taken for an older self. On a change a node bumps `seq`, re-advertises its metadata and sends `{nodeID, version, tags}` to every alive peer with `memberlist.SendReliable` (topic `cluster.tags`). A peer stores a list whose version equals the announced one, or is a later `seq` of the announced epoch. A peer that holds no list for a node, or another version than the announced one, sends `cluster.tags.request` and the node answers with its list: on `NotifyJoin`, on `NotifyUpdate`, and from a periodic scan of all members that is the floor under both. `NotifyLeave` drops the node's list. memberlist's event callbacks run under its node lock and are the only place a member can be read safely, so they do nothing but copy: the member (name, address, metadata) into the registry's own directory of alive members, and a nudge into a bounded queue. Everything else — `List`, `Lookup`, the fan-out, the scan — reads that directory and never `memberlist.Members()`, whose nodes memberlist rewrites under a lock no caller can take. One worker goroutine stores lists, and every send runs on a goroutine of its own. `NodeRegistry.Changed()` is closed when a list arrives with different tags, when a peer joins and when one leaves.
 
-**Platform clock.** With clock control on, the test clock's setting travels on the `platform.clock` topic: a change is published after it is applied locally, and a peer applies a setting with a newer version, dropping an invalid payload with a WARN. The setting also rides memberlist's push/pull state exchange (`Gossip.SetStateExchange`, `LocalState`/`MergeRemoteState`), at join and periodically, so a node that joins or missed a broadcast converges on its peers' setting. The topic and the exchange are registered only when clock control is on (`platformclock.Attach`, before the node registers). Only a shareable setting is served: one published or adopted from a peer. A set-back still awaiting the store's answer is never served, because it may yet be undone (§3.9).
+**Platform clock.** With clock control on, the handling node pushes each new setting to every member of its directory over `POST /internal/dispatch/clock`, sealed for the recipient and the path like a callout hand-over, all peers in parallel within `CYODA_PROXY_TIMEOUT`. A peer applies the setting if it is newer and echoes the setting it holds; only an exact echo confirms. `POST /platform/clock` answers 200 with the nodes (its own included) when every node confirmed; otherwise it answers 503 `CLOCK_NOT_CONFIRMED` naming the nodes that did not, and nothing is rolled back. Every step of a move is confirmed the same way. Memberlist's push/pull state exchange (`Gossip.SetStateExchange`, `LocalState`/`MergeRemoteState`) carries the setting only on a join (`join` true), so a joining node takes the cluster's setting; it is registered only when clock control is on (`platformclock.Attach`, before the node registers). Only a pushed or adopted setting is served: a set-back still awaiting the store's answer is never served, because it may yet be undone (§3.9).
 
 **Bootstrap algorithm:**
 
@@ -1044,7 +1044,10 @@ identically for every peer, so the loop stops rather than trying the next one.
 
 ```
 POST /internal/dispatch/callout
+POST /internal/dispatch/clock
 ```
+
+The bullets below describe the callout route. The clock route carries a platform clock setting under the same peer seal (§4.1, Platform clock).
 
 - Single route for every callout kind (processor, criteria, function); `Kind` in
   the request body discriminates
@@ -1209,7 +1212,7 @@ Segment-boundary observations:
 | L4 | Node B <-> Node A | Internal proxy (HTTP) |
 | L5 | Node A <-> PostgreSQL | TCP (pgx connection) |
 | L6 | Node B <-> PostgreSQL | TCP (pgx connection). Carries no part of this cascade: Node B holds none of tx-123, and it resolves the proxy target from its own local member directory (§4.1), not from PostgreSQL |
-| L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over) |
+| L7 | Node A <-> Node B | HTTP POST /internal/dispatch/callout (callout hand-over); POST /internal/dispatch/clock (platform clock push) |
 
 ---
 
@@ -2322,7 +2325,7 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 | `CYODA_GOSSIP_ADDR` | `:7946` | Memberlist gossip bind address |
 | `CYODA_SEED_NODES` | (none) | Comma-separated `host:port` for gossip seeds |
 | `CYODA_GOSSIP_STABILITY_WINDOW` | `2s` | Wait for stable membership count after join |
-| `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout |
+| `CYODA_PROXY_TIMEOUT` | `30s` | HTTP proxy response header timeout; must be > 0 (startup fails otherwise). Also bounds one platform clock confirmation round (every peer contacted in parallel) |
 | `CYODA_HMAC_SECRET` (with `_FILE` variant) | (none) | Hex-encoded secret for token signing + gossip encryption (required if cluster enabled). See §4.2 for encoding details. |
 | `CYODA_DISPATCH_WAIT_TIMEOUT` | `5s` | The patience: how long one callout waits, in total, for a compute member with matching tags to exist, on a single node as in a cluster. `0` disables waiting. Must not be negative; startup fails otherwise. |
 | `CYODA_DISPATCH_CONNECT_TIMEOUT` | `2s` | Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be `> 0`; startup fails otherwise. |
@@ -2333,7 +2336,7 @@ Default `CYODA_SQLITE_PATH`: on Linux / macOS, `$XDG_DATA_HOME/cyoda/cyoda.db` w
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `CYODA_CLOCK_CONTROL_ENABLED` | `false` | Build a controllable clock, give it to the storage backend and to everything that reads business time, and accept `POST /platform/clock`. With `false`, `POST /platform/clock` answers `403 CLOCK_CONTROL_DISABLED` and `GET /platform/clock` answers real time at rate 1. A test feature, not for production: startup logs a WARN when it is on. The clock is instance-wide. Use the same value on every node; nodes share the setting through gossip and need synchronised real clocks. See `cyoda help config clock` |
+| `CYODA_CLOCK_CONTROL_ENABLED` | `false` | Build a controllable clock, give it to the storage backend and to everything that reads business time, and accept `POST /platform/clock`. With `false`, `POST /platform/clock` answers `403 CLOCK_CONTROL_DISABLED` and `GET /platform/clock` answers real time at rate 1. A test feature, not for production: startup logs a WARN when it is on. The clock is instance-wide. Use the same value on every node; each change is confirmed by every node, and the nodes need synchronised real clocks. See `cyoda help config clock` |
 
 ### Scheduler
 

@@ -5,6 +5,8 @@ stability: experimental
 version_added: 0.9.0
 see_also:
   - config.clock
+  - config.cluster
+  - errors.CLOCK_NOT_CONFIRMED
   - scheduled-tasks
   - workflows
   - crud
@@ -26,7 +28,7 @@ POST /api/platform/clock      {"advanceByMs": 86400000}
 POST /api/platform/clock      {"rate": 1}
 ```
 
-`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`. A `time` later than now is a move (see below), not only a set in the past.
+`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`. A successful `POST` answers `200` with `now`, `rate`, `controllable` and `nodes`, the ids of the nodes that hold the new setting (`["local"]` on a single node). A `time` later than now is a move (see below), not only a set in the past.
 
 ## DESCRIPTION
 
@@ -43,10 +45,28 @@ POST /api/platform/clock      {"rate": 1}
 **Rate.** From 0.1 to 100; 1 is recommended. A rate other than 1 makes retries and time limits pass faster or slower in platform time, and multiplies any difference between node clocks. Retention follows platform time as well: after a move, the next reap drops async search results, and later commits drop recorded submit times, that are past their retention at the new time, and a rate above 1 shortens retention in real time. A `rate` sent with a later `time` or with `advanceByMs` takes effect when the move finishes.
 
 **Restrictions.**
-- Keep the system idle while the clock changes; nothing guards activity during a change.
+- Keep the system idle while the clock changes; nothing guards activity during a change. See `TESTING WITH THE PLATFORM CLOCK`.
 - Cluster nodes need synchronised real clocks, and all use the same value of `CYODA_CLOCK_CONTROL_ENABLED`.
 - A node that restarts while other nodes run takes their setting. Only a full restart (no node left running, or a single-node deployment) returns the clock to real time, and that startup fails if the store holds times more than 1 s later than real time: start over with a fresh store.
 - Mock IAM lets any admin act as platform operator.
+
+## TESTING WITH THE PLATFORM CLOCK
+
+The clock is for tests on a cluster you control. A change is only correct under three preconditions, which nothing enforces:
+
+- The cluster is static during a change: no node starts, stops or joins.
+- The system is idle.
+- One change at a time: send the next only after the previous call has returned.
+
+Every change, and every step of a move, is pushed to every node of the cluster, and each node must echo exactly that setting. A `200` therefore means every node holds the setting, and the answer lists the nodes in `nodes`. If a node does not confirm within `CYODA_PROXY_TIMEOUT`, the answer is `503 CLOCK_NOT_CONFIRMED`, which names the nodes. Nothing is rolled back, so the cluster may hold different clocks; start over by restarting the cluster with a fresh store (see `cyoda help errors CLOCK_NOT_CONFIRMED`).
+
+Advice for a test run:
+
+- Set the start in the past before you write any data or import any model; earlier activity raises the earliest allowed start.
+- Retention follows platform time: after a move, expired async search results and recorded submit times are dropped as the new time dictates.
+- A move needs a running scheduler and the compute nodes that its scheduled tasks call; without them it waits.
+- A node that starts or shuts down while a change runs can make the change fail.
+- Cluster nodes need synchronised host clocks.
 
 ## SEE ALSO
 

@@ -32,15 +32,17 @@ deadlines, leases, heartbeats, keep-alives, metrics.
 
 A start time `S`, the real time `R` at which it applied, and a rate `k` from
 0.1 to 100 (no frozen clock). Platform time is `S + k * (real now - R)`. A
-cluster shares one setting; the highest version (a counter, then the writing
-node id) wins; a node that joins takes it from its peers.
+cluster shares one setting. A change answers 200 only when every node holds the
+new setting. A node that does not confirm it gives `503 CLOCK_NOT_CONFIRMED`
+naming that node, with no rollback. A node that joins takes the setting from
+its peers. How Cloud nodes reach each other is Cloud's own.
 
 ## 3. API
 
 | Operation | Contract |
 |---|---|
 | `GET /platform/clock` | Any authenticated caller. `PlatformClockDto`: `now`, `rate`, `controllable`. Without the feature: real time, rate 1. gRPC read: `PlatformClockGetRequest` / `PlatformClockResponse` |
-| `POST /platform/clock` | Platform operator only. Body `PlatformClockChangeDto`: `time`, `advanceByMs` (> 0), `rate`; at most one of `time` and `advanceByMs`, at least one member. `200 PlatformClockDto` when complete |
+| `POST /platform/clock` | Platform operator only. Body `PlatformClockChangeDto`: `time`, `advanceByMs` (> 0), `rate`; at most one of `time` and `advanceByMs`, at least one member. `200 PlatformClockChangeResultDto` when every node holds the setting: `now`, `rate`, `controllable` and `nodes` (the node ids in ascending order, the handling node included; `["local"]` on a single node) |
 
 | Status | Code | When |
 |---|---|---|
@@ -48,6 +50,7 @@ node id) wins; a node that joins takes it from its peers.
 | 400 | strict-body and validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs <= 0`, `advanceByMs` that moves the clock past the year 9000, `rate` outside 0.1 to 100 or with more than six fractional digits, `time` not RFC 3339 or outside 1970 to 9000 |
 | 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest time the store has recorded; the detail names it, and `properties.latestRecordedTime` carries it as an RFC 3339 timestamp |
 | 503 | store unavailable | the store did not answer the check or the move's task query |
+| 503 | `CLOCK_NOT_CONFIRMED` | a node did not confirm the setting (no answer, refusal, a different setting, or no usable address) within the confirmation bound; the detail names the nodes and nothing is rolled back |
 
 ## 4. Behaviour
 
