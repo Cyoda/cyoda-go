@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -200,6 +201,12 @@ func classify(err error) *common.AppError {
 	}
 	if errors.As(err, new(*OutOfRangeError)) {
 		return badRequest(err.Error())
+	}
+	var nc *NotConfirmedError
+	if errors.As(err, &nc) {
+		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeClockNotConfirmed,
+			fmt.Sprintf("the clock change was not confirmed by node(s) %s; the nodes that confirmed keep it and nothing is rolled back: start over by restarting the cluster with a fresh store",
+				strings.Join(nc.Nodes, ", ")))
 	}
 	if errors.Is(err, spi.ErrConsistencyTimeUnavailable) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeConsistencyTimeUnavailable,

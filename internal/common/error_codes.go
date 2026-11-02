@@ -171,6 +171,10 @@ const (
 	// the requested time is earlier than the latest time the store has
 	// recorded. 409, not retryable as sent; the clock is unchanged.
 	ErrCodeClockBeforeRecordedTime = "CLOCK_BEFORE_RECORDED_TIME"
+	// ErrCodeClockNotConfirmed is returned by POST /platform/clock when a node
+	// of the cluster did not confirm the change or a move's step. 503, not
+	// retryable; nothing is rolled back.
+	ErrCodeClockNotConfirmed = "CLOCK_NOT_CONFIRMED"
 	// ErrCodeServerBusy is returned when the node has no capacity left for
 	// the bounded work a request needs within the wait — today, a
 	// client-secret hash on POST /clients or PUT /clients/{clientId}/secret
@@ -311,6 +315,7 @@ var knownErrorCodes = map[string]struct{}{
 	ErrCodeConditionTypeMismatch:            {},
 	ErrCodeClockBeforeRecordedTime:          {},
 	ErrCodeClockControlDisabled:             {},
+	ErrCodeClockNotConfirmed:                {},
 	ErrCodeConflict:                         {},
 	ErrCodeConsistencyTimeUnavailable:       {},
 	ErrCodeDeleteNotConverged:               {},

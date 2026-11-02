@@ -294,3 +294,23 @@ func TestHandler_Post_OutOfRange_Is400(t *testing.T) {
 		t.Fatalf("got %d %s: %s", rec.Code, code, rec.Body.String())
 	}
 }
+
+func TestHandler_503_NotConfirmed(t *testing.T) {
+	f := newFake()
+	f.err = &platformclock.NotConfirmedError{Nodes: []string{"node-b", "node-c"}}
+	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+	rec := httptest.NewRecorder()
+	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"rate":2}`))
+	code, body := problem(t, rec)
+	if rec.Code != 503 || code != "CLOCK_NOT_CONFIRMED" {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	detail, _ := body["detail"].(string)
+	if !strings.Contains(detail, "node-b") || !strings.Contains(detail, "node-c") {
+		t.Fatalf("detail %q", detail)
+	}
+	props, _ := body["properties"].(map[string]any)
+	if r, _ := props["retryable"].(bool); r {
+		t.Fatalf("marked retryable: %s", rec.Body.String())
+	}
+}
