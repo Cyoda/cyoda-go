@@ -42,7 +42,7 @@ its peers. How Cloud nodes reach each other is Cloud's own.
 | Operation | Contract |
 |---|---|
 | `GET /platform/clock` | Any authenticated caller. `PlatformClockDto`: `now`, `rate`, `controllable`. Without the feature: real time, rate 1. gRPC read: `PlatformClockGetRequest` / `PlatformClockResponse` |
-| `POST /platform/clock` | Platform operator only. Body `PlatformClockChangeDto`: `time`, `advanceByMs` (> 0), `rate`; at most one of `time` and `advanceByMs`, at least one member. `200 PlatformClockChangeResultDto` when every node holds the setting: `now`, `rate`, `controllable` and `nodes` (the node ids in ascending order, the handling node included; `["local"]` on a single node) |
+| `POST /platform/clock` | Platform operator only. Body `PlatformClockChangeDto`: `time`, `advanceByMs` (> 0), `rate`; at most one of `time` and `advanceByMs`, at least one member. `200 PlatformClockChangeResultDto` when every node holds the setting: `now`, `rate`, `controllable` and `nodes` (the node ids in ascending order, the handling node included; `["local"]` without clustering, `CYODA_CLUSTER_ENABLED=false`) |
 
 | Status | Code | When |
 |---|---|---|

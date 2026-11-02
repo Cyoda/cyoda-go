@@ -11223,7 +11223,7 @@ components:
             type: string
           description: >-
             The ids of every node that holds the new setting, this node
-            included, in ascending order; `["local"]` on a single node.
+            included, in ascending order; `["local"]` without clustering (`CYODA_CLUSTER_ENABLED=false`).
     PlatformClockChangeDto:
       type: object
       properties:

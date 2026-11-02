@@ -28,7 +28,7 @@ POST /api/platform/clock      {"advanceByMs": 86400000}
 POST /api/platform/clock      {"rate": 1}
 ```
 
-`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`. A successful `POST` answers `200` with `now`, `rate`, `controllable` and `nodes`, the ids of the nodes that hold the new setting (`["local"]` on a single node). A `time` later than now is a move (see below), not only a set in the past.
+`POST` needs a platform operator and `CYODA_CLOCK_CONTROL_ENABLED=true` (see `cyoda help config clock`); without it the answer is `403 CLOCK_CONTROL_DISABLED`. `GET` answers any authenticated caller, and over gRPC there is `PlatformClockGetRequest`. A change takes `time` or `advanceByMs` (not both), and optionally `rate`. A successful `POST` answers `200` with `now`, `rate`, `controllable` and `nodes`, the ids of the nodes that hold the new setting (`["local"]` without clustering, `CYODA_CLUSTER_ENABLED=false`). A `time` later than now is a move (see below), not only a set in the past.
 
 ## DESCRIPTION
 
