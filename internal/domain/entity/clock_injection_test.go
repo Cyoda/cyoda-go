@@ -39,10 +39,12 @@ type dateCapturingStore struct {
 }
 
 func (s *dateCapturingStore) Save(ctx context.Context, e *spi.Entity) (int64, error) {
-	s.f.mu.Lock()
-	s.f.created = append(s.f.created, e.Meta.CreationDate)
-	s.f.modified = append(s.f.modified, e.Meta.LastModifiedDate)
-	s.f.mu.Unlock()
+	func() {
+		s.f.mu.Lock()
+		defer s.f.mu.Unlock()
+		s.f.created = append(s.f.created, e.Meta.CreationDate)
+		s.f.modified = append(s.f.modified, e.Meta.LastModifiedDate)
+	}()
 	return s.EntityStore.Save(ctx, e)
 }
 

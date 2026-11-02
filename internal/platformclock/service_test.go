@@ -274,9 +274,7 @@ func TestMove_RateAppliedAtEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.conf.mu.Lock()
-	sets := append([]Setting(nil), f.conf.sets...)
-	f.conf.mu.Unlock()
+	sets := f.conf.confirmed()
 	if len(sets) != 2 || sets[0].RatePPM != 1_000_000 || sets[1].RatePPM != 3_000_000 ||
 		sets[1].StartUnixMicro != target.UnixMicro() {
 		t.Fatalf("confirmed = %+v", sets)
@@ -507,9 +505,7 @@ func TestChange_TimeEqualNowWithRate_AppliesBoth(t *testing.T) {
 	if _, err := f.svc.Change(context.Background(), Change{At: &at, RatePPM: ptr(int64(5_000_000))}); err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.conf.mu.Lock()
-	sets := append([]Setting(nil), f.conf.sets...)
-	f.conf.mu.Unlock()
+	sets := f.conf.confirmed()
 	if len(sets) != 1 || sets[0].StartUnixMicro != at.UnixMicro() || sets[0].RatePPM != 5_000_000 {
 		t.Fatalf("confirmed = %+v", sets)
 	}
@@ -647,9 +643,7 @@ func TestMove_SchedulerErrorMidMove(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want wrapped %v", err, boom)
 	}
-	f.conf.mu.Lock()
-	sets := append([]Setting(nil), f.conf.sets...)
-	f.conf.mu.Unlock()
+	sets := f.conf.confirmed()
 	if len(sets) != 1 || sets[0].StartUnixMicro != h1.UnixMicro() || sets[0].RatePPM != 1_000_000 {
 		t.Fatalf("confirmed = %+v, want one complete step to %v at the old rate", sets, h1)
 	}
@@ -814,9 +808,7 @@ func TestMove_DueAtTarget_WithRate_RateAppliesAtEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.conf.mu.Lock()
-	sets := append([]Setting(nil), f.conf.sets...)
-	f.conf.mu.Unlock()
+	sets := f.conf.confirmed()
 	if len(sets) < 2 {
 		t.Fatalf("confirmed = %+v, want the step and the rate", sets)
 	}
@@ -850,9 +842,11 @@ func TestMove_RepeatAfterCancelContinues(t *testing.T) {
 		t.Fatalf("clock after cancel = %v, want %v", f.clock.Now(), h1)
 	}
 	f.conf.hook = nil
-	f.sched.mu.Lock()
-	f.sched.fire = true
-	f.sched.mu.Unlock()
+	func() {
+		f.sched.mu.Lock()
+		defer f.sched.mu.Unlock()
+		f.sched.fire = true
+	}()
 	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
 		t.Fatalf("repeated move: %v", err)
 	}
@@ -1085,9 +1079,11 @@ func TestChange_EveryConfirmedSettingIsFresh(t *testing.T) {
 		t.Fatalf("set-back: %v", err)
 	}
 	h1 := f.clock.Now().Truncate(time.Millisecond).Add(time.Hour)
-	f.sched.mu.Lock()
-	f.sched.due = []time.Time{h1}
-	f.sched.mu.Unlock()
+	func() {
+		f.sched.mu.Lock()
+		defer f.sched.mu.Unlock()
+		f.sched.due = []time.Time{h1}
+	}()
 	target := h1.Add(time.Hour)
 	if _, err := f.svc.Change(ctx, Change{At: &target}); err != nil {
 		t.Fatalf("move: %v", err)

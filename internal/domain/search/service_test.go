@@ -646,17 +646,21 @@ func (c *cancelDispatchCaptureStore) SaveResults(ctx context.Context, jobID stri
 }
 
 func (c *cancelDispatchCaptureStore) Cancel(ctx context.Context, jobID string, finishTime time.Time) error {
-	c.mu.Lock()
-	c.cancelCalls++
-	c.cancelFinishTime = finishTime
-	c.mu.Unlock()
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.cancelCalls++
+		c.cancelFinishTime = finishTime
+	}()
 	return c.AsyncSearchStore.Cancel(ctx, jobID, finishTime)
 }
 
 func (c *cancelDispatchCaptureStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
-	c.mu.Lock()
-	c.updateStatusCalls++
-	c.mu.Unlock()
+	func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.updateStatusCalls++
+	}()
 	return c.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }
 
@@ -709,11 +713,11 @@ func TestCancelAsync_DispatchesStoreCancel(t *testing.T) {
 		t.Fatal("expected cancel to succeed while goroutine is blocked")
 	}
 
-	capture.mu.Lock()
-	cancelCalls := capture.cancelCalls
-	cancelFinishTime := capture.cancelFinishTime
-	updateStatusCalls := capture.updateStatusCalls
-	capture.mu.Unlock()
+	cancelCalls, cancelFinishTime, updateStatusCalls := func() (int, time.Time, int) {
+		capture.mu.Lock()
+		defer capture.mu.Unlock()
+		return capture.cancelCalls, capture.cancelFinishTime, capture.updateStatusCalls
+	}()
 
 	if cancelCalls != 1 {
 		t.Errorf("Cancel calls = %d, want 1", cancelCalls)

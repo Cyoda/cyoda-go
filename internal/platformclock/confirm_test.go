@@ -26,10 +26,12 @@ type pushFake struct {
 }
 
 func (f *pushFake) push(ctx context.Context, p Peer, s Setting) (Setting, error) {
-	f.mu.Lock()
-	f.pushed = append(f.pushed, p.NodeID)
-	b := f.byNode[p.NodeID]
-	f.mu.Unlock()
+	b := func() func(ctx context.Context, s Setting) (Setting, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.pushed = append(f.pushed, p.NodeID)
+		return f.byNode[p.NodeID]
+	}()
 	if f.started != nil {
 		f.started <- p.NodeID
 	}

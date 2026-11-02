@@ -36,11 +36,13 @@ func (s *failingSaveObserverStore) SaveResults(context.Context, string, int64, i
 
 func (s *failingSaveObserverStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	if status == "FAILED" {
-		s.mu.Lock()
-		s.failedCtx = ctx
-		s.failedMsg = errMsg
-		s.sawFailure = true
-		s.mu.Unlock()
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.failedCtx = ctx
+			s.failedMsg = errMsg
+			s.sawFailure = true
+		}()
 	}
 	return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }

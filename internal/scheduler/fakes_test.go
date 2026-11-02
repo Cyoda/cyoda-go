@@ -145,17 +145,20 @@ func (f *fakeStore) claimed() []uuid.UUID {
 }
 
 func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
-	f.mu.Lock()
-	f.heartbeats++
-	block, err, boom := f.hbBlock, f.hbErr, f.heartbeatPanic
-	if err == nil && f.hbFailNext > 0 {
-		f.hbFailNext--
-		err = errors.New("heartbeat: connection refused")
-	}
-	if err != nil {
-		f.hbFailures++
-	}
-	f.mu.Unlock()
+	block, boom, err := func() (chan struct{}, bool, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.heartbeats++
+		block, err, boom := f.hbBlock, f.hbErr, f.heartbeatPanic
+		if err == nil && f.hbFailNext > 0 {
+			f.hbFailNext--
+			err = errors.New("heartbeat: connection refused")
+		}
+		if err != nil {
+			f.hbFailures++
+		}
+		return block, boom, err
+	}()
 	if boom {
 		panic("injected panic in a heartbeat")
 	}

@@ -417,17 +417,22 @@ func (m *recoveryTrackingTxMgr) Begin(ctx context.Context) (string, context.Cont
 	if err != nil {
 		return txID, txCtx, err
 	}
-	m.mu.Lock()
-	m.begun = append(m.begun, txID)
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begun = append(m.begun, txID)
+	}()
 	return txID, txCtx, nil
 }
 
 func (m *recoveryTrackingTxMgr) openTxIDs() []string {
-	m.mu.Lock()
-	ids := make([]string, len(m.begun))
-	copy(ids, m.begun)
-	m.mu.Unlock()
+	ids := func() []string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		ids := make([]string, len(m.begun))
+		copy(ids, m.begun)
+		return ids
+	}()
 
 	probeCtx := context.Background()
 	var open []string

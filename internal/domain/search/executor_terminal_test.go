@@ -51,11 +51,13 @@ func (s *terminalWriteObserverStore) SaveResults(ctx context.Context, jobID stri
 
 func (s *terminalWriteObserverStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	if status == "SUCCESSFUL" {
-		s.mu.Lock()
-		s.successCtx = ctx
-		s.successCount = resultCount
-		s.sawSuccess = true
-		s.mu.Unlock()
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.successCtx = ctx
+			s.successCount = resultCount
+			s.sawSuccess = true
+		}()
 	}
 	return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }

@@ -41,9 +41,11 @@ func (r *recordingCriteria) DispatchCriteria(_ context.Context, _ *spi.Entity, c
 	if err != nil {
 		return false, "", err
 	}
-	r.mu.Lock()
-	r.calls = append(r.calls, append(json.RawMessage(nil), criterion...))
-	r.mu.Unlock()
+	func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.calls = append(r.calls, append(json.RawMessage(nil), criterion...))
+	}()
 	a, ok := r.answers[fn.Name]
 	if !ok {
 		return false, "", fmt.Errorf("no answer scripted for %q", fn.Name)

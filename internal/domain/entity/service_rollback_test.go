@@ -504,14 +504,17 @@ func (m *trackingTxMgr) failCommitOf(txID string, err error) {
 }
 
 func (m *trackingTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	failure := m.commitErr
-	armed := m.failCommitTxID != "" && m.failCommitTxID == txID
-	if armed {
-		m.failCommitTxID = ""
-		m.commitErr = nil
-	}
-	m.mu.Unlock()
+	armed, failure := func() (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		failure := m.commitErr
+		armed := m.failCommitTxID != "" && m.failCommitTxID == txID
+		if armed {
+			m.failCommitTxID = ""
+			m.commitErr = nil
+		}
+		return armed, failure
+	}()
 	if !armed {
 		return m.TransactionManager.Commit(ctx, txID)
 	}
@@ -526,10 +529,12 @@ func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, err
 	if err != nil {
 		return txID, txCtx, err
 	}
-	m.mu.Lock()
-	m.begun = append(m.begun, txID)
-	cb := m.onBegin
-	m.mu.Unlock()
+	cb := func() func(txID string) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begun = append(m.begun, txID)
+		return m.onBegin
+	}()
 	if cb != nil {
 		cb(txID)
 	}
@@ -553,9 +558,11 @@ func (m *trackingTxMgr) isOpen(txID string) bool {
 }
 
 func (m *trackingTxMgr) openTxIDs() []string {
-	m.mu.Lock()
-	ids := slices.Clone(m.begun)
-	m.mu.Unlock()
+	ids := func() []string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return slices.Clone(m.begun)
+	}()
 	var open []string
 	for _, id := range ids {
 		if m.isOpen(id) {

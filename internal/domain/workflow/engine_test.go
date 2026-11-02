@@ -890,9 +890,11 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time, got %d", calls)
 	}
@@ -942,9 +944,11 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time, got %d", calls)
 	}
@@ -1005,9 +1009,11 @@ func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
 
 	// And the dispatcher was actually called exactly once — i.e. it
 	// wasn't silently treated as "no-op" via some unknown-mode swallow.
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time for empty executionMode, got %d", calls)
 	}
@@ -1164,9 +1170,11 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 		t.Errorf("expected state=ELIGIBLE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchCriteriaCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchCriteriaCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchCriteria called 1 time, got %d", calls)
 	}
@@ -1268,9 +1276,11 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 		t.Errorf("expected state=SELECTED, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchCriteriaCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchCriteriaCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchCriteria called 1 time, got %d", calls)
 	}
@@ -1698,9 +1708,11 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 
 	mock := &mockExternalProcessing{
 		dispatchFunc: func(_ context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-			callMu.Lock()
-			callOrder = append(callOrder, proc.Name)
-			callMu.Unlock()
+			func() {
+				callMu.Lock()
+				defer callMu.Unlock()
+				callOrder = append(callOrder, proc.Name)
+			}()
 
 			// Read current entity data, add this processor's key, return modified.
 			var data map[string]any

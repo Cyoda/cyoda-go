@@ -259,9 +259,11 @@ type blockingEntityStore struct {
 }
 
 func (s *blockingEntityStore) Save(ctx context.Context, _ *spi.Entity) (int64, error) {
-	s.mu.Lock()
-	s.saves++
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.saves++
+	}()
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
@@ -290,9 +292,11 @@ type onCommitTxMgr struct {
 }
 
 func (m *onCommitTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.commits++
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.commits++
+	}()
 	if m.onCommit != nil {
 		m.onCommit(ctx)
 	}

@@ -56,9 +56,11 @@ type deleteAllTxSizeSpyStore struct {
 }
 
 func (s *deleteAllTxSizeSpyStore) DeleteAll(ctx context.Context, ref spi.ModelRef) error {
-	s.mu.Lock()
-	s.called = true
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.called = true
+	}()
 	return s.EntityStore.DeleteAll(ctx, ref)
 }
 
@@ -349,10 +351,12 @@ type failNthCommitTxSizeMgr struct {
 }
 
 func (m *failNthCommitTxSizeMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.commits++
-	idx := m.commits
-	m.mu.Unlock()
+	idx := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.commits++
+		return m.commits
+	}()
 	if err, ok := m.failOn[idx]; ok {
 		return err
 	}
