@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -892,10 +893,10 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap; both conditions below are a pointer test and an
-// atomic load, and neither performs I/O.
+// probe — keep it cheap; each condition below is a pointer test or an
+// atomic load, and none performs I/O.
 //
-// Two conditions fail it independently, and the returned reasons differ so
+// Three conditions fail it independently, and the returned reasons differ so
 // the admin handler's server-side log tells an operator which fired:
 //
 //   - Storage is not initialized. A defensive guard rather than a live
@@ -905,6 +906,10 @@ func (a *App) Handler() http.Handler { return a.handler }
 //   - A panic was recovered on some door. The node's state is then
 //     unverified, so it must stop receiving traffic — fail closed. Nothing
 //     resets the latch.
+//   - Shutdown has begun and the node is draining. Readiness fails from the
+//     start of the drain so load balancers stop sending new requests;
+//     GET /health stays on the latch alone. When the latch has also tripped,
+//     its reason is returned.
 //
 // What failing readiness achieves is bounded: Kubernetes drops the pod from
 // the client-facing Service, so new client connections stop. Peers resolve
@@ -919,6 +924,9 @@ func (a *App) ReadinessCheck() error {
 	// A nil latch (an App not built by New()) reads as not tripped.
 	if a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
+	}
+	if a.lifecycle.Draining() {
+		return errors.New("node draining: shutdown has begun")
 	}
 	return nil
 }

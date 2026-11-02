@@ -24,7 +24,7 @@ The probe uses a hard-coded 2-second HTTP client timeout. This timeout is load-b
 
 The port is read from `CYODA_ADMIN_PORT` (default: `9091`). The admin listener always binds to `127.0.0.1` from the probe's perspective — `cyoda health` is designed to run inside the same container or on the same host as the server.
 
-Despite the command name, this probes `/readyz` on the admin listener, not `GET /health` on the API listener. The two mirror the same underlying flag — `200`/`ready` while healthy, `503` once a panic has been recovered in engine or store work and the node's state is unverified, latched until the node is replaced (a panic in a probe or a metrics scrape is contained with a ticket but does not latch) — but `/health` is a plain JSON summary for humans and simple scripts, not the deployment probe.
+Despite the command name, this probes `/readyz` on the admin listener, not `GET /health` on the API listener. Both go `503` once a panic has been recovered in engine or store work and the node's state is unverified, latched until the node is replaced (a panic in a probe or a metrics scrape is contained with a ticket but does not latch). `/readyz` also answers `503` from the start of shutdown, while the node drains; `/health` stays `200` then. `/health` is a plain JSON summary for humans and simple scripts, not the deployment probe.
 
 Primary consumers:
 

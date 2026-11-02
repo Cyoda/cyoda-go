@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -186,5 +187,54 @@ func TestReadinessCheck_ReasonsAreDistinguishable(t *testing.T) {
 	}
 	if !strings.Contains(panicErr.Error(), "panic") {
 		t.Errorf("panic reason = %q, want it to name the recovered panic", panicErr)
+	}
+}
+
+// TestReadyz_FailsFromDrainSchedulerStart pins that readiness fails as soon as
+// shutdown begins, so load balancers stop sending the node new requests.
+func TestReadyz_FailsFromDrainSchedulerStart(t *testing.T) {
+	a := readinessTestApp(t)
+	if err := a.ReadinessCheck(); err != nil {
+		t.Fatalf("precondition: fresh node not ready: %v", err)
+	}
+
+	a.DrainScheduler(context.Background())
+
+	if rec := probeReadyz(t, a); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("draining: /readyz = %d, want 503", rec.Code)
+	}
+	err := a.ReadinessCheck()
+	if err == nil || !strings.Contains(err.Error(), "draining") {
+		t.Fatalf("draining: ReadinessCheck() = %v, want an error naming draining", err)
+	}
+}
+
+// TestHealth_StaysUpWhileDraining pins that /health stays on the health latch
+// alone: a draining node is healthy, only not ready.
+func TestHealth_StaysUpWhileDraining(t *testing.T) {
+	a := readinessTestApp(t)
+	a.DrainScheduler(context.Background())
+
+	rec := httptest.NewRecorder()
+	a.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("draining: /health = %d, want 200", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["status"] != "UP" {
+		t.Fatalf("draining: /health body = %q, want status UP", rec.Body.String())
+	}
+}
+
+// TestReadinessCheck_LatchReasonWinsWhileDraining pins that a tripped latch is
+// reported in preference to the draining reason.
+func TestReadinessCheck_LatchReasonWinsWhileDraining(t *testing.T) {
+	a := readinessTestApp(t)
+	recoverPanicOnce(a)
+	a.DrainScheduler(context.Background())
+
+	err := a.ReadinessCheck()
+	if err == nil || !strings.Contains(err.Error(), "unhealthy") {
+		t.Fatalf("latched and draining: ReadinessCheck() = %v, want the unhealthy reason", err)
 	}
 }

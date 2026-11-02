@@ -395,7 +395,7 @@ contract.
 
 Further recovery sites deliberately do **not** latch, because they wrap probes, notification callbacks or per-connection framing rather than domain work: the admin listener, which runs the same `Recovery` middleware with no health flag (`cmd/cyoda/adminserver.go`) so a panic in `/livez`, `/readyz` or a `/metrics` scrape still answers a ticket-carrying 500 without withdrawing the node; the member-registry `onChange` fan-out (`internal/grpc/members.go`); the signing-key copy's gossip-ping handler and its re-read (`handlePing` and `reconcileOnce` in `internal/auth/replica.go`, and the run loop in `internal/auth/coalesce.go`); and each per-member gRPC stream's four per-connection goroutines — the writer (`Member.writeLoop`), the receive goroutine (`receiveLoop`), the keep-alive loop (`keepAliveLoop`) and the client re-check loop (`clientRecheckLoop`), all in `internal/grpc/streaming.go` and `members.go` — which recover with a ticket-carrying status and evict just that member rather than latching the node, since each wraps only that member's own framing, liveness or credential bookkeeping, not domain work. None of these sites holds a transaction, and all self-heal: the admin surface on the next probe, the fan-out on the next event, the signing-key copy on the next ping or reconcile tick, the four per-member goroutines by the client reconnecting as a fresh member.
 
-Nothing resets the flag: it latches on the first panic recovered in engine or store work, and `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` once latched — while the admin listener's `/readyz` (§7.5) reads the same flag and reports `503` for the same reason. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the flag. `/health` and `/readyz` read the same flag but serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
+Nothing resets the flag: it latches on the first panic recovered in engine or store work, and `GET /health` on the API listener mirrors it directly — `200 {"status":"UP"}` while healthy, `503 {"status":"DOWN"}` once latched — while the admin listener's `/readyz` (§7.5) reads the same flag and reports `503` for the same reason, and also while the node drains, which `/health` does not. A node that has panicked has unverified state, so taking it out of service is the correct response rather than continuing to serve from a state nothing has checked. Read the ticket in the log, then replace the node — nothing re-arms the flag. `/health` and `/readyz` serve different audiences: `/readyz` (with `/livez`, unconditional) is the deployment probe on the admin listener; `/health` is a plain summary for humans and simple scripts.
 
 What the flag actually stops, and what it does not:
 
@@ -403,7 +403,7 @@ What the flag actually stops, and what it does not:
 - **Does not stop:** peer-forwarded work. The chart always enables cluster mode, and peers address each other through the gossip registry, not the Service — tx-affinity proxying and callout hand-overs keep reaching the node. The node's own scheduler stops claiming when the flag latches, whichever site latched it, but keeps heartbeating unless the heartbeat itself panicked, so the runs it has in progress are not taken over while they may still commit. Only a panic recovered inside the scheduler also cancels those runs (§4.8). Established connections — a compute node holding a gRPC stream, for instance — are not closed either.
 - **Does not restart it.** `/livez` is unconditional and does not read the flag, deliberately: a deterministic panic (a poisoned entity, a bad workflow definition) would otherwise recur on the next request and turn a restart into a loop. Replacing a drained node is an operator action.
 
-`/readyz` fails for two independent reasons — storage not initialised, or a recovered panic — and reports which in the server-side log while answering the probe generically.
+`/readyz` fails for three independent reasons — storage not initialised, a recovered panic, or shutdown having begun (the node is draining, from the start of the drain, so load balancers stop sending it requests) — and reports which in the server-side log while answering the probe generically.
 
 **Storage ceilings** (postgres plugin, §9):
 
@@ -2035,7 +2035,7 @@ The admin listener (`/livez`, `/readyz`, `/metrics` on
 `CYODA_ADMIN_PORT`, default `9091`) is served separately from the
 main API listener and has its own authentication policy. This is
 where the deployment probes live — `GET /health` on the main API
-listener (§3.4) mirrors the same readiness flag as `/readyz` but is
+listener (§3.4) reads the panic-recovery flag alone, while `/readyz` also fails while the node drains, and is
 a plain summary for humans and simple scripts, not the orchestrator
 contract:
 
