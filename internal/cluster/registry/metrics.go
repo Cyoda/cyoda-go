@@ -54,7 +54,7 @@ func newTagMetrics(meter metric.Meter, outstanding func() int64, memberStates fu
 		return nil
 	}, gauge, members)
 	if err != nil {
-		return nil, fmt.Errorf("register lists_outstanding callback: %w", err)
+		return nil, fmt.Errorf("register lists_outstanding and member.count callback: %w", err)
 	}
 	return &tagMetrics{sendFailures: failures, registration: reg}, nil
 }

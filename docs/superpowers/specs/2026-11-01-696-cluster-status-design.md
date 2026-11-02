@@ -451,7 +451,7 @@ Ping(ctx context.Context) error
 | Status route: an envelope sealed for another path or node is refused; the `Ping` bound is half the ask bound | ✓ | | | | |
 | Lifecycle: precedence; each transition at its call site; nothing is undone | ✓ | | | | |
 | Metadata carries the state; one builder pairs tag version and state; size check with `UNHEALTHY`; re-advertised on change | ✓ | | | | |
-| `/readyz` fails from the start of `DrainScheduler`; `GET /health` stays `UP` while draining | ✓ | waived: the e2e harness runs no admin listener; the binary's SIGTERM test (`cmd/cyoda/main_sigterm_test.go:19`) asserts `/readyz` fails during the drain | | | |
+| `/readyz` fails from the start of `DrainScheduler`; `GET /health` stays `UP` while draining | ✓ | waived: the e2e harness runs no admin listener; `TestReadyz_FailsFromDrainSchedulerStart` (`app/app_readiness_test.go`, through `admin.NewHandler`) pins that `/readyz` fails from the start of `DrainScheduler` | | | |
 | gRPC `Check` without a token: `SERVING` | | | | ✓ | |
 | gRPC `Check`: `NOT_SERVING` with the latch tripped, and while draining | | | | ✓ | |
 | gRPC `Check` for another service name: `NotFound` | | | | ✓ | |
