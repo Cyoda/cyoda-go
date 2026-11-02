@@ -473,10 +473,12 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 
 // Member is one member of the directory: NodeID is the memberlist name (the
 // node's CYODA_NODE_ID) and Addr its HTTP address from the metadata, empty
-// when the metadata does not parse.
+// when the metadata does not parse. State is the lifecycle state the member
+// announced, empty when the metadata does not parse or names no valid state.
 type Member struct {
 	NodeID string
 	Addr   string
+	State  lifecycle.State
 }
 
 // Members returns every member of the directory, this node included and
@@ -496,7 +498,8 @@ func (g *Gossip) Members() []Member {
 			out = append(out, Member{NodeID: m.Name})
 			continue
 		}
-		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr})
+		st, _ := memberState(m.Meta)
+		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr, State: st})
 	}
 	return out
 }

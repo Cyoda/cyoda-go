@@ -172,3 +172,37 @@ func TestMemberCountMetric(t *testing.T) {
 		t.Error("cyoda.cluster.member.count is still exposed after close")
 	}
 }
+
+func TestDirectoryMembers_CarryState(t *testing.T) {
+	cfg := GossipConfig{NodeID: "self", NodeAddr: "http://self.test:8080"}
+	selfMeta, err := marshalMeta(cfg, listVersion{Epoch: 1}, lifecycle.Normal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerMeta, err := marshalMeta(GossipConfig{NodeID: "peer", NodeAddr: "http://peer.test:8080"}, listVersion{Epoch: 1}, lifecycle.Draining)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Gossip{cfg: cfg, dir: newDirectory()}
+	g.dir.set(&memberlist.Node{Name: "self", Meta: selfMeta})
+	g.dir.set(&memberlist.Node{Name: "peer", Meta: peerMeta})
+	g.dir.set(&memberlist.Node{Name: "garbled", Meta: []byte("not json")})
+
+	got := map[string]Member{}
+	for _, m := range g.Members() {
+		got[m.NodeID] = m
+	}
+	want := map[string]Member{
+		"self":    {NodeID: "self", Addr: "http://self.test:8080", State: lifecycle.Normal},
+		"peer":    {NodeID: "peer", Addr: "http://peer.test:8080", State: lifecycle.Draining},
+		"garbled": {NodeID: "garbled"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Members = %v, want %v", got, want)
+	}
+	for id, w := range want {
+		if got[id] != w {
+			t.Errorf("Members[%s] = %+v, want %+v", id, got[id], w)
+		}
+	}
+}
