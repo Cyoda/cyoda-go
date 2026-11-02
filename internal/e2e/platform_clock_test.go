@@ -914,12 +914,18 @@ func TestPlatformClock_Cluster_PeerClockOff503(t *testing.T) {
 	sfx := randSuffix(t)[:8]
 	aID, bID := "clock-a-"+sfx, "clock-b-"+sfx
 	a := clockClusterNode(t, s, key, aID, seed.gossip, true)
-	clockClusterNode(t, s, key, bID, seed.gossip, false)
+	b := clockClusterNode(t, s, key, bID, seed.gossip, false)
 	awaitMembers(t, a, seed.nodeID, aID, bID)
 
-	detail, _ := postClockNotConfirmed(t, a, `{"rate":2}`)
+	detail, raw := postClockNotConfirmed(t, a, `{"rate":2}`)
 	if !strings.Contains(detail, bID) || strings.Contains(detail, seed.nodeID) {
 		t.Fatalf("detail %q; want it to name %s and not %s", detail, bID, seed.nodeID)
+	}
+	// B's refusal text and address go to the log only.
+	for _, leak := range []string{"clock control is off", "refused", b.baseURL, "127.0.0.1", "http://"} {
+		if strings.Contains(raw, leak) {
+			t.Fatalf("the answer carries %q: %s", leak, raw)
+		}
 	}
 	if got := seed.clock.Setting().RatePPM; got != 2_000_000 {
 		t.Fatalf("the seed's rate %d ppm after the 503; want 2000000 (no rollback)", got)
