@@ -63,7 +63,7 @@ func TestGossip_NoStateExchangeByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := r.LocalStateForTest(); got != nil {
+	if got := r.LocalStateForTest(true); got != nil {
 		t.Fatalf("LocalState = %q, want nil", got)
 	}
 }
@@ -94,5 +94,21 @@ func TestGossip_MergeOnlyOnJoin(t *testing.T) {
 	g.MergeRemoteStateForTest([]byte("x"), true)
 	if c := snapshot(); len(c) != 1 || c[0] != "x" {
 		t.Fatalf("a join exchange must merge once with x, got %v", c)
+	}
+}
+
+func TestGossip_StateSentOnlyOnJoin(t *testing.T) {
+	g, err := registry.NewGossip(registry.GossipConfig{NodeID: "sj-1", NodeAddr: "localhost:18193", BindAddr: "127.0.0.1", BindPort: 0, StabilityWindow: 200 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer g.Deregister(context.Background(), "sj-1")
+	g.SetStateExchange(func() []byte { return []byte("state") }, func([]byte) {})
+
+	if got := g.LocalStateForTest(false); got != nil {
+		t.Fatalf("a periodic exchange sent %q, want nil", got)
+	}
+	if got := g.LocalStateForTest(true); string(got) != "state" {
+		t.Fatalf("a join exchange sent %q, want %q", got, "state")
 	}
 }

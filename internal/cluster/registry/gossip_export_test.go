@@ -31,8 +31,9 @@ func (g *Gossip) Crash() {
 	})
 }
 
-// LocalStateForTest returns what memberlist would send in a push/pull exchange.
-func (g *Gossip) LocalStateForTest() []byte { return g.delegate.LocalState(false) }
+// LocalStateForTest returns what memberlist would send in a push/pull
+// exchange; join says whether the exchange is a join.
+func (g *Gossip) LocalStateForTest(join bool) []byte { return g.delegate.LocalState(join) }
 
 // MergeRemoteStateForTest delivers a push/pull payload as memberlist would.
 func (g *Gossip) MergeRemoteStateForTest(buf []byte, join bool) {

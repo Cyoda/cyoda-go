@@ -579,11 +579,10 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return nil
 }
 
-// SetStateExchange registers the push/pull state exchanged with a peer: local
-// supplies this node's state, merge receives a peer's pushed state on a join
-// only (a periodic exchange is not merged). merge
-// runs on memberlist's goroutine and must not block. Without it the exchange
-// carries nothing.
+// SetStateExchange registers the state exchanged with a peer on a join: local
+// supplies this node's state, and merge receives the peer's. A periodic
+// push/pull carries none. merge runs on memberlist's goroutine and must not
+// block. Without it a join carries nothing.
 func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
 	g.delegate.ex.Store(&stateExchange{local: local, merge: merge})
 }
@@ -598,9 +597,8 @@ type stateExchange struct {
 // identity (id, addresses, tag list version); NotifyMsg/GetBroadcasts
 // implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
 // Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
-// carry the optional state set by Gossip.SetStateExchange and are no-ops
-// without it; LocalState is sent on every exchange, but the pushed state is
-// merged on a join only.
+// carry the optional state set by Gossip.SetStateExchange on a join only, and
+// are no-ops without it.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte
@@ -616,8 +614,8 @@ type gossipDelegate struct {
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
 
-	// ex holds the optional push/pull state exchange hooks; nil until
-	// SetStateExchange, and an atomic load on every push/pull.
+	// ex holds the optional join-time state exchange hooks; nil until
+	// SetStateExchange, and an atomic load on every join exchange.
 	ex atomic.Pointer[stateExchange]
 }
 
@@ -654,18 +652,21 @@ func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 	return d.queue.GetBroadcasts(overhead, limit)
 }
 
-// LocalState and MergeRemoteState carry the optional push/pull state set by
-// Gossip.SetStateExchange; with none registered they do nothing. The merge
-// runs on a join only.
-func (d *gossipDelegate) LocalState(bool) []byte {
+// LocalState sends the state set by Gossip.SetStateExchange on a join only;
+// a periodic push/pull carries none. memberlist passes the request's join flag
+// to the node that answers it, so a joiner receives the state of the node it
+// joins through.
+func (d *gossipDelegate) LocalState(join bool) []byte {
+	if !join {
+		return nil
+	}
 	if ex := d.ex.Load(); ex != nil {
 		return ex.local()
 	}
 	return nil
 }
 
-// MergeRemoteState merges the pushed state on a join only; a periodic
-// exchange is not merged.
+// MergeRemoteState merges the state a peer sent on a join only.
 func (d *gossipDelegate) MergeRemoteState(buf []byte, join bool) {
 	if !join {
 		return

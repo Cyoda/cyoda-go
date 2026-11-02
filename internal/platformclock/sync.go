@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// StateExchanger is the gossip push/pull state channel: local supplies this
+// StateExchanger is the gossip state channel of a join: local supplies this
 // node's state to a peer, merge receives a peer's. merge runs on the gossip
 // goroutine and must not block.
 type StateExchanger interface {
@@ -77,11 +77,11 @@ func (a *adoptLog) log(src func() time.Time, s Setting, now time.Time) {
 		"version", s.Version, "writer", s.Writer, "now", stamp(now))
 }
 
-// Attach registers c's setting with the push/pull state exchange, so a
+// Attach registers c's setting with gossip's join-time state exchange, so a
 // joining node takes the cluster's setting before it finishes joining. The
-// exchange merges a peer's setting on a join only: a change reaches the
-// running nodes by its push, never by the periodic exchange. The join-time
-// exchange only covers a node that calls Attach before Register.
+// setting is exchanged on a join only: a change reaches the running nodes by
+// its push, never by gossip. The exchange only covers a node that calls Attach
+// before Register.
 func Attach(c *Test, ex StateExchanger) {
 	adopted := &adoptLog{}
 	ex.SetStateExchange(
