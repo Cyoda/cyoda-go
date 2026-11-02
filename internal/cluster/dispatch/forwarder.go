@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // DispatchForwarder sends a callout dispatch request to a peer node. The peer
@@ -133,6 +135,28 @@ func (f *HTTPForwarder) ForwardCallout(ctx context.Context, peerNodeID, addr str
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// PushClock POSTs a clock setting to the peer at addr, sealed for peerNodeID,
+// and returns the setting the peer then holds. A refusal the peer sealed is an
+// error carrying its reason. The call ends when ctx does.
+func (f *HTTPForwarder) PushClock(ctx context.Context, peerNodeID, addr string, s platformclock.Setting) (platformclock.Setting, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, f.connectTimeout)
+	defer cancel()
+	if err := validatePeerAddress(lookupCtx, addr, f.allowLoopback); err != nil {
+		return platformclock.Setting{}, stageErr(StageNotConnected, err)
+	}
+	var answer ClockPushAnswer
+	if err := f.forward(ctx, peerNodeID, ensureScheme(addr)+ClockPath, &s, &answer); err != nil {
+		return platformclock.Setting{}, err
+	}
+	if answer.Refused != "" {
+		return platformclock.Setting{}, fmt.Errorf("the peer refused the clock setting: %s", answer.Refused)
+	}
+	if answer.Held == nil {
+		return platformclock.Setting{}, errors.New("the peer's answer carries no clock setting")
+	}
+	return *answer.Held, nil
 }
 
 // ensureScheme prepends http:// if the address has no scheme.

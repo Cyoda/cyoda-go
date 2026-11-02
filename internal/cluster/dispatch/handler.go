@@ -70,7 +70,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 		// because there is no request to bind that answer to but the one the
 		// replay copies.
 		slog.Warn("hand-over refused by the replay cache", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "reason", err)
-		h.writeSealed(w, binding, refusal(noCnodeFailure()), "")
+		writeSealed(w, h.auth, binding, refusal(noCnodeFailure()), "requestId", "", "outcome", "refused")
 		return
 	case err != nil:
 		slog.Warn("dispatch request auth failed", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "err", err)
@@ -106,7 +106,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 	resp := responseFromLocal(call, res, diag.GetWarnings(), diag.GetErrors())
 	slog.Debug("hand-over answered", "pkg", "dispatch", "kind", req.Kind, "requestId", req.RequestID,
 		"owner", req.OwnerNodeID, "outcome", resp.Outcome, "triesUsed", res.TriesUsed)
-	h.writeSealed(w, binding, resp, req.RequestID)
+	writeSealed(w, h.auth, binding, resp, "requestId", boundLine(req.RequestID), "outcome", resp.Outcome)
 }
 
 // refuse answers a hand-over that was authenticated but cannot be run. It would
@@ -116,7 +116,7 @@ func (h *DispatchHandler) handleCallout(w http.ResponseWriter, r *http.Request) 
 func (h *DispatchHandler) refuse(w http.ResponseWriter, binding ResponseBinding, requestID string, err error) {
 	slog.Error("hand-over refused", "pkg", "dispatch", "requestId", boundLine(requestID), "err", err)
 	appErr := common.Internal("the hand-over was refused", err)
-	h.writeSealed(w, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}), requestID)
+	writeSealed(w, h.auth, binding, refusal(&contract.CalloutFailure{Kind: contract.Terminal, Code: appErr.Code, Message: appErr.Message, Err: appErr}), "requestId", boundLine(requestID), "outcome", "refused")
 }
 
 // buildContext constructs the context.Context the callout runs under: a
@@ -149,15 +149,16 @@ func (h *DispatchHandler) buildContext(r *http.Request, identity PeerIdentity, r
 
 // writeSealed answers the request binding names, under seal. The owner trusts
 // nothing else: a status line or a body it cannot open tells it only that the
-// answer was lost.
-func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBinding, v DispatchCalloutResponse, requestID string) {
+// answer was lost. attrs are added to the log line written when the answer does
+// not fit the envelope.
+func writeSealed(w http.ResponseWriter, auth PeerAuth, binding ResponseBinding, v any, attrs ...any) {
 	plain, err := encodePeerBody(v)
 	if err != nil {
 		slog.Error("failed to marshal dispatch answer", "pkg", "dispatch", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	wire, err := h.auth.SealResponse(w.Header(), binding, plain)
+	wire, err := auth.SealResponse(w.Header(), binding, plain)
 	if err != nil {
 		slog.Error("failed to seal dispatch answer", "pkg", "dispatch", "err", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -167,12 +168,10 @@ func (h *DispatchHandler) writeSealed(w http.ResponseWriter, binding ResponseBin
 		// The owner reads at most the ceiling, so writing these bytes would
 		// send it a truncated answer while this node recorded that it had
 		// answered. A status instead: the owner reads the lost answer it is,
-		// and an operator is told which callout produced an answer too large.
-		// The request id is the owner's own, echoed back on this leg like any
-		// other peer-written field, so it is bounded before it is logged.
-		slog.Error("the answer to a hand-over does not fit the envelope and was not sent",
-			"pkg", "dispatch", "requestId", boundLine(requestID), "outcome", v.Outcome,
-			"sealedBytes", len(wire), "maxBytes", maxEnvelopeSize)
+		// and an operator is told which answer was too large. Peer-written
+		// fields in attrs are bounded by the caller before they are logged.
+		slog.Error("a peer answer does not fit the envelope and was not sent",
+			append([]any{"pkg", "dispatch", "sealedBytes", len(wire), "maxBytes", maxEnvelopeSize}, attrs...)...)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -107,4 +108,37 @@ func Attach(c *Test, b spi.ClusterBroadcaster, ex StateExchanger) {
 func Publish(b spi.ClusterBroadcaster, s Setting) {
 	raw, _ := json.Marshal(s) // integers and a string: cannot fail
 	b.Broadcast(topic, raw)
+}
+
+// ErrClockControlOff is what a node refuses a pushed setting with when it does
+// not run a controllable clock.
+var ErrClockControlOff = errors.New("clock control is off on this node")
+
+// Holder holds a setting pushed to this node by a peer and answers with the
+// setting it then holds.
+type Holder struct {
+	c       *Test
+	adopted adoptLog
+}
+
+// NewHolder returns a Holder over c. A nil c means clock control is off.
+func NewHolder(c *Test) *Holder { return &Holder{c: c} }
+
+// Hold validates payload, applies it when newer, and returns the setting this
+// node holds afterwards: payload's when it was adopted or equal, the held one
+// when payload is older. An invalid payload is refused and logged without it.
+func (h *Holder) Hold(payload []byte) (Setting, error) {
+	if h.c == nil {
+		return Setting{}, ErrClockControlOff
+	}
+	s, err := decode(payload)
+	if err != nil {
+		slog.Warn("refusing invalid platform clock setting",
+			"pkg", "platformclock", "reason", err.Error(), "size", len(payload))
+		return Setting{}, fmt.Errorf("invalid clock setting: %w", err)
+	}
+	if h.c.Apply(s) {
+		h.adopted.log(h.c.src, s, h.c.Now())
+	}
+	return h.c.Setting(), nil
 }

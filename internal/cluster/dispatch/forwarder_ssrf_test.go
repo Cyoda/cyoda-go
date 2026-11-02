@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/dispatch"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
 // TestHTTPForwarder_RejectsLoopbackAddresses documents the SSRF guard on
@@ -118,5 +119,14 @@ func TestHTTPForwarder_AcceptsRoutableAddress(t *testing.T) {
 	// URL we passed.
 	if !strings.Contains(err.Error(), "192.0.2.1") {
 		t.Fatalf("expected error to reference the target addr, got: %v", err)
+	}
+}
+
+func TestHTTPForwarder_PushClockRejectsLoopback(t *testing.T) {
+	fw := dispatch.NewHTTPForwarder(newTestPeerAuth(t), time.Second)
+	_, err := fw.PushClock(context.Background(), testNodeID, "http://127.0.0.1:1", platformclock.Setting{})
+	var fe *dispatch.ForwardError
+	if !errors.As(err, &fe) || fe.Stage != dispatch.StageNotConnected {
+		t.Fatalf("err = %v, want *ForwardError StageNotConnected", err)
 	}
 }
