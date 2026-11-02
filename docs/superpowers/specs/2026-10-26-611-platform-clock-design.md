@@ -54,9 +54,12 @@ These were decided with Paul and are not reopened here:
 1. **A test feature.** It needs no durability and no protection against
    network partitions or other high-availability concerns. After a hiccup, a
    test starts over.
-2. **Idle during changes.** Keeping the system idle while the clock changes
-   is the test's job. It is a documented restriction, not something the code
-   enforces.
+2. **Test preconditions.** Three conditions are the test's job. They are
+   documented, and the code does not enforce them:
+   - the cluster is static during a change: no node starts, stops or joins;
+   - the system is idle during a change: no requests or callouts run;
+   - one change at a time: the next change starts only after the previous
+     call has returned.
 3. **Operator-run.** The platform operator runs the clock through the API.
    There is no configured start time.
 4. **Rate limits.** The rate is between 0.1 and 100. There is no frozen
@@ -75,6 +78,10 @@ These were decided with Paul and are not reopened here:
 7. **Restart.** A node that starts with no peer holding a clock setting
    starts on real time. If the store holds times later than real time, startup
    fails, because the test must start over.
+8. **Confirmed changes.** A change answers 200 only when every node holds the
+   new setting. Any node that does not confirm it fails the change with 503
+   `CLOCK_NOT_CONFIRMED`. Nothing is rolled back; starting over means
+   restarting the cluster with a fresh store.
 
 ## Goals
 
@@ -86,7 +93,8 @@ These were decided with Paul and are not reopened here:
    move it forward.
 4. A move fires every scheduled transition that comes due on the way, each at
    its own due time.
-5. Every node of a cluster uses the same clock setting.
+5. When a change answers 200, every node of the cluster holds the same clock
+   setting.
 6. Applications and compute nodes can read the platform time.
 
 ## Non-goals
@@ -94,6 +102,11 @@ These were decided with Paul and are not reopened here:
 - **Durability.** A full restart returns the clock to real time.
 - **Guarantees for activity during a change.** Transactions in flight during
   a change are not protected (decision 2).
+- **Rollback.** A change that some node did not confirm is not undone
+  (decision 8).
+- **Partitions.** A node cut off from gossip but still reaching the database
+  is out of scope (decision 1). It is not in the handling node's directory, so
+  no change is pushed to it.
 - **Frozen clocks.**
 - **Application-supplied valid time (#293).**
 
@@ -175,43 +188,130 @@ have the starting inventory.
 ## The setting across a cluster
 
 The setting is a small value: `S`, `R` (as Unix time), `k`, and a version made
-of a counter plus the node id that wrote it (for a total order). Each node
-holds it in its test clock.
-
-- **Changes.** The node that handles a change applies it locally and
-  broadcasts it on a gossip topic (`Gossip.Broadcast`,
-  `internal/cluster/registry/gossip_broadcast.go`). Every node keeps the
-  highest version it has seen.
-- **Joining nodes.** A node that joins receives the setting in memberlist's
-  join-time state exchange (`LocalState`/`MergeRemoteState`; today they are
-  unused, `internal/cluster/registry/gossip.go:605-606`). The periodic
-  push-pull of that exchange repairs a broadcast a node missed.
-- **Only with the feature on.** The topic subscription and the state
-  exchange carry the setting only when `CYODA_CLOCK_CONTROL_ENABLED` is true;
-  with it off, `LocalState` returns nothing, as today.
-- **What is shared.** A node shares only a setting it published or adopted
-  from a peer. A local change still pending, such as a set-back awaiting the
-  store's answer, is not shared, because it may yet be undone.
-- **Before background work.** A node joins and merges the setting before it
-  starts any background loop (search reapers, scheduler). Gossip registration
-  comes before the search reapers start, in both modes.
-- **Single-node deployments** have no gossip; the setting is local.
-- **Lag.** A node learns of a change within gossip latency, usually well
-  under a second. Under decision 2 the test waits for the change to return
-  and keeps idle meanwhile, so lag is not guarded.
-- **Real clock differences between nodes** show up multiplied by the rate:
-  10 ms of NTP difference is 1 s at rate 100. The documentation says the
-  nodes need synchronised clocks.
+of a counter plus the node id that wrote it (for a total order)
+(`Setting`, `internal/platformclock/setting.go:24-30`). Each node holds it in
+its test clock, and a node's clock reading follows entirely from it.
 
 Nodes compute the platform time from their own real clocks; there is no
 master. That is how NTP works too: it distributes a reference, and each
 machine keeps time locally.
 
+### A change is pushed and confirmed
+
+Every kind of change runs the same order: a set, a set-back, a rate-only
+change, and each step of a move.
+
+1. **Apply locally.** The handling node installs the setting in its own clock.
+   A set-back first runs its store check (`internal/platformclock/service.go:166-181`);
+   when the check refuses, the previous setting is restored and nothing is
+   pushed.
+2. **Push.** The node marks the setting shareable (`Test.share`,
+   `internal/platformclock/clock.go:194-205`) and sends it to every other live
+   member in parallel, over the peer channel (below).
+3. **Hold and echo.** Each receiving node applies the setting
+   (`Test.Apply`, `clock.go:96-117`, newest version wins) and answers with the
+   full setting it holds afterwards (`Test.Setting`, `clock.go:93-94`). A
+   setting equal to the one held is not re-applied, and the echo still matches.
+4. **Match.** A node's confirmation counts only when its echo equals, in all
+   five fields, the setting the handling node sent.
+5. **Wait for all.** The change is confirmed when every other live member has
+   confirmed it. The handling node's own scheduler may fire a step's tasks
+   before the peers hold that step; this is accepted, because the system is
+   idle (decision 2) and nothing else runs in that moment.
+
+**Every other live member** is every member in the handling node's gossip
+directory (`internal/cluster/registry/directory.go:11-29`) except itself. A
+member whose metadata does not parse has no usable address and fails the
+confirmation. Today `List` skips such a member
+(`internal/cluster/registry/gossip.go:438-450`) and `Lookup` reports it not
+alive (`gossip.go:416-431`), so the confirmation reads the directory through a
+registry method that returns it too.
+
+**Failure.** The change fails with 503 `CLOCK_NOT_CONFIRMED` when any member
+does not answer within the bound, refuses (clock control is off on it, or the
+setting fails its validation), echoes a different setting, or has no usable
+address. The detail names the id of every node that did not confirm. The
+forwarder's error text and the peers' URLs go to the log only. Nothing is
+rolled back: the handling node and the nodes that confirmed keep the setting.
+Starting over means restarting the cluster with a fresh store.
+
+**What a 200 means.** Every node holds the same setting. Readings still differ
+by the difference between the hosts' real clocks multiplied by the rate:
+10 ms of NTP difference is 1 s at rate 100. The documentation says the nodes
+need synchronised clocks.
+
+**Single-node deployments** have no peers and no peer channel. A change is
+confirmed once it is applied, and the 200 lists the handling node only, whose
+id is `local` (`app/app.go:157`).
+
+### The peer channel
+
+The push reuses the authenticated channel that callout hand-overs use
+(`internal/cluster/dispatch`).
+
+- **Route.** A new route, `POST /internal/dispatch/clock`, is registered beside
+  the hand-over route (`internal/cluster/dispatch/handler.go:50-53`), at the
+  root and outside the context path (`app/app.go:731-734`, `:743-746`), on
+  every node in cluster mode, whether clock control is on or off.
+- **Authentication.** The request is sealed for its recipient, and the
+  associated data binds the method, the path, the timestamp and the recipient's
+  node id (`internal/cluster/dispatch/aead_peer_auth.go:92-105`, `:300-301`).
+  The answer is sealed for the request it answers (`aead_peer_auth.go:303-311`).
+  So a hand-over envelope cannot be replayed to the clock route, nor a clock
+  envelope delivered to another node. A request that fails authentication gets
+  the bare 403 the hand-over route gives today (`handler.go:75-78`), which the
+  sender reads as no confirmation.
+- **Refusals.** A node with clock control off answers with a sealed refusal. A
+  node with it on validates the setting as it validates any setting from the
+  network (`decode`, `internal/platformclock/sync.go:29-46`) and answers a
+  sealed refusal when it fails.
+- **Forwarder.** `HTTPForwarder` (`internal/cluster/dispatch/forwarder.go:62-106`)
+  gains a call for the clock route. It reuses the peer-address check
+  (`forwarder.go:122-130`) and the sealed round trip (`forwarder.go:146-225`).
+  The forwarder is built in cluster mode regardless of `ExternalProcessing`;
+  today it is built only on the branch where `ExternalProcessing` is unset
+  (`app/app.go:495-512`).
+- **Parallel, bounded.** All peers are contacted at once. Opening each
+  connection is bounded by `CYODA_DISPATCH_CONNECT_TIMEOUT` (the forwarder's
+  dialer, `forwarder.go:81-105`). The whole confirmation round is bounded by
+  `CYODA_PROXY_TIMEOUT`.
+- **Client gone.** The round's context derives from the request. A client that
+  leaves cancels it, and the error is marked `ClientGone`
+  (`internal/common/errors.go:54-56`), as a move's store calls are
+  (`service.go:264-272`).
+
+### Joining nodes: the join exchange only
+
+- **Kept.** A node that joins takes the current setting from the node it joins
+  through, in memberlist's join-time push/pull exchange
+  (`LocalState`/`MergeRemoteState`, `internal/cluster/registry/gossip.go:552-558`,
+  `:625-638`), which `Attach` registers (`internal/platformclock/sync.go:84-104`).
+  This is the only remaining use of gossip for the clock.
+- **Join only.** The periodic push/pull does not carry clock settings: the
+  delegate hands a remote state to the merge only when memberlist's `join`
+  flag is true. Today the flag is ignored (`gossip.go:634`). Both sides of a
+  join exchange see `join` true (memberlist v0.6.0 `net.go:321`, `:978`,
+  `:1052`, `:1315`).
+- **Removed.** The broadcast topic `platform.clock` (`sync.go:14-15`), its
+  subscription (`sync.go:90`), `Publish` (`sync.go:106-110`) and the publish
+  wiring (`app/app.go:597-601`). The direct push replaces them.
+- **What is shared.** A node hands a joining peer only a setting it pushed or
+  adopted (`clock.go:39-42`, `:207-211`), never a local change still pending,
+  such as a set-back awaiting the store's answer, which may yet be undone.
+- **Only with the feature on.** `Attach` runs only with clock control on
+  (`app/app.go:192-199`); with it off, `LocalState` returns nothing, as today.
+- **Before background work.** A node joins and merges the setting before it
+  starts any background loop (search reapers, scheduler). Gossip registration
+  comes before the search reapers start, in both modes (`app/app.go:444-475`).
+
 ## Changing the clock
 
 All changes are made through `POST /platform/clock` by a platform operator, on
-a node with `CYODA_CLOCK_CONTROL_ENABLED=true`. The test keeps the system idle
-meanwhile (decision 2).
+a node with `CYODA_CLOCK_CONTROL_ENABLED=true`. The test keeps the cluster
+static and the system idle meanwhile, and makes one change at a time
+(decision 2). Every change, and every step of a move, is pushed to the other
+nodes and confirmed by them before the request goes on (see "A change is
+pushed and confirmed").
 
 ### Setting a time not later than now (start in the past)
 
@@ -226,7 +326,8 @@ recorded in the store:
    took, times the rate), the store holds a later time. The node restores its
    previous setting and answers 409 `CLOCK_BEFORE_RECORDED_TIME`, naming the
    latest recorded time.
-4. Otherwise it broadcasts the setting.
+4. Otherwise it pushes the setting and waits until every other node confirms
+   it.
 
 On a fresh store the floor is zero, so any start from 1970 on is accepted. The
 help topic says to set the start before anything else. Every operation that
@@ -257,7 +358,13 @@ fire. So a set never moves it back: an intermediate step goes to `e` only if
 `e` is still ahead, and the final step goes to `T` only if `T` is still ahead.
 If a fire near the end ran past `T`, the move ends with the clock where it is.
 
-- **Each step** is an ordinary change: applied locally and broadcast.
+- **Each step** is an ordinary change: applied locally, pushed, and confirmed
+  by every other node before the move waits for that step's tasks. A step
+  that is not confirmed stops the move there with 503 `CLOCK_NOT_CONFIRMED`.
+- **The end of a move** confirms the setting the handling node holds at that
+  point, even when the last step made no new setting (`setForward` reports no
+  change, `internal/platformclock/service.go:220-224`). So every move answers
+  200 only with the final setting confirmed by every node.
 - **The scheduler** on every node then fires what is due, as it does on real
   time. A fire is recorded at `e` plus the scan latency times the rate. The
   default scan interval is 1 s, so at rate 1 a fire is recorded within about
@@ -272,8 +379,9 @@ If a fire near the end ran past `T`, the move ends with the clock where it is.
   tenant, `app/config.go:457-459`), so their commit order is not their due
   order. That is also how they behave on real time. The help topic says so.
 - **One change at a time.** Two changes at once are the test's mistake
-  (decision 2), not something the platform detects. The last setting gossiped
-  wins.
+  (decision 2), not something the platform detects. A node that already holds
+  a newer setting than the one pushed echoes its own, and the change fails
+  with 503 `CLOCK_NOT_CONFIRMED`.
 - **Interruption.** If the request is cancelled or the node stops, the clock
   stays where the last step put it, running at its rate. Repeating the move
   with the same `time` continues from there; `advanceByMs` counts from the
@@ -281,8 +389,8 @@ If a fire near the end ran past `T`, the move ends with the clock where it is.
 - **Cost:**
   - one step per distinct due time in the window, including retries and
     schedules that re-arm themselves;
-  - each step costs up to one scan interval on the other nodes, plus the
-    fire;
+  - each step costs one confirmation round, up to one scan interval on the
+    other nodes, plus the fire;
   - a move waits as long as a due task stays pending, for example when no
     node runs a scheduler. The caller decides how long to wait.
 
@@ -348,7 +456,15 @@ the move runs at the current rate and the new rate applies at the end.
   - `time` not later than now: a set (see above);
   - a later target: a move;
   - `rate` alone: a rate change.
-- 200 `PlatformClockDto` when complete.
+- 200 `PlatformClockChangeResultDto` when complete:
+  - `now`, `rate`, `controllable`, as in `PlatformClockDto`;
+  - `nodes` (array of strings, required): the ids of every node that holds
+    the setting, the handling node included, in ascending order. On a single
+    node it is `["local"]`.
+
+  `GET /platform/clock` and the gRPC `PlatformClockResponse` keep
+  `PlatformClockDto` unchanged. Spec's call: a new response schema for POST,
+  not an optional member, so that GET declares no member it never sends.
 
 Errors, in the order they are checked:
 
@@ -361,10 +477,16 @@ Errors, in the order they are checked:
 | 400 | existing strict-body / validation codes | malformed body, unknown member, null member, no member, both `time` and `advanceByMs`, `advanceByMs ≤ 0` or moving the clock past 9000, `rate` outside 0.1–100, `time` not RFC 3339 or outside 1970–9000 | — | ✓ |
 | 409 | `CLOCK_BEFORE_RECORDED_TIME` | `time` earlier than the latest recorded time; the detail names it | — | ✓ |
 | 503 | existing store-unavailable | the store did not answer the consistency-time check or the move's task query | — | ✓ |
+| 503 | `CLOCK_NOT_CONFIRMED` | a node did not confirm the change or a move's step: no answer within `CYODA_PROXY_TIMEOUT`, a refusal (clock control off on that node, or the setting fails its validation), an echo that differs, or a member without a usable address; the detail names the node ids; not retryable — start over | — | ✓ |
 | 500 | generic + ticket | anything else | ✓ | ✓ |
 
-`GET` makes no store call, so it has no 503, and no 500 that a request could
-cause.
+`GET` makes no store call and contacts no peer, so it has no 503, and no 500
+that a request could cause.
+
+`CLOCK_NOT_CONFIRMED` is checked after the local change: a set-back that the
+store refuses answers 409 and pushes nothing. A client that leaves during a
+confirmation round gets no answer; the error is marked `ClientGone` and the
+door logs it at DEBUG.
 
 ### gRPC
 
@@ -386,6 +508,14 @@ cause.
   for production; the clock is instance-wide and affects every tenant".
 
 All nodes of a cluster use the same value.
+
+`CYODA_PROXY_TIMEOUT` (duration, default `30s`, `app/config.go:452`) bounds
+each confirmation round. `ValidateDispatch` (`app/config.go:927-941`) refuses
+a value that is not greater than zero; today it is not checked. The
+`config cluster` help topic (`cmd/cyoda/help/content/config/cluster.md:27`)
+says both. `README.md` does not list the variable (`grep -n CYODA_PROXY_TIMEOUT
+README.md` is empty) and the default is unchanged, so neither needs a change
+(Gate 4).
 
 Documented in a new help topic `cmd/cyoda/help/content/config/clock.md`, in
 `README.md` and in `DefaultConfig()` (Gate 4). Mock IAM lets any tenant's
@@ -550,15 +680,25 @@ ways and no others.
    option refuses a nil clock with a panic at startup; a plugin given no clock
    uses its own, as production postgres does. `memory.NewAsyncSearchStore`
    is removed.
+10. **Cluster mode wiring.** Every node in cluster mode registers the clock
+    route `POST /internal/dispatch/clock` and answers every push with a sealed
+    refusal, because clock control is off. The dispatch forwarder is built in
+    cluster mode whatever `ExternalProcessing` is; production leaves
+    `ExternalProcessing` unset (`app/app.go:495-512`), so production already
+    builds it, and only an embedder that sets it sees a difference.
+11. **`CYODA_PROXY_TIMEOUT` validation.** A value not greater than zero fails
+    startup. The default, `30s`, passes.
 
 **Additions that production does not exercise:**
 - `GET /platform/clock` (answers real time, rate 1) and `POST /platform/clock`
   (answers 403 `CLOCK_CONTROL_DISABLED`);
-- the gRPC read types, the new error code, and the OpenAPI and schema entries;
+- the gRPC read types, the new error codes, and the OpenAPI and schema entries;
 - the SPI methods `SchedulerActivity` and `LatestRecordedTime`, which every
   plugin implements and production never calls.
 
-The gossip topic and the state exchange are active only with the feature on.
+The state exchange is active only with the feature on, and it merges only
+during a join (`join` true); with the feature off nothing is registered on it,
+so the join-only rule changes nothing. The broadcast topic is gone.
 Gossip registration now happens before the search reapers start, in both
 modes, so with the feature off the reapers start after the cluster join.
 No new store reads, locks, checks or background work run in production.
@@ -579,6 +719,20 @@ No new store reads, locks, checks or background work run in production.
   - problem details name the refused member.
 - **Information in errors.** `CLOCK_BEFORE_RECORDED_TIME` names the latest
   recorded time. Any caller can read that already as a consistency time.
+  `CLOCK_NOT_CONFIRMED` names node ids only, to a platform operator. Node
+  addresses, peer URLs and the forwarder's error text go to the log, never to
+  the response.
+- **Peer route.** `POST /internal/dispatch/clock` accepts only an envelope
+  sealed with the cluster key for this node and this path (see "The peer
+  channel"), the same trust as a callout hand-over: whoever holds the cluster
+  key can already hand this node a callout. It is outside the context path and
+  outside API authentication, like the hand-over route. Every answer to an
+  opened request is sealed. A node with clock control off only refuses. A
+  received setting is validated as any setting from the network
+  (`sync.go:29-46`); a failed validation is logged without the payload.
+- **SSRF.** The push dials only addresses from the gossip directory, through
+  the forwarder's peer-address guard (`forwarder.go:122-130`), which refuses
+  loopback unless `CYODA_DISPATCH_ALLOW_LOOPBACK_FOR_TESTING` is set.
 
 ## Documentation
 
@@ -590,15 +744,43 @@ No new store reads, locks, checks or background work run in production.
   - the restrictions: keep the system idle during changes, nodes need
     synchronised clocks, a restart returns to real time or fails on a store
     with later times;
-  - the instance-wide effect.
+  - the instance-wide effect;
+  - a section "Testing with the platform clock":
+    - the three preconditions: the cluster is static during a change, the
+      system is idle, one change at a time;
+    - a 200 means every node holds the setting; the answer lists the nodes;
+    - on failure (`503 CLOCK_NOT_CONFIRMED`), start over: restart the cluster
+      with a fresh store;
+    - set the start in the past before writing data or importing models;
+    - retention follows platform time;
+    - a move needs a running scheduler and the compute nodes its tasks call;
+    - a node that is starting, or shutting down, while a change runs can make
+      the change fail;
+    - synchronised host clocks are required.
+- **New error topic** `cmd/cyoda/help/content/errors/CLOCK_NOT_CONFIRMED.md`,
+  and the code in `internal/common/error_codes.go` beside the other clock
+  codes (`:167-173`, `:312-313`).
 - **Existing topics:**
   - `cyoda help config clock`;
+  - `cyoda help config cluster`: `CYODA_PROXY_TIMEOUT` bounds a clock
+    confirmation round and must be greater than zero;
   - `cloudevents.md` (the `time` attribute);
   - `scheduled-tasks.md` (moves fire due tasks at their due times);
   - `crud.md` (point-in-time "now" follows the clock).
-- **OpenAPI** for both operations; **gRPC** schemas for the two types.
+- **OpenAPI** for both operations; **gRPC** schemas for the two types. POST's
+  200 names `PlatformClockChangeResultDto` (today `PlatformClockDto`,
+  `api/openapi.yaml:1087-1092`). POST's 503 gets its own description naming
+  the store codes and `CLOCK_NOT_CONFIRMED`, in place of the shared
+  `ServiceUnavailable` response (`api/openapi.yaml:1115-1116`). Then
+  `go generate ./api`.
 - **`docs/cloud-parity/platform-clock.md`** (Gate 7), and a CaaS ticket. Cloud
-  has no controllable clock (`ClockCtrl` is replaceable only by tests).
+  has no controllable clock (`ClockCtrl` is replaceable only by tests). The
+  page states the contract a Cloud cluster follows: a change answers 200 only
+  when every node holds the setting, the 200 body lists the node ids
+  (`PlatformClockChangeResultDto`), and a node that does not confirm gives
+  503 `CLOCK_NOT_CONFIRMED` with no rollback. Its §2 drops "highest version
+  wins" as the means of spreading a change; a joining node still takes the
+  setting from its peers. How Cloud nodes reach each other is Cloud's own.
 - **CHANGELOG:**
   - `### Added` for the feature;
   - `### Breaking` for plugin authors (`SchedulerActivity`,
@@ -641,7 +823,19 @@ No new store reads, locks, checks or background work run in production.
 | Each 400 cell, including the query-parameter refusal | ✓ | ✓ | | | |
 | POST 503 when the store fails the check | ✓ | waived: no e2e stops the database mid-test; handler unit test | | | |
 | POST 500 | ✓ | waived: no e2e can force an internal fault; handler unit test | | | |
-| Cluster: a change through node A reaches node B; a node that joins later takes the setting | ✓ | ✓ | | | |
+| Cluster: a change through node A answers 200 only once node B holds it; `nodes` lists every node; B reads the setting at once; a node that joins later takes the setting | ✓ | ✓ | | | |
+| Single node: the 200 lists the handling node only (`local`) | ✓ | ✓ | ✓ | | |
+| 503 `CLOCK_NOT_CONFIRMED`, unreachable peer: a gossip member whose address serves nothing; the detail names it | ✓ | ✓ | | | |
+| 503 `CLOCK_NOT_CONFIRMED`, a peer with clock control off answers a sealed refusal; the detail names it | ✓ | ✓ | | | |
+| 503 `CLOCK_NOT_CONFIRMED`, a peer echoes a different setting | ✓ | waived: needs two concurrent changes, which the preconditions exclude; the service test drives a peer that echoes a newer setting | | | |
+| 503 `CLOCK_NOT_CONFIRMED`, a member whose metadata does not parse | ✓ | waived: no cyoda-go node advertises such metadata; registry and service unit tests | | | |
+| 503 `CLOCK_NOT_CONFIRMED` on a move step: the move stops at that step, the clock stays there | ✓ | | | | |
+| A move confirms each step before it waits for that step's tasks, and confirms the final setting when the last step made no new one | ✓ | | | | |
+| A set-back refused by the store pushes nothing | ✓ | | | | |
+| A client that leaves during a confirmation round: `ClientGone`, logged at DEBUG | ✓ | waived: an e2e cannot read an answer its client has abandoned | | | |
+| Peer route: refusal with clock control off; refusal of a setting that fails validation; an envelope sealed for another path or node is refused | ✓ | | | | |
+| Periodic push/pull does not merge a setting; the join exchange does | ✓ | | | | |
+| `CYODA_PROXY_TIMEOUT` ≤ 0 fails config validation | ✓ | | | | |
 | Restart alone on a store with times ahead of real time → the check returns an error; behind → starts on real time | ✓ | waived: startup failure exits the process (`app.New`, `os.Exit(1)`), and e2e runs the app in-process; the check function is unit-tested on a real store | | | |
 | Callout `time` attribute carries the clock's time; an absolute schedule-function fire time computed from it is due at the right platform time | ✓ | ✓ | | | |
 | Callout `time` attribute is the owner's platform time when it took the callout up: a retry and a hand-over send the same value; a peer sends the hand-over's time, not its own clock's; a hand-over without one is refused | ✓ | | | | |
@@ -657,17 +851,25 @@ No new store reads, locks, checks or background work run in production.
 
 ## Left to the builder
 
-- Package and type names; the gossip topic name and the encoding of the
-  setting.
+- Package and type names; the peer route's path and the wire encoding of the
+  push, its echo and its refusal; the registry method that lists every
+  directory member.
+- The e2e cluster fixture. `newClockSeed`
+  (`internal/e2e/platform_clock_test.go:664-697`) is a gossip-only member whose
+  address serves nothing (`:679`), so it fails every cluster change. It either
+  serves the clock route, or the cluster test joins through a real node; the
+  member that serves nothing becomes the unreachable-peer 503 test.
 - The poll interval of the move's wait.
 - How `SchedulerActivity` is implemented per plugin.
 - The wording of the log lines and help topics.
 
 ## Calls made in this document (not discussed with Paul)
 
-- **Gossip carriers.** The setting rides a gossip topic for changes and
-  memberlist's join-time state exchange for nodes that join. Highest version
-  wins.
+- **Carriage.** A change is pushed directly to every node over the peer
+  channel and confirmed by each; memberlist's join-time state exchange carries
+  the setting to a node that joins. Highest version wins on every node.
+- **POST's 200 schema** is a new `PlatformClockChangeResultDto`, so GET and
+  gRPC keep `PlatformClockDto`.
 - **Setting a past time** is checked against the store's consistency time.
   On memory and sqlite, a read made before the start raises the earliest
   allowed start; the help topic says to set the start first.
