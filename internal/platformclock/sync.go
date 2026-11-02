@@ -115,15 +115,14 @@ func NewHolder(c *Test) *Holder { return &Holder{c: c} }
 
 // Hold validates payload, applies it when newer, and returns the setting this
 // node holds afterwards: payload's when it was adopted or equal, the held one
-// when payload is older. An invalid payload is refused and logged without it.
+// when payload is older. An invalid payload is refused with an error that
+// names the reason and never carries the payload; the caller logs it.
 func (h *Holder) Hold(payload []byte) (Setting, error) {
 	if h.c == nil {
 		return Setting{}, ErrClockControlOff
 	}
 	s, err := decode(payload)
 	if err != nil {
-		slog.Warn("refusing invalid platform clock setting",
-			"pkg", "platformclock", "reason", err.Error(), "size", len(payload))
 		return Setting{}, fmt.Errorf("invalid clock setting: %w", err)
 	}
 	if h.c.Apply(s) {

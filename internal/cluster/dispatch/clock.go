@@ -56,7 +56,7 @@ func (h *ClockHandler) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	held, err := h.holder.Hold(body)
 	if err != nil {
-		slog.Warn("clock push refused", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "reason", err.Error())
+		slog.Warn("clock push refused", "pkg", "dispatch", "remoteAddr", r.RemoteAddr, "reason", err.Error(), "size", len(body))
 		writeSealed(w, h.auth, binding, ClockPushAnswer{Refused: err.Error()})
 		return
 	}

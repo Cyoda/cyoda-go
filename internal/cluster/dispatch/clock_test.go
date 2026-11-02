@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,6 +101,34 @@ func TestClockPush_InvalidSettingIsSealedRefusal(t *testing.T) {
 	}
 	if c.Setting() != held {
 		t.Fatalf("peer setting = %+v, want unchanged %+v", c.Setting(), held)
+	}
+}
+
+// A refused push is one WARN line, the route's, and it carries the reason.
+func TestClockPush_InvalidSettingLogsOneWarn(t *testing.T) {
+	var logged bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&logged, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	c := platformclock.NewTest("node-b", nil)
+	c.Apply(clockSetting(3))
+	srv := clockServer(t, newAEAD(t), platformclock.NewHolder(c))
+	s := clockSetting(5)
+	s.Writer = ""
+	if _, err := clockSender(t).PushClock(context.Background(), testSelfNodeID, srv.URL, s); err == nil {
+		t.Fatal("an invalid setting was held")
+	}
+	lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("%d WARN lines for one refused push, want 1:\n%s", len(lines), logged.String())
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &rec); err != nil {
+		t.Fatalf("decode %q: %v", lines[0], err)
+	}
+	if rec["msg"] != "clock push refused" || !strings.Contains(fmt.Sprint(rec["reason"]), "empty writer") {
+		t.Fatalf("WARN line = %v, want \"clock push refused\" with the reason", rec)
 	}
 }
 
