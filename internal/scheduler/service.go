@@ -11,7 +11,6 @@ import (
 	"log/slog"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,6 +20,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
@@ -38,7 +38,7 @@ type Deps struct {
 	// at arm.
 	Clock spi.Clock
 	// HealthFlag is the process-wide flag a recovered panic latches false.
-	HealthFlag *atomic.Bool
+	HealthFlag *health.Latch
 	Meter      metric.Meter
 	// CalloutDeadlineMax is the longest one callout can take. Shutdown step 4
 	// waits for it, counted from the start of each unsafe callout in flight.
@@ -1023,12 +1023,12 @@ func (s *Service) recoverLatch(site string) {
 // latchedLocked reports whether the node is latched: either the scheduler's
 // own s.latched, set by a panic recovered inside the scheduler, or the
 // process-wide Deps.HealthFlag a panic recovered elsewhere in the process (the
-// HTTP Recovery middleware, the gRPC server, the search reaper) has set
-// false. One helper for both so the claim gate and register cannot drift
+// HTTP Recovery middleware, the gRPC server, the search reaper) has
+// tripped. One helper for both so the claim gate and register cannot drift
 // apart on which sources count. The caller holds s.mu; HealthFlag is read
-// without it, since it is its own atomic.
+// without it, since the latch locks itself.
 func (s *Service) latchedLocked() bool {
-	return s.latched || (s.deps.HealthFlag != nil && !s.deps.HealthFlag.Load())
+	return s.latched || s.deps.HealthFlag.Tripped()
 }
 
 // latch marks the node unhealthy for good. A latched node claims nothing, and
@@ -1036,9 +1036,7 @@ func (s *Service) latchedLocked() bool {
 // (latchAndCancel). It keeps heartbeating unless the heartbeat itself
 // panicked, so its runs are not taken over while they finish.
 func (s *Service) latch() {
-	if s.deps.HealthFlag != nil {
-		s.deps.HealthFlag.Store(false)
-	}
+	s.deps.HealthFlag.Trip()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.latched = true

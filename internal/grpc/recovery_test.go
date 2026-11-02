@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +28,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -36,10 +36,9 @@ import (
 )
 
 func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	resp, err := interceptor(context.Background(), nil,
@@ -51,7 +50,7 @@ func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 	if resp != nil {
 		t.Fatalf("resp = %v, want nil", resp)
 	}
-	if health.Load() {
+	if !latch.Tripped() {
 		t.Fatal("health flag not marked; a node that has panicked has unknown state")
 	}
 	if strings.Contains(err.Error(), "injected") {
@@ -60,10 +59,9 @@ func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 }
 
 func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := StreamRecoveryInterceptor(&health)
+	interceptor := StreamRecoveryInterceptor(latch)
 	handler := func(srv any, ss googlegrpc.ServerStream) error { panic("injected") }
 
 	err := interceptor(nil, nil,
@@ -72,7 +70,7 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 	if err == nil {
 		t.Fatal("panic was not converted to an error; the process would have died")
 	}
-	if health.Load() {
+	if !latch.Tripped() {
 		t.Fatal("health flag not marked")
 	}
 	if strings.Contains(err.Error(), "injected") {
@@ -88,10 +86,9 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 // recovered panic is the failure class that most needs one for monitoring and
 // retry dispatch.
 func TestUnaryRecoveryInterceptor_ReturnsCodesInternal(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	_, err := interceptor(context.Background(), nil,
@@ -116,10 +113,9 @@ func TestUnaryRecoveryInterceptor_ReturnsCodesInternal(t *testing.T) {
 func TestUnaryRecoveryInterceptor_TicketCorrelatesClientAndLog(t *testing.T) {
 	records := captureSlog(t)
 
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	interceptor := UnaryRecoveryInterceptor(&health)
+	interceptor := UnaryRecoveryInterceptor(latch)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
 	_, err := interceptor(context.Background(), nil,
@@ -266,10 +262,9 @@ func TestUnaryRecoveryInterceptor_NilHealthFlag(t *testing.T) {
 // panic unwinds through the deferred rollback Tasks 1-5 built, so by the time
 // it reaches this interceptor the transaction it opened must already be gone.
 func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
-	var health atomic.Bool
-	health.Store(true)
+	latch := health.NewLatch()
 
-	env := startRecoveryTestServer(t, &health)
+	env := startRecoveryTestServer(t, latch)
 
 	// Import and lock a model with an automated transition out of its initial
 	// state, guarded by a FUNCTION criterion that panics.
@@ -317,7 +312,7 @@ func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
 	if _, parseErr := uuid.Parse(extractTicket(t, st.Message())); parseErr != nil {
 		t.Fatalf("client-visible message %q does not carry a valid correlation ticket: %v", st.Message(), parseErr)
 	}
-	if health.Load() {
+	if !latch.Tripped() {
 		t.Fatal("health flag not marked through the real server path")
 	}
 
@@ -466,7 +461,7 @@ func (a *fixedAuthService) Authenticate(ctx context.Context, _ *http.Request) (c
 // with an in-memory backend and a localproc external-processing service, so a
 // test can drive genuine production code paths (including panics deep inside
 // workflow criterion evaluation) over an actual gRPC connection.
-func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTestServer {
+func startRecoveryTestServer(t *testing.T, healthFlag *health.Latch) *recoveryTestServer {
 	t.Helper()
 	return startRecoveryTestServerWithKeepAlive(t, healthFlag,
 		KeepAliveConfig{Interval: 10 * time.Second, Timeout: 30 * time.Second})
@@ -475,7 +470,7 @@ func startRecoveryTestServer(t *testing.T, healthFlag *atomic.Bool) *recoveryTes
 // startRecoveryTestServerWithKeepAlive is startRecoveryTestServer with the
 // keep-alive configuration under the test's control, for tests whose subject
 // is the keep-alive itself and which cannot wait out the production timings.
-func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *atomic.Bool, ka KeepAliveConfig) *recoveryTestServer {
+func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *health.Latch, ka KeepAliveConfig) *recoveryTestServer {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 	googlegrpc "google.golang.org/grpc"
@@ -13,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 // UnaryRecoveryInterceptor converts a handler panic into an error instead of
@@ -34,7 +34,7 @@ import (
 // progress are not taken over. The node is not restarted either: /livez stays
 // unconditional so a deterministic panic does not become a restart loop.
 // Draining is the automatic part; replacing the node is the operator's.
-func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInterceptor {
+func UnaryRecoveryInterceptor(healthFlag *health.Latch) googlegrpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (resp any, err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -47,7 +47,7 @@ func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInt
 }
 
 // StreamRecoveryInterceptor is UnaryRecoveryInterceptor for streaming methods.
-func StreamRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.StreamServerInterceptor {
+func StreamRecoveryInterceptor(healthFlag *health.Latch) googlegrpc.StreamServerInterceptor {
 	return func(srv any, ss googlegrpc.ServerStream, info *googlegrpc.StreamServerInfo, handler googlegrpc.StreamHandler) (err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
@@ -89,10 +89,8 @@ func panicStatus(rec any, method string) error {
 // recoverPanic is panicStatus plus the health-flag latch: the interceptors'
 // policy, for panics raised while serving an RPC (nil-safe: some test
 // constructors do not wire a flag).
-func recoverPanic(rec any, method string, healthFlag *atomic.Bool) error {
+func recoverPanic(rec any, method string, healthFlag *health.Latch) error {
 	err := panicStatus(rec, method)
-	if healthFlag != nil {
-		healthFlag.Store(false)
-	}
+	healthFlag.Trip()
 	return err
 }

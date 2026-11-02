@@ -42,7 +42,7 @@ func probeReadyz(t *testing.T, a *App) *httptest.ResponseRecorder {
 // holding the app's own health flag — exactly what happens when any HTTP route
 // or gRPC method panics.
 func recoverPanicOnce(a *App) {
-	h := middleware.Recovery(a.healthFlag)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	h := middleware.Recovery(a.healthLatch)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("boom")
 	}))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/panics", nil))
@@ -127,7 +127,7 @@ func TestReadinessCheck_UsesTheSameFlagTheRequestDoorsMark(t *testing.T) {
 // silently passing.
 func TestNew_HealthFlagReachesEveryPanicRecoverySite(t *testing.T) {
 	a := readinessTestApp(t)
-	want := reflect.ValueOf(a.healthFlag).Pointer()
+	want := reflect.ValueOf(a.healthLatch).Pointer()
 
 	for _, site := range []struct {
 		name   string

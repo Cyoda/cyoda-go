@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -1611,8 +1611,7 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthFlag := health.NewLatch()
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
@@ -1626,7 +1625,7 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "FAILED")
 
-	if healthFlag.Load() {
+	if !healthFlag.Tripped() {
 		t.Fatal("health flag still true after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
 	}
 }
@@ -1643,8 +1642,7 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthFlag := health.NewLatch()
 
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
@@ -1658,7 +1656,7 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "SUCCESSFUL")
 
-	if !healthFlag.Load() {
+	if healthFlag.Tripped() {
 		t.Fatal("health flag went false after a successful async search — the node took itself out of service for nothing")
 	}
 }

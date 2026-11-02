@@ -2,9 +2,9 @@ package api
 
 import (
 	"net/http"
-	"sync/atomic"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 // RegisterHealthRoutes registers GET /health on the API listener.
@@ -19,9 +19,9 @@ import (
 // This is not the deployment probe. Deployment probes are /livez
 // (unconditional) and /readyz (same flag) on the admin listener; /health is
 // for humans and simple scripts.
-func RegisterHealthRoutes(mux *http.ServeMux, healthFlag *atomic.Bool) {
+func RegisterHealthRoutes(mux *http.ServeMux, healthFlag *health.Latch) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
-		if !healthFlag.Load() {
+		if healthFlag.Tripped() {
 			common.WriteJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "DOWN"})
 			return
 		}

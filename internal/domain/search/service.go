@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -207,7 +207,7 @@ type SearchService struct {
 	// and store code, so it is the same evidence of unverified state.
 	// nil-safe — unit tests that do not care about node health leave it
 	// unset.
-	healthFlag *atomic.Bool
+	healthFlag *health.Latch
 
 	// pool is the bounded worker pool async submissions run on. Set via
 	// WithAsyncPool; when unset, asyncPool() lazily constructs a small
@@ -332,7 +332,7 @@ func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchS
 // false when it recovers a panic — the same flag the HTTP and gRPC recovery
 // paths hold, so any door reaching it takes the node out of service. Returns
 // the receiver for chaining after NewSearchService.
-func (s *SearchService) WithHealthFlag(f *atomic.Bool) *SearchService {
+func (s *SearchService) WithHealthFlag(f *health.Latch) *SearchService {
 	s.healthFlag = f
 	return s
 }
@@ -1178,9 +1178,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// evidence that the node's state is unverified. Nothing resets
 			// it — the node reports 503 on /health and /readyz and stops
 			// taking client traffic.
-			if s.healthFlag != nil {
-				s.healthFlag.Store(false)
-			}
+			s.healthFlag.Trip()
 			// jobCtx may or may not be cancelled at this point, but the write
 			// must land regardless — writeAsyncFailure strips cancellation
 			// itself (keeping the UserContext value), so a store that aborts

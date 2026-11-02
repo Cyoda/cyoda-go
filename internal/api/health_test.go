@@ -4,15 +4,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync/atomic"
 	"testing"
 
 	internalapi "github.com/cyoda-platform/cyoda-go/internal/api"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 func TestHealthEndpointUp(t *testing.T) {
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthFlag := health.NewLatch()
 
 	mux := http.NewServeMux()
 	internalapi.RegisterHealthRoutes(mux, healthFlag)
@@ -35,8 +34,8 @@ func TestHealthEndpointUp(t *testing.T) {
 }
 
 func TestHealthEndpointDown(t *testing.T) {
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(false)
+	healthFlag := health.NewLatch()
+	healthFlag.Trip()
 
 	mux := http.NewServeMux()
 	internalapi.RegisterHealthRoutes(mux, healthFlag)

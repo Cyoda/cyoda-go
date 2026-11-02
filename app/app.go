@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -45,6 +44,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
@@ -91,16 +91,15 @@ type App struct {
 	// registered on this node.
 	searchPool   *search.WorkerPool
 	grpcStopOnce sync.Once
-	// healthFlag starts true and is latched false by the first recovered
-	// panic at any of the four sites that run engine or store work: the HTTP
-	// recovery middleware, the gRPC recovery interceptors, the async-search
-	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
-	// watchdog and runs). Notification-callback recoveries (member-registry
-	// onChange, auth key-store reconcile broadcast) deliberately do not.
-	// Nothing resets it: a node that has panicked has state nothing has
-	// verified. Read by RegisterHealthRoutes (GET /health) and by
-	// ReadinessCheck (/readyz).
-	healthFlag *atomic.Bool
+	// healthLatch trips on the first recovered panic at any of the six sites
+	// that run engine or store work: the search reaper sweep, the gRPC
+	// recovery interceptors, the scheduler, the HTTP recovery middleware, the
+	// async-search goroutine and the search reaper's second pass.
+	// Notification-callback recoveries (member-registry onChange, auth
+	// key-store reconcile broadcast) deliberately do not. Nothing resets it: a
+	// node that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
+	healthLatch *health.Latch
 }
 
 func New(cfg Config) *App {
@@ -125,8 +124,7 @@ func New(cfg Config) *App {
 
 	// Created before anything that can latch it: the async-search goroutine
 	// is wired below, well ahead of the HTTP mux and the gRPC server.
-	a.healthFlag = &atomic.Bool{}
-	a.healthFlag.Store(true)
+	a.healthLatch = health.NewLatch()
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -437,7 +435,7 @@ func New(cfg Config) *App {
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
-		WithHealthFlag(a.healthFlag).
+		WithHealthFlag(a.healthLatch).
 		WithAsyncPool(a.searchPool).
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
@@ -473,7 +471,7 @@ func New(cfg Config) *App {
 		}
 	}
 
-	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthLatch)
 
 	a.auditService = skeleton.NewAuditService()
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
@@ -554,7 +552,7 @@ func New(cfg Config) *App {
 		TxManager:          a.transactionManager,
 		Firer:              a.workflowEngine,
 		Clock:              clk,
-		HealthFlag:         a.healthFlag,
+		HealthFlag:         a.healthLatch,
 		Meter:              observability.Meter(),
 		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
 	})
@@ -619,7 +617,7 @@ func New(cfg Config) *App {
 	mux := http.NewServeMux()
 
 	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
+	internalapi.RegisterHealthRoutes(mux, a.healthLatch)
 
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface:
@@ -768,16 +766,16 @@ func New(cfg Config) *App {
 	// its headers before calling the next handler, so a recovered 500 keeps
 	// them. Recovery re-raises http.ErrAbortHandler, which is how the reverse
 	// proxy reports a client hang-up, so proxied disconnects stay silent.
-	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+	a.handler = middleware.Recovery(a.healthLatch)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
 
 	return a
 }
 
-// latchOnPanic recovers a panic beneath a reaper sweep and latches healthFlag
+// latchOnPanic recovers a panic beneath a reaper sweep and latches healthLatch
 // false, exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
 // process down, and a node that has panicked has state nothing has verified.
@@ -786,13 +784,11 @@ func New(cfg Config) *App {
 // tick; site names the sweep in the log. No plugin currently returns the
 // shapes that would panic (a nil element from ClaimStale, say), so this is
 // hardening rather than a fix for a live defect.
-func latchOnPanic(healthFlag *atomic.Bool, site string) {
+func latchOnPanic(healthLatch *health.Latch, site string) {
 	if rec := recover(); rec != nil {
 		slog.Error("panic recovered in "+site, "pkg", "search",
 			"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
-		if healthFlag != nil {
-			healthFlag.Store(false)
-		}
+		healthLatch.Trip()
 	}
 }
 
@@ -809,7 +805,7 @@ func latchOnPanic(healthFlag *atomic.Bool, site string) {
 // Both run under one context, which stop cancels: a statement still waiting
 // for a connection gives up, and the second pass sends nothing more. stop then
 // waits for both goroutines and for the second pass.
-func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthFlag *atomic.Bool) (stop func()) {
+func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthLatch *health.Latch) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -818,7 +814,7 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 		for {
 			select {
 			case <-ticker.C:
-				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthFlag)
+				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthLatch)
 			case <-ctx.Done():
 				return
 			}
@@ -828,13 +824,13 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 		// Startup sweep: a restarted node reclaims its own released jobs and
 		// any already-stale jobs the moment it can execute, not after the
 		// first interval.
-		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
 		ticker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
 			case <-ctx.Done():
 				return
 			}
@@ -849,8 +845,8 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 
 // reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
 // on SearchReapInterval. Panic-latches health like the other engine-work sites.
-func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search snapshot reaper")
+func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search snapshot reaper")
 	reaped, err := store.ReapExpired(ctx, snapshotTTL)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -866,8 +862,8 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 // this node; the second pass fails those past the attempt cap. Runs on the
 // heartbeat interval — a finer cadence than the snapshot reap — plus once at
 // startup.
-func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search stale-job reaper")
+func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search stale-job reaper")
 	reenqueued, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -909,8 +905,8 @@ func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	// nil only for an App not built by New(); New() always sets the flag.
-	if a.healthFlag != nil && !a.healthFlag.Load() {
+	// A nil latch (an App not built by New()) reads as not tripped.
+	if a.healthLatch != nil && a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
 	return nil

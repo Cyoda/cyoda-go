@@ -5,11 +5,11 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 // Recovery converts a handler panic into a sanitized 500 carrying a ticket
@@ -33,7 +33,7 @@ import (
 // nothing about whether this node's entity state is still correct, so
 // latching would take a healthy node out of service over a broken probe.
 // Same criterion as internal/grpc/recovery.go's per-member goroutines.
-func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
+func Recovery(healthFlag *health.Latch) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
@@ -61,9 +61,7 @@ func Recovery(healthFlag *atomic.Bool) func(http.Handler) http.Handler {
 						"ticket", ticket, "err", err, "stack", stack)
 					appErr := common.Fatal("internal server error", err).WithTicket(ticket)
 					appErr.Detail = "panic recovered; check server logs for details"
-					if healthFlag != nil {
-						healthFlag.Store(false)
-					}
+					healthFlag.Trip()
 					common.WriteError(w, r, appErr)
 				}
 			}()

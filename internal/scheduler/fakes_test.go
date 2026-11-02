@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -338,7 +338,7 @@ func testConfig() Config {
 type harness struct {
 	svc  *Service
 	fs   *fakeStore
-	flag *atomic.Bool
+	flag *health.Latch
 	mem  *memory.StoreFactory
 }
 
@@ -347,8 +347,7 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	mem := memory.NewStoreFactory()
 	t.Cleanup(func() { _ = mem.Close() })
 	fs := &fakeStore{}
-	flag := &atomic.Bool{}
-	flag.Store(true)
+	flag := health.NewLatch()
 	svc := New(cfg, Deps{
 		Store:              testFactory{StoreFactory: mem, sts: fs},
 		TxManager:          mem.NewTransactionManager(common.NewTestUUIDGenerator()),

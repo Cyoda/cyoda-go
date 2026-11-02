@@ -2,7 +2,6 @@ package grpc
 
 import (
 	"net"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -19,6 +18,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
@@ -88,7 +88,7 @@ func NewServer(
 	otelEnabled bool,
 	localGRPCPort int,
 	allowLoopback bool,
-	healthFlag *atomic.Bool,
+	healthFlag *health.Latch,
 	keepAlive KeepAliveConfig,
 	cons *consistency.Service,
 	clockState func() platformclock.State,

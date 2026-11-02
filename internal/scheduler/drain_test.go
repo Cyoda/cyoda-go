@@ -192,7 +192,7 @@ func TestDrain_BookkeepingStopsAtItsShutdownDeadline(t *testing.T) {
 			t.Errorf("RetireOwner calls = %d, want 1", h.fs.retired)
 		}
 	})
-	if !h.flag.Load() {
+	if h.flag.Tripped() {
 		t.Error("an outage latched the node")
 	}
 }
@@ -349,7 +349,7 @@ func TestDrain_ARunWhoseOutcomeTheStoreRejectedIsNotGivenBack(t *testing.T) {
 	})
 	h.start(t)
 	token := receive(t, tokens)
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.flag.Tripped() })
 
 	h.svc.Drain(context.Background())
 	assertKeptAtShutdown(t, h, token)

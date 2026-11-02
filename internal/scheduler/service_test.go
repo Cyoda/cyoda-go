@@ -319,7 +319,7 @@ func TestService_CommittedOutcomesRecordNothing(t *testing.T) {
 			if a, f := len(h.fs.attemptsRecorded()), len(h.fs.failsRecorded()); a+f != 0 {
 				t.Errorf("a %s run wrote %d attempts and %d failures", outcome, a, f)
 			}
-			if !h.flag.Load() {
+			if h.flag.Tripped() {
 				t.Error("a normal run latched the node")
 			}
 		})

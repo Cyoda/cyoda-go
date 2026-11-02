@@ -27,7 +27,7 @@ func TestService_ExternalHealthFlagStopsClaimingButKeepsHeartbeating(t *testing.
 
 	// Simulate a panic recovered elsewhere in the process: only the shared
 	// flag flips, never the scheduler's own s.latched.
-	h.flag.Store(false)
+	h.flag.Trip()
 	baseline := h.fs.claims()
 	beats := h.fs.heartbeatCount()
 	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
@@ -60,7 +60,7 @@ func TestService_ARunInProgressWhenTheFlagIsSetFromOutsideIsNotCancelled(t *test
 	h.start(t)
 	receive(t, started)
 
-	h.flag.Store(false) // an external latch while the run is in flight
+	h.flag.Trip() // an external latch while the run is in flight
 
 	time.Sleep(100 * time.Millisecond)
 	if n := liveRuns(h.svc); n != 1 {
@@ -89,7 +89,7 @@ func TestService_AClaimInFlightWhenTheFlagIsSetFromOutsideIsGivenBackWithoutRunn
 	})
 	h.start(t)
 	eventually(t, "a claim in flight", func() bool { return len(h.fs.claimed()) == 1 })
-	h.flag.Store(false) // an external latch while the claim is in flight
+	h.flag.Trip() // an external latch while the claim is in flight
 	from := len(h.fs.giveBackCalls())
 	close(block)
 
