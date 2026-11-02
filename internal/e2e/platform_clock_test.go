@@ -725,18 +725,31 @@ func newClockSeed(t *testing.T, serve bool) clockSeed {
 // clock control on or off. Every node signs with key, so one token serves all.
 func clockClusterNode(t *testing.T, s *schedDB, key *rsa.PrivateKey, nodeID, seed string, clockOn bool) *callbackHarness {
 	t.Helper()
+	return clusterNode(t, s, key, nodeID, "127.0.0.1:0", []string{seed}, func(cfg *app.Config) {
+		cfg.ClockControlEnabled = clockOn
+	})
+}
+
+// clusterNode is a cluster node on database s whose gossip binds gossipAddr
+// and joins through seeds; with no seeds it starts the cluster alone.
+// configure, when not nil, runs last. Every node signs with key, so one token
+// serves all.
+func clusterNode(t *testing.T, s *schedDB, key *rsa.PrivateKey, nodeID, gossipAddr string, seeds []string, configure func(*app.Config)) *callbackHarness {
+	t.Helper()
 	return newCalloutHarnessWithKey(t, key, func(cfg *app.Config) {
 		t.Setenv("CYODA_POSTGRES_URL", s.url)
 		schedulerTuning(cfg)
-		cfg.ClockControlEnabled = clockOn
 		cfg.Cluster.Enabled = true
 		cfg.Cluster.NodeID = nodeID
 		cfg.Cluster.NodeAddr = fmt.Sprintf("http://127.0.0.1:%d", cfg.HTTPPort)
-		cfg.Cluster.GossipAddr = "127.0.0.1:0"
-		cfg.Cluster.SeedNodes = []string{seed}
+		cfg.Cluster.GossipAddr = gossipAddr
+		cfg.Cluster.SeedNodes = seeds
 		cfg.Cluster.StabilityWindow = 0
 		cfg.Cluster.HMACSecret = clusterHMACSecret32
 		cfg.Cluster.DispatchAllowLoopback = true
+		if configure != nil {
+			configure(cfg)
+		}
 	})
 }
 
