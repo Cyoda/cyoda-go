@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math"
 	"sort"
 	"sync"
@@ -1012,6 +1014,63 @@ func TestMove_StepNotConfirmed_StopsThere(t *testing.T) {
 	defer f.sched.mu.Unlock()
 	if f.sched.polls != polls {
 		t.Fatalf("scheduler polled %d times after the failed confirm (%d before)", f.sched.polls-polls, polls)
+	}
+}
+
+// msgLog records the messages of the log records it handles.
+type msgLog struct {
+	slog.Handler
+	mu   sync.Mutex
+	msgs []string
+}
+
+func (m *msgLog) Enabled(context.Context, slog.Level) bool { return true }
+func (m *msgLog) Handle(_ context.Context, r slog.Record) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.msgs = append(m.msgs, r.Message)
+	return nil
+}
+
+func (m *msgLog) count(msg string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, s := range m.msgs {
+		if s == msg {
+			n++
+		}
+	}
+	return n
+}
+
+// A move that fails to confirm logs where it stopped, whether the failed
+// confirmation is a step's or the move's final setting.
+func TestMove_NotConfirmed_LogsStopped(t *testing.T) {
+	cases := map[string]bool{"step": true, "final": false}
+	for name, withStep := range cases {
+		t.Run(name, func(t *testing.T) {
+			ml := &msgLog{Handler: slog.NewTextHandler(io.Discard, nil)}
+			prev := slog.Default()
+			slog.SetDefault(slog.New(ml))
+			defer slog.SetDefault(prev)
+
+			f := newFixture(t)
+			base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+			h1, target := base.Add(time.Hour), base.Add(2*time.Hour)
+			if withStep {
+				f.sched.due = []time.Time{h1}
+			}
+			f.conf.failAt = 1
+			f.conf.failErr = &NotConfirmedError{Nodes: []string{"a"}}
+			_, err := f.svc.Change(context.Background(), Change{At: &target})
+			if !errors.As(err, new(*NotConfirmedError)) {
+				t.Fatalf("err = %v, want *NotConfirmedError", err)
+			}
+			if n := ml.count("platform clock move stopped"); n != 1 {
+				t.Fatalf("%d \"platform clock move stopped\" lines, want 1", n)
+			}
+		})
 	}
 }
 

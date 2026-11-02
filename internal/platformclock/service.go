@@ -245,7 +245,11 @@ func (s *Service) move(reqCtx context.Context, target time.Time, rate *int64) ([
 			if !ok {
 				st = s.c.set(nil, rate)
 			}
-			return s.commit(ctx, st)
+			nodes, err := s.commit(ctx, st)
+			if err != nil {
+				return stopped(err)
+			}
+			return nodes, nil
 		}
 		if st, ok := s.c.setForward(e, nil); ok {
 			if _, err := s.commit(ctx, st); err != nil {
