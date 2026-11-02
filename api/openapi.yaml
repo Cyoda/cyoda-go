@@ -318,6 +318,10 @@ tags:
     description: >-
       Read the platform clock and, on a node started with clock control
       enabled, change it. A test feature.
+  - name: Platform Cluster
+    description: >-
+      Read the status of the cluster's nodes, and whether the cluster is
+      operational.
 paths:
   /account:
     get:
@@ -1127,6 +1131,92 @@ paths:
             application/problem+json:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
+        default:
+          $ref: '#/components/responses/InternalServerError'
+  /platform/cluster:
+    get:
+      tags:
+        - Platform Cluster
+      summary: Get the cluster status
+      description: >-
+        Lists every member of the cluster directory, this node included, with
+        its reachability and lifecycle state and, for a member that answered,
+        its database check, version and clock setting, and says whether the
+        cluster is operational. The node that serves the request asks every
+        member, itself included, for its status over the peer channel; each
+        ask is bounded by `CYODA_PROXY_TIMEOUT`. A member that does not answer
+        is `DOWN`, with the state its gossip metadata names. Without
+        clustering (`CYODA_CLUSTER_ENABLED=false`) the one member is `local`.
+
+
+        `operational` is true only when every node is `UP` and `NORMAL` with
+        its database check passing, all nodes have the same version and the
+        same clock setting, and, with `waitForNodes`, at least that many nodes
+        are `UP` and `NORMAL`. The answer is 200 when it is true and 503 when
+        it is false, with the same body.
+
+
+        **Authorization Required:** platform operator — `ROLE_ADMIN` in the tenant `PLATFORM`.
+      operationId: getPlatformCluster
+      parameters:
+        - name: waitForNodes
+          in: query
+          description: >-
+            Answer once at least this many nodes are `UP` and `NORMAL`, or at
+            `timeoutMs`, with the last completed round. Absent, the answer
+            follows one round. 1 to 1000.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 1000
+        - name: timeoutMs
+          in: query
+          description: >-
+            The longest wait for `waitForNodes`, in milliseconds; the answer
+            comes at the later of this and the end of the first round. 1 to
+            600000. Only together with `waitForNodes`; alone it is refused
+            with 400.
+          required: false
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 600000
+            default: 30000
+      responses:
+        "200":
+          description: The cluster is operational.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterStatusDto"
+        "400":
+          description: >-
+            Bad request. `properties.errorCode` is BAD_REQUEST, and
+            `properties.parameter` names the parameter, except for a query
+            string that does not parse: a query string that does not parse; a
+            query parameter the operation does not declare; a parameter given
+            more than once; a value that is not an integer or is outside the
+            32-bit range; `waitForNodes` outside 1 to 1000; `timeoutMs`
+            outside 1 to 600000; `timeoutMs` without `waitForNodes`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: "#/components/schemas/ProblemDetail"
+        "401":
+          $ref: '#/components/responses/Unauthorized'
+        "403":
+          $ref: '#/components/responses/Forbidden'
+        "503":
+          description: >-
+            The cluster is not operational. The body is the same status as
+            the 200's, not a problem: it carries no ticket and no detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClusterStatusDto"
         default:
           $ref: '#/components/responses/InternalServerError'
   /entity/stats:
@@ -11224,6 +11314,118 @@ components:
           description: >-
             The ids of every node that holds the new setting, this node
             included, in ascending order; `["local"]` without clustering (`CYODA_CLUSTER_ENABLED=false`).
+    ClusterStatusDto:
+      type: object
+      required:
+        - operational
+        - counts
+        - nodes
+      properties:
+        operational:
+          type: boolean
+          description: >-
+            True only when every node is `UP` and `NORMAL` with `database`
+            true, all nodes have the same `version` and the same `clock`, and,
+            with `waitForNodes`, at least that many nodes are `UP` and
+            `NORMAL`.
+        counts:
+          type: array
+          description: >-
+            One item per combination of reachability and state present among
+            the nodes, with its count: `UP` before `DOWN`, then in the order
+            `STARTING`, `NORMAL`, `DRAINING`, `UNHEALTHY`, with the item
+            without a state last. A combination no node has is absent.
+          items:
+            $ref: "#/components/schemas/ClusterStateCountDto"
+        nodes:
+          type: array
+          description: One item per member of the cluster directory, in ascending `id` order.
+          items:
+            $ref: "#/components/schemas/ClusterNodeStatusDto"
+    ClusterStateCountDto:
+      type: object
+      required:
+        - reachability
+        - count
+      properties:
+        reachability:
+          type: string
+          enum:
+            - UP
+            - DOWN
+          description: Whether the nodes counted answered.
+        state:
+          type: string
+          enum:
+            - STARTING
+            - NORMAL
+            - DRAINING
+            - UNHEALTHY
+          description: The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+          description: How many nodes have this reachability and state.
+    ClusterNodeStatusDto:
+      type: object
+      required:
+        - id
+        - reachability
+      properties:
+        id:
+          type: string
+          description: The node's id; `local` without clustering.
+        reachability:
+          type: string
+          enum:
+            - UP
+            - DOWN
+          description: >-
+            `UP` when the node answered the status ask; `DOWN` when it did
+            not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did
+            not open, an answer that did not validate, or no usable address.
+        state:
+          type: string
+          enum:
+            - STARTING
+            - NORMAL
+            - DRAINING
+            - UNHEALTHY
+          description: >-
+            The node's lifecycle state: from its answer when `UP`, from its
+            gossip metadata when `DOWN`. Absent for a `DOWN` node whose
+            metadata does not parse.
+        database:
+          type: boolean
+          description: Whether the node's database check passed. Only when `UP`.
+        version:
+          type: string
+          description: The node's build version. Only when `UP`.
+        clock:
+          $ref: "#/components/schemas/ClusterNodeClockDto"
+    ClusterNodeClockDto:
+      type: object
+      description: >-
+        The node's platform clock setting, without its times. Only when the
+        node is `UP`. A node without clock control answers `controllable`
+        false, `version` 0 and `writer` empty.
+      required:
+        - controllable
+        - version
+        - writer
+      properties:
+        controllable:
+          type: boolean
+          description: Whether clock control is on at the node.
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The version of the node's clock setting.
+        writer:
+          type: string
+          description: The id of the node that wrote the setting.
     PlatformClockChangeDto:
       type: object
       properties:

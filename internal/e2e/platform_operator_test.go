@@ -26,6 +26,7 @@ func operatorEndpoints() []struct{ name, method, path, body string } {
 		{"set log-level", http.MethodPost, "/admin/log-level", `{"level":"info"}`},
 		{"get trace-sampler", http.MethodGet, "/admin/trace-sampler", ""},
 		{"set trace-sampler", http.MethodPost, "/admin/trace-sampler", `{"sampler":"always"}`},
+		{"get cluster", http.MethodGet, "/platform/cluster", ""},
 	}
 }
 

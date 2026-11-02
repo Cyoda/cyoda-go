@@ -18,11 +18,11 @@ import (
 
 // routeClassificationAllowList is a literal copy of the design's allow-list:
 // the operations guarded by the admin rule (clients, trusted keys) or the
-// operator rule (key pairs, POST /platform/clock), and the ones decided by no
-// role rule (GET /account, GET /platform/clock).
+// operator rule (key pairs, POST /platform/clock, GET /platform/cluster), and
+// the ones decided by no role rule (GET /account, GET /platform/clock).
 var routeClassificationAllowList = []string{
 	"GET /account",
-	"GET /platform/clock", "POST /platform/clock",
+	"GET /platform/clock", "POST /platform/clock", "GET /platform/cluster",
 	"GET /clients", "POST /clients",
 	"DELETE /clients/{clientId}", "PUT /clients/{clientId}/secret",
 	"GET /oauth/keys/trusted", "POST /oauth/keys/trusted",

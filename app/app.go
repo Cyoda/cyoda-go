@@ -30,6 +30,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
@@ -628,6 +629,21 @@ func New(cfg Config) *App {
 		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
 	}
 
+	// The cluster status read. This node's own status is its lifecycle state,
+	// its store's Ping (bounded by half of CYODA_PROXY_TIMEOUT), its version
+	// and its clock setting. In cluster mode every member of the gossip
+	// directory, this node included, is asked over the sealed peer channel,
+	// each ask bounded by CYODA_PROXY_TIMEOUT; without clustering the one
+	// member, local, is read in process.
+	statusSelf := clusterstatus.NewSelf(a.lifecycle, a.storeFactory, cfg.Version, statusClock(testClock), cfg.Cluster.ProxyTimeout)
+	var statusSvc *clusterstatus.Service
+	if cfg.Cluster.Enabled {
+		statusSvc = clusterstatus.NewService(gossipDirectory{g: gossipReg}, forwarder, cfg.Cluster.ProxyTimeout)
+	} else {
+		statusSvc = clusterstatus.NewService(clusterstatus.LocalDirectory(a.lifecycle), clusterstatus.InProcess(statusSelf), cfg.Cluster.ProxyTimeout)
+	}
+	server.PlatformCluster = clusterstatus.NewHandler(statusSvc, operatorGuard)
+
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
@@ -752,13 +768,14 @@ func New(cfg Config) *App {
 	// (OSS base merged with any plugin-registered overlays).
 	internalapi.RegisterHelpRoutes(rootMux, help.BuildTree(), contextPath, cfg.Version)
 	// Internal dispatch routes at root, not under the context path, sealed by
-	// the peer channel: the callout hand-over and the platform clock push. The
-	// clock route is served whether clock control is on or off: with it off
-	// (testClock nil) every push is refused, so a change fails on that node
-	// rather than passing it by.
+	// the peer channel: the callout hand-over, the platform clock push and the
+	// status ask. The clock route is served whether clock control is on or
+	// off: with it off (testClock nil) every push is refused, so a change
+	// fails on that node rather than passing it by.
 	if cfg.Cluster.Enabled {
 		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
 		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
+		clusterdispatch.NewStatusHandler(peerAuth, statusSelf).Register(rootMux)
 	}
 	a.handler = rootMux
 

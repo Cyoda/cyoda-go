@@ -150,7 +150,10 @@ func (s *Service) roundBefore(ctx context.Context, deadline time.Time) (entries 
 
 // round lists the members and asks each one with an address for its status,
 // all in parallel. A member that does not answer is DOWN with its directory
-// state. The only error is ClientGone, when ctx ends during the round.
+// state. The only error is ClientGone, when ctx ends during the round: the
+// caller's departure when ctx is the caller's. A round roundBefore runs under
+// the wait's deadline ends the same way when the deadline cuts it, and
+// roundBefore discards that error.
 func (s *Service) round(ctx context.Context) ([]Entry, error) {
 	members := s.dir.Members()
 	entries := make([]Entry, len(members))

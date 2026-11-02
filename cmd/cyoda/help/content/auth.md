@@ -57,11 +57,11 @@ All cyoda APIs accept the JWT via `Authorization: Bearer <token>`. The token cla
 
 `POST /api/tenants/{tenant}/oauth/token`, `GET /api/.well-known/jwks.json`, the health summary `GET /api/health` and the gRPC health probe `/grpc.health.v1.Health/Check` take no bearer token at all (the token endpoint authenticates the client with HTTP Basic). Every other HTTP operation and every other gRPC call requires `ROLE_M2M` in the token's roles, except:
 
-- `GET /account`;
+- `GET /account` and `GET /platform/clock`;
 - the client and trusted-key operations (`/clients*`, `/oauth/keys/trusted*`), which require `ROLE_ADMIN`;
-- the key-pair operations (`/oauth/keys/keypair*`) and `/admin/*`, which require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`).
+- the key-pair operations (`/oauth/keys/keypair*`), `POST /platform/clock`, `GET /platform/cluster` and `/admin/*`, which require a platform operator (`ROLE_ADMIN` in the tenant `PLATFORM`).
 
-A token without `ROLE_M2M` gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") or gRPC `PermissionDenied` before the operation runs. Every M2M client holds `ROLE_M2M`, so its tokens reach data. There is no finer split: a client's own token with `ROLE_M2M` reaches every data operation of its tenant, model and workflow import included, and can open a compute-node stream with any tags; the only other distinctions are `ROLE_ADMIN` and the on-behalf-of permission. A token from the token exchange never administers: the client, trusted-key, key-pair and `/admin/*` operations answer it `403 FORBIDDEN` whatever its roles. A token from `cyoda token` carries the roles it was signed with: sign it with `--roles ROLE_ADMIN,ROLE_M2M` to reach data (see `cli.token`). In mock mode the principal's roles are `CYODA_IAM_MOCK_ROLES`, `ROLE_ADMIN,ROLE_M2M` by default.
+A token without `ROLE_M2M` gets `403 FORBIDDEN` ("this operation requires ROLE_M2M") or gRPC `PermissionDenied` before the operation runs. Every M2M client holds `ROLE_M2M`, so its tokens reach data. There is no finer split: a client's own token with `ROLE_M2M` reaches every data operation of its tenant, model and workflow import included, and can open a compute-node stream with any tags; the only other distinctions are `ROLE_ADMIN` and the on-behalf-of permission. A token from the token exchange never administers: the client, trusted-key, key-pair, `POST /platform/clock`, `GET /platform/cluster` and `/admin/*` operations answer it `403 FORBIDDEN` whatever its roles. A token from `cyoda token` carries the roles it was signed with: sign it with `--roles ROLE_ADMIN,ROLE_M2M` to reach data (see `cli.token`). In mock mode the principal's roles are `CYODA_IAM_MOCK_ROLES`, `ROLE_ADMIN,ROLE_M2M` by default.
 
 ## SEE ALSO
 

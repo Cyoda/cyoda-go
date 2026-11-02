@@ -127,6 +127,90 @@ func (e CancelAsyncSearchDtoCurrentSearchJobStatus) Valid() bool {
 	}
 }
 
+// Defines values for ClusterNodeStatusDtoReachability.
+const (
+	ClusterNodeStatusDtoReachabilityDOWN ClusterNodeStatusDtoReachability = "DOWN"
+	ClusterNodeStatusDtoReachabilityUP   ClusterNodeStatusDtoReachability = "UP"
+)
+
+// Valid indicates whether the value is a known member of the ClusterNodeStatusDtoReachability enum.
+func (e ClusterNodeStatusDtoReachability) Valid() bool {
+	switch e {
+	case ClusterNodeStatusDtoReachabilityDOWN:
+		return true
+	case ClusterNodeStatusDtoReachabilityUP:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClusterNodeStatusDtoState.
+const (
+	ClusterNodeStatusDtoStateDRAINING  ClusterNodeStatusDtoState = "DRAINING"
+	ClusterNodeStatusDtoStateNORMAL    ClusterNodeStatusDtoState = "NORMAL"
+	ClusterNodeStatusDtoStateSTARTING  ClusterNodeStatusDtoState = "STARTING"
+	ClusterNodeStatusDtoStateUNHEALTHY ClusterNodeStatusDtoState = "UNHEALTHY"
+)
+
+// Valid indicates whether the value is a known member of the ClusterNodeStatusDtoState enum.
+func (e ClusterNodeStatusDtoState) Valid() bool {
+	switch e {
+	case ClusterNodeStatusDtoStateDRAINING:
+		return true
+	case ClusterNodeStatusDtoStateNORMAL:
+		return true
+	case ClusterNodeStatusDtoStateSTARTING:
+		return true
+	case ClusterNodeStatusDtoStateUNHEALTHY:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClusterStateCountDtoReachability.
+const (
+	ClusterStateCountDtoReachabilityDOWN ClusterStateCountDtoReachability = "DOWN"
+	ClusterStateCountDtoReachabilityUP   ClusterStateCountDtoReachability = "UP"
+)
+
+// Valid indicates whether the value is a known member of the ClusterStateCountDtoReachability enum.
+func (e ClusterStateCountDtoReachability) Valid() bool {
+	switch e {
+	case ClusterStateCountDtoReachabilityDOWN:
+		return true
+	case ClusterStateCountDtoReachabilityUP:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ClusterStateCountDtoState.
+const (
+	ClusterStateCountDtoStateDRAINING  ClusterStateCountDtoState = "DRAINING"
+	ClusterStateCountDtoStateNORMAL    ClusterStateCountDtoState = "NORMAL"
+	ClusterStateCountDtoStateSTARTING  ClusterStateCountDtoState = "STARTING"
+	ClusterStateCountDtoStateUNHEALTHY ClusterStateCountDtoState = "UNHEALTHY"
+)
+
+// Valid indicates whether the value is a known member of the ClusterStateCountDtoState enum.
+func (e ClusterStateCountDtoState) Valid() bool {
+	switch e {
+	case ClusterStateCountDtoStateDRAINING:
+		return true
+	case ClusterStateCountDtoStateNORMAL:
+		return true
+	case ClusterStateCountDtoStateSTARTING:
+		return true
+	case ClusterStateCountDtoStateUNHEALTHY:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for EntityChangeMetaChangeType.
 const (
 	CREATE EntityChangeMetaChangeType = "CREATE"
@@ -815,6 +899,75 @@ type CancelAsyncSearchDto struct {
 
 // CancelAsyncSearchDtoCurrentSearchJobStatus defines model for CancelAsyncSearchDto.CurrentSearchJobStatus.
 type CancelAsyncSearchDtoCurrentSearchJobStatus string
+
+// ClusterNodeClockDto The node's platform clock setting, without its times. Only when the node is `UP`. A node without clock control answers `controllable` false, `version` 0 and `writer` empty.
+type ClusterNodeClockDto struct {
+	// Controllable Whether clock control is on at the node.
+	Controllable bool `json:"controllable"`
+
+	// Version The version of the node's clock setting.
+	Version int64 `json:"version"`
+
+	// Writer The id of the node that wrote the setting.
+	Writer string `json:"writer"`
+}
+
+// ClusterNodeStatusDto defines model for ClusterNodeStatusDto.
+type ClusterNodeStatusDto struct {
+	// Clock The node's platform clock setting, without its times. Only when the node is `UP`. A node without clock control answers `controllable` false, `version` 0 and `writer` empty.
+	Clock *ClusterNodeClockDto `json:"clock,omitempty"`
+
+	// Database Whether the node's database check passed. Only when `UP`.
+	Database *bool `json:"database,omitempty"`
+
+	// Id The node's id; `local` without clustering.
+	Id string `json:"id"`
+
+	// Reachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
+	Reachability ClusterNodeStatusDtoReachability `json:"reachability"`
+
+	// State The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse.
+	State *ClusterNodeStatusDtoState `json:"state,omitempty"`
+
+	// Version The node's build version. Only when `UP`.
+	Version *string `json:"version,omitempty"`
+}
+
+// ClusterNodeStatusDtoReachability `UP` when the node answered the status ask; `DOWN` when it did not: no answer within `CYODA_PROXY_TIMEOUT`, a connection that did not open, an answer that did not validate, or no usable address.
+type ClusterNodeStatusDtoReachability string
+
+// ClusterNodeStatusDtoState The node's lifecycle state: from its answer when `UP`, from its gossip metadata when `DOWN`. Absent for a `DOWN` node whose metadata does not parse.
+type ClusterNodeStatusDtoState string
+
+// ClusterStateCountDto defines model for ClusterStateCountDto.
+type ClusterStateCountDto struct {
+	// Count How many nodes have this reachability and state.
+	Count int32 `json:"count"`
+
+	// Reachability Whether the nodes counted answered.
+	Reachability ClusterStateCountDtoReachability `json:"reachability"`
+
+	// State The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+	State *ClusterStateCountDtoState `json:"state,omitempty"`
+}
+
+// ClusterStateCountDtoReachability Whether the nodes counted answered.
+type ClusterStateCountDtoReachability string
+
+// ClusterStateCountDtoState The lifecycle state of the nodes counted; absent for `DOWN` nodes whose gossip metadata does not parse.
+type ClusterStateCountDtoState string
+
+// ClusterStatusDto defines model for ClusterStatusDto.
+type ClusterStatusDto struct {
+	// Counts One item per combination of reachability and state present among the nodes, with its count: `UP` before `DOWN`, then in the order `STARTING`, `NORMAL`, `DRAINING`, `UNHEALTHY`, with the item without a state last. A combination no node has is absent.
+	Counts []ClusterStateCountDto `json:"counts"`
+
+	// Nodes One item per member of the cluster directory, in ascending `id` order.
+	Nodes []ClusterNodeStatusDto `json:"nodes"`
+
+	// Operational True only when every node is `UP` and `NORMAL` with `database` true, all nodes have the same `version` and the same `clock`, and, with `waitForNodes`, at least that many nodes are `UP` and `NORMAL`.
+	Operational bool `json:"operational"`
+}
 
 // ConsistencyTimeDto defines model for ConsistencyTimeDto.
 type ConsistencyTimeDto struct {
@@ -2693,6 +2846,15 @@ type FetchEntityTransitionsParams struct {
 	XTxToken *TxToken `json:"X-Tx-Token,omitempty"`
 }
 
+// GetPlatformClusterParams defines parameters for GetPlatformCluster.
+type GetPlatformClusterParams struct {
+	// WaitForNodes Answer once at least this many nodes are `UP` and `NORMAL`, or at `timeoutMs`, with the last completed round. Absent, the answer follows one round. 1 to 1000.
+	WaitForNodes *int32 `form:"waitForNodes,omitempty" json:"waitForNodes,omitempty"`
+
+	// TimeoutMs The longest wait for `waitForNodes`, in milliseconds; the answer comes at the later of this and the end of the first round. 1 to 600000. Only together with `waitForNodes`; alone it is refused with 400.
+	TimeoutMs *int32 `form:"timeoutMs,omitempty" json:"timeoutMs,omitempty"`
+}
+
 // ListScheduledTasksParams defines parameters for ListScheduledTasks.
 type ListScheduledTasksParams struct {
 	// Status Return tasks in any of these statuses. Repeat the parameter for several. Any other value is rejected with 400.
@@ -3158,6 +3320,9 @@ type ServerInterface interface {
 	// Change the platform clock
 	// (POST /platform/clock)
 	ChangePlatformClock(w http.ResponseWriter, r *http.Request)
+	// Get the cluster status
+	// (GET /platform/cluster)
+	GetPlatformCluster(w http.ResponseWriter, r *http.Request, params GetPlatformClusterParams)
 	// List the tenant's scheduled tasks
 	// (GET /scheduled-tasks)
 	ListScheduledTasks(w http.ResponseWriter, r *http.Request, params ListScheduledTasksParams)
@@ -6378,6 +6543,58 @@ func (siw *ServerInterfaceWrapper) ChangePlatformClock(w http.ResponseWriter, r 
 	handler.ServeHTTP(w, r)
 }
 
+// GetPlatformCluster operation middleware
+func (siw *ServerInterfaceWrapper) GetPlatformCluster(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetPlatformClusterParams
+
+	// ------------- Optional query parameter "waitForNodes" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "waitForNodes", r.URL.Query(), &params.WaitForNodes, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "waitForNodes"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "waitForNodes", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "timeoutMs" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "timeoutMs", r.URL.Query(), &params.TimeoutMs, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "timeoutMs"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "timeoutMs", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetPlatformCluster(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // ListScheduledTasks operation middleware
 func (siw *ServerInterfaceWrapper) ListScheduledTasks(w http.ResponseWriter, r *http.Request) {
 
@@ -7128,6 +7345,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform-api/entity/fetch/transitions", wrapper.FetchEntityTransitions)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform/clock", wrapper.GetPlatformClock)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/platform/clock", wrapper.ChangePlatformClock)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/platform/cluster", wrapper.GetPlatformCluster)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/scheduled-tasks", wrapper.ListScheduledTasks)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/search/async/{entityName}/{modelVersion}", wrapper.SubmitAsyncSearchJob)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/search/async/{jobId}", wrapper.GetAsyncSearchResults)
