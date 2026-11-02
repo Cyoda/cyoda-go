@@ -33,7 +33,7 @@ func TestGossip_StateExchangeOnJoin(t *testing.T) {
 		func(context.Context) (spi.ScheduledTaskStore, error) {
 			return nil, errors.New("a rate change does not read the scheduled tasks")
 		},
-		func(platformclock.Setting) {}, time.Second)
+		platformclock.SingleNode("st-1"), time.Second)
 	rate := int64(2_000_000)
 	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
 		t.Fatal(err)

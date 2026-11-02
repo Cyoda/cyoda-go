@@ -1320,6 +1320,21 @@ type PlatformClockChangeDto struct {
 	Time *time.Time `json:"time,omitempty"`
 }
 
+// PlatformClockChangeResultDto defines model for PlatformClockChangeResultDto.
+type PlatformClockChangeResultDto struct {
+	// Controllable Whether this node accepts changes to the clock.
+	Controllable bool `json:"controllable"`
+
+	// Nodes The ids of every node that holds the new setting, this node included, in ascending order; `["local"]` on a single node.
+	Nodes []string `json:"nodes"`
+
+	// Now This node's platform time.
+	Now time.Time `json:"now"`
+
+	// Rate Platform seconds per real second; 1 without clock control.
+	Rate float32 `json:"rate"`
+}
+
 // PlatformClockDto defines model for PlatformClockDto.
 type PlatformClockDto struct {
 	// Controllable Whether this node accepts changes to the clock.

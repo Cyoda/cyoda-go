@@ -18,6 +18,7 @@ import (
 type fakeController struct {
 	now   time.Time
 	rate  int64
+	nodes []string
 	err   error
 	calls []platformclock.Change
 }
@@ -26,9 +27,9 @@ func (f *fakeController) State() platformclock.State {
 	return platformclock.State{Now: f.now, RatePPM: f.rate, Controllable: true}
 }
 
-func (f *fakeController) Change(_ context.Context, ch platformclock.Change) (platformclock.State, error) {
+func (f *fakeController) Change(_ context.Context, ch platformclock.Change) (platformclock.ChangeResult, error) {
 	f.calls = append(f.calls, ch)
-	return f.State(), f.err
+	return platformclock.ChangeResult{State: f.State(), Nodes: f.nodes}, f.err
 }
 
 type storeDown struct{}
@@ -312,5 +313,30 @@ func TestHandler_503_NotConfirmed(t *testing.T) {
 	props, _ := body["properties"].(map[string]any)
 	if r, _ := props["retryable"].(bool); r {
 		t.Fatalf("marked retryable: %s", rec.Body.String())
+	}
+}
+
+// A 200 answers the clock after the change and the nodes that hold it.
+func TestHandler_Post_200_ListsNodes(t *testing.T) {
+	f := newFake()
+	f.rate = 2_000_000
+	f.nodes = []string{"node-a", "node-b"}
+	h := platformclock.NewHandler(f, auth.MockOperatorGuard(), true)
+	rec := httptest.NewRecorder()
+	h.ChangePlatformClock(rec, operatorReq(http.MethodPost, `{"rate":2}`))
+	var got struct {
+		Now          time.Time `json:"now"`
+		Rate         float64   `json:"rate"`
+		Controllable bool      `json:"controllable"`
+		Nodes        []string  `json:"nodes"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	if !got.Now.Equal(f.now) || got.Rate != 2 || !got.Controllable {
+		t.Fatalf("%+v", got)
+	}
+	if len(got.Nodes) != 2 || got.Nodes[0] != "node-a" || got.Nodes[1] != "node-b" {
+		t.Fatalf("nodes = %v, want [node-a node-b]", got.Nodes)
 	}
 }

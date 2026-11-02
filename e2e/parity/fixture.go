@@ -63,9 +63,10 @@ type BackendFixture interface {
 // the fixture's server. Like ComputeClientFixture it is not part of
 // BackendFixture: a scenario that needs it skips on a fixture without it.
 type FreshStackFixture interface {
-	// NewFreshStack starts a stack with no compute client, on a store no
-	// other stack uses, with CYODA_CLOCK_CONTROL_ENABLED=true and env set
-	// on top of the fixture's own settings. The fixture stops it with
+	// NewFreshStack starts a single-node stack (cluster mode off) with no
+	// compute client, on a store no other stack uses, with
+	// CYODA_CLOCK_CONTROL_ENABLED=true and env set on top of the fixture's
+	// own settings. The fixture stops it with
 	// t.Cleanup. It t.Fatals on failure.
 	NewFreshStack(t *testing.T, env map[string]string) FreshStack
 }

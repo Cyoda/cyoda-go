@@ -592,15 +592,20 @@ func New(cfg Config) *App {
 
 	// The platform clock API. With clock control on, POST /platform/clock
 	// changes the test clock: a move polls the store's scheduled tasks, and
-	// in cluster mode each new setting is broadcast to the peers.
+	// each new setting is confirmed before the change goes on.
 	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
 	if testClock != nil {
-		publish := func(platformclock.Setting) {}
+		confirm := platformclock.SingleNode(a.selfNodeID)
 		if gossipReg != nil {
-			publish = func(s platformclock.Setting) { platformclock.Publish(gossipReg, s) }
+			// Until the peers confirm over the peer channel, the setting is
+			// broadcast and only this node is known to hold it.
+			confirm = func(_ context.Context, s platformclock.Setting) ([]string, error) {
+				platformclock.Publish(gossipReg, s)
+				return []string{a.selfNodeID}, nil
+			}
 		}
 		clockSvc := platformclock.NewService(testClock, platformConsistencyTime(a.transactionManager), a.storeFactory.ScheduledTaskStore,
-			publish, 100*time.Millisecond)
+			confirm, 100*time.Millisecond)
 		clockState = clockSvc.State
 		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
 	} else {

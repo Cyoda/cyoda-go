@@ -100,24 +100,42 @@ func (f *fakeStoreTime) storeTime(context.Context) (time.Time, error) {
 	return f.answer(), nil
 }
 
-type publishLog struct {
-	mu   sync.Mutex
-	sets []Setting
-	hook func(Setting)
+// confirmLog is a Confirm that records every setting it is given.
+type confirmLog struct {
+	mu      sync.Mutex
+	sets    []Setting
+	hook    func(Setting)
+	failAt  int // the 1-based call that returns failErr; 0 never fails
+	failErr error
+	nodes   []string // the answer; ["n1"] when nil
 }
 
-func (p *publishLog) publish(s Setting) {
-	func() {
+func (p *confirmLog) confirm(_ context.Context, s Setting) ([]string, error) {
+	n := func() int {
 		p.mu.Lock()
 		defer p.mu.Unlock()
 		p.sets = append(p.sets, s)
+		return len(p.sets)
 	}()
 	if p.hook != nil {
 		p.hook(s)
 	}
+	if p.failAt > 0 && n == p.failAt {
+		return nil, p.failErr
+	}
+	if p.nodes == nil {
+		return []string{"n1"}, nil
+	}
+	return p.nodes, nil
 }
 
-func (p *publishLog) starts() []time.Time {
+func (p *confirmLog) confirmed() []Setting {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]Setting(nil), p.sets...)
+}
+
+func (p *confirmLog) starts() []time.Time {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	out := make([]time.Time, len(p.sets))
@@ -132,7 +150,7 @@ type fixture struct {
 	clock *Test
 	sched *fakeScheduler
 	tm    *fakeStoreTime
-	pub   *publishLog
+	conf  *confirmLog
 	svc   *Service
 	t0    time.Time // platform time at fixture creation
 }
@@ -146,7 +164,7 @@ func newFixture(t *testing.T) *fixture {
 		clock: c,
 		sched: &fakeScheduler{clock: c, fire: true},
 		tm:    &fakeStoreTime{answer: func() time.Time { return time.UnixMicro(0) }},
-		pub:   &publishLog{},
+		conf:  &confirmLog{},
 		t0:    c.Now(),
 	}
 	f.svc = NewService(c, f.tm.storeTime,
@@ -156,7 +174,7 @@ func newFixture(t *testing.T) *fixture {
 			}
 			return f.sched, nil
 		},
-		f.pub.publish, testPoll)
+		f.conf.confirm, testPoll)
 	return f
 }
 
@@ -180,13 +198,13 @@ func TestNewService_NilCollaboratorPanics(t *testing.T) {
 	c := NewTest("n1", newFakeSrc().now)
 	storeTime := (&fakeStoreTime{}).storeTime
 	tasks := func(context.Context) (spi.ScheduledTaskStore, error) { return nil, nil }
-	publish := (&publishLog{}).publish
+	confirm := (&confirmLog{}).confirm
 	tests := map[string]func(){
-		"a nil clock":      func() { NewService(nil, storeTime, tasks, publish, testPoll) },
-		"a nil store time": func() { NewService(c, nil, tasks, publish, testPoll) },
-		"nil tasks":        func() { NewService(c, storeTime, nil, publish, testPoll) },
-		"a nil publish":    func() { NewService(c, storeTime, tasks, nil, testPoll) },
-		"a zero poll":      func() { NewService(c, storeTime, tasks, publish, 0) },
+		"a nil clock":      func() { NewService(nil, storeTime, tasks, confirm, testPoll) },
+		"a nil store time": func() { NewService(c, nil, tasks, confirm, testPoll) },
+		"nil tasks":        func() { NewService(c, storeTime, nil, confirm, testPoll) },
+		"a nil confirm":    func() { NewService(c, storeTime, tasks, nil, testPoll) },
+		"a zero poll":      func() { NewService(c, storeTime, tasks, confirm, 0) },
 	}
 	for name, build := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -203,15 +221,15 @@ func TestNewService_NilCollaboratorPanics(t *testing.T) {
 func TestMove_NoTasks_SetsTargetImmediately(t *testing.T) {
 	f := newFixture(t)
 	target := f.t0.Add(4 * time.Hour).Truncate(time.Millisecond)
-	st, err := f.svc.Change(context.Background(), Change{At: &target})
+	res, err := f.svc.Change(context.Background(), Change{At: &target})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{target}) {
-		t.Fatalf("published starts = %v, want [%v]", got, target)
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{target}) {
+		t.Fatalf("confirmed starts = %v, want [%v]", got, target)
 	}
-	if !st.Now.Equal(target) || !st.Controllable || st.RatePPM != 1_000_000 {
-		t.Fatalf("state = %+v", st)
+	if !res.State.Now.Equal(target) || !res.State.Controllable || res.State.RatePPM != 1_000_000 {
+		t.Fatalf("state = %+v", res.State)
 	}
 }
 
@@ -221,8 +239,8 @@ func TestMove_AdvanceBy_TargetsNowPlusDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{f.t0.Add(2 * time.Hour)}) {
-		t.Fatalf("published starts = %v", got)
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{f.t0.Add(2 * time.Hour)}) {
+		t.Fatalf("confirmed starts = %v", got)
 	}
 }
 
@@ -242,8 +260,8 @@ func TestMove_StepsThroughDueTimesInOrder(t *testing.T) {
 		t.Fatalf("Change: %v", err)
 	}
 	want := []time.Time{h1, h2, h3, target}
-	if got := f.pub.starts(); !sameTimes(got, want) {
-		t.Fatalf("published starts = %v, want %v", got, want)
+	if got := f.conf.starts(); !sameTimes(got, want) {
+		t.Fatalf("confirmed starts = %v, want %v", got, want)
 	}
 }
 
@@ -252,19 +270,19 @@ func TestMove_RateAppliedAtEnd(t *testing.T) {
 	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
 	h1, target := base.Add(time.Hour), base.Add(2*time.Hour)
 	f.sched.due = []time.Time{h1}
-	st, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(3_000_000))})
+	res, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(3_000_000))})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.pub.mu.Lock()
-	sets := append([]Setting(nil), f.pub.sets...)
-	f.pub.mu.Unlock()
+	f.conf.mu.Lock()
+	sets := append([]Setting(nil), f.conf.sets...)
+	f.conf.mu.Unlock()
 	if len(sets) != 2 || sets[0].RatePPM != 1_000_000 || sets[1].RatePPM != 3_000_000 ||
 		sets[1].StartUnixMicro != target.UnixMicro() {
-		t.Fatalf("published = %+v", sets)
+		t.Fatalf("confirmed = %+v", sets)
 	}
-	if st.RatePPM != 3_000_000 {
-		t.Fatalf("state rate = %d", st.RatePPM)
+	if res.State.RatePPM != 3_000_000 {
+		t.Fatalf("state rate = %d", res.State.RatePPM)
 	}
 }
 
@@ -280,16 +298,19 @@ func TestMove_NeverSetsBackward(t *testing.T) {
 		}
 		return nil
 	}
-	f.pub.hook = func(s Setting) {
+	f.conf.hook = func(s Setting) {
 		if seen := f.sched.seen(); s.StartUnixMicro < seen.UnixMicro() {
-			t.Errorf("published start %v before the clock's time %v", time.UnixMicro(s.StartUnixMicro), seen)
+			t.Errorf("confirmed start %v before the clock's time %v", time.UnixMicro(s.StartUnixMicro), seen)
 		}
 	}
 	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{h1, h3}) {
-		t.Fatalf("published starts = %v, want [%v %v]", got, h1, h3)
+	// The steps, then the fresh final setting where the last fire left the
+	// clock: past the target.
+	got := f.conf.starts()
+	if len(got) != 3 || !sameTimes(got[:2], []time.Time{h1, h3}) || !got[2].After(target) {
+		t.Fatalf("confirmed starts = %v, want [%v %v] then one past %v", got, h1, h3, target)
 	}
 	if !f.clock.Now().After(target) {
 		t.Fatalf("clock %v not past target %v", f.clock.Now(), target)
@@ -300,18 +321,18 @@ func TestMove_WaitsWhileRunning(t *testing.T) {
 	f := newFixture(t)
 	f.sched.running = 5
 	target := f.t0.Add(time.Hour)
-	f.pub.hook = func(Setting) {
+	f.conf.hook = func(Setting) {
 		f.sched.mu.Lock()
 		defer f.sched.mu.Unlock()
 		if f.sched.running > 0 {
-			t.Errorf("published while %d running polls remain", f.sched.running)
+			t.Errorf("confirmed while %d running polls remain", f.sched.running)
 		}
 	}
 	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if got := f.pub.starts(); len(got) != 1 {
-		t.Fatalf("published starts = %v", got)
+	if got := f.conf.starts(); len(got) != 1 {
+		t.Fatalf("confirmed starts = %v", got)
 	}
 }
 
@@ -322,7 +343,7 @@ func TestMove_CancelIsClientGone(t *testing.T) {
 	f.sched.fire = false
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	f.pub.hook = func(Setting) { cancel() }
+	f.conf.hook = func(Setting) { cancel() }
 	target := base.Add(2 * time.Hour)
 	_, err := f.svc.Change(ctx, Change{At: &target})
 	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
@@ -356,7 +377,7 @@ func TestMove_CancelDuringStoreLookupIsClientGone(t *testing.T) {
 			cancel()
 			return nil, fmt.Errorf("resolve: %w", context.Canceled)
 		},
-		(&publishLog{}).publish, testPoll)
+		(&confirmLog{}).confirm, testPoll)
 	target := c.Now().Add(time.Hour)
 	_, err := svc.Change(ctx, Change{At: &target})
 	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
@@ -372,13 +393,13 @@ func TestMove_CancelLeavesClock(t *testing.T) {
 	f.sched.fire = false // no scheduler runs: the due task stays pending
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	f.pub.hook = func(Setting) { cancel() }
+	f.conf.hook = func(Setting) { cancel() }
 	_, err := f.svc.Change(ctx, Change{At: &target})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{h1}) {
-		t.Fatalf("published starts = %v", got)
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{h1}) {
+		t.Fatalf("confirmed starts = %v", got)
 	}
 	if !f.clock.Now().Equal(h1) {
 		t.Fatalf("clock = %v, want %v", f.clock.Now(), h1)
@@ -388,17 +409,17 @@ func TestMove_CancelLeavesClock(t *testing.T) {
 func TestMove_SchedulerErrorFails(t *testing.T) {
 	src := newFakeSrc()
 	c := NewTest("n1", src.now)
-	pub := &publishLog{}
+	conf := &confirmLog{}
 	boom := errors.New("store down")
 	svc := NewService(c, (&fakeStoreTime{}).storeTime,
 		func(context.Context) (spi.ScheduledTaskStore, error) { return nil, boom },
-		pub.publish, testPoll)
+		conf.confirm, testPoll)
 	target := c.Now().Add(time.Hour)
 	if _, err := svc.Change(context.Background(), Change{At: &target}); !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want %v", err, boom)
 	}
-	if len(pub.starts()) != 0 {
-		t.Fatal("published despite the error")
+	if len(conf.starts()) != 0 {
+		t.Fatal("confirmed despite the error")
 	}
 }
 
@@ -423,8 +444,8 @@ func TestSetBack_RefusedWhenRecordedLater(t *testing.T) {
 	if !f.clock.Now().Equal(recorded) {
 		t.Fatalf("clock = %v, want %v", f.clock.Now(), recorded)
 	}
-	if len(f.pub.starts()) != 0 {
-		t.Fatal("published a refused setting")
+	if len(f.conf.starts()) != 0 {
+		t.Fatal("confirmed a refused setting")
 	}
 }
 
@@ -440,8 +461,8 @@ func TestSetBack_ConsistencyTimeErrorRestores(t *testing.T) {
 	if got := f.clock.Setting(); got != prev {
 		t.Fatalf("setting = %+v, want restored %+v", got, prev)
 	}
-	if len(f.pub.starts()) != 0 {
-		t.Fatal("published despite the error")
+	if len(f.conf.starts()) != 0 {
+		t.Fatal("confirmed despite the error")
 	}
 }
 
@@ -454,15 +475,15 @@ func TestSetBack_FreshStoreAccepted(t *testing.T) {
 		return f.clock.Now()
 	}
 	at := time.Date(1970, 1, 1, 0, 0, 1, 0, time.UTC)
-	st, err := f.svc.Change(context.Background(), Change{At: &at, RatePPM: ptr(int64(2_000_000))})
+	res, err := f.svc.Change(context.Background(), Change{At: &at, RatePPM: ptr(int64(2_000_000))})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{at}) {
-		t.Fatalf("published starts = %v", got)
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{at}) {
+		t.Fatalf("confirmed starts = %v", got)
 	}
-	if want := at.Add(100 * time.Millisecond); !st.Now.Equal(want) {
-		t.Fatalf("state now = %v, want %v", st.Now, want)
+	if want := at.Add(100 * time.Millisecond); !res.State.Now.Equal(want) {
+		t.Fatalf("state now = %v, want %v", res.State.Now, want)
 	}
 }
 
@@ -486,11 +507,11 @@ func TestChange_TimeEqualNowWithRate_AppliesBoth(t *testing.T) {
 	if _, err := f.svc.Change(context.Background(), Change{At: &at, RatePPM: ptr(int64(5_000_000))}); err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.pub.mu.Lock()
-	sets := append([]Setting(nil), f.pub.sets...)
-	f.pub.mu.Unlock()
+	f.conf.mu.Lock()
+	sets := append([]Setting(nil), f.conf.sets...)
+	f.conf.mu.Unlock()
 	if len(sets) != 1 || sets[0].StartUnixMicro != at.UnixMicro() || sets[0].RatePPM != 5_000_000 {
-		t.Fatalf("published = %+v", sets)
+		t.Fatalf("confirmed = %+v", sets)
 	}
 	if f.tm.calls != 1 {
 		t.Fatalf("ConsistencyTime calls = %d, want 1", f.tm.calls)
@@ -501,15 +522,15 @@ func TestRateOnly_NoJump(t *testing.T) {
 	f := newFixture(t)
 	f.src.advance(10 * time.Second)
 	before := f.clock.Now()
-	st, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))})
+	res, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	if !st.Now.Equal(before) || st.RatePPM != 2_000_000 {
-		t.Fatalf("state = %+v, want now %v rate 2x", st, before)
+	if !res.State.Now.Equal(before) || res.State.RatePPM != 2_000_000 {
+		t.Fatalf("state = %+v, want now %v rate 2x", res.State, before)
 	}
-	if got := f.pub.starts(); !sameTimes(got, []time.Time{before}) {
-		t.Fatalf("published starts = %v", got)
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{before}) {
+		t.Fatalf("confirmed starts = %v", got)
 	}
 	f.src.advance(time.Second)
 	if want := before.Add(2 * time.Second); !f.clock.Now().Equal(want) {
@@ -583,23 +604,33 @@ func TestMove_StepSkippedWhenClockPassedDueTime(t *testing.T) {
 		sched := &fakeScheduler{clock: c, fire: true,
 			due: []time.Time{t0.Truncate(time.Millisecond).Add(time.Duration(k) * step)}}
 		prev := c.Setting()
-		var backward []string
-		publish := func(s Setting) {
+		var backward, stale []string
+		confirm := func(_ context.Context, s Setting) ([]string, error) {
 			// The previous setting's reading at the new anchor instant.
 			was := prev.StartUnixMicro + (s.AnchorUnixMicro-prev.AnchorUnixMicro)*prev.RatePPM/1_000_000
 			if s.StartUnixMicro < was {
 				backward = append(backward, time.UnixMicro(s.StartUnixMicro).String())
 			}
+			if s.Version <= prev.Version {
+				stale = append(stale, fmt.Sprintf("version %d after %d", s.Version, prev.Version))
+			}
 			prev = s
+			return []string{"n1"}, nil
 		}
 		svc := NewService(c, (&fakeStoreTime{}).storeTime,
-			func(context.Context) (spi.ScheduledTaskStore, error) { return sched, nil }, publish, testPoll)
+			func(context.Context) (spi.ScheduledTaskStore, error) { return sched, nil }, confirm, testPoll)
 		target := t0.Add(10 * time.Hour)
 		if _, err := svc.Change(context.Background(), Change{At: &target}); err != nil {
 			t.Fatalf("k=%d: Change: %v", k, err)
 		}
 		if len(backward) > 0 {
-			t.Errorf("k=%d: published backward starts %v", k, backward)
+			t.Errorf("k=%d: confirmed backward starts %v", k, backward)
+		}
+		if len(stale) > 0 {
+			t.Errorf("k=%d: confirmed versions not strictly increasing: %v", k, stale)
+		}
+		if got := c.Setting(); got != prev {
+			t.Errorf("k=%d: clock holds %+v, want the last confirmed %+v", k, got, prev)
 		}
 	}
 }
@@ -616,14 +647,14 @@ func TestMove_SchedulerErrorMidMove(t *testing.T) {
 	if !errors.Is(err, boom) {
 		t.Fatalf("err = %v, want wrapped %v", err, boom)
 	}
-	f.pub.mu.Lock()
-	sets := append([]Setting(nil), f.pub.sets...)
-	f.pub.mu.Unlock()
+	f.conf.mu.Lock()
+	sets := append([]Setting(nil), f.conf.sets...)
+	f.conf.mu.Unlock()
 	if len(sets) != 1 || sets[0].StartUnixMicro != h1.UnixMicro() || sets[0].RatePPM != 1_000_000 {
-		t.Fatalf("published = %+v, want one complete step to %v at the old rate", sets, h1)
+		t.Fatalf("confirmed = %+v, want one complete step to %v at the old rate", sets, h1)
 	}
 	if got := f.clock.Setting(); got != sets[0] {
-		t.Fatalf("clock setting = %+v, want the last published %+v", got, sets[0])
+		t.Fatalf("clock setting = %+v, want the last confirmed %+v", got, sets[0])
 	}
 }
 
@@ -651,7 +682,7 @@ func servedSetting(t *testing.T, ex *capturedExchange) *Setting {
 
 // TestSetBack_PendingSettingNeverServed: while a set-back waits for the
 // store, and after it is refused, the state exchange serves only the setting
-// last published, never the pending one.
+// last confirmed, never the pending one.
 func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 	f := newFixture(t)
 	ex := &capturedExchange{}
@@ -660,9 +691,9 @@ func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 	if _, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))}); err != nil {
 		t.Fatalf("rate change: %v", err)
 	}
-	published := f.clock.Setting()
-	if got := servedSetting(t, ex); got == nil || *got != published {
-		t.Fatalf("served %+v, want the published %+v", got, published)
+	confirmed := f.clock.Setting()
+	if got := servedSetting(t, ex); got == nil || *got != confirmed {
+		t.Fatalf("served %+v, want the confirmed %+v", got, confirmed)
 	}
 
 	called := make(chan struct{})
@@ -678,24 +709,24 @@ func TestSetBack_PendingSettingNeverServed(t *testing.T) {
 		done <- err
 	}()
 	<-called
-	if pending := f.clock.Setting(); pending == published {
+	if pending := f.clock.Setting(); pending == confirmed {
 		t.Fatal("set-back not applied locally before the store call")
 	}
-	if got := servedSetting(t, ex); got == nil || *got != published {
-		t.Fatalf("served %+v while the set-back is pending, want %+v", got, published)
+	if got := servedSetting(t, ex); got == nil || *got != confirmed {
+		t.Fatalf("served %+v while the set-back is pending, want %+v", got, confirmed)
 	}
 	release <- f.clock.Now().Add(time.Hour) // the store holds a later time
 	if err := <-done; !errors.As(err, new(*BeforeRecordedTimeError)) {
 		t.Fatalf("err = %v, want *BeforeRecordedTimeError", err)
 	}
-	if got := servedSetting(t, ex); got == nil || *got != published {
-		t.Fatalf("served %+v after the refusal, want %+v", got, published)
+	if got := servedSetting(t, ex); got == nil || *got != confirmed {
+		t.Fatalf("served %+v after the refusal, want %+v", got, confirmed)
 	}
 }
 
 // TestSetBack_PendingOnFreshClockServesNothing: before anything is
-// published the exchange serves nothing, even while a set-back is pending;
-// once accepted and published, it serves that setting.
+// confirmed the exchange serves nothing, even while a set-back is pending;
+// once accepted and confirmed, it serves that setting.
 func TestSetBack_PendingOnFreshClockServesNothing(t *testing.T) {
 	f := newFixture(t)
 	ex := &capturedExchange{}
@@ -711,7 +742,7 @@ func TestSetBack_PendingOnFreshClockServesNothing(t *testing.T) {
 		t.Fatalf("Change: %v", err)
 	}
 	if got := servedSetting(t, ex); got == nil || *got != f.clock.Setting() {
-		t.Fatalf("served %+v after publish, want %+v", got, f.clock.Setting())
+		t.Fatalf("served %+v after the confirm, want %+v", got, f.clock.Setting())
 	}
 }
 
@@ -745,7 +776,7 @@ func TestMove_CancelStopsWithUserContext(t *testing.T) {
 	f.sched.fire = false
 	ctx, cancel := context.WithCancel(spi.WithUserContext(context.Background(),
 		&spi.UserContext{UserID: "u", Tenant: spi.Tenant{ID: "t"}}))
-	f.pub.hook = func(Setting) { cancel() }
+	f.conf.hook = func(Setting) { cancel() }
 	target := base.Add(2 * time.Hour)
 	_, err := f.svc.Change(ctx, Change{At: &target})
 	if !errors.Is(err, common.ErrClientGone) || !errors.Is(err, context.Canceled) {
@@ -764,9 +795,15 @@ func TestMove_DueAtTarget_DoesNotMoveBack(t *testing.T) {
 	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	starts := f.pub.starts()
-	if len(starts) == 0 || !starts[len(starts)-1].Equal(target) {
-		t.Fatalf("published starts = %v, want them to end at %v", starts, target)
+	// The step to the target, then a fresh final setting where the fire left
+	// the clock, never back at the target.
+	sets := f.conf.confirmed()
+	if len(sets) < 2 || sets[0].StartUnixMicro != target.UnixMicro() {
+		t.Fatalf("confirmed = %+v, want them to begin at %v", sets, target)
+	}
+	last := sets[len(sets)-1]
+	if last.StartUnixMicro < target.Add(time.Millisecond).UnixMicro() || last.Version <= sets[0].Version {
+		t.Fatalf("last confirmed = %+v, want a newer setting no earlier than %v", last, target.Add(time.Millisecond))
 	}
 	if f.clock.Now().Before(target.Add(time.Millisecond)) {
 		t.Fatalf("clock = %v, behind the fire at %v", f.clock.Now(), target.Add(time.Millisecond))
@@ -778,25 +815,25 @@ func TestMove_DueAtTarget_WithRate_RateAppliesAtEnd(t *testing.T) {
 	target := f.t0.Truncate(time.Millisecond).Add(time.Hour)
 	f.sched.due = []time.Time{target}
 	f.sched.onFire = func(time.Time) []time.Time { f.src.advance(time.Millisecond); return nil }
-	st, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(3_000_000))})
+	res, err := f.svc.Change(context.Background(), Change{At: &target, RatePPM: ptr(int64(3_000_000))})
 	if err != nil {
 		t.Fatalf("Change: %v", err)
 	}
-	f.pub.mu.Lock()
-	sets := append([]Setting(nil), f.pub.sets...)
-	f.pub.mu.Unlock()
+	f.conf.mu.Lock()
+	sets := append([]Setting(nil), f.conf.sets...)
+	f.conf.mu.Unlock()
 	if len(sets) < 2 {
-		t.Fatalf("published = %+v, want the step and the rate", sets)
+		t.Fatalf("confirmed = %+v, want the step and the rate", sets)
 	}
 	if sets[0].StartUnixMicro != target.UnixMicro() || sets[0].RatePPM != 1_000_000 {
-		t.Fatalf("first published = %+v, want the step at the target", sets[0])
+		t.Fatalf("first confirmed = %+v, want the step at the target", sets[0])
 	}
 	last := sets[len(sets)-1]
 	if last.RatePPM != 3_000_000 || last.StartUnixMicro < target.Add(time.Millisecond).UnixMicro() {
-		t.Fatalf("last published = %+v, want rate 3000000 starting no earlier than the fire", last)
+		t.Fatalf("last confirmed = %+v, want rate 3000000 starting no earlier than the fire", last)
 	}
-	if st.RatePPM != 3_000_000 || st.Now.Before(target.Add(time.Millisecond)) {
-		t.Fatalf("state = %+v", st)
+	if res.State.RatePPM != 3_000_000 || res.State.Now.Before(target.Add(time.Millisecond)) {
+		t.Fatalf("state = %+v", res.State)
 	}
 }
 
@@ -810,14 +847,14 @@ func TestMove_RepeatAfterCancelContinues(t *testing.T) {
 	f.sched.fire = false
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	f.pub.hook = func(Setting) { cancel() }
+	f.conf.hook = func(Setting) { cancel() }
 	if _, err := f.svc.Change(ctx, Change{At: &target}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("first move err = %v, want context.Canceled", err)
 	}
 	if !f.clock.Now().Equal(h1) {
 		t.Fatalf("clock after cancel = %v, want %v", f.clock.Now(), h1)
 	}
-	f.pub.hook = nil
+	f.conf.hook = nil
 	f.sched.mu.Lock()
 	f.sched.fire = true
 	f.sched.mu.Unlock()
@@ -825,8 +862,8 @@ func TestMove_RepeatAfterCancelContinues(t *testing.T) {
 		t.Fatalf("repeated move: %v", err)
 	}
 	want := []time.Time{h1, h2, h3, target}
-	if got := f.pub.starts(); !sameTimes(got, want) {
-		t.Fatalf("published starts = %v, want %v", got, want)
+	if got := f.conf.starts(); !sameTimes(got, want) {
+		t.Fatalf("confirmed starts = %v, want %v", got, want)
 	}
 	if !f.clock.Now().Equal(target) {
 		t.Fatalf("clock = %v, want %v", f.clock.Now(), target)
@@ -850,28 +887,28 @@ func TestSetBack_ClientLeavingDuringStoreCallIsClientGone(t *testing.T) {
 	if got := f.clock.Setting(); got != prev {
 		t.Fatalf("setting = %+v, want restored %+v", got, prev)
 	}
-	if len(f.pub.starts()) != 0 {
-		t.Fatal("published despite the departure")
+	if len(f.conf.starts()) != 0 {
+		t.Fatal("confirmed despite the departure")
 	}
 }
 
 // The service resolves advanceByMs against the clock it moves, so it is the
 // one that refuses a target past the year 9000: nothing changes and nothing
-// is published.
+// is confirmed.
 func TestChange_AdvancePastYear9000_Refused(t *testing.T) {
 	f := newFixture(t)
 	near := time.Date(9000, 12, 31, 23, 59, 0, 0, time.UTC)
 	if _, err := f.svc.Change(context.Background(), Change{At: &near}); err != nil {
 		t.Fatalf("set near the end: %v", err)
 	}
-	published := len(f.pub.starts())
+	confirmed := len(f.conf.starts())
 	ms := int64(2 * time.Minute / time.Millisecond)
 	_, err := f.svc.Change(context.Background(), Change{AdvanceByMs: &ms})
 	if !errors.As(err, new(*OutOfRangeError)) {
 		t.Fatalf("err = %v, want *OutOfRangeError", err)
 	}
-	if got := len(f.pub.starts()); got != published {
-		t.Fatalf("published %d settings after the refusal, want %d", got, published)
+	if got := len(f.conf.starts()); got != confirmed {
+		t.Fatalf("confirmed %d settings after the refusal, want %d", got, confirmed)
 	}
 	if f.clock.Now().After(maxSetTime) {
 		t.Fatalf("clock = %v, beyond the year 9000", f.clock.Now())
@@ -887,13 +924,13 @@ func TestChange_RateOnlyPastSetLimit_Applies(t *testing.T) {
 		t.Fatalf("set the limit: %v", err)
 	}
 	f.src.advance(2 * time.Second)
-	published := len(f.pub.starts())
+	confirmed := len(f.conf.starts())
 	rate := int64(2_000_000)
 	if _, err := f.svc.Change(context.Background(), Change{RatePPM: &rate}); err != nil {
 		t.Fatalf("rate change: %v", err)
 	}
-	if got := len(f.pub.starts()); got != published+1 {
-		t.Fatalf("published %d settings, want %d", got, published+1)
+	if got := len(f.conf.starts()); got != confirmed+1 {
+		t.Fatalf("confirmed %d settings, want %d", got, confirmed+1)
 	}
 }
 
@@ -901,14 +938,14 @@ func TestChange_RateOnlyPastSetLimit_Applies(t *testing.T) {
 // check runs before any arithmetic that could overflow.
 func TestChange_HugeAdvance_Refused(t *testing.T) {
 	f := newFixture(t)
-	published := len(f.pub.starts())
+	confirmed := len(f.conf.starts())
 	ms := int64(math.MaxInt64)
 	_, err := f.svc.Change(context.Background(), Change{AdvanceByMs: &ms})
 	if !errors.As(err, new(*OutOfRangeError)) {
 		t.Fatalf("err = %v, want *OutOfRangeError", err)
 	}
-	if got := len(f.pub.starts()); got != published {
-		t.Fatalf("published %d settings after the refusal, want %d", got, published)
+	if got := len(f.conf.starts()); got != confirmed {
+		t.Fatalf("confirmed %d settings after the refusal, want %d", got, confirmed)
 	}
 }
 
@@ -922,5 +959,155 @@ func TestChange_AdvanceLongerThanDuration_Applies(t *testing.T) {
 	}
 	if years := f.clock.Now().Year() - f.t0.Year(); years < 316 || years > 318 {
 		t.Fatalf("clock moved %d years, to %v from %v; want about 317", years, f.clock.Now(), f.t0)
+	}
+}
+
+// A change answers the nodes the confirmation names.
+func TestChange_ReturnsConfirmedNodes(t *testing.T) {
+	f := newFixture(t)
+	f.conf.nodes = []string{"a", "n1"}
+	res, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))})
+	if err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	if len(res.Nodes) != 2 || res.Nodes[0] != "a" || res.Nodes[1] != "n1" {
+		t.Fatalf("nodes = %v, want [a n1]", res.Nodes)
+	}
+}
+
+// A change some node does not confirm fails, and nothing is rolled back: the
+// handling node keeps the setting it installed.
+func TestChange_NotConfirmed_KeepsSetting(t *testing.T) {
+	f := newFixture(t)
+	f.conf.failAt = 1
+	f.conf.failErr = &NotConfirmedError{Nodes: []string{"a"}}
+	res, err := f.svc.Change(context.Background(), Change{RatePPM: ptr(int64(2_000_000))})
+	var nc *NotConfirmedError
+	if !errors.As(err, &nc) {
+		t.Fatalf("err = %v, want *NotConfirmedError", err)
+	}
+	if got := f.clock.Setting().RatePPM; got != 2_000_000 {
+		t.Fatalf("rate = %d, want the installed 2000000 kept", got)
+	}
+	if res.Nodes != nil {
+		t.Fatalf("nodes = %v on an error, want nil", res.Nodes)
+	}
+}
+
+// A step some node does not confirm stops the move there: the clock stays at
+// the step, and the move does not wait for the step's tasks.
+func TestMove_StepNotConfirmed_StopsThere(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	h1, h2, h3 := base.Add(time.Hour), base.Add(2*time.Hour), base.Add(3*time.Hour)
+	f.sched.due = []time.Time{h1, h2}
+	f.conf.failAt = 1
+	f.conf.failErr = &NotConfirmedError{Nodes: []string{"a"}}
+	polls := -1
+	f.conf.hook = func(Setting) {
+		f.sched.mu.Lock()
+		defer f.sched.mu.Unlock()
+		polls = f.sched.polls
+	}
+	_, err := f.svc.Change(context.Background(), Change{At: &h3})
+	if !errors.As(err, new(*NotConfirmedError)) {
+		t.Fatalf("err = %v, want *NotConfirmedError", err)
+	}
+	if !f.clock.Now().Equal(h1) {
+		t.Fatalf("clock = %v, want %v", f.clock.Now(), h1)
+	}
+	if n := len(f.conf.confirmed()); n != 1 {
+		t.Fatalf("confirm calls = %d, want 1", n)
+	}
+	f.sched.mu.Lock()
+	defer f.sched.mu.Unlock()
+	if f.sched.polls != polls {
+		t.Fatalf("scheduler polled %d times after the failed confirm (%d before)", f.sched.polls-polls, polls)
+	}
+}
+
+// A move confirms each step before it waits for that step's tasks: every poll
+// after the first confirm sees the clock on the setting last confirmed.
+func TestMove_ConfirmsEachStepBeforeWaiting(t *testing.T) {
+	f := newFixture(t)
+	base := f.t0.Truncate(time.Millisecond).Add(time.Millisecond)
+	h1, h2 := base.Add(time.Hour), base.Add(2*time.Hour)
+	f.sched.due = []time.Time{h1, h2}
+	f.sched.onPoll = func() {
+		sets := f.conf.confirmed()
+		if len(sets) == 0 {
+			return
+		}
+		if got, last := f.clock.Setting(), sets[len(sets)-1]; got != last {
+			t.Errorf("polled on %+v, not the last confirmed %+v", got, last)
+		}
+	}
+	target := base.Add(3 * time.Hour)
+	if _, err := f.svc.Change(context.Background(), Change{At: &target}); err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	if got := f.conf.starts(); !sameTimes(got, []time.Time{h1, h2, target}) {
+		t.Fatalf("confirmed starts = %v", got)
+	}
+}
+
+// A move whose target the clock has already passed when it ends installs and
+// confirms a fresh setting of its own at the current time.
+func TestMove_TargetPassed_InstallsFreshFinalSetting(t *testing.T) {
+	f := newFixture(t)
+	f.sched.onPoll = func() { f.src.advance(time.Second) }
+	res, err := f.svc.Change(context.Background(), Change{AdvanceByMs: ptr(int64(1))})
+	if err != nil {
+		t.Fatalf("Change: %v", err)
+	}
+	now := f.clock.Now()
+	sets := f.conf.confirmed()
+	if len(sets) != 1 {
+		t.Fatalf("confirmed = %+v, want one fresh setting", sets)
+	}
+	s := sets[0]
+	if s.Version != 1 || s.Writer != "n1" {
+		t.Fatalf("confirmed = %+v, want version 1 by n1", s)
+	}
+	if d := now.Sub(time.UnixMicro(s.StartUnixMicro)); d < 0 || d > time.Millisecond {
+		t.Fatalf("confirmed start %v, want within 1 ms of %v", time.UnixMicro(s.StartUnixMicro), now)
+	}
+	if len(res.Nodes) != 1 || res.Nodes[0] != "n1" {
+		t.Fatalf("nodes = %v, want [n1]", res.Nodes)
+	}
+}
+
+// Every confirmed setting is one this node installed in the change: written by
+// it, with a version above every earlier one, never the starting version 0.
+func TestChange_EveryConfirmedSettingIsFresh(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	if _, err := f.svc.Change(ctx, Change{RatePPM: ptr(int64(2_000_000))}); err != nil {
+		t.Fatalf("rate change: %v", err)
+	}
+	back := f.t0.Add(-time.Hour)
+	if _, err := f.svc.Change(ctx, Change{At: &back}); err != nil {
+		t.Fatalf("set-back: %v", err)
+	}
+	h1 := f.clock.Now().Truncate(time.Millisecond).Add(time.Hour)
+	f.sched.mu.Lock()
+	f.sched.due = []time.Time{h1}
+	f.sched.mu.Unlock()
+	target := h1.Add(time.Hour)
+	if _, err := f.svc.Change(ctx, Change{At: &target}); err != nil {
+		t.Fatalf("move: %v", err)
+	}
+	f.sched.onPoll = func() { f.src.advance(time.Second) }
+	if _, err := f.svc.Change(ctx, Change{AdvanceByMs: ptr(int64(1))}); err != nil {
+		t.Fatalf("advance past its target: %v", err)
+	}
+	sets := f.conf.confirmed()
+	if len(sets) < 5 {
+		t.Fatalf("confirmed %d settings, want at least 5: %+v", len(sets), sets)
+	}
+	for i, s := range sets {
+		if s.Writer != "n1" || s.Version != uint64(i+1) {
+			t.Fatalf("confirmed[%d] = %+v, want version %d by n1", i, s, i+1)
+		}
 	}
 }

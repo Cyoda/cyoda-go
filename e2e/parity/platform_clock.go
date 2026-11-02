@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -98,6 +99,7 @@ type clockAnswer struct {
 	Now          time.Time `json:"now"`
 	Rate         float64   `json:"rate"`
 	Controllable bool      `json:"controllable"`
+	Nodes        []string  `json:"nodes"` // POST only
 }
 
 // clock sends method to /platform/clock and decodes a 200 answer.
@@ -454,5 +456,21 @@ func RunPlatformClockPastStartAsyncSearch(t *testing.T, fixture BackendFixture) 
 	status, raw := s.do(t, s.tenant, http.MethodGet, "/api/entity/"+id.String()+"/transitions?transactionId="+url.QueryEscape(txID), "")
 	if status != http.StatusOK {
 		t.Fatalf("transitions by transactionId: %d %s", status, raw)
+	}
+}
+
+// RunPlatformClockChangeListsNodes: every kind of change — a set, a rate
+// change and a move — answers the nodes that hold the new setting; on a single
+// node that is the node itself, "local".
+func RunPlatformClockChangeListsNodes(t *testing.T, fixture BackendFixture) {
+	s := newClockStack(t, fixture, nil)
+	for _, body := range []string{
+		fmt.Sprintf(`{"time":%q}`, clockParityStart.Format(time.RFC3339Nano)),
+		`{"rate":2}`,
+		`{"advanceByMs":1000}`,
+	} {
+		if a := s.clock(t, http.MethodPost, body); !slices.Equal(a.Nodes, []string{"local"}) {
+			t.Fatalf("POST %s answered nodes %v; want [local]", body, a.Nodes)
+		}
 	}
 }

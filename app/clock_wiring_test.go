@@ -210,7 +210,7 @@ func TestClockWiring_OnClusterJoinAdoptsPeerSetting(t *testing.T) {
 	// A published setting; its broadcast is dropped (no publish), so the
 	// node can learn it only by the join-time exchange.
 	rate := int64(3_000_000)
-	svc := platformclock.NewService(held, unusedStoreTime, unusedTasks, func(platformclock.Setting) {}, time.Second)
+	svc := platformclock.NewService(held, unusedStoreTime, unusedTasks, platformclock.SingleNode("clock-probe"), time.Second)
 	if _, err := svc.Change(ctx, platformclock.Change{RatePPM: &rate}); err != nil {
 		t.Fatal(err)
 	}

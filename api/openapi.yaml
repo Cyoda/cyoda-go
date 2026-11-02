@@ -1085,11 +1085,11 @@ paths:
               schema:
                 $ref: "#/components/schemas/ProblemDetail"
         "200":
-          description: The clock after the change.
+          description: The clock after the change, and the nodes that hold it.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/PlatformClockDto"
+                $ref: "#/components/schemas/PlatformClockChangeResultDto"
         "401":
           $ref: '#/components/responses/Unauthorized'
         "403":
@@ -11199,6 +11199,31 @@ components:
         controllable:
           type: boolean
           description: Whether this node accepts changes to the clock.
+    PlatformClockChangeResultDto:
+      type: object
+      required:
+        - now
+        - rate
+        - controllable
+        - nodes
+      properties:
+        now:
+          type: string
+          format: date-time
+          description: This node's platform time.
+        rate:
+          type: number
+          description: Platform seconds per real second; 1 without clock control.
+        controllable:
+          type: boolean
+          description: Whether this node accepts changes to the clock.
+        nodes:
+          type: array
+          items:
+            type: string
+          description: >-
+            The ids of every node that holds the new setting, this node
+            included, in ascending order; `["local"]` on a single node.
     PlatformClockChangeDto:
       type: object
       properties:

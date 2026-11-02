@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type clockBody struct {
 	Now          time.Time `json:"now"`
 	Rate         float64   `json:"rate"`
 	Controllable bool      `json:"controllable"`
+	Nodes        []string  `json:"nodes"` // POST only
 }
 
 // clockStack is a stack of its own with clock control on or off.
@@ -175,10 +177,10 @@ func TestPlatformClock_Post_AdvancePastYear9000_400(t *testing.T) {
 func TestPlatformClock_Post_RateThenGet(t *testing.T) {
 	h := clockStack(t, true)
 	c := decodeClock(t, h.clockAs(t, h.platformToken(t), http.MethodPost, "", `{"rate":2.5}`))
-	if c.Rate != 2.5 || !c.Controllable {
+	if c.Rate != 2.5 || !c.Controllable || !slices.Equal(c.Nodes, []string{"local"}) {
 		t.Fatalf("post answered %+v", c)
 	}
-	if g := decodeClock(t, h.clockAs(t, h.token(t), http.MethodGet, "", "")); g.Rate != 2.5 {
+	if g := decodeClock(t, h.clockAs(t, h.token(t), http.MethodGet, "", "")); g.Rate != 2.5 || g.Nodes != nil {
 		t.Fatalf("get after post: %+v", g)
 	}
 }

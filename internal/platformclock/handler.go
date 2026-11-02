@@ -25,7 +25,7 @@ const maxRateLiteral = 64
 // Controller is the clock service the handler drives; *Service is one.
 type Controller interface {
 	State() State
-	Change(ctx context.Context, ch Change) (State, error)
+	Change(ctx context.Context, ch Change) (ChangeResult, error)
 }
 
 // Handler serves GET and POST /platform/clock.
@@ -51,6 +51,15 @@ type clockBody struct {
 
 func bodyOf(st State) clockBody {
 	return clockBody{Now: st.Now.UTC(), Rate: st.Rate(), Controllable: st.Controllable}
+}
+
+// changeBody is the PlatformClockChangeResultDto response: the clock after a
+// change and the ids of the nodes that hold it.
+type changeBody struct {
+	Now          time.Time `json:"now"`
+	Rate         float64   `json:"rate"`
+	Controllable bool      `json:"controllable"`
+	Nodes        []string  `json:"nodes"`
 }
 
 // StateOf is the state both doors answer: svc's state when clock control is
@@ -182,12 +191,13 @@ func (h *Handler) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 		common.WriteError(w, r, appErr)
 		return
 	}
-	st, err := h.svc.Change(r.Context(), ch)
+	res, err := h.svc.Change(r.Context(), ch)
 	if err != nil {
 		common.WriteError(w, r, classify(err))
 		return
 	}
-	common.WriteJSON(w, http.StatusOK, bodyOf(st))
+	b := bodyOf(res.State)
+	common.WriteJSON(w, http.StatusOK, changeBody{Now: b.Now, Rate: b.Rate, Controllable: b.Controllable, Nodes: res.Nodes})
 }
 
 func classify(err error) *common.AppError {
