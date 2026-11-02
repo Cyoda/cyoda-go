@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/metric/noop"
 
 	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 // tagMetrics are the membership instruments an operator alerts on: sends that
@@ -48,7 +49,7 @@ func newTagMetrics(meter metric.Meter, outstanding func() int64, memberStates fu
 		// member left drops to 0 instead of keeping its last value.
 		for _, st := range lifecycle.States() {
 			o.ObserveInt64(members, counts[st], metric.WithAttributes(
-				attribute.String("cyoda.cluster.member.state", strings.ToLower(string(st)))))
+				observability.AttrClusterMemberState.String(strings.ToLower(string(st)))))
 		}
 		return nil
 	}, gauge, members)
