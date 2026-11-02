@@ -3,11 +3,17 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/cyoda-platform/cyoda-go/internal/admin"
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
@@ -236,5 +242,40 @@ func TestReadinessCheck_LatchReasonWinsWhileDraining(t *testing.T) {
 	err := a.ReadinessCheck()
 	if err == nil || !strings.Contains(err.Error(), "unhealthy") {
 		t.Fatalf("latched and draining: ReadinessCheck() = %v, want the unhealthy reason", err)
+	}
+}
+
+// TestNew_GRPCHealthIsWiredToRealReadiness pins that New hands the gRPC server
+// the node's real readiness check: SERVING while ready, NOT_SERVING once the
+// drain begins.
+func TestNew_GRPCHealthIsWiredToRealReadiness(t *testing.T) {
+	a := readinessTestApp(t)
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	go func() { _ = a.GRPCServer().Serve(lis) }()
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := grpc_health_v1.NewHealthClient(conn)
+
+	check := func() grpc_health_v1.HealthCheckResponse_ServingStatus {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		resp, err := client.Check(ctx, &grpc_health_v1.HealthCheckRequest{})
+		if err != nil {
+			t.Fatalf("Check: %v", err)
+		}
+		return resp.GetStatus()
+	}
+	if got := check(); got != grpc_health_v1.HealthCheckResponse_SERVING {
+		t.Fatalf("fresh node: status = %v, want SERVING", got)
+	}
+	a.DrainScheduler(context.Background())
+	if got := check(); got != grpc_health_v1.HealthCheckResponse_NOT_SERVING {
+		t.Fatalf("draining node: status = %v, want NOT_SERVING", got)
 	}
 }
