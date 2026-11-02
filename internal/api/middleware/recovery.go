@@ -28,7 +28,7 @@ import (
 // healthLatch is optional. Passing nil keeps the containment — ticket, log,
 // sanitized 500 — and skips the latch, which is how a surface that does no
 // engine or store work on the application's behalf opts out: the admin
-// listener, whose /livez writes a constant, whose /readyz reads two latches,
+// listener, whose /livez writes a constant, whose /readyz reads the health latch and the draining state,
 // and whose /metrics gathers registered collectors. A panic there says
 // nothing about whether this node's entity state is still correct, so
 // tripping would take a healthy node out of service over a broken probe.

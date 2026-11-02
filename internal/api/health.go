@@ -17,7 +17,7 @@ import (
 // scrapes is contained the same way but does not latch.
 //
 // This is not the deployment probe. Deployment probes are /livez
-// (unconditional) and /readyz (same latch) on the admin listener; /health is
+// (unconditional) and /readyz (the same latch, plus the draining state) on the admin listener; /health is
 // for humans and simple scripts.
 func RegisterHealthRoutes(mux *http.ServeMux, healthLatch *health.Latch) {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {

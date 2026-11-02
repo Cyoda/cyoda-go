@@ -2034,10 +2034,10 @@ Authorization is done by route guards.
 The admin listener (`/livez`, `/readyz`, `/metrics` on
 `CYODA_ADMIN_PORT`, default `9091`) is served separately from the
 main API listener and has its own authentication policy. This is
-where the deployment probes live — `GET /health` on the main API
-listener (§3.4) reads the panic-recovery flag alone, while `/readyz` also fails while the node drains, and is
-a plain summary for humans and simple scripts, not the orchestrator
-contract:
+where the deployment probes live. `/readyz` fails after a recovered
+panic and from the start of shutdown; `GET /health` on the main API
+listener (§3.4) reads the panic-recovery flag alone and is a plain
+summary for humans and simple scripts, not the orchestrator contract:
 
 - **`/livez` and `/readyz`** are always unauthenticated. Kubelet
   probes carry no bearer token; authenticating these endpoints
