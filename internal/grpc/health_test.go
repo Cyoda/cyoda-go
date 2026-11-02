@@ -128,6 +128,16 @@ func TestHealthWatch_NoToken_Unauthenticated(t *testing.T) {
 	wantCode(t, err, codes.Unauthenticated)
 }
 
+func TestHealthWatch_PlainToken_PermissionDenied(t *testing.T) {
+	ready := func() error { return nil }
+	client, _ := startHealthTestServer(t, &ready)
+	stream, err := client.Watch(healthCtx(t, "plain"), &grpc_health_v1.HealthCheckRequest{})
+	if err == nil {
+		_, err = stream.Recv()
+	}
+	wantCode(t, err, codes.PermissionDenied)
+}
+
 func TestHealthList_PlainToken_PermissionDenied(t *testing.T) {
 	ready := func() error { return nil }
 	client, _ := startHealthTestServer(t, &ready)

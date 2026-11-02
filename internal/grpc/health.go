@@ -11,9 +11,9 @@ import (
 // healthServer is the standard grpc.health.v1.Health service, Check only.
 // Check answers for the server as a whole (the empty service name): SERVING
 // while readiness is nil (healthy and not draining), NOT_SERVING otherwise.
-// The answer carries the status alone; the reason a node is not ready stays
-// in the server log, because Check is the one method a caller reaches without
-// a token. Watch and List are left unimplemented and keep full authentication.
+// The answer carries the status alone; it does not state why the node is not
+// ready, because Check is the one method a caller reaches without a token.
+// Watch and List are left unimplemented and keep full authentication.
 type healthServer struct {
 	grpc_health_v1.UnimplementedHealthServer
 	readiness func() error

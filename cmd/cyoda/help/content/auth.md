@@ -55,7 +55,7 @@ All cyoda APIs accept the JWT via `Authorization: Bearer <token>`. The token cla
 
 ## ROLES
 
-`POST /api/tenants/{tenant}/oauth/token`, `GET /api/.well-known/jwks.json` and the gRPC health probe `/grpc.health.v1.Health/Check` take no bearer token at all (the token endpoint authenticates the client with HTTP Basic). Every other HTTP operation and every other gRPC call requires `ROLE_M2M` in the token's roles, except:
+`POST /api/tenants/{tenant}/oauth/token`, `GET /api/.well-known/jwks.json`, the health summary `GET /api/health` and the gRPC health probe `/grpc.health.v1.Health/Check` take no bearer token at all (the token endpoint authenticates the client with HTTP Basic). Every other HTTP operation and every other gRPC call requires `ROLE_M2M` in the token's roles, except:
 
 - `GET /account`;
 - the client and trusted-key operations (`/clients*`, `/oauth/keys/trusted*`), which require `ROLE_ADMIN`;
