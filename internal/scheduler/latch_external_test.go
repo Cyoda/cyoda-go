@@ -13,10 +13,10 @@ import (
 )
 
 // A panic recovered outside the scheduler (the HTTP Recovery middleware, the
-// gRPC server, the search reaper) latches Deps.HealthFlag false without ever
+// gRPC server, the search reaper) trips Deps.HealthLatch without ever
 // touching Service.latched. Spec §6.5: a latched pnode stops claiming, but
 // unless the heartbeat itself panicked, it keeps heartbeating.
-func TestService_ExternalHealthFlagStopsClaimingButKeepsHeartbeating(t *testing.T) {
+func TestService_ExternalHealthLatchStopsClaimingButKeepsHeartbeating(t *testing.T) {
 	var fires atomic.Int32
 	h := newHarness(t, testConfig(), firerFunc(func(context.Context, spi.ScheduledTask, int, time.Duration) workflow.RunReport {
 		fires.Add(1)
@@ -26,8 +26,8 @@ func TestService_ExternalHealthFlagStopsClaimingButKeepsHeartbeating(t *testing.
 	eventually(t, "healthy", func() bool { return h.svc.isHealthy() })
 
 	// Simulate a panic recovered elsewhere in the process: only the shared
-	// flag flips, never the scheduler's own s.latched.
-	h.flag.Trip()
+	// latch trips, never the scheduler's own s.latched.
+	h.latch.Trip()
 	baseline := h.fs.claims()
 	beats := h.fs.heartbeatCount()
 	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t1", "task-1")} })
@@ -41,7 +41,7 @@ func TestService_ExternalHealthFlagStopsClaimingButKeepsHeartbeating(t *testing.
 	}
 }
 
-// A run already in progress when the flag is latched from outside is not
+// A run already in progress when the latch is tripped from outside is not
 // cancelled: only a panic recovered inside the scheduler (latchAndCancel)
 // cancels runs in progress (§6.5).
 func TestService_ARunInProgressWhenTheFlagIsSetFromOutsideIsNotCancelled(t *testing.T) {
@@ -60,7 +60,7 @@ func TestService_ARunInProgressWhenTheFlagIsSetFromOutsideIsNotCancelled(t *test
 	h.start(t)
 	receive(t, started)
 
-	h.flag.Trip() // an external latch while the run is in flight
+	h.latch.Trip() // an external latch while the run is in flight
 
 	time.Sleep(100 * time.Millisecond)
 	if n := liveRuns(h.svc); n != 1 {
@@ -89,7 +89,7 @@ func TestService_AClaimInFlightWhenTheFlagIsSetFromOutsideIsGivenBackWithoutRunn
 	})
 	h.start(t)
 	eventually(t, "a claim in flight", func() bool { return len(h.fs.claimed()) == 1 })
-	h.flag.Trip() // an external latch while the claim is in flight
+	h.latch.Trip() // an external latch while the claim is in flight
 	from := len(h.fs.giveBackCalls())
 	close(block)
 

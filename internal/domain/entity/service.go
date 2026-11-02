@@ -390,8 +390,8 @@ func getEntityByTransactionID(ctx context.Context, store spi.EntityStore, entity
 	// unchecked anyway would let a backend that violates it (a plausible
 	// implementation slip — e.g. a sqlite pushdown querying the
 	// transaction-ID column directly and returning a tombstone row) panic
-	// this request and, via the handler's unrecovered-panic path, latch
-	// healthFlag false and take the node out of service. Pre-branch, the
+	// this request and, via the handler's unrecovered-panic path, trip
+	// healthLatch and take the node out of service. Pre-branch, the
 	// equivalent linear scan over versions skipped nil-entity versions
 	// structurally, so this can't have regressed silently before. Guard
 	// defensively instead of trusting the contract: treat a payload-less

@@ -3,7 +3,7 @@ package health
 
 import "sync"
 
-// Latch is a one-way health flag. Trip marks it tripped for good and notifies
+// Latch is a one-way health latch. Trip marks it tripped for good and notifies
 // every OnTrip callback. All methods are safe on a nil *Latch, which never
 // reports tripped.
 type Latch struct {

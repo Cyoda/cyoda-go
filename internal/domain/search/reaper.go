@@ -184,7 +184,7 @@ func (s *SearchService) runSecondPass(ctx context.Context) {
 			slog.Error("panic recovered in the reclaim sweep's second pass", "pkg", "search",
 				"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
 			// Same latch as the executor: the same store code ran here.
-			s.healthFlag.Trip()
+			s.healthLatch.Trip()
 			s.endSecondPassAfterPanic(unsent)
 		}
 	}()

@@ -10,7 +10,7 @@ import (
 // is — 500 with a ticket, /livez still answering — but it does not latch the
 // node. Probes and scrapes do no engine or store work on the application's
 // behalf, so a panic there says nothing about the correctness of the node's
-// state. The handler is built with no health flag, and the proof that nothing
+// state. The handler is built with no health latch, and the proof that nothing
 // latched is that a later /readyz on the same handler, with the readiness
 // check healthy again, answers 200.
 func TestAdminHandler_PanicIsContained(t *testing.T) {

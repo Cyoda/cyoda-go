@@ -51,7 +51,7 @@ func TestUnaryRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 		t.Fatalf("resp = %v, want nil", resp)
 	}
 	if !latch.Tripped() {
-		t.Fatal("health flag not marked; a node that has panicked has unknown state")
+		t.Fatal("health latch not tripped; a node that has panicked has unknown state")
 	}
 	if strings.Contains(err.Error(), "injected") {
 		t.Fatal("panic value leaked to the client")
@@ -71,7 +71,7 @@ func TestStreamRecoveryInterceptor_RecoversAndMarksUnhealthy(t *testing.T) {
 		t.Fatal("panic was not converted to an error; the process would have died")
 	}
 	if !latch.Tripped() {
-		t.Fatal("health flag not marked")
+		t.Fatal("health latch not tripped")
 	}
 	if strings.Contains(err.Error(), "injected") {
 		t.Fatal("panic value leaked to the client")
@@ -227,11 +227,11 @@ func findRecord(t *testing.T, records *[]capturedLogRecord, msg string) captured
 	return capturedLogRecord{}
 }
 
-// TestUnaryRecoveryInterceptor_NilHealthFlag proves the nil-healthFlag guard:
+// TestUnaryRecoveryInterceptor_NilHealthLatch proves the nil-healthLatch guard:
 // test constructors (and any future caller) that pass nil must not panic on
 // the Store call inside the panic handler itself — that would defeat the
 // entire point of the interceptor.
-func TestUnaryRecoveryInterceptor_NilHealthFlag(t *testing.T) {
+func TestUnaryRecoveryInterceptor_NilHealthLatch(t *testing.T) {
 	interceptor := UnaryRecoveryInterceptor(nil)
 	handler := func(ctx context.Context, req any) (any, error) { panic("injected") }
 
@@ -313,7 +313,7 @@ func TestServer_HandlerPanic_ProcessSurvives(t *testing.T) {
 		t.Fatalf("client-visible message %q does not carry a valid correlation ticket: %v", st.Message(), parseErr)
 	}
 	if !latch.Tripped() {
-		t.Fatal("health flag not marked through the real server path")
+		t.Fatal("health latch not tripped through the real server path")
 	}
 
 	if open := env.tracker.openTxIDs(); len(open) != 0 {
@@ -461,16 +461,16 @@ func (a *fixedAuthService) Authenticate(ctx context.Context, _ *http.Request) (c
 // with an in-memory backend and a localproc external-processing service, so a
 // test can drive genuine production code paths (including panics deep inside
 // workflow criterion evaluation) over an actual gRPC connection.
-func startRecoveryTestServer(t *testing.T, healthFlag *health.Latch) *recoveryTestServer {
+func startRecoveryTestServer(t *testing.T, healthLatch *health.Latch) *recoveryTestServer {
 	t.Helper()
-	return startRecoveryTestServerWithKeepAlive(t, healthFlag,
+	return startRecoveryTestServerWithKeepAlive(t, healthLatch,
 		KeepAliveConfig{Interval: 10 * time.Second, Timeout: 30 * time.Second})
 }
 
 // startRecoveryTestServerWithKeepAlive is startRecoveryTestServer with the
 // keep-alive configuration under the test's control, for tests whose subject
 // is the keep-alive itself and which cannot wait out the production timings.
-func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *health.Latch, ka KeepAliveConfig) *recoveryTestServer {
+func startRecoveryTestServerWithKeepAlive(t *testing.T, healthLatch *health.Latch, ka KeepAliveConfig) *recoveryTestServer {
 	t.Helper()
 
 	factory := memory.NewStoreFactory()
@@ -513,7 +513,7 @@ func startRecoveryTestServerWithKeepAlive(t *testing.T, healthFlag *health.Latch
 	registry := NewMemberRegistry()
 	srv := NewServer(authSvc, nil, registry, tracker, entityHandler, modelHandler, searchSvc,
 		tokenSigner, noCalloutJoiner(t, tokenSigner, tracker), nil /* nodeRegistry: unused, no tx-token sent */, "recovery-test-node",
-		false, 0, true, healthFlag, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} })
+		false, 0, true, healthLatch, ka, newFixedConsistency(), func() platformclock.State { return platformclock.State{} })
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

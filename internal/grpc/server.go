@@ -69,9 +69,9 @@ type KeepAliveConfig struct {
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
 // peer-address SSRF guard on the gRPC forward path (symmetric with the
 // dispatch forwarder and HTTP proxy).
-// healthFlag is the same flag the HTTP Recovery middleware stores into — a
+// healthLatch is the same latch the HTTP Recovery middleware trips — a
 // panic recovered on either door marks the node unhealthy. May be nil in
-// tests that don't care about health-flag observation.
+// tests that don't care about health latch observation.
 // clockState answers PlatformClockGetRequest; it is the state GET /platform/clock answers.
 func NewServer(
 	authSvc contract.AuthenticationService,
@@ -88,7 +88,7 @@ func NewServer(
 	otelEnabled bool,
 	localGRPCPort int,
 	allowLoopback bool,
-	healthFlag *health.Latch,
+	healthLatch *health.Latch,
 	keepAlive KeepAliveConfig,
 	cons *consistency.Service,
 	clockState func() platformclock.State,
@@ -112,13 +112,13 @@ func NewServer(
 	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
-			UnaryRecoveryInterceptor(healthFlag),
+			UnaryRecoveryInterceptor(healthLatch),
 			UnaryAuthInterceptor(authSvc),
 			UnaryRequireM2M(),
 			txRoute.unary(),
 		),
 		googlegrpc.ChainStreamInterceptor(
-			StreamRecoveryInterceptor(healthFlag),
+			StreamRecoveryInterceptor(healthLatch),
 			StreamAuthInterceptor(authSvc),
 			StreamRequireM2M(),
 			txRoute.stream(),

@@ -1,6 +1,7 @@
 package health
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,5 +73,47 @@ func TestLatch_NilIsSafe(t *testing.T) {
 	l.Trip()
 	if l.Tripped() {
 		t.Fatal("nil latch reports tripped")
+	}
+}
+
+// A callback registered while Trip runs must still run exactly once, whichever
+// side of the trip the registration lands on.
+func TestLatch_OnTripRacingTrip(t *testing.T) {
+	const iterations = 2000
+	for i := 0; i < iterations; i++ {
+		l := NewLatch()
+		var runs atomic.Int32
+		ran := make(chan struct{}, 4)
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			l.OnTrip(func() { runs.Add(1); ran <- struct{}{} })
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			l.Trip()
+		}()
+		close(start)
+		wg.Wait()
+
+		select {
+		case <-ran:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: callback never ran", i)
+		}
+		// A second run, if there were one, is already queued once the
+		// first has finished; give it a bounded window to show itself.
+		select {
+		case <-ran:
+			t.Fatalf("iteration %d: callback ran twice", i)
+		case <-time.After(time.Millisecond):
+		}
+		if got := runs.Load(); got != 1 {
+			t.Fatalf("iteration %d: callback ran %d times, want 1", i, got)
+		}
 	}
 }

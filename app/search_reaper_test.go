@@ -44,7 +44,7 @@ func newReclaimService(t *testing.T, factory *memory.StoreFactory, store spi.Asy
 
 // TestReclaimStaleTick_RecoversPanicAndLatchesHealth pins that one reclaim
 // tick recovers a panic raised anywhere beneath it (here a nil job from a
-// misbehaving ClaimStale), latches the node-health flag the same way the
+// misbehaving ClaimStale), trips the health latch the same way the
 // async-search executor's own recovery does, and returns normally so the
 // ticker loop keeps running.
 func TestReclaimStaleTick_RecoversPanicAndLatchesHealth(t *testing.T) {
@@ -62,7 +62,7 @@ func TestReclaimStaleTick_RecoversPanicAndLatchesHealth(t *testing.T) {
 	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, latch)
 
 	if !latch.Tripped() {
-		t.Error("healthFlag = true after a recovered panic in the reclaim tick; a node that has panicked has state nothing has verified")
+		t.Error("healthLatch untripped after a recovered panic in the reclaim tick; a node that has panicked has state nothing has verified")
 	}
 }
 
@@ -83,7 +83,7 @@ func TestReclaimStaleTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, latch)
 
 	if latch.Tripped() {
-		t.Error("healthFlag = false after an uneventful reclaim tick")
+		t.Error("healthLatch tripped after an uneventful reclaim tick")
 	}
 }
 
@@ -103,7 +103,7 @@ func TestReapExpiredSnapshotsTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 	reapExpiredSnapshotsTick(context.Background(), realAsync, time.Hour, latch)
 
 	if latch.Tripped() {
-		t.Error("healthFlag = false after an uneventful snapshot reaper tick")
+		t.Error("healthLatch tripped after an uneventful snapshot reaper tick")
 	}
 }
 

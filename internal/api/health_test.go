@@ -11,10 +11,10 @@ import (
 )
 
 func TestHealthEndpointUp(t *testing.T) {
-	healthFlag := health.NewLatch()
+	healthLatch := health.NewLatch()
 
 	mux := http.NewServeMux()
-	internalapi.RegisterHealthRoutes(mux, healthFlag)
+	internalapi.RegisterHealthRoutes(mux, healthLatch)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -34,11 +34,11 @@ func TestHealthEndpointUp(t *testing.T) {
 }
 
 func TestHealthEndpointDown(t *testing.T) {
-	healthFlag := health.NewLatch()
-	healthFlag.Trip()
+	healthLatch := health.NewLatch()
+	healthLatch.Trip()
 
 	mux := http.NewServeMux()
-	internalapi.RegisterHealthRoutes(mux, healthFlag)
+	internalapi.RegisterHealthRoutes(mux, healthLatch)
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

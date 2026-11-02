@@ -106,7 +106,7 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 	}
 
 	latch := health.NewLatch()
-	svc := newSecondPassService(t, factory, store).WithHealthFlag(latch)
+	svc := newSecondPassService(t, factory, store).WithHealthLatch(latch)
 
 	if _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1); err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
@@ -116,7 +116,7 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 		t.Fatal("no owed write was sent")
 	}
 	if !latch.Tripped() {
-		t.Error("healthFlag = true after a panic in the second pass")
+		t.Error("healthLatch untripped after a panic in the second pass")
 	}
 
 	// Both jobs were just claimed, so this sweep claims nothing and owes

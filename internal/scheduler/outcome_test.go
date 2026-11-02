@@ -174,7 +174,7 @@ func TestService_OutcomeWriteRetriedThroughAnOutage(t *testing.T) {
 			t.Errorf("%d outcome writes, want 3", n)
 		}
 	})
-	if h.flag.Tripped() {
+	if h.latch.Tripped() {
 		t.Error("an outage latched the node")
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
@@ -226,7 +226,7 @@ func TestService_ClearOwnMarkRetriedThroughAnOutage(t *testing.T) {
 	if a := h.fs.attemptsRecorded()[0]; !a.ClearOwnMark || a.NotCounted {
 		t.Errorf("attempt = %+v, want a counted attempt that clears the run's own mark", a)
 	}
-	if h.flag.Tripped() {
+	if h.latch.Tripped() {
 		t.Error("an outage latched the node")
 	}
 }
@@ -244,7 +244,7 @@ func TestService_LockAndPoolErrorsAreRetriedWithoutLatching(t *testing.T) {
 	})
 	h.start(t)
 	eventually(t, "the attempt accepted", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
-	if h.flag.Tripped() {
+	if h.latch.Tripped() {
 		t.Error("a lock wait, a full pool, a conflict or a busy row latched the node")
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
@@ -263,7 +263,7 @@ func TestService_StoreRejectionLatchesAndKeepsTheClaim(t *testing.T) {
 	})
 	h.start(t)
 	token := receive(t, tokens)
-	eventually(t, "the node latched", func() bool { return h.flag.Tripped() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	claims := h.fs.claims()
 	time.Sleep(50 * time.Millisecond)
 	h.fs.with(func() {

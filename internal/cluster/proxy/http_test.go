@@ -405,7 +405,7 @@ func TestProxy_PreservesQueryString(t *testing.T) {
 
 // An upstream that hangs up mid-body makes ReverseProxy panic with
 // http.ErrAbortHandler. Under Recovery that must stay a silent abort: the
-// node's health flag is untouched.
+// node's health latch is untouched.
 func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", "1000")
@@ -426,8 +426,8 @@ func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	healthFlag := health.NewLatch()
-	h := middleware.Recovery(healthFlag)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler()))
+	healthLatch := health.NewLatch()
+	h := middleware.Recovery(healthLatch)(proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler()))
 	srv := httptest.NewServer(h) // a real server, so the re-raised sentinel reaches net/http
 	defer srv.Close()
 
@@ -438,7 +438,7 @@ func TestHTTPProxy_UpstreamHangupMidBody_DoesNotLatchHealth(t *testing.T) {
 		_, _ = io.ReadAll(resp.Body)
 		resp.Body.Close()
 	}
-	if healthFlag.Tripped() {
+	if healthLatch.Tripped() {
 		t.Fatal("a proxied client hang-up latched the node unhealthy")
 	}
 }

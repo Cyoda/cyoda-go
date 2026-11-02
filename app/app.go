@@ -435,7 +435,7 @@ func New(cfg Config) *App {
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
-		WithHealthFlag(a.healthLatch).
+		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
@@ -552,7 +552,7 @@ func New(cfg Config) *App {
 		TxManager:          a.transactionManager,
 		Firer:              a.workflowEngine,
 		Clock:              clk,
-		HealthFlag:         a.healthLatch,
+		HealthLatch:        a.healthLatch,
 		Meter:              observability.Meter(),
 		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
 	})
@@ -616,7 +616,7 @@ func New(cfg Config) *App {
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	// Infrastructure routes (no auth, receives health flag)
+	// Infrastructure routes (no auth, receives the health latch)
 	internalapi.RegisterHealthRoutes(mux, a.healthLatch)
 
 	// Auth service route registration is split into two strict groups so
@@ -775,8 +775,8 @@ func New(cfg Config) *App {
 	return a
 }
 
-// latchOnPanic recovers a panic beneath a reaper sweep and latches healthLatch
-// false, exactly as the async-search executor's own recovery does: a reaper
+// latchOnPanic recovers a panic beneath a reaper sweep and trips healthLatch,
+// exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
 // process down, and a node that has panicked has state nothing has verified.
 // Recovering also keeps the ticker alive, so one bad tick does not silently
@@ -893,7 +893,7 @@ func (a *App) Handler() http.Handler { return a.handler }
 //     and keeps the check honest for any other caller.
 //   - A panic was recovered on some door. The node's state is then
 //     unverified, so it must stop receiving traffic — fail closed. Nothing
-//     resets the flag.
+//     resets the latch.
 //
 // What failing readiness achieves is bounded: Kubernetes drops the pod from
 // the client-facing Service, so new client connections stop. Peers resolve
@@ -906,7 +906,7 @@ func (a *App) ReadinessCheck() error {
 		return fmt.Errorf("storage not initialized")
 	}
 	// A nil latch (an App not built by New()) reads as not tripped.
-	if a.healthLatch != nil && a.healthLatch.Tripped() {
+	if a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
 	}
 	return nil
