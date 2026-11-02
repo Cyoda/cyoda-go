@@ -8,6 +8,7 @@ import (
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -18,7 +19,8 @@ import (
 // UnaryAuthInterceptor creates a unary server interceptor for authentication.
 // It extracts the authorization header from gRPC metadata, delegates to the
 // AuthenticationService, and injects the resulting UserContext into the request
-// context.
+// context. The health Check is passed through unauthenticated (see
+// isUnauthenticatedMethod).
 func UnaryAuthInterceptor(authSvc contract.AuthenticationService) googlegrpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
@@ -26,6 +28,9 @@ func UnaryAuthInterceptor(authSvc contract.AuthenticationService) googlegrpc.Una
 		info *googlegrpc.UnaryServerInfo,
 		handler googlegrpc.UnaryHandler,
 	) (any, error) {
+		if isUnauthenticatedMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
 		authCtx, err := authenticateFromMetadata(ctx, authSvc)
 		if err != nil {
 			slog.Warn("gRPC auth failed", "pkg", "grpc", "method", info.FullMethod, "err", err)
@@ -33,6 +38,15 @@ func UnaryAuthInterceptor(authSvc contract.AuthenticationService) googlegrpc.Una
 		}
 		return handler(authCtx, req)
 	}
+}
+
+// isUnauthenticatedMethod reports whether a unary method is served without a
+// token: only grpc.health.v1.Health/Check, by exact full-method name, because
+// probes cannot authenticate. It answers serving or not serving and nothing
+// else. Watch and List of the same service, and every stream, are
+// authenticated and role-checked as any other method is.
+func isUnauthenticatedMethod(fullMethod string) bool {
+	return fullMethod == grpc_health_v1.Health_Check_FullMethodName
 }
 
 // StreamAuthInterceptor creates a stream server interceptor for authentication.
