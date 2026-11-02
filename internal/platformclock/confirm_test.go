@@ -3,6 +3,8 @@ package platformclock
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -97,12 +99,23 @@ func TestClusterConfirm_PushFails(t *testing.T) {
 }
 
 func TestClusterConfirm_EchoDiffers(t *testing.T) {
-	f := &pushFake{byNode: map[string]func(context.Context, Setting) (Setting, error){
-		"a": func(_ context.Context, s Setting) (Setting, error) { s.Version = 4; return s, nil },
-	}}
-	_, err := Cluster("b", peersOf("a", "c"), f.push, time.Second)(context.Background(), confirmSetting)
-	if nc := notConfirmed(t, err); !slices.Equal(nc.Nodes, []string{"a"}) {
-		t.Fatalf("%v", nc.Nodes)
+	fields := map[string]func(*Setting){
+		"StartUnixMicro":  func(s *Setting) { s.StartUnixMicro++ },
+		"AnchorUnixMicro": func(s *Setting) { s.AnchorUnixMicro++ },
+		"RatePPM":         func(s *Setting) { s.RatePPM++ },
+		"Version":         func(s *Setting) { s.Version++ },
+		"Writer":          func(s *Setting) { s.Writer += "x" },
+	}
+	for name, mutate := range fields {
+		t.Run(name, func(t *testing.T) {
+			f := &pushFake{byNode: map[string]func(context.Context, Setting) (Setting, error){
+				"a": func(_ context.Context, s Setting) (Setting, error) { mutate(&s); return s, nil },
+			}}
+			_, err := Cluster("b", peersOf("a", "c"), f.push, time.Second)(context.Background(), confirmSetting)
+			if nc := notConfirmed(t, err); !slices.Equal(nc.Nodes, []string{"a"}) {
+				t.Fatalf("%v", nc.Nodes)
+			}
+		})
 	}
 }
 
@@ -190,6 +203,53 @@ func TestClusterConfirm_ClientGone(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the round did not stop")
+	}
+}
+
+type warnCounter struct {
+	slog.Handler
+	mu sync.Mutex
+	n  int
+}
+
+func (w *warnCounter) Enabled(context.Context, slog.Level) bool { return true }
+func (w *warnCounter) Handle(_ context.Context, r slog.Record) error {
+	if r.Level >= slog.LevelWarn {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.n++
+	}
+	return nil
+}
+
+func TestClusterConfirm_ClientGoneLogsNoWarn(t *testing.T) {
+	wc := &warnCounter{Handler: slog.NewTextHandler(io.Discard, nil)}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(wc))
+	defer slog.SetDefault(prev)
+
+	f := &pushFake{
+		started: make(chan string, 1),
+		byNode: map[string]func(context.Context, Setting) (Setting, error){
+			"a": func(ctx context.Context, _ Setting) (Setting, error) { <-ctx.Done(); return Setting{}, ctx.Err() },
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := Cluster("b", peersOf("a"), f.push, 5*time.Second)(ctx, confirmSetting)
+		done <- err
+	}()
+	<-f.started
+	cancel()
+	if err := <-done; !errors.Is(err, common.ErrClientGone) {
+		t.Fatalf("want client gone, got %v", err)
+	}
+	wc.mu.Lock()
+	defer wc.mu.Unlock()
+	if wc.n != 0 {
+		t.Fatalf("%d WARN records for a departed client", wc.n)
 	}
 }
 

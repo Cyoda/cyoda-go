@@ -20,7 +20,8 @@ type Peer struct {
 }
 
 // Push sends a setting to one peer and returns the setting the peer holds
-// afterwards.
+// afterwards. It must return when ctx ends: the round's bound
+// (CYODA_PROXY_TIMEOUT) relies on it.
 type Push func(ctx context.Context, peer Peer, s Setting) (Setting, error)
 
 // Confirm pushes a setting to every node and returns the ids of the nodes
@@ -62,24 +63,27 @@ func Cluster(self string, peers func() []Peer, push Push, bound time.Duration) C
 			mu        sync.Mutex
 			confirmed = []string{self}
 			failed    []string
+			reasons   = map[string][]any{}
+			peerOf    = map[string]Peer{}
 			wg        sync.WaitGroup
 		)
-		record := func(id string, ok bool) {
+		record := func(p Peer, ok bool, reason string, extra ...any) {
 			mu.Lock()
 			defer mu.Unlock()
 			if ok {
-				confirmed = append(confirmed, id)
-			} else {
-				failed = append(failed, id)
+				confirmed = append(confirmed, p.NodeID)
+				return
 			}
+			failed = append(failed, p.NodeID)
+			peerOf[p.NodeID] = p
+			reasons[p.NodeID] = append([]any{reason}, extra...)
 		}
 		for _, p := range peers() {
 			if p.NodeID == self {
 				continue
 			}
 			if p.Addr == "" {
-				warnNotConfirmed(p, "no usable address")
-				record(p.NodeID, false)
+				record(p, false, "no usable address")
 				continue
 			}
 			wg.Add(1)
@@ -88,13 +92,11 @@ func Cluster(self string, peers func() []Peer, push Push, bound time.Duration) C
 				echo, err := push(round, p, s)
 				switch {
 				case err != nil:
-					warnNotConfirmed(p, err.Error())
-					record(p.NodeID, false)
+					record(p, false, err.Error())
 				case echo != s:
-					warnNotConfirmed(p, "echoed a different setting", "version", echo.Version, "writer", echo.Writer)
-					record(p.NodeID, false)
+					record(p, false, "echoed a different setting", "version", echo.Version, "writer", echo.Writer)
 				default:
-					record(p.NodeID, true)
+					record(p, true, "")
 				}
 			}()
 		}
@@ -105,6 +107,10 @@ func Cluster(self string, peers func() []Peer, push Push, bound time.Duration) C
 		}
 		if len(failed) > 0 {
 			sort.Strings(failed)
+			for _, id := range failed {
+				r := reasons[id]
+				warnNotConfirmed(peerOf[id], r[0].(string), r[1:]...)
+			}
 			return nil, &NotConfirmedError{Nodes: failed}
 		}
 		sort.Strings(confirmed)
