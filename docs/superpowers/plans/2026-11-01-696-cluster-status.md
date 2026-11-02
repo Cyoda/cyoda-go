@@ -41,11 +41,11 @@ Tasks 10–16 use these by the role named here. Task 9 writes the names that lan
 
 | Role | Landed name |
 |---|---|
-| Registry method that lists every directory member, including one whose metadata does not parse | |
-| The `HTTPForwarder` that `app.New` builds in cluster mode whatever `ExternalProcessing` is | |
-| How the clock route is registered beside the hand-over route (handler type, constructor) | |
-| The e2e cluster fixture that joins a node through a real node (if one landed) | |
-| The test clock's setting accessor (today `(*platformclock.Test).Setting()`) | |
+| Registry method that lists every directory member, including one whose metadata does not parse | `(*registry.Gossip).Members() []registry.Member` (`internal/cluster/registry/gossip.go:485`); `Member{NodeID, Addr}` (`gossip.go:477`), `Addr` empty when the metadata does not parse. A method on the concrete `*Gossip`, not on a registry interface. |
+| The `HTTPForwarder` that `app.New` builds in cluster mode whatever `ExternalProcessing` is | The local `forwarder *clusterdispatch.HTTPForwarder` in `app.New` (`app/app.go:504`), built by `clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)` under `if cfg.Cluster.Enabled` (`app/app.go:513`, loopback opt-in `:517`); used by the dispatch router (`:528`) and `clockPush(forwarder)` (`:621`). Peer call shape: `(*HTTPForwarder).PushClock(ctx, peerNodeID, addr, s)` (`internal/cluster/dispatch/forwarder.go:143`). |
+| How the clock route is registered beside the hand-over route (handler type, constructor) | `dispatch.ClockHandler` (`internal/cluster/dispatch/clock.go:30`), `NewClockHandler(auth PeerAuth, holder ClockHolder)` (`clock.go:36`), `Register(mux)` adds `POST ` + `ClockPath` = `/internal/dispatch/clock` (`clock.go:41`, `:12`). Registered once on `rootMux` beside `NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)` under `if cfg.Cluster.Enabled` (`app/app.go:760-761`). Sealed answers go through the shared `writeSealed(w, auth, binding, v, attrs...)` (`internal/cluster/dispatch/handler.go:156`). |
+| The e2e cluster fixture that joins a node through a real node (if one landed) | `clockClusterNode(t, s *schedDB, key, nodeID, seed string, clockOn bool) *callbackHarness` (`internal/e2e/platform_clock_test.go:726`) — a full app node joining through `seed`; the seed is `newClockSeed(t, serve bool) clockSeed` (`platform_clock_test.go:682`), a bare gossip node running the platform clock (and the clock route with `serve`), not a full app node; `awaitMembers(t, h, ids...)` (`platform_clock_test.go:746`) waits on `NodeRegistry().List`. |
+| The test clock's setting accessor (today `(*platformclock.Test).Setting()`) | Unchanged: `(*platformclock.Test).Setting() Setting` (`internal/platformclock/clock.go:95`). |
 
 ---
 
