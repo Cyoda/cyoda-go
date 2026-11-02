@@ -63,3 +63,23 @@ func TestGossipRegistry_UnparseableMetadata_NotAlive_HTTP503(t *testing.T) {
 		t.Errorf("body %s does not carry %s", rec.Body.String(), common.ErrCodeTransactionNodeUnavailable)
 	}
 }
+
+func TestGossip_Members_IncludesUnparseableWithoutAddress(t *testing.T) {
+	r := startInternalGossip(t, "members-1", 200*time.Millisecond)
+	startRawPeer(t, "members-stranger", []byte("not json"), gossipAddr(r))
+	waitFor(t, 5*time.Second, "memberlist on members-1 has the stranger as an alive member", func() bool {
+		_, ok := r.member("members-stranger")
+		return ok
+	})
+
+	got := map[string]string{}
+	for _, m := range r.Members() {
+		got[m.NodeID] = m.Addr
+	}
+	if addr, ok := got["members-1"]; !ok || addr != "http://members-1.test:8080" {
+		t.Errorf("Members missing this node with its address: %v", got)
+	}
+	if addr, ok := got["members-stranger"]; !ok || addr != "" {
+		t.Errorf("Members must list the unparseable member with an empty Addr: %v", got)
+	}
+}

@@ -33,3 +33,8 @@ func (g *Gossip) Crash() {
 
 // LocalStateForTest returns what memberlist would send in a push/pull exchange.
 func (g *Gossip) LocalStateForTest() []byte { return g.delegate.LocalState(false) }
+
+// MergeRemoteStateForTest delivers a push/pull payload as memberlist would.
+func (g *Gossip) MergeRemoteStateForTest(buf []byte, join bool) {
+	g.delegate.MergeRemoteState(buf, join)
+}

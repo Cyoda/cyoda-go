@@ -459,6 +459,36 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 	return nodes, nil
 }
 
+// Member is one member of the directory: NodeID is the memberlist name (the
+// node's CYODA_NODE_ID) and Addr its HTTP address from the metadata, empty
+// when the metadata does not parse.
+type Member struct {
+	NodeID string
+	Addr   string
+}
+
+// Members returns every member of the directory, this node included and
+// unsorted. A member whose metadata does not parse is kept, with an empty
+// Addr: it is still a member, and a round over the members must not pass it by.
+func (g *Gossip) Members() []Member {
+	all := g.dir.all()
+	out := make([]Member, 0, len(all))
+	for _, m := range all {
+		nm, err := parseMeta(m.Meta)
+		if err != nil {
+			slog.Warn("member has unparseable metadata; listing it without an address",
+				"pkg", "cluster/registry",
+				"memberName", m.Name,
+				"err", err,
+			)
+			out = append(out, Member{NodeID: m.Name})
+			continue
+		}
+		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr})
+	}
+	return out
+}
+
 // outstandingLists counts the alive peers whose announced list is not the one
 // held. It runs on the metrics reader's goroutine and reads the directory.
 func (g *Gossip) outstandingLists() int64 {
@@ -623,7 +653,8 @@ func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 }
 
 // LocalState and MergeRemoteState carry the optional push/pull state set by
-// Gossip.SetStateExchange; with none registered they do nothing.
+// Gossip.SetStateExchange; with none registered they do nothing. The merge
+// runs on a join only.
 func (d *gossipDelegate) LocalState(bool) []byte {
 	if ex := d.ex.Load(); ex != nil {
 		return ex.local()
@@ -631,7 +662,12 @@ func (d *gossipDelegate) LocalState(bool) []byte {
 	return nil
 }
 
-func (d *gossipDelegate) MergeRemoteState(buf []byte, _ bool) {
+// MergeRemoteState merges the pushed state on a join only; a periodic
+// exchange is not merged.
+func (d *gossipDelegate) MergeRemoteState(buf []byte, join bool) {
+	if !join {
+		return
+	}
 	if ex := d.ex.Load(); ex != nil {
 		ex.merge(buf)
 	}
