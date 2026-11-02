@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 )
 
 // countingStoreFactory records the number of Close() invocations. The other
@@ -55,7 +57,7 @@ func (f *countingStoreFactory) Close() error {
 // graceful drain.
 func TestApp_ShutdownThenClose_StoreFactoryClosedExactlyOnce(t *testing.T) {
 	fake := &countingStoreFactory{}
-	a := &App{storeFactory: fake}
+	a := &App{storeFactory: fake, lifecycle: lifecycle.New(health.NewLatch())}
 
 	a.Shutdown()
 	if err := a.Close(); err != nil {

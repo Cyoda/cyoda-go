@@ -91,12 +91,8 @@ func (l *Lifecycle) refreshLocked() {
 	}
 }
 
-// MarkStarted records that startup finished. MarkStarted, BeginDraining and
-// Draining are safe on a nil *Lifecycle (an App built without New).
+// MarkStarted records that startup finished.
 func (l *Lifecycle) MarkStarted() {
-	if l == nil {
-		return
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.started = true
@@ -105,9 +101,6 @@ func (l *Lifecycle) MarkStarted() {
 
 // BeginDraining records that the node began draining.
 func (l *Lifecycle) BeginDraining() {
-	if l == nil {
-		return
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.draining = true
@@ -116,9 +109,6 @@ func (l *Lifecycle) BeginDraining() {
 
 // Draining reports whether the node began draining.
 func (l *Lifecycle) Draining() bool {
-	if l == nil {
-		return false
-	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.draining

@@ -170,11 +170,43 @@ func TestLifecycle_ConcurrentTripAndDrain_MonotoneDelivery(t *testing.T) {
 	}
 }
 
-func TestLifecycle_NilIsSafe(t *testing.T) {
-	var l *Lifecycle
-	l.MarkStarted()
-	l.BeginDraining()
-	if l.Draining() {
-		t.Fatal("nil lifecycle reports draining")
+func TestLifecycle_OnChangeAfterTrip_NoDuplicateUnhealthy(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		latch := health.NewLatch()
+		l := New(latch)
+		var mu sync.Mutex
+		counts := map[int]int{}
+		listen := func(id int) func(State) {
+			return func(s State) {
+				if s != Unhealthy {
+					return
+				}
+				mu.Lock()
+				defer mu.Unlock()
+				counts[id]++
+			}
+		}
+		l.OnChange(listen(0))
+		latch.Trip()
+		l.OnChange(listen(1))
+		deadline := time.Now().Add(2 * time.Second)
+		for {
+			mu.Lock()
+			done := counts[0] >= 1 && counts[1] >= 1
+			mu.Unlock()
+			if done {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("iteration %d: UNHEALTHY not delivered: %v", i, counts)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(time.Millisecond)
+		mu.Lock()
+		if counts[0] != 1 || counts[1] != 1 {
+			t.Fatalf("iteration %d: UNHEALTHY deliveries %v, want one each", i, counts)
+		}
+		mu.Unlock()
 	}
 }

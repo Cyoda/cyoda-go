@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 )
@@ -53,11 +52,7 @@ func TestLatchTrip_SetsUnhealthy(t *testing.T) {
 	a := lifecycleTestApp(t)
 	t.Cleanup(func() { a.Shutdown(); _ = a.Close() })
 	recoverPanicOnce(a)
-	deadline := time.Now().Add(2 * time.Second)
-	for a.Lifecycle().State() != lifecycle.Unhealthy {
-		if time.Now().After(deadline) {
-			t.Fatalf("state = %s, want UNHEALTHY", a.Lifecycle().State())
-		}
-		time.Sleep(time.Millisecond)
+	if got := a.Lifecycle().State(); got != lifecycle.Unhealthy {
+		t.Fatalf("state = %s, want UNHEALTHY", got)
 	}
 }

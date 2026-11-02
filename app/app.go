@@ -99,7 +99,8 @@ type App struct {
 	// Notification-callback recoveries (member-registry onChange, auth
 	// key-store reconcile broadcast) deliberately do not. Nothing resets it: a
 	// node that has panicked has state nothing has verified. Read by
-	// RegisterHealthRoutes (GET /health) and by ReadinessCheck (/readyz).
+	// RegisterHealthRoutes (GET /health), by ReadinessCheck (/readyz) and by
+	// the lifecycle, which turns a trip into UNHEALTHY.
 	healthLatch *health.Latch
 
 	// lifecycle derives the node's STARTING/NORMAL/DRAINING/UNHEALTHY state
@@ -925,7 +926,7 @@ func (a *App) ReadinessCheck() error {
 // DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
 // on a signal before the servers drain, so runs still in progress keep their
 // compute-node streams and callback routes. Shutdown and Close drain it again;
-// every call after the first does nothing.
+// every call after the first does nothing. It also sets the node to DRAINING.
 func (a *App) DrainScheduler(ctx context.Context) {
 	a.lifecycle.BeginDraining()
 	if a.scheduler != nil {
@@ -1056,7 +1057,7 @@ func (a *App) StopGRPC() {
 // resources. The storeFactory is intentionally NOT closed here — Close()
 // is the single teardown path for that, so callers invoking Shutdown()
 // followed by Close() (the runServers sequence) close the factory
-// exactly once.
+// exactly once. It also sets the node to DRAINING.
 func (a *App) Shutdown() {
 	a.lifecycle.BeginDraining()
 	// A server failed, or the binary did not drain the scheduler first: the
