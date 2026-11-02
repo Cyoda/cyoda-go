@@ -579,8 +579,9 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return nil
 }
 
-// SetStateExchange registers the push/pull state a joining or syncing peer
-// exchanges: local supplies this node's state, merge receives a peer's. merge
+// SetStateExchange registers the push/pull state exchanged with a peer: local
+// supplies this node's state, merge receives a peer's pushed state on a join
+// only (a periodic exchange is not merged). merge
 // runs on memberlist's goroutine and must not block. Without it the exchange
 // carries nothing.
 func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
@@ -598,7 +599,8 @@ type stateExchange struct {
 // implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
 // Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
 // carry the optional state set by Gossip.SetStateExchange and are no-ops
-// without it.
+// without it; LocalState is sent on every exchange, but the pushed state is
+// merged on a join only.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte

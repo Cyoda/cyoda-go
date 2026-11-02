@@ -3,6 +3,7 @@ package registry_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -73,15 +74,25 @@ func TestGossip_MergeOnlyOnJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer g.Deregister(context.Background(), "mj-1")
+	var mu sync.Mutex
 	var calls []string
-	g.SetStateExchange(func() []byte { return nil }, func(b []byte) { calls = append(calls, string(b)) })
+	g.SetStateExchange(func() []byte { return nil }, func(b []byte) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, string(b))
+	})
+	snapshot := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]string(nil), calls...)
+	}
 
 	g.MergeRemoteStateForTest([]byte("x"), false)
-	if len(calls) != 0 {
-		t.Fatalf("a periodic exchange merged: %v", calls)
+	if c := snapshot(); len(c) != 0 {
+		t.Fatalf("a periodic exchange merged: %v", c)
 	}
 	g.MergeRemoteStateForTest([]byte("x"), true)
-	if len(calls) != 1 || calls[0] != "x" {
-		t.Fatalf("a join exchange must merge once with x, got %v", calls)
+	if c := snapshot(); len(c) != 1 || c[0] != "x" {
+		t.Fatalf("a join exchange must merge once with x, got %v", c)
 	}
 }
