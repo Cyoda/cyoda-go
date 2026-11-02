@@ -2,11 +2,15 @@ package registry
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/memberlist"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 )
 
 func startMeteredGossip(t *testing.T, id string) (*Gossip, *sdkmetric.ManualReader) {
@@ -102,4 +106,69 @@ func TestGossipMetrics_SendFailures(t *testing.T) {
 		v, ok := int64Value(t, reader, "cyoda.cluster.tags.send_failures")
 		return ok && v >= 1
 	})
+}
+
+func TestMemberCountMetric(t *testing.T) {
+	cfg := GossipConfig{NodeID: "self", NodeAddr: "http://self.test:8080"}
+	selfMeta, err := marshalMeta(cfg, listVersion{Epoch: 1}, lifecycle.Normal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerMeta, err := marshalMeta(GossipConfig{NodeID: "peer", NodeAddr: "http://peer.test:8080"}, listVersion{Epoch: 1}, lifecycle.Draining)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g := &Gossip{cfg: cfg, dir: newDirectory()}
+	g.dir.set(&memberlist.Node{Name: "self", Meta: selfMeta})
+	g.dir.set(&memberlist.Node{Name: "peer", Meta: peerMeta})
+	g.dir.set(&memberlist.Node{Name: "garbled", Meta: []byte("not json")})
+
+	reader := sdkmetric.NewManualReader()
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	t.Cleanup(func() { _ = mp.Shutdown(context.Background()) })
+	m, err := newTagMetrics(mp.Meter("test"), func() int64 { return 0 }, g.memberStateCounts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	collect := func() (metricdata.Metrics, bool) {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatalf("collect: %v", err)
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, mt := range sm.Metrics {
+				if mt.Name == "cyoda.cluster.member.count" {
+					return mt, true
+				}
+			}
+		}
+		return metricdata.Metrics{}, false
+	}
+
+	mt, ok := collect()
+	if !ok {
+		t.Fatal("cyoda.cluster.member.count is not exposed")
+	}
+	if mt.Unit != "{member}" {
+		t.Errorf("unit = %q, want {member}", mt.Unit)
+	}
+	gauge, ok := mt.Data.(metricdata.Gauge[int64])
+	if !ok {
+		t.Fatalf("data is %T, want Gauge[int64]", mt.Data)
+	}
+	got := map[string]int64{}
+	for _, dp := range gauge.DataPoints {
+		v, _ := dp.Attributes.Value("cyoda.cluster.member.state")
+		got[v.AsString()] = dp.Value
+	}
+	want := map[string]int64{"starting": 0, "normal": 1, "draining": 1, "unhealthy": 0}
+	if !maps.Equal(got, want) {
+		t.Errorf("counts = %v, want %v", got, want)
+	}
+
+	m.close()
+	if _, ok := collect(); ok {
+		t.Error("cyoda.cluster.member.count is still exposed after close")
+	}
 }

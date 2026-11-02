@@ -122,6 +122,7 @@ regardless of `CYODA_OTEL_ENABLED`:
 
 - `cyoda.cluster.tags.send_failures` — `Int64Counter` — reliable tag-list messages to a peer that failed to send; labeled by `msg` (`list`, `request`). A failed send is repaired by the peer fetching the list; a steady rate points at a peer that gossip reaches and TCP does not.
 - `cyoda.cluster.tags.lists_outstanding` — `Int64ObservableGauge` — alive peers whose announced tag list this node does not hold yet. Briefly non-zero after a join or a compute node attaching; alarm when it stays non-zero, because callouts are not handed to a peer whose tags are unknown.
+- `cyoda.cluster.member.count` — `Int64ObservableGauge`, unit `{member}` — live cluster members, this node included, per lifecycle state; labeled by `cyoda.cluster.member.state` (`starting`, `normal`, `draining`, `unhealthy`). All four states are reported on every collection, `0` for a state no member holds. A member whose gossip metadata cannot be read is not counted.
 
 Auth metrics are exposed whenever IAM runs in `jwt` mode, regardless of `CYODA_OTEL_ENABLED`:
 
@@ -165,6 +166,7 @@ Cyoda-specific span attribute keys defined in `internal/observability/attrs.go`:
 - `criteria.matches` — boolean result of a criteria evaluation
 - `type` — callout kind label for the `cyoda.dispatch.*` and `cyoda.callout.*` metrics (`processor`, `criteria` or `function`)
 - `outcome` — outcome label of `cyoda.callout.tries`, `cyoda.callout.handovers`, `cyoda.callout.superseded`, `cyoda.scheduler.runs` and `cyoda.scheduler.run.duration`; a closed set for each
+- `cyoda.cluster.member.state` — lifecycle-state label of `cyoda.cluster.member.count` (`starting`, `normal`, `draining`, `unhealthy`)
 - `reason` — claim label of `cyoda.scheduler.claims` (`due` or `owner_lost`)
 - `pool` — PostgreSQL pool label of `cyoda.storage.pool.connections`: `main` (entity transactions and `GET /scheduled-tasks`), `scheduler` (the scheduler's claims and its retry writes (`RecordAttempt`), and the async-search heartbeat and claim; a FAILED outcome commits with its audit event on the main pool) or `heartbeat` (the scheduler heartbeat's own connection)
 - `callout.tries` — number of tries a callout made, on its span

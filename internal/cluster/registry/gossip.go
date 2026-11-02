@@ -213,7 +213,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	g.list = ml
 	list.Store(ml)
 
-	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists)
+	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists, g.memberStateCounts)
 	if err != nil {
 		_ = ml.Shutdown()
 		return nil, fmt.Errorf("failed to create membership metrics: %w", err)
@@ -499,6 +499,19 @@ func (g *Gossip) Members() []Member {
 		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr})
 	}
 	return out
+}
+
+// memberStateCounts counts the live members, this node included, per lifecycle
+// state. A member whose metadata does not parse or names no valid state is not
+// counted. It runs on the metrics reader's goroutine and reads the directory.
+func (g *Gossip) memberStateCounts() map[lifecycle.State]int64 {
+	counts := make(map[lifecycle.State]int64)
+	for _, m := range g.dir.all() {
+		if st, ok := memberState(m.Meta); ok {
+			counts[st]++
+		}
+	}
+	return counts
 }
 
 // outstandingLists counts the alive peers whose announced list is not the one
