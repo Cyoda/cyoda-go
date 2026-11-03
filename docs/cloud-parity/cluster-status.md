@@ -1,5 +1,7 @@
 # Cluster status, node lifecycle and health probes — Cloud twin-alignment spec
 
+CaaS ticket: [CP-3993](https://cyoda1.atlassian.net/browse/CP-3993)
+
 This document is the contract Cyoda Cloud implements to stay aligned with
 cyoda-go's cluster status read, its node lifecycle states, its gRPC health
 service and its readiness during shutdown. cyoda-go is the authoritative
