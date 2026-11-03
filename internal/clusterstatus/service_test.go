@@ -441,7 +441,7 @@ func (h slowRefusalLog) WithGroup(string) slog.Handler      { return h }
 // before the deadline counts, although the round ends after it.
 func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 	old := slog.Default()
-	slog.SetDefault(slog.New(slowRefusalLog{delay: 80 * time.Millisecond}))
+	slog.SetDefault(slog.New(slowRefusalLog{delay: 300 * time.Millisecond}))
 	defer slog.SetDefault(old)
 
 	ask := func(ctx context.Context, id string, call int) (NodeStatus, error) {
@@ -453,7 +453,7 @@ func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 				}
 				// b refuses just before the deadline; its log line ends the
 				// round after the deadline.
-				time.Sleep(time.Until(dl) - 20*time.Millisecond)
+				time.Sleep(time.Until(dl) - 150*time.Millisecond)
 			}
 			return NodeStatus{}, errors.New("refused")
 		}

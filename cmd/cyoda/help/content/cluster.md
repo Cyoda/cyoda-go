@@ -80,7 +80,7 @@ The node that serves the request lists every member of its gossip directory, its
 Query parameters:
 
 - `waitForNodes` (integer, 1 to 1000, optional) — answer once at least this many nodes are `UP` and `NORMAL`. The node asks again whenever the directory changes, and at least once a second. Absent, the answer follows one round.
-- `timeoutMs` (integer, 1 to 600000, default 30000) — the longest wait for `waitForNodes`. When it has passed the answer is the last completed round; the first round always completes. Given without `waitForNodes` it is refused.
+- `timeoutMs` (integer, 1 to 600000, default 30000) — the longest wait for `waitForNodes`. When it has passed the answer is the last counted round (a round counts only when every member's answer arrived before then); the first round always completes. Given without `waitForNodes` it is refused.
 
 The body is the same for 200 and 503, and is a status, not a problem:
 

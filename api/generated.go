@@ -2848,7 +2848,7 @@ type FetchEntityTransitionsParams struct {
 
 // GetPlatformClusterParams defines parameters for GetPlatformCluster.
 type GetPlatformClusterParams struct {
-	// WaitForNodes Answer once at least this many nodes are `UP` and `NORMAL`, or at `timeoutMs`, with the last completed round. Absent, the answer follows one round. 1 to 1000.
+	// WaitForNodes Answer once at least this many nodes are `UP` and `NORMAL`, or at `timeoutMs`, with the last counted round (one whose every answer arrived before then). Absent, the answer follows one round. 1 to 1000.
 	WaitForNodes *int32 `form:"waitForNodes,omitempty" json:"waitForNodes,omitempty"`
 
 	// TimeoutMs The longest wait for `waitForNodes`, in milliseconds; the answer comes at the later of this and the end of the first round. 1 to 600000; defaults to 30000 when `waitForNodes` is given. Only together with `waitForNodes`; alone it is refused with 400.
