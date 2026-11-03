@@ -118,7 +118,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		cfg.ListScanInterval = time.Second
 	}
 	// The epoch only has to differ between two lives of this pnode.
-	epoch := time.Now().UnixNano()
+	epoch := time.Now().UnixNano() // realtime: gossip membership timing
 	metaBytes, err := marshalMeta(cfg, listVersion{Epoch: epoch})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
@@ -250,7 +250,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 		maxBackoff     = 10 * time.Second
 	)
 
-	start := time.Now()
+	start := time.Now() // realtime: gossip membership timing
 	backoff := initialBackoff
 	// The duplicate the last attempt that found one saw. It is what the
 	// operator is told when the budget runs out, in preference to a bare
@@ -262,7 +262,7 @@ func (g *Gossip) Register(ctx context.Context, _ string, _ string) error {
 			if duplicate != nil {
 				return duplicate
 			}
-			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err)
+			return fmt.Errorf("join seeds after %v: %w", time.Since(start), err) // realtime: gossip membership timing
 		}
 
 		// Each attempt asks about the cluster as it is now. A record that has
@@ -332,19 +332,19 @@ func (g *Gossip) awaitStability(ctx context.Context, start time.Time) error {
 	}
 	const pollInterval = 200 * time.Millisecond
 	lastCount := g.list.NumMembers()
-	stableSince := time.Now()
-	for time.Since(stableSince) < g.cfg.StabilityWindow {
+	stableSince := time.Now()                             // realtime: gossip membership timing
+	for time.Since(stableSince) < g.cfg.StabilityWindow { // realtime: gossip membership timing
 		timer := time.NewTimer(pollInterval)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err())
+			return fmt.Errorf("stability-window wait aborted after %v: %w", time.Since(start), ctx.Err()) // realtime: gossip membership timing
 		case <-timer.C:
 		}
 		current := g.list.NumMembers()
 		if current != lastCount {
 			lastCount = current
-			stableSince = time.Now()
+			stableSince = time.Now() // realtime: gossip membership timing
 		}
 	}
 	return nil
@@ -459,6 +459,36 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 	return nodes, nil
 }
 
+// Member is one member of the directory: NodeID is the memberlist name (the
+// node's CYODA_NODE_ID) and Addr its HTTP address from the metadata, empty
+// when the metadata does not parse.
+type Member struct {
+	NodeID string
+	Addr   string
+}
+
+// Members returns every member of the directory, this node included and
+// unsorted. A member whose metadata does not parse is kept, with an empty
+// Addr: it is still a member, and a round over the members must not pass it by.
+func (g *Gossip) Members() []Member {
+	all := g.dir.all()
+	out := make([]Member, 0, len(all))
+	for _, m := range all {
+		nm, err := parseMeta(m.Meta)
+		if err != nil {
+			slog.Warn("member has unparseable metadata; listing it without an address",
+				"pkg", "cluster/registry",
+				"memberName", m.Name,
+				"err", err,
+			)
+			out = append(out, Member{NodeID: m.Name})
+			continue
+		}
+		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr})
+	}
+	return out
+}
+
 // outstandingLists counts the alive peers whose announced list is not the one
 // held. It runs on the metrics reader's goroutine and reads the directory.
 func (g *Gossip) outstandingLists() int64 {
@@ -549,11 +579,26 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 	return nil
 }
 
+// SetStateExchange registers the state exchanged with a peer on a join: local
+// supplies this node's state, and merge receives the peer's. A periodic
+// push/pull carries none. merge runs on memberlist's goroutine and must not
+// block. Without it a join carries nothing.
+func (g *Gossip) SetStateExchange(local func() []byte, merge func([]byte)) {
+	g.delegate.ex.Store(&stateExchange{local: local, merge: merge})
+}
+
+// stateExchange is the push/pull state hooks SetStateExchange registers.
+type stateExchange struct {
+	local func() []byte
+	merge func([]byte)
+}
+
 // gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
 // identity (id, addresses, tag list version); NotifyMsg/GetBroadcasts
 // implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
 // Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
-// are no-ops — we don't use the push/pull anti-entropy state channel.
+// carry the optional state set by Gossip.SetStateExchange on a join only, and
+// are no-ops without it.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte
@@ -568,6 +613,10 @@ type gossipDelegate struct {
 	queue  *memberlist.TransmitLimitedQueue
 	subs   map[string][]func([]byte)
 	subsMu sync.RWMutex
+
+	// ex holds the optional join-time state exchange hooks; nil until
+	// SetStateExchange, and an atomic load on every join exchange.
+	ex atomic.Pointer[stateExchange]
 }
 
 func (d *gossipDelegate) updateMeta(meta []byte) {
@@ -602,8 +651,30 @@ func (d *gossipDelegate) NotifyMsg(msg []byte) {
 func (d *gossipDelegate) GetBroadcasts(overhead, limit int) [][]byte {
 	return d.queue.GetBroadcasts(overhead, limit)
 }
-func (d *gossipDelegate) LocalState(bool) []byte        { return nil }
-func (d *gossipDelegate) MergeRemoteState([]byte, bool) {}
+
+// LocalState sends the state set by Gossip.SetStateExchange on a join only;
+// a periodic push/pull carries none. memberlist passes the request's join flag
+// to the node that answers it, so a joiner receives the state of the node it
+// joins through.
+func (d *gossipDelegate) LocalState(join bool) []byte {
+	if !join {
+		return nil
+	}
+	if ex := d.ex.Load(); ex != nil {
+		return ex.local()
+	}
+	return nil
+}
+
+// MergeRemoteState merges the state a peer sent on a join only.
+func (d *gossipDelegate) MergeRemoteState(buf []byte, join bool) {
+	if !join {
+		return
+	}
+	if ex := d.ex.Load(); ex != nil {
+		ex.merge(buf)
+	}
+}
 
 func (d *gossipDelegate) subscribe(topic string, handler func([]byte)) {
 	d.subsMu.Lock()

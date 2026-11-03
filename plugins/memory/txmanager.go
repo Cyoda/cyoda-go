@@ -665,7 +665,7 @@ func (m *TransactionManager) nextSubmitTime() time.Time {
 	// Round(0) drops Go's monotonic reading so the floor compares WALL
 	// time: stamps and point-in-time instants are wall times, and a wall
 	// clock that steps back must be floored, not followed.
-	now := m.factory.clock.Now().Round(0)
+	now := m.factory.bizClock.Now().Round(0)
 	if !now.After(m.lastSubmitTime) {
 		now = m.lastSubmitTime.Add(time.Microsecond)
 	}
@@ -744,7 +744,7 @@ func (m *TransactionManager) Begin(ctx context.Context) (string, context.Context
 	func() {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		now := m.factory.clock.Now().Round(0)
+		now := m.factory.bizClock.Now().Round(0)
 		if now.Before(m.lastSubmitTime) {
 			now = m.lastSubmitTime
 		}
@@ -1190,7 +1190,7 @@ func (m *TransactionManager) Commit(ctx context.Context, txID string) error {
 				taskWrites: taskPriors,
 			})
 			m.submitTimes[txID] = submitTimeEntry{submitTime: submitTime, tenantID: tid}
-			evictBefore := m.factory.clock.Now().Add(-submitTimeTTL)
+			evictBefore := m.factory.bizClock.Now().Add(-submitTimeTTL)
 			for id, e := range m.submitTimes {
 				if e.submitTime.Before(evictBefore) {
 					delete(m.submitTimes, id)
@@ -1294,12 +1294,22 @@ func (m *TransactionManager) ConsistencyTime(ctx context.Context) (time.Time, er
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	now := m.factory.clock.Now().Round(0)
+	now := m.factory.bizClock.Now().Round(0)
 	if now.Before(m.lastSubmitTime) {
 		now = m.lastSubmitTime
 	}
 	m.lastSubmitTime = now
 	return now, nil
+}
+
+// LatestRecordedTime implements spi.TransactionManager: the submit-time floor
+// (lastSubmitTime), read under the mutex that every stamp, SnapshotTime and
+// ConsistencyTime raises it under. It does not raise it. The floor is shared
+// by all tenants, so ctx needs no tenant. Zero on a fresh store.
+func (m *TransactionManager) LatestRecordedTime(_ context.Context) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.lastSubmitTime, nil
 }
 
 // CommittedLogLen returns the current length of the committed log.

@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/e2e/openapivalidator"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -205,7 +206,7 @@ func recordScheduledFailure(t *testing.T) (spi.StoreFactory, context.Context, st
 		Store:     mem,
 		TxManager: mem.NewTransactionManager(common.NewTestUUIDGenerator()),
 		Firer:     unsafeFailure{},
-		Clock:     scheduler.NewRealClock(),
+		Clock:     platformclock.Real(),
 	})
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("scheduler Start: %v", err)

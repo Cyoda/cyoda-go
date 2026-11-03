@@ -12,6 +12,7 @@ import (
 	events "github.com/cyoda-platform/cyoda-go/api/grpc/events"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -65,7 +66,7 @@ func TestDirectSearch_UndecodableStoredData_ServerErrorEnvelope(t *testing.T) {
 		}}
 	factory := &searcherFactoryG{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))}
+	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())}
 
 	stream := &mockEntityStream{ctx: ctx}
 	if err := svc.EntitySearchCollection(makeCE(EntitySearchRequest, map[string]any{
@@ -122,7 +123,7 @@ func TestSnapshotGet_UndecodableStoredData_ServerErrorEnvelope(t *testing.T) {
 		ids = append(ids, e.Meta.ID)
 	}
 	svc := &CloudEventsServiceImpl{searchService: search.NewSearchService(
-		&snapshotFactoryG{store: &snapshotEntityStoreG{byID: byID}}, nil, &snapshotResultsStoreG{ids: ids}, newFixedConsistency())}
+		&snapshotFactoryG{store: &snapshotEntityStoreG{byID: byID}}, nil, &snapshotResultsStoreG{ids: ids}, newFixedConsistency(), platformclock.Real())}
 
 	stream := &mockEntityStream{ctx: ctx}
 	if err := svc.EntitySearchCollection(makeCE(SnapshotGetRequest, map[string]any{

@@ -274,13 +274,13 @@ func (s *CloudEventsServiceImpl) keepAliveLoop(ctx context.Context, member *Memb
 		case <-member.Evicted():
 			return
 		case <-ticker.C:
-			if time.Since(member.LastSeen()) > s.keepAliveTimeout {
+			if time.Since(member.LastSeen()) > s.keepAliveTimeout { // realtime: member keep-alive liveness
 				slog.Info("member timed out", "pkg", "grpc", "memberId", member.ID)
 				member.Evict(status.Error(codes.DeadlineExceeded, "keep-alive timeout"))
 				return
 			}
-			if since := member.WriteInFlightSince(); !since.IsZero() && time.Since(since) > s.keepAliveTimeout {
-				slog.Warn("member not draining", "pkg", "grpc", "memberId", member.ID, "stalledFor", time.Since(since))
+			if since := member.WriteInFlightSince(); !since.IsZero() && time.Since(since) > s.keepAliveTimeout { // realtime: member keep-alive liveness
+				slog.Warn("member not draining", "pkg", "grpc", "memberId", member.ID, "stalledFor", time.Since(since)) // realtime: member keep-alive liveness
 				member.Evict(status.Error(codes.DeadlineExceeded, "member not draining"))
 				return
 			}

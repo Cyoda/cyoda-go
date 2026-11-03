@@ -10,12 +10,13 @@ import (
 
 // operationalPathPrefixes are paths the test server mounts but the OpenAPI
 // spec deliberately doesn't document — health checks, admin endpoints,
-// Scalar docs UI, OAuth discovery, the help index and its topics. Validation
-// is skipped for these so they don't appear in the conformance report as "no
-// spec route matches".
+// Scalar docs UI, OAuth discovery, the help index and its topics, and the
+// sealed peer channel between cluster nodes. Validation is skipped for these
+// so they don't appear in the conformance report as "no spec route matches".
 //
-// Path prefixes are matched against r.URL.Path after the test server's
-// /api context-path mount (e.g. "/api/health" matches prefix "/api/health").
+// Path prefixes are matched against r.URL.Path, which carries the test
+// server's /api context-path mount (e.g. "/api/health" matches prefix
+// "/api/health"); the peer channel is mounted at the root, outside it.
 //
 // Keep this list to genuinely non-spec paths only. Customer endpoints that
 // are spec-declared but not yet implemented must NOT appear here — they should
@@ -29,6 +30,7 @@ var operationalPathPrefixes = []string{
 	"/api/admin/",
 	"/api/.well-known/",
 	"/api/help",
+	"/internal/dispatch/",
 }
 
 // isOperationalPath reports whether path p is an operational/admin endpoint

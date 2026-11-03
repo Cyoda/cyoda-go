@@ -13,6 +13,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/localproc"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -50,10 +51,10 @@ func TestRPC_EntityPatch_SaveInAbortedTxIsConflict(t *testing.T) {
 	inner.NewTransactionManager(common.NewDefaultUUIDGenerator())
 	txMgr := inner.GetTransactionManager()
 	factory := &txAbortedSaveFactory{StoreFactory: inner}
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
-	svc.modelHandler = model.New(inner)
+	svc.entityHandler = entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	svc.modelHandler = model.New(inner, platformclock.Real())
 	importAndLockModel(t, svc, ctx, "person", "1", map[string]any{"name": "A", "amount": 1})
 
 	createResp, err := svc.EntityManage(ctx, makeCE(EntityCreateRequest, map[string]any{
@@ -133,10 +134,10 @@ func TestRPC_EntityCreate_ProcessorFailedAfterLostRaceIsConflict(t *testing.T) {
 		}
 		return nil, errors.New("the processor failed after its joined write")
 	})
-	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, workflow.WithExternalProcessing(lp))
+	engine := workflow.NewEngine(inner, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real(), workflow.WithExternalProcessing(lp))
 	svc.txMgr = txMgr
-	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, inner))
-	svc.modelHandler = model.New(inner)
+	svc.entityHandler = entity.New(inner, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, inner), platformclock.Real())
+	svc.modelHandler = model.New(inner, platformclock.Real())
 	importAndLockModel(t, svc, ctx, "racer", "1", map[string]any{"name": "A", "amount": 1})
 
 	ws, err := inner.WorkflowStore(ctx)

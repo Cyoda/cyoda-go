@@ -70,7 +70,7 @@ func (o *OBOClient) assertion(t *testing.T, user string) string {
 // ones before signing.
 func (o *OBOClient) assertionWith(t *testing.T, user string, override map[string]any) string {
 	t.Helper()
-	now := time.Now()
+	now := time.Now() // realtime: test assertion JWT validity window
 	claims := map[string]any{
 		"sub": user, "iss": "parity-app", "aud": o.issuer, "caas_org_id": o.tenant,
 		"iat": now.Unix(), "exp": now.Add(2 * time.Minute).Unix(), "jti": uuid.NewString(),

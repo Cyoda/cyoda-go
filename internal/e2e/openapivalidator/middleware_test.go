@@ -224,6 +224,22 @@ func TestIsOperationalPath_HelpRootNotItsLookalikes(t *testing.T) {
 	}
 }
 
+// The sealed peer channel between nodes is served at the root, outside the
+// context path and the customer API spec: a node's answer to a peer's push or
+// hand-over is not validated against it.
+func TestIsOperationalPath_PeerChannel(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/internal/dispatch/clock":   true,
+		"/internal/dispatch/callout": true,
+		"/internal/dispatcher":       false,
+		"/api/internal/dispatch/x":   false,
+	} {
+		if got := isOperationalPath(p); got != want {
+			t.Errorf("isOperationalPath(%q) = %t, want %t", p, got, want)
+		}
+	}
+}
+
 // serveFixture sends req through the middleware over the fixture spec, with
 // a handler answering 204, and returns the mismatches it collected.
 func serveFixture(t *testing.T, req *http.Request) []Mismatch {

@@ -74,7 +74,7 @@ func (f *UnsafeFlight) Begin() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.n == 0 {
-		f.since = time.Now()
+		f.since = time.Now() // realtime: unsafe-dispatch flight duration
 	}
 	f.n++
 }

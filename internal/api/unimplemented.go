@@ -57,6 +57,14 @@ func (u *Unimplemented) ResetTechnicalUserSecret(w http.ResponseWriter, r *http.
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) GetPlatformClock(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
+func (u *Unimplemented) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }

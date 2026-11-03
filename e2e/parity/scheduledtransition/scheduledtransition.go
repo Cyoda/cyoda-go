@@ -9,7 +9,7 @@
 // e2e/parity/contracts.go — "no storage handle... verification is
 // API-only") and every backend under it runs cyoda-go as a real OS
 // subprocess (e2e/parity/fixtureutil.LaunchCyodaAndCompute), so there is
-// no in-process engine or clock to inject — WithScheduledClock (used by
+// no in-process engine or clock to inject — WithClock (used by
 // internal/domain/workflow's unit tests) is not reachable from here, and
 // never will be for any backend under this harness, including memory.
 // Exact scheduledTime, lateness, retry-delay and deadline arithmetic is
@@ -545,7 +545,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 	}`, delayMs)
 	setupModelWithWorkflow(t, c, modelName, modelVersion, `{"k":1}`, wf)
 
-	createdAt := time.Now()
+	createdAt := time.Now() // realtime: elapsed wall time of a test wait
 	entityID, err := c.CreateEntity(t, modelName, modelVersion, `{"k":1}`)
 	if err != nil {
 		t.Fatalf("CreateEntity: %v", err)
@@ -557,7 +557,7 @@ func RunScheduledTransition_ReArmClockReset(t *testing.T, fixture parity.Backend
 	}
 
 	awaitEntityState(t, c, entityID, "CLOSED", waitOn(fixture, fireTimeout))
-	elapsed := time.Since(createdAt)
+	elapsed := time.Since(createdAt) // realtime: elapsed wall time of a test wait
 	if elapsed < minElapsedForCorrectReArm {
 		t.Errorf("entity fired %s after creation — too soon: expected the loopback to re-arm the task to fire "+
 			"around %s (loopback offset + delay), not the original %dms", elapsed, loopbackOffset+delayMs*time.Millisecond, delayMs)

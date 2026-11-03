@@ -34,7 +34,7 @@ func TestRootConfigVars_WellFormed(t *testing.T) {
 	validTopic := map[string]bool{
 		"server": true, "admin": true, "search": true,
 		"cluster": true, "auth": true, "cors": true, "grpc": true,
-		"scheduler": true,
+		"scheduler": true, "clock": true,
 	}
 	for _, v := range vars {
 		if v.Name == "" || v.Description == "" {

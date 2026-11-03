@@ -10,6 +10,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/google/uuid"
@@ -79,7 +80,7 @@ func startedSchedulerApp(t *testing.T) (*App, *teardownLog) {
 		Store:     f,
 		TxManager: mem.NewTransactionManager(common.NewTestUUIDGenerator()),
 		Firer:     idleFirer{},
-		Clock:     scheduler.NewRealClock(),
+		Clock:     platformclock.Real(),
 	})
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("scheduler Start: %v", err)

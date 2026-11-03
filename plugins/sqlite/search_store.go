@@ -23,7 +23,8 @@ type asyncSearchStore struct {
 	// sole connection.
 	readDB *sql.DB
 
-	clock Clock
+	clock Clock // physical: liveness (heartbeats, stale reclaim)
+	biz   Clock // business: reaping cutoff against finish_time
 }
 
 func (s *asyncSearchStore) tenant(ctx context.Context) (spi.TenantID, error) {
@@ -51,17 +52,19 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 
 	// epoch is deliberately not in the column list: the schema's
 	// `DEFAULT 1` supplies it, so CreateJob always persists 1 regardless
-	// of the value the caller set on job.Epoch. heartbeat_time is
-	// likewise omitted — it defaults to NULL (never stamped).
+	// of the value the caller set on job.Epoch. heartbeat_time is stamped
+	// from the store's clock: liveness starts at creation, and ClaimStale
+	// measures staleness from heartbeat_time alone.
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO search_jobs
-		 (tenant_id, job_id, status, model_name, model_version, condition, point_in_time, search_opts, result_count, error, create_time, finish_time, calc_time_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (tenant_id, job_id, status, model_name, model_version, condition, point_in_time, search_opts, result_count, error, create_time, finish_time, calc_time_ms, heartbeat_time)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(tid), job.ID, job.Status,
 		job.ModelRef.EntityName, job.ModelRef.ModelVersion,
 		nullableBlob(job.Condition), job.PointInTime.UnixMicro(),
 		nullableBlob(job.SearchOpts), job.ResultCount,
-		job.Error, job.CreateTime.UnixMicro(), finishMicro, job.CalcTimeMs)
+		job.Error, job.CreateTime.UnixMicro(), finishMicro, job.CalcTimeMs,
+		s.clock.Now().UnixMicro())
 	if err != nil {
 		return fmt.Errorf("failed to create search job %s: %w", job.ID, err)
 	}
@@ -331,7 +334,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime 
 }
 
 func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
-	cutoff := s.clock.Now().Add(-ttl)
+	cutoff := s.biz.Now().Add(-ttl)
 	cutoffMicro := cutoff.UnixMicro()
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -415,7 +418,7 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tenant_id, job_id, epoch FROM search_jobs
 		 WHERE status = 'RUNNING'
-		   AND (released = 1 OR COALESCE(heartbeat_time, create_time) < ?)
+		   AND (released = 1 OR heartbeat_time < ?)
 		 ORDER BY create_time
 		 LIMIT ?`,
 		cutoffMicro, limit)

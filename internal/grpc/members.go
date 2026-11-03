@@ -137,7 +137,7 @@ type Member struct {
 }
 
 func newMember(id string, tenantID spi.TenantID, tags []string, send SendFunc) *Member {
-	now := time.Now()
+	now := time.Now() // realtime: member keep-alive liveness
 	return &Member{
 		ID:          id,
 		TenantID:    tenantID,
@@ -263,7 +263,7 @@ func (m *Member) writeLoop(first *cepb.CloudEvent) {
 // write performs one raw send, bracketing it with writeStartedAt so the
 // keep-alive loop can see a stall. A failed send evicts the member.
 func (m *Member) write(ce *cepb.CloudEvent) bool {
-	m.writeStartedAt.Store(time.Now().UnixNano())
+	m.writeStartedAt.Store(time.Now().UnixNano()) // realtime: member keep-alive liveness
 	defer m.writeStartedAt.Store(0)
 	err := m.send(ce)
 	if err != nil {
@@ -357,7 +357,7 @@ func (m *Member) failAllPending(errMsg string) {
 func (m *Member) UpdateLastSeen() {
 	m.lastSeenMu.Lock()
 	defer m.lastSeenMu.Unlock()
-	m.lastSeen = time.Now()
+	m.lastSeen = time.Now() // realtime: member keep-alive liveness
 }
 
 // LastSeen returns the time the member was last seen.

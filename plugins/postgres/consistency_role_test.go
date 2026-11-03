@@ -135,13 +135,13 @@ func TestConsistencyTime_PlantedOverloadsAreNeverCalled(t *testing.T) {
 			plant := fmt.Sprintf(`
 				CREATE TABLE public.ct_planted_calls (fn text);
 				GRANT INSERT ON public.ct_planted_calls TO PUBLIC;
-				CREATE FUNCTION public.cyoda_stamp(%[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
+				CREATE FUNCTION public.cyoda_stamp(%[1]s, %[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
 				BEGIN
 				  INSERT INTO public.ct_planted_calls VALUES ('cyoda_stamp');
 				  EXECUTE 'ALTER ROLE %[2]s SUPERUSER';
 				  RETURN '1999-01-01T00:00:00Z';
 				END $f$;
-				CREATE FUNCTION public.cyoda_consistency_time(%[1]s, %[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
+				CREATE FUNCTION public.cyoda_consistency_time(%[1]s, %[1]s, %[1]s) RETURNS timestamptz LANGUAGE plpgsql AS $f$
 				BEGIN
 				  INSERT INTO public.ct_planted_calls VALUES ('cyoda_consistency_time');
 				  EXECUTE 'ALTER ROLE %[2]s SUPERUSER';
@@ -257,12 +257,12 @@ func TestConsistencyTime_PlantedDomainOverloadsAreNeverCalled(t *testing.T) {
 		CREATE TABLE public.ct_planted_calls (fn pg_catalog.text);
 		GRANT INSERT ON public.ct_planted_calls TO PUBLIC;
 		CREATE DOMAIN public.int4 AS pg_catalog.int4;
-		CREATE FUNCTION public.cyoda_stamp(public.int4) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
+		CREATE FUNCTION public.cyoda_stamp(public.int4, pg_catalog.int8) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
 		BEGIN
 		  INSERT INTO public.ct_planted_calls VALUES ('cyoda_stamp');
 		  RETURN '1999-01-01T00:00:00Z';
 		END $f$;
-		CREATE FUNCTION public.cyoda_consistency_time(public.int4, pg_catalog.int8) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
+		CREATE FUNCTION public.cyoda_consistency_time(public.int4, pg_catalog.int8, pg_catalog.int8) RETURNS pg_catalog.timestamptz LANGUAGE plpgsql AS $f$
 		BEGIN
 		  INSERT INTO public.ct_planted_calls VALUES ('cyoda_consistency_time');
 		  RETURN '2999-01-01T00:00:00Z';

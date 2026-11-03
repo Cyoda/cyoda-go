@@ -5511,6 +5511,182 @@ func (j *PatchFormatJson) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
+type PlatformClockGetRequestJson struct {
+	// Error details (if present).
+	Error *PlatformClockGetRequestJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type PlatformClockGetRequestJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockGetRequestJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain PlatformClockGetRequestJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = PlatformClockGetRequestJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockGetRequestJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	type Plain PlatformClockGetRequestJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = PlatformClockGetRequestJson(plain)
+	return nil
+}
+
+type PlatformClockResponseJson struct {
+	// Whether this node accepts changes to the clock. Set when success is true.
+	Controllable *bool `json:"controllable,omitempty" yaml:"controllable,omitempty" mapstructure:"controllable,omitempty"`
+
+	// Error details (if present).
+	Error *PlatformClockResponseJsonError `json:"error,omitempty" yaml:"error,omitempty" mapstructure:"error,omitempty"`
+
+	// Event ID.
+	ID string `json:"id" yaml:"id" mapstructure:"id"`
+
+	// This node's platform time. Set when success is true.
+	Now *time.Time `json:"now,omitempty" yaml:"now,omitempty" mapstructure:"now,omitempty"`
+
+	// Platform seconds per real second; 1 without clock control. Set when success is
+	// true.
+	Rate *float64 `json:"rate,omitempty" yaml:"rate,omitempty" mapstructure:"rate,omitempty"`
+
+	// ID of the original request.
+	RequestID string `json:"requestId" yaml:"requestId" mapstructure:"requestId"`
+
+	// Flag indicates whether this message relates to some failure.
+	Success bool `json:"success" yaml:"success,omitempty" mapstructure:"success,omitempty"`
+
+	// Warnings (if applicable).
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty" mapstructure:"warnings,omitempty"`
+}
+
+// Error details (if present).
+type PlatformClockResponseJsonError struct {
+	// Error code.
+	Code string `json:"code" yaml:"code" mapstructure:"code"`
+
+	// Error message.
+	Message string `json:"message" yaml:"message" mapstructure:"message"`
+
+	// Whether the sender judges that repeating the request could succeed. On a
+	// calculation response this is the compute member's verdict: cyoda passes it on
+	// to the client of the failed operation and does not give the work to another
+	// compute member because of it.
+	Retryable *bool `json:"retryable,omitempty" yaml:"retryable,omitempty" mapstructure:"retryable,omitempty"`
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockResponseJsonError) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["code"]; !ok {
+		return fmt.Errorf("field code: required")
+	} else if v == nil {
+		return fmt.Errorf("field code: must not be null")
+	}
+	if v, ok := raw["message"]; !ok {
+		return fmt.Errorf("field message: required")
+	} else if v == nil {
+		return fmt.Errorf("field message: must not be null")
+	}
+	type Plain PlatformClockResponseJsonError
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	*j = PlatformClockResponseJsonError(plain)
+	return nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (j *PlatformClockResponseJson) UnmarshalJSON(value []byte) error {
+	var raw map[string]interface{}
+	if err := decodeWithUseNumber(value, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; !ok {
+		return fmt.Errorf("field id: required")
+	} else if v == nil {
+		return fmt.Errorf("field id: must not be null")
+	}
+	if v, ok := raw["requestId"]; !ok {
+		return fmt.Errorf("field requestId: required")
+	} else if v == nil {
+		return fmt.Errorf("field requestId: must not be null")
+	}
+	type Plain PlatformClockResponseJson
+	var plain Plain
+	if err := decodeWithUseNumber(value, &plain); err != nil {
+		return err
+	}
+	if v, ok := raw["success"]; ok && v == nil {
+		return fmt.Errorf("field success: must not be null")
+	} else if !ok {
+		plain.Success = true
+	}
+	*j = PlatformClockResponseJson(plain)
+	return nil
+}
+
 type ProcessorInfoJson struct {
 	// Processor ID.
 	ID string `json:"id" yaml:"id" mapstructure:"id"`

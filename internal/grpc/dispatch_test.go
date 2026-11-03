@@ -60,6 +60,10 @@ func newTestDispatcherWith(t *testing.T, registry *MemberRegistry, selector Memb
 	return NewProcessorDispatcher(registry, selector, signer, 30*time.Second, 60*time.Second, 3*time.Second)
 }
 
+// testCalloutAt is the platform time a test arms a callout with, as an owner
+// would when it takes the callout up.
+var testCalloutAt = time.Date(2015, 3, 1, 9, 30, 0, 0, time.UTC)
+
 // oneTry is the local procedure with one try, armed the way an owner arms a
 // callout: what these tests pin is what one try sends and how its answer is
 // read.
@@ -73,6 +77,7 @@ func oneTry(d *ProcessorDispatcher, ctx context.Context, call Callout) (CalloutR
 	call.OwnerNodeID = "node-test"
 	call.Number = &countingNumberer{}
 	call.Identity = IdentityFrom(ctx)
+	call.At = testCalloutAt
 	res := d.RunLocal(ctx, call, 1)
 	return res.Result, res.Err()
 }
@@ -134,6 +139,7 @@ func tryOnceAs(d *ProcessorDispatcher, ctx context.Context, member *Member, id C
 		RequestID:   requestID,
 		AnswerLimit: time.Duration(timeoutMs) * time.Millisecond,
 		OwnerNodeID: "node-test",
+		At:          testCalloutAt,
 		eventType:   EntityProcessorCalculationRequest,
 		buildRequest: func(id string) any {
 			return map[string]any{"requestId": id}

@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 	"github.com/cyoda-platform/cyoda-go/plugins/sqlite"
@@ -503,14 +504,17 @@ func (m *trackingTxMgr) failCommitOf(txID string, err error) {
 }
 
 func (m *trackingTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	failure := m.commitErr
-	armed := m.failCommitTxID != "" && m.failCommitTxID == txID
-	if armed {
-		m.failCommitTxID = ""
-		m.commitErr = nil
-	}
-	m.mu.Unlock()
+	armed, failure := func() (bool, error) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		failure := m.commitErr
+		armed := m.failCommitTxID != "" && m.failCommitTxID == txID
+		if armed {
+			m.failCommitTxID = ""
+			m.commitErr = nil
+		}
+		return armed, failure
+	}()
 	if !armed {
 		return m.TransactionManager.Commit(ctx, txID)
 	}
@@ -525,10 +529,12 @@ func (m *trackingTxMgr) Begin(ctx context.Context) (string, context.Context, err
 	if err != nil {
 		return txID, txCtx, err
 	}
-	m.mu.Lock()
-	m.begun = append(m.begun, txID)
-	cb := m.onBegin
-	m.mu.Unlock()
+	cb := func() func(txID string) {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begun = append(m.begun, txID)
+		return m.onBegin
+	}()
 	if cb != nil {
 		cb(txID)
 	}
@@ -552,9 +558,11 @@ func (m *trackingTxMgr) isOpen(txID string) bool {
 }
 
 func (m *trackingTxMgr) openTxIDs() []string {
-	m.mu.Lock()
-	ids := slices.Clone(m.begun)
-	m.mu.Unlock()
+	ids := func() []string {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return slices.Clone(m.begun)
+	}()
 	var open []string
 	for _, id := range ids {
 		if m.isOpen(id) {
@@ -740,11 +748,11 @@ func newTrackingHandlerWrapping(t *testing.T, backend string, wrap func(spi.Tran
 
 	proc := &stubExternalProc{}
 	engineCAS := &casHookFactory{StoreFactory: raw}
-	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker,
+	engine := wfengine.NewEngine(engineCAS, common.NewDefaultUUIDGenerator(), tracker, platformclock.Real(),
 		wfengine.WithExternalProcessing(proc))
 
 	armed := &armedFactory{StoreFactory: raw}
-	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(tracker))
+	h := New(armed, tracker, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(tracker), platformclock.Real())
 
 	hn := &rollbackHarness{h: h, tracker: tracker, raw: raw, armed: armed, engineCAS: engineCAS, proc: proc, ctx: ctx}
 	hn.registerModel(t, rollbackModel)

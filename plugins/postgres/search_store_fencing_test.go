@@ -60,13 +60,14 @@ func TestPGSearchStore_SaveResults_EmptySequence_FencesOnStaleEpoch(t *testing.T
 	store := getSearchStore(t, factory, "empty-fence-tenant")
 	ctx := ctxWithTenant("empty-fence-tenant")
 
-	// created_at well in the past so ClaimStale's staleness window covers it.
-	stale := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	// Liveness starts at CreateJob, so a negative staleAfter (a cutoff in the
+	// future) is what makes the fresh job stale.
+	stale := time.Now().UTC().Truncate(time.Microsecond)
 	if err := store.CreateJob(ctx, newRunningJob("job-empty-stale", "empty-fence-tenant", stale)); err != nil {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
-	claimed, err := store.ClaimStale(context.Background(), time.Hour, 10)
+	claimed, err := store.ClaimStale(context.Background(), -time.Hour, 10)
 	if err != nil {
 		t.Fatalf("ClaimStale: %v", err)
 	}
@@ -456,6 +457,11 @@ func TestPGSearchStore_ClaimStale_RejectsNonPositiveLimit(t *testing.T) {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
+	created, err := store.GetJob(ctx, "job-live")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+
 	for _, limit := range []int{0, -1} {
 		claimed, err := store.ClaimStale(context.Background(), time.Minute, limit)
 		if err == nil {
@@ -473,7 +479,7 @@ func TestPGSearchStore_ClaimStale_RejectsNonPositiveLimit(t *testing.T) {
 	if job.Epoch != 1 {
 		t.Errorf("a rejected ClaimStale bumped the epoch to %d, want 1", job.Epoch)
 	}
-	if job.HeartbeatTime != nil {
-		t.Error("a rejected ClaimStale stamped HeartbeatTime")
+	if job.HeartbeatTime == nil || created.HeartbeatTime == nil || !job.HeartbeatTime.Equal(*created.HeartbeatTime) {
+		t.Error("a rejected ClaimStale changed HeartbeatTime")
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -36,6 +37,7 @@ func TestGetEntity_InfrastructureErrorReturns500(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(), newFixedConsistency(),
+		platformclock.Real(),
 	)
 
 	ctx := context.Background()
@@ -94,6 +96,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(), newFixedConsistency(),
+			platformclock.Real(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -117,6 +120,7 @@ func TestCreateEntity_ClassifiesModelStoreErrors(t *testing.T) {
 			common.NewDefaultUUIDGenerator(),
 			nil,
 			txgate.New(), newFixedConsistency(),
+			platformclock.Real(),
 		)
 
 		_, err := h.CreateEntity(ctx, input)
@@ -148,6 +152,7 @@ func TestGetEntity_NotFoundReturns404(t *testing.T) {
 		common.NewDefaultUUIDGenerator(),
 		nil,
 		txgate.New(), newFixedConsistency(),
+		platformclock.Real(),
 	)
 
 	ctx := context.Background()
@@ -194,7 +199,7 @@ func statsTestCtx(tenantID spi.TenantID) context.Context {
 func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "stats-model", ModelVersion: "1"}
 
@@ -273,7 +278,7 @@ func TestGetStatisticsByState_UsesCountByState(t *testing.T) {
 func TestGetStatisticsByStateForModel_UsesCountByState(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	ctx := statsTestCtx("tenant-stats-m")
-	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
+	h := entity.New(factory, nil, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
 
 	mref := spi.ModelRef{EntityName: "model-m", ModelVersion: "1"}
 
@@ -548,7 +553,7 @@ func TestDeleteAllEntities_EmptyModel_ReturnsZeroCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory))
+	h := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
 
 	// Register a LOCKED model with zero entities.
 	mref := spi.ModelRef{EntityName: "EmptyModel", ModelVersion: "1"}
@@ -705,7 +710,7 @@ func newDeleteFixtureWithSchema(t *testing.T) (h *entity.Handler, ctx context.Co
 	if err != nil {
 		t.Fatalf("TransactionManager: %v", err)
 	}
-	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base))
+	h = entity.New(base, txMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistency(t, base), platformclock.Real())
 
 	return h, ctx, ref.EntityName, 1
 }

@@ -113,7 +113,7 @@ func (g HeartbeatGate) Await(t testing.TB, logs func() []string, what string, ch
 		if done {
 			return
 		}
-		if now := time.Now(); now.After(deadline) {
+		if now := time.Now(); now.After(deadline) { // realtime: test wait for a physical heartbeat window
 			deadline, failures = g.Deadline(logs()...)
 			if deadline.After(limit) {
 				if now.After(limit) {
@@ -136,7 +136,7 @@ func (g HeartbeatGate) Await(t testing.TB, logs func() []string, what string, ch
 // heartbeat of the first node allowed to act.
 func AwaitNodeScheduler(t testing.TB, slack time.Duration, what string, check func() (done bool, last string), logs ...*SyncBuffer) {
 	t.Helper()
-	HeartbeatGate{ReadyAt: time.Now(), Slack: slack}.Await(t, func() []string {
+	HeartbeatGate{ReadyAt: time.Now(), Slack: slack}.Await(t, func() []string { // realtime: test wait for a physical heartbeat window
 		out := make([]string, len(logs))
 		for i, l := range logs {
 			out[i] = l.String()

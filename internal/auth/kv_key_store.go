@@ -174,7 +174,7 @@ func (s *KVKeyStore) selectSigner() (*KeyPair, Signer, error) {
 	if s.rep.Stale() {
 		return nil, nil, ErrStoreStale
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	var (
 		best        *KeyPair
 		bestSigner  Signer
@@ -236,7 +236,7 @@ func (s *KVKeyStore) Current() (*KeyPair, error) {
 // of fail the same way. There is no store read on this path.
 func (s *KVKeyStore) VerificationKey(kid string) (*rsa.PublicKey, error) {
 	stale := s.rep.Stale()
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	var pub *rsa.PublicKey
 	s.rep.read(func(recs map[string]*signingEntry) {
 		if kid == s.boot.kid {
@@ -277,7 +277,7 @@ func (s *KVKeyStore) Published() ([]*KeyPair, error) {
 	if s.rep.Stale() {
 		return nil, ErrStoreStale
 	}
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	var out []*KeyPair
 	s.rep.read(func(recs map[string]*signingEntry) {
 		for _, e := range recs {

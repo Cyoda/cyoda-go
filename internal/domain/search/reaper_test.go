@@ -26,15 +26,17 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
 // newReclaimTestService builds a memory-backed SearchService with a bounded
 // pool so the reclaim sweep can actually re-execute a claimed job end to end.
 // The pool is drained at cleanup so no worker goroutines outlive the test.
-func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFactory, spi.AsyncSearchStore) {
+func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFactory, spi.AsyncSearchStore, *memory.TestClock) {
 	t.Helper()
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	store, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -42,17 +44,18 @@ func newReclaimTestService(t *testing.T) (*search.SearchService, *memory.StoreFa
 	}
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
-	return svc, factory, store
+	return svc, factory, store, clock
 }
 
-// createStaleReclaimJob persists a RUNNING job whose CreateTime is an hour in
-// the past (so it is stale against any staleAfter well under an hour) and no
-// heartbeat, with the condition and options envelope SubmitAsync itself
-// persists — so decodeStoredJob can reconstruct and re-run it.
-func createStaleReclaimJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.TenantID, id string, ref spi.ModelRef, cond predicate.Condition, pit time.Time) {
+// createStaleReclaimJob persists a RUNNING job, then ages the store's clock an
+// hour so the job is stale against any staleAfter well under an hour: the store
+// stamps the job's heartbeat at creation and judges staleness from it alone.
+// The condition and options envelope are the ones SubmitAsync itself persists,
+// so decodeStoredJob can reconstruct and re-run it.
+func createStaleReclaimJob(t *testing.T, clock *memory.TestClock, store spi.AsyncSearchStore, tenant spi.TenantID, id string, ref spi.ModelRef, cond predicate.Condition, pit time.Time) {
 	t.Helper()
 	condJSON, err := json.Marshal(cond)
 	if err != nil {
@@ -73,18 +76,19 @@ func createStaleReclaimJob(t *testing.T, store spi.AsyncSearchStore, tenant spi.
 		ModelRef:   ref,
 		Condition:  condJSON,
 		SearchOpts: optsJSON,
-		CreateTime: time.Now().Add(-time.Hour),
+		CreateTime: clock.Now(),
 	}
 	if err := store.CreateJob(tenantCtx(string(tenant)), job); err != nil {
 		t.Fatalf("CreateJob(%s): %v", id, err)
 	}
+	clock.Advance(time.Hour)
 }
 
 // (a) a stale job with StaleClaims below the attempt cap is re-enqueued and
 // runs to SUCCESSFUL on this node — a crashed node's job is completed by a
 // live node, not failed.
 func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
-	svc, factory, store := newReclaimTestService(t)
+	svc, factory, store, clock := newReclaimTestService(t)
 	ctx := tenantCtx("tenant-a")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
@@ -93,7 +97,7 @@ func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
 	saveEntity(t, ctx, factory, ref, "e2", []byte(`{"name":"Bob"}`))
 
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, store, "tenant-a", "job-stale", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-stale", ref, cond, time.Now())
 
 	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
 	if err != nil {
@@ -120,10 +124,10 @@ func TestReclaimStaleJobs_ReenqueuesStaleJobToSuccessful(t *testing.T) {
 // (b) a job at the attempt cap (the staleness claim brings StaleClaims up to
 // maxAttempts) is FAILED with the jobAttemptsExhausted message, not re-run.
 func TestReclaimStaleJobs_AttemptCapFailsJob(t *testing.T) {
-	svc, _, store := newReclaimTestService(t)
+	svc, _, store, clock := newReclaimTestService(t)
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, store, "tenant-a", "job-cap", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-cap", ref, cond, time.Now())
 
 	// maxAttempts=1: this first staleness claim bumps StaleClaims to 1, which
 	// meets the cap, so the job is abandoned (FAILED) rather than re-run.
@@ -189,7 +193,7 @@ func createRunningReclaimJobAt(t *testing.T, store spi.AsyncSearchStore, tenant 
 // this job is claimable at all is the Release mark, isolating that path from
 // ordinary staleness.
 func TestReclaimStaleJobs_ReleaseThenClaimDoesNotCount(t *testing.T) {
-	svc, factory, store := newReclaimTestService(t)
+	svc, factory, store, _ := newReclaimTestService(t)
 	ctx := tenantCtx("tenant-a")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 
@@ -257,7 +261,7 @@ func TestReclaimStaleJobs_ZeroHeadroomClaimsNothing(t *testing.T) {
 
 	pool := search.NewWorkerPool(2, 3) // Cap() == 5
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool)
 
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-headroom"}}
@@ -302,7 +306,8 @@ func (s *clearResultsErrorStore) ClearResults(ctx context.Context, jobID string,
 // release itself (as opposed to the original staleness claim that brought
 // the job in) was not counted as another attempt.
 func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -312,14 +317,14 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	// Stale by heartbeat baseline (CreateTime an hour in the past) so the
+	// Stale by heartbeat (the test clock advanced an hour after creation) so the
 	// FIRST ClaimStale below actually claims it in the ordinary way; the
 	// point under test is what happens to it AFTER that claim.
-	createStaleReclaimJob(t, store, "tenant-a", "job-clear-err", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, store, "tenant-a", "job-clear-err", ref, cond, time.Now())
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool)
 
 	reenq, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 5)
@@ -364,7 +369,7 @@ func TestReclaimStaleJobs_ClearResultsErrorReleases(t *testing.T) {
 // delete guard deregisterJobHandle relies on to keep a superseded executor's
 // deferred cleanup from evicting the handle that replaced it).
 func TestReclaimStaleJobs_SelfReclaimReplacesHandle(t *testing.T) {
-	svc, _, _ := newReclaimTestService(t)
+	svc, _, _, _ := newReclaimTestService(t)
 	uc := &spi.UserContext{Tenant: spi.Tenant{ID: "tenant-self-reclaim"}}
 
 	oldCtx, oldCancel := context.WithCancelCause(context.Background())
@@ -432,7 +437,8 @@ func (s *inFlightClearStore) ClearResults(ctx context.Context, jobID string, epo
 // its results. The store refuses it at the old epoch, and the new owner's rows
 // survive.
 func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
-	factory := memory.NewStoreFactory()
+	clock := memory.NewTestClock()
+	factory := memory.NewStoreFactory(memory.WithClock(clock))
 	t.Cleanup(func() { factory.Close() })
 	base, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
@@ -446,11 +452,11 @@ func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
 	ctx := tenantCtx("tenant-a")
 	ref := spi.ModelRef{EntityName: "person", ModelVersion: "1"}
 	cond := &predicate.SimpleCondition{JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice"}
-	createStaleReclaimJob(t, base, "tenant-a", "job-late-clear", ref, cond, time.Now())
+	createStaleReclaimJob(t, clock, base, "tenant-a", "job-late-clear", ref, cond, time.Now())
 
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), store, newTestConsistency(t, factory), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(20 * time.Millisecond)
 	t.Cleanup(letThrough) // runs before the pool drains
@@ -466,7 +472,7 @@ func TestReclaimStaleJobs_LateClearFromLostOwnerDeletesNothing(t *testing.T) {
 
 	// Another node takes the job (epoch 3) and saves its results while this
 	// node's clear, at epoch 2, is still in flight.
-	time.Sleep(5 * time.Millisecond)
+	clock.Advance(5 * time.Millisecond)
 	claimed, err := base.ClaimStale(context.Background(), time.Nanosecond, 10)
 	if err != nil || len(claimed) != 1 || claimed[0].Epoch != 3 {
 		t.Fatalf("the other node's claim = %v (err %v), want the job at epoch 3", claimed, err)

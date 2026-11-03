@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -46,7 +47,7 @@ func lostRaceTx(t *testing.T) (*Engine, spi.TransactionManager, context.Context)
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	txID, txCtx, err := txMgr.Begin(ctx)
@@ -142,7 +143,7 @@ func TestConflictOverDispatchFailure_UnansweredLostRaceKeepsProcessorFailure(t *
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	inner := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, lostRaceErrTxManager{TransactionManager: inner, err: spi.ErrTxNotFound})
+	engine := NewEngine(factory, uuids, lostRaceErrTxManager{TransactionManager: inner, err: spi.ErrTxNotFound}, platformclock.Real())
 
 	txID, txCtx, err := inner.Begin(ctxWithTenant(testTenant))
 	if err != nil {

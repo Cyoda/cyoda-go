@@ -116,13 +116,13 @@ func StartComputeClientOrSkip(t *testing.T, fixture BackendFixture, spec Compute
 // AwaitReceived polls until cc has received at least n calculation requests.
 func AwaitReceived(t *testing.T, cc ComputeClient, n int, within time.Duration) []ReceivedCallout {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(within) // realtime: test poll deadline
 	for {
 		got := cc.Received(t)
 		if len(got) >= n {
 			return got
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("compute client %s received %d requests within %s; want at least %d", cc.MemberID(), len(got), within, n)
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -188,9 +188,9 @@ func RunComputeClientJoinServeLeave(t *testing.T, fixture BackendFixture) {
 	cc.Stop()
 	// The server learns of the closed stream a moment after the process is
 	// gone; until then a create may be routed to the dying member.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(10 * time.Second) // realtime: test poll deadline
 	for !noComputeNode() {
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatal("10s after Stop the server still routes to the stopped client")
 		}
 		time.Sleep(50 * time.Millisecond)

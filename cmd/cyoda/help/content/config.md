@@ -12,6 +12,7 @@ see_also:
   - config.schema
   - config.cluster
   - config.scheduler
+  - config.clock
 ---
 
 # config
@@ -31,6 +32,7 @@ All configuration is environment variables prefixed with `CYODA_`. Topics group 
 - `config.schema` — schema-extension log tuning
 - `config.cluster` — multi-node clustering, gossip, cross-node dispatch
 - `config.scheduler` — how each node claims and runs scheduled transitions: cadence, limits, liveness, retries, shutdown
+- `config.clock` — the controllable platform clock, a test feature
 - `config all` — flat listing of every variable (append `--format=json` for the docs-site JSON)
 
 ## DESCRIPTION
@@ -121,3 +123,5 @@ See `config.cluster` for multi-node clustering, gossip, and cross-node dispatch 
 - config.grpc
 - config.schema
 - config.cluster
+- config.scheduler
+- config.clock

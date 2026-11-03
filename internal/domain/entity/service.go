@@ -279,7 +279,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 
 	entityID := uuid.UUID(h.uuids.NewTimeUUID())
-	now := time.Now()
+	now := h.clock.Now()
 
 	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
 	// the pre-Begin outer ctx — origin inheritance for a service/system
@@ -2012,7 +2012,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 
-	now := time.Now()
+	now := h.clock.Now()
 
 	// Pre-generate entity IDs so they are stable across the per-item engine
 	// execution and Save. The IDs are also written into the audit trail by
@@ -2268,7 +2268,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		return nil, err
 	}
 
-	now := time.Now()
+	now := h.clock.Now()
 
 	// Computed on txCtx (the tx-carrying context beginOrJoin returned), not
 	// the pre-Begin outer ctx — see the CreateEntity site above for why.
@@ -2525,7 +2525,7 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 
 	txID, txCtx, owned := scope.TxID(), scope.Ctx(), scope.Owned()
 
-	now := time.Now()
+	now := h.clock.Now()
 
 	entityIDs := make([]string, 0, len(parsed))
 	failed := make([]UpdateCollectionItemFailure, 0)

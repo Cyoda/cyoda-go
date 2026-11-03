@@ -15,8 +15,6 @@ package postgres_test
 import (
 	"context"
 	"errors"
-	"net/url"
-	"strings"
 	"testing"
 	"time"
 
@@ -102,35 +100,16 @@ func newCTFactoryWithStatementTimeout(t *testing.T, d time.Duration) (*postgres.
 // next test's stamps until that test reset the schema.
 func freshCTDatabase(t *testing.T) string {
 	t.Helper()
-	base := testDBURL(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	admin, err := pgxpool.New(ctx, base)
+	dsn, drop, err := postgres.CreateTestDatabase(testDBURL(t), "cyoda_ct_")
 	if err != nil {
-		t.Fatalf("open admin pool: %v", err)
-	}
-	t.Cleanup(admin.Close)
-
-	name := "cyoda_ct_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
-		t.Fatalf("create %s: %v", name, err)
+		t.Fatalf("fresh database: %v", err)
 	}
 	t.Cleanup(func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer dropCancel()
-		if _, err := admin.Exec(dropCtx, "DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Errorf("drop %s: %v", name, err)
+		if err := drop(); err != nil {
+			t.Errorf("%v", err)
 		}
 	})
-
-	u, err := url.Parse(base)
-	if err != nil {
-		// errors.Unwrap: *url.Error renders the URL, which may carry a password.
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
-	}
-	u.Path = "/" + name
-	return u.String()
+	return dsn
 }
 
 // newCTFactoryOwnDB is newCTFactory on a database of its own.

@@ -101,6 +101,7 @@ func defaultFor(c app.Config) map[string]string {
 		"CYODA_MAX_STATE_VISITS":         strconv.Itoa(c.MaxStateVisits),
 		"CYODA_MODEL_CACHE_LEASE":        renderDuration(c.ModelCacheLease),
 		"CYODA_STORAGE_BACKEND":          c.StorageBackend,
+		"CYODA_CLOCK_CONTROL_ENABLED":    strconv.FormatBool(c.ClockControlEnabled),
 
 		// --- admin ---
 		"CYODA_ADMIN_PORT":           strconv.Itoa(c.Admin.Port),

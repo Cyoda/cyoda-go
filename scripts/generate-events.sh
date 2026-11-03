@@ -39,6 +39,7 @@ mkdir -p "$(dirname "$OUT")"
   "$CLEAN_DIR"/entity/*.json \
   "$CLEAN_DIR"/model/*.json \
   "$CLEAN_DIR"/search/*.json \
+  "$CLEAN_DIR"/platform/*.json \
   "$CLEAN_DIR"/processing/*.json
 
 # Post-process: remove omitempty from the 'success' bool field.

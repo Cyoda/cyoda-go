@@ -14,7 +14,7 @@ import (
 func WriteReport(path string, mismatches []Mismatch, exercised map[string]bool, allOps []string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# OpenAPI Conformance Report\n\n")
-	fmt.Fprintf(&b, "Generated: %s\n\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Generated: %s\n\n", time.Now().UTC().Format(time.RFC3339)) // realtime: report generation stamp
 
 	fmt.Fprintf(&b, "## Mismatches (%d)\n\n", len(mismatches))
 	if len(mismatches) == 0 {

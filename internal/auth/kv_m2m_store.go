@@ -214,7 +214,7 @@ func (s *KVM2MClientStore) Create(ctx context.Context, tenant spi.TenantID, clie
 	if err != nil {
 		return "", err
 	}
-	now := time.Now().UTC()
+	now := time.Now().UTC() // realtime: auth key and token validity
 	rec, err := encodeClientRecord(&M2MClient{ClientID: clientID, HashedSecret: string(hash), TenantID: tenant, UserID: clientID, Roles: append([]string(nil), roles...), OnBehalfOf: onBehalfOf, SecretGen: gen, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		return "", err
@@ -334,7 +334,7 @@ func (s *KVM2MClientStore) ResetSecret(ctx context.Context, tenant spi.TenantID,
 	if !found {
 		return "", nil, fmt.Errorf("%w: %s", ErrM2MClientNotFound, clientID)
 	}
-	c.HashedSecret, c.UpdatedAt = string(hash), time.Now().UTC()
+	c.HashedSecret, c.UpdatedAt = string(hash), time.Now().UTC() // realtime: auth key and token validity
 	c.SecretGen++
 	next, err := encodeClientRecord(c)
 	if err != nil {

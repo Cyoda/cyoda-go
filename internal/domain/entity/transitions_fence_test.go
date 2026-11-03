@@ -15,6 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -52,7 +53,7 @@ func TestTransitions_FenceOnPointInTimeAndTransactionID(t *testing.T) {
 	}
 
 	txh := entity.New(f.factory, submitTimeTM{TransactionManager: f.tm, submit: f.c.Add(time.Millisecond)},
-		common.NewDefaultUUIDGenerator(), nil, txgate.New(), consistency.New(f.tm))
+		common.NewDefaultUUIDGenerator(), nil, txgate.New(), consistency.New(f.tm), platformclock.Real())
 	txID := uuid.New()
 	if status, code := call(txh, genapi.GetEntityTransitionsParams{TransactionId: &txID}); status != http.StatusBadRequest || code != common.ErrCodePointInTimeAfterConsistencyTime {
 		t.Errorf("transactionId submit time after C: %d %s", status, code)

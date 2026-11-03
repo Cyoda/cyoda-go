@@ -24,9 +24,9 @@ const keyPairChangeBound = 70 * time.Second
 // passes.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(keyPairChangeBound)
+	deadline := time.Now().Add(keyPairChangeBound) // realtime: test poll deadline
 	for !cond() {
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("never happened: %s", what)
 		}
 		time.Sleep(200 * time.Millisecond)
@@ -157,7 +157,7 @@ func RunSigningKeyPairFollowsTheCluster(t *testing.T, fixture MultiNodeFixture) 
 		t.Fatalf("control: B refuses the token signed before the issue too: %d, want 200", code)
 	}
 
-	if code, _, err := op.ReactivateKeyPairRaw(t, kid, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK {
+	if code, _, err := op.ReactivateKeyPairRaw(t, kid, time.Now().Add(time.Hour)); err != nil || code != http.StatusOK { // realtime: key validity window handed to the server auth check
 		t.Fatalf("reactivate on A: %d %v", code, err)
 	}
 	eventually(t, "B accepts the reactivated key", func() bool {

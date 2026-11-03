@@ -14,7 +14,7 @@ import (
 )
 
 // isClientGoneCancellation reports whether err is the request's own client
-// having gone away before the request did anything — the same single question
+// having gone away while a layer waited on it — the same single question
 // common.WriteError's HTTP-side check asks: did the layer that was waiting on
 // the client mark the cause common.ErrClientGone?
 //

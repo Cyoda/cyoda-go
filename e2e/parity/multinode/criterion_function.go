@@ -65,7 +65,7 @@ func RunCriterionFunction_HandOverFromAGroup(t *testing.T, fixture MultiNodeFixt
 	// The warm-up's processor callout is in the same record; count the
 	// criterion callouts only.
 	var criteria []parity.ReceivedCallout
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(5 * time.Second) // realtime: test poll deadline
 	for {
 		criteria = criteria[:0]
 		for _, r := range remote.Received(t) {
@@ -73,7 +73,7 @@ func RunCriterionFunction_HandOverFromAGroup(t *testing.T, fixture MultiNodeFixt
 				criteria = append(criteria, r)
 			}
 		}
-		if len(criteria) > 0 || time.Now().After(deadline) {
+		if len(criteria) > 0 || time.Now().After(deadline) { // realtime: test poll deadline
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

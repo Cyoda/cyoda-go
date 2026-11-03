@@ -688,7 +688,7 @@ func TestFireScheduled_ReArmedAtReRead_Superseded(t *testing.T) {
 		}
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, WithScheduledClock(fixedClock(armMs)))
+	engine := NewEngine(racingFactory, uuids, txMgr, funcClock(fixedClock(armMs)))
 
 	r := fireDue(t, engine, ctx, id)
 	if r.Outcome != OutcomeSuperseded || r.Err != nil {
@@ -819,6 +819,10 @@ func (t *txLeakTracker) ConsistencyTime(ctx context.Context) (time.Time, error) 
 	return time.Time{}, errors.New("not used by this test")
 }
 
+func (t *txLeakTracker) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (t *txLeakTracker) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return t.inner.GetSubmitTime(ctx, txID)
 }
@@ -852,11 +856,11 @@ func setupEngineForCBDFire(t *testing.T, initialMs int64, mock *mockExternalProc
 	rawTxMgr := factory.NewTransactionManager(uuids)
 	tracker := newTxLeakTracker(rawTxMgr)
 	clock, advance := steppableClock(initialMs)
-	opts := []EngineOption{WithScheduledClock(clock), WithExternalProcessing(mock)}
+	opts := []EngineOption{WithExternalProcessing(mock)}
 	if maxStateVisits > 0 {
 		opts = append(opts, WithMaxStateVisits(maxStateVisits))
 	}
-	engine := NewEngine(factory, uuids, tracker, opts...)
+	engine := NewEngine(factory, uuids, tracker, funcClock(clock), opts...)
 	return engine, factory, tracker, advance
 }
 
@@ -1413,7 +1417,7 @@ func TestFireScheduled_GuardCASRace_SafeFailureWithoutTornWrite(t *testing.T) {
 		seedFireEntity(t, realFactory, ctx, "race-e1", modelRef, "RACED", "racer-tx-1", map[string]any{"racer": true})
 	}
 
-	engine := NewEngine(racingFactory, uuids, txMgr, WithScheduledClock(fixedClock(armMs)))
+	engine := NewEngine(racingFactory, uuids, txMgr, funcClock(fixedClock(armMs)))
 
 	r := fireDue(t, engine, ctx, id)
 	if r.Err == nil {

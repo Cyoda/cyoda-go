@@ -123,7 +123,7 @@ func runSortedAsyncSearch(t *testing.T, c *client.Client, modelName string, mode
 		t.Fatalf("%s run: SubmitAsyncSearchSorted: %v", label, err)
 	}
 
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(30 * time.Second) // realtime: test poll deadline
 	for {
 		status, err := c.GetAsyncSearchStatus(t, jobID)
 		if err != nil {
@@ -139,7 +139,7 @@ func runSortedAsyncSearch(t *testing.T, c *client.Client, modelName string, mode
 		if status == "FAILED" || status == "CANCELLED" || status == "NOT_FOUND" {
 			t.Fatalf("%s run: async search reached terminal status %s (jobId=%s)", label, status, jobID)
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("%s run: timeout waiting for async search jobId=%s (last status=%s)", label, jobID, status)
 		}
 		time.Sleep(100 * time.Millisecond)

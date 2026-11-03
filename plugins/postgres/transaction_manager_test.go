@@ -386,8 +386,8 @@ func TestTxManager_RepeatableRead_SnapshotAndReadYourOwnWrites(t *testing.T) {
 	txID1, txCtx1 := beginGuarded(t, tm, ctx)
 	tx1, _ := tm.LookupTx(txID1)
 	if _, err := tx1.Exec(txCtx1,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-         VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb)`); err != nil {
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+         VALUES ('t1', 'e1', 'M', '1', 1, false, '{}'::jsonb, now(), now())`); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	// Read-your-own-writes.
@@ -441,10 +441,12 @@ func TestTxManager_Commit_ReadSetConflict(t *testing.T) {
 	ctx := ctxWithTenant("t1")
 
 	// Seed.
-	_, _ = pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		VALUES ('t1', 'e1', 'M', '1', 5, false, '{}'::jsonb)
-	`)
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		VALUES ('t1', 'e1', 'M', '1', 5, false, '{}'::jsonb, now(), now())
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
 
 	// Tx A: begin, record a read at version 5.
 	txA, _ := beginGuarded(t, tm, ctx)
@@ -483,8 +485,8 @@ func TestTxManager_Savepoint_RollsBackTxStateEntries(t *testing.T) {
 	// Seed two entities x and y at version 1.
 	for _, id := range []string{"sp-x", "sp-y"} {
 		_, err := pool.Exec(ctx, `
-			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-			VALUES ('sp-tenant', $1, 'M', '1', 1, false, '{}'::jsonb)`, id)
+			INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+			VALUES ('sp-tenant', $1, 'M', '1', 1, false, '{}'::jsonb, now(), now())`, id)
 		if err != nil {
 			t.Fatalf("seed %s: %v", id, err)
 		}

@@ -35,13 +35,13 @@ func AwaitScheduler(t *testing.T, fixture SchedulerFixture, slack time.Duration,
 		w.AwaitScheduler(t, slack, what, check)
 		return
 	}
-	deadline := time.Now().Add(slack)
+	deadline := time.Now().Add(slack) // realtime: test poll deadline
 	for {
 		done, last := check()
 		if done {
 			return
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(deadline) { // realtime: test poll deadline
 			t.Fatalf("%s not seen within %s; last: %s", what, slack, last)
 		}
 		time.Sleep(100 * time.Millisecond)

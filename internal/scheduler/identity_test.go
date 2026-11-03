@@ -50,3 +50,12 @@ func TestSystemUserContextValue_HasTenant(t *testing.T) {
 		t.Error("Begin(context.Background()) should fail with no user context/tenant")
 	}
 }
+
+func TestNew_NilClockPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("New with a nil clock did not panic")
+		}
+	}()
+	New(testConfig(), Deps{Store: failingFactory{}})
+}

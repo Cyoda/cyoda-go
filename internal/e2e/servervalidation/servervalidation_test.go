@@ -21,6 +21,7 @@ var allowlist = map[site]string{
 	{"callout_handover_lost_test.go", "newStandInPeer", "httptest.NewServer"}:                           "a stand-in cluster peer: serves only the internal peer-dispatch route, which is not in the API spec",
 	{"callout_handover_lost_test.go", "freeLoopbackPort", "net.Listen"}:                                 "reserves a port for the gossip layer and closes it at once; serves nothing",
 	{"callback_harness_test.go", "newCalloutHarnessWithKey", "net.Listen"}:                              "the harness's gRPC listener; the HTTP validator does not apply to gRPC",
+	{"platform_clock_test.go", "newClockSeed", "httptest.NewServer"}:                                    "a stand-in cluster peer: serves only the internal peer clock route, which is not in the API spec",
 	{"pool_metrics_test.go", "TestMetrics_PostgresPoolSeriesAreExported", "httptest.NewServer"}:         "the Prometheus metrics handler, which is not in the API spec",
 	{"torn_connection_e2e_test.go", "newPGProxy", "net.Listen"}:                                         "a TCP proxy in front of PostgreSQL; it carries no HTTP",
 	{"tx_lifecycle_e2e_test.go", "TestE2E_PanicInOwnedWrite_ReturnsConnection", "httptest.NewRecorder"}: "drives the admin handler's /readyz and /livez, operational paths outside the API spec",

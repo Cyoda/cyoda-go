@@ -22,6 +22,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -63,11 +64,11 @@ func newTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Context) {
 		Roles:    []string{"ADMIN"},
 	}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
-	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory))
-	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory))
-	modelHandler := model.New(factory)
+	searchService := search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real())
+	entityHandler := entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real())
+	modelHandler := model.New(factory, platformclock.Real())
 
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
@@ -718,7 +719,7 @@ func TestRPC_ModelSetUniqueKeys_422_Unsupported(t *testing.T) {
 	// concrete SupportsCompositeUniqueKeys method on the real factory is NOT
 	// promoted — the type assertion in SetUniqueKeys returns ok=false.
 	type incapableFactory struct{ spi.StoreFactory }
-	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()})
+	svc.modelHandler = model.New(incapableFactory{memory.NewStoreFactory()}, platformclock.Real())
 
 	ce := makeCE(EntityModelSetUniqueKeysRequest, map[string]any{
 		"id":    "test",

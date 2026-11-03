@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"errors"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"net/http"
 	"testing"
 
@@ -22,7 +23,7 @@ func TestEngine_CallerTextHoldingNUL_RefusedBeforeAnyEvent(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "caller-nul", ModelVersion: "1.0"}

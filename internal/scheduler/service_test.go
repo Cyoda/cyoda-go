@@ -15,6 +15,8 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
+	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 )
 
 var fired = workflow.RunReport{Outcome: workflow.OutcomeFired}
@@ -484,7 +486,7 @@ func (failingFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStor
 // A Start that failed keeps failing: a later call reports the first error,
 // never a success for a service that runs nothing.
 func TestService_StartAfterAFailedStartReportsTheFirstError(t *testing.T) {
-	svc := New(testConfig(), Deps{Store: failingFactory{}, Firer: reportFirer(fired), Clock: NewRealClock()})
+	svc := New(testConfig(), Deps{Store: failingFactory{}, Firer: reportFirer(fired), Clock: platformclock.Real()})
 	t.Cleanup(svc.Stop)
 	first := svc.Start(context.Background())
 	if first == nil {
@@ -492,5 +494,19 @@ func TestService_StartAfterAFailedStartReportsTheFirstError(t *testing.T) {
 	}
 	if second := svc.Start(context.Background()); second == nil || second.Error() != first.Error() {
 		t.Errorf("second Start = %v, want the first error %v", second, first)
+	}
+}
+
+func TestScheduler_ClaimNowFromClock(t *testing.T) {
+	at := time.Date(2015, 3, 1, 0, 0, 0, 0, time.UTC)
+	h := newHarness(t, testConfig(), reportFirer(fired))
+	h.svc.deps.Clock = fakeclock.New(at)
+	h.start(t)
+	eventually(t, "a claim", func() bool { return h.fs.claims() >= 1 })
+
+	var req spi.ClaimRequest
+	h.fs.with(func() { req = h.fs.claimReqs[0] })
+	if req.NowMs != at.UnixMilli() {
+		t.Errorf("ClaimRequest.NowMs = %d, want the injected clock's %d", req.NowMs, at.UnixMilli())
 	}
 }

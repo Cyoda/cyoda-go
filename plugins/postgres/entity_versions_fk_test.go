@@ -20,8 +20,8 @@ func TestEntityVersionsRequireAnEntityRow(t *testing.T) {
 
 	_, err := pool.Exec(ctx,
 		`INSERT INTO entity_versions
-		   (tenant_id, entity_id, model_name, model_version, version, valid_time, creation_date, doc)
-		 VALUES ('t-fk', 'orphan-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`)
+		   (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, creation_date, doc)
+		 VALUES ('t-fk', 'orphan-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`)
 	if err == nil {
 		t.Fatal("an entity_versions row with no entities row must be rejected by the foreign key")
 	}
@@ -42,15 +42,15 @@ func TestEntityVersionsAcceptAPairedEntityRow(t *testing.T) {
 	pool := postgres.PoolForTest(factory)
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ('t-fk-paired', 'paired-id', 'm', '1', 1, false, '{"_meta":{}}'::jsonb)`); err != nil {
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		 VALUES ('t-fk-paired', 'paired-id', 'm', '1', 1, false, '{"_meta":{}}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatalf("seed entities row: %v", err)
 	}
 
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO entity_versions
-		   (tenant_id, entity_id, model_name, model_version, version, valid_time, creation_date, doc)
-		 VALUES ('t-fk-paired', 'paired-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`); err != nil {
+		   (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, creation_date, doc)
+		 VALUES ('t-fk-paired', 'paired-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`); err != nil {
 		t.Errorf("a version row with a matching entities row must be accepted, got: %v", err)
 	}
 }
@@ -68,14 +68,14 @@ func TestEntityVersionsEntityFK_RestrictsEntityDeletion(t *testing.T) {
 	pool := postgres.PoolForTest(factory)
 
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ('t-fk-restrict', 'restrict-id', 'm', '1', 1, false, '{"_meta":{}}'::jsonb)`); err != nil {
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		 VALUES ('t-fk-restrict', 'restrict-id', 'm', '1', 1, false, '{"_meta":{}}'::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatalf("seed entities row: %v", err)
 	}
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO entity_versions
-		   (tenant_id, entity_id, model_name, model_version, version, valid_time, creation_date, doc)
-		 VALUES ('t-fk-restrict', 'restrict-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`); err != nil {
+		   (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, creation_date, doc)
+		 VALUES ('t-fk-restrict', 'restrict-id', 'm', '1', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`); err != nil {
 		t.Fatalf("seed entity_versions row: %v", err)
 	}
 

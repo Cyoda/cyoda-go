@@ -135,6 +135,7 @@ func armed(call Callout, repeatSafe bool, limit time.Duration) Callout {
 	call.OwnerNodeID = "node-test"
 	call.Number = &countingNumberer{}
 	call.Identity = IdentityFrom(testContext())
+	call.At = testCalloutAt
 	return call
 }
 

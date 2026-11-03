@@ -266,6 +266,18 @@ func TestHandler_TheCalloutCarriesTheIdentityAsReceived(t *testing.T) {
 	}
 }
 
+// The callout the receiving pnode runs carries the platform time the owner took
+// it up at, exactly as received.
+func TestHandler_TheCalloutCarriesThePlatformTimeAsReceived(t *testing.T) {
+	auth := newAEAD(t)
+	runner := &fakeRunner{result: internalgrpc.LocalResult{TriesUsed: 1, Result: internalgrpc.CalloutResult{Entity: &spi.Entity{Data: []byte(`{}`)}}}}
+	postHandOver(t, newHandlerMux(t, runner, auth), auth, validRequest(t, "processor"))
+
+	if got := runner.gotCall.At; !got.Equal(ownerAt) {
+		t.Errorf("callout platform time = %v, want the owner's %v", got, ownerAt)
+	}
+}
+
 // A hand-over that does not name both principals of the callout's identity is
 // refused before any cnode is tried: the receiving pnode never substitutes a
 // principal for one the owner did not send.
@@ -329,6 +341,31 @@ func TestHandler_PassMintedOnThePeerNamesTheOwner(t *testing.T) {
 	}
 	if len(claims.Outer) != 1 || claims.Outer[0] != (token.Pair{Callout: "outer-rid", Major: 3, Minor: 1}) {
 		t.Errorf("pass Outer = %+v, want the hand-over's enclosing pairs", claims.Outer)
+	}
+}
+
+// The receiving pnode sends the platform time the hand-over carries, the time
+// the owner took the callout up, whatever its own clock reads: a peer that has
+// not yet adopted a clock move must not send the compute node an older time
+// than the owner records for the same callout. The real local procedure builds
+// the request.
+func TestHandler_TheCnodeIsSentTheOwnersPlatformTime(t *testing.T) {
+	signer, err := token.NewSigner(testSecret32)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	reg, cnode := attachedCnode(t, "tenant-1", "python")
+	local := internalgrpc.NewProcessorDispatcher(reg, internalgrpc.NewRoundRobinSelector(reg),
+		signer, 5*time.Second, testOwnAnswerLimitMax, 30*time.Second)
+
+	auth := newAEAD(t)
+	req := validRequest(t, "processor")
+	resp := postHandOver(t, newHandlerMux(t, local, auth), auth, req)
+	if resp.Outcome != OutcomeOK {
+		t.Fatalf("%+v", resp)
+	}
+	if got, want := cnode.onlyTime(t), time.UnixMicro(*req.AtUnixMicro); !got.Equal(want) {
+		t.Errorf("the cnode was sent time %v, want the owner's platform time %v", got, want)
 	}
 }
 

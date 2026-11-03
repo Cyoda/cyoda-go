@@ -453,6 +453,7 @@ func (s *scheduledTaskStore) Query(ctx context.Context, tenant spi.TenantID, q s
 // ownerLostCondition holds when the owner of the RUNNING row st has no
 // liveness record, or one older than StaleAfter ($3, in microseconds) by the
 // database clock.
+// realtime: scheduler owner liveness is judged on the database clock
 const ownerLostCondition = `NOT EXISTS (SELECT 1 FROM scheduler_owners o
 	                     WHERE o.owner = st.claim_owner
 	                       AND o.heartbeat_at >= now() - ($3::bigint * interval '1 microsecond'))`
@@ -1173,6 +1174,7 @@ func (s *scheduledTaskStore) GiveBackIdle(ctx context.Context, owner uuid.UUID, 
 // Heartbeat stamps the owner's liveness record with the database clock. It is
 // an upsert, so a record swept during a long outage comes back.
 func (s *scheduledTaskStore) Heartbeat(ctx context.Context, owner uuid.UUID) error {
+	// realtime: scheduler owner heartbeat liveness
 	if _, err := s.heartbeat.Exec(ctx, `INSERT INTO scheduler_owners (owner, heartbeat_at) VALUES ($1, now())
 		ON CONFLICT (owner) DO UPDATE SET heartbeat_at = now()`, owner); err != nil {
 		return fmt.Errorf("failed to record the scheduler heartbeat: %w", err)
@@ -1190,6 +1192,7 @@ func (s *scheduledTaskStore) RetireOwner(ctx context.Context, owner uuid.UUID) e
 // SweepOwners removes liveness records older than deadFor that no RUNNING task
 // references.
 func (s *scheduledTaskStore) SweepOwners(ctx context.Context, deadFor time.Duration) error {
+	// realtime: scheduler owner liveness sweep
 	if _, err := s.sched.Exec(ctx, `DELETE FROM scheduler_owners o
 		WHERE o.heartbeat_at < now() - ($1::bigint * interval '1 microsecond')
 		  AND NOT EXISTS (SELECT 1 FROM scheduled_tasks st
@@ -1210,4 +1213,24 @@ func (s *scheduledTaskStore) SweepMarks(ctx context.Context) error {
 		return fmt.Errorf("failed to sweep scheduled task marks: %w", err)
 	}
 	return nil
+}
+
+// SchedulerActivity reads, in one statement and so one snapshot, the earliest
+// next_attempt_time of a WAITING task and whether any task is RUNNING, across
+// all tenants (the scheduler tables carry no row-level security, like
+// ClaimDue's cross-tenant reads). It runs on the scheduler pool.
+func (s *scheduledTaskStore) SchedulerActivity(ctx context.Context) (spi.SchedulerActivityReport, error) {
+	var earliest *int64
+	var running bool
+	if err := s.sched.QueryRow(ctx,
+		`SELECT (SELECT min(next_attempt_time) FROM scheduled_tasks WHERE status = 'WAITING'),
+		        EXISTS (SELECT 1 FROM scheduled_tasks WHERE status = 'RUNNING')`).Scan(&earliest, &running); err != nil {
+		return spi.SchedulerActivityReport{}, fmt.Errorf("failed to read the scheduler activity: %w", err)
+	}
+	r := spi.SchedulerActivityReport{Running: running}
+	if earliest != nil {
+		r.HasWaiting = true
+		r.EarliestWaitingMs = *earliest
+	}
+	return r, nil
 }

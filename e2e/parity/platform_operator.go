@@ -38,7 +38,7 @@ func RunPlatformOperatorGate(t *testing.T, fixture BackendFixture) {
 			}},
 			{"current", func() (int, []byte, error) { return c.CurrentKeyPairRaw(t) }},
 			{"invalidate", func() (int, []byte, error) { return c.InvalidateKeyPairRaw(t, bootKID) }},
-			{"reactivate", func() (int, []byte, error) { return c.ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)) }},
+			{"reactivate", func() (int, []byte, error) { return c.ReactivateKeyPairRaw(t, bootKID, time.Now().Add(time.Hour)) }}, // realtime: key validity window handed to the server auth check
 			{"delete", func() (int, []byte, error) { return c.DeleteKeyPairRaw(t, bootKID) }},
 		}
 		for _, call := range calls {
@@ -112,7 +112,7 @@ func RunOBOTokenCannotAdminister(t *testing.T, fixture BackendFixture) {
 		}},
 		{"invalidate trusted key", func() (int, []byte, error) { return obo.InvalidateTrustedKeyRaw(t, kid) }},
 		{"reactivate trusted key", func() (int, []byte, error) {
-			return obo.ReactivateTrustedKeyRaw(t, kid, map[string]any{"validTo": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)})
+			return obo.ReactivateTrustedKeyRaw(t, kid, map[string]any{"validTo": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}) // realtime: key validity window handed to the server auth check
 		}},
 		{"delete trusted key", func() (int, []byte, error) { return obo.DeleteTrustedKeyRaw(t, kid) }},
 	}

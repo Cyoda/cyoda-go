@@ -119,7 +119,7 @@ func newImportTaskEnv(t *testing.T) *importTaskEnv {
 	factory := &taskconflict.Factory{StoreFactory: real, Plan: plan}
 	commits := &conflictOnCommitTxMgr{TransactionManager: txMgr}
 	clock, advance := steppableClock(time.Now().UnixMilli())
-	engine := NewEngine(factory, common.NewDefaultUUIDGenerator(), commits, WithScheduledClock(clock))
+	engine := NewEngine(factory, common.NewDefaultUUIDGenerator(), commits, funcClock(clock))
 	return &importTaskEnv{
 		h: New(factory, engine, 60*time.Second), ctx: ctx, real: real, factory: factory,
 		txMgr: txMgr, commits: commits, plan: plan, advance: advance,

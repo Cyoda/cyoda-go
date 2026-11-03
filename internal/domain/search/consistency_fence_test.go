@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -50,7 +51,7 @@ func newFenceSearchFixture(t *testing.T, tenant string, cTimeErr error) *fenceSe
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, cons)
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, cons, platformclock.Real())
 	return &fenceSearchFixture{base: base, store: store, svc: svc, ctx: ctx, ref: ref, c: c}
 }
 
@@ -107,7 +108,7 @@ func TestSubmitAsync_UnavailableCreatesNoJob(t *testing.T) {
 		t.Fatalf("TransactionManager: %v", tmErr)
 	}
 	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), counting,
-		consistency.New(chosenTM{TransactionManager: realTM, err: spi.ErrConsistencyTimeUnavailable}))
+		consistency.New(chosenTM{TransactionManager: realTM, err: spi.ErrConsistencyTimeUnavailable}), platformclock.Real())
 
 	for _, pit := range []*time.Time{nil, f.after()} {
 		_, err := svc.SubmitAsync(f.ctx, f.ref, matchEverything, search.SearchOptions{Limit: 10, PointInTime: pit})
@@ -129,7 +130,7 @@ func TestSubmitAsync_CapPreCheckWinsOverFence(t *testing.T) {
 	pool := search.NewWorkerPool(4, 64)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
 	svc := search.NewSearchService(f.base, common.NewTestUUIDGenerator(), blocking,
-		consistency.New(chosenTM{TransactionManager: realTM, at: f.c})).
+		consistency.New(chosenTM{TransactionManager: realTM, at: f.c}), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithAsyncMaxPerTenant(1).
 		WithHeartbeat(50 * time.Millisecond)

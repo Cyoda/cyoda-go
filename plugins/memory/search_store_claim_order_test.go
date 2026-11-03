@@ -75,6 +75,11 @@ func TestClaimStale_RejectsNonPositiveLimit(t *testing.T) {
 		t.Fatalf("CreateJob: %v", err)
 	}
 
+	created, err := store.GetJob(ctx, "job-live")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+
 	for _, limit := range []int{0, -1} {
 		claimed, err := store.ClaimStale(ctx, -time.Hour, limit)
 		if err == nil {
@@ -93,8 +98,8 @@ func TestClaimStale_RejectsNonPositiveLimit(t *testing.T) {
 	if job.Epoch != 1 {
 		t.Errorf("a rejected ClaimStale bumped the epoch to %d, want 1", job.Epoch)
 	}
-	if job.HeartbeatTime != nil {
-		t.Error("a rejected ClaimStale stamped HeartbeatTime")
+	if job.HeartbeatTime == nil || !job.HeartbeatTime.Equal(*created.HeartbeatTime) {
+		t.Error("a rejected ClaimStale changed HeartbeatTime")
 	}
 }
 

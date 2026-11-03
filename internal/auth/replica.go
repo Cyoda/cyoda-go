@@ -116,7 +116,7 @@ func newKVReplica[R any](ctx context.Context, kv spi.KeyValueStore, cfg replicaC
 	if cfg.metrics == nil {
 		cfg.metrics = NopReconcileMetrics{}
 	}
-	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: ctx, epoch: time.Now()}
+	r := &kvReplica[R]{cfg: cfg, kv: kv, ctx: ctx, epoch: time.Now()} // realtime: replica staleness measured on the process clock
 	entries, err := kv.List(r.ctx, cfg.namespace)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load %s records: %w", cfg.name, err)
@@ -145,10 +145,10 @@ func (r *kvReplica[R]) read(fn func(recs map[string]R)) {
 	fn(r.recs)
 }
 
-func (r *kvReplica[R]) stampOK() { r.lastOK.Store(int64(time.Since(r.epoch))) }
+func (r *kvReplica[R]) stampOK() { r.lastOK.Store(int64(time.Since(r.epoch))) } // realtime: replica staleness measured on the process clock
 
 func (r *kvReplica[R]) age() time.Duration {
-	return time.Since(r.epoch) - time.Duration(r.lastOK.Load())
+	return time.Since(r.epoch) - time.Duration(r.lastOK.Load()) // realtime: replica staleness measured on the process clock
 }
 
 // Stale reports whether the copy has had no successful re-read for the
@@ -281,9 +281,11 @@ func (r *kvReplica[R]) Start() bool {
 	// the loop's own clock starts now, not at construction time.
 	r.stampOK()
 	done := make(chan struct{})
-	r.loopMu.Lock()
-	r.loopDone = done
-	r.loopMu.Unlock()
+	func() {
+		r.loopMu.Lock()
+		defer r.loopMu.Unlock()
+		r.loopDone = done
+	}()
 	go func() {
 		defer close(done)
 		for {
@@ -307,9 +309,11 @@ func (r *kvReplica[R]) Start() bool {
 // arrives after this returns a safe no-op, so Wait does not need to guard
 // against one arriving later.
 func (r *kvReplica[R]) Wait() {
-	r.loopMu.Lock()
-	done := r.loopDone
-	r.loopMu.Unlock()
+	done := func() chan struct{} {
+		r.loopMu.Lock()
+		defer r.loopMu.Unlock()
+		return r.loopDone
+	}()
 	if done != nil {
 		<-done
 	}

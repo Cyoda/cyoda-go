@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"strings"
 	"sync"
 	"testing"
@@ -25,7 +26,7 @@ func setupEngine(t *testing.T) (*Engine, spi.StoreFactory) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 	return engine, factory
 }
 
@@ -708,7 +709,7 @@ func TestProcessorAsyncNewTxIndependent(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-new-tx", ModelVersion: "1.0"}
@@ -748,7 +749,7 @@ func TestProcessorSyncInCallerTx(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "sync-proc", ModelVersion: "1.0"}
@@ -788,7 +789,7 @@ func TestProcessorAsyncSameTxDefault(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-same-tx", ModelVersion: "1.0"}
@@ -861,7 +862,7 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-proc", ModelVersion: "1.0"}
@@ -889,9 +890,11 @@ func TestProcessorDispatchWithExtProc(t *testing.T) {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time, got %d", calls)
 	}
@@ -907,7 +910,7 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-async-new", ModelVersion: "1.0"}
@@ -941,9 +944,11 @@ func TestProcessorDispatchWithExtProcAsyncNewTx(t *testing.T) {
 		t.Errorf("expected state=DONE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time, got %d", calls)
 	}
@@ -966,7 +971,7 @@ func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "empty-mode", ModelVersion: "1.0"}
@@ -1004,9 +1009,11 @@ func TestProcessorEmptyExecutionMode_FiresAsSync(t *testing.T) {
 
 	// And the dispatcher was actually called exactly once — i.e. it
 	// wasn't silently treated as "no-op" via some unknown-mode swallow.
-	mock.mu.Lock()
-	calls := mock.dispatchProcessorCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchProcessorCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchProcessor called 1 time for empty executionMode, got %d", calls)
 	}
@@ -1019,7 +1026,7 @@ func TestProcessorDispatchError(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{returnErr: fmt.Errorf("processor failed")}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-err", ModelVersion: "1.0"}
@@ -1055,7 +1062,7 @@ func TestProcessorDispatchModifiesEntityData(t *testing.T) {
 	mock := &mockExtProc{
 		returnEntity: &spi.Entity{Data: modifiedData},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "ext-mod", ModelVersion: "1.0"}
@@ -1135,7 +1142,7 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: true}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-crit", ModelVersion: "1.0"}
@@ -1163,9 +1170,11 @@ func TestFunctionCriterionDispatched(t *testing.T) {
 		t.Errorf("expected state=ELIGIBLE, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchCriteriaCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchCriteriaCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchCriteria called 1 time, got %d", calls)
 	}
@@ -1205,7 +1214,7 @@ func TestFunctionCriterionReturnsFalse(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "func-false", ModelVersion: "1.0"}
@@ -1242,7 +1251,7 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: true}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "wf-func-crit", ModelVersion: "1.0"}
@@ -1267,9 +1276,11 @@ func TestWorkflowFunctionCriterion(t *testing.T) {
 		t.Errorf("expected state=SELECTED, got %q", entity.Meta.State)
 	}
 
-	mock.mu.Lock()
-	calls := mock.dispatchCriteriaCalls
-	mock.mu.Unlock()
+	calls := func() int {
+		mock.mu.Lock()
+		defer mock.mu.Unlock()
+		return mock.dispatchCriteriaCalls
+	}()
 	if calls != 1 {
 		t.Errorf("expected DispatchCriteria called 1 time, got %d", calls)
 	}
@@ -1515,7 +1526,7 @@ func TestExecute_WrappedNotFoundFallsBackToDefault(t *testing.T) {
 	factory := &wrappedNotFoundFactory{StoreFactory: memFactory}
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := memFactory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "WrappedModel", ModelVersion: "1.0"}
@@ -1572,7 +1583,7 @@ func TestAsyncNewTxFailureDoesNotKillPipeline(t *testing.T) {
 			}
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-fail-test", ModelVersion: "1.0"}
@@ -1639,7 +1650,7 @@ func TestAsyncNewTxEntityMutationsDiscarded(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-discard-test", ModelVersion: "1.0"}
@@ -1697,9 +1708,11 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 
 	mock := &mockExternalProcessing{
 		dispatchFunc: func(_ context.Context, entity *spi.Entity, proc spi.ProcessorDefinition, _, _, _ string) (*spi.Entity, error) {
-			callMu.Lock()
-			callOrder = append(callOrder, proc.Name)
-			callMu.Unlock()
+			func() {
+				callMu.Lock()
+				defer callMu.Unlock()
+				callOrder = append(callOrder, proc.Name)
+			}()
 
 			// Read current entity data, add this processor's key, return modified.
 			var data map[string]any
@@ -1711,7 +1724,7 @@ func TestSyncProcessorsSequentialCumulativeMutations(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cumulative-test", ModelVersion: "1.0"}
@@ -1781,7 +1794,7 @@ func TestAsyncNewTx_SeesSyncChanges(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "async-sees-sync", ModelVersion: "1.0"}
 
@@ -1935,7 +1948,7 @@ func TestEngine_SegmentBoundary_FlushesCommitsAndReopens(t *testing.T) {
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
-	engine := NewEngine(factory, uuids, txMgr)
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real())
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "SegmentModel", ModelVersion: "1.0"}
@@ -2056,7 +2069,7 @@ func TestEngine_CommitBeforeDispatch_FalseBranch_HappyPath(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-false", ModelVersion: "1.0"}
@@ -2200,6 +2213,10 @@ func (m *countingTxManager) ConsistencyTime(ctx context.Context) (time.Time, err
 	return time.Time{}, errors.New("not used by this test")
 }
 
+func (m *countingTxManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return time.Time{}, errors.New("not used by this test")
+}
+
 func (m *countingTxManager) GetSubmitTime(ctx context.Context, txID string) (time.Time, error) {
 	return m.inner.GetSubmitTime(ctx, txID)
 }
@@ -2244,7 +2261,7 @@ func TestEngine_SingleSegment_NoEngineCommit(t *testing.T) {
 			return e, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "single-seg", ModelVersion: "1.0"}
@@ -2388,7 +2405,7 @@ func TestEngine_CommitBeforeDispatch_CASConflict_BubblesAsErrConflict(t *testing
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	wf := spi.WorkflowDefinition{
 		Version: "1.1", Name: "CbdCASConflictWF", InitialState: "S_pre", Active: true,
@@ -2529,7 +2546,7 @@ func TestEngine_CommitBeforeDispatch_TrueBranch_HappyPath(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-true", ModelVersion: "1.0"}
@@ -2685,7 +2702,7 @@ func TestEngine_CommitBeforeDispatch_AuditEventPlacement(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-audit", ModelVersion: "1.0"}
@@ -2830,7 +2847,7 @@ func TestEngine_Execute_ReturnsFinalSegmentTxOnCBDCascade(t *testing.T) {
 			return &spi.Entity{Data: modified}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-final-tx", ModelVersion: "1.0"}
@@ -2985,7 +3002,7 @@ func TestEngine_CBD_FollowedBySyncFailure_RollsBackPostSegment(t *testing.T) {
 			return e, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "cbd-then-fail", ModelVersion: "1.0"}
@@ -3170,7 +3187,7 @@ func TestEngine_AutomatedCriterionNoMatch_RecordsReason(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "amount 5 below minimum 10"}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "auto-crit-reason", ModelVersion: "1.0"}
@@ -3308,7 +3325,7 @@ func TestEngine_ManualCriterionNoMatch_EnrichesError(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "reason X"}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "manual-crit-reason", ModelVersion: "1.0"}
@@ -3413,7 +3430,7 @@ func TestEngine_WorkflowSkipped_RecordsReason(t *testing.T) {
 	txMgr := factory.NewTransactionManager(uuids)
 
 	mock := &mockExtProc{criteriaResult: false, criteriaReason: "tenant not eligible"}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "wf-skip-reason", ModelVersion: "1.0"}

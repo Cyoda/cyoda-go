@@ -51,7 +51,8 @@ func dsnWithParam(t *testing.T, dsn, key, value string) string {
 	t.Helper()
 	u, err := url.Parse(dsn)
 	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
+		// errors.Unwrap: *url.Error renders the URL, which carries the password.
+		t.Fatalf("parse CYODA_TEST_DB_URL: %v", errors.Unwrap(err))
 	}
 	q := u.Query()
 	q.Set(key, value)
@@ -368,8 +369,8 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 	// 000012) requires a version row's entities row to already exist, the
 	// same order every real Save keeps.
 	if _, err := pool.Exec(ctx, `
-		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted,
+		INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, creation_date, last_modified, doc)
+		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version, deleted, creation_date, last_modified,
 		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
 		FROM entities, generate_series(1, $1) AS g
 		WHERE tenant_id = $2 AND entity_id = 'seed'`,
@@ -379,9 +380,9 @@ func seedSearchCeilingModel(t *testing.T, dsn string) {
 
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO entity_versions (tenant_id, entity_id, model_name, model_version, version,
-		                             valid_time, transaction_time, wall_clock_time, doc)
+		                             valid_time, transaction_time, wall_clock_time, creation_date, doc)
 		SELECT tenant_id, entity_id || '-' || g, model_name, model_version, version,
-		       valid_time, transaction_time, wall_clock_time,
+		       valid_time, transaction_time, wall_clock_time, creation_date,
 		       jsonb_set(doc, '{_meta,id}', to_jsonb(entity_id || '-' || g))
 		FROM entity_versions, generate_series(1, $1) AS g
 		WHERE tenant_id = $2 AND entity_id = 'seed'`,

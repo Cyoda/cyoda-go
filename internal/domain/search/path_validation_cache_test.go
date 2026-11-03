@@ -10,6 +10,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -74,7 +75,7 @@ func TestSearch_NegativeCache_CollapsesSerialFloodForUnknownPath(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -128,7 +129,7 @@ func TestSearch_NegativeCache_InvalidatedOnSchemaChange(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")
@@ -185,7 +186,7 @@ func TestSearch_NegativeCache_ConcurrentMissAndInvalidation(t *testing.T) {
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	ctx := tenantCtx("tenant-1")

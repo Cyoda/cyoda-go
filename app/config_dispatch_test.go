@@ -12,6 +12,7 @@ func validDispatchConfig() cluster.Config {
 	return cluster.Config{
 		DispatchWaitTimeout:    5 * time.Second,
 		DispatchConnectTimeout: 2 * time.Second,
+		ProxyTimeout:           30 * time.Second,
 	}
 }
 
@@ -53,6 +54,8 @@ func TestValidateDispatch(t *testing.T) {
 		{"negative patience", func(c *cluster.Config) { c.DispatchWaitTimeout = -time.Second }, "CYODA_DISPATCH_WAIT_TIMEOUT"},
 		{"zero connect timeout", func(c *cluster.Config) { c.DispatchConnectTimeout = 0 }, "CYODA_DISPATCH_CONNECT_TIMEOUT"},
 		{"negative connect timeout", func(c *cluster.Config) { c.DispatchConnectTimeout = -time.Second }, "CYODA_DISPATCH_CONNECT_TIMEOUT"},
+		{"zero proxy timeout", func(c *cluster.Config) { c.ProxyTimeout = 0 }, "CYODA_PROXY_TIMEOUT"},
+		{"negative proxy timeout", func(c *cluster.Config) { c.ProxyTimeout = -time.Second }, "CYODA_PROXY_TIMEOUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

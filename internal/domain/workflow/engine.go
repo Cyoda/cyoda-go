@@ -153,9 +153,9 @@ type Engine struct {
 	maxStateVisits   int
 	defaultWorkflows []spi.WorkflowDefinition
 	// clock supplies "now" for scheduled-transition arming (reconcileScheduledTasks)
-	// and for FireScheduledTransition's deadline decisions. Defaults to
-	// time.Now; overridden via WithScheduledClock for deterministic tests.
-	clock func() time.Time
+	// and for FireScheduledTransition's deadline decisions, and stamps the audit
+	// trail. Injected via NewEngine.
+	clock spi.Clock
 	// commitBudget bounds flushAndCommitSegment's shielded CBD-segment
 	// commit (common.ShieldedCommitWithBudget). Defaults to
 	// common.CommitBudget (the same 30s production budget
@@ -168,9 +168,16 @@ type Engine struct {
 }
 
 // NewEngine creates a new workflow engine. txMgr is required and must not be
-// nil: the engine takes savepoints and rolls back segments through it.
-func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, opts ...EngineOption) *Engine {
-	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: time.Now, commitBudget: common.CommitBudget}
+// nil: the engine takes savepoints and rolls back segments through it. clock
+// is required and must not be nil: it is the platform clock behind
+// reconcileScheduledTasks' scheduledTime/armedAt computation,
+// FireScheduledTransition's deadline decisions and audit-event timestamps.
+// There is no default; a missing clock fails at construction.
+func NewEngine(factory spi.StoreFactory, uuids spi.UUIDGenerator, txMgr spi.TransactionManager, clock spi.Clock, opts ...EngineOption) *Engine {
+	if clock == nil {
+		panic("workflow.NewEngine: nil clock")
+	}
+	e := &Engine{factory: factory, uuids: uuids, txMgr: txMgr, maxStateVisits: defaultMaxStateVisits, clock: clock, commitBudget: common.CommitBudget}
 	for _, opt := range opts {
 		opt(e)
 	}
@@ -204,18 +211,6 @@ func WithMaxStateVisits(n int) EngineOption {
 	}
 }
 
-// WithScheduledClock overrides the engine's clock, used for
-// reconcileScheduledTasks' scheduledTime/armedAt computation and
-// FireScheduledTransition's deadline decisions. Defaults to time.Now; tests
-// inject a deterministic clock instead.
-func WithScheduledClock(clock func() time.Time) EngineOption {
-	return func(e *Engine) {
-		if clock != nil {
-			e.clock = clock
-		}
-	}
-}
-
 // WithCommitBudget overrides the budget flushAndCommitSegment's shielded CBD
 // commit is bound by. Defaults to common.CommitBudget (30s); tests inject a
 // short budget to observe common.ErrCommitInterrupted firing for real
@@ -230,10 +225,7 @@ func WithCommitBudget(budget time.Duration) EngineOption {
 
 // now returns the engine's current time per its configured clock.
 func (e *Engine) now() time.Time {
-	if e.clock != nil {
-		return e.clock()
-	}
-	return time.Now()
+	return e.clock.Now()
 }
 
 // rollbackSegment releases a transaction segment the engine opened and never

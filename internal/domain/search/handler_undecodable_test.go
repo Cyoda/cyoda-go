@@ -13,6 +13,7 @@ import (
 	genapi "github.com/cyoda-platform/cyoda-go/api"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -49,7 +50,7 @@ func TestSearchEntities_UndecodableStoredData_Fails(t *testing.T) {
 		}}
 	factory := &searcherFactory{StoreFactory: base, entityStore: ses}
 	searchStore, _ := base.AsyncSearchStore(context.Background())
-	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)))
+	h := search.NewHandler(search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()))
 
 	body := `{"type":"simple","jsonPath":"$.name","operatorType":"EQUALS","value":"Alice"}`
 	req := httptest.NewRequest(http.MethodPost, "/search/direct/person/1", strings.NewReader(body)).WithContext(ctx)
@@ -66,7 +67,7 @@ func TestGetAsyncSearchResults_UndecodableStoredData_Fails(t *testing.T) {
 			"good-id": []byte(`{"name":"Alice"}`),
 			"bad-id":  undecodableData,
 		}}},
-		nil, &resultIDsStore{ids: []string{"good-id", "bad-id"}}, newFixedConsistency())
+		nil, &resultIDsStore{ids: []string{"good-id", "bad-id"}}, newFixedConsistency(), platformclock.Real())
 
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/search/async/"+jobID.String(), nil).WithContext(tenantCtx("tenant-1"))

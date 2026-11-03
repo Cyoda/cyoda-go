@@ -96,9 +96,9 @@ func (t *TracingExternalProcessingService) record(
 	ctx, stats := contract.WithCalloutStats(ctx)
 
 	opt := t.measurementOption(kind)
-	start := time.Now()
+	start := time.Now() // realtime: latency metric
 	err := fn(ctx, span)
-	elapsed := time.Since(start).Seconds()
+	elapsed := time.Since(start).Seconds() // realtime: latency metric
 
 	t.dispatchDuration.Record(ctx, elapsed, opt)
 	t.dispatchTotal.Add(ctx, 1, opt)

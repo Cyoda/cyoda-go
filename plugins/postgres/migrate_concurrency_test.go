@@ -24,9 +24,7 @@ import (
 
 	"github.com/golang-migrate/migrate/v4/database"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/google/uuid"
 	"github.com/jackc/pgerrcode"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
@@ -338,35 +336,16 @@ func TestLockTimeout_AbortsAnAdvisoryLockWait(t *testing.T) {
 // independent migration domains.
 func freshDatabase(t *testing.T) string {
 	t.Helper()
-	base := testDBURL(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	admin, err := pgxpool.New(ctx, base)
+	dsn, drop, err := CreateTestDatabase(testDBURL(t), "cyoda_boot_")
 	if err != nil {
-		t.Fatalf("open admin pool: %v", err)
-	}
-	t.Cleanup(admin.Close)
-
-	name := "cyoda_boot_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
-	quoted := pgx.Identifier{name}.Sanitize()
-	if _, err := admin.Exec(ctx, "CREATE DATABASE "+quoted); err != nil {
-		t.Fatalf("create %s: %v", name, err)
+		t.Fatalf("fresh database: %v", err)
 	}
 	t.Cleanup(func() {
-		dropCtx, dropCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer dropCancel()
-		if _, err := admin.Exec(dropCtx, "DROP DATABASE IF EXISTS "+quoted+" WITH (FORCE)"); err != nil {
-			t.Errorf("drop %s: %v", name, err)
+		if err := drop(); err != nil {
+			t.Errorf("%v", err)
 		}
 	})
-
-	u, err := url.Parse(base)
-	if err != nil {
-		t.Fatalf("parse CYODA_TEST_DB_URL: %v", err)
-	}
-	u.Path = "/" + name
-	return u.String()
+	return dsn
 }
 
 // dsnDatabase returns just the database name from dsn, for failure messages.

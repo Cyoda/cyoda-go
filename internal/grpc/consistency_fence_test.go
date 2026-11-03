@@ -20,6 +20,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -48,7 +49,7 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	tm := &consistencyTimeTM{TransactionManager: txMgr}
 	cons := consistency.New(tm)
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, err := factory.AsyncSearchStore(context.Background())
 	if err != nil {
 		t.Fatalf("AsyncSearchStore: %v", err)
@@ -56,9 +57,9 @@ func newFenceEnv(t *testing.T) *fenceEnv {
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), cons),
-		modelHandler:  model.New(factory),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, cons),
+		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), cons, platformclock.Real()),
+		modelHandler:  model.New(factory, platformclock.Real()),
+		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, cons, platformclock.Real()),
 		cons:          cons,
 	}
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{

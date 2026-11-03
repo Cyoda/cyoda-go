@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -50,11 +51,13 @@ func (s *terminalWriteObserverStore) SaveResults(ctx context.Context, jobID stri
 
 func (s *terminalWriteObserverStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	if status == "SUCCESSFUL" {
-		s.mu.Lock()
-		s.successCtx = ctx
-		s.successCount = resultCount
-		s.sawSuccess = true
-		s.mu.Unlock()
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.successCtx = ctx
+			s.successCount = resultCount
+			s.sawSuccess = true
+		}()
 	}
 	return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }
@@ -69,7 +72,7 @@ func newObserverService(t *testing.T, base *memory.StoreFactory, store *terminal
 	t.Helper()
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	return search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base)).
+	return search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 }

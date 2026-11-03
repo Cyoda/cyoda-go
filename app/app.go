@@ -48,6 +48,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
@@ -176,6 +177,27 @@ func New(cfg Config) *App {
 	var factoryOpts []spi.FactoryOption
 	if gossipReg != nil {
 		factoryOpts = append(factoryOpts, spi.WithClusterBroadcaster(gossipReg))
+	}
+
+	// clk is the platform clock: one source of business time shared by the
+	// search service, the engine, the scheduler, the domain handlers and the
+	// owner's callout loop, so all agree on "now". It is the real clock unless
+	// clock control is on; then it is one test clock for the process, attached
+	// to gossip's state exchange before the node registers so the join-time
+	// exchange brings the cluster's setting. A change reaches the running
+	// nodes by its push over the peer channel, not by gossip. The storage
+	// plugin gets it (spi.WithClock) only when clock control is on; production
+	// postgres keeps the database clock.
+	var testClock *platformclock.Test
+	clk := platformclock.Real()
+	if cfg.ClockControlEnabled {
+		slog.Warn(clockControlWarning, "pkg", "app")
+		testClock = platformclock.NewTest(a.selfNodeID, nil)
+		clk = testClock
+		factoryOpts = append(factoryOpts, spi.WithClock(testClock))
+		if gossipReg != nil {
+			platformclock.Attach(testClock, gossipReg)
+		}
 	}
 
 	// startupCtx carries a deadline so unreachable infrastructure fails fast
@@ -412,7 +434,7 @@ func New(cfg Config) *App {
 	// cfg.Validate at the top of New).
 	a.searchPool = search.NewWorkerPool(cfg.SearchAsync.Workers, cfg.SearchAsync.QueueLen)
 	a.searchService = search.
-		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency).
+		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
 		WithHealthFlag(a.healthFlag).
@@ -420,12 +442,10 @@ func New(cfg Config) *App {
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
 
-	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
-
-	a.auditService = skeleton.NewAuditService()
-	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
-
-	// Cluster components
+	// Cluster membership. The node joins before any background loop starts
+	// (the search reapers and the scheduler below), so with clock control on
+	// it has merged the cluster's clock setting before anything reads the
+	// clock in the background.
 	if cfg.Cluster.Enabled {
 		// gossipReg was created above (before plugin.NewFactory) so the plugin
 		// could subscribe to broadcast topics. Join the cluster now; subscribers
@@ -444,13 +464,32 @@ func New(cfg Config) *App {
 		a.nodeRegistry = registry.NewLocal("local", fmt.Sprintf("localhost:%d", cfg.HTTPPort))
 	}
 
+	// With clock control on and no setting taken from a peer, the node starts
+	// on real time; a store holding later times fails the start.
+	if testClock != nil {
+		if err := checkClockAtStartup(startupCtx, testClock, platformLatestRecordedTime(a.transactionManager), time.Now()); err != nil { // realtime: a restart compares the store with real time
+			slog.Error("startup failure", "phase", "platform-clock", "error", err.Error())
+			os.Exit(1)
+		}
+	}
+
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
+
+	a.auditService = skeleton.NewAuditService()
+	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
+
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
 	// Peer-auth for inter-node dispatch. AES-256-GCM + HKDF-derived key over
 	// the shared cluster secret. 30-second timestamp skew window. This node's
 	// id is what every inbound envelope must have been sealed for. Constructed
-	// once and shared by forwarder and handler so rotation is atomic.
-	var peerAuth clusterdispatch.PeerAuth
+	// once and shared by forwarder and handler so rotation is atomic. The
+	// forwarder carries a callout hand-over and a platform clock push, so it is
+	// built in cluster mode whatever serves external processing.
+	var (
+		peerAuth  clusterdispatch.PeerAuth
+		forwarder *clusterdispatch.HTTPForwarder
+	)
 	if cfg.Cluster.Enabled {
 		auth, err := clusterdispatch.NewAEADPeerAuth(cfg.Cluster.HMACSecret, a.selfNodeID, 30*time.Second)
 		if err != nil {
@@ -458,6 +497,12 @@ func New(cfg Config) *App {
 			os.Exit(1)
 		}
 		peerAuth = auth
+		forwarder = clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
+		if cfg.Cluster.DispatchAllowLoopback {
+			// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
+			// Never set in production (SSRF guard stays active by default).
+			forwarder = forwarder.AllowLoopbackForTesting()
+		}
 	}
 	if cfg.ExternalProcessing != nil {
 		extProc = cfg.ExternalProcessing
@@ -466,12 +511,6 @@ func New(cfg Config) *App {
 		// router: peers stays a nil interface (a nil *PeerRouter would not be).
 		var peers callout.PeerRouter
 		if cfg.Cluster.Enabled {
-			forwarder := clusterdispatch.NewHTTPForwarder(peerAuth, cfg.Cluster.DispatchConnectTimeout)
-			if cfg.Cluster.DispatchAllowLoopback {
-				// Test-only: multi-node E2E fixtures run every node on 127.0.0.1.
-				// Never set in production (SSRF guard stays active by default).
-				forwarder = forwarder.AllowLoopbackForTesting()
-			}
 			peerRouter, err := clusterdispatch.NewPeerRouter(a.nodeRegistry, a.selfNodeID,
 				clusterdispatch.NewRandomSelector(), forwarder, observability.Meter())
 			if err != nil {
@@ -480,7 +519,7 @@ func New(cfg Config) *App {
 			}
 			peers = peerRouter
 		}
-		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), callout.Config{
+		extProc = callout.New(localDispatcher, a.memberRegistry, peers, a.fence, common.NewDefaultUUIDGenerator(), clk, callout.Config{
 			SelfNodeID:        a.selfNodeID,
 			FixedNumRetries:   cfg.Callout.FixedNumRetries,
 			Patience:          cfg.Cluster.DispatchWaitTimeout,
@@ -490,13 +529,9 @@ func New(cfg Config) *App {
 	if cfg.OTelEnabled {
 		extProc = observability.NewTracingExternalProcessingService(extProc, observability.Meter())
 	}
-	// schedClock is the pnode clock, shared by the engine's arm and fire math
-	// and the scheduler, so both agree on "now".
-	schedClock := scheduler.NewRealClock()
-	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager,
+	a.workflowEngine = workflow.NewEngine(a.storeFactory, common.NewDefaultUUIDGenerator(), a.transactionManager, clk,
 		workflow.WithExternalProcessing(extProc),
-		workflow.WithMaxStateVisits(cfg.MaxStateVisits),
-		workflow.WithScheduledClock(schedClock.Now))
+		workflow.WithMaxStateVisits(cfg.MaxStateVisits))
 
 	// Wire MemberRegistry onChange to gossip tag updates
 	if cfg.Cluster.Enabled {
@@ -518,7 +553,7 @@ func New(cfg Config) *App {
 		Store:              a.storeFactory,
 		TxManager:          a.transactionManager,
 		Firer:              a.workflowEngine,
-		Clock:              schedClock,
+		Clock:              clk,
 		HealthFlag:         a.healthFlag,
 		Meter:              observability.Meter(),
 		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
@@ -540,8 +575,8 @@ func New(cfg Config) *App {
 	a.joiner = joiner
 
 	// Domain handlers
-	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency)
-	modelHandler := model.New(a.storeFactory)
+	entityHandler := entity.New(a.storeFactory, a.transactionManager, common.NewDefaultUUIDGenerator(), a.workflowEngine, a.txGate, a.consistency, clk)
+	modelHandler := model.New(a.storeFactory, clk)
 	server := internalapi.NewServer()
 	server.Entity = entityHandler
 	server.Model = modelHandler
@@ -560,6 +595,25 @@ func New(cfg Config) *App {
 	}
 	accountHandler := account.New(accountKeyStore, accountTrustedKeyStore, accountM2MStore, cfg.IAM.AuthIAMFeatures(), operatorGuard)
 	server.Account = accountHandler
+
+	// The platform clock API. With clock control on, POST /platform/clock
+	// changes the test clock: a move polls the store's scheduled tasks, and
+	// each new setting is confirmed before the change goes on. In cluster mode
+	// the setting is pushed to every member of the gossip directory over the
+	// peer channel, and each must echo it within CYODA_PROXY_TIMEOUT.
+	clockState := func() platformclock.State { return platformclock.StateOf(nil, false) }
+	if testClock != nil {
+		confirm := platformclock.SingleNode(a.selfNodeID)
+		if cfg.Cluster.Enabled {
+			confirm = platformclock.Cluster(a.selfNodeID, clockPeers(gossipReg), clockPush(forwarder), cfg.Cluster.ProxyTimeout)
+		}
+		clockSvc := platformclock.NewService(testClock, platformConsistencyTime(a.transactionManager), a.storeFactory.ScheduledTaskStore,
+			confirm, 100*time.Millisecond)
+		clockState = clockSvc.State
+		server.PlatformClock = platformclock.NewHandler(clockSvc, operatorGuard, true)
+	} else {
+		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
+	}
 
 	// Build HTTP handler
 	mux := http.NewServeMux()
@@ -673,33 +727,27 @@ func New(cfg Config) *App {
 
 	// Context path — wrap all routes under configurable prefix
 	contextPath := strings.TrimRight(cfg.ContextPath, "/")
+	rootMux := mux
 	if contextPath != "" {
 		outerMux := http.NewServeMux()
 		outerMux.Handle(contextPath+"/", http.StripPrefix(contextPath, mux))
-		// Discovery routes at root (no auth, no context path)
-		internalapi.RegisterDiscoveryRoutes(outerMux, contextPath)
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(outerMux, help.BuildTree(), contextPath, cfg.Version)
-		// Internal dispatch routes at root (AEAD-authenticated, not under context path)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(outerMux)
-		}
-		a.handler = outerMux
-	} else {
-		// No context path — discovery routes on the main mux
-		internalapi.RegisterDiscoveryRoutes(mux, "")
-		// Help routes — unauthenticated, public content embedded in the binary
-		// (OSS base merged with any plugin-registered overlays).
-		internalapi.RegisterHelpRoutes(mux, help.BuildTree(), "", cfg.Version)
-		// Internal dispatch routes (AEAD-authenticated)
-		if cfg.Cluster.Enabled {
-			dispatchHandler := clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth)
-			dispatchHandler.Register(mux)
-		}
-		a.handler = mux
+		rootMux = outerMux
 	}
+	// Discovery routes at root (no auth, no context path)
+	internalapi.RegisterDiscoveryRoutes(rootMux, contextPath)
+	// Help routes — unauthenticated, public content embedded in the binary
+	// (OSS base merged with any plugin-registered overlays).
+	internalapi.RegisterHelpRoutes(rootMux, help.BuildTree(), contextPath, cfg.Version)
+	// Internal dispatch routes at root, not under the context path, sealed by
+	// the peer channel: the callout hand-over and the platform clock push. The
+	// clock route is served whether clock control is on or off: with it off
+	// (testClock nil) every push is refused, so a change fails on that node
+	// rather than passing it by.
+	if cfg.Cluster.Enabled {
+		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
+		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
+	}
+	a.handler = rootMux
 
 	// Cluster routing sits directly over the mux: a request carrying a
 	// transaction token for another node is forwarded before auth runs here
@@ -724,7 +772,7 @@ func New(cfg Config) *App {
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency)
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
 
 	return a
 }

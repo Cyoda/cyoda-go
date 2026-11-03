@@ -17,6 +17,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -144,17 +145,20 @@ func (f *fakeStore) claimed() []uuid.UUID {
 }
 
 func (f *fakeStore) Heartbeat(context.Context, uuid.UUID) error {
-	f.mu.Lock()
-	f.heartbeats++
-	block, err, boom := f.hbBlock, f.hbErr, f.heartbeatPanic
-	if err == nil && f.hbFailNext > 0 {
-		f.hbFailNext--
-		err = errors.New("heartbeat: connection refused")
-	}
-	if err != nil {
-		f.hbFailures++
-	}
-	f.mu.Unlock()
+	block, boom, err := func() (chan struct{}, bool, error) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.heartbeats++
+		block, err, boom := f.hbBlock, f.hbErr, f.heartbeatPanic
+		if err == nil && f.hbFailNext > 0 {
+			f.hbFailNext--
+			err = errors.New("heartbeat: connection refused")
+		}
+		if err != nil {
+			f.hbFailures++
+		}
+		return block, boom, err
+	}()
 	if boom {
 		panic("injected panic in a heartbeat")
 	}
@@ -349,7 +353,7 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 		Store:              testFactory{StoreFactory: mem, sts: fs},
 		TxManager:          mem.NewTransactionManager(common.NewTestUUIDGenerator()),
 		Firer:              firer,
-		Clock:              NewRealClock(),
+		Clock:              platformclock.Real(),
 		HealthFlag:         flag,
 		CalloutDeadlineMax: time.Second,
 	})

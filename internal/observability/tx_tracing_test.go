@@ -24,6 +24,12 @@ type fakeTxManager struct {
 	lostRaceErr    error
 	ctTime         time.Time
 	ctErr          error
+	latest         time.Time
+	latestErr      error
+}
+
+func (f *fakeTxManager) LatestRecordedTime(ctx context.Context) (time.Time, error) {
+	return f.latest, f.latestErr
 }
 
 func (f *fakeTxManager) ConsistencyTime(ctx context.Context) (time.Time, error) {
@@ -100,6 +106,25 @@ func TestTracing_ForwardsConsistencyTime(t *testing.T) {
 	traced = observability.NewTracingTransactionManager(inner, observability.Meter())
 	if _, err := traced.ConsistencyTime(context.Background()); !errors.Is(err, wantErr) {
 		t.Fatalf("ConsistencyTime error = %v, want %v", err, wantErr)
+	}
+}
+
+// LatestRecordedTime is answered by the wrapped manager, value and error unchanged.
+func TestTracing_ForwardsLatestRecordedTime(t *testing.T) {
+	shutdown, _ := observability.Init(context.Background(), "test", "node-test", true)
+	defer shutdown(context.Background())
+
+	want := time.Date(2015, 3, 1, 9, 0, 0, 0, time.UTC)
+	traced := observability.NewTracingTransactionManager(&fakeTxManager{latest: want}, observability.Meter())
+	got, err := traced.LatestRecordedTime(context.Background())
+	if err != nil || !got.Equal(want) {
+		t.Fatalf("LatestRecordedTime = (%v, %v), want (%v, nil)", got, err, want)
+	}
+
+	wantErr := errors.New("store down")
+	traced = observability.NewTracingTransactionManager(&fakeTxManager{latestErr: wantErr}, observability.Meter())
+	if _, err := traced.LatestRecordedTime(context.Background()); !errors.Is(err, wantErr) {
+		t.Fatalf("LatestRecordedTime error = %v, want %v", err, wantErr)
 	}
 }
 

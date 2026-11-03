@@ -26,6 +26,7 @@ func rawCall(limit time.Duration) Callout {
 	return Callout{
 		Identity: IdentityFrom(testContext()),
 		Kind:     ProcessorCallout, Name: "p", TenantID: testTenantID, RequestID: "r1", AnswerLimit: limit, OwnerNodeID: "node-test",
+		At:           testCalloutAt,
 		eventType:    EntityProcessorCalculationRequest,
 		buildRequest: func(id string) any { return map[string]any{"requestId": id} },
 		mapResponse:  func(*ProcessingResponse) (CalloutResult, error) { return CalloutResult{}, nil },
@@ -232,6 +233,7 @@ func TestTryKind_ResponsePayloadUnmarshal_IsTerminal(t *testing.T) {
 	call := NewProcessorCallout(testTenantID, testEntity(), testProcessor("python", 0), "wf1", "t1", "tx-1")
 	call.RequestID, call.AnswerLimit, call.OwnerNodeID = "r1", 5*time.Second, "node-test"
 	call.Identity = IdentityFrom(testContext())
+	call.At = testCalloutAt
 	failure, ctxErr := kindOf(d, testContext(), m, call)
 	if ctxErr != nil {
 		t.Fatalf("unexpected ctx error: %v", ctxErr)

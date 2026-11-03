@@ -47,6 +47,12 @@ type asyncSearchStore struct {
 	// job-record reads and writes and belong under the interactive ceiling like
 	// every other short statement.
 	searchStatementTimeout time.Duration
+
+	// clock is the factory's business clock (StoreFactory.clock); nil in
+	// production. ReapExpired's cutoff is taken from it, because finished_at
+	// is a business time. Liveness (Heartbeat, ClaimStale, CreateJob's
+	// heartbeat stamp) stays on the database clock.
+	clock spi.Clock
 }
 
 // acquireContext bounds SaveResults' per-chunk Begin. See newAcquireContext
@@ -104,10 +110,12 @@ func (s *asyncSearchStore) CreateJob(ctx context.Context, job *spi.SearchJob) er
 	}
 	// Enforce context tenant — never trust the struct field. Epoch is always
 	// persisted as 1 regardless of job.Epoch (spi.AsyncSearchStore.CreateJob
-	// contract) — heartbeat_time is left NULL (never stamped).
+	// contract). heartbeat_time is stamped with the database's now(): liveness
+	// starts at creation, and ClaimStale measures staleness from it alone.
+	// realtime: search job heartbeat starts at creation
 	_, err = s.q.Exec(ctx,
-		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, epoch)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1)`,
+		`INSERT INTO search_jobs (id, tenant_id, status, model_name, model_ver, condition, point_in_time, search_opts, result_count, error, created_at, finished_at, calc_ms, epoch, heartbeat_time)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 1, now())`,
 		job.ID, string(tid), job.Status,
 		job.ModelRef.EntityName, job.ModelRef.ModelVersion,
 		job.Condition, job.PointInTime,
@@ -233,6 +241,7 @@ func (s *asyncSearchStore) Heartbeat(ctx context.Context, jobID string, epoch in
 		return err
 	}
 
+	// realtime: search job heartbeat liveness
 	tag, err := s.sched.Exec(ctx,
 		`UPDATE search_jobs SET heartbeat_time = now()
 		 WHERE id = $1 AND tenant_id = $2 AND epoch = $3
@@ -584,7 +593,7 @@ func (s *asyncSearchStore) Cancel(ctx context.Context, jobID string, finishTime 
 
 func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (int, error) {
 	// ReapExpired runs cross-tenant — no tenant context required.
-	cutoff := time.Now().UTC().Add(-ttl)
+	cutoff := businessNow(s.clock).Add(-ttl)
 	tag, err := s.q.Exec(ctx,
 		`DELETE FROM search_jobs WHERE status != 'RUNNING' AND finished_at IS NOT NULL AND finished_at < $1`,
 		cutoff)
@@ -594,8 +603,8 @@ func (s *asyncSearchStore) ReapExpired(ctx context.Context, ttl time.Duration) (
 	return int(tag.RowsAffected()), nil
 }
 
-// ClaimStale atomically claims up to limit RUNNING jobs whose heartbeat (or
-// created_at, when heartbeat_time is NULL) is older than staleAfter, bumping
+// ClaimStale atomically claims up to limit RUNNING jobs whose heartbeat_time —
+// stamped at CreateJob, so never NULL — is older than staleAfter, bumping
 // epoch and refreshing heartbeat_time on every winner in the same statement
 // that selected them.
 //
@@ -623,11 +632,12 @@ func (s *asyncSearchStore) ClaimStale(ctx context.Context, staleAfter time.Durat
 		return nil, fmt.Errorf("claim stale search jobs: limit must be >= 1, got %d", limit)
 	}
 
+	// realtime: stale-claim measurement on the database clock
 	rows, err := s.sched.Query(ctx,
 		`WITH claimed AS (
 		   SELECT tenant_id, id, released FROM search_jobs
 		   WHERE status = 'RUNNING'
-		     AND (released OR COALESCE(heartbeat_time, created_at) < now() - ($1 * interval '1 microsecond'))
+		     AND (released OR heartbeat_time < now() - ($1 * interval '1 microsecond'))
 		   ORDER BY created_at
 		   LIMIT $2
 		   FOR UPDATE SKIP LOCKED

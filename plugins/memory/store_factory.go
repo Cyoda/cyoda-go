@@ -16,10 +16,18 @@ import (
 // Option is a functional option for NewStoreFactory.
 type Option func(*StoreFactory)
 
-// WithClock injects a custom Clock into the factory.
-// Used by conformance tests to advance time deterministically.
+// WithClock injects the PHYSICAL clock into the factory: the clock behind
+// liveness (scheduler owner heartbeats and sweeps, search-job heartbeats and
+// stale reclaim). Used by conformance tests to advance time deterministically.
 func WithClock(c Clock) Option {
 	return func(f *StoreFactory) { f.clock = c }
+}
+
+// WithBusinessClock injects the BUSINESS clock: the one behind submit time,
+// snapshot time, consistency time and retention cutoffs. It defaults to the
+// physical clock.
+func WithBusinessClock(c Clock) Option {
+	return func(f *StoreFactory) { f.bizClock = c }
 }
 
 // ApplyFunc replays an opaque SchemaDelta onto a base schema.
@@ -66,7 +74,8 @@ type entityTenantKey struct {
 }
 
 type StoreFactory struct {
-	clock      Clock
+	clock      Clock // physical: liveness
+	bizClock   Clock // business: stamps and retention; defaults to clock
 	entityMu   sync.RWMutex
 	modelMu    sync.RWMutex
 	kvMu       sync.RWMutex
@@ -183,7 +192,10 @@ func NewStoreFactory(opts ...Option) *StoreFactory {
 	for _, o := range opts {
 		o(f)
 	}
-	f.searchStore = newAsyncSearchStore(f.clock)
+	if f.bizClock == nil {
+		f.bizClock = f.clock
+	}
+	f.searchStore = newAsyncSearchStore(f.clock, f.bizClock)
 	f.initTransactionManager(&defaultUUIDGenerator{})
 	return f
 }
@@ -343,8 +355,8 @@ func (f *StoreFactory) TransactionManager(ctx context.Context) (spi.TransactionM
 
 // newStoreFactory is the unexported constructor called by Plugin.NewFactory.
 // It delegates to NewStoreFactory so the two paths stay in sync.
-func newStoreFactory() *StoreFactory {
-	return NewStoreFactory()
+func newStoreFactory(opts ...Option) *StoreFactory {
+	return NewStoreFactory(opts...)
 }
 
 // SupportsCompositeUniqueKeys advertises composite-unique-key enforcement.

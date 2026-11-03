@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"slices"
 	"strings"
 	"sync"
@@ -40,9 +41,11 @@ func (r *recordingCriteria) DispatchCriteria(_ context.Context, _ *spi.Entity, c
 	if err != nil {
 		return false, "", err
 	}
-	r.mu.Lock()
-	r.calls = append(r.calls, append(json.RawMessage(nil), criterion...))
-	r.mu.Unlock()
+	func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		r.calls = append(r.calls, append(json.RawMessage(nil), criterion...))
+	}()
 	a, ok := r.answers[fn.Name]
 	if !ok {
 		return false, "", fmt.Errorf("no answer scripted for %q", fn.Name)
@@ -75,7 +78,7 @@ func evalEnv(t *testing.T, answers map[string]criteriaAnswer) (*Engine, *recordi
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: answers}
-	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), WithExternalProcessing(rec))
+	engine := NewEngine(factory, uuids, factory.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(rec))
 	ctx := ctxWithTenant(testTenant)
 	ref := spi.ModelRef{EntityName: "fn-eval", ModelVersion: "1.0"}
 	registerModelFields(t, ctx, factory, ref, map[string]schema.DataType{"amount": schema.Integer})
@@ -203,7 +206,7 @@ func TestEvaluateCriterion_ModelStoreFailureBeforeAnyCallout(t *testing.T) {
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: map[string]criteriaAnswer{"a": {matches: true}}}
 	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}, uuids,
-		base.NewTransactionManager(uuids), WithExternalProcessing(rec))
+		base.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(rec))
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", spi.ModelRef{EntityName: "fn-infra", ModelVersion: "1.0"}, map[string]any{"amount": 50})
 	_, err := engine.evaluateCriterion([]byte(evGroup("AND", evFn("a", ""), evFn("b", evAmountGT10))), entity, &criterionContext{ctx: ctx})
@@ -221,7 +224,7 @@ func TestEvaluateCriterion_WholeFunctionWithoutPreCheckLoadsNoModel(t *testing.T
 	uuids := common.NewTestUUIDGenerator()
 	rec := &recordingCriteria{answers: map[string]criteriaAnswer{"a": {matches: true}}}
 	engine := NewEngine(&errModelStoreFactory{StoreFactory: base, err: errors.New("model store down")}, uuids,
-		base.NewTransactionManager(uuids), WithExternalProcessing(rec))
+		base.NewTransactionManager(uuids), platformclock.Real(), WithExternalProcessing(rec))
 	ctx := ctxWithTenant(testTenant)
 	entity := makeEntity("e1", spi.ModelRef{EntityName: "fn-nomodel", ModelVersion: "1.0"}, map[string]any{"amount": 50})
 	out, err := engine.evaluateCriterion([]byte(evFn("a", "")), entity, &criterionContext{ctx: ctx})

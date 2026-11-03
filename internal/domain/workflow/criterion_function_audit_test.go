@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"maps"
 	"strings"
 	"testing"
@@ -100,7 +101,7 @@ func auditEnv(t *testing.T, answers map[string]criteriaAnswer, wfs ...spi.Workfl
 	uuids := common.NewTestUUIDGenerator()
 	txMgr := factory.NewTransactionManager(uuids)
 	rec := &recordingCriteria{answers: answers}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(rec))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(rec))
 	ctx := ctxWithTenant(testTenant)
 	name := strings.ReplaceAll(strings.ToLower(t.Name()), "/", "-")
 	ref := spi.ModelRef{EntityName: "fn-audit-" + name, ModelVersion: "1.0"}

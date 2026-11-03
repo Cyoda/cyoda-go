@@ -150,7 +150,7 @@ func MintTenantJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 // mintTenantAdminJWT signs a ROLE_ADMIN, ROLE_M2M token of tenantID for userID with the
 // fixture's key.
 func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) {
-	now := time.Now()
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
 		"sub":          userID,
 		"iss":          ks.Issuer,
@@ -171,7 +171,7 @@ func mintTenantAdminJWT(ks *JWTKeySet, tenantID, userID string) (string, error) 
 // token only on the platform-wide admin endpoints, never for tenant data.
 func MintPlatformOperatorJWT(t *testing.T, ks *JWTKeySet) parity.Tenant {
 	t.Helper()
-	now := time.Now()
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
 		"sub":          "platform-operator",
 		"iss":          ks.Issuer,
@@ -277,7 +277,7 @@ func MintComputeUserJWT(t *testing.T, ks *JWTKeySet, userID string, roles ...str
 		roles = []string{}
 	}
 
-	now := time.Now()
+	now := time.Now() // realtime: test JWT validity window
 	claims := map[string]any{
 		"sub":          userID,
 		"iss":          ks.Issuer,
@@ -427,9 +427,9 @@ func nodeOutcome(nodeIdx int, healthDoneCh <-chan error, exitedCh <-chan struct{
 // WaitForHTTPHealth polls the given URL until it returns 200 OK or the
 // timeout elapses.
 func WaitForHTTPHealth(url string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(timeout) // realtime: test poll deadline
 	client := &http.Client{Timeout: 2 * time.Second}
-	for time.Now().Before(deadline) {
+	for time.Now().Before(deadline) { // realtime: test poll deadline
 		resp, err := client.Get(url)
 		if err == nil {
 			resp.Body.Close()

@@ -38,7 +38,7 @@ const scheduledFireTimeout = 15 * time.Second
 //
 // Audit events are stamped from Engine.now() — the same clock the scheduler
 // arms and fires against — so the two remain comparable even under an injected
-// WithScheduledClock, not merely because these tests inject none.
+// WithClock, not merely because these tests inject none.
 //
 // Where a precondition for an assertion cannot be established (e.g. the machine
 // stalled so long that the scheduler was entitled to fire), these tests fail

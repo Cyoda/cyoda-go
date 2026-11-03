@@ -14,6 +14,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -35,11 +36,13 @@ func (s *failingSaveObserverStore) SaveResults(context.Context, string, int64, i
 
 func (s *failingSaveObserverStore) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, resultCount int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
 	if status == "FAILED" {
-		s.mu.Lock()
-		s.failedCtx = ctx
-		s.failedMsg = errMsg
-		s.sawFailure = true
-		s.mu.Unlock()
+		func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.failedCtx = ctx
+			s.failedMsg = errMsg
+			s.sawFailure = true
+		}()
 	}
 	return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, resultCount, errMsg, finishTime, calcTimeMs)
 }
@@ -81,7 +84,7 @@ func TestExecutor_FailureTerminalWrite_IsNotCancellable(t *testing.T) {
 	store := &failingSaveObserverStore{AsyncSearchStore: realAsync}
 	pool := search.NewWorkerPool(2, 8)
 	t.Cleanup(func() { pool.Drain(context.Background()) })
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
 		WithAsyncPool(pool).
 		WithHeartbeat(50 * time.Millisecond)
 

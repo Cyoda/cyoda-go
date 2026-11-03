@@ -9,6 +9,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -77,7 +78,7 @@ func TestDirectSearch_LifecycleBadTemporalOperand_RejectsAtServiceBoundary(t *te
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
@@ -99,7 +100,7 @@ func TestDirectSearch_UnknownMetaField_RejectsAtServiceBoundary(t *testing.T) {
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "notARealMetaField",
@@ -124,7 +125,7 @@ func TestSubmitAsyncSearch_BadTemporalOperand_RejectsAtServiceBoundary(t *testin
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.LifecycleCondition{
 		Field:        "creationDate",
@@ -163,7 +164,7 @@ func TestDirectSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *testing.T
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	// The exact C1 repro condition: a scalar RFC3339 operand against a
 	// temporal lifecycle field's BETWEEN operator.
@@ -188,7 +189,7 @@ func TestSubmitAsyncSearch_ScalarBetweenOperand_RejectsAtServiceBoundary(t *test
 
 	uuids := common.NewTestUUIDGenerator()
 	searchStore, _ := factory.AsyncSearchStore(tenantCtx("tenant-1"))
-	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory))
+	svc := search.NewSearchService(factory, uuids, searchStore, newTestConsistency(t, factory), platformclock.Real())
 
 	cond := &predicate.SimpleCondition{
 		JsonPath:     "$.age",

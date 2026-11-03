@@ -90,7 +90,7 @@ func IdentityFrom(ctx context.Context) CalloutIdentity {
 // Callout is one processor, criterion or function request, in the form the
 // local procedure tries on cnodes. Build it with NewProcessorCallout,
 // NewCriteriaCallout or NewFunctionCallout; the caller then fills RequestID,
-// AnswerLimit and OwnerNodeID.
+// AnswerLimit, OwnerNodeID and At.
 type Callout struct {
 	Kind     CalloutKind
 	Name     string // the configured processor, criterion or function name
@@ -126,6 +126,11 @@ type Callout struct {
 	// Identity is who the callout is for and who executes it. The owner sets
 	// it once, before its first try; a hand-over carries it.
 	Identity CalloutIdentity
+	// At is the platform time at which the owner took the callout up. The
+	// owner sets it once, before its first try; every try sends it as the
+	// CloudEvents time attribute, and a hand-over carries it, so every try on
+	// every pnode sends the same time.
+	At time.Time
 
 	eventType    string
 	buildRequest func(requestID string) any

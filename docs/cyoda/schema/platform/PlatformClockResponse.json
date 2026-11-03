@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cyoda.com/cloud/event/platform/PlatformClockResponse.json",
+  "title": "PlatformClockResponse",
+  "type": "object",
+  "allOf": [
+    {
+      "$ref": "../common/BaseEvent.json"
+    }
+  ],
+  "properties": {
+    "requestId": {
+      "type": "string",
+      "description": "ID of the original request."
+    },
+    "now": {
+      "type": "string",
+      "format": "date-time",
+      "description": "This node's platform time. Set when success is true."
+    },
+    "rate": {
+      "type": "number",
+      "description": "Platform seconds per real second; 1 without clock control. Set when success is true."
+    },
+    "controllable": {
+      "type": "boolean",
+      "description": "Whether this node accepts changes to the clock. Set when success is true."
+    }
+  },
+  "required": [
+    "requestId"
+  ]
+}

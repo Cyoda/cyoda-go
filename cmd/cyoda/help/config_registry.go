@@ -75,7 +75,7 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_GOSSIP_STABILITY_WINDOW", Topic: "cluster", Type: "duration", Default: "2s", Description: "Gossip stability window."},
 	{Name: "CYODA_SEED_NODES", Topic: "cluster", Type: "csv", Default: "", Description: "Comma-separated list of seed node addresses."},
 	{Name: "CYODA_HMAC_SECRET", Topic: "cluster", Type: "string", Default: "", Description: "Hex-encoded HMAC secret for inter-node dispatch authentication; required when CYODA_CLUSTER_ENABLED=true. Supports _FILE suffix."},
-	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Request proxy timeout."},
+	{Name: "CYODA_PROXY_TIMEOUT", Topic: "cluster", Type: "duration", Default: "30s", Description: "Request proxy timeout, and the bound on one platform clock confirmation round. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_DISPATCH_WAIT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "5s", Description: "How long one callout waits, in total, for a compute member with matching tags to exist — on a single node as in a cluster, whatever its retryPolicy. 0 disables waiting. Must not be negative; startup fails otherwise."},
 	{Name: "CYODA_DISPATCH_CONNECT_TIMEOUT", Topic: "cluster", Type: "duration", Default: "2s", Description: "Time allowed to open the connection when a callout is handed over to another node; a node that cannot be connected to costs no try. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_CALLOUT_HANDOVER_ALLOWANCE", Topic: "cluster", Type: "duration", Default: "30s", Description: "What the owning node allows a callout hand-over on top of (tries left x answer limit); also the last term of a callout's overall deadline. Must be > 0; startup fails otherwise."},
@@ -132,6 +132,9 @@ var rootConfigVars = []ConfigVar{
 	{Name: "CYODA_SCHEDULER_RETRY_DELAY", Topic: "scheduler", Type: "duration", Default: "30s", Description: "Delay before the first retry of a scheduled run that failed safely; it doubles on each further failure. Must be > 0; startup fails otherwise."},
 	{Name: "CYODA_SCHEDULER_RETRY_DELAY_MAX", Topic: "scheduler", Type: "duration", Default: "15m", Description: "The retry delay never grows past this. Must be >= CYODA_SCHEDULER_RETRY_DELAY; startup fails otherwise."},
 	{Name: "CYODA_SCHEDULER_SHUTDOWN_DRAIN", Topic: "scheduler", Type: "duration", Default: "20s", Description: "On shutdown, how long a node waits for its scheduled runs before it cancels them; a run with an unsafe processor callout in flight is not cancelled. Must be >= 0; startup fails otherwise."},
+
+	// --- clock ---
+	{Name: "CYODA_CLOCK_CONTROL_ENABLED", Topic: "clock", Type: "bool", Default: "false", Description: "Test feature: build a controllable platform clock and accept POST /platform/clock. Instance-wide; never for production. Use the same value on every node."},
 }
 
 // RootConfigVars returns a copy of the root var table.

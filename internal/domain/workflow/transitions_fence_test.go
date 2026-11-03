@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestJoinedGetTransitions_HoldsTheLock_AndGivesItUpForTheCallout(t *testing.
 		}
 	}
 	ext := &lockProbingCriteria{free: free}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(ext))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(ext))
 
 	modelRef := spi.ModelRef{EntityName: "joined-transitions", ModelVersion: "1.0"}
 	crit, _ := json.Marshal(map[string]any{"type": "function", "function": map[string]any{"name": "c", "config": map[string]any{"calculationNodesTags": "t"}}})

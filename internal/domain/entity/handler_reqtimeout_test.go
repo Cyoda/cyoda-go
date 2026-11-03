@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -35,9 +36,11 @@ type blockingEntityStore struct {
 }
 
 func (s *blockingEntityStore) Save(ctx context.Context, _ *spi.Entity) (int64, error) {
-	s.mu.Lock()
-	s.saves++
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.saves++
+	}()
 	<-ctx.Done()
 	return 0, ctx.Err()
 }
@@ -91,9 +94,11 @@ type countingModelStore struct {
 }
 
 func (s *countingModelStore) Get(ctx context.Context, ref spi.ModelRef) (*spi.ModelDescriptor, error) {
-	s.f.mu.Lock()
-	s.f.gets++
-	s.f.mu.Unlock()
+	func() {
+		s.f.mu.Lock()
+		defer s.f.mu.Unlock()
+		s.f.gets++
+	}()
 	return s.ModelStore.Get(ctx, ref)
 }
 
@@ -123,9 +128,11 @@ type recordingTxMgr struct {
 // the same distinction the audit-store-accessor count draws for engine.Execute
 // below, applied to a call whose own entry point is Begin rather than Execute.
 func (m *recordingTxMgr) Begin(ctx context.Context) (string, context.Context, error) {
-	m.mu.Lock()
-	m.begins++
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.begins++
+	}()
 	return m.TransactionManager.Begin(ctx)
 }
 
@@ -142,16 +149,20 @@ func (m *recordingTxMgr) Commit(ctx context.Context, txID string) error {
 	if m.commitErr != nil {
 		return m.commitErr
 	}
-	m.mu.Lock()
-	m.committed = append(m.committed, txID)
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.committed = append(m.committed, txID)
+	}()
 	return m.TransactionManager.Commit(ctx, txID)
 }
 
 func (m *recordingTxMgr) Rollback(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.rolledBack = append(m.rolledBack, txID)
-	m.mu.Unlock()
+	func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.rolledBack = append(m.rolledBack, txID)
+	}()
 	return m.TransactionManager.Rollback(ctx, txID)
 }
 
@@ -169,8 +180,8 @@ func newReqTimeoutHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.Tran
 		Roles:    []string{"user"},
 	})
 
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	h := New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 
 	node := schema.NewObjectNode()
 	node.SetChild("name", schema.NewLeafNode(schema.String))
@@ -387,9 +398,11 @@ func TestCreate_TransactionTimeout_408NothingCommitted(t *testing.T) {
 		t.Fatalf("retryable = %v, want true", pd.Properties["retryable"])
 	}
 
-	rtm.mu.Lock()
-	committed, rolledBack := rtm.committed, rtm.rolledBack
-	rtm.mu.Unlock()
+	committed, rolledBack := func() ([]string, []string) {
+		rtm.mu.Lock()
+		defer rtm.mu.Unlock()
+		return rtm.committed, rtm.rolledBack
+	}()
 	if len(committed) != 0 {
 		t.Fatalf("commit ran despite the expired deadline: %v", committed)
 	}
@@ -432,9 +445,11 @@ func TestCreate_CommitWins_DeadlineAfterCommit200(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body: %s", w.Code, w.Body.String())
 	}
-	rtm.mu.Lock()
-	committed := rtm.committed
-	rtm.mu.Unlock()
+	committed := func() []string {
+		rtm.mu.Lock()
+		defer rtm.mu.Unlock()
+		return rtm.committed
+	}()
 	if len(committed) != 1 {
 		t.Fatalf("commit did not run: %v", committed)
 	}
@@ -653,9 +668,11 @@ func TestCreateEntity_MemoryBackend_PreExpiredDeadline408(t *testing.T) {
 		t.Fatalf("error chain does not contain context.DeadlineExceeded: %v", err)
 	}
 
-	rtm.mu.Lock()
-	committed := rtm.committed
-	rtm.mu.Unlock()
+	committed := func() []string {
+		rtm.mu.Lock()
+		defer rtm.mu.Unlock()
+		return rtm.committed
+	}()
 	if len(committed) != 0 {
 		t.Fatalf("commit ran despite the pre-expired deadline: %v", committed)
 	}
@@ -674,10 +691,12 @@ type cancelingEntityStore struct {
 
 func (s *cancelingEntityStore) Delete(ctx context.Context, id string) error {
 	err := s.EntityStore.Delete(ctx, id)
-	s.mu.Lock()
-	s.deletes++
-	n := s.deletes
-	s.mu.Unlock()
+	n := func() int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.deletes++
+		return s.deletes
+	}()
 	if n == s.cancelAt {
 		s.cancel()
 	}
@@ -747,7 +766,7 @@ func TestDeleteEntitiesConditional_CtxCancelledMidLoop_RollsBackFailClosed(t *te
 	cancelingStore := &cancelingEntityStore{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	deleteFactory := &cancelingEntityFactory{StoreFactory: realFactory, store: cancelingStore}
 
-	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistencyFor(realTxMgr))
+	hDelete := New(deleteFactory, realTxMgr, common.NewDefaultUUIDGenerator(), nil, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	cond := []byte(`{"type":"simple","jsonPath":"$.age","operatorType":"GREATER_OR_EQUAL","value":0}`)
 	_, delErr := hDelete.DeleteEntitiesConditional(cancelCtx, "Person", 1, cond, nil, true, 0)
@@ -805,13 +824,15 @@ type cancelAfterNSaves struct {
 
 func (s *cancelAfterNSaves) Save(ctx context.Context, e *spi.Entity) (int64, error) {
 	v, err := s.EntityStore.Save(ctx, e)
-	s.mu.Lock()
-	s.saves++
-	n := s.saves
-	if err == nil {
-		s.savedIDs = append(s.savedIDs, e.Meta.ID)
-	}
-	s.mu.Unlock()
+	n := func() int {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.saves++
+		if err == nil {
+			s.savedIDs = append(s.savedIDs, e.Meta.ID)
+		}
+		return s.saves
+	}()
 	if n == s.cancelAt {
 		s.cancel()
 	}
@@ -862,9 +883,11 @@ func (f *instrumentedEngineFactory) EntityStore(_ context.Context) (spi.EntitySt
 }
 
 func (f *instrumentedEngineFactory) StateMachineAuditStore(ctx context.Context) (spi.StateMachineAuditStore, error) {
-	f.mu.Lock()
-	f.auditCalls++
-	f.mu.Unlock()
+	func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.auditCalls++
+	}()
 	return f.StoreFactory.StateMachineAuditStore(ctx)
 }
 
@@ -902,8 +925,8 @@ func TestCreateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	}
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
-	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr))
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
+	h := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []CollectionItem{
 		{ModelName: "Person", ModelVersion: 1, Payload: json.RawMessage(`{"name":"A","age":1}`)},
@@ -975,8 +998,8 @@ func TestUpdateEntityCollection_CtxCancelledAfterFirstItem_StopsEarlyFailClosed(
 	}
 	saveStore := &cancelAfterNSaves{EntityStore: realEntityStore, cancel: cancel, cancelAt: 1}
 	instrumented := &instrumentedEngineFactory{StoreFactory: realFactory, entityStore: saveStore}
-	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr)
-	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr))
+	engine := wfengine.NewEngine(instrumented, common.NewDefaultUUIDGenerator(), realTxMgr, platformclock.Real())
+	hUpdate := New(instrumented, realTxMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(realTxMgr), platformclock.Real())
 
 	items := []UpdateCollectionItem{
 		{EntityID: ids[0], Payload: json.RawMessage(`{"name":"X"}`)},

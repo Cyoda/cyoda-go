@@ -112,7 +112,7 @@ func EnsureAlgRS256(header map[string]any) error {
 
 // ValidateClaims checks exp and iat claims.
 func ValidateClaims(claims map[string]any, clockSkew time.Duration) error {
-	now := time.Now()
+	now := time.Now() // realtime: auth key and token validity
 	if exp, ok := claims["exp"].(float64); ok {
 		expTime := time.Unix(int64(exp), 0)
 		if now.After(expTime.Add(clockSkew)) {

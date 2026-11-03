@@ -11,6 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
@@ -44,7 +45,7 @@ func TestPathValidationCache_RejectedSortOnArrayContainer_DoesNotPoisonCondition
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	condition := &predicate.SimpleCondition{JsonPath: "$.tags", OperatorType: "NOT_NULL"}
@@ -111,7 +112,7 @@ func TestPathValidationCache_RejectedSortOnObjectContainer_DoesNotPoisonConditio
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base)).
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, base), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	condition := &predicate.SimpleCondition{JsonPath: "$.address", OperatorType: "NOT_NULL"}
@@ -165,7 +166,7 @@ func TestPathValidationCache_RejectedCondition_StillRejectsSort(t *testing.T) {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 	cache := search.NewPathValidationCache()
-	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory)).
+	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
 		WithPathValidationCache(cache)
 
 	// 1. A condition on a genuinely-unknown path is rejected and negative-cached.

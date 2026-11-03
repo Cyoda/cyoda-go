@@ -1268,8 +1268,8 @@ func (c *Client) AwaitAsyncSearchResults(t *testing.T, modelName string, modelVe
 	if err != nil {
 		return PagedEntityResults{}, fmt.Errorf("submit: %w", err)
 	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	deadline := time.Now().Add(timeout) // realtime: test poll deadline
+	for time.Now().Before(deadline) {   // realtime: test poll deadline
 		status, err := c.GetAsyncSearchStatus(t, jobID)
 		if err != nil {
 			return PagedEntityResults{}, fmt.Errorf("status (jobId=%s): %w", jobID, err)

@@ -13,6 +13,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -62,14 +63,14 @@ func newTransitionTestEnv(t *testing.T) (*CloudEventsServiceImpl, context.Contex
 	txMgr := base.GetTransactionManager()
 	factory := &firstReadFactory{StoreFactory: base}
 
-	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
+	engine := workflow.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := &CloudEventsServiceImpl{
 		registry:      NewMemberRegistry(),
 		txMgr:         txMgr,
-		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory)),
-		modelHandler:  model.New(factory),
-		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory)),
+		entityHandler: entity.New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistency(t, factory), platformclock.Real()),
+		modelHandler:  model.New(factory, platformclock.Real()),
+		searchService: search.NewSearchService(factory, common.NewDefaultUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()),
 	}
 	ctx := spi.WithUserContext(context.Background(), &spi.UserContext{
 		UserID: "test-user", UserName: "Test User",

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"testing"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -37,7 +38,7 @@ func procOutputEngine(
 			return &spi.Entity{Data: []byte(procData)}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-" + mode, ModelVersion: "1.0"}
@@ -213,7 +214,7 @@ func TestProcessorOutput_DescriptorResolvedOnceAcrossThePipeline(t *testing.T) {
 			return &spi.Entity{Data: []byte(fmt.Sprintf(`{"x":%d}`, calls))}, nil
 		},
 	}
-	engine := NewEngine(factory, uuids, txMgr, WithExternalProcessing(mock))
+	engine := NewEngine(factory, uuids, txMgr, platformclock.Real(), WithExternalProcessing(mock))
 
 	ctx := ctxWithTenant(testTenant)
 	modelRef := spi.ModelRef{EntityName: "procout-memo", ModelVersion: "1.0"}

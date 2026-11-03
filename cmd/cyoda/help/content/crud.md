@@ -626,6 +626,8 @@ waits only for saves still committing (milliseconds). It has four properties:
 - **Exact** — it is never rounded up, and it covers the store's own read
   resolution.
 
+With clock control on, the store takes its time from the platform clock, which a test can set (see `cyoda help clock`).
+
 `GET /api/entity/consistency-time` returns it. To read the model "as of now"
 with an answer that cannot change, fetch it and pass it as `pointInTime`; a
 read at that value is never refused with

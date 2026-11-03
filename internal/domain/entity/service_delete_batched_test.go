@@ -15,6 +15,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	wfengine "github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -76,8 +77,8 @@ func newDeleteBatchedCtx(t *testing.T, factory spi.StoreFactory) context.Context
 // Iterate drain, since the streamed-selection rework) rather than a stub.
 func buildDeleteBatchedHandler(t *testing.T, factory spi.StoreFactory, txMgr spi.TransactionManager) *Handler {
 	t.Helper()
-	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr)
-	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr))
+	engine := wfengine.NewEngine(factory, common.NewDefaultUUIDGenerator(), txMgr, platformclock.Real())
+	return New(factory, txMgr, common.NewDefaultUUIDGenerator(), engine, txgate.New(), newTestConsistencyFor(txMgr), platformclock.Real())
 }
 
 // seedPersons creates n Person entities (ages 0..n-1) via h and returns their
@@ -114,10 +115,12 @@ type failNthCommitTxMgr struct {
 }
 
 func (m *failNthCommitTxMgr) Commit(ctx context.Context, txID string) error {
-	m.mu.Lock()
-	m.commits++
-	idx := m.commits
-	m.mu.Unlock()
+	idx := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		m.commits++
+		return m.commits
+	}()
 	if err, ok := m.failOn[idx]; ok {
 		return err
 	}
@@ -135,9 +138,11 @@ type deleteAllSpyStore struct {
 }
 
 func (s *deleteAllSpyStore) DeleteAll(ctx context.Context, ref spi.ModelRef) error {
-	s.mu.Lock()
-	s.called = true
-	s.mu.Unlock()
+	func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.called = true
+	}()
 	return s.EntityStore.DeleteAll(ctx, ref)
 }
 
@@ -192,10 +197,13 @@ func (s *mutateAfterSelectionStore) Get(ctx context.Context, id string) (*spi.En
 	if !s.hookOnFirstGet || id != s.targetID {
 		return e, err
 	}
-	s.mu.Lock()
-	fire := !s.fired
-	s.fired = true
-	s.mu.Unlock()
+	fire := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		fire := !s.fired
+		s.fired = true
+		return fire
+	}()
 	if fire {
 		s.mutate()
 	}
@@ -227,10 +235,13 @@ func (it *mutateAfterSelectionIterator) Next() bool {
 func (it *mutateAfterSelectionIterator) Close() error {
 	err := it.Iterator.Close()
 	if it.sawTargetID && !it.store.hookOnFirstGet {
-		it.store.mu.Lock()
-		fire := !it.store.fired
-		it.store.fired = true
-		it.store.mu.Unlock()
+		fire := func() bool {
+			it.store.mu.Lock()
+			defer it.store.mu.Unlock()
+			fire := !it.store.fired
+			it.store.fired = true
+			return fire
+		}()
 		if fire {
 			it.store.mutate()
 		}

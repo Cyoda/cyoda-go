@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	cepb "github.com/cyoda-platform/cyoda-go/api/grpc/cloudevents"
@@ -86,6 +87,20 @@ type scriptedCnode struct {
 	mu     sync.Mutex
 	passes []string
 	auth   []map[string]string
+	// times is the CloudEvents time attribute of each request.
+	times []time.Time
+}
+
+// onlyTime returns the CloudEvents time attribute of the one request the cnode
+// was sent.
+func (c *scriptedCnode) onlyTime(t *testing.T) time.Time {
+	t.Helper()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.times) != 1 {
+		t.Fatalf("the cnode was sent %d requests, want 1", len(c.times))
+	}
+	return c.times[0]
 }
 
 // onlyAuth returns the auth context attributes of the one request the cnode
@@ -141,6 +156,7 @@ func attachedCnode(t *testing.T, tenantID spi.TenantID, tag string) (*internalgr
 				}
 			}
 			cnode.auth = append(cnode.auth, auth)
+			cnode.times = append(cnode.times, ce.Attributes["time"].GetCeTimestamp().AsTime())
 		}()
 		if m := reg.Get(id); m != nil {
 			m.CompleteRequest(body.RequestID, &internalgrpc.ProcessingResponse{

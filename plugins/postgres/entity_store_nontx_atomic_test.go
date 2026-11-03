@@ -99,8 +99,8 @@ func TestNonTxSave_UpdatePathIsAtomic(t *testing.T) {
 	// Plant the entities row the foreign key now requires, at version 0 so
 	// Save's upsert lands on nextVersion = 1 below.
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc)
-		 VALUES ($1, $2, $3, $4, 0, false, $5::jsonb)`,
+		`INSERT INTO entities (tenant_id, entity_id, model_name, model_version, version, deleted, doc, creation_date, last_modified)
+		 VALUES ($1, $2, $3, $4, 0, false, $5::jsonb, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
 		string(tenant), id, mref.EntityName, mref.ModelVersion, plantedDoc); err != nil {
 		t.Fatalf("plant entities row: %v", err)
 	}
@@ -108,8 +108,8 @@ func TestNonTxSave_UpdatePathIsAtomic(t *testing.T) {
 	// Plant the collision: version 1 already exists for this id.
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO entity_versions
-		   (tenant_id, entity_id, model_name, model_version, version, valid_time, doc)
-		 VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`,
+		   (tenant_id, entity_id, model_name, model_version, version, valid_time, transaction_time, creation_date, doc)
+		 VALUES ($1, $2, $3, $4, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, '{"_meta":{}}'::jsonb)`,
 		string(tenant), id, mref.EntityName, mref.ModelVersion); err != nil {
 		t.Fatalf("plant version row: %v", err)
 	}
