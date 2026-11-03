@@ -618,4 +618,9 @@ func TestRead_TimedOutWaitStartsNoRound(t *testing.T) {
 	if n := a.called("a"); n != 1 {
 		t.Fatalf("a asked %d times, want 1: the wait ran to the deadline", n)
 	}
+	draining := okStatus()
+	draining.State = lifecycle.Draining
+	if want := []Entry{upEntry("a", draining)}; !reflect.DeepEqual(r.Nodes, want) {
+		t.Fatalf("nodes %+v, want the first round %+v", r.Nodes, want)
+	}
 }
