@@ -1165,7 +1165,7 @@ paths:
           in: query
           description: >-
             Answer once at least this many nodes are `UP` and `NORMAL`, or at
-            `timeoutMs`, with the last counted round (one whose every answer arrived
+            `timeoutMs`, with the last counted round (one whose every ask returned
             before then). Absent, the answer
             follows one round. 1 to 1000.
           required: false

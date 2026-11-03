@@ -37,8 +37,8 @@ the one entry has the id `local` and is read in process.
 **The wait.** With `waitForNodes`, the node runs rounds until one has at least
 that many `UP`/`NORMAL` nodes. It runs a new round whenever the directory
 changes, and at least once a second. When `timeoutMs` has passed, the answer
-is the last counted round. A round counts only when every member's answer
-arrived before that moment; asks still out then are called off and that round
+is the last counted round. A round counts only when every ask it made
+returned before that moment; asks still out then are called off and that round
 does not count. The first round always completes, so the answer comes
 at the later of `timeoutMs` and the end of the first round. A client that
 leaves during the wait gets no answer.

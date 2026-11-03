@@ -86,8 +86,8 @@ func NewService(dir Directory, ask Asker, askTimeout time.Duration) *Service {
 
 // Read answers the cluster status. With waitFor 0 it answers after one round.
 // Otherwise it runs rounds until one has at least waitFor UP/NORMAL entries, or
-// until timeout has passed, when it answers with the last completed round. The
-// first round always completes. Its only error is common.ClientGone, when the
+// until timeout has passed, when it answers with the last counted round (every
+// ask returned before the deadline). The first round always completes. Its only error is common.ClientGone, when the
 // caller's context ends during an ask or a wait.
 func (s *Service) Read(ctx context.Context, waitFor int, timeout time.Duration) (Report, error) {
 	// realtime: the wait for waitFor nodes is bounded by a wall-clock timeout

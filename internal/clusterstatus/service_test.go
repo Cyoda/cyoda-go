@@ -384,8 +384,8 @@ func TestRead_TimeoutAnswersLastCompletedRound(t *testing.T) {
 	}
 }
 
-// TestRead_DeadlineCancelsRunningRound: a round still running at the deadline
-// is called off, and the answer is the last completed round.
+// TestRead_DeadlineCancelsRunningRound: a round whose asks are still out at the
+// deadline is called off, and the answer is the last counted round.
 func TestRead_DeadlineCancelsRunningRound(t *testing.T) {
 	var startedLive atomic.Bool
 	ask := func(ctx context.Context, _ string, call int) (NodeStatus, error) {
@@ -464,7 +464,7 @@ func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 		return s, nil
 	}
 	s := NewService(newFakeDir(member("a", lifecycle.Normal), member("b", lifecycle.Normal)), newFakeAsker(ask), 10*time.Second)
-	r := read(t, s, 1, 1400*time.Millisecond)
+	r := read(t, s, 1, 1600*time.Millisecond)
 	want := []Entry{upEntry("a", okStatus()), downEntry("b", lifecycle.Normal)}
 	if !reflect.DeepEqual(r.Nodes, want) {
 		t.Fatalf("got %+v, want the completed second round %+v", r.Nodes, want)
