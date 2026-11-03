@@ -498,7 +498,10 @@ func (g *Gossip) Members() []Member {
 			out = append(out, Member{NodeID: m.Name})
 			continue
 		}
-		st, _ := memberState(m.Meta)
+		var st lifecycle.State
+		if nm.State.Valid() {
+			st = nm.State
+		}
 		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr, State: st})
 	}
 	return out
