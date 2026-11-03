@@ -422,6 +422,79 @@ func TestRead_DeadlineCancelsRunningRound(t *testing.T) {
 	}
 }
 
+// slowRefusalLog is a slog handler that holds the log line of a member that
+// did not answer for delay: the time a round spends after its last ask
+// returned and before it ends.
+type slowRefusalLog struct{ delay time.Duration }
+
+func (slowRefusalLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h slowRefusalLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == "cluster status: member did not answer" {
+		time.Sleep(h.delay)
+	}
+	return nil
+}
+func (h slowRefusalLog) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h slowRefusalLog) WithGroup(string) slog.Handler      { return h }
+
+// TestRead_RoundCompletedAtDeadlineCounts: a round whose asks all returned
+// before the deadline counts, although the round ends after it.
+func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
+	old := slog.Default()
+	slog.SetDefault(slog.New(slowRefusalLog{delay: 80 * time.Millisecond}))
+	defer slog.SetDefault(old)
+
+	ask := func(ctx context.Context, id string, call int) (NodeStatus, error) {
+		if id == "b" {
+			if call == 2 {
+				dl, ok := ctx.Deadline()
+				if !ok {
+					return NodeStatus{}, errors.New("the second round's ask has no deadline")
+				}
+				// b refuses just before the deadline; its log line ends the
+				// round after the deadline.
+				time.Sleep(time.Until(dl) - 20*time.Millisecond)
+			}
+			return NodeStatus{}, errors.New("refused")
+		}
+		s := okStatus()
+		if call == 1 {
+			s.State = lifecycle.Draining
+		}
+		return s, nil
+	}
+	s := NewService(newFakeDir(member("a", lifecycle.Normal), member("b", lifecycle.Normal)), newFakeAsker(ask), 10*time.Second)
+	r := read(t, s, 1, 1400*time.Millisecond)
+	want := []Entry{upEntry("a", okStatus()), downEntry("b", lifecycle.Normal)}
+	if !reflect.DeepEqual(r.Nodes, want) {
+		t.Fatalf("got %+v, want the completed second round %+v", r.Nodes, want)
+	}
+}
+
+// TestRead_AnswerAfterDeadlineIsCut: an ask that returns after the deadline
+// has passed is cut, even with an answer: the deadline may have shaped it,
+// as it shapes the database check of the in-process ask.
+func TestRead_AnswerAfterDeadlineIsCut(t *testing.T) {
+	ask := func(ctx context.Context, _ string, call int) (NodeStatus, error) {
+		s := okStatus()
+		if call == 1 {
+			s.State = lifecycle.Draining
+			return s, nil
+		}
+		<-ctx.Done()
+		s.Database = false
+		return s, nil
+	}
+	s := NewService(newFakeDir(member("a", lifecycle.Normal)), newFakeAsker(ask), 10*time.Second)
+	r := read(t, s, 1, 1300*time.Millisecond)
+	first := okStatus()
+	first.State = lifecycle.Draining
+	want := []Entry{upEntry("a", first)}
+	if !reflect.DeepEqual(r.Nodes, want) {
+		t.Fatalf("got %+v, want the first round %+v", r.Nodes, want)
+	}
+}
+
 func TestRead_FirstRoundOutlastsTimeout(t *testing.T) {
 	ask := func(ctx context.Context, _ string, _ int) (NodeStatus, error) {
 		select {

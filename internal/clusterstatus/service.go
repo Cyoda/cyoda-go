@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
@@ -87,14 +88,14 @@ func NewService(dir Directory, ask Asker, askTimeout time.Duration) *Service {
 // Otherwise it runs rounds until one has at least waitFor UP/NORMAL entries, or
 // until timeout has passed, when it answers with the last completed round. The
 // first round always completes. Its only error is common.ClientGone, when the
-// caller's context ends.
+// caller's context ends during an ask or a wait.
 func (s *Service) Read(ctx context.Context, waitFor int, timeout time.Duration) (Report, error) {
 	// realtime: the wait for waitFor nodes is bounded by a wall-clock timeout
 	deadline := time.Now().Add(timeout)
 	changed := s.dir.Changed()
-	last, err := s.round(ctx)
-	if err != nil {
-		return Report{}, err
+	last, cut := s.round(ctx)
+	if cut {
+		return Report{}, common.ClientGone(ctx.Err())
 	}
 	for waitFor > 0 && upNormal(last) < waitFor {
 		// realtime: the wait for waitFor nodes is bounded by a wall-clock timeout
@@ -132,31 +133,33 @@ func wait(ctx context.Context, changed <-chan struct{}, d time.Duration) error {
 	return nil
 }
 
-// roundBefore runs a round that the deadline calls off. cut reports that it
-// did, and the round's entries are then not an answer.
+// roundBefore runs a round that the deadline calls off. cut reports that one
+// of its asks returned after the deadline, and the round's entries are then not
+// an answer. A round whose asks all returned before the deadline counts, even
+// when the round ends after it.
 func (s *Service) roundBefore(ctx context.Context, deadline time.Time) (entries []Entry, cut bool, err error) {
 	// realtime: a round still running at the wait's deadline is called off
 	rctx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
-	entries, err = s.round(rctx)
+	entries, cut = s.round(rctx)
+	if !cut {
+		return entries, false, nil
+	}
 	if ctx.Err() != nil {
 		return nil, false, common.ClientGone(ctx.Err())
 	}
-	if rctx.Err() != nil {
-		return nil, true, nil
-	}
-	return entries, false, err
+	return nil, true, nil
 }
 
 // round lists the members and asks each one with an address for its status,
 // all in parallel. A member that does not answer is DOWN with its directory
-// state. The only error is ClientGone, when ctx ends during the round: the
-// caller's departure when ctx is the caller's. A round roundBefore runs under
-// the wait's deadline ends the same way when the deadline cuts it, and
-// roundBefore discards that error.
-func (s *Service) round(ctx context.Context) ([]Entry, error) {
+// state. cut reports that an ask returned after ctx ended: ctx's end may have
+// decided that answer, and the entries are then not a round. A round whose
+// asks all returned before ctx ended is complete, however late it ends.
+func (s *Service) round(ctx context.Context) (entries []Entry, cut bool) {
 	members := s.dir.Members()
-	entries := make([]Entry, len(members))
+	entries = make([]Entry, len(members))
+	var cutAsk atomic.Bool
 	var wg sync.WaitGroup
 	for i, m := range members {
 		entries[i] = Entry{ID: m.ID, Reachability: Down, State: m.State}
@@ -165,33 +168,43 @@ func (s *Service) round(ctx context.Context) ([]Entry, error) {
 			continue
 		}
 		wg.Go(func() {
-			if st, ok := s.askOne(ctx, m); ok {
+			st, ok, late := s.askOne(ctx, m)
+			if late {
+				cutAsk.Store(true)
+				return
+			}
+			if ok {
 				entries[i] = Entry{ID: m.ID, Reachability: Up, State: st.State, Status: &st}
 			}
 		})
 	}
 	wg.Wait()
-	if ctx.Err() != nil {
-		return nil, common.ClientGone(ctx.Err())
+	if cutAsk.Load() {
+		return nil, true
 	}
 	slices.SortFunc(entries, func(a, b Entry) int { return cmp.Compare(a.ID, b.ID) })
-	return entries, nil
+	return entries, false
 }
 
 // askOne asks one member under the ask bound. An ask error covers an answer out
 // of bounds: the peer asker validates the answer it receives, and the
-// in-process asker answers this node's own status. The address and the error
+// in-process asker answers this node's own status. late reports that the ask
+// returned after ctx ended, which may have shaped its outcome: the in-process
+// ask, for one, answers its database check failed. The address and the error
 // text go to the log only: they can name hosts and ports.
-func (s *Service) askOne(ctx context.Context, m Member) (NodeStatus, bool) {
+func (s *Service) askOne(ctx context.Context, m Member) (st NodeStatus, ok, late bool) {
 	// realtime: each member's ask is bounded by a wall-clock timeout
 	actx, cancel := context.WithTimeout(ctx, s.askTimeout)
 	defer cancel()
 	st, err := s.ask.AskStatus(actx, m.ID, m.Addr)
+	if ctx.Err() != nil {
+		return NodeStatus{}, false, true
+	}
 	if err != nil {
 		slog.Debug("cluster status: member did not answer", "pkg", "clusterstatus", "memberId", m.ID, "addr", m.Addr, "err", err)
-		return NodeStatus{}, false
+		return NodeStatus{}, false, false
 	}
-	return st, true
+	return st, true, false
 }
 
 func isUpNormal(e Entry) bool { return e.Reachability == Up && e.State == lifecycle.Normal }
