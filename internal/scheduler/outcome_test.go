@@ -97,18 +97,23 @@ type flakyTx struct {
 func (f *flakyTx) Begin(ctx context.Context) (string, context.Context, error) {
 	id, txCtx, err := f.TransactionManager.Begin(ctx)
 	if err == nil {
-		f.mu.Lock()
-		f.begun = append(f.begun, id)
-		f.mu.Unlock()
+		func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.begun = append(f.begun, id)
+		}()
 	}
 	return id, txCtx, err
 }
 
 func (f *flakyTx) Commit(ctx context.Context, txID string) error {
-	f.mu.Lock()
-	first := !f.failed
-	f.failed = true
-	f.mu.Unlock()
+	first := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		first := !f.failed
+		f.failed = true
+		return first
+	}()
 	if first {
 		return errors.New("commit: connection reset by peer")
 	}
@@ -122,9 +127,11 @@ func (f *flakyTx) Commit(ctx context.Context, txID string) error {
 }
 
 func (f *flakyTx) Rollback(ctx context.Context, txID string) error {
-	f.mu.Lock()
-	f.rolledBack = append(f.rolledBack, txID)
-	f.mu.Unlock()
+	func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.rolledBack = append(f.rolledBack, txID)
+	}()
 	return f.TransactionManager.Rollback(ctx, txID)
 }
 
