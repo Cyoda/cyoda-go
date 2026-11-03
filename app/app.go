@@ -915,8 +915,8 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap; each condition below is a pointer test or an
-// atomic load, and none performs I/O.
+// probe — keep it cheap; each condition below is a pointer test or a short
+// mutex-guarded read, and none performs I/O.
 //
 // Three conditions fail it independently, and the returned reasons differ so
 // the admin handler's server-side log tells an operator which fired:
