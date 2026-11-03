@@ -107,6 +107,10 @@ func (s *Service) Read(ctx context.Context, waitFor int, timeout time.Duration) 
 		if err := wait(ctx, changed, min(reaskInterval, remaining)); err != nil {
 			return Report{}, err
 		}
+		// realtime: a wait that ran to the deadline starts no round the deadline would cut
+		if time.Until(deadline) <= 0 {
+			break
+		}
 		changed = s.dir.Changed()
 		entries, cut, err := s.roundBefore(ctx, deadline)
 		if err != nil {

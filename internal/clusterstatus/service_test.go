@@ -599,3 +599,23 @@ func TestInProcess_SingleNode(t *testing.T) {
 		t.Fatal("waitFor 2 can never be met by one node")
 	}
 }
+
+// TestRead_TimedOutWaitStartsNoRound: a wait that runs to the deadline answers
+// the last counted round; it does not start a round the deadline has already
+// cut.
+func TestRead_TimedOutWaitStartsNoRound(t *testing.T) {
+	ask := func(context.Context, string, int) (NodeStatus, error) {
+		s := okStatus()
+		s.State = lifecycle.Draining
+		return s, nil
+	}
+	a := newFakeAsker(ask)
+	s := NewService(newFakeDir(member("a", lifecycle.Normal)), a, time.Second)
+	r := read(t, s, 1, 300*time.Millisecond)
+	if r.Operational {
+		t.Fatal("Operational should be false: waitFor not met")
+	}
+	if n := a.called("a"); n != 1 {
+		t.Fatalf("a asked %d times, want 1: the wait ran to the deadline", n)
+	}
+}

@@ -86,15 +86,21 @@ func NewSelf(lc *lifecycle.Lifecycle, store interface{ Ping(context.Context) err
 }
 
 // Status reads the node's status. A failed Ping is answered as Database false;
-// its text goes to the log only, as it can carry a DSN or an address.
+// its text goes to the log only, as it can carry a DSN or an address. A Ping
+// that fails after the caller's context ended is not a database fault: the
+// asker called the ask off and discards the answer, so it logs at DEBUG.
 func (s *Self) Status(ctx context.Context) NodeStatus {
 	// realtime: the database probe is bounded by a wall-clock timeout
 	pctx, cancel := context.WithTimeout(ctx, s.askTimeout/2)
 	defer cancel()
 	db := true
 	if err := s.store.Ping(pctx); err != nil {
-		slog.Warn("cluster status: database ping failed", "pkg", "clusterstatus", "err", err)
 		db = false
+		if ctx.Err() != nil {
+			slog.Debug("cluster status: database ping ended with the ask", "pkg", "clusterstatus", "err", err)
+		} else {
+			slog.Warn("cluster status: database ping failed", "pkg", "clusterstatus", "err", err)
+		}
 	}
 	return NodeStatus{State: s.lc.State(), Database: db, Version: s.version, Clock: s.clock()}
 }

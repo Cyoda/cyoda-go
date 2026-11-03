@@ -76,8 +76,8 @@ func TestSelf_PingFailure_DatabaseFalse_NoTextInStatus(t *testing.T) {
 		t.Fatalf("status leaks error text: %s", b)
 	}
 	log := buf.String()
-	if !strings.Contains(log, "level=WARN") || !strings.Contains(log, "10.0.0.9") {
-		t.Fatalf("WARN log should carry the error, got %q", log)
+	if strings.Count(log, "level=WARN") != 1 || !strings.Contains(log, "10.0.0.9") {
+		t.Fatalf("want one WARN line carrying the error, got %q", log)
 	}
 }
 
@@ -143,5 +143,52 @@ func TestNodeStatus_Validate_ShortStateIsQuoted(t *testing.T) {
 	err := NodeStatus{State: "bogus"}.Validate()
 	if err == nil || !strings.Contains(err.Error(), `"bogus"`) {
 		t.Fatalf("err = %v, want the state quoted", err)
+	}
+}
+
+type pingFunc func(context.Context) error
+
+func (f pingFunc) Ping(ctx context.Context) error { return f(ctx) }
+
+// captureLog routes the default logger, at DEBUG, to a buffer for the test.
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+// A Ping that fails only because the caller's context ended is not a database
+// fault: it logs no WARN, and the answer still says Database false.
+func TestSelf_PingFailsOnCallerEnd_NoWarn(t *testing.T) {
+	buf := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := pingFunc(func(ctx context.Context) error { return ctx.Err() })
+	s := NewSelf(normalLifecycle(), p, "v1", func() Clock { return Clock{} }, 10*time.Second)
+	if s.Status(ctx).Database {
+		t.Fatal("Database should be false")
+	}
+	if n := strings.Count(buf.String(), "level=WARN"); n != 0 {
+		t.Fatalf("got %d WARN lines, want none: %q", n, buf.String())
+	}
+}
+
+// A Ping cut by its own bound while the caller waits is a database fault: one
+// WARN.
+func TestSelf_PingBoundExpires_Warns(t *testing.T) {
+	buf := captureLog(t)
+	p := pingFunc(func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	s := NewSelf(normalLifecycle(), p, "v1", func() Clock { return Clock{} }, 100*time.Millisecond)
+	if s.Status(context.Background()).Database {
+		t.Fatal("Database should be false")
+	}
+	if n := strings.Count(buf.String(), "level=WARN"); n != 1 {
+		t.Fatalf("got %d WARN lines, want 1: %q", n, buf.String())
 	}
 }
