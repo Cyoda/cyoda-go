@@ -22,7 +22,7 @@ whatever its roles.
 | Parameter | Type | Range | Meaning |
 |---|---|---|---|
 | `waitForNodes` | int32 | 1 to 1000 | Answer once at least this many nodes are `UP` and `NORMAL`. Absent, the answer follows one round. |
-| `timeoutMs` | int32 | 1 to 600000, default 30000 | The longest wait for `waitForNodes`. Given without `waitForNodes`, it is refused. |
+| `timeoutMs` | int32 | 1 to 600000 | The longest wait for `waitForNodes`; 30000 when `waitForNodes` is given without it. Given without `waitForNodes`, it is refused. The schema declares no default: a generated default would make an absent `timeoutMs` look given. |
 
 **A round.** The node that serves the request lists every member of its
 membership directory, itself included, and asks each one for its status, all

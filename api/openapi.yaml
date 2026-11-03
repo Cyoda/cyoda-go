@@ -1178,15 +1178,14 @@ paths:
           description: >-
             The longest wait for `waitForNodes`, in milliseconds; the answer
             comes at the later of this and the end of the first round. 1 to
-            600000. Only together with `waitForNodes`; alone it is refused
-            with 400.
+            600000; defaults to 30000 when `waitForNodes` is given. Only
+            together with `waitForNodes`; alone it is refused with 400.
           required: false
           schema:
             type: integer
             format: int32
             minimum: 1
             maximum: 600000
-            default: 30000
       responses:
         "200":
           description: The cluster is operational.
