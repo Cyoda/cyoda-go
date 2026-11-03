@@ -368,7 +368,7 @@ func TestRead_WaitMetWithExtraDown(t *testing.T) {
 	}
 }
 
-func TestRead_TimeoutAnswersLastCompletedRound(t *testing.T) {
+func TestRead_TimeoutAnswersLastCountedRound(t *testing.T) {
 	s := NewService(newFakeDir(member("a", lifecycle.Normal), member("b", lifecycle.Normal)), newFakeAsker(allOK), time.Second)
 	var r Report
 	dur := elapsed(func() { r = read(t, s, 3, 300*time.Millisecond) })
@@ -425,11 +425,15 @@ func TestRead_DeadlineCancelsRunningRound(t *testing.T) {
 // slowRefusalLog is a slog handler that holds the log line of a member that
 // did not answer for delay: the time a round spends after its last ask
 // returned and before it ends.
-type slowRefusalLog struct{ delay time.Duration }
+type slowRefusalLog struct {
+	delay   time.Duration
+	delayed *atomic.Int32
+}
 
 func (slowRefusalLog) Enabled(context.Context, slog.Level) bool { return true }
 func (h slowRefusalLog) Handle(_ context.Context, r slog.Record) error {
 	if r.Message == "cluster status: member did not answer" {
+		h.delayed.Add(1)
 		time.Sleep(h.delay)
 	}
 	return nil
@@ -441,7 +445,8 @@ func (h slowRefusalLog) WithGroup(string) slog.Handler      { return h }
 // before the deadline counts, although the round ends after it.
 func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 	old := slog.Default()
-	slog.SetDefault(slog.New(slowRefusalLog{delay: 300 * time.Millisecond}))
+	var delayed atomic.Int32
+	slog.SetDefault(slog.New(slowRefusalLog{delay: 300 * time.Millisecond, delayed: &delayed}))
 	defer slog.SetDefault(old)
 
 	ask := func(ctx context.Context, id string, call int) (NodeStatus, error) {
@@ -468,6 +473,11 @@ func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 	want := []Entry{upEntry("a", okStatus()), downEntry("b", lifecycle.Normal)}
 	if !reflect.DeepEqual(r.Nodes, want) {
 		t.Fatalf("got %+v, want the completed second round %+v", r.Nodes, want)
+	}
+	// Both rounds must have held their end on b's log line, or the second round
+	// ended before the deadline and the test proves nothing.
+	if got := delayed.Load(); got != 2 {
+		t.Fatalf("delayed log lines = %d, want 2 (one per round)", got)
 	}
 }
 
