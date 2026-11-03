@@ -149,9 +149,11 @@ func TestLifecycle_ConcurrentTripAndDrain_MonotoneDelivery(t *testing.T) {
 
 		deadline := time.Now().Add(2 * time.Second)
 		for {
-			mu.Lock()
-			last := got[len(got)-1]
-			mu.Unlock()
+			last := func() State {
+				mu.Lock()
+				defer mu.Unlock()
+				return got[len(got)-1]
+			}()
 			if last == Unhealthy {
 				break
 			}
@@ -160,13 +162,16 @@ func TestLifecycle_ConcurrentTripAndDrain_MonotoneDelivery(t *testing.T) {
 			}
 			time.Sleep(time.Millisecond)
 		}
-		mu.Lock()
-		for j := 1; j < len(got); j++ {
-			if rank(got[j]) < rank(got[j-1]) {
-				t.Fatalf("iteration %d: rank decreased: %v", i, got)
+		delivered := func() []State {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]State(nil), got...)
+		}()
+		for j := 1; j < len(delivered); j++ {
+			if rank(delivered[j]) < rank(delivered[j-1]) {
+				t.Fatalf("iteration %d: rank decreased: %v", i, delivered)
 			}
 		}
-		mu.Unlock()
 	}
 }
 
@@ -189,24 +194,25 @@ func TestLifecycle_OnChangeAfterTrip_NoDuplicateUnhealthy(t *testing.T) {
 		l.OnChange(listen(0))
 		latch.Trip()
 		l.OnChange(listen(1))
+		snapCounts := func() (int, int) {
+			mu.Lock()
+			defer mu.Unlock()
+			return counts[0], counts[1]
+		}
 		deadline := time.Now().Add(2 * time.Second)
 		for {
-			mu.Lock()
-			done := counts[0] >= 1 && counts[1] >= 1
-			mu.Unlock()
-			if done {
+			c0, c1 := snapCounts()
+			if c0 >= 1 && c1 >= 1 {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("iteration %d: UNHEALTHY not delivered: %v", i, counts)
+				t.Fatalf("iteration %d: UNHEALTHY not delivered: %d, %d", i, c0, c1)
 			}
 			time.Sleep(time.Millisecond)
 		}
 		time.Sleep(time.Millisecond)
-		mu.Lock()
-		if counts[0] != 1 || counts[1] != 1 {
-			t.Fatalf("iteration %d: UNHEALTHY deliveries %v, want one each", i, counts)
+		if c0, c1 := snapCounts(); c0 != 1 || c1 != 1 {
+			t.Fatalf("iteration %d: UNHEALTHY deliveries %d, %d, want one each", i, c0, c1)
 		}
-		mu.Unlock()
 	}
 }
