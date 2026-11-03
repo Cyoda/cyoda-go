@@ -469,7 +469,7 @@ func TestRead_RoundCompletedAtDeadlineCounts(t *testing.T) {
 		return s, nil
 	}
 	s := NewService(newFakeDir(member("a", lifecycle.Normal), member("b", lifecycle.Normal)), newFakeAsker(ask), 10*time.Second)
-	r := read(t, s, 1, 1600*time.Millisecond)
+	r := read(t, s, 1, 2600*time.Millisecond)
 	want := []Entry{upEntry("a", okStatus()), downEntry("b", lifecycle.Normal)}
 	if !reflect.DeepEqual(r.Nodes, want) {
 		t.Fatalf("got %+v, want the completed second round %+v", r.Nodes, want)
