@@ -77,7 +77,7 @@ func TestNewHandOverRequest(t *testing.T) {
 				t.Errorf("Outer = %+v", req.Outer)
 			}
 			if req.TenantID != "tenant-1" || string(req.EntityMeta.TenantID) != "tenant-1" || req.TxID != "tx-1" ||
-				req.Tags != "python" || req.WorkflowName != "wf" || req.TransitionName != "tr" || string(req.Entity) != `{"key":"value"}` {
+				req.WorkflowName != "wf" || req.TransitionName != "tr" || string(req.Entity) != `{"key":"value"}` {
 				t.Errorf("shared fields wrong: %+v", req)
 			}
 			// The identity the owner computed, as it computed it: the peer
@@ -397,7 +397,7 @@ func TestResponseFromLocal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tt.check(t, responseFromLocal(ownerCallout(t, tt.kind), tt.res, []string{"w1"}, nil))
+			tt.check(t, responseFromLocal(ownerCallout(t, tt.kind), tt.res, []string{"w1"}))
 		})
 	}
 }
@@ -407,22 +407,22 @@ func TestResponseFromLocal_MemberFailed(t *testing.T) {
 	res := internalgrpc.LocalResult{TriesUsed: 1,
 		Failure:  &contract.CalloutFailure{Kind: contract.MemberFailed, Message: "card declined", MemberText: "card declined", Retryable: &yes},
 		Attempts: []contract.CalloutAttempt{{MemberID: "m1", Kind: contract.MemberFailed, Cause: "card declined"}}}
-	r := responseFromLocal(ownerCallout(t, "processor"), res, []string{"processor p: slow"}, []string{"processor p: card declined"})
+	r := responseFromLocal(ownerCallout(t, "processor"), res, []string{"processor p: slow"})
 	if r.Outcome != "member_failed" || r.MemberError != "card declined" || r.MemberRetryable == nil || !*r.MemberRetryable {
 		t.Errorf("%+v", r)
 	}
 	if r.ErrorCode != "" {
 		t.Errorf("a cnode's own failure carries no code of this pnode's: %q", r.ErrorCode)
 	}
-	if len(r.Warnings) != 1 || len(r.Errors) != 1 {
-		t.Errorf("diagnostics lost: %+v / %+v", r.Warnings, r.Errors)
+	if len(r.Warnings) != 1 {
+		t.Errorf("warnings lost: %+v", r.Warnings)
 	}
 }
 
 // The peer's context ended: the owner hung up, nobody reads the answer. It is
 // still a well-formed one.
 func TestResponseFromLocal_CallerWentAway(t *testing.T) {
-	r := responseFromLocal(ownerCallout(t, "processor"), internalgrpc.LocalResult{TriesUsed: 1, CtxErr: errors.New("context canceled")}, nil, nil)
+	r := responseFromLocal(ownerCallout(t, "processor"), internalgrpc.LocalResult{TriesUsed: 1, CtxErr: errors.New("context canceled")}, nil)
 	if r.Outcome != "no_answer" || *r.TriesUsed != 1 {
 		t.Errorf("%+v", r)
 	}
@@ -485,7 +485,7 @@ func TestReadAnswer_OK(t *testing.T) {
 // never as the entity it handed over.
 func TestNoPayload_RoundTrip(t *testing.T) {
 	call := ownerCallout(t, "processor")
-	resp := responseFromLocal(call, internalgrpc.LocalResult{TriesUsed: 1}, nil, nil)
+	resp := responseFromLocal(call, internalgrpc.LocalResult{TriesUsed: 1}, nil)
 	raw, err := json.Marshal(resp)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

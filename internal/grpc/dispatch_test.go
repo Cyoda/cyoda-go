@@ -1038,52 +1038,6 @@ func TestDispatchProcessor_WarningPropagatesName(t *testing.T) {
 	}
 }
 
-// TestDispatchCriteria_FailurePropagatesName guards the error path: a failed
-// criteria response surfaces to the client keyed by the criteria NAME.
-func TestDispatchCriteria_FailurePropagatesName(t *testing.T) {
-	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
-	ctx := common.WithDiagnostics(testContext())
-	entity := testEntity()
-
-	// Production criterion shape: name/config nested under "function".
-	criterion := json.RawMessage(`{
-		"type": "function",
-		"function": {
-			"name": "amount-check",
-			"config": {
-				"calculationNodesTags": "python",
-				"responseTimeoutMs": 5000
-			}
-		}
-	}`)
-
-	go func() {
-		ce := <-sentCh
-		reqID, err := extractRequestID(ce)
-		if err != nil {
-			t.Errorf("extractRequestID: %v", err)
-			return
-		}
-		member := registry.Get(memberID)
-		member.CompleteRequest(reqID, &ProcessingResponse{
-			Success: false,
-			Error:   "boom",
-		})
-	}()
-
-	if _, _, err := dispatchCriteria(dispatcher, ctx, entity, criterion, "transition", "wf1", "t1", "", "tx-1"); err == nil {
-		t.Fatal("expected dispatch failure error")
-	}
-
-	errs := common.GetDiagnostics(ctx).GetErrors()
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error diagnostic, got %d: %v", len(errs), errs)
-	}
-	if errs[0] != "criteria amount-check: boom" {
-		t.Errorf("error diagnostic must carry criteria name, got %q", errs[0])
-	}
-}
-
 func TestDispatchFunction_HappyPath(t *testing.T) {
 	dispatcher, registry, memberID, sentCh := setupTestDispatcher(t)
 	ctx := testContext()

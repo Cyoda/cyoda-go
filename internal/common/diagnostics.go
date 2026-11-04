@@ -5,12 +5,11 @@ import (
 	"sync"
 )
 
-// RequestDiagnostics accumulates warnings and errors during request processing.
+// RequestDiagnostics accumulates warnings during request processing.
 // Thread-safe for concurrent access from multiple goroutines (e.g., async processors).
 type RequestDiagnostics struct {
 	mu       sync.Mutex
 	warnings []string
-	errors   []string
 }
 
 type diagnosticsKey struct{}
@@ -32,18 +31,8 @@ func GetDiagnostics(ctx context.Context) *RequestDiagnostics {
 func AddWarning(ctx context.Context, msg string) {
 	if d := GetDiagnostics(ctx); d != nil {
 		d.mu.Lock()
+		defer d.mu.Unlock()
 		d.warnings = append(d.warnings, msg)
-		d.mu.Unlock()
-	}
-}
-
-// AddError appends an error message to the diagnostics.
-// Safe to call even if diagnostics is not initialized on the context (silent no-op).
-func AddError(ctx context.Context, msg string) {
-	if d := GetDiagnostics(ctx); d != nil {
-		d.mu.Lock()
-		d.errors = append(d.errors, msg)
-		d.mu.Unlock()
 	}
 }
 
@@ -59,20 +48,5 @@ func (d *RequestDiagnostics) GetWarnings() []string {
 	}
 	cp := make([]string, len(d.warnings))
 	copy(cp, d.warnings)
-	return cp
-}
-
-// GetErrors returns accumulated errors, or an empty slice (never nil).
-func (d *RequestDiagnostics) GetErrors() []string {
-	if d == nil {
-		return []string{}
-	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if len(d.errors) == 0 {
-		return []string{}
-	}
-	cp := make([]string, len(d.errors))
-	copy(cp, d.errors)
 	return cp
 }

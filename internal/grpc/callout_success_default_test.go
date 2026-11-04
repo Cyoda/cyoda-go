@@ -214,9 +214,6 @@ func TestDispatchProcessor_ErrorObjectAloneIsNotAFailure(t *testing.T) {
 		t.Errorf("entity data = %s; want no entity: the answer had no payload", entity.Data)
 	}
 	diag := common.GetDiagnostics(ctx)
-	if got := diag.GetErrors(); len(got) != 0 {
-		t.Errorf("errors = %v; want none: the member's text is read only on the failure branch", got)
-	}
 	if got := diag.GetWarnings(); len(got) != 0 {
 		t.Errorf("warnings = %v; want none: the text is dropped, not downgraded to a warning", got)
 	}
@@ -334,9 +331,6 @@ func TestDispatchCriteria_NullSuccessSurfacesNothing(t *testing.T) {
 	diag := common.GetDiagnostics(ctx)
 	if got := diag.GetWarnings(); len(got) != 0 {
 		t.Errorf("warnings = %v; want none: nothing is read out of an answer that could not be read", got)
-	}
-	if got := diag.GetErrors(); len(got) != 0 {
-		t.Errorf("errors = %v; want none: the member's text is read only on the failure branch", got)
 	}
 }
 

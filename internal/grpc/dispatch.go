@@ -304,7 +304,6 @@ func (d *ProcessorDispatcher) dispatchCalloutToMember(ctx context.Context, membe
 			if resp.Error != "" {
 				failure.MemberText = boundMemberText(resp.Error)
 				failure.Message = failure.MemberText
-				common.AddError(ctx, fmt.Sprintf("%s %s: %s", label, name, failure.Message))
 			}
 			return CalloutResult{}, failure, true, nil
 		}

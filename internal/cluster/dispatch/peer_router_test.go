@@ -202,26 +202,6 @@ func TestHandOver_NothingToHandOver_IsTerminal_NothingSent(t *testing.T) {
 	}
 }
 
-func TestHandOver_AddsThePeersErrorsToTheRequestDiagnostics(t *testing.T) {
-	no := false
-	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1),
-		MemberError: "card declined", MemberRetryable: &no,
-		Attempts: []WireAttempt{{MemberID: "m1", Kind: "member_failed", Cause: "card declined"}},
-		Warnings: []string{"processor p: slow"}, Errors: []string{"processor p: card declined"}}}
-	ctx := common.WithDiagnostics(testContext())
-	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(ctx, node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
-
-	if got := common.GetDiagnostics(ctx).GetErrors(); len(got) != 1 || got[0] != "processor p: card declined" {
-		t.Errorf("errors = %v", got)
-	}
-	if len(a.Warnings) != 1 || a.Warnings[0] != "processor p: slow" {
-		t.Errorf("Warnings = %v — returned for the caller to add, as the seam says", a.Warnings)
-	}
-	if got := common.GetDiagnostics(ctx).GetWarnings(); len(got) != 0 {
-		t.Errorf("warnings were added twice over: %v", got)
-	}
-}
-
 // --- why a peer was not connected to, by class ---
 
 // timeoutErr is a net.Error that timed out, as the dialer reports a connect
@@ -295,7 +275,7 @@ func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
 		attempts = append(attempts, WireAttempt{MemberID: long, Kind: "member_failed", Cause: long})
 	}
 	fwd := &answeringForwarder{resp: &DispatchCalloutResponse{Outcome: "member_failed", TriesUsed: intPtr(1),
-		MemberError: "declined", Warnings: append([]string{long}, many...), Errors: many, Attempts: attempts}}
+		MemberError: "declined", Warnings: append([]string{long}, many...), Attempts: attempts}}
 	ctx := common.WithDiagnostics(testContext())
 	a := newTestRouter(t, &stubNodeRegistry{}, fwd).HandOver(ctx, node("peer-1", true, "tenant-1", "python"), ownerCallout(t, "processor"), 1, 1)
 
@@ -304,9 +284,6 @@ func TestHandOver_BoundsThePeersDiagnostics(t *testing.T) {
 	}
 	if got := []rune(a.Warnings[0]); len(got) != maxPeerDiagnosticRunes+1 || got[len(got)-1] != '…' {
 		t.Errorf("a long warning was not cut with a mark: %d runes", len(got))
-	}
-	if got := common.GetDiagnostics(ctx).GetErrors(); len(got) != maxPeerDiagnostics {
-		t.Errorf("errors = %d entries, want %d", len(got), maxPeerDiagnostics)
 	}
 	if len(a.Attempts) != maxPeerDiagnostics {
 		t.Errorf("Attempts = %d entries, want %d", len(a.Attempts), maxPeerDiagnostics)

@@ -118,16 +118,12 @@ func (r *PeerRouter) Changed() <-chan struct{} { return r.registry.Changed() }
 // deadline); the transport has no timeout of its own beyond opening the
 // connection.
 //
-// The peer's warnings are returned for the caller to add; the diagnostics the
-// tries raised as errors on the peer are added to ctx here. The caller's own
+// The peer's warnings are returned for the caller to add. The caller's own
 // context ending is not reported: the caller checks its ctx, and context.Cause,
 // after the call.
 func (r *PeerRouter) HandOver(ctx context.Context, peer contract.NodeInfo, call internalgrpc.Callout, triesLeft int, major uint32) HandOverAnswer {
 	ans, outcome := r.handOver(ctx, peer, call, triesLeft, major)
 	r.handovers.Add(ctx, 1, metric.WithAttributes(attribute.String("outcome", outcome)))
-	for _, e := range ans.peerErrors {
-		common.AddError(ctx, e)
-	}
 	slog.Debug("hand-over", "pkg", "dispatch", "kind", call.Kind.String(), "name", call.Name, "requestId", call.RequestID,
 		"peer", peer.NodeID, "triesLeft", triesLeft, "major", major, "outcome", outcome, "triesUsed", ans.TriesUsed)
 	return ans
@@ -222,9 +218,8 @@ func (r *PeerRouter) boundPeerText(resp *DispatchCalloutResponse, peer contract.
 	if resp == nil {
 		return false
 	}
-	omitted := len(resp.Warnings) > maxPeerDiagnostics || len(resp.Errors) > maxPeerDiagnostics || len(resp.Attempts) > maxPeerDiagnostics
+	omitted := len(resp.Warnings) > maxPeerDiagnostics || len(resp.Attempts) > maxPeerDiagnostics
 	resp.Warnings = boundLines(resp.Warnings)
-	resp.Errors = boundLines(resp.Errors)
 	// The cnode's own message becomes the MemberFailed failure's MemberText
 	// and the client's Message, and from there the client's 400 body — the
 	// same text a local try bounds where the member speaks it

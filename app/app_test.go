@@ -91,13 +91,11 @@ func TestDIWiring(t *testing.T) {
 		{"AuthenticationService", a.AuthenticationService() != nil},
 		{"WorkflowEngine", a.WorkflowEngine() != nil},
 		{"SearchService", a.SearchService() != nil},
-		{"AuditService", a.AuditService() != nil},
 		{"StoreFactory.MessageStore", func() bool {
 			ctx := ctxWithTenant("test-tenant")
 			ms, err := a.StoreFactory().MessageStore(ctx)
 			return err == nil && ms != nil
 		}()},
-		{"ClusterService", a.ClusterService() != nil},
 	}
 
 	for _, c := range checks {

@@ -35,7 +35,6 @@ type DispatchCalloutRequest struct {
 	TransitionName string         `json:"transitionName"`
 	TxID           string         `json:"txID"`
 	TenantID       string         `json:"tenantID"`
-	Tags           string         `json:"tags"`
 
 	// AttributedID/AttributedKind and ExecutorID/ExecutorKind are the
 	// callout's identity as the owner computed it: who the work is for and
@@ -140,8 +139,6 @@ type DispatchCalloutResponse struct {
 	ResultKind string          `json:"resultKind,omitempty"`
 
 	Warnings []string `json:"warnings,omitempty"`
-	// Errors are the diagnostics the tries added on the answering pnode.
-	Errors []string `json:"errors,omitempty"`
 }
 
 // OutcomeOK is the outcome of a hand-over that a cnode answered. The other

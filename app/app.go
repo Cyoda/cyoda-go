@@ -53,7 +53,6 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
-	"github.com/cyoda-platform/cyoda-go/internal/skeleton"
 	"github.com/cyoda-platform/cyoda-go/internal/txgate"
 )
 
@@ -69,8 +68,6 @@ type App struct {
 	fence              *fence.Fence     // one arbiter per process; both callback doors and every callout judge a callback by it
 	joiner             *txjoin.Joiner   // the join layer both callback doors run a request carrying a pass through
 	searchService      *search.SearchService
-	auditService       contract.AuditService
-	clusterService     contract.ClusterService
 	memberRegistry     *internalgrpc.MemberRegistry
 	grpcServer         *internalgrpc.Server
 	handler            http.Handler
@@ -489,9 +486,6 @@ func New(cfg Config) *App {
 	}
 
 	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthLatch)
-
-	a.auditService = skeleton.NewAuditService()
-	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
 
 	// Wire external processing dispatcher
 	var extProc contract.ExternalProcessingService
@@ -982,8 +976,6 @@ func (a *App) AuthenticationService() contract.AuthenticationService {
 func (a *App) AuthService() *auth.AuthService               { return a.authSvc }
 func (a *App) WorkflowEngine() *workflow.Engine             { return a.workflowEngine }
 func (a *App) SearchService() *search.SearchService         { return a.searchService }
-func (a *App) AuditService() contract.AuditService          { return a.auditService }
-func (a *App) ClusterService() contract.ClusterService      { return a.clusterService }
 func (a *App) GRPCServer() *internalgrpc.Server             { return a.grpcServer }
 func (a *App) MemberRegistry() *internalgrpc.MemberRegistry { return a.memberRegistry }
 func (a *App) TokenSigner() *token.Signer                   { return a.tokenSigner }
