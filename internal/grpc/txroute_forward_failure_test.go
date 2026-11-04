@@ -352,3 +352,55 @@ func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
 		})
 	}
 }
+
+// framesThenFail yields its frames, then fails with err.
+type framesThenFail struct {
+	googlegrpc.ClientStream
+	frames []*cepb.CloudEvent
+	err    error
+	idx    int
+}
+
+func (c *framesThenFail) Recv() (*cepb.CloudEvent, error) {
+	if c.idx < len(c.frames) {
+		f := c.frames[c.idx]
+		c.idx++
+		return f, nil
+	}
+	return nil, c.err
+}
+
+// A forwarded stream that breaks after its first frame ends with a generic
+// status: the hop's transport text names cluster-internal addresses and is
+// logged here, never sent. The owner's own refusal still passes through.
+func TestTxRouteInterceptor_StreamBreakAfterFirstFrameIsGeneric(t *testing.T) {
+	const leak = "10.0.0.2:9090"
+	for name, c := range map[string]struct {
+		err      error
+		wantCode codes.Code
+		wantText string
+	}{
+		"transport break": {status.Error(codes.Unavailable, "connection error: desc = \"error reading from server: read tcp 10.0.0.1:41000->"+leak+": read: connection reset by peer\""), codes.Unavailable, "transaction node is unreachable"},
+		"hop status":      {status.Error(codes.Internal, "stream terminated by RST_STREAM with error code: INTERNAL_ERROR"), codes.Internal, "transaction node answer failed"},
+		"owner refusal":   {status.Error(codes.InvalidArgument, "invalid payload: x"), codes.InvalidArgument, "invalid payload: x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+			ic.forwardStream = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+				return &framesThenFail{frames: []*cepb.CloudEvent{{Id: "f1"}}, err: c.err}, nil
+			}
+			ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-break"}}}
+			err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t))
+			if len(ss.sent) != 1 || ss.sent[0].Id != "f1" {
+				t.Fatalf("sent %+v, want the first frame copied", ss.sent)
+			}
+			st, _ := status.FromError(err)
+			if st.Code() != c.wantCode || st.Message() != c.wantText {
+				t.Fatalf("err = %v, want %s %q", err, c.wantCode, c.wantText)
+			}
+			if strings.Contains(st.Message(), leak) {
+				t.Fatalf("the caller was sent an internal address: %q", st.Message())
+			}
+		})
+	}
+}

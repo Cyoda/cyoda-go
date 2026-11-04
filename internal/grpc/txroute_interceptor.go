@@ -403,12 +403,31 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 			return nil
 		}
 		if err != nil {
-			return err
+			return forwardStreamBroke(ctx, addr, err)
 		}
 		if err := ss.SendMsg(frame); err != nil {
 			return err
 		}
 	}
+}
+
+// forwardStreamBroke ends a forwarded stream that failed after its first
+// message, when no envelope can follow the frames already sent. The owner's
+// own refusal passes through. Anything else is logged here and ended with a
+// generic status: the hop's transport text names cluster-internal addresses.
+func forwardStreamBroke(ctx context.Context, addr string, err error) error {
+	if ctx.Err() != nil {
+		return callerGone(ctx, addr)
+	}
+	switch classifyForwardErr(err) {
+	case ownerRefused:
+		return err
+	case ownerNotReached:
+		slog.Error("forwarded stream broke", "pkg", "grpc", "target", addr, "error", err)
+		return status.Error(codes.Unavailable, "transaction node is unreachable")
+	}
+	slog.Error("forwarded stream broke", "pkg", "grpc", "target", addr, "error", err)
+	return status.Error(codes.Internal, "transaction node answer failed")
 }
 
 // forwardOutcome is what an error from a forwarded call says about the owner.
