@@ -169,3 +169,22 @@ func TestBuildErrorFields_RawStorageUnavailableMarker(t *testing.T) {
 		t.Errorf("unmarked raw error = %q/retryable=%v, want SERVER_ERROR/nil", plainCode, plainRetryable)
 	}
 }
+
+// TestBuildErrorFields_RawEpochMismatch — a raw store error reporting a lost
+// shard answers the same retryable EPOCH_MISMATCH on gRPC as on HTTP.
+func TestBuildErrorFields_RawEpochMismatch(t *testing.T) {
+	raw := fmt.Errorf("commit aborted: shard revoked: %w", spi.ErrEpochMismatch)
+	code, message, retryable := buildErrorFields(raw)
+	if code != "CLIENT_ERROR" {
+		t.Errorf("code = %q, want CLIENT_ERROR", code)
+	}
+	if !strings.HasPrefix(message, common.ErrCodeEpochMismatch+":") {
+		t.Errorf("message = %q, want the %s domain code", message, common.ErrCodeEpochMismatch)
+	}
+	if retryable == nil || !*retryable {
+		t.Errorf("retryable = %v, want true", retryable)
+	}
+	if strings.Contains(message, "shard revoked") {
+		t.Errorf("message leaks the store's wording: %q", message)
+	}
+}

@@ -1005,6 +1005,11 @@ func perIDDeleteError(entityID string, err error) string {
 			"code", suErr.Code, "message", suErr.Message, "cause", err.Error())
 		return suErr.Message
 	}
+	if emErr := common.EpochMismatch(err); emErr != nil {
+		slog.Info("operational error", "pkg", "entity", "entityId", entityID,
+			"code", emErr.Code, "message", emErr.Message, "cause", err.Error())
+		return emErr.Message
+	}
 	if errors.Is(err, spi.ErrNotFound) {
 		return fmt.Sprintf("%s: entity id=%s not found", common.ErrCodeEntityNotFound, entityID)
 	}
@@ -2870,6 +2875,9 @@ func classifyWorkflowError(err error) *common.AppError {
 	// opaque 500 for a condition that clears on its own in milliseconds.
 	if suErr := common.StorageUnavailable(err); suErr != nil {
 		return suErr
+	}
+	if emErr := common.EpochMismatch(err); emErr != nil {
+		return emErr
 	}
 	if errors.Is(err, contract.ErrNoMatchingMember) {
 		return common.Operational(http.StatusServiceUnavailable, common.ErrCodeNoComputeMemberForTag, err.Error()).AsRetryable()

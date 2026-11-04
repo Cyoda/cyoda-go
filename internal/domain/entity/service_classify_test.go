@@ -543,3 +543,26 @@ func TestClassifyWorkflowError_TxAbortedIs409(t *testing.T) {
 		t.Fatal("the cause is not attached")
 	}
 }
+
+// TestClassifyWorkflowError_EpochMismatchIsARetryable409 — a store error that
+// reports a lost shard (spi.ErrEpochMismatch) inside a cascade is not a
+// workflow failure: it must not fall through to 400 WORKFLOW_FAILED carrying
+// the store's text.
+func TestClassifyWorkflowError_EpochMismatchIsARetryable409(t *testing.T) {
+	appErr := classifyWorkflowError(fmt.Errorf("tx read record aborted: shard revoked: %w", spi.ErrEpochMismatch))
+	if appErr.Status != http.StatusConflict || appErr.Code != common.ErrCodeEpochMismatch || !appErr.Retryable {
+		t.Fatalf("got %d/%s/retryable=%v, want 409/%s/true", appErr.Status, appErr.Code, appErr.Retryable, common.ErrCodeEpochMismatch)
+	}
+	if strings.Contains(appErr.Message, "shard revoked") {
+		t.Fatalf("message leaks the store's wording: %q", appErr.Message)
+	}
+}
+
+// TestPerIDDeleteError_EpochMismatchKeepsItsCode — a delete item that failed on
+// a lost shard reports the retryable code, not a ticket.
+func TestPerIDDeleteError_EpochMismatchKeepsItsCode(t *testing.T) {
+	msg := perIDDeleteError("e1", fmt.Errorf("transactional delete aborted: shard revoked: %w", spi.ErrEpochMismatch))
+	if !strings.HasPrefix(msg, common.ErrCodeEpochMismatch+":") {
+		t.Fatalf("message = %q, want the %s code", msg, common.ErrCodeEpochMismatch)
+	}
+}

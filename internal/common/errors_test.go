@@ -754,3 +754,31 @@ func TestTxAbortedConflict(t *testing.T) {
 		t.Fatalf("nil was answered %+v", got)
 	}
 }
+
+// TestInternal_EpochMismatchIsARetryable409 — a store that lost ownership of a
+// shard mid-transaction (spi.ErrEpochMismatch) has rolled the transaction back,
+// so the same request can succeed on a fresh attempt. It must not reach the
+// caller as an opaque 500, and the store's own wording stays in the log.
+func TestInternal_EpochMismatchIsARetryable409(t *testing.T) {
+	cause := fmt.Errorf("transactional save aborted: shard revoked: %w", spi.ErrEpochMismatch)
+	e := common.Internal("failed to save entity", cause)
+
+	if e.Status != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", e.Status)
+	}
+	if e.Code != common.ErrCodeEpochMismatch {
+		t.Fatalf("code = %q, want %q", e.Code, common.ErrCodeEpochMismatch)
+	}
+	if !e.Retryable {
+		t.Fatal("EPOCH_MISMATCH must be retryable")
+	}
+	if e.Level != common.LevelOperational {
+		t.Fatalf("level = %v, want Operational", e.Level)
+	}
+	if e.Err == nil {
+		t.Fatal("the cause was dropped from the log")
+	}
+	if strings.Contains(e.Message, "shard revoked") {
+		t.Fatalf("the client-facing message leaked the store's wording: %q", e.Message)
+	}
+}

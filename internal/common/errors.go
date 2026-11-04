@@ -192,6 +192,19 @@ func StorageUnavailable(err error) *AppError {
 	return nil
 }
 
+// EpochMismatch returns a retryable 409 AppError when err reports that the
+// store lost ownership of the shard a transaction ran on (spi.ErrEpochMismatch),
+// and nil when it does not. The store has rolled the transaction back, so the
+// same request can succeed on a fresh attempt. The store's own wording rides
+// along as the cause, for the log; it stays out of the client-facing message.
+func EpochMismatch(err error) *AppError {
+	if err == nil || !errors.Is(err, spi.ErrEpochMismatch) {
+		return nil
+	}
+	return Operational(http.StatusConflict, ErrCodeEpochMismatch,
+		"the transaction's storage shard changed owner — retry").AsRetryable().WithCause(err)
+}
+
 // TxAbortedConflict answers an error that is a consequence of an earlier
 // conflict in its transaction (spi.ErrTxAborted): a retryable 409 CONFLICT with
 // err attached as the cause. It returns nil for any other error. A backend
@@ -222,6 +235,9 @@ func TxAbortedConflict(err error) *AppError {
 // than any sentinel a wrapper below it might also carry.
 func Internal(message string, err error) *AppError {
 	if appErr := StorageUnavailable(err); appErr != nil {
+		return appErr
+	}
+	if appErr := EpochMismatch(err); appErr != nil {
 		return appErr
 	}
 	if err != nil && errors.Is(err, spi.ErrUniqueViolation) {

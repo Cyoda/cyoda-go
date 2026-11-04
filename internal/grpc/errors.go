@@ -103,6 +103,9 @@ func buildErrorFields(err error) (code, message string, retryable *bool) {
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return buildErrorFields(appErr)
 	}
+	if appErr := common.EpochMismatch(err); appErr != nil {
+		return buildErrorFields(appErr)
+	}
 	// A departed client that never passed through an *AppError is still a
 	// departed client, not an unclassified failure. Same message as the branch
 	// above; a raw error has no code or message of its own to carry.
