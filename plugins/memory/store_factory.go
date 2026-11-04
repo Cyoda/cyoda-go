@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -74,8 +75,9 @@ type entityTenantKey struct {
 }
 
 type StoreFactory struct {
-	clock      Clock // physical: liveness
-	bizClock   Clock // business: stamps and retention; defaults to clock
+	closed     atomic.Bool // set by Close; Ping reports it
+	clock      Clock       // physical: liveness
+	bizClock   Clock       // business: stamps and retention; defaults to clock
 	entityMu   sync.RWMutex
 	modelMu    sync.RWMutex
 	kvMu       sync.RWMutex
@@ -270,7 +272,23 @@ func (f *StoreFactory) ScheduledTaskStore(_ context.Context) (spi.ScheduledTaskS
 	return &scheduledTaskStore{f: f}, nil
 }
 
+// errClosed is what Ping returns once Close has run.
+var errClosed = errors.New("memory: store factory is closed")
+
+// Ping implements spi.StoreFactory. The in-memory store always answers, so it
+// fails only when ctx is done or the factory has been closed.
+func (f *StoreFactory) Ping(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if f.closed.Load() {
+		return errClosed
+	}
+	return nil
+}
+
 func (f *StoreFactory) Close() error {
+	f.closed.Store(true)
 	// Close the root before removing the tree: on Windows an open handle
 	// blocks the removal. NewStoreFactory panics if OpenRoot fails, so
 	// blobRoot is never nil on a constructed factory and no nil check is

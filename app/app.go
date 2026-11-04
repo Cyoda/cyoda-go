@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -12,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
@@ -30,6 +30,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/proxy"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/registry"
 	"github.com/cyoda-platform/cyoda-go/internal/cluster/token"
+	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
@@ -45,8 +46,10 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
 	"github.com/cyoda-platform/cyoda-go/internal/fence"
 	internalgrpc "github.com/cyoda-platform/cyoda-go/internal/grpc"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/httpmw"
 	mockiam "github.com/cyoda-platform/cyoda-go/internal/iam/mock"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/observability"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
@@ -91,16 +94,21 @@ type App struct {
 	// registered on this node.
 	searchPool   *search.WorkerPool
 	grpcStopOnce sync.Once
-	// healthFlag starts true and is latched false by the first recovered
-	// panic at any of the four sites that run engine or store work: the HTTP
-	// recovery middleware, the gRPC recovery interceptors, the async-search
-	// goroutine and the scheduler's goroutines (its claim loop, heartbeat,
-	// watchdog and runs). Notification-callback recoveries (member-registry
-	// onChange, auth key-store reconcile broadcast) deliberately do not.
-	// Nothing resets it: a node that has panicked has state nothing has
-	// verified. Read by RegisterHealthRoutes (GET /health) and by
-	// ReadinessCheck (/readyz).
-	healthFlag *atomic.Bool
+	// healthLatch trips on the first recovered panic at any of the five sites
+	// that run engine or store work: the HTTP recovery middleware, the gRPC
+	// recovery interceptors, the async-search goroutine, the search reaper
+	// (its snapshot sweep, its stale-job reclaim sweep and that sweep's second
+	// pass) and the scheduler.
+	// Notification-callback recoveries (member-registry onChange, auth
+	// key-store reconcile broadcast) deliberately do not. Nothing resets it: a
+	// node that has panicked has state nothing has verified. Read by
+	// RegisterHealthRoutes (GET /health), by ReadinessCheck (/readyz) and by
+	// the lifecycle, which turns a trip into UNHEALTHY.
+	healthLatch *health.Latch
+
+	// lifecycle derives the node's STARTING/NORMAL/DRAINING/UNHEALTHY state
+	// from the latch and the app's own start and drain steps.
+	lifecycle *lifecycle.Lifecycle
 }
 
 func New(cfg Config) *App {
@@ -125,8 +133,8 @@ func New(cfg Config) *App {
 
 	// Created before anything that can latch it: the async-search goroutine
 	// is wired below, well ahead of the HTTP mux and the gRPC server.
-	a.healthFlag = &atomic.Bool{}
-	a.healthFlag.Store(true)
+	a.healthLatch = health.NewLatch()
+	a.lifecycle = lifecycle.New(a.healthLatch)
 
 	common.SetErrorResponseMode(cfg.ErrorResponseMode)
 
@@ -160,6 +168,13 @@ func New(cfg Config) *App {
 		validateClusterConfig(cfg.Cluster)
 		a.selfNodeID = cfg.Cluster.NodeID
 		gossipReg = mustNewGossip(cfg.Cluster)
+		// Peers read this node's lifecycle state from its gossip metadata.
+		// SetState runs under the lifecycle's lock and never blocks.
+		a.lifecycle.OnChange(func(s lifecycle.State) {
+			if err := gossipReg.SetState(s); err != nil {
+				slog.Error("failed to advertise the lifecycle state", "pkg", "cluster", "state", s, "err", err)
+			}
+		})
 	} else {
 		secret = make([]byte, 32)
 		if _, err := rand.Read(secret); err != nil {
@@ -437,7 +452,7 @@ func New(cfg Config) *App {
 		NewSearchService(a.storeFactory, common.NewDefaultUUIDGenerator(), searchStore, a.consistency, clk).
 		WithPathValidationCache(pathValidationCache).
 		WithMaxSortKeys(a.config.SearchMaxSortKeys).
-		WithHealthFlag(a.healthFlag).
+		WithHealthLatch(a.healthLatch).
 		WithAsyncPool(a.searchPool).
 		WithAsyncMaxPerTenant(cfg.SearchAsync.MaxPerTenant).
 		WithHeartbeat(cfg.SearchJobHeartbeatInterval)
@@ -473,7 +488,7 @@ func New(cfg Config) *App {
 		}
 	}
 
-	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthFlag)
+	a.stopSearchReapers = startSearchReapers(&cfg, a.searchService, searchStore, a.healthLatch)
 
 	a.auditService = skeleton.NewAuditService()
 	a.clusterService = internalgrpc.NewClusterService(a.memberRegistry)
@@ -554,7 +569,7 @@ func New(cfg Config) *App {
 		TxManager:          a.transactionManager,
 		Firer:              a.workflowEngine,
 		Clock:              clk,
-		HealthFlag:         a.healthFlag,
+		HealthLatch:        a.healthLatch,
 		Meter:              observability.Meter(),
 		CalloutDeadlineMax: schedulerCalloutDeadlineMax(cfg),
 	})
@@ -615,11 +630,26 @@ func New(cfg Config) *App {
 		server.PlatformClock = platformclock.NewHandler(nil, operatorGuard, false)
 	}
 
+	// The cluster status read. This node's own status is its lifecycle state,
+	// its store's Ping (bounded by half of CYODA_PROXY_TIMEOUT), its version
+	// and its clock setting. In cluster mode every member of the gossip
+	// directory, this node included, is asked over the sealed peer channel,
+	// each ask bounded by CYODA_PROXY_TIMEOUT; without clustering the one
+	// member, local, is read in process.
+	statusSelf := clusterstatus.NewSelf(a.lifecycle, a.storeFactory, cfg.Version, statusClock(testClock), cfg.Cluster.ProxyTimeout)
+	var statusSvc *clusterstatus.Service
+	if cfg.Cluster.Enabled {
+		statusSvc = clusterstatus.NewService(gossipDirectory{g: gossipReg}, forwarder, cfg.Cluster.ProxyTimeout)
+	} else {
+		statusSvc = clusterstatus.NewService(clusterstatus.LocalDirectory(a.lifecycle), clusterstatus.InProcess(statusSelf), cfg.Cluster.ProxyTimeout)
+	}
+	server.PlatformCluster = clusterstatus.NewHandler(statusSvc, operatorGuard)
+
 	// Build HTTP handler
 	mux := http.NewServeMux()
 
-	// Infrastructure routes (no auth, receives health flag)
-	internalapi.RegisterHealthRoutes(mux, a.healthFlag)
+	// Infrastructure routes (no auth, receives the health latch)
+	internalapi.RegisterHealthRoutes(mux, a.healthLatch)
 
 	// Auth service route registration is split into two strict groups so
 	// nothing administrative leaks into the public surface:
@@ -739,13 +769,14 @@ func New(cfg Config) *App {
 	// (OSS base merged with any plugin-registered overlays).
 	internalapi.RegisterHelpRoutes(rootMux, help.BuildTree(), contextPath, cfg.Version)
 	// Internal dispatch routes at root, not under the context path, sealed by
-	// the peer channel: the callout hand-over and the platform clock push. The
-	// clock route is served whether clock control is on or off: with it off
-	// (testClock nil) every push is refused, so a change fails on that node
-	// rather than passing it by.
+	// the peer channel: the callout hand-over, the platform clock push and the
+	// status ask. The clock route is served whether clock control is on or
+	// off: with it off (testClock nil) every push is refused, so a change
+	// fails on that node rather than passing it by.
 	if cfg.Cluster.Enabled {
 		clusterdispatch.NewDispatchHandler(localDispatcher, peerAuth).Register(rootMux)
 		clusterdispatch.NewClockHandler(peerAuth, platformclock.NewHolder(testClock)).Register(rootMux)
+		clusterdispatch.NewStatusHandler(peerAuth, statusSelf).Register(rootMux)
 	}
 	a.handler = rootMux
 
@@ -768,17 +799,18 @@ func New(cfg Config) *App {
 	// its headers before calling the next handler, so a recovered 500 keeps
 	// them. Recovery re-raises http.ErrAbortHandler, which is how the reverse
 	// proxy reports a client hang-up, so proxied disconnects stay silent.
-	a.handler = middleware.Recovery(a.healthFlag)(a.handler)
+	a.handler = middleware.Recovery(a.healthLatch)(a.handler)
 
 	// gRPC server — uses inner handler (without context path prefix). The
 	// client store is nil in mock IAM mode, so no member stream is re-checked.
-	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthFlag, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState)
+	a.grpcServer = internalgrpc.NewServer(a.authService, accountM2MStore, a.memberRegistry, a.transactionManager, entityHandler, modelHandler, a.searchService, a.tokenSigner, a.joiner, a.nodeRegistry, a.selfNodeID, cfg.OTelEnabled, cfg.GRPC.Port, cfg.Cluster.DispatchAllowLoopback, a.healthLatch, internalgrpc.KeepAliveConfig{Interval: time.Duration(cfg.GRPC.KeepAliveInterval) * time.Second, Timeout: time.Duration(cfg.GRPC.KeepAliveTimeout) * time.Second}, a.consistency, clockState, a.ReadinessCheck)
 
+	a.lifecycle.MarkStarted()
 	return a
 }
 
-// latchOnPanic recovers a panic beneath a reaper sweep and latches healthFlag
-// false, exactly as the async-search executor's own recovery does: a reaper
+// latchOnPanic recovers a panic beneath a reaper sweep and trips healthLatch,
+// exactly as the async-search executor's own recovery does: a reaper
 // goroutine has no HTTP handler above it, so an unrecovered panic takes the
 // process down, and a node that has panicked has state nothing has verified.
 // Recovering also keeps the ticker alive, so one bad tick does not silently
@@ -786,13 +818,11 @@ func New(cfg Config) *App {
 // tick; site names the sweep in the log. No plugin currently returns the
 // shapes that would panic (a nil element from ClaimStale, say), so this is
 // hardening rather than a fix for a live defect.
-func latchOnPanic(healthFlag *atomic.Bool, site string) {
+func latchOnPanic(healthLatch *health.Latch, site string) {
 	if rec := recover(); rec != nil {
 		slog.Error("panic recovered in "+site, "pkg", "search",
 			"err", fmt.Errorf("panic: %v", rec), "stack", string(debug.Stack()))
-		if healthFlag != nil {
-			healthFlag.Store(false)
-		}
+		healthLatch.Trip()
 	}
 }
 
@@ -809,7 +839,7 @@ func latchOnPanic(healthFlag *atomic.Bool, site string) {
 // Both run under one context, which stop cancels: a statement still waiting
 // for a connection gives up, and the second pass sends nothing more. stop then
 // waits for both goroutines and for the second pass.
-func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthFlag *atomic.Bool) (stop func()) {
+func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncSearchStore, healthLatch *health.Latch) (stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Go(func() {
@@ -818,7 +848,7 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 		for {
 			select {
 			case <-ticker.C:
-				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthFlag)
+				reapExpiredSnapshotsTick(ctx, store, cfg.SearchSnapshotTTL, healthLatch)
 			case <-ctx.Done():
 				return
 			}
@@ -828,13 +858,13 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 		// Startup sweep: a restarted node reclaims its own released jobs and
 		// any already-stale jobs the moment it can execute, not after the
 		// first interval.
-		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+		reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
 		ticker := time.NewTicker(cfg.SearchJobHeartbeatInterval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthFlag)
+				reclaimStaleTick(ctx, svc, cfg.SearchJobStaleAfter, cfg.SearchJobMaxAttempts, healthLatch)
 			case <-ctx.Done():
 				return
 			}
@@ -849,8 +879,8 @@ func startSearchReapers(cfg *Config, svc *search.SearchService, store spi.AsyncS
 
 // reapExpiredSnapshotsTick deletes terminal jobs past the snapshot TTL. Runs
 // on SearchReapInterval. Panic-latches health like the other engine-work sites.
-func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search snapshot reaper")
+func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, snapshotTTL time.Duration, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search snapshot reaper")
 	reaped, err := store.ReapExpired(ctx, snapshotTTL)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -866,8 +896,8 @@ func reapExpiredSnapshotsTick(ctx context.Context, store spi.AsyncSearchStore, s
 // this node; the second pass fails those past the attempt cap. Runs on the
 // heartbeat interval — a finer cadence than the snapshot reap — plus once at
 // startup.
-func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthFlag *atomic.Bool) {
-	defer latchOnPanic(healthFlag, "search stale-job reaper")
+func reclaimStaleTick(ctx context.Context, svc *search.SearchService, staleAfter time.Duration, maxAttempts int, healthLatch *health.Latch) {
+	defer latchOnPanic(healthLatch, "search stale-job reaper")
 	reenqueued, err := svc.ReclaimStaleJobs(ctx, staleAfter, maxAttempts)
 	if err != nil {
 		if ctx.Err() != nil {
@@ -885,10 +915,10 @@ func (a *App) Handler() http.Handler { return a.handler }
 
 // ReadinessCheck returns nil when the instance is ready to serve external
 // traffic. Called synchronously by the /readyz admin endpoint on every
-// probe — keep it cheap; both conditions below are a pointer test and an
-// atomic load, and neither performs I/O.
+// probe — keep it cheap; each condition below is a pointer test or a short
+// mutex-guarded read, and none performs I/O.
 //
-// Two conditions fail it independently, and the returned reasons differ so
+// Three conditions fail it independently, and the returned reasons differ so
 // the admin handler's server-side log tells an operator which fired:
 //
 //   - Storage is not initialized. A defensive guard rather than a live
@@ -897,7 +927,11 @@ func (a *App) Handler() http.Handler { return a.handler }
 //     and keeps the check honest for any other caller.
 //   - A panic was recovered on some door. The node's state is then
 //     unverified, so it must stop receiving traffic — fail closed. Nothing
-//     resets the flag.
+//     resets the latch.
+//   - Shutdown has begun and the node is draining. Readiness fails from the
+//     start of the drain so load balancers stop sending new requests;
+//     GET /health stays on the latch alone. When the latch has also tripped,
+//     its reason is returned.
 //
 // What failing readiness achieves is bounded: Kubernetes drops the pod from
 // the client-facing Service, so new client connections stop. Peers resolve
@@ -909,9 +943,11 @@ func (a *App) ReadinessCheck() error {
 	if a.storeFactory == nil {
 		return fmt.Errorf("storage not initialized")
 	}
-	// nil only for an App not built by New(); New() always sets the flag.
-	if a.healthFlag != nil && !a.healthFlag.Load() {
+	if a.healthLatch.Tripped() {
 		return fmt.Errorf("node unhealthy: a panic was recovered and this node's state is unverified")
+	}
+	if a.lifecycle.Draining() {
+		return errors.New("node draining: shutdown has begun")
 	}
 	return nil
 }
@@ -919,8 +955,9 @@ func (a *App) ReadinessCheck() error {
 // DrainScheduler runs the scheduler's shutdown steps 1-5. The binary calls it
 // on a signal before the servers drain, so runs still in progress keep their
 // compute-node streams and callback routes. Shutdown and Close drain it again;
-// every call after the first does nothing.
+// every call after the first does nothing. It also sets the node to DRAINING.
 func (a *App) DrainScheduler(ctx context.Context) {
+	a.lifecycle.BeginDraining()
 	if a.scheduler != nil {
 		a.scheduler.Drain(ctx)
 	}
@@ -1049,8 +1086,9 @@ func (a *App) StopGRPC() {
 // resources. The storeFactory is intentionally NOT closed here — Close()
 // is the single teardown path for that, so callers invoking Shutdown()
 // followed by Close() (the runServers sequence) close the factory
-// exactly once.
+// exactly once. It also sets the node to DRAINING.
 func (a *App) Shutdown() {
+	a.lifecycle.BeginDraining()
 	// A server failed, or the binary did not drain the scheduler first: the
 	// same steps run here, after the servers stopped, with no outside
 	// deadline. After a DrainScheduler this does nothing.

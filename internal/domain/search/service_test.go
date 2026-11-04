@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +17,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/testing/fakeclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -1587,8 +1587,8 @@ func TestAsyncSearchJob_PanicIsRecovered(t *testing.T) {
 }
 
 // TestAsyncSearchJob_PanicMarksNodeUnhealthy holds the async-search goroutine
-// to the same contract as the two request doors: a recovered panic latches the
-// node's health flag false, so the node reports 503 on /health and /readyz and
+// to the same contract as the two request doors: a recovered panic trips the
+// node's health latch, so the node reports 503 on /health and /readyz and
 // stops taking client traffic. A panic here is exactly as much evidence of
 // unverified state as a panic in an HTTP or gRPC handler — it runs the same
 // engine and store code — so recording the job FAILED and carrying on would
@@ -1611,12 +1611,11 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	factory := &iterableFactory{StoreFactory: base, entityStore: ies}
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	searchStore, _ := base.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
-		WithHealthFlag(healthFlag)
+		WithHealthLatch(healthLatch)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
@@ -1626,14 +1625,14 @@ func TestAsyncSearchJob_PanicMarksNodeUnhealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "FAILED")
 
-	if healthFlag.Load() {
-		t.Fatal("health flag still true after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
+	if !healthLatch.Tripped() {
+		t.Fatal("health latch still untripped after a recovered panic in the async search goroutine — the node keeps taking traffic with unverified state")
 	}
 }
 
 // TestAsyncSearchJob_SuccessLeavesNodeHealthy is the other direction: an async
-// job that completes normally must not touch the flag. Without it, a recover
-// handler that latched the flag unconditionally would still pass the test above.
+// job that completes normally must not touch the latch. Without it, a recover
+// handler that tripped the latch unconditionally would still pass the test above.
 func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	defer factory.Close()
@@ -1643,12 +1642,11 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	saveMinimalModel(t, ctx, factory, ref)
 	saveEntity(t, ctx, factory, ref, "e1", []byte(`{"name":"Alice"}`))
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	searchStore, _ := factory.AsyncSearchStore(context.Background())
 	svc := search.NewSearchService(factory, common.NewTestUUIDGenerator(), searchStore, newTestConsistency(t, factory), platformclock.Real()).
-		WithHealthFlag(healthFlag)
+		WithHealthLatch(healthLatch)
 
 	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.SimpleCondition{
 		JsonPath: "$.name", OperatorType: "EQUALS", Value: "Alice",
@@ -1658,13 +1656,13 @@ func TestAsyncSearchJob_SuccessLeavesNodeHealthy(t *testing.T) {
 	}
 	awaitJobSettled(t, svc, ctx, jobID, "SUCCESSFUL")
 
-	if !healthFlag.Load() {
-		t.Fatal("health flag went false after a successful async search — the node took itself out of service for nothing")
+	if healthLatch.Tripped() {
+		t.Fatal("health latch tripped after a successful async search — the node took itself out of service for nothing")
 	}
 }
 
 // awaitJobSettled polls until the job leaves RUNNING and asserts the terminal
-// status, so the health-flag assertions above run against a finished goroutine.
+// status, so the health latch assertions above run against a finished goroutine.
 func awaitJobSettled(t *testing.T, svc *search.SearchService, ctx context.Context, jobID string, want string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

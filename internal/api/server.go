@@ -6,6 +6,7 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
 	genapi "github.com/cyoda-platform/cyoda-go/api"
+	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/account"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/audit"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/entity"
@@ -22,15 +23,16 @@ import (
 type Server struct {
 	*Unimplemented
 
-	Entity         *entity.Handler
-	Model          *model.Handler
-	Workflow       *workflow.Handler
-	Search         *search.Handler
-	Audit          *audit.Handler
-	Messaging      *messaging.Handler
-	Account        *account.Handler
-	ScheduledTasks *scheduledtask.Handler
-	PlatformClock  *platformclock.Handler
+	Entity          *entity.Handler
+	Model           *model.Handler
+	Workflow        *workflow.Handler
+	Search          *search.Handler
+	Audit           *audit.Handler
+	Messaging       *messaging.Handler
+	Account         *account.Handler
+	ScheduledTasks  *scheduledtask.Handler
+	PlatformClock   *platformclock.Handler
+	PlatformCluster *clusterstatus.Handler
 }
 
 // NewServer returns a Server with the Unimplemented fallback initialised.
@@ -230,6 +232,18 @@ func (s *Server) ChangePlatformClock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.Unimplemented.ChangePlatformClock(w, r)
+}
+
+// ---------------------------------------------------------------------------
+// Platform cluster delegation (1 method)
+// ---------------------------------------------------------------------------
+
+func (s *Server) GetPlatformCluster(w http.ResponseWriter, r *http.Request, params genapi.GetPlatformClusterParams) {
+	if s.PlatformCluster != nil {
+		s.PlatformCluster.GetPlatformCluster(w, r, params)
+		return
+	}
+	s.Unimplemented.GetPlatformCluster(w, r, params)
 }
 
 // ---------------------------------------------------------------------------

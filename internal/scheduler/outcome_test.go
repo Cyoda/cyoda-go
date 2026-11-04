@@ -97,18 +97,23 @@ type flakyTx struct {
 func (f *flakyTx) Begin(ctx context.Context) (string, context.Context, error) {
 	id, txCtx, err := f.TransactionManager.Begin(ctx)
 	if err == nil {
-		f.mu.Lock()
-		f.begun = append(f.begun, id)
-		f.mu.Unlock()
+		func() {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.begun = append(f.begun, id)
+		}()
 	}
 	return id, txCtx, err
 }
 
 func (f *flakyTx) Commit(ctx context.Context, txID string) error {
-	f.mu.Lock()
-	first := !f.failed
-	f.failed = true
-	f.mu.Unlock()
+	first := func() bool {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		first := !f.failed
+		f.failed = true
+		return first
+	}()
 	if first {
 		return errors.New("commit: connection reset by peer")
 	}
@@ -122,9 +127,11 @@ func (f *flakyTx) Commit(ctx context.Context, txID string) error {
 }
 
 func (f *flakyTx) Rollback(ctx context.Context, txID string) error {
-	f.mu.Lock()
-	f.rolledBack = append(f.rolledBack, txID)
-	f.mu.Unlock()
+	func() {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.rolledBack = append(f.rolledBack, txID)
+	}()
 	return f.TransactionManager.Rollback(ctx, txID)
 }
 
@@ -174,7 +181,7 @@ func TestService_OutcomeWriteRetriedThroughAnOutage(t *testing.T) {
 			t.Errorf("%d outcome writes, want 3", n)
 		}
 	})
-	if !h.flag.Load() {
+	if h.latch.Tripped() {
 		t.Error("an outage latched the node")
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
@@ -226,7 +233,7 @@ func TestService_ClearOwnMarkRetriedThroughAnOutage(t *testing.T) {
 	if a := h.fs.attemptsRecorded()[0]; !a.ClearOwnMark || a.NotCounted {
 		t.Errorf("attempt = %+v, want a counted attempt that clears the run's own mark", a)
 	}
-	if !h.flag.Load() {
+	if h.latch.Tripped() {
 		t.Error("an outage latched the node")
 	}
 }
@@ -244,7 +251,7 @@ func TestService_LockAndPoolErrorsAreRetriedWithoutLatching(t *testing.T) {
 	})
 	h.start(t)
 	eventually(t, "the attempt accepted", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
-	if !h.flag.Load() {
+	if h.latch.Tripped() {
 		t.Error("a lock wait, a full pool, a conflict or a busy row latched the node")
 	}
 	eventually(t, "the run released", func() bool { return liveRuns(h.svc) == 0 })
@@ -263,7 +270,7 @@ func TestService_StoreRejectionLatchesAndKeepsTheClaim(t *testing.T) {
 	})
 	h.start(t)
 	token := receive(t, tokens)
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	claims := h.fs.claims()
 	time.Sleep(50 * time.Millisecond)
 	h.fs.with(func() {

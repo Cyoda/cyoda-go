@@ -12,5 +12,5 @@ func TestNewServer_NilConsistencyPanics(t *testing.T) {
 			t.Fatal("NewServer with a nil consistency service did not panic")
 		}
 	}()
-	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, nil, KeepAliveConfig{}, nil, func() platformclock.State { return platformclock.State{} })
+	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, nil, KeepAliveConfig{}, nil, func() platformclock.State { return platformclock.State{} }, func() error { return nil })
 }

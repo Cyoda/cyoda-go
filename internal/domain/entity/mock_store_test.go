@@ -41,7 +41,8 @@ func (f *failingStoreFactory) ScheduledTaskStore(_ context.Context) (spi.Schedul
 func (f *failingStoreFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, f.err
 }
-func (f *failingStoreFactory) Close() error { return nil }
+func (f *failingStoreFactory) Close() error               { return nil }
+func (f *failingStoreFactory) Ping(context.Context) error { return nil }
 
 // failingEntityStore always returns the configured error from Get/GetAsAt.
 type failingEntityStore struct {
@@ -157,7 +158,8 @@ func (f *modelGetErrFactory) ScheduledTaskStore(_ context.Context) (spi.Schedule
 func (f *modelGetErrFactory) TransactionManager(_ context.Context) (spi.TransactionManager, error) {
 	return nil, errUnusedEntity
 }
-func (f *modelGetErrFactory) Close() error { return nil }
+func (f *modelGetErrFactory) Close() error               { return nil }
+func (f *modelGetErrFactory) Ping(context.Context) error { return nil }
 
 // errUnusedEntity is a sentinel for store accessors the CreateEntity-path
 // tests never reach because the ModelStore.Get error short-circuits.

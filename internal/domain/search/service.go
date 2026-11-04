@@ -10,7 +10,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -20,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/consistency"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model/schema"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/pagination"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/match"
 
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
@@ -201,13 +201,13 @@ type SearchService struct {
 	// built-in default of 16.
 	maxSortKeys int
 
-	// healthFlag is the process-wide node-health flag the HTTP and gRPC
-	// recovery paths latch false on a recovered panic. The async-search
-	// executor latches the same one: a panic there runs the same engine
+	// healthLatch is the process-wide health latch the HTTP and gRPC
+	// recovery paths trip on a recovered panic. The async-search
+	// executor trips the same one: a panic there runs the same engine
 	// and store code, so it is the same evidence of unverified state.
 	// nil-safe — unit tests that do not care about node health leave it
 	// unset.
-	healthFlag *atomic.Bool
+	healthLatch *health.Latch
 
 	// pool is the bounded worker pool async submissions run on. Set via
 	// WithAsyncPool; when unset, asyncPool() lazily constructs a small
@@ -328,12 +328,12 @@ func (s *SearchService) WithPathValidationCache(c *PathValidationCache) *SearchS
 	return s
 }
 
-// WithHealthFlag wires the node-health flag the async-search goroutine latches
-// false when it recovers a panic — the same flag the HTTP and gRPC recovery
+// WithHealthLatch wires the health latch the async-search goroutine trips
+// when it recovers a panic — the same latch the HTTP and gRPC recovery
 // paths hold, so any door reaching it takes the node out of service. Returns
 // the receiver for chaining after NewSearchService.
-func (s *SearchService) WithHealthFlag(f *atomic.Bool) *SearchService {
-	s.healthFlag = f
+func (s *SearchService) WithHealthLatch(f *health.Latch) *SearchService {
+	s.healthLatch = f
 	return s
 }
 
@@ -1178,9 +1178,7 @@ func (s *SearchService) runAsyncJob(jobCtx context.Context, cancel context.Cance
 			// evidence that the node's state is unverified. Nothing resets
 			// it — the node reports 503 on /health and /readyz and stops
 			// taking client traffic.
-			if s.healthFlag != nil {
-				s.healthFlag.Store(false)
-			}
+			s.healthLatch.Trip()
 			// jobCtx may or may not be cancelled at this point, but the write
 			// must land regardless — writeAsyncFailure strips cancellation
 			// itself (keeping the UserContext value), so a store that aborts

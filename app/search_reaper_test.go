@@ -12,6 +12,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/common/commontest"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -43,7 +44,7 @@ func newReclaimService(t *testing.T, factory *memory.StoreFactory, store spi.Asy
 
 // TestReclaimStaleTick_RecoversPanicAndLatchesHealth pins that one reclaim
 // tick recovers a panic raised anywhere beneath it (here a nil job from a
-// misbehaving ClaimStale), latches the node-health flag the same way the
+// misbehaving ClaimStale), trips the health latch the same way the
 // async-search executor's own recovery does, and returns normally so the
 // ticker loop keeps running.
 func TestReclaimStaleTick_RecoversPanicAndLatchesHealth(t *testing.T) {
@@ -55,14 +56,13 @@ func TestReclaimStaleTick_RecoversPanicAndLatchesHealth(t *testing.T) {
 	}
 	svc := newReclaimService(t, factory, &nilJobClaimStore{AsyncSearchStore: realAsync})
 
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
 	// Must not panic out of the call.
-	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, health)
+	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, latch)
 
-	if health.Load() {
-		t.Error("healthFlag = true after a recovered panic in the reclaim tick; a node that has panicked has state nothing has verified")
+	if !latch.Tripped() {
+		t.Error("healthLatch untripped after a recovered panic in the reclaim tick; a node that has panicked has state nothing has verified")
 	}
 }
 
@@ -78,13 +78,12 @@ func TestReclaimStaleTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 	}
 	svc := newReclaimService(t, factory, realAsync)
 
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
-	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, health)
+	reclaimStaleTick(context.Background(), svc, 5*time.Minute, 3, latch)
 
-	if !health.Load() {
-		t.Error("healthFlag = false after an uneventful reclaim tick")
+	if latch.Tripped() {
+		t.Error("healthLatch tripped after an uneventful reclaim tick")
 	}
 }
 
@@ -99,13 +98,12 @@ func TestReapExpiredSnapshotsTick_HealthyStoreLeavesHealthAlone(t *testing.T) {
 		t.Fatalf("AsyncSearchStore: %v", err)
 	}
 
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
-	reapExpiredSnapshotsTick(context.Background(), realAsync, time.Hour, health)
+	reapExpiredSnapshotsTick(context.Background(), realAsync, time.Hour, latch)
 
-	if !health.Load() {
-		t.Error("healthFlag = false after an uneventful snapshot reaper tick")
+	if latch.Tripped() {
+		t.Error("healthLatch tripped after an uneventful snapshot reaper tick")
 	}
 }
 
@@ -211,10 +209,9 @@ func TestSearchReapers_BlockedReapDoesNotStopClaims(t *testing.T) {
 	}
 	store := &blockedReapStore{AsyncSearchStore: base, reaping: make(chan struct{}, 1), letGo: make(chan struct{})}
 	svc := newReclaimService(t, factory, store)
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
-	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
 	t.Cleanup(stop)
 	t.Cleanup(store.release) // runs before stop
 
@@ -241,10 +238,9 @@ func TestSearchReapers_StopEndsBlockedReap(t *testing.T) {
 	store := &blockedReapStore{AsyncSearchStore: base, reaping: make(chan struct{}, 1), letGo: make(chan struct{})}
 	t.Cleanup(store.release)
 	svc := newReclaimService(t, factory, store)
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
-	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
 	select {
 	case <-store.reaping:
 	case <-time.After(2 * time.Second):
@@ -288,13 +284,12 @@ func TestSearchReapers_StopEndsAndAwaitsBlockedSecondPass(t *testing.T) {
 	}
 	store := &blockedFailStore{AsyncSearchStore: base, failing: make(chan struct{}, 1)}
 	svc := newReclaimService(t, factory, store)
-	health := &atomic.Bool{}
-	health.Store(true)
+	latch := health.NewLatch()
 
 	// Stale, and at its cap on the first claim (maxAttempts 1).
 	createReapTestJob(t, base, "job-capped")
 	clock.Advance(time.Hour)
-	stop := startSearchReapers(reaperTestConfig(), svc, store, health)
+	stop := startSearchReapers(reaperTestConfig(), svc, store, latch)
 	select {
 	case <-store.failing:
 	case <-time.After(2 * time.Second):

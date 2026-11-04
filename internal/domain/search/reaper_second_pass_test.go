@@ -16,6 +16,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go-spi/predicate"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -104,9 +105,8 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 		createStaleReclaimJob(t, clock, base, "tenant-a", id, ref, cond, time.Now())
 	}
 
-	health := &atomic.Bool{}
-	health.Store(true)
-	svc := newSecondPassService(t, factory, store).WithHealthFlag(health)
+	latch := health.NewLatch()
+	svc := newSecondPassService(t, factory, store).WithHealthLatch(latch)
 
 	if _, err := svc.ReclaimStaleJobs(context.Background(), 5*time.Minute, 1); err != nil {
 		t.Fatalf("ReclaimStaleJobs: %v", err)
@@ -115,8 +115,8 @@ func TestReclaimStaleJobs_PanicInSecondPass_KeepsUnsentWritesOwed(t *testing.T) 
 	if !store.panicked.Load() {
 		t.Fatal("no owed write was sent")
 	}
-	if health.Load() {
-		t.Error("healthFlag = true after a panic in the second pass")
+	if !latch.Tripped() {
+		t.Error("healthLatch untripped after a panic in the second pass")
 	}
 
 	// Both jobs were just claimed, so this sweep claims nothing and owes

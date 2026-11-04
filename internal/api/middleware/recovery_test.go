@@ -7,23 +7,22 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/cyoda-platform/cyoda-go/internal/api/middleware"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	common.SetErrorResponseMode("sanitized")
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("something terrible")
 	})
 
-	wrapped := middleware.Recovery(healthFlag)(handler)
+	wrapped := middleware.Recovery(healthLatch)(handler)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	wrapped.ServeHTTP(w, r)
@@ -31,8 +30,8 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 	if w.Code != 500 {
 		t.Errorf("expected 500, got %d", w.Code)
 	}
-	if healthFlag.Load() {
-		t.Error("expected health flag to be false after FATAL")
+	if !healthLatch.Tripped() {
+		t.Error("expected health latch to be tripped after FATAL")
 	}
 	var pd map[string]any
 	json.NewDecoder(w.Body).Decode(&pd)
@@ -42,14 +41,13 @@ func TestRecoveryMiddlewareCatchesPanic(t *testing.T) {
 }
 
 func TestRecoveryMiddlewarePassesThrough(t *testing.T) {
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
 
-	wrapped := middleware.Recovery(healthFlag)(handler)
+	wrapped := middleware.Recovery(healthLatch)(handler)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	wrapped.ServeHTTP(w, r)
@@ -57,14 +55,13 @@ func TestRecoveryMiddlewarePassesThrough(t *testing.T) {
 	if w.Code != 200 {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
-	if !healthFlag.Load() {
-		t.Error("health flag should remain true")
+	if healthLatch.Tripped() {
+		t.Error("health latch should stay untripped")
 	}
 }
 
-func TestRecoveryMiddlewareHealthFlagStaysFalse(t *testing.T) {
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+func TestRecoveryMiddlewareHealthLatchStaysTripped(t *testing.T) {
+	healthLatch := health.NewLatch()
 
 	panicHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
@@ -74,22 +71,22 @@ func TestRecoveryMiddlewareHealthFlagStaysFalse(t *testing.T) {
 	})
 
 	// First request panics
-	wrapped := middleware.Recovery(healthFlag)(panicHandler)
+	wrapped := middleware.Recovery(healthLatch)(panicHandler)
 	w := httptest.NewRecorder()
 	wrapped.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
 
-	// Health flag is now false
-	if healthFlag.Load() {
+	// The health latch is now tripped
+	if !healthLatch.Tripped() {
 		t.Fatal("expected unhealthy after panic")
 	}
 
-	// Second request is OK but flag stays false
-	wrapped2 := middleware.Recovery(healthFlag)(okHandler)
+	// Second request is OK but latch stays tripped
+	wrapped2 := middleware.Recovery(healthLatch)(okHandler)
 	w2 := httptest.NewRecorder()
 	wrapped2.ServeHTTP(w2, httptest.NewRequest("GET", "/", nil))
 
-	if healthFlag.Load() {
-		t.Error("health flag should stay false — no auto-recovery")
+	if !healthLatch.Tripped() {
+		t.Error("health latch should stay tripped — no auto-recovery")
 	}
 }
 
@@ -97,14 +94,13 @@ func TestRecoveryMiddleware_VerboseMode_NoStackTraceInResponse(t *testing.T) {
 	common.SetErrorResponseMode("verbose")
 	defer common.SetErrorResponseMode("sanitized")
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("something terrible")
 	})
 
-	wrapped := middleware.Recovery(healthFlag)(handler)
+	wrapped := middleware.Recovery(healthLatch)(handler)
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest("GET", "/test", nil)
 	wrapped.ServeHTTP(w, r)
@@ -139,14 +135,13 @@ func TestRecoveryMiddleware_PanicLogCarriesTheClientTicket(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
+	healthLatch := health.NewLatch()
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("something terrible")
 	})
 
 	w := httptest.NewRecorder()
-	middleware.Recovery(healthFlag)(handler).ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
+	middleware.Recovery(healthLatch)(handler).ServeHTTP(w, httptest.NewRequest("GET", "/test", nil))
 
 	var pd map[string]any
 	if err := json.NewDecoder(w.Body).Decode(&pd); err != nil {
@@ -183,9 +178,8 @@ func TestRecoveryMiddleware_PanicLogCarriesTheClientTicket(t *testing.T) {
 // abort the response silently. Recovery must re-raise it, not treat it as a
 // defect: no log, no 500, no health latch.
 func TestRecoveryMiddlewareReRaisesErrAbortHandler(t *testing.T) {
-	healthFlag := &atomic.Bool{}
-	healthFlag.Store(true)
-	handler := middleware.Recovery(healthFlag)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	healthLatch := health.NewLatch()
+	handler := middleware.Recovery(healthLatch)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic(http.ErrAbortHandler)
 	}))
 	srv := httptest.NewServer(handler) // a real server: net/http swallows the sentinel
@@ -196,22 +190,21 @@ func TestRecoveryMiddlewareReRaisesErrAbortHandler(t *testing.T) {
 		resp.Body.Close()
 		t.Fatalf("expected the connection to be aborted, got status %d", resp.StatusCode)
 	}
-	if !healthFlag.Load() {
-		t.Fatal("ErrAbortHandler must not latch the health flag")
+	if healthLatch.Tripped() {
+		t.Fatal("ErrAbortHandler must not trip the health latch")
 	}
 }
 
 // A surface that does no engine or store work on the application's behalf —
 // the admin listener's probes and metrics scrape — opts out of the latch by
-// passing no flag. Containment still applies: the panic becomes a sanitised
+// passing no latch. Containment still applies: the panic becomes a sanitised
 // 500 carrying a ticket. Nothing the process holds is marked unhealthy.
-func TestRecoveryMiddleware_NilFlagContainsWithoutLatch(t *testing.T) {
+func TestRecoveryMiddleware_NilLatchContainsWithoutTrip(t *testing.T) {
 	common.SetErrorResponseMode("sanitized")
-	// A flag the caller holds but never hands to Recovery. It stands in for
-	// the node-health flag the admin door deliberately does not pass, and it
+	// A latch the caller holds but never hands to Recovery. It stands in for
+	// the health latch the admin door deliberately does not pass, and it
 	// must come out of the panic untouched.
-	otherFlag := &atomic.Bool{}
-	otherFlag.Store(true)
+	otherLatch := health.NewLatch()
 
 	handler := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		panic("probe exploded")
@@ -229,7 +222,7 @@ func TestRecoveryMiddleware_NilFlagContainsWithoutLatch(t *testing.T) {
 	if ticket, _ := pd["ticket"].(string); ticket == "" {
 		t.Error("expected a ticket UUID in the panic response")
 	}
-	if !otherFlag.Load() {
-		t.Error("Recovery(nil) must not latch any health flag")
+	if otherLatch.Tripped() {
+		t.Error("Recovery(nil) must not trip any health latch")
 	}
 }

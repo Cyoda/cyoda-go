@@ -19,6 +19,7 @@ import (
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/contract"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 )
 
 // GossipConfig holds the configuration for a gossip-based NodeRegistry.
@@ -43,17 +44,15 @@ type GossipConfig struct {
 }
 
 // nodeMeta is serialized as JSON in memberlist node metadata. It holds the
-// pnode's identity and the version of its tag list — nothing that grows. The
-// list itself travels by reliable message (see tags_worker.go).
+// pnode's identity, the version of its tag list and its lifecycle state —
+// nothing that grows. The list itself travels by reliable message (see
+// tags_worker.go). metaBuilder (meta.go) composes it.
 type nodeMeta struct {
-	ID       string      `json:"id"`
-	Addr     string      `json:"addr"`
-	GRPCAddr string      `json:"grpcAddr,omitempty"`
-	Tags     listVersion `json:"tv"`
-}
-
-func marshalMeta(cfg GossipConfig, version listVersion) ([]byte, error) {
-	return json.Marshal(nodeMeta{ID: cfg.NodeID, Addr: cfg.NodeAddr, GRPCAddr: cfg.GRPCNodeAddr, Tags: version})
+	ID       string          `json:"id"`
+	Addr     string          `json:"addr"`
+	GRPCAddr string          `json:"grpcAddr,omitempty"`
+	Tags     listVersion     `json:"tv"`
+	State    lifecycle.State `json:"st"`
 }
 
 // parseMeta decodes a member's metadata. Metadata without an id is not a
@@ -69,11 +68,22 @@ func parseMeta(raw []byte) (nodeMeta, error) {
 	return nm, nil
 }
 
+// memberState returns the lifecycle state a member's metadata names. ok is
+// false when the metadata does not parse or names no valid state.
+func memberState(meta []byte) (lifecycle.State, bool) {
+	nm, err := parseMeta(meta)
+	if err != nil || !nm.State.Valid() {
+		return "", false
+	}
+	return nm.State, true
+}
+
 // checkIdentityFits refuses an identity that cannot fit memberlist's metadata.
-// The size depends only on operator settings and on the digits of the version,
-// so it is measured once, with the longest version there can be.
+// The size depends only on operator settings, on the digits of the version
+// and on the state, so it is measured once, with the longest version there can
+// be and the longest state, UNHEALTHY.
 func checkIdentityFits(cfg GossipConfig) error {
-	largest, err := marshalMeta(cfg, listVersion{Epoch: math.MaxInt64, Seq: math.MaxUint64})
+	largest, err := marshalMeta(cfg, listVersion{Epoch: math.MaxInt64, Seq: math.MaxUint64}, lifecycle.Unhealthy)
 	if err != nil {
 		return fmt.Errorf("failed to marshal node metadata: %w", err)
 	}
@@ -95,6 +105,7 @@ type Gossip struct {
 	events   *tagEvents
 	signal   *common.ChangeSignal
 	metrics  *tagMetrics
+	meta     *metaBuilder
 
 	publish     chan struct{} // one slot: this pnode's list changed
 	readvertise chan struct{} // one slot: the metadata must be re-advertised
@@ -119,10 +130,6 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	}
 	// The epoch only has to differ between two lives of this pnode.
 	epoch := time.Now().UnixNano() // realtime: gossip membership timing
-	metaBytes, err := marshalMeta(cfg, listVersion{Epoch: epoch})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal node metadata: %w", err)
-	}
 
 	// This node's memberlist configuration, built before the delegate so that
 	// the broadcast queue takes its retransmit multiplier from the settings this
@@ -143,7 +150,6 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	// 1 — this node alone — until the memberlist is published.
 	var list atomic.Pointer[memberlist.Memberlist]
 	del := &gossipDelegate{
-		meta: metaBytes,
 		subs: make(map[string][]func([]byte)),
 		queue: &memberlist.TransmitLimitedQueue{
 			NumNodes: func() int {
@@ -154,6 +160,11 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 			},
 			RetransmitMult: mlCfg.RetransmitMult,
 		},
+	}
+	// The first metadata is stored before Create, which reads it.
+	meta, err := newMetaBuilder(cfg, del, listVersion{Epoch: epoch}, lifecycle.Starting)
+	if err != nil {
+		return nil, err
 	}
 	guard := newIdentityGuard(cfg.NodeID)
 	signal := common.NewChangeSignal()
@@ -167,6 +178,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 		identity:    guard,
 		dir:         dir,
 		tags:        newTagStore(cfg.NodeID, epoch, signal),
+		meta:        meta,
 		events:      events,
 		signal:      signal,
 		publish:     make(chan struct{}, 1),
@@ -201,7 +213,7 @@ func NewGossip(cfg GossipConfig) (*Gossip, error) {
 	g.list = ml
 	list.Store(ml)
 
-	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists)
+	metrics, err := newTagMetrics(cfg.Meter, g.outstandingLists, g.memberStateCounts)
 	if err != nil {
 		_ = ml.Shutdown()
 		return nil, fmt.Errorf("failed to create membership metrics: %w", err)
@@ -461,10 +473,12 @@ func (g *Gossip) List(_ context.Context) ([]contract.NodeInfo, error) {
 
 // Member is one member of the directory: NodeID is the memberlist name (the
 // node's CYODA_NODE_ID) and Addr its HTTP address from the metadata, empty
-// when the metadata does not parse.
+// when the metadata does not parse. State is the lifecycle state the member
+// announced, empty when the metadata does not parse or names no valid state.
 type Member struct {
 	NodeID string
 	Addr   string
+	State  lifecycle.State
 }
 
 // Members returns every member of the directory, this node included and
@@ -484,9 +498,26 @@ func (g *Gossip) Members() []Member {
 			out = append(out, Member{NodeID: m.Name})
 			continue
 		}
-		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr})
+		var st lifecycle.State
+		if nm.State.Valid() {
+			st = nm.State
+		}
+		out = append(out, Member{NodeID: m.Name, Addr: nm.Addr, State: st})
 	}
 	return out
+}
+
+// memberStateCounts counts the live members, this node included, per lifecycle
+// state. A member whose metadata does not parse or names no valid state is not
+// counted. It runs on the metrics reader's goroutine and reads the directory.
+func (g *Gossip) memberStateCounts() map[lifecycle.State]int64 {
+	counts := make(map[lifecycle.State]int64)
+	for _, m := range g.dir.all() {
+		if st, ok := memberState(m.Meta); ok {
+			counts[st]++
+		}
+	}
+	return counts
 }
 
 // outstandingLists counts the alive peers whose announced list is not the one
@@ -514,8 +545,9 @@ func (g *Gossip) Deregister(_ context.Context, _ string) error {
 	g.deregisterOnce.Do(func() {
 		close(g.stop)
 		<-g.done
-		// A re-advertise in flight waits for its broadcast, so this can take
-		// up to metaBroadcastTimeout. It is waited for rather than left
+		// A re-advertise in flight waits for its broadcast, and one still
+		// pending runs before the re-advertiser returns, so this can take up
+		// to twice metaBroadcastTimeout. It is waited for rather than left
 		// running: Leave and Shutdown below are calls into the same
 		// memberlist, and two at once is what this goroutine exists to avoid.
 		<-g.advertised
@@ -559,14 +591,7 @@ func (g *Gossip) filterSelf(seeds []string) []string {
 // worker's, so the caller never waits on a peer. A set equal to the current
 // one changes nothing.
 func (g *Gossip) UpdateTags(tags map[string][]string) error {
-	changed, err := g.tags.setOwn(tags, func(version listVersion) error {
-		metaBytes, err := marshalMeta(g.cfg, version)
-		if err != nil {
-			return fmt.Errorf("failed to marshal node metadata: %w", err)
-		}
-		g.delegate.updateMeta(metaBytes)
-		return nil
-	})
+	changed, err := g.tags.setOwn(tags, g.meta.setVersion)
 	if err != nil {
 		return err
 	}
@@ -575,6 +600,23 @@ func (g *Gossip) UpdateTags(tags map[string][]string) error {
 		case g.publish <- struct{}{}:
 		default: // a publish is pending; it reads the newest list
 		}
+	}
+	return nil
+}
+
+// SetState advertises this pnode's lifecycle state. It stores the metadata
+// and asks the re-advertiser to gossip it, without waiting on either the
+// re-advertiser or a peer, so it may be called under the lifecycle's lock. A
+// state equal to the current one changes nothing. A state stored before
+// Deregister still goes out: the re-advertiser runs a pending re-advertise
+// before it stops.
+func (g *Gossip) SetState(s lifecycle.State) error {
+	changed, err := g.meta.setState(s)
+	if err != nil {
+		return err
+	}
+	if changed {
+		g.requestReadvertise()
 	}
 	return nil
 }
@@ -594,11 +636,11 @@ type stateExchange struct {
 }
 
 // gossipDelegate implements memberlist.Delegate. NodeMeta carries per-node
-// identity (id, addresses, tag list version); NotifyMsg/GetBroadcasts
-// implement the topic-multiplexed broadcast channel used by Gossip.Broadcast /
-// Gossip.Subscribe (see gossip_broadcast.go). LocalState / MergeRemoteState
-// carry the optional state set by Gossip.SetStateExchange on a join only, and
-// are no-ops without it.
+// identity (id, addresses), the tag list version and the lifecycle state;
+// NotifyMsg/GetBroadcasts implement the topic-multiplexed broadcast channel
+// used by Gossip.Broadcast / Gossip.Subscribe (see gossip_broadcast.go).
+// LocalState / MergeRemoteState carry the optional state set by
+// Gossip.SetStateExchange on a join only, and are no-ops without it.
 type gossipDelegate struct {
 	mu   sync.RWMutex
 	meta []byte

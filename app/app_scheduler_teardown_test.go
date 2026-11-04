@@ -10,6 +10,8 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/internal/scheduler"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
@@ -85,7 +87,7 @@ func startedSchedulerApp(t *testing.T) (*App, *teardownLog) {
 	if err := svc.Start(context.Background()); err != nil {
 		t.Fatalf("scheduler Start: %v", err)
 	}
-	return &App{storeFactory: f, scheduler: svc}, log
+	return &App{storeFactory: f, scheduler: svc, lifecycle: lifecycle.New(health.NewLatch())}, log
 }
 
 // Close without Shutdown must not leave the scheduler running against a

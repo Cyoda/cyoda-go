@@ -245,7 +245,7 @@ func TestListTechnicalUsers_NilStore_Returns501NotImplemented(t *testing.T) {
 // /clients adapter short-circuits with 501 when the M2M store is nil (mock
 // IAM mode). Without this guard, a regression dropping requireM2MStore on
 // any one adapter would surface as a nil-pointer panic — and the recovery
-// middleware would flip healthFlag to false permanently on the first request.
+// middleware would trip healthLatch permanently on the first request.
 func TestM2MAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {
 	feats := auth.DefaultIAMFeatures()
 	h := New(nil, nil, nil, feats, auth.OperatorGuard{}) // explicit nil store

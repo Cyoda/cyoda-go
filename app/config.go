@@ -928,8 +928,9 @@ func ValidateCallout(c CalloutConfig) error {
 // ValidateDispatch rejects peer-call durations that cannot be honoured. The
 // patience may be zero (waiting disabled) but not negative; the connect
 // timeout bounds a network call and must be positive; the proxy timeout
-// bounds a proxied request and a platform clock confirmation round, and must
-// be positive. They are checked whether or not clustering is enabled: a value
+// bounds a proxied request, a platform clock confirmation round and each
+// status ask of the cluster status read (half of it the database check), and
+// must be positive. They are checked whether or not clustering is enabled: a value
 // that would fail the moment clustering is switched on is a configuration
 // error today.
 func ValidateDispatch(c cluster.Config) error {

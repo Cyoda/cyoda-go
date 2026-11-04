@@ -42,7 +42,8 @@ func TestRouteGuard_DataRouteRequiresM2M(t *testing.T) {
 }
 
 // TestRouteGuard_AllowListedRoutesNeedNoM2M: GET /account, a client route
-// (admin rule) and an /admin route (operator rule) answer without ROLE_M2M.
+// (admin rule), an /admin route and GET /platform/cluster (operator rule)
+// answer without ROLE_M2M.
 func TestRouteGuard_AllowListedRoutesNeedNoM2M(t *testing.T) {
 	tok := noM2MSuiteToken(t)
 	for _, path := range []string{"/api/account", "/api/clients"} {
@@ -58,6 +59,10 @@ func TestRouteGuard_AllowListedRoutesNeedNoM2M(t *testing.T) {
 	resp := doAuthAgainst(t, serverURL, op, http.MethodGet, "/api/admin/log-level", "")
 	if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
 		t.Errorf("GET /api/admin/log-level as an operator without ROLE_M2M: %d %s, want 200", resp.StatusCode, body)
+	}
+	resp = doAuthAgainst(t, serverURL, op, http.MethodGet, "/api/platform/cluster", "")
+	if body := readBody(t, resp); resp.StatusCode != http.StatusOK {
+		t.Errorf("GET /api/platform/cluster as an operator without ROLE_M2M: %d %s, want 200", resp.StatusCode, body)
 	}
 }
 

@@ -229,7 +229,7 @@ func TestE2E_PanicInOwnedWrite_ReturnsConnection(t *testing.T) {
 
 	// Coverage row 7b, through the production path: a real HTTP request onto
 	// the assembled app handler, the handler-wide middleware.Recovery wrap,
-	// the app's own health flag, ReadinessCheck, and the real admin handler.
+	// the app's own health latch, ReadinessCheck, and the real admin handler.
 	// Serving and being ready are different questions — the node answers
 	// requests (below) and is no longer ready to be sent new ones (here),
 	// because its state is unverified.
@@ -266,8 +266,8 @@ func TestE2E_PanicInOwnedWrite_ReturnsConnection(t *testing.T) {
 // --- coverage row 2: repeated panics do not take the node out ---------------
 
 // TestE2E_RepeatedPanics_NodeKeepsServing asserts request handling continues —
-// NOT that health is green. The recovery middleware stores false on the health
-// flag and nothing resets it, so the health endpoint reports DOWN after the
+// NOT that health is green. The recovery middleware trips the health
+// latch and nothing resets it, so the health endpoint reports DOWN after the
 // first recovered panic. That is the existing contract and is deliberate: a node
 // that has panicked has unknown state.
 func TestE2E_RepeatedPanics_NodeKeepsServing(t *testing.T) {

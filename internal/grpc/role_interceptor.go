@@ -12,8 +12,9 @@ import (
 
 // requireM2M refuses a context whose caller does not hold ROLE_M2M: no
 // principal is Unauthenticated, a principal without the role
-// PermissionDenied. Every method and stream of the service requires the role;
-// gRPC has no allow-listed operation.
+// PermissionDenied. Every method and stream requires the role except the
+// unary health Check, which the auth interceptor also passes through without
+// a token (see isUnauthenticatedMethod).
 func requireM2M(ctx context.Context) error {
 	uc := spi.GetUserContext(ctx)
 	if uc == nil {
@@ -28,7 +29,10 @@ func requireM2M(ctx context.Context) error {
 // UnaryRequireM2M refuses a unary call whose caller lacks ROLE_M2M before
 // its handler runs. It runs after the auth interceptor.
 func UnaryRequireM2M() googlegrpc.UnaryServerInterceptor {
-	return func(ctx context.Context, req any, _ *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
+	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (any, error) {
+		if isUnauthenticatedMethod(info.FullMethod) {
+			return handler(ctx, req)
+		}
 		if err := requireM2M(ctx); err != nil {
 			return nil, err
 		}

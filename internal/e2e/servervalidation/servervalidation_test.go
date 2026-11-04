@@ -20,6 +20,7 @@ const e2eSourceDir = ".."
 var allowlist = map[site]string{
 	{"callout_handover_lost_test.go", "newStandInPeer", "httptest.NewServer"}:                           "a stand-in cluster peer: serves only the internal peer-dispatch route, which is not in the API spec",
 	{"callout_handover_lost_test.go", "freeLoopbackPort", "net.Listen"}:                                 "reserves a port for the gossip layer and closes it at once; serves nothing",
+	{"platform_cluster_test.go", "appGossipAddr", "net.Listen"}:                                         "reserves a gossip port and closes it at once; serves nothing",
 	{"callback_harness_test.go", "newCalloutHarnessWithKey", "net.Listen"}:                              "the harness's gRPC listener; the HTTP validator does not apply to gRPC",
 	{"platform_clock_test.go", "newClockSeed", "httptest.NewServer"}:                                    "a stand-in cluster peer: serves only the internal peer clock route, which is not in the API spec",
 	{"pool_metrics_test.go", "TestMetrics_PostgresPoolSeriesAreExported", "httptest.NewServer"}:         "the Prometheus metrics handler, which is not in the API spec",

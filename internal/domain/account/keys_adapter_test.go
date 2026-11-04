@@ -376,7 +376,7 @@ func TestRegression_StrictValidation_ValidToBeforeValidFrom(t *testing.T) {
 }
 
 // Regression-lock: nil keyStore (mock IAM mode wiring) must return 501 NOT_IMPLEMENTED,
-// never panic. Without this guard the recovery middleware flips healthFlag to false
+// never panic. Without this guard the recovery middleware trips healthLatch
 // permanently on the first admin request. All 5 keypair handlers are covered so
 // an accidental removal of the requireKeyStore guard is caught per-handler.
 func TestKeysAdapter_NilStoreReturns501_AllHandlers(t *testing.T) {

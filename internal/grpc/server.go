@@ -2,11 +2,11 @@ package grpc
 
 import (
 	"net"
-	"sync/atomic"
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/keepalive"
 
 	spi "github.com/cyoda-platform/cyoda-go-spi"
@@ -19,6 +19,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/internal/domain/model"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/search"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/txjoin"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
@@ -69,10 +70,12 @@ type KeepAliveConfig struct {
 // allowLoopback must match cfg.Cluster.DispatchAllowLoopback; it gates the
 // peer-address SSRF guard on the gRPC forward path (symmetric with the
 // dispatch forwarder and HTTP proxy).
-// healthFlag is the same flag the HTTP Recovery middleware stores into — a
+// healthLatch is the same latch the HTTP Recovery middleware trips — a
 // panic recovered on either door marks the node unhealthy. May be nil in
-// tests that don't care about health-flag observation.
+// tests that don't care about health latch observation.
 // clockState answers PlatformClockGetRequest; it is the state GET /platform/clock answers.
+// readiness answers grpc.health.v1.Health/Check: SERVING while it returns nil.
+// It is the check /readyz answers.
 func NewServer(
 	authSvc contract.AuthenticationService,
 	m2mStore auth.M2MClientStore,
@@ -88,10 +91,11 @@ func NewServer(
 	otelEnabled bool,
 	localGRPCPort int,
 	allowLoopback bool,
-	healthFlag *atomic.Bool,
+	healthLatch *health.Latch,
 	keepAlive KeepAliveConfig,
 	cons *consistency.Service,
 	clockState func() platformclock.State,
+	readiness func() error,
 ) *Server {
 	if cons == nil {
 		panic("grpc.NewServer: nil consistency service")
@@ -99,26 +103,31 @@ func NewServer(
 	if clockState == nil {
 		panic("grpc.NewServer: nil platform clock state")
 	}
+	if readiness == nil {
+		panic("grpc.NewServer: nil readiness check")
+	}
 	var opts []googlegrpc.ServerOption
 	if otelEnabled {
 		opts = append(opts, googlegrpc.StatsHandler(otelgrpc.NewServerHandler()))
 	}
-	// Recovery runs first so it also covers a panic inside auth or tx-routing.
-	// Auth runs second so the later interceptors see the authenticated
-	// UserContext. The ROLE_M2M check runs third, so a caller without the role
-	// joins and forwards nothing; tx-route runs last (the join layer's tenant
-	// check depends on the UserContext), joining the referenced transaction or
-	// forwarding to its owner.
+	// Recovery runs first so it also covers a panic inside auth or tx-routing,
+	// and inside the health Check. Auth runs second so the later interceptors
+	// see the authenticated UserContext. The ROLE_M2M check runs third, so a
+	// caller without the role joins and forwards nothing. Tx-route runs last
+	// (the join layer's tenant check depends on the UserContext), joining the
+	// referenced transaction or forwarding to its owner. Auth and the role
+	// check pass exactly one method through: the unary health Check, which a
+	// probe calls without a token.
 	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
-			UnaryRecoveryInterceptor(healthFlag),
+			UnaryRecoveryInterceptor(healthLatch),
 			UnaryAuthInterceptor(authSvc),
 			UnaryRequireM2M(),
 			txRoute.unary(),
 		),
 		googlegrpc.ChainStreamInterceptor(
-			StreamRecoveryInterceptor(healthFlag),
+			StreamRecoveryInterceptor(healthLatch),
 			StreamAuthInterceptor(authSvc),
 			StreamRequireM2M(),
 			txRoute.stream(),
@@ -153,6 +162,7 @@ func NewServer(
 		keepAliveTimeout:  keepAlive.Timeout,
 	}
 	cyodapb.RegisterCloudEventsServiceServer(grpcServer, svc)
+	grpc_health_v1.RegisterHealthServer(grpcServer, &healthServer{readiness: readiness})
 	return &Server{grpcServer: grpcServer, service: svc}
 }
 

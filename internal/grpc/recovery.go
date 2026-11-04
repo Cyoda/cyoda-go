@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/debug"
-	"sync/atomic"
 
 	"github.com/google/uuid"
 	googlegrpc "google.golang.org/grpc"
@@ -13,6 +12,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/cyoda-platform/cyoda-go/internal/common"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 )
 
 // UnaryRecoveryInterceptor converts a handler panic into an error instead of
@@ -20,26 +20,26 @@ import (
 // is no equivalent of net/http's per-connection recover — so without this a
 // single panic on any gRPC-only operation takes the node down.
 //
-// Mirrors internal/api/middleware/recovery.go: log with stack, mark the health
-// flag, return a generic internal error carrying a ticket UUID as a proper
+// Mirrors internal/api/middleware/recovery.go: log with stack, trip the health
+// latch, return a generic internal error carrying a ticket UUID as a proper
 // gRPC status (codes.Internal). Marking health is permanent — nothing resets
-// the flag — and takes both GET /health and the admin /readyz to 503.
+// the latch — and takes both GET /health and the admin /readyz to 503.
 //
 // What that achieves, precisely: new client connections arriving through the
 // Kubernetes Service stop, because the pod leaves its endpoints. It does not
 // stop peer-forwarded work — the chart always runs cluster mode, and peers
 // address each other through the gossip registry rather than the Service —
 // and it does not close established connections. The node's own scheduler
-// stops claiming when the flag latches but keeps heartbeating, so its runs in
+// stops claiming when the latch trips but keeps heartbeating, so its runs in
 // progress are not taken over. The node is not restarted either: /livez stays
 // unconditional so a deterministic panic does not become a restart loop.
 // Draining is the automatic part; replacing the node is the operator's.
-func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInterceptor {
+func UnaryRecoveryInterceptor(healthLatch *health.Latch) googlegrpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *googlegrpc.UnaryServerInfo, handler googlegrpc.UnaryHandler) (resp any, err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
 				resp = nil
-				err = recoverPanic(rec, info.FullMethod, healthFlag)
+				err = recoverPanic(rec, info.FullMethod, healthLatch)
 			}
 		}()
 		return handler(ctx, req)
@@ -47,11 +47,11 @@ func UnaryRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.UnaryServerInt
 }
 
 // StreamRecoveryInterceptor is UnaryRecoveryInterceptor for streaming methods.
-func StreamRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.StreamServerInterceptor {
+func StreamRecoveryInterceptor(healthLatch *health.Latch) googlegrpc.StreamServerInterceptor {
 	return func(srv any, ss googlegrpc.ServerStream, info *googlegrpc.StreamServerInfo, handler googlegrpc.StreamHandler) (err error) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				err = recoverPanic(rec, info.FullMethod, healthFlag)
+				err = recoverPanic(rec, info.FullMethod, healthLatch)
 			}
 		}()
 		return handler(srv, ss)
@@ -72,7 +72,7 @@ func StreamRecoveryInterceptor(healthFlag *atomic.Bool) googlegrpc.StreamServerI
 // monitoring and retry dispatch see the same precision every other RPC-level
 // failure in this package already returns.
 //
-// It does NOT touch the health flag: whether a recovered panic latches the
+// It does NOT touch the health latch: whether a recovered panic latches the
 // node unhealthy depends on what the code was doing (engine or store work on
 // the application's behalf latches; a goroutine that only ticks, enqueues or
 // reads the wire and self-heals by evicting its member does not), so the
@@ -86,13 +86,11 @@ func panicStatus(rec any, method string) error {
 	return status.Error(codes.Internal, message)
 }
 
-// recoverPanic is panicStatus plus the health-flag latch: the interceptors'
+// recoverPanic is panicStatus plus the health-latch trip: the interceptors'
 // policy, for panics raised while serving an RPC (nil-safe: some test
-// constructors do not wire a flag).
-func recoverPanic(rec any, method string, healthFlag *atomic.Bool) error {
+// constructors do not wire a latch).
+func recoverPanic(rec any, method string, healthLatch *health.Latch) error {
 	err := panicStatus(rec, method)
-	if healthFlag != nil {
-		healthFlag.Store(false)
-	}
+	healthLatch.Trip()
 	return err
 }

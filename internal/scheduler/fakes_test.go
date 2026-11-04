@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,6 +16,7 @@ import (
 	spi "github.com/cyoda-platform/cyoda-go-spi"
 	"github.com/cyoda-platform/cyoda-go/internal/common"
 	"github.com/cyoda-platform/cyoda-go/internal/domain/workflow"
+	"github.com/cyoda-platform/cyoda-go/internal/health"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
@@ -336,10 +336,10 @@ func testConfig() Config {
 }
 
 type harness struct {
-	svc  *Service
-	fs   *fakeStore
-	flag *atomic.Bool
-	mem  *memory.StoreFactory
+	svc   *Service
+	fs    *fakeStore
+	latch *health.Latch
+	mem   *memory.StoreFactory
 }
 
 func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
@@ -347,14 +347,13 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	mem := memory.NewStoreFactory()
 	t.Cleanup(func() { _ = mem.Close() })
 	fs := &fakeStore{}
-	flag := &atomic.Bool{}
-	flag.Store(true)
+	latch := health.NewLatch()
 	svc := New(cfg, Deps{
 		Store:              testFactory{StoreFactory: mem, sts: fs},
 		TxManager:          mem.NewTransactionManager(common.NewTestUUIDGenerator()),
 		Firer:              firer,
 		Clock:              platformclock.Real(),
-		HealthFlag:         flag,
+		HealthLatch:        latch,
 		CalloutDeadlineMax: time.Second,
 	})
 	// The test configs use a short STALE_AFTER that no watchdog window could be
@@ -365,7 +364,7 @@ func newHarness(t *testing.T, cfg Config, firer Firer) *harness {
 	// Step 5 waits one store-call budget for outcome writes under way, out
 	// of the step-4 margin.
 	svc.bookWait = 50 * time.Millisecond
-	return &harness{svc: svc, fs: fs, flag: flag, mem: mem}
+	return &harness{svc: svc, fs: fs, latch: latch, mem: mem}
 }
 
 func (h *harness) start(t *testing.T) {

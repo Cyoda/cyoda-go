@@ -544,7 +544,8 @@ func (f *spyStoreFactory) ScheduledTaskStore(ctx context.Context) (spi.Scheduled
 func (f *spyStoreFactory) TransactionManager(ctx context.Context) (spi.TransactionManager, error) {
 	return f.delegate.TransactionManager(ctx)
 }
-func (f *spyStoreFactory) Close() error { return f.delegate.Close() }
+func (f *spyStoreFactory) Close() error                   { return f.delegate.Close() }
+func (f *spyStoreFactory) Ping(ctx context.Context) error { return f.delegate.Ping(ctx) }
 
 // Compile-time contract check.
 var _ spi.StoreFactory = (*spyStoreFactory)(nil)

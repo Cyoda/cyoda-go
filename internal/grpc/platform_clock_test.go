@@ -88,7 +88,7 @@ func TestPlatformClock_GRPC_Unauthenticated(t *testing.T) {
 		func() platformclock.State {
 			t.Error("handler reached without authentication")
 			return platformclock.State{}
-		})
+		}, func() error { return nil })
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

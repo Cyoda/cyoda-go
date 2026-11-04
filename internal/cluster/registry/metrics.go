@@ -3,10 +3,14 @@ package registry
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
+
+	"github.com/cyoda-platform/cyoda-go/internal/lifecycle"
+	"github.com/cyoda-platform/cyoda-go/internal/observability"
 )
 
 // tagMetrics are the membership instruments an operator alerts on: sends that
@@ -18,7 +22,7 @@ type tagMetrics struct {
 	registration metric.Registration
 }
 
-func newTagMetrics(meter metric.Meter, outstanding func() int64) (*tagMetrics, error) {
+func newTagMetrics(meter metric.Meter, outstanding func() int64, memberStates func() map[lifecycle.State]int64) (*tagMetrics, error) {
 	if meter == nil {
 		meter = noop.NewMeterProvider().Meter("")
 	}
@@ -32,12 +36,25 @@ func newTagMetrics(meter metric.Meter, outstanding func() int64) (*tagMetrics, e
 	if err != nil {
 		return nil, fmt.Errorf("instrument lists_outstanding: %w", err)
 	}
+	members, err := meter.Int64ObservableGauge("cyoda.cluster.member.count",
+		metric.WithDescription("Live cluster members per lifecycle state"),
+		metric.WithUnit("{member}"))
+	if err != nil {
+		return nil, fmt.Errorf("instrument member.count: %w", err)
+	}
 	reg, err := meter.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		o.ObserveInt64(gauge, outstanding())
+		counts := memberStates()
+		// Every state is observed, 0 for one no member holds, so a state a
+		// member left drops to 0 instead of keeping its last value.
+		for _, st := range lifecycle.States() {
+			o.ObserveInt64(members, counts[st], metric.WithAttributes(
+				observability.AttrClusterMemberState.String(strings.ToLower(string(st)))))
+		}
 		return nil
-	}, gauge)
+	}, gauge, members)
 	if err != nil {
-		return nil, fmt.Errorf("register lists_outstanding callback: %w", err)
+		return nil, fmt.Errorf("register lists_outstanding and member.count callback: %w", err)
 	}
 	return &tagMetrics{sendFailures: failures, registration: reg}, nil
 }

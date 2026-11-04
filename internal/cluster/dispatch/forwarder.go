@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cyoda-platform/cyoda-go/internal/clusterstatus"
 	"github.com/cyoda-platform/cyoda-go/internal/platformclock"
 )
 
@@ -157,6 +158,31 @@ func (f *HTTPForwarder) PushClock(ctx context.Context, peerNodeID, addr string, 
 		return platformclock.Setting{}, errors.New("the peer's answer carries no clock setting")
 	}
 	return *answer.Held, nil
+}
+
+// AskStatus asks the peer at addr, sealed for peerNodeID, for its own status.
+// A refusal the peer sealed, an answer without a status, and a status outside
+// the bounds on a peer's answer are errors. The call ends when ctx does.
+func (f *HTTPForwarder) AskStatus(ctx context.Context, peerNodeID, addr string) (clusterstatus.NodeStatus, error) {
+	lookupCtx, cancel := context.WithTimeout(ctx, f.connectTimeout)
+	defer cancel()
+	if err := validatePeerAddress(lookupCtx, addr, f.allowLoopback); err != nil {
+		return clusterstatus.NodeStatus{}, stageErr(StageNotConnected, err)
+	}
+	var answer StatusAnswer
+	if err := f.forward(ctx, peerNodeID, ensureScheme(addr)+StatusPath, struct{}{}, &answer); err != nil {
+		return clusterstatus.NodeStatus{}, err
+	}
+	if answer.Refused != "" {
+		return clusterstatus.NodeStatus{}, fmt.Errorf("the peer refused the status ask: %s", boundLine(answer.Refused))
+	}
+	if answer.Status == nil {
+		return clusterstatus.NodeStatus{}, errors.New("the peer's answer carries no status")
+	}
+	if err := answer.Status.Validate(); err != nil {
+		return clusterstatus.NodeStatus{}, fmt.Errorf("the peer's status is out of bounds: %w", err)
+	}
+	return *answer.Status, nil
 }
 
 // ensureScheme prepends http:// if the address has no scheme.

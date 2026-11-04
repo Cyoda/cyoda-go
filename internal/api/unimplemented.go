@@ -65,6 +65,10 @@ func (u *Unimplemented) ChangePlatformClock(w http.ResponseWriter, r *http.Reque
 	u.stub(w, r)
 }
 
+func (u *Unimplemented) GetPlatformCluster(w http.ResponseWriter, r *http.Request, params genapi.GetPlatformClusterParams) {
+	u.stub(w, r)
+}
+
 func (u *Unimplemented) GetConsistencyTime(w http.ResponseWriter, r *http.Request) {
 	u.stub(w, r)
 }

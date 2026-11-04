@@ -34,7 +34,7 @@ grpcurl -plaintext -import-path ./proto -proto cyoda/cyoda-cloud-api.proto local
 
 ## DESCRIPTION
 
-cyoda-go exposes one gRPC service: `CloudEventsService` (package `org.cyoda.cloud.api.grpc`). All gRPC methods use the CloudEvents Protobuf envelope (`io.cloudevents.v1.CloudEvent`) as both request and response types. The event type string in the CloudEvent envelope selects the operation; the JSON payload in `text_data` (or `binary_data`) carries the operation-specific body.
+cyoda-go exposes two gRPC services: `CloudEventsService` (package `org.cyoda.cloud.api.grpc`) and the standard health service `grpc.health.v1.Health`. All `CloudEventsService` methods use the CloudEvents Protobuf envelope (`io.cloudevents.v1.CloudEvent`) as both request and response types. The event type string in the CloudEvent envelope selects the operation; the JSON payload in `text_data` (or `binary_data`) carries the operation-specific body.
 
 The primary use case is the compute member protocol: external workflow processors subscribe via `StartStreaming`, receive processor and criteria calculation requests, and respond over the same bidirectional stream.
 
@@ -46,7 +46,7 @@ The secondary use case is programmatic entity and model management: `entityManag
 
 **Transport**: plaintext TCP. The listener has no TLS of its own. In production, TLS is terminated by the ingress, gateway or service mesh in front of it (the Helm chart's `ingress.grpc.tls`); compute nodes connect through it and verify the server certificate, and only then may they rely on the identity attributes of a callout. Plaintext is for localhost or a private Docker network during development.
 
-**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API, and it is checked exactly as an HTTP request's `Authorization` header is, in mock and JWT mode alike: the same tokens are accepted, a missing or invalid one answers `codes.Unauthenticated`, and every method and stream then requires `ROLE_M2M` (`codes.PermissionDenied` otherwise). See `cyoda help auth`.
+**Authentication**: Bearer token passed as gRPC metadata key `authorization`. The value is the same `Bearer <token>` string as used in the HTTP API, and it is checked exactly as an HTTP request's `Authorization` header is, in mock and JWT mode alike: the same tokens are accepted, a missing or invalid one answers `codes.Unauthenticated`, and every method and stream then requires `ROLE_M2M` (`codes.PermissionDenied` otherwise). `/grpc.health.v1.Health/Check` is the one method without a token: it needs neither a token nor `ROLE_M2M`, because probes cannot authenticate. See `cyoda help auth`.
 
 **OTel tracing**: when `CYODA_OTEL_ENABLED=true`, the gRPC server installs an `otelgrpc.NewServerHandler()` stats handler that creates spans for every inbound RPC.
 
@@ -93,6 +93,8 @@ service CloudEventsService {
 **entitySearch** — unary RPC for single-answer retrieval. Accepts: `EntityGetRequest`, `EntityConsistencyTimeGetRequest`, `PlatformClockGetRequest`, `EntitySnapshotSearchRequest`, `SnapshotGetStatusRequest`, `SnapshotCancelRequest`.
 
 **entitySearchCollection** — server-streaming RPC for collection retrieval. Accepts: `EntityGetAllRequest`, `EntitySearchRequest`, `SnapshotGetRequest`, `EntityStatsGetRequest`, `EntityStatsByStateGetRequest`, `EntityChangesMetadataGetRequest`. Streams results.
+
+**grpc.health.v1.Health** — the standard gRPC health service, for probes such as `grpc_health_probe` and Kubernetes `grpc` probes. Only `Check` is served, and only for the empty service name `""`; any other name answers `codes.NotFound`. `Check` answers `SERVING` while the node is ready, healthy and not draining, and `NOT_SERVING` otherwise: after a recovered panic, and from the start of shutdown. It is the same check as `GET /readyz` on the admin port, and the answer carries no reason. `Check` needs no token. `Watch` and `List` are not implemented: they require a token and `ROLE_M2M` like every other method, and then answer `codes.Unimplemented`.
 
 ## MESSAGE TYPES
 
@@ -186,7 +188,7 @@ The full CloudEvent envelope for an ack:
 
 - `EntityGetRequest` / `EntityResponse`
 - `EntityConsistencyTimeGetRequest` / `EntityConsistencyTimeResponse` — the tenant's consistency time, in `consistencyTime` (set when `success` is true). A read with a `pointInTime` at or before it is never refused with `POINT_IN_TIME_AFTER_CONSISTENCY_TIME`; a refusal's message text carries the current one. Payload fields: `cyoda help cloudevents json`. Failure carries `CLIENT_ERROR`, a `CONSISTENCY_TIME_UNAVAILABLE:` message prefix and `retryable`.
-- `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only; like every gRPC operation the read requires `ROLE_M2M`, which HTTP `GET /platform/clock` does not; `controllable` is true only on a node started with clock control (`cyoda help config clock`). Payload fields: `cyoda help cloudevents json`.
+- `PlatformClockGetRequest` / `PlatformClockResponse` — this node's platform time (`now`), `rate` (platform seconds per real second) and `controllable`, the same values `GET /platform/clock` answers; read only, changing the clock is HTTP-only; like every `CloudEventsService` operation the read requires `ROLE_M2M`, which HTTP `GET /platform/clock` does not; `controllable` is true only on a node started with clock control (`cyoda help config clock`). Payload fields: `cyoda help cloudevents json`.
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`

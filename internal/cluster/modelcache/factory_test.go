@@ -2,6 +2,7 @@ package modelcache_test
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -37,7 +38,8 @@ func (f *stubFactory) ScheduledTaskStore(context.Context) (spi.ScheduledTaskStor
 func (f *stubFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
-func (f *stubFactory) Close() error { return nil }
+func (f *stubFactory) Close() error               { return nil }
+func (f *stubFactory) Ping(context.Context) error { return nil }
 
 func TestCachingStoreFactory_SharesCacheAcrossRequests(t *testing.T) {
 	ref := spi.ModelRef{EntityName: "E", ModelVersion: "1"}
@@ -187,7 +189,8 @@ func (f *recordingFactory) TransactionManager(context.Context) (spi.TransactionM
 	f.bump("TransactionManager")
 	return nil, nil
 }
-func (f *recordingFactory) Close() error { return nil }
+func (f *recordingFactory) Close() error               { return nil }
+func (f *recordingFactory) Ping(context.Context) error { return nil }
 
 // capableInnerFactory wraps stubFactory and implements spi.CompositeUniqueKeyCapable.
 type capableInnerFactory struct {
@@ -236,4 +239,27 @@ func TestCachingStoreFactory_ForwardsCompositeUniqueKeyCapable(t *testing.T) {
 			t.Error("expected SupportsCompositeUniqueKeys=false when inner does not implement the interface")
 		}
 	})
+}
+
+type pingFactory struct {
+	stubFactory
+	err error
+	got context.Context
+}
+
+func (f *pingFactory) Ping(ctx context.Context) error { f.got = ctx; return f.err }
+
+func TestCachingStoreFactory_PingForwards(t *testing.T) {
+	sentinel := errors.New("ping sentinel")
+	inner := &pingFactory{err: sentinel}
+	factory := modelcache.NewCachingStoreFactory(inner, nil, &manualClock{now: time.Now()}, time.Hour)
+
+	type ctxKey struct{}
+	ctx := context.WithValue(context.Background(), ctxKey{}, "marker")
+	if err := factory.Ping(ctx); !errors.Is(err, sentinel) {
+		t.Fatalf("Ping error = %v, want sentinel", err)
+	}
+	if inner.got != ctx {
+		t.Fatal("Ping did not pass the caller's ctx to the inner factory")
+	}
 }

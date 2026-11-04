@@ -7,8 +7,8 @@ package entity
 // to always carry a populated Entity — but a backend that violates that
 // contract (a plausible implementation slip: a sqlite pushdown querying the
 // transaction-ID column directly and returning a tombstone row) would panic
-// this call, and via the handler's unrecovered-panic path latch healthFlag
-// false and take the node out of service. Pre-branch, the equivalent linear
+// this call, and via the handler's unrecovered-panic path trip healthLatch
+// and take the node out of service. Pre-branch, the equivalent linear
 // scan over versions skipped nil-entity versions structurally, so this is a
 // regression the streamlined direct lookup introduced. The fix treats a
 // payload-less version the same as "no matching version" (spi.ErrNotFound).
@@ -76,7 +76,8 @@ func (nilVersionStoreFactory) ScheduledTaskStore(context.Context) (spi.Scheduled
 func (nilVersionStoreFactory) TransactionManager(context.Context) (spi.TransactionManager, error) {
 	return nil, nil
 }
-func (nilVersionStoreFactory) Close() error { return nil }
+func (nilVersionStoreFactory) Close() error               { return nil }
+func (nilVersionStoreFactory) Ping(context.Context) error { return nil }
 
 func TestGetEntity_ByTransactionID_NilEntityVersion_Returns404(t *testing.T) {
 	h := &Handler{factory: nilVersionStoreFactory{}}

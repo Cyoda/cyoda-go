@@ -37,7 +37,7 @@ func TestService_PanickingRunFailsItsTaskAndLatches(t *testing.T) {
 	if f.Reason != spi.FailureRunPanicked || !ticketText.MatchString(f.Error) {
 		t.Errorf("failure = %+v, want RUN_PANICKED with a ticket only", f)
 	}
-	if h.flag.Load() {
+	if !h.latch.Tripped() {
 		t.Error("a panicking run did not latch the node")
 	}
 	eventually(t, "the run ended as panicked", func() bool { return runs()[outcomePanicked] == 1 })
@@ -124,7 +124,7 @@ func TestService_PanicWhileRecordingTheOutcomeLatchesAndKeepsTheClaim(t *testing
 	})
 	h.start(t)
 	token := receive(t, tokens)
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	eventually(t, "the run ended as panicked", func() bool { return runs()[outcomePanicked] == 1 })
 	if n := liveRuns(h.svc); n != 1 {
 		t.Errorf("%d live runs, want the run whose bookkeeping panicked kept", n)
@@ -164,7 +164,7 @@ func TestService_PanicInsideTheFailTransactionRollsItBack(t *testing.T) {
 	})
 	h.start(t)
 	eventually(t, "the run ended as panicked", func() bool { return runs()[outcomePanicked] == 1 })
-	if h.flag.Load() {
+	if !h.latch.Tripped() {
 		t.Error("a panic in the FAILED write did not latch the node")
 	}
 	begun, committed, rolledBack := tx.snapshot()
@@ -213,7 +213,7 @@ func TestService_APanicInTheLoopHeartbeatOrWatchdogLatchesAndCancels(t *testing.
 		panic("injected panic in the watchdog")
 	}()
 	receive(t, done)
-	if h.flag.Load() {
+	if !h.latch.Tripped() {
 		t.Error("the recovered panic did not latch the node")
 	}
 	eventually(t, "the run cancelled by the latch", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
@@ -249,7 +249,7 @@ func TestService_StoreRejectionDoesNotCancelTheRunsInProgress(t *testing.T) {
 	h.start(t)
 	ctx := receive(t, sibling)
 	h.fs.with(func() { h.fs.due = []spi.ScheduledTask{dueTask("t2", "task-rejected")} })
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	time.Sleep(50 * time.Millisecond)
 	if err := ctx.Err(); err != nil {
 		t.Errorf("the sibling run was cancelled by a store rejection: %v", err)
@@ -268,7 +268,7 @@ func TestService_HeartbeatPanicLatchesCancelsAndStopsTheHeartbeat(t *testing.T) 
 	h.start(t)
 	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
 	h.fs.with(func() { h.fs.heartbeatPanic = true })
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	eventually(t, "the run cancelled by the latch", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
 	if a := h.fs.attemptsRecorded()[0]; a.NotCounted || a.Error != cancelledText {
 		t.Errorf("attempt = %+v, want the run cancelled by the latch", a)
@@ -293,7 +293,7 @@ func TestService_ClaimLoopPanicLatchesCancelsAndKeepsHeartbeating(t *testing.T) 
 	h.start(t)
 	eventually(t, "the run started", func() bool { return liveRuns(h.svc) == 1 })
 	h.fs.with(func() { h.fs.claimPanic = true })
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	eventually(t, "the run cancelled by the latch", func() bool { return len(h.fs.attemptsRecorded()) == 1 })
 	if a := h.fs.attemptsRecorded()[0]; a.NotCounted || a.Error != cancelledText {
 		t.Errorf("attempt = %+v, want the run cancelled by the latch", a)
@@ -351,7 +351,7 @@ func TestService_BookkeepingPanicCancelsTheRunsInProgress(t *testing.T) {
 		h.fs.outcomePanic = true
 		h.fs.due = []spi.ScheduledTask{dueTask("t2", "task-boom")}
 	})
-	eventually(t, "the node latched", func() bool { return !h.flag.Load() })
+	eventually(t, "the node latched", func() bool { return h.latch.Tripped() })
 	select {
 	case <-ctx.Done():
 	case <-time.After(5 * time.Second):

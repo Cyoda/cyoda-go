@@ -7,7 +7,8 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 ### Breaking
 
 - **`CYODA_PROXY_TIMEOUT` must be greater than zero;** startup fails
-  otherwise. It also bounds a platform clock confirmation round.
+  otherwise. It also bounds a platform clock confirmation round and each
+  status ask of `GET /platform/cluster`.
 
 - **`memory.NewAsyncSearchStore` is removed** from the memory plugin module;
   the async search store comes from the store factory.
@@ -20,6 +21,20 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   the store's physical clock, and stale-job reclaim no longer falls back to
   `CreateTime`. Out-of-tree plugins must implement the first two and follow
   the third; see `COMPATIBILITY.md`.
+
+- **Storage plugins: `StoreFactory.Ping(ctx) error`.** It reports whether the
+  store answers, returns within `ctx` (an error once `ctx` is done) and
+  returns an error after `Close`. `GET /platform/cluster` reads it as each
+  node's `database` check. The memory plugin fails it only on a done `ctx` or
+  after `Close`, sqlite pings its read handle and postgres its main pool.
+  Out-of-tree plugins must implement it; see `COMPATIBILITY.md`.
+
+- **`/readyz` fails from the start of shutdown.** On SIGTERM a node answers
+  `503` on `/readyz` at once, while it drains, so a load balancer stops
+  sending it new requests; before, readiness held until the admin listener
+  closed. It still fails after a recovered panic. `GET /health` is unchanged:
+  it reflects the recovered panic only and stays `200` while the node
+  drains. `/livez` is unconditional, as before.
 
 - **Only M2M clients reach cyoda-go; an application acts for its users
   through an on-behalf-of client.** cyoda-go has no per-user permissions: an
@@ -59,13 +74,15 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   compute client. An on-behalf-of write records the user (`attributedKind`
   `user`) with the on-behalf-of client as `executedBy`.
 
-- **Every API operation requires `ROLE_M2M`, except account, client,
-  trusted-key, key-pair and `/admin` operations (guarded by their admin or
-  operator rule) and `GET /account`.** The exempt account operation is
+- **Every API operation requires `ROLE_M2M`, except `GET /account`,
+  `GET /platform/clock` and the operations guarded by their admin or operator
+  rule: client, trusted-key and key-pair operations, `POST /platform/clock`,
+  `GET /platform/cluster` and `/admin`.** The exempt account operation is
   `GET /account` alone; `GET /account/subscriptions` requires the role. A
   caller without it gets `403 FORBIDDEN` ("this operation requires
   ROLE_M2M") before the operation runs, and before a transaction token it
-  presents is read; every gRPC method and stream answers `PermissionDenied`.
+  presents is read; every gRPC method and stream answers `PermissionDenied`,
+  except the health `Check`, which needs no token.
   Every M2M client holds `ROLE_M2M`. A `cyoda token` carries only the roles
   it is signed with: the default `ROLE_ADMIN` reaches the admin operations,
   `--roles ROLE_ADMIN,ROLE_M2M` also reaches data. The OpenAPI document lists
@@ -1226,6 +1243,41 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   change answers only once every node of a cluster holds the new setting;
   the answer lists the nodes, and a node that does not confirm fails the
   change with `503 CLOCK_NOT_CONFIRMED`. See `cyoda help clock`.
+
+- **`GET /platform/cluster` lists the cluster's nodes and says whether the
+  cluster is operational.** For a platform operator only. Every member of
+  the cluster, the serving node included, is asked for its status over the
+  sealed peer channel, each ask bounded by `CYODA_PROXY_TIMEOUT`. Each node
+  is listed with its reachability (`UP`, `DOWN`) and lifecycle state and,
+  when it answered, its database check, version and clock setting. The
+  answer is `200` when every node is `UP` and `NORMAL` with its database
+  check passing and all share one version and one clock setting, and `503`
+  otherwise, with the same body. `waitForNodes` (1 to 1000) waits, up to
+  `timeoutMs` (1 to 600000, default 30000), for that many `UP`/`NORMAL`
+  nodes. A bad parameter is `400 BAD_REQUEST` naming it in
+  `properties.parameter`. Without clustering the one node is `local`. See
+  `cyoda help cluster` and `docs/cloud-parity/cluster-status.md`.
+
+- **Node lifecycle states in the gossip metadata.** Every node publishes its
+  state: `STARTING` until it has finished building, `NORMAL`, `DRAINING`
+  from the start of shutdown (gossiped before the node leaves), and
+  `UNHEALTHY` after a recovered panic; the precedence is `UNHEALTHY` >
+  `DRAINING` > `STARTING` > `NORMAL`, and no transition is undone. The
+  state takes room in the 512-byte metadata: `CYODA_NODE_ID`,
+  `CYODA_NODE_ADDR` and `CYODA_GRPC_NODE_ADDR` together have 406 bytes.
+
+- **`grpc.health.v1.Health/Check` without a token.** The gRPC listener serves
+  the standard health service for probes such as `grpc_health_probe` and
+  Kubernetes `grpc` probes: `Check` for the empty service name answers
+  `SERVING` while `/readyz` answers `200` and `NOT_SERVING` otherwise; any
+  other name is `NOT_FOUND`. `Watch` and `List` require a token and
+  `ROLE_M2M` and answer `UNIMPLEMENTED`. See `cyoda help grpc`.
+
+- **`cyoda.cluster.member.count`**, an observable gauge of the live cluster
+  members, this node included, per lifecycle state, labelled
+  `cyoda.cluster.member.state` (`starting`, `normal`, `draining`,
+  `unhealthy`; `0` for a state no member holds). Exposed in cluster mode
+  regardless of `CYODA_OTEL_ENABLED`. See `cyoda help telemetry`.
 
 - **`ProblemDetail` declares `ticket`.** The problem document of an unexpected server
   error (500) already carried it (a UUID, also written to the server log with

@@ -35,6 +35,8 @@ const (
 	AttrCalloutWaitedMs = attribute.Key("callout.waited_ms")
 	AttrCalloutOutcome  = attribute.Key("outcome")
 
+	AttrClusterMemberState = attribute.Key("cyoda.cluster.member.state")
+
 	AttrEntityCount = attribute.Key("entity.count")
 	AttrCQLName     = attribute.Key("cql.name")
 	AttrCQLOp       = attribute.Key("cql.op")
