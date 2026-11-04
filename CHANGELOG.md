@@ -1718,6 +1718,13 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A gRPC request answers a store's conflict or unique-key refusal as HTTP
+  does.** A lost write race, a unique-key violation or a unique-key field
+  that is null, reported on a raw error, answered gRPC with a ticketed
+  `SERVER_ERROR` while HTTP answered `409 CONFLICT` (retryable),
+  `409 UNIQUE_VIOLATION` or `422 INVALID_UNIQUE_KEY`. gRPC now gives the same
+  code.
+
 - **A gRPC call forwarded to its transaction's owner answers `503
   TRANSACTION_NODE_UNAVAILABLE` when the owner cannot be reached, as HTTP
   does.** A dial or transport failure answered a ticketed `SERVER_ERROR`, and

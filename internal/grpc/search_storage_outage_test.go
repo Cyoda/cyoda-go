@@ -188,3 +188,25 @@ func TestBuildErrorFields_RawEpochMismatch(t *testing.T) {
 		t.Errorf("message leaks the store's wording: %q", message)
 	}
 }
+
+// TestBuildErrorFields_RawSentinelsMatchHTTP — a raw error carrying a store
+// sentinel answers on gRPC with the code the HTTP door gives the same error
+// (common.Internal), not a ticketed SERVER_ERROR.
+func TestBuildErrorFields_RawSentinelsMatchHTTP(t *testing.T) {
+	for name, raw := range map[string]error{
+		"conflict":           fmt.Errorf("commit: %w", spi.ErrConflict),
+		"unique violation":   fmt.Errorf("save: %w", spi.ErrUniqueViolation),
+		"partial unique key": fmt.Errorf("save: %w", spi.ErrPartialUniqueKey),
+	} {
+		t.Run(name, func(t *testing.T) {
+			httpErr := common.Internal("op failed", raw)
+			code, message, retryable := buildErrorFields(raw)
+			if code != "CLIENT_ERROR" || !strings.HasPrefix(message, httpErr.Code+":") {
+				t.Fatalf("gRPC = %q/%q, want CLIENT_ERROR with the HTTP door's %s", code, message, httpErr.Code)
+			}
+			if httpErr.Retryable != (retryable != nil && *retryable) {
+				t.Fatalf("retryable = %v, HTTP door says %v", retryable, httpErr.Retryable)
+			}
+		})
+	}
+}
