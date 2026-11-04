@@ -17,7 +17,7 @@ import (
 type ErrorLevel int
 
 const (
-	LevelOperational ErrorLevel = iota // 4xx client errors
+	LevelOperational ErrorLevel = iota // client-visible: 4xx, 501, 503
 	LevelInternal                      // 500 unexpected errors
 	LevelFatal                         // unrecoverable, marks system unhealthy
 )

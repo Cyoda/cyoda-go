@@ -835,10 +835,9 @@ func untranslatableCondition(translateErr error) *common.AppError {
 // otherwise have no way to tell which evaluator actually rejected the leaf.
 //
 // Exported so callers outside this package that drive a store with an
-// engine-translated Filter (entity's grouped-stats service) or run
-// internal/match's residual evaluator directly (entity's conditional-delete
-// planner, grouped-stats' streaming tally) classify identically instead of
-// maintaining a second copy of the table.
+// engine-translated Filter (entity's grouped-stats service and conditional
+// delete) classify identically instead of maintaining a second copy of the
+// table.
 func ClassifyStoreQueryError(err error) *common.AppError {
 	switch {
 	case err == nil:

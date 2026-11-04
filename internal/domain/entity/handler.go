@@ -200,13 +200,10 @@ func (h *Handler) ValidateWithRefresh(ctx context.Context, modelStore spi.ModelS
 	return nil
 }
 
-// classifyBeginErr maps a transaction-Begin failure to a status code.
-//
-// common.Internal now recognises the storage-unavailability marker itself, so
-// this is no longer the only thing standing between a 503 and an opaque 500. It
-// is kept as the named entry point every Begin site calls, and because the
-// message it would otherwise pass — "failed to begin transaction" — is not what
-// a transient pool outage should be reported as.
+// classifyBeginErr maps a transaction-Begin failure to a status code. It is
+// the named entry point every Begin site calls; a transient pool outage keeps
+// its own 503 rather than the "failed to begin transaction" message
+// common.Internal would otherwise give it.
 func classifyBeginErr(err error) *common.AppError {
 	if appErr := common.StorageUnavailable(err); appErr != nil {
 		return appErr

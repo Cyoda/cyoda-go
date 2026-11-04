@@ -1,9 +1,7 @@
-// Package pagination centralizes shared validation rules for paginated
-// HTTP / gRPC endpoints. The bounds and overflow checks below were
-// originally inlined in internal/domain/search/handler.go; they are
-// extracted here so every entry point that
-// computes `offset = pageNumber * pageSize` enforces the same caps and
-// catches the same int64 overflow before reaching storage.
+// Package pagination holds the validation rules shared by paginated HTTP and
+// gRPC endpoints, so every entry point that computes
+// `offset = pageNumber * pageSize` enforces the same caps and catches the same
+// int64 overflow before reaching storage.
 package pagination
 
 import (
