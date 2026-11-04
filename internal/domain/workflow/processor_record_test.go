@@ -35,7 +35,9 @@ func processorRecords(t *testing.T, procs []spi.ProcessorDefinition, answer func
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
-	_, _ = engine.Execute(ctx, makeEntity("e1", modelRef, map[string]any{}), "FIRE")
+	entity := makeEntity("e1", modelRef, map[string]any{})
+	entity.Meta.State = "INITIAL"
+	_, _ = engine.ManualTransition(ctx, entity, "FIRE", IfMatch{})
 
 	auditStore, err := factory.StateMachineAuditStore(ctx)
 	if err != nil {

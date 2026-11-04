@@ -60,7 +60,7 @@ func TestReconcile_FunctionAbsoluteFireArms(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("abs-fire-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -103,7 +103,7 @@ func TestReconcile_FunctionRelativeFireArms(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("rel-fire-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestReconcile_FunctionExpiryStoredAsTimeoutMs(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("expiry-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 
@@ -211,7 +211,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 	}
 	entity := makeEntity("born-expired-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -235,7 +235,7 @@ func TestReconcile_FunctionBornExpiredCancelsAndEmitsExpire(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.Loopback(txCtx2, entity); err != nil {
+	if _, err := engine.Loopback(txCtx2, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
@@ -312,7 +312,7 @@ func TestReconcile_FunctionArmedByIsChainOriginNotFunctionResult(t *testing.T) {
 
 	entity := makeEntity("armedby-fn-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = ownerTxID
-	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
@@ -391,7 +391,7 @@ func TestReconcile_FunctionArmedByIsTheWritesAttributedUser(t *testing.T) {
 
 	entity := makeEntity("armedby-fn-attr-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = bobTxID
-	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(bobTxCtx, bobTxID); err != nil {
@@ -431,7 +431,7 @@ func TestReconcile_FunctionDispatchFailureFailsWrite(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("dispatch-fail-e1", modelRef, map[string]any{})
-	if _, err := engine.Execute(ctx, entity, ""); err == nil {
+	if _, err := engine.Execute(ctx, entity); err == nil {
 		t.Fatal("expected error from failing Function dispatch")
 	}
 
@@ -462,7 +462,7 @@ func TestReconcile_FunctionWrongResultKindIs500(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("wrong-kind-e1", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	assertScheduleFunctionInvalidResult(t, err)
 }
 
@@ -482,7 +482,7 @@ func TestReconcile_FunctionMalformedResultIs500(t *testing.T) {
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("malformed-e1", modelRef, map[string]any{})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	assertScheduleFunctionInvalidResult(t, err)
 }
 

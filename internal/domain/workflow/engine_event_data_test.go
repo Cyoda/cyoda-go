@@ -55,7 +55,7 @@ func TestEngineEventData_Create(t *testing.T) {
 	}})
 
 	entity := makeEntity("e1", ref, map[string]any{"x": 1})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	events := allEvents(t, factory, ctx, "e1")
@@ -88,7 +88,7 @@ func TestEngineEventData_ManualStartHasState(t *testing.T) {
 	}})
 	entity := makeEntity("e1", ref, map[string]any{"x": 1})
 	entity.Meta.State = "NEW"
-	if _, err := engine.ManualTransition(ctx, entity, "go"); err != nil {
+	if _, err := engine.ManualTransition(ctx, entity, "go", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	if d := onlyEvent(t, allEvents(t, factory, ctx, "e1"), spi.SMEventStarted).Data; !reflect.DeepEqual(d, map[string]any{"state": "NEW"}) {
@@ -116,7 +116,7 @@ func TestEngineEventData_TransitionNotFound(t *testing.T) {
 			id := "e-" + name
 			entity := makeEntity(id, ref, map[string]any{"x": 1})
 			entity.Meta.State = "NEW"
-			if _, err := engine.ManualTransition(ctx, entity, name); err == nil {
+			if _, err := engine.ManualTransition(ctx, entity, name, IfMatch{}); err == nil {
 				t.Fatal("ManualTransition succeeded, want an error")
 			}
 			ev := onlyEvent(t, allEvents(t, factory, ctx, id), spi.SMEventTransitionNotFound)
@@ -144,7 +144,7 @@ func TestEngineEventData_CancelVisitLimit(t *testing.T) {
 		},
 	}})
 	entity := makeEntity("e1", ref, map[string]any{"x": 1})
-	if _, err := engine.Execute(ctx, entity, ""); err == nil {
+	if _, err := engine.Execute(ctx, entity); err == nil {
 		t.Fatal("Execute succeeded, want the visit limit")
 	}
 	ev := onlyEvent(t, allEvents(t, factory, ctx, "e1"), spi.SMEventCancelled)
@@ -172,7 +172,7 @@ func TestEngineEventData_TransitionAborted(t *testing.T) {
 	t.Run("manual", func(t *testing.T) {
 		entity := makeEntity("e-manual", ref, map[string]any{"x": 1})
 		entity.Meta.State = "NEW"
-		if _, err := engine.ManualTransitionWithIfMatch(ctx, entity, "go", stale); err == nil {
+		if _, err := engine.ManualTransition(ctx, entity, "go", stale); err == nil {
 			t.Fatal("want a conflict")
 		}
 		ev := onlyEvent(t, allEvents(t, factory, ctx, "e-manual"), SMEventTransitionAborted)
@@ -184,7 +184,7 @@ func TestEngineEventData_TransitionAborted(t *testing.T) {
 	t.Run("loopback", func(t *testing.T) {
 		entity := makeEntity("e-loopback", ref, map[string]any{"x": 1})
 		entity.Meta.State = "NEW"
-		if _, err := engine.LoopbackWithIfMatch(ctx, entity, stale); err == nil {
+		if _, err := engine.Loopback(ctx, entity, stale); err == nil {
 			t.Fatal("want a conflict")
 		}
 		ev := onlyEvent(t, allEvents(t, factory, ctx, "e-loopback"), SMEventTransitionAborted)
@@ -218,7 +218,7 @@ func TestEngineEventData_PauseProcessNamesInPipelineOrder(t *testing.T) {
 		},
 	}})
 	entity := makeEntity("e1", ref, map[string]any{"x": 1})
-	if _, err := engine.Execute(ctx, entity, ""); err != nil {
+	if _, err := engine.Execute(ctx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	ev := onlyEvent(t, allEvents(t, factory, ctx, "e1"), spi.SMEventProcessingPaused)

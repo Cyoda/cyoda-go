@@ -93,7 +93,7 @@ func TestReconcile_ArmsCurrentStateSchedules(t *testing.T) {
 	entity := makeEntity("sched-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID
 
-	_, err = engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity)
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 	}
 	entity := makeEntity("loop-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -218,7 +218,7 @@ func TestReconcile_LoopbackReArmsNoCancel(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.Loopback(txCtx2, entity); err != nil {
+	if _, err := engine.Loopback(txCtx2, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
@@ -318,7 +318,7 @@ func TestReconcile_ArmedByCapturesUserOrigin(t *testing.T) {
 
 	entity := makeEntity("armedby-user-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID); err != nil {
@@ -387,7 +387,7 @@ func TestReconcile_ArmedByCapturesChainOriginOverServiceExecutor(t *testing.T) {
 
 	entity := makeEntity("armedby-chain-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = ownerTxID
-	if _, err := engine.Execute(joinedCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(joinedCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ownerTxCtx, ownerTxID); err != nil {
@@ -441,7 +441,7 @@ func armedBy(t *testing.T, beginCtx context.Context, writer *spi.UserContext, na
 	}
 	entity := makeEntity(name+"-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Execute(spi.WithUserContext(txCtx, writer), entity, ""); err != nil {
+	if _, err := engine.Execute(spi.WithUserContext(txCtx, writer), entity); err != nil {
 		t.Fatal(err)
 	}
 	if err := txMgr.Commit(beginCtx, txID); err != nil {
@@ -528,7 +528,7 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 	}
 	entity := makeEntity("cancel-e1", modelRef, map[string]any{})
 	entity.Meta.TransactionID = txID1
-	if _, err := engine.Execute(txCtx1, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx1, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID1); err != nil {
@@ -550,7 +550,7 @@ func TestReconcile_TransitionCancelsOldState(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID2
-	if _, err := engine.ManualTransition(txCtx2, entity, "advance"); err != nil {
+	if _, err := engine.ManualTransition(txCtx2, entity, "advance", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID2); err != nil {
@@ -677,7 +677,7 @@ func TestReconcile_StoreFailureIsMarkedInfra(t *testing.T) {
 			entity := makeEntity("sched-infra-1", modelRef, map[string]any{})
 			entity.Meta.TransactionID = txID
 
-			_, err = engine.Execute(txCtx, entity, "")
+			_, err = engine.Execute(txCtx, entity)
 			if err == nil {
 				t.Fatal("expected the scheduled-task store failure to surface")
 			}
@@ -744,7 +744,7 @@ func TestReconcile_StaticDelayUnrenderableFailsArm(t *testing.T) {
 			entity := makeEntity("static-delay-range-e1", modelRef, map[string]any{})
 			entity.Meta.TransactionID = txID
 
-			_, err = engine.Execute(txCtx, entity, "")
+			_, err = engine.Execute(txCtx, entity)
 			if err == nil {
 				t.Fatal("expected an unrenderable static delay/timeout to fail the arm")
 			}
@@ -830,7 +830,7 @@ func loopbackInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx co
 		t.Fatalf("Get entity: %v", err)
 	}
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Loopback(txCtx, entity); err != nil {
+	if _, err := engine.Loopback(txCtx, entity, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	if _, err := es.Save(txCtx, entity); err != nil {
@@ -950,7 +950,7 @@ func TestReconcile_FailedTaskCancelledWhenEntityLeavesState(t *testing.T) {
 		t.Fatalf("Get: %v", err)
 	}
 	entity.Meta.TransactionID = txID
-	if _, err := env.engine.ManualTransition(txCtx, entity, "advance"); err != nil {
+	if _, err := env.engine.ManualTransition(txCtx, entity, "advance", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	if _, err := es.Save(txCtx, entity); err != nil {
@@ -1034,7 +1034,7 @@ func executeInTx(t *testing.T, engine *Engine, factory spi.StoreFactory, ctx con
 		t.Fatalf("Begin: %v", err)
 	}
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := txMgr.Commit(ctx, txID); err != nil {

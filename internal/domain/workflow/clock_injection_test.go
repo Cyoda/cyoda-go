@@ -29,7 +29,7 @@ func TestEngine_AuditTimestampFromClock(t *testing.T) {
 	}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{wf})
 
-	if _, err := engine.Execute(ctx, makeEntity("clk-e1", modelRef, map[string]any{"x": 1}), ""); err != nil {
+	if _, err := engine.Execute(ctx, makeEntity("clk-e1", modelRef, map[string]any{"x": 1})); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	auditStore, err := factory.StateMachineAuditStore(ctx)
@@ -81,7 +81,7 @@ func TestArm_ScheduledTimeFromClock(t *testing.T) {
 	}
 	e := makeEntity("clk-sched", modelRef, map[string]any{})
 	e.Meta.TransactionID = txID
-	if _, err := engine.Execute(txCtx, e, ""); err != nil {
+	if _, err := engine.Execute(txCtx, e); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := tm.Commit(ctx, txID); err != nil {

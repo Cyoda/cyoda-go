@@ -80,7 +80,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 		t.Fatalf("Begin: %v", err)
 	}
 	main.Meta.TransactionID = txID
-	if _, err := env.engine.Execute(txCtx, main, ""); err != nil {
+	if _, err := env.engine.Execute(txCtx, main); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if err := env.txMgr.Commit(ctx, txID); err != nil {
@@ -88,18 +88,18 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 	}
 	stale := IfMatch{Expected: "tx-stale", Current: "tx-current"}
 	// TRANSITION_ABORTED, with and without a transition.
-	if _, err := env.engine.ManualTransitionWithIfMatch(ctx, main, "finish", stale); err == nil {
-		t.Fatal("ManualTransitionWithIfMatch succeeded, want a conflict")
+	if _, err := env.engine.ManualTransition(ctx, main, "finish", stale); err == nil {
+		t.Fatal("ManualTransition succeeded, want a conflict")
 	}
-	if _, err := env.engine.LoopbackWithIfMatch(ctx, main, stale); err == nil {
-		t.Fatal("LoopbackWithIfMatch succeeded, want a conflict")
+	if _, err := env.engine.Loopback(ctx, main, stale); err == nil {
+		t.Fatal("Loopback succeeded, want a conflict")
 	}
 	// The arm-time SCHEDULED_TRANSITION_CANCEL of the task armed in MID.
-	if _, err := env.engine.ManualTransition(ctx, main, "finish"); err != nil {
+	if _, err := env.engine.ManualTransition(ctx, main, "finish", IfMatch{}); err != nil {
 		t.Fatalf("ManualTransition: %v", err)
 	}
 	// TRANSITION_NOT_FOUND.
-	if _, err := env.engine.ManualTransition(ctx, main, "missing"); err == nil {
+	if _, err := env.engine.ManualTransition(ctx, main, "missing", IfMatch{}); err == nil {
 		t.Fatal("ManualTransition of an undeclared transition succeeded")
 	}
 	save(main)
@@ -107,7 +107,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 	// FORCE_SUCCESS: a loopback in a state the selected workflow lacks.
 	orphan := makeEntity(uuid.NewString(), ref, map[string]any{"kind": "a", "x": 1})
 	orphan.Meta.State = "ORPHAN"
-	if _, err := env.engine.Loopback(ctx, orphan); err != nil {
+	if _, err := env.engine.Loopback(ctx, orphan, IfMatch{}); err != nil {
 		t.Fatalf("Loopback: %v", err)
 	}
 	save(orphan)
@@ -121,7 +121,7 @@ func recordEngineEvents(t *testing.T) (spi.StoreFactory, context.Context, []stri
 		},
 	}})
 	loop := makeEntity(uuid.NewString(), loopRef, map[string]any{})
-	if _, err := env.engine.Execute(ctx, loop, ""); err == nil {
+	if _, err := env.engine.Execute(ctx, loop); err == nil {
 		t.Fatal("Execute succeeded, want the visit limit")
 	}
 	save(loop)

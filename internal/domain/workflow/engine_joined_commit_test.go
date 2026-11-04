@@ -41,7 +41,7 @@ func TestEngine_JoinedChain_RefusesCommitBeforeDispatch(t *testing.T) {
 			entryTxID, ownerCtx := h.begin(t)
 			joinedCtx := MarkJoinedTransaction(ownerCtx)
 
-			_, err := h.engine.Execute(joinedCtx, h.entity, "")
+			_, err := h.engine.Execute(joinedCtx, h.entity)
 
 			var appErr *common.AppError
 			if !errors.As(err, &appErr) {
@@ -81,7 +81,7 @@ func TestEngine_OwnerChain_CommitBeforeDispatchStillSegments(t *testing.T) {
 	h.registerCBDProcessor("segmenter")
 
 	entryTxID, ownerCtx := h.begin(t)
-	res, err := h.engine.Execute(ownerCtx, h.entity, "")
+	res, err := h.engine.Execute(ownerCtx, h.entity)
 	if err != nil {
 		t.Fatalf("owner chain: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestEngine_JoinedChain_RefusesWhateverTheEntityStamp(t *testing.T) {
 	joinedCtx := MarkJoinedTransaction(ownerCtx)
 	h.entity.Meta.TransactionID = "a-stamp-that-is-not-the-joined-transaction"
 
-	_, err := h.engine.Execute(joinedCtx, h.entity, "")
+	_, err := h.engine.Execute(joinedCtx, h.entity)
 
 	var appErr *common.AppError
 	if !errors.As(err, &appErr) || appErr.Code != common.ErrCodeCommitInJoinedTransaction {

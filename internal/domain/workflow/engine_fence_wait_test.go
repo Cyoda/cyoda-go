@@ -102,7 +102,7 @@ func TestAsyncNewTx_FailedProcessorsWriteLandsBeforeSavepointIsUndone(t *testing
 	}
 	entity := makeEntity("fence-wait-1", modelRef, map[string]any{"x": 1})
 	entity.Meta.TransactionID = txID
-	if _, err := engine.Execute(txCtx, entity, ""); err != nil {
+	if _, err := engine.Execute(txCtx, entity); err != nil {
 		t.Fatalf("an ASYNC_NEW_TX processor failure must not fail the operation: %v", err)
 	}
 	select {

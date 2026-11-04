@@ -70,7 +70,7 @@ func calloutModeEngine(t *testing.T, mode string, startNewTx *bool, failure erro
 		Meta: spi.EntityMeta{ID: "callout-mode-1", TenantID: testTenant, ModelRef: modelRef, TransactionID: entryTxID},
 		Data: []byte(`{"x":1}`),
 	}
-	result, execErr = engine.Execute(txCtx, entity, "")
+	result, execErr = engine.Execute(txCtx, entity)
 	return result, execErr, cnt, entity, txCtx
 }
 
@@ -179,7 +179,7 @@ func TestReconcile_FunctionMemberFailed_NamesTheFunctionAndKeepsTheVerdict(t *te
 	modelRef := spi.ModelRef{EntityName: "fn-member-failed-order", ModelVersion: "1.0"}
 	saveWorkflow(t, factory, ctx, modelRef, []spi.WorkflowDefinition{scheduleFunctionWorkflow("FnMemberFailedWF", "calcFire")})
 
-	_, err := engine.Execute(ctx, makeEntity("fn-member-failed-e1", modelRef, map[string]any{}), "")
+	_, err := engine.Execute(ctx, makeEntity("fn-member-failed-e1", modelRef, map[string]any{}))
 	if err == nil {
 		t.Fatal("expected the write to fail")
 	}

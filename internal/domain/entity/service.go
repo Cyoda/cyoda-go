@@ -310,7 +310,7 @@ func (h *Handler) CreateEntity(ctx context.Context, input CreateEntityInput) (*E
 	// this is TX_post (a fresh TX opened by the engine after committing
 	// TX_pre); for non-segmenting cascades it equals the handler's input
 	// txID. CreateEntity has no prior version, so no IfMatch is involved.
-	result, err := h.engine.Execute(txCtx, entity, "")
+	result, err := h.engine.Execute(txCtx, entity)
 	if err != nil {
 		slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID)
 		return nil, classifyWorkflowError(err)
@@ -2073,7 +2073,7 @@ func (h *Handler) CreateEntityCollection(ctx context.Context, items []Collection
 		// context. Mirrors single CreateEntity's flow so initial-state
 		// derivation, automated cascade and state-machine audit events all
 		// apply per item.
-		result, err := h.engine.Execute(currentCtx, entity, "")
+		result, err := h.engine.Execute(currentCtx, entity)
 		if err != nil {
 			slog.Error("workflow execution failed", "error", err.Error(), "entityId", entity.Meta.ID, "itemIndex", i)
 			return nil, classifyWorkflowError(fmt.Errorf("item %d: %w", i, err))
@@ -2311,7 +2311,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 	// after the read fails the commit.
 	ifMatch := wfengine.IfMatch{Expected: input.IfMatch, Current: existing.Meta.TransactionID}
 	if input.Transition == "" {
-		res, lbErr := h.engine.LoopbackWithIfMatch(txCtx, updated, ifMatch)
+		res, lbErr := h.engine.Loopback(txCtx, updated, ifMatch)
 		if lbErr != nil {
 			slog.Error("workflow loopback failed", "error", lbErr.Error(), "entityId", updated.Meta.ID)
 			// An unmarked conflict is a precondition on this request's own
@@ -2336,7 +2336,7 @@ func (h *Handler) updateEntityCore(ctx context.Context, input UpdateEntityInput,
 		scope.Advance(res.FinalCtx, res.FinalTxID)
 		updated.Meta.TransitionForLatestSave = "loopback"
 	} else {
-		res, mtErr := h.engine.ManualTransitionWithIfMatch(txCtx, updated, input.Transition, ifMatch)
+		res, mtErr := h.engine.ManualTransition(txCtx, updated, input.Transition, ifMatch)
 		if mtErr != nil {
 			slog.Error("workflow manual transition failed", "error", mtErr.Error(), "entityId", updated.Meta.ID, "transition", input.Transition)
 			if errors.Is(mtErr, spi.ErrConflict) && !engineConflictIsTransactionConflict(mtErr) {
@@ -2624,9 +2624,9 @@ func (h *Handler) UpdateEntityCollection(ctx context.Context, items []UpdateColl
 		var engineErr error
 		ifMatch := wfengine.IfMatch{Expected: item.ifMatch, Current: existing.Meta.TransactionID}
 		if item.transition == "" {
-			engineResult, engineErr = h.engine.LoopbackWithIfMatch(currentCtx, updated, ifMatch)
+			engineResult, engineErr = h.engine.Loopback(currentCtx, updated, ifMatch)
 		} else {
-			engineResult, engineErr = h.engine.ManualTransitionWithIfMatch(currentCtx, updated, item.transition, ifMatch)
+			engineResult, engineErr = h.engine.ManualTransition(currentCtx, updated, item.transition, ifMatch)
 		}
 		if engineErr != nil {
 			// Per-item ENTITY_MODIFIED isolation: the engine's If-Match check

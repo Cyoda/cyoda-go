@@ -130,7 +130,7 @@ func TestCBDFailureAfterBoundary_ResultRecordedDurably(t *testing.T) {
 					var entryCtx context.Context
 					entryTxID, entryCtx = h.begin(t)
 
-					if _, err := h.engine.Execute(entryCtx, h.entity, ""); err == nil {
+					if _, err := h.engine.Execute(entryCtx, h.entity); err == nil {
 						t.Fatal("expected the processor's failure to fail the operation")
 					}
 
@@ -201,7 +201,7 @@ func TestCBDFailureBeforeCommit_NoRecord(t *testing.T) {
 				var entryCtx context.Context
 				entryTxID, entryCtx = h.begin(t)
 
-				if _, err := h.engine.Execute(entryCtx, h.entity, ""); err == nil {
+				if _, err := h.engine.Execute(entryCtx, h.entity); err == nil {
 					t.Fatal("expected the boundary's failure to fail the operation")
 				}
 				// What the entity service does with a failed operation.
@@ -232,7 +232,7 @@ func TestCBDJoinedRefusal_RecordStaysInJoinedTransaction(t *testing.T) {
 			}
 			entryTxID, ownerCtx := h.begin(t)
 
-			if _, err := h.engine.Execute(MarkJoinedTransaction(ownerCtx), h.entity, ""); err == nil {
+			if _, err := h.engine.Execute(MarkJoinedTransaction(ownerCtx), h.entity); err == nil {
 				t.Fatal("expected the joined chain's refusal")
 			}
 			if len(commits) != 0 {
@@ -275,7 +275,7 @@ func TestCBDFailureAfterBoundary_OwnTransactionCommitFails(t *testing.T) {
 			var entryCtx context.Context
 			entryTxID, entryCtx = h.begin(t)
 
-			_, err := h.engine.Execute(entryCtx, h.entity, "")
+			_, err := h.engine.Execute(entryCtx, h.entity)
 			if err == nil || err.Error() != "processor charge failed: card declined" {
 				t.Fatalf("err = %v, want the processor's own failure", err)
 			}
@@ -310,7 +310,7 @@ func TestCBDFailureAfterBoundary_RecordRefused_OwnTransactionRolledBack(t *testi
 			}
 			entryTxID, entryCtx := h.begin(t)
 
-			_, err := h.engine.Execute(entryCtx, h.entity, "")
+			_, err := h.engine.Execute(entryCtx, h.entity)
 			if err == nil || err.Error() != "processor charge failed: card declined" {
 				t.Fatalf("err = %v, want the processor's own failure", err)
 			}

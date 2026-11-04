@@ -112,9 +112,9 @@ func TestIfMatch_OwnWriteBeforeSegmentKeepsThePrecondition(t *testing.T) {
 		t.Fatalf("Begin: %v", err)
 	}
 	entity := f.entity(txID)
-	res, err := f.engine.ManualTransitionWithIfMatch(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
+	res, err := f.engine.ManualTransition(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
 	if err != nil {
-		t.Fatalf("ManualTransitionWithIfMatch: %v", err)
+		t.Fatalf("ManualTransition: %v", err)
 	}
 	if res.FinalTxID == txID || entity.Meta.State != "S_post" {
 		t.Fatalf("FinalTxID=%s state=%q; want a segmented cascade ending in S_post", res.FinalTxID, entity.Meta.State)
@@ -151,9 +151,9 @@ func TestIfMatch_StaleAbortsBeforeAnything(t *testing.T) {
 
 			stale := IfMatch{Expected: "tx-that-never-existed", Current: f.seedTxID}
 			if door == "Loopback" {
-				_, err = f.engine.LoopbackWithIfMatch(txCtx, f.entity(txID), stale)
+				_, err = f.engine.Loopback(txCtx, f.entity(txID), stale)
 			} else {
-				_, err = f.engine.ManualTransitionWithIfMatch(txCtx, f.entity(txID), "go", stale)
+				_, err = f.engine.ManualTransition(txCtx, f.entity(txID), "go", stale)
 			}
 			if !errors.Is(err, spi.ErrConflict) {
 				t.Fatalf("err = %v; want spi.ErrConflict", err)
@@ -185,9 +185,9 @@ func TestIfMatch_Matching_RunsTheTransition(t *testing.T) {
 	}
 	defer func() { _ = f.txMgr.Rollback(f.ctx, txID) }()
 	entity := f.entity(txID)
-	res, err := f.engine.ManualTransitionWithIfMatch(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
+	res, err := f.engine.ManualTransition(txCtx, entity, "go", IfMatch{Expected: f.seedTxID, Current: f.seedTxID})
 	if err != nil {
-		t.Fatalf("ManualTransitionWithIfMatch: %v", err)
+		t.Fatalf("ManualTransition: %v", err)
 	}
 	if res.FinalTxID != txID || entity.Meta.State != "S_post" {
 		t.Fatalf("FinalTxID=%s state=%q; want %s and S_post", res.FinalTxID, entity.Meta.State, txID)

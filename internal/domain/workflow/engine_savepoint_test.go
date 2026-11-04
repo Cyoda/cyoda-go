@@ -87,7 +87,7 @@ func TestAsyncNewTx_SavepointFailureFailsTheOperation(t *testing.T) {
 			entity := makeEntity("sp-1", modelRef, map[string]any{"x": 1})
 			entity.Meta.TransactionID = txID
 
-			_, err = engine.Execute(txCtx, entity, "")
+			_, err = engine.Execute(txCtx, entity)
 			if !errors.Is(err, ErrSavepointInfra) {
 				t.Fatalf("err = %v; want ErrSavepointInfra — a savepoint failure is not the processor's failure", err)
 			}

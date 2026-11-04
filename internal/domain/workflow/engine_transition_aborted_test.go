@@ -11,7 +11,7 @@ import (
 	"github.com/cyoda-platform/cyoda-go/plugins/memory"
 )
 
-// TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted is the audit
+// TestManualTransition_StaleEmitsTransitionAborted is the audit
 // contract of a stale If-Match: the engine records STATE_MACHINE_START, checks
 // the precondition, and records TRANSITION_ABORTED before it fails with
 // ErrConflict, so a reader inside the same transaction sees the paired
@@ -24,7 +24,7 @@ import (
 // abort alike — is gone. So this test reads the events THROUGH cCtx (the
 // aborted transaction) before rolling it back, asserts the paired shape and
 // payload there, then rolls back and asserts nothing of it survives.
-func TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted(t *testing.T) {
+func TestManualTransition_StaleEmitsTransitionAborted(t *testing.T) {
 	factory := memory.NewStoreFactory()
 	t.Cleanup(func() { factory.Close() })
 	uuids := common.NewTestUUIDGenerator()
@@ -87,7 +87,7 @@ func TestManualTransitionWithIfMatch_StaleEmitsTransitionAborted(t *testing.T) {
 	}
 
 	const stale = "tx-that-never-existed"
-	_, err = engine.ManualTransitionWithIfMatch(cCtx, entity, "go", IfMatch{Expected: stale, Current: seedTxID})
+	_, err = engine.ManualTransition(cCtx, entity, "go", IfMatch{Expected: stale, Current: seedTxID})
 	if err == nil {
 		t.Fatalf("expected error on stale IfMatch, got nil")
 	}

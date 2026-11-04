@@ -105,7 +105,7 @@ func TestEvaluateCriterion_UndeclaredPathLeavesStateUnchanged(t *testing.T) {
 	saveWorkflow(t, factory, ctx, ref, []spi.WorkflowDefinition{wf})
 
 	entity := makeEntity("e1", ref, map[string]any{"amount": 5})
-	_, err := engine.Execute(ctx, entity, "")
+	_, err := engine.Execute(ctx, entity)
 	if err == nil {
 		t.Fatal("expected the cascade to abort on the undeclared-field criterion")
 	}

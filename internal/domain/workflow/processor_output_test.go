@@ -74,7 +74,7 @@ func runProcOutput(t *testing.T, engine *Engine, txMgr spi.TransactionManager, c
 		},
 		Data: []byte(`{"x":1}`),
 	}
-	_, err = engine.Execute(txCtx, entity, "")
+	_, err = engine.Execute(txCtx, entity)
 	return entity, err
 }
 
