@@ -1723,8 +1723,11 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
   does.** A dial or transport failure answered a ticketed `SERVER_ERROR`, and
   an owner that never answered held the call until the caller gave up.
   `CYODA_PROXY_TIMEOUT` now bounds the wait on gRPC as on HTTP: a unary call's
-  response, or a streamed call's first message. A status the owner answered
-  with reaches the caller unchanged.
+  response, or a streamed call's first message. The owner's own refusals
+  reach the caller unchanged; any other failure of the hop answers a
+  ticketed `SERVER_ERROR`. A forwarded answer larger than 4 MiB, which the
+  owner may send up to `CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES`, no longer
+  fails on the hop.
 
 - **A storage backend that loses a transaction's shard answers `409
   EPOCH_MISMATCH`, retryable.** The commercial cassandra plugin reports it

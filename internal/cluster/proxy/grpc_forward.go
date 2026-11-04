@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"sync"
@@ -69,9 +70,16 @@ func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, er
 	// Never a proxy: grpc-go's default dialer reads the environment's proxy
 	// settings, and through one the call goes to an address the guard above
 	// never validated.
+	//
+	// No receive limit of the hop's own: the caller gets what the owner
+	// answers, as it would calling the owner directly. The owner bounds a
+	// joined answer (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES), as it does on
+	// the HTTP proxy, which adds no limit either; grpc-go's 4 MiB client
+	// default would refuse an answer the owner is allowed to send.
 	conn, err := grpc.NewClient(target,
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithNoProxy())
+		grpc.WithNoProxy(),
+		grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(math.MaxInt32)))
 	if err != nil {
 		return nil, err
 	}

@@ -168,3 +168,41 @@ func TestClientPool_SSRFGuard_AllowsLoopback(t *testing.T) {
 		t.Fatal("expected non-nil conn")
 	}
 }
+
+// largeAnswerServer answers EntitySearch with a CloudEvent of size bytes.
+type largeAnswerServer struct {
+	cyodapb.UnimplementedCloudEventsServiceServer
+	size int
+}
+
+func (s *largeAnswerServer) EntitySearch(_ context.Context, ce *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+	return &cepb.CloudEvent{Id: ce.Id, Data: &cepb.CloudEvent_BinaryData{BinaryData: make([]byte, s.size)}}, nil
+}
+
+// A forwarded call receives what the owner answers, whatever its size, as the
+// caller would calling the owner directly: the owner bounds a joined answer
+// (CYODA_CALLOUT_JOINED_RESPONSE_MAX_BYTES, 10 MiB by default), and the hop
+// adds no lower limit of its own — grpc-go's 4 MiB client default would.
+func TestForwardEntitySearch_AnswerPastClientDefaultLimit(t *testing.T) {
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	gs := grpc.NewServer()
+	cyodapb.RegisterCloudEventsServiceServer(gs, &largeAnswerServer{size: 6 << 20})
+	go func() { _ = gs.Serve(lis) }()
+	defer gs.Stop()
+
+	pool := proxy.NewClientPool(true) // allowLoopback=true: test server binds on 127.0.0.1
+	defer pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := proxy.ForwardEntitySearch(ctx, pool, lis.Addr().String(), &cepb.CloudEvent{Id: "big"})
+	if err != nil {
+		t.Fatalf("ForwardEntitySearch: %v", err)
+	}
+	if got := len(resp.GetBinaryData()); got != 6<<20 {
+		t.Fatalf("answer = %d bytes, want %d", got, 6<<20)
+	}
+}
