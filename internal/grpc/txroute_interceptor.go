@@ -149,6 +149,9 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			defer cancel()
 			resp, fwdErr := forward(fctx, i.pool, grpcAddr, ce)
 			if fwdErr != nil {
+				if ctx.Err() != nil {
+					return nil, callerGone(ctx, grpcAddr)
+				}
 				switch classifyForwardErr(fwdErr) {
 				case ownerRefused:
 					return nil, fwdErr
@@ -371,6 +374,10 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	firstWait := time.AfterFunc(i.proxyTimeout, cancel)
 	cs, err := forward(fctx, i.pool, addr, &ce)
 	if err != nil {
+		if ctx.Err() != nil {
+			firstWait.Stop()
+			return callerGone(ctx, addr)
+		}
 		if !firstWait.Stop() {
 			return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
 		}
@@ -381,6 +388,10 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 		frame, err := cs.Recv()
 		if first {
 			first = false
+			if err != nil && ctx.Err() != nil {
+				firstWait.Stop()
+				return callerGone(ctx, addr)
+			}
 			if !firstWait.Stop() {
 				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, fmt.Errorf("no answer within the proxy timeout: %w", context.DeadlineExceeded)))
 			}
@@ -443,6 +454,14 @@ func (i *txRouteInterceptor) forwardStreamErr(ss googlegrpc.ServerStream, reqID 
 		return i.streamErr(ss, reqID, envelope, ownerUnreachable(addr, err))
 	}
 	return i.streamErr(ss, reqID, envelope, err)
+}
+
+// callerGone ends a forwarded call whose caller went away: not an outage of
+// the owner, so no ERROR and no envelope for nobody — the call ends with the
+// caller's own cancellation.
+func callerGone(ctx context.Context, addr string) error {
+	slog.Debug("client gone before forwarded call completed", "pkg", "grpc", "target", addr)
+	return status.FromContextError(ctx.Err()).Err()
 }
 
 // ownerUnreachable logs a forwarded call that did not reach its owner and

@@ -1,9 +1,11 @@
 package proxy_test
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -507,5 +509,40 @@ func TestHTTPProxy_Administration_RefusedBeforeVerifyOrProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A caller that goes away while its request is proxied is not an outage of the
+// owner: the failed proxy is not logged at ERROR.
+func TestHTTPProxy_CallerGoneDuringProxyIsNotAnOutage(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	owner := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer owner.Close()
+
+	signer := mustNewSigner([]byte("test-secret-key-at-least-32-bytes!"))
+	reg := newFakeRegistry(
+		contract.NodeInfo{NodeID: "node-1", Addr: "http://localhost:9999", Alive: true},
+		contract.NodeInfo{NodeID: "node-2", Addr: owner.URL, Alive: true},
+	)
+	tok, err := signer.Issue(token.Claims{NodeID: "node-2", TxRef: "tx-gone", ExpiresAt: time.Now().Add(5 * time.Minute).Unix(), Callout: "req-tx-gone", Major: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := proxy.HTTPRouting(signer, reg, "node-1", 5*time.Second, true, "")(localHandler())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/api/test", nil).WithContext(ctx)
+	req.Header.Set(proxy.TxTokenHeader, tok)
+	time.AfterFunc(50*time.Millisecond, cancel)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	if strings.Contains(logBuf.String(), "level=ERROR") {
+		t.Fatalf("a departed caller was logged as an error:\n%s", logBuf.String())
 	}
 }

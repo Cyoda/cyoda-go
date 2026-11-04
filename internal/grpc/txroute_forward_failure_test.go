@@ -1,9 +1,13 @@
 package grpc
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,6 +268,87 @@ func TestTxRouteInterceptor_StreamFirstMessageFailureClassified(t *testing.T) {
 				t.Fatalf("err = %v, sent %d; want one envelope", err, len(ss.sent))
 			}
 			assertEnvelopeCode(t, ss.sent[0], "req-stream-fail", c.wantCode)
+		})
+	}
+}
+
+// A caller that goes away while its call is forwarded is not an outage of the
+// owner: no ERROR is logged and no 503 envelope is built for nobody; the call
+// ends with the caller's own cancellation.
+func TestTxRouteInterceptor_CallerGoneDuringForwardIsNotAnOutage(t *testing.T) {
+	var logBuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ic, baseCtx := forwardingInterceptor(t, testProxyTimeout)
+	ctx, cancel := context.WithCancel(baseCtx)
+	ic.forwardUnary = func(fctx context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+		cancel()
+		<-fctx.Done()
+		return nil, status.FromContextError(fctx.Err()).Err()
+	}
+	_, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-gone"}, entityManageInfo(), mustNotRunUnary(t))
+	if status.Code(err) != codes.Canceled {
+		t.Fatalf("err = %v, want the caller's cancellation", err)
+	}
+	if strings.Contains(logBuf.String(), "level=ERROR") {
+		t.Fatalf("a departed caller was logged as an error:\n%s", logBuf.String())
+	}
+}
+
+// realForwardInterceptor is forwardingInterceptor with the production forward
+// and a peer that advertises grpcAddr.
+func realForwardInterceptor(t *testing.T, grpcAddr string, proxyTimeout time.Duration) (*txRouteInterceptor, context.Context) {
+	t.Helper()
+	s, _ := token.NewSigner(make32(t))
+	tok, _ := s.Issue(token.Claims{NodeID: "node-B", TxRef: "tx-net", ExpiresAt: time.Now().Add(time.Minute).Unix(), Callout: "req-tx-net", Major: 1})
+	reg := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
+		"node-B": {NodeID: "node-B", Addr: "http://127.0.0.1:8080", GRPCAddr: grpcAddr, Alive: true},
+	}}
+	ic := newTxRouteInterceptor(s, reg, "node-A", noCalloutJoiner(t, s, fakeJoinTM{}), 9090, true, proxyTimeout)
+	t.Cleanup(ic.pool.Close)
+	return ic, metadata.NewIncomingContext(context.Background(), metadata.Pairs("tx-token", tok))
+}
+
+// Over a real connection: an owner whose port refuses connections, and one
+// that accepts the connection and never speaks, both answer 503
+// TRANSACTION_NODE_UNAVAILABLE within the proxy timeout.
+func TestTxRouteInterceptor_RealNetworkOwnerUnreachable(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closedAddr := closed.Addr().String()
+	_ = closed.Close()
+
+	silent, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer silent.Close()
+	go func() {
+		for {
+			c, err := silent.Accept()
+			if err != nil {
+				return
+			}
+			defer c.Close() // hold the connection open, say nothing
+		}
+	}()
+
+	for name, addr := range map[string]string{"refused": closedAddr, "silent": silent.Addr().String()} {
+		t.Run(name, func(t *testing.T) {
+			ic, ctx := realForwardInterceptor(t, addr, 300*time.Millisecond)
+			start := time.Now()
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-net"}, entityManageInfo(), mustNotRunUnary(t))
+			if err != nil {
+				t.Fatalf("expected envelope response, got gRPC err: %v", err)
+			}
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Fatalf("the wait was not bounded: %v", elapsed)
+			}
+			assertEnvelopeCode(t, resp, "req-net", "TRANSACTION_NODE_UNAVAILABLE")
 		})
 	}
 }

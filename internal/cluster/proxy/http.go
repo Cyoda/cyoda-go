@@ -97,26 +97,21 @@ func HTTPRouting(signer *token.Signer, registry contract.NodeRegistry, selfNodeI
 }
 
 func handleTokenError(w http.ResponseWriter, r *http.Request, err error) {
-	switch {
-	case errors.Is(err, token.ErrTokenExpired):
+	if errors.Is(err, token.ErrTokenExpired) {
 		common.WriteError(w, r, common.Operational(
 			http.StatusGone,
 			common.ErrCodeTransactionExpired,
 			"transaction token has expired",
 		))
-	case errors.Is(err, token.ErrTokenTampered), errors.Is(err, token.ErrTokenInvalid):
-		common.WriteError(w, r, common.Operational(
-			http.StatusUnauthorized,
-			common.ErrCodeUnauthorized,
-			"invalid transaction token",
-		))
-	default:
-		common.WriteError(w, r, common.Operational(
-			http.StatusUnauthorized,
-			common.ErrCodeUnauthorized,
-			"transaction token verification failed",
-		))
+		return
 	}
+	// Verify refuses a token as expired, tampered or invalid; the last two
+	// answer alike.
+	common.WriteError(w, r, common.Operational(
+		http.StatusUnauthorized,
+		common.ErrCodeUnauthorized,
+		"invalid transaction token",
+	))
 }
 
 func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http.RoundTripper, allowLoopback bool) {
@@ -166,11 +161,17 @@ func proxyTo(w http.ResponseWriter, r *http.Request, addr string, transport http
 		Director:  makeProxyDirector(target),
 		Transport: transport,
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
-			slog.Error("proxy request failed",
-				"pkg", "proxy",
-				"target", addr,
-				"error", err,
-			)
+			// The caller going away cancels the proxied request: not an
+			// outage of the owner, so not an ERROR.
+			if req.Context().Err() != nil {
+				slog.Debug("client gone before proxied request completed", "pkg", "proxy", "target", addr)
+			} else {
+				slog.Error("proxy request failed",
+					"pkg", "proxy",
+					"target", addr,
+					"error", err,
+				)
+			}
 			common.WriteError(rw, req, common.Operational(
 				http.StatusServiceUnavailable,
 				common.ErrCodeTransactionNodeUnavailable,
