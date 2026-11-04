@@ -64,7 +64,6 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.CLOCK_BEFORE_RECORDED_TIME` — `409` — not retryable — a request to set the platform clock named a time earlier than the latest time the store has recorded; the clock is unchanged
 - `errors.CLOCK_CONTROL_DISABLED` — `403` — not retryable — a request to change the platform clock reached a node not started with clock control enabled
 - `errors.CLOCK_NOT_CONFIRMED` — `503` — not retryable — a node of the cluster did not confirm a platform clock change; nothing is rolled back
-- `errors.CLUSTER_NODE_NOT_REGISTERED` — `503` — retryable — target cluster node is not present in the gossip registry
 - `errors.COMMIT_IN_JOINED_TRANSACTION` — `409` — not retryable — a write made under a transaction token ran a workflow that reached a `COMMIT_BEFORE_DISPATCH` processor, which would commit the transaction the request joined; refused before that transaction is flushed or committed and before the processor is dispatched
 - `errors.COMPOSITE_KEY_UNSUPPORTED` — `422` — not retryable — the storage backend does not enforce composite unique keys
 - `errors.COMPUTE_MEMBER_DISCONNECTED` — `503` — retryable — the compute member tried for a callout went away, before or after it was handed the work
@@ -84,7 +83,6 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.FORBIDDEN` — `403` — not retryable — authenticated caller lacks the required role or the tenant does not match
 - `errors.GROUP_CARDINALITY_EXCEEDED` — `422` — not retryable — grouped-stats query produced more distinct buckets than `CYODA_STATS_GROUP_MAX` allows; no partial result is returned
 - `errors.HELP_TOPIC_NOT_FOUND` — `404` — not retryable — help topic path does not resolve to any topic in the tree
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — not retryable — request with the same idempotency key was received but payload differs from the original
 - `errors.INCOMPATIBLE_TYPE` — `400` — not retryable — entity payload's leaf value type is not assignable to the schema's declared DataType for that path; carries `fieldPath`, `expectedType`, `actualType` in `properties` (Cloud's `FoundIncompatibleTypeWithEntityModelException` equivalent)
 - `errors.INVALID_AGGREGATION_FIELD` — `400` — not retryable — grouped-stats aggregation `field` is outside the scalar JSONPath grammar (most often a missing `$.` leader)
 - `errors.INVALID_AGGREGATION_OP` — `400` — not retryable — grouped-stats aggregation `op` is not one of `sum`, `avg`, `min`, `max`, `stdev`
@@ -117,7 +115,6 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.SEARCH_JOB_NOT_FOUND` — `404` — not retryable — referenced search job does not exist in the current tenant
 - `errors.SEARCH_QUEUE_FULL` — `503` — retryable — async-search worker pool has no free worker and its submit queue is at capacity
 - `errors.SEARCH_RESULT_LIMIT` — `400` — not retryable — direct search's matched entity count exceeded the requested `limit` (a cap on the matched set, not a page size)
-- `errors.SEARCH_SHARD_TIMEOUT` — `503` — retryable — one or more search shards did not respond within the configured timeout
 - `errors.SEARCH_TIMEOUT` — `408` — retryable — client-requested search timeout expired before the result set was collected
 - `errors.SERVER_BUSY` — `503` — retryable — the node had no free client-secret (bcrypt) slot within 1 s for `POST /clients` or a secret reset; nothing was written; carries `Retry-After: 1`
 - `errors.SERVER_ERROR` — `500` — retryable with caution — unclassified internal error; response includes `ticket` UUID for log correlation
@@ -130,10 +127,6 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state
 - `errors.TRUSTED_KEY_CAP_REACHED` — `400` — not retryable — Per-tenant trusted-key cap reached.
 - `errors.TRUSTED_KEY_NOT_FOUND` — `404` — not retryable — referenced trusted-key KID is not present in the registry (delete / invalidate / reactivate target missing)
-- `errors.TX_CONFLICT` — `409` — retryable — transaction aborted due to storage-level serialization conflict
-- `errors.TX_COORDINATOR_NOT_CONFIGURED` — `503` — not retryable — distributed transaction coordinator is disabled or misconfigured on this node
-- `errors.TX_NO_STATE` — `404` — not retryable — coordinator has no state record for the given transaction ID
-- `errors.TX_REQUIRED` — `400` — not retryable — operation requires a transaction context but none was provided
 - `errors.UNAUTHORIZED` — `401` — not retryable — `Authorization` header is missing, token is expired, or the token is not one cyoda signed and accepts
 - `errors.UNIQUE_VIOLATION` — `409` — not retryable — a write would duplicate a declared composite unique key
 - `errors.UNSUPPORTED_ALGORITHM` — `400` — not retryable — Requested JWT algorithm not supported in this version.

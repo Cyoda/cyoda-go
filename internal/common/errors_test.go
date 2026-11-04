@@ -341,12 +341,6 @@ func TestErrCodeSearchJobAlreadyTerminal(t *testing.T) {
 	}
 }
 
-func TestErrCodeSearchShardTimeout(t *testing.T) {
-	if common.ErrCodeSearchShardTimeout != "SEARCH_SHARD_TIMEOUT" {
-		t.Errorf("got %q", common.ErrCodeSearchShardTimeout)
-	}
-}
-
 func TestErrCodeSearchResultLimit(t *testing.T) {
 	if common.ErrCodeSearchResultLimit != "SEARCH_RESULT_LIMIT" {
 		t.Errorf("got %q", common.ErrCodeSearchResultLimit)
@@ -475,10 +469,8 @@ func TestOperational_NotRetryableByDefault(t *testing.T) {
 // TestOperational_AsRetryable_FlipsRetryableBit pins the contract:
 // the three axes (status, code, retryable) are independent and any
 // 4xx with any code can be flagged retryable via the fluent
-// AsRetryable() opt-in. A retryable conflict with a specific
-// dictionary code (e.g. retryable TX_CONFLICT — distinct from the
-// generic CONFLICT) was previously unreachable without bare-field
-// mutation; AsRetryable() closes that gap.
+// AsRetryable() opt-in, so a code other than the generic CONFLICT can
+// be answered retryable without setting the field directly.
 func TestOperational_AsRetryable_FlipsRetryableBit(t *testing.T) {
 	err := common.Operational(http.StatusConflict, common.ErrCodeConflict, "transaction conflict — retry").AsRetryable()
 	if err.Status != http.StatusConflict {

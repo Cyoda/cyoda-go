@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.SEARCH_JOB_ALREADY_TERMINAL
-  - errors.SEARCH_SHARD_TIMEOUT
 ---
 
 # errors.SEARCH_JOB_NOT_FOUND
@@ -28,4 +27,3 @@ Not retryable. The job ID and tenant credentials must match the values used at j
 
 - errors
 - errors.SEARCH_JOB_ALREADY_TERMINAL
-- errors.SEARCH_SHARD_TIMEOUT

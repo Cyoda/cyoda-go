@@ -1517,6 +1517,12 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Changed
 
+- **Seven error codes the server never answers are removed** from the
+  code set and from `cyoda help errors`: `TX_REQUIRED`, `TX_CONFLICT`,
+  `TX_COORDINATOR_NOT_CONFIGURED`, `TX_NO_STATE`,
+  `CLUSTER_NODE_NOT_REGISTERED`, `IDEMPOTENCY_CONFLICT` and
+  `SEARCH_SHARD_TIMEOUT`. No response carried any of them.
+
 - OpenAPI: `TokenResponseDto` no longer declares `refresh_token` or `scope`,
   which `POST /tenants/{tenant}/oauth/token` never sends; `expires_in` has the maximum 3600
   and `issued_token_type` the one value it takes,

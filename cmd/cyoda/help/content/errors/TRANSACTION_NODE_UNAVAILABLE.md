@@ -6,7 +6,6 @@ see_also:
   - errors
   - errors.TRANSACTION_EXPIRED
   - errors.TRANSACTION_NOT_FOUND
-  - errors.CLUSTER_NODE_NOT_REGISTERED
 ---
 
 # errors.TRANSACTION_NODE_UNAVAILABLE
@@ -30,4 +29,3 @@ Retryable by opening a new transaction. The in-progress transaction is likely lo
 - errors
 - errors.TRANSACTION_EXPIRED
 - errors.TRANSACTION_NOT_FOUND
-- errors.CLUSTER_NODE_NOT_REGISTERED

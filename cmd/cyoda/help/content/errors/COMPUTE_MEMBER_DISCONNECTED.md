@@ -4,7 +4,6 @@ title: "COMPUTE_MEMBER_DISCONNECTED — compute member dropped from the cluster"
 stability: stable
 see_also:
   - errors
-  - errors.CLUSTER_NODE_NOT_REGISTERED
   - errors.NO_COMPUTE_MEMBER_FOR_TAG
   - errors.DISPATCH_TIMEOUT
   - errors.CALLOUT_FAILED
@@ -34,7 +33,6 @@ Retryable. `retryable: true` speaks for Cyoda's state only. With a `SYNC` or `AS
 ## SEE ALSO
 
 - errors
-- errors.CLUSTER_NODE_NOT_REGISTERED
 - errors.NO_COMPUTE_MEMBER_FOR_TAG
 - errors.DISPATCH_TIMEOUT
 - errors.CALLOUT_FAILED

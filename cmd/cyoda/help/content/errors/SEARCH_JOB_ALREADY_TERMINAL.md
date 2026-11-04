@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.SEARCH_JOB_NOT_FOUND
-  - errors.SEARCH_SHARD_TIMEOUT
 ---
 
 # errors.SEARCH_JOB_ALREADY_TERMINAL
@@ -30,4 +29,3 @@ Not retryable on the same job. Results from a successfully completed job remain 
 
 - errors
 - errors.SEARCH_JOB_NOT_FOUND
-- errors.SEARCH_SHARD_TIMEOUT

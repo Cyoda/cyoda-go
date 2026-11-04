@@ -10,7 +10,6 @@ see_also:
   - errors.SEARCH_JOB_NOT_FOUND
   - errors.SEARCH_JOB_ALREADY_TERMINAL
   - errors.SEARCH_RESULT_LIMIT
-  - errors.SEARCH_SHARD_TIMEOUT
   - errors.SEARCH_QUEUE_FULL
   - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
   - errors.CONSISTENCY_TIME_UNAVAILABLE
@@ -386,7 +385,6 @@ A condition is checked in one fixed order, and the first failing step gives the 
 - `errors.SEARCH_JOB_ALREADY_TERMINAL` — `400` — cancel attempted on a job that is already `SUCCESSFUL`, `FAILED`, or `CANCELLED`; body carries `currentStatus` and `snapshotId`
 - `errors.SEARCH_RESULT_LIMIT` — `400` — direct search's matched entity count exceeded the requested `limit`; enforced by the backend's bounded-or-fail `Search`. Async search never returns this code — an oversized `pageSize`/`pageNumber` on result retrieval is `errors.BAD_REQUEST` instead
 - `errors.SEARCH_TIMEOUT` — `408` — direct search's client-supplied `timeoutMillis` elapsed before the result set was collected; retryable, and nothing partial is returned
-- `errors.SEARCH_SHARD_TIMEOUT` — per-shard search timeout exceeded (relevant for distributed backends)
 - `errors.SEARCH_QUEUE_FULL` — `503` — async submit refused for capacity: either the node's worker pool and submit queue are both exhausted, or the tenant is at its in-flight share of this node; retryable, tune via `CYODA_SEARCH_ASYNC_WORKERS`/`CYODA_SEARCH_ASYNC_QUEUE`/`CYODA_SEARCH_ASYNC_MAX_PER_TENANT`
 - `errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME` — `400` — a `pointInTime` later than the consistency time (direct search, and async submit with a `pointInTime`); `properties.consistencyTime` carries the current one
 - `errors.CONSISTENCY_TIME_UNAVAILABLE` — `503` — retryable — the store could not provide a consistency time in time (a direct search with a `pointInTime`, or an async submit)
@@ -488,7 +486,6 @@ curl -s -X PUT \
 - errors.SEARCH_JOB_NOT_FOUND
 - errors.SEARCH_JOB_ALREADY_TERMINAL
 - errors.SEARCH_RESULT_LIMIT
-- errors.SEARCH_SHARD_TIMEOUT
 - errors.SEARCH_QUEUE_FULL
 - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
 - errors.CONSISTENCY_TIME_UNAVAILABLE

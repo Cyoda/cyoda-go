@@ -15,7 +15,6 @@ see_also:
   - errors.CONFLICT
   - errors.POINT_IN_TIME_AFTER_CONSISTENCY_TIME
   - errors.CONSISTENCY_TIME_UNAVAILABLE
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.TRANSACTION_TIMEOUT
   - errors.TRANSITION_NOT_FOUND
   - errors.WORKFLOW_FAILED
@@ -745,7 +744,6 @@ See `cyoda help errors ENTITY_MODIFIED` for the recovery flow on a `412`.
 - `errors.VALIDATION_FAILED` — `400` — payload fails schema validation against the model
 - `errors.INCOMPATIBLE_TYPE` — `400` — entity payload's leaf value type is not assignable to the schema's declared DataType for that field; carries `fieldPath`, `expectedType`, `actualType` in `properties`
 - `errors.CONFLICT` — `409` — storage-level transaction serialization conflict (retryable)
-- `errors.IDEMPOTENCY_CONFLICT` — `409` — reserved; not yet implemented. Future contract: returned on collection create/update when the `Idempotency-Key` header is re-used with a different payload body
 - `errors.UNIQUE_VIOLATION` — `409` — a declared composite unique key already holds this field-value combination
 - `errors.INVALID_UNIQUE_KEY` — `422` — a unique-key field is null, missing, or has an out-of-range value
 - `errors.TRANSITION_NOT_FOUND` — `400` — named transition does not exist in the workflow

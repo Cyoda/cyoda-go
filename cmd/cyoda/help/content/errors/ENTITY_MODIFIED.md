@@ -5,7 +5,6 @@ stability: stable
 see_also:
   - errors
   - errors.CONFLICT
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.EPOCH_MISMATCH
 ---
 
@@ -64,5 +63,4 @@ So omitting `If-Match` does not turn off all concurrency control — but it does
 
 - errors
 - errors.CONFLICT
-- errors.IDEMPOTENCY_CONFLICT
 - errors.EPOCH_MISMATCH

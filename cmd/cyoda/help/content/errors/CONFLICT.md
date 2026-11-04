@@ -4,8 +4,6 @@ title: "CONFLICT — another write committed first"
 stability: stable
 see_also:
   - errors
-  - errors.TX_CONFLICT
-  - errors.IDEMPOTENCY_CONFLICT
   - errors.EPOCH_MISMATCH
   - auth.clients
 ---
@@ -50,7 +48,5 @@ On the gRPC entity operations this error is `code` `CLIENT_ERROR`, with a messag
 ## SEE ALSO
 
 - errors
-- errors.TX_CONFLICT
-- errors.IDEMPOTENCY_CONFLICT
 - errors.EPOCH_MISMATCH
 - auth.clients
