@@ -149,10 +149,13 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			defer cancel()
 			resp, fwdErr := forward(fctx, i.pool, grpcAddr, ce)
 			if fwdErr != nil {
-				if ownerAnswered(fwdErr) {
+				switch classifyForwardErr(fwdErr) {
+				case ownerRefused:
 					return nil, fwdErr
+				case ownerNotReached:
+					return i.unaryErr(ctx, ce, envelope, ownerUnreachable(grpcAddr, fwdErr))
 				}
-				return i.unaryErr(ctx, ce, envelope, ownerUnreachable(grpcAddr, fwdErr))
+				return i.unaryErr(ctx, ce, envelope, fwdErr)
 			}
 			return resp, nil
 		}
@@ -368,10 +371,10 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	firstWait := time.AfterFunc(i.proxyTimeout, cancel)
 	cs, err := forward(fctx, i.pool, addr, &ce)
 	if err != nil {
-		if firstWait.Stop() && ownerAnswered(err) {
-			return err
+		if !firstWait.Stop() {
+			return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
 		}
-		return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
+		return i.forwardStreamErr(ss, ce.Id, envelope, addr, err)
 	}
 	first := true
 	for {
@@ -381,8 +384,8 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 			if !firstWait.Stop() {
 				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, fmt.Errorf("no answer within the proxy timeout: %w", context.DeadlineExceeded)))
 			}
-			if err != nil && !errors.Is(err, io.EOF) && !ownerAnswered(err) {
-				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
+			if err != nil && !errors.Is(err, io.EOF) {
+				return i.forwardStreamErr(ss, ce.Id, envelope, addr, err)
 			}
 		}
 		if errors.Is(err, io.EOF) {
@@ -397,21 +400,49 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	}
 }
 
-// ownerAnswered reports whether err from a forwarded call is a status the
-// owner itself answered with, which reaches the caller unchanged. A failure to
-// reach the owner is not: an error with no gRPC status (dial, address guard),
-// or one of the statuses the transport raises when the owner cannot be reached
-// or does not answer in time.
-func ownerAnswered(err error) bool {
+// forwardOutcome is what an error from a forwarded call says about the owner.
+type forwardOutcome int
+
+const (
+	// forwardFailed: the hop failed in a way that names no cause on the owner's
+	// side — a status the forwarding node's own gRPC client may have built (a
+	// receive limit, a stream reset). The caller gets the ticketed
+	// SERVER_ERROR, and the cause is logged here.
+	forwardFailed forwardOutcome = iota
+	// ownerRefused: one of the refusals the owner's server chain answers with
+	// for the caller's own request. It reaches the caller unchanged, as it
+	// would calling the owner directly.
+	ownerRefused
+	// ownerNotReached: no gRPC status (dial, address guard), or a status the
+	// transport raises when the owner cannot be reached or does not answer in
+	// time.
+	ownerNotReached
+)
+
+func classifyForwardErr(err error) forwardOutcome {
 	st, ok := status.FromError(err)
 	if !ok {
-		return false
+		return ownerNotReached
 	}
 	switch st.Code() {
 	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
-		return false
+		return ownerNotReached
+	case codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.NotFound:
+		return ownerRefused
 	}
-	return true
+	return forwardFailed
+}
+
+// forwardStreamErr answers a streamed forward that failed before its first
+// message, by classifyForwardErr.
+func (i *txRouteInterceptor) forwardStreamErr(ss googlegrpc.ServerStream, reqID string, envelope envelopeFn, addr string, err error) error {
+	switch classifyForwardErr(err) {
+	case ownerRefused:
+		return err
+	case ownerNotReached:
+		return i.streamErr(ss, reqID, envelope, ownerUnreachable(addr, err))
+	}
+	return i.streamErr(ss, reqID, envelope, err)
 }
 
 // ownerUnreachable logs a forwarded call that did not reach its owner and

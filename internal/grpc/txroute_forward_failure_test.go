@@ -187,3 +187,83 @@ func TestTxRouteInterceptor_StreamUnreachableOwnerUnavailable(t *testing.T) {
 	}
 	assertEnvelopeCode(t, ss.sent[0], "req-stream-unreach", "TRANSACTION_NODE_UNAVAILABLE")
 }
+
+// A status that the forwarding hop's own gRPC client may have built — an
+// answer past the receive limit, a stream reset — is not passed off as the
+// owner's: the caller gets the ticketed SERVER_ERROR envelope and the cause is
+// logged on this node.
+func TestTxRouteInterceptor_HopStatusIsNotPassedThrough(t *testing.T) {
+	for name, fwdErr := range map[string]error{
+		"receive limit": status.Error(codes.ResourceExhausted, "grpc: received message larger than max (5242880 vs. 4194304)"),
+		"stream reset":  status.Error(codes.Internal, "stream terminated by RST_STREAM with error code: PROTOCOL_ERROR"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+			ic.forwardUnary = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+				return nil, fwdErr
+			}
+			resp, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-hop"}, entityManageInfo(), mustNotRunUnary(t))
+			if err != nil {
+				t.Fatalf("expected envelope response, got gRPC err: %v", err)
+			}
+			assertEnvelopeCode(t, resp, "req-hop", "SERVER_ERROR")
+		})
+	}
+}
+
+// The owner's own refusals reach the caller unchanged, as they would calling
+// the owner directly.
+func TestTxRouteInterceptor_OwnerRefusalsPassThrough(t *testing.T) {
+	for _, c := range []codes.Code{codes.InvalidArgument, codes.Unauthenticated, codes.PermissionDenied, codes.NotFound} {
+		t.Run(c.String(), func(t *testing.T) {
+			ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+			ic.forwardUnary = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (*cepb.CloudEvent, error) {
+				return nil, status.Error(c, "refused by the owner")
+			}
+			_, err := ic.unary()(ctx, &cepb.CloudEvent{Id: "req-refused"}, entityManageInfo(), mustNotRunUnary(t))
+			if status.Code(err) != c {
+				t.Fatalf("err = %v, want the owner's %s", err, c)
+			}
+		})
+	}
+}
+
+// failingClientStream fails its first Recv with err.
+type failingClientStream struct {
+	googlegrpc.ClientStream
+	err error
+}
+
+func (c *failingClientStream) Recv() (*cepb.CloudEvent, error) { return nil, c.err }
+
+// On a stream, a hop status before the first message gets the ticketed
+// SERVER_ERROR envelope, and an owner refusal reaches the caller unchanged.
+func TestTxRouteInterceptor_StreamFirstMessageFailureClassified(t *testing.T) {
+	for name, c := range map[string]struct {
+		err      error
+		wantCode string // envelope code; "" means the status passes through
+	}{
+		"hop status":    {status.Error(codes.ResourceExhausted, "grpc: received message larger than max"), "SERVER_ERROR"},
+		"owner refusal": {status.Error(codes.PermissionDenied, "this operation requires ROLE_M2M"), ""},
+		"unreachable":   {status.Error(codes.Unavailable, "connection reset"), "TRANSACTION_NODE_UNAVAILABLE"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ic, ctx := forwardingInterceptor(t, testProxyTimeout)
+			ic.forwardStream = func(context.Context, *proxy.ClientPool, string, *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+				return &failingClientStream{err: c.err}, nil
+			}
+			ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-stream-fail"}}}
+			err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t))
+			if c.wantCode == "" {
+				if status.Code(err) != status.Code(c.err) || len(ss.sent) != 0 {
+					t.Fatalf("err = %v, sent %d; want the owner's status unchanged", err, len(ss.sent))
+				}
+				return
+			}
+			if err != nil || len(ss.sent) != 1 {
+				t.Fatalf("err = %v, sent %d; want one envelope", err, len(ss.sent))
+			}
+			assertEnvelopeCode(t, ss.sent[0], "req-stream-fail", c.wantCode)
+		})
+	}
+}
