@@ -78,7 +78,7 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.ENTITY_MODEL_MISMATCH` — `400` — not retryable — a save targeted an existing entity under a different model; an entity's model is fixed at creation
 - `errors.ENTITY_MODIFIED` — `412` — not retryable — `If-Match`-guarded entity update rejected; supplied transaction ID does not match the entity's current version
 - `errors.ENTITY_NOT_FOUND` — `404` — not retryable — entity UUID does not exist or is not accessible to the caller
-- `errors.EPOCH_MISMATCH` — `409` — retryable — writing node's cached shard epoch is stale; another node has since taken ownership
+- `errors.EPOCH_MISMATCH` — `409` — retryable — the storage backend refused the transaction because the shard it ran on changed owner while it ran
 - `errors.FEATURE_DISABLED` — `404` — not retryable — Optional feature not enabled in this deployment.
 - `errors.FORBIDDEN` — `403` — not retryable — authenticated caller lacks the required role or the tenant does not match
 - `errors.GROUP_CARDINALITY_EXCEEDED` — `422` — not retryable — grouped-stats query produced more distinct buckets than `CYODA_STATS_GROUP_MAX` allows; no partial result is returned
@@ -121,7 +121,7 @@ A `500` from an unexpected server error includes a `ticket` UUID for server-side
 - `errors.STORAGE_UNAVAILABLE` — `503` — retryable — storage layer could not supply a connection within its acquire deadline, or the transaction was reclaimed by the idle-in-transaction ceiling
 - `errors.TOO_MANY_JOINED_REQUESTS` — `503` — retryable — `CYODA_CALLOUT_JOINED_MAX_WAITERS` requests made under a transaction token are already waiting for that transaction; back off and send the callback again
 - `errors.TRANSACTION_EXPIRED` — `410` — not retryable — transaction token's `exp` claim is in the past
-- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — retryable — cluster node that owns the open transaction is unreachable
+- `errors.TRANSACTION_NODE_UNAVAILABLE` — `503` — not retryable — a request under a transaction token could not be completed on the node that owns the transaction (not alive, not reachable, or no answer within `CYODA_PROXY_TIMEOUT`)
 - `errors.TRANSACTION_NOT_FOUND` — `404` — not retryable — transaction ID does not correspond to an active transaction on this node
 - `errors.TRANSACTION_TIMEOUT` — `408` — retryable — client-requested transaction timeout expired before commit
 - `errors.TRANSITION_NOT_FOUND` — `400` — not retryable — requested workflow transition is not defined for the entity's current state

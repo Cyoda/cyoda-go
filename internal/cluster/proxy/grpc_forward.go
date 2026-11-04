@@ -48,9 +48,8 @@ func NewClientPool(allowLoopback bool) *ClientPool {
 // attempted; forbidden addresses (loopback when disallowed, link-local,
 // unspecified, multicast) are rejected with peeraddr.ErrForbiddenPeerAddress.
 // ctx bounds the name lookup that guard makes, so a forwarded call whose caller
-// has gone does not wait on a resolver — and, since a forwarded call carries no
-// deadline of its own, peeraddr's own bound for a lookup that precedes a dial is
-// applied on top of it.
+// has gone does not wait on a resolver, and peeraddr's own bound for a lookup
+// that precedes a dial is applied on top of it.
 func (p *ClientPool) Get(ctx context.Context, addr string) (*grpc.ClientConn, error) {
 	target, err := dialTarget(addr)
 	if err != nil {

@@ -739,7 +739,7 @@ In a multi-node cluster, a calculation member's gRPC stream terminates at one no
 | **Messaging** | `POST/GET/DELETE /message/...` | Edge message store |
 | **Auth** | `POST /tenants/{tenant}/oauth/token`, `GET /.well-known/jwks.json`, key/trusted/M2M management | Authentication and key management |
 | **Account** | `GET /account` | Account info, subscriptions |
-| **Cluster** | _(not exposed over REST)_ | Connected calculation-member registry is internal-only (`contract.ClusterService`) |
+| **Cluster** | `GET /platform/cluster` | Cluster status read: each node's reachability, lifecycle state and database check (platform operator) |
 | **Admin** | `GET/POST /admin/log-level` | Runtime log level control |
 
 All REST responses follow RFC 9457 (Problem Details) for errors.

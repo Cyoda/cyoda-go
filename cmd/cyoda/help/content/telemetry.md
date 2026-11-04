@@ -194,8 +194,6 @@ cyoda-go uses **W3C Trace Context** (`traceparent`, `tracestate`) and **W3C Bagg
 
 **gRPC**: `otelgrpc.NewServerHandler()` extracts trace context from inbound gRPC metadata automatically.
 
-**Messaging / internal**: `observability.InjectTraceContext(ctx, headers)` writes `traceparent` and `tracestate` into a `map[string]string` carrier. `observability.ExtractTraceContext(baseCtx, headers)` restores the remote span context. Both use the global text map propagator.
-
 ## METRICS ENDPOINT
 
 **GET :9091/metrics**
