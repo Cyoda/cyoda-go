@@ -404,3 +404,58 @@ func TestTxRouteInterceptor_StreamBreakAfterFirstFrameIsGeneric(t *testing.T) {
 		})
 	}
 }
+
+// A caller that goes away during a streamed forward — before the first message,
+// or after it — ends with its own cancellation and no ERROR.
+func TestTxRouteInterceptor_StreamCallerGoneIsNotAnOutage(t *testing.T) {
+	for name, frames := range map[string][]*cepb.CloudEvent{"before the first message": nil, "after it": {{Id: "f1"}}} {
+		t.Run(name, func(t *testing.T) {
+			var logBuf bytes.Buffer
+			prev := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+
+			ic, baseCtx := forwardingInterceptor(t, testProxyTimeout)
+			ctx, cancel := context.WithCancel(baseCtx)
+			ic.forwardStream = func(fctx context.Context, _ *proxy.ClientPool, _ string, _ *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {
+				cancel()
+				<-fctx.Done()
+				return &framesThenFail{frames: frames, err: status.FromContextError(fctx.Err()).Err()}, nil
+			}
+			ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-stream-gone"}}}
+			err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t))
+			if status.Code(err) != codes.Canceled {
+				t.Fatalf("err = %v, want the caller's cancellation", err)
+			}
+			for _, f := range ss.sent {
+				if f.Id != "f1" {
+					t.Fatalf("an envelope was built for a departed caller: %+v", f)
+				}
+			}
+			if strings.Contains(logBuf.String(), "level=ERROR") {
+				t.Fatalf("a departed caller was logged as an error:\n%s", logBuf.String())
+			}
+		})
+	}
+}
+
+// Over a real connection, a streamed forward to a refused port answers 503
+// TRANSACTION_NODE_UNAVAILABLE on the stream.
+func TestTxRouteInterceptor_RealNetworkStreamOwnerUnreachable(t *testing.T) {
+	closed, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := closed.Addr().String()
+	_ = closed.Close()
+
+	ic, ctx := realForwardInterceptor(t, addr, 300*time.Millisecond)
+	ss := &fakeServerStream{ctx: ctx, recv: []*cepb.CloudEvent{{Id: "req-net-stream"}}}
+	if err := ic.stream()(nil, ss, entityManageCollectionInfo(), mustNotRunStream(t)); err != nil {
+		t.Fatalf("expected an envelope on the stream, got err: %v", err)
+	}
+	if len(ss.sent) != 1 {
+		t.Fatalf("sent %d frames, want one error envelope", len(ss.sent))
+	}
+	assertEnvelopeCode(t, ss.sent[0], "req-net-stream", "TRANSACTION_NODE_UNAVAILABLE")
+}

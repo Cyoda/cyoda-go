@@ -392,6 +392,9 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 				firstWait.Stop()
 				return callerGone(ctx, addr)
 			}
+			// A fired timer has cancelled the forwarded call. A first message
+			// that raced it in is not copied: the rest of the stream is gone,
+			// so the caller gets the 503 whose outcome is unknown.
 			if !firstWait.Stop() {
 				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, fmt.Errorf("no answer within the proxy timeout: %w", context.DeadlineExceeded)))
 			}
