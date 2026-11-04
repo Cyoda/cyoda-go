@@ -1712,6 +1712,21 @@ All notable changes to Cyoda-Go are documented here. The project follows [Keep a
 
 ### Fixed
 
+- **A gRPC call forwarded to its transaction's owner answers `503
+  TRANSACTION_NODE_UNAVAILABLE` when the owner cannot be reached, as HTTP
+  does.** A dial or transport failure answered a ticketed `SERVER_ERROR`, and
+  an owner that never answered held the call until the caller gave up.
+  `CYODA_PROXY_TIMEOUT` now bounds the wait on gRPC as on HTTP: a unary call's
+  response, or a streamed call's first message. A status the owner answered
+  with reaches the caller unchanged.
+
+- **A storage backend that loses a transaction's shard answers `409
+  EPOCH_MISMATCH`, retryable.** The commercial cassandra plugin reports it
+  when the shard a transaction ran on changes owner, after rolling the
+  transaction back. It reached the caller as a ticketed `500`, or inside a
+  workflow as `400 WORKFLOW_FAILED` with the store's text. The stock backends
+  never report it.
+
 - **A gRPC `EntityTransitionRequest` no longer writes an older copy of the
   entity's data over a concurrent write.** It read the data outside the
   transition's transaction, then wrote that copy back. A write committed
