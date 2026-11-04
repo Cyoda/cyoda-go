@@ -189,7 +189,7 @@ func TestTxRouteInterceptor_SearchForwardReturnsOwnerUncommittedWrites(t *testin
 	regB := fakeRouteRegistry{nodes: map[string]contract.NodeInfo{
 		"node-A": {NodeID: "node-A", Addr: "http://node-a:8080", Alive: true},
 	}}
-	nodeB := newTxRouteInterceptor(signer, regB, "node-B", noCalloutJoiner(t, signer, fakeJoinTM{}), 9090, true)
+	nodeB := newTxRouteInterceptor(signer, regB, "node-B", noCalloutJoiner(t, signer, fakeJoinTM{}), 9090, true, testProxyTimeout)
 
 	var forwardedAddr string
 	nodeB.forwardSearchStream = func(_ context.Context, _ *proxy.ClientPool, addr string, ce *cepb.CloudEvent) (googlegrpc.ServerStreamingClient[cepb.CloudEvent], error) {

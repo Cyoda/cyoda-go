@@ -7,8 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	googlegrpc "google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -50,6 +52,10 @@ type txRouteInterceptor struct {
 	joiner        *txjoin.Joiner
 	pool          *proxy.ClientPool
 	localGRPCPort int
+	// proxyTimeout bounds the wait for a forwarded call's owner to begin its
+	// answer (CYODA_PROXY_TIMEOUT), as the HTTP proxy bounds its response
+	// headers.
+	proxyTimeout time.Duration
 
 	// forward seams — overridable in tests.
 	forwardUnary        forwardUnaryFn
@@ -58,7 +64,7 @@ type txRouteInterceptor struct {
 	forwardSearchStream forwardStreamFn
 }
 
-func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, j *txjoin.Joiner, localGRPCPort int, allowLoopback bool) *txRouteInterceptor {
+func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, selfNodeID string, j *txjoin.Joiner, localGRPCPort int, allowLoopback bool, proxyTimeout time.Duration) *txRouteInterceptor {
 	return &txRouteInterceptor{
 		signer:              signer,
 		registry:            reg,
@@ -66,6 +72,7 @@ func newTxRouteInterceptor(signer *token.Signer, reg contract.NodeRegistry, self
 		joiner:              j,
 		pool:                proxy.NewClientPool(allowLoopback),
 		localGRPCPort:       localGRPCPort,
+		proxyTimeout:        proxyTimeout,
 		forwardUnary:        proxy.ForwardEntityManage,
 		forwardStream:       proxy.ForwardEntityManageCollection,
 		forwardSearchUnary:  proxy.ForwardEntitySearch,
@@ -138,9 +145,14 @@ func (i *txRouteInterceptor) unary() googlegrpc.UnaryServerInterceptor {
 			if addrErr != nil {
 				return i.unaryErr(ctx, ce, envelope, fmt.Errorf("resolve peer gRPC addr: %w", addrErr))
 			}
-			resp, fwdErr := forward(ctx, i.pool, grpcAddr, ce)
+			fctx, cancel := context.WithTimeout(ctx, i.proxyTimeout)
+			defer cancel()
+			resp, fwdErr := forward(fctx, i.pool, grpcAddr, ce)
 			if fwdErr != nil {
-				return i.unaryErr(ctx, ce, envelope, fwdErr)
+				if ownerAnswered(fwdErr) {
+					return nil, fwdErr
+				}
+				return i.unaryErr(ctx, ce, envelope, ownerUnreachable(grpcAddr, fwdErr))
 			}
 			return resp, nil
 		}
@@ -348,12 +360,31 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 	if err := ss.RecvMsg(&ce); err != nil {
 		return err
 	}
-	cs, err := forward(ctx, i.pool, addr, &ce)
+	// CYODA_PROXY_TIMEOUT bounds the wait for the owner's first message, as the
+	// HTTP proxy bounds its response headers; a stream the owner has started is
+	// copied to its end however long it runs.
+	fctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	firstWait := time.AfterFunc(i.proxyTimeout, cancel)
+	cs, err := forward(fctx, i.pool, addr, &ce)
 	if err != nil {
-		return i.streamErr(ss, ce.Id, envelope, err)
+		if firstWait.Stop() && ownerAnswered(err) {
+			return err
+		}
+		return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
 	}
+	first := true
 	for {
 		frame, err := cs.Recv()
+		if first {
+			first = false
+			if !firstWait.Stop() {
+				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, fmt.Errorf("no answer within the proxy timeout: %w", context.DeadlineExceeded)))
+			}
+			if err != nil && !errors.Is(err, io.EOF) && !ownerAnswered(err) {
+				return i.streamErr(ss, ce.Id, envelope, ownerUnreachable(addr, err))
+			}
+		}
 		if errors.Is(err, io.EOF) {
 			return nil
 		}
@@ -364,6 +395,30 @@ func (i *txRouteInterceptor) proxyStream(ctx context.Context, ss googlegrpc.Serv
 			return err
 		}
 	}
+}
+
+// ownerAnswered reports whether err from a forwarded call is a status the
+// owner itself answered with, which reaches the caller unchanged. A failure to
+// reach the owner is not: an error with no gRPC status (dial, address guard),
+// or one of the statuses the transport raises when the owner cannot be reached
+// or does not answer in time.
+func ownerAnswered(err error) bool {
+	st, ok := status.FromError(err)
+	if !ok {
+		return false
+	}
+	switch st.Code() {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.Canceled:
+		return false
+	}
+	return true
+}
+
+// ownerUnreachable logs a forwarded call that did not reach its owner and
+// answers it as the HTTP proxy does: 503 TRANSACTION_NODE_UNAVAILABLE.
+func ownerUnreachable(addr string, err error) error {
+	slog.Error("proxy request failed", "pkg", "grpc", "target", addr, "error", err)
+	return common.Operational(http.StatusServiceUnavailable, common.ErrCodeTransactionNodeUnavailable, "transaction node is unreachable")
 }
 
 // streamErr sends err as the routed RPC's error envelope on the stream. reqID

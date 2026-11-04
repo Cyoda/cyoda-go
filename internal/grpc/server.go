@@ -91,6 +91,7 @@ func NewServer(
 	otelEnabled bool,
 	localGRPCPort int,
 	allowLoopback bool,
+	proxyTimeout time.Duration,
 	healthLatch *health.Latch,
 	keepAlive KeepAliveConfig,
 	cons *consistency.Service,
@@ -118,7 +119,7 @@ func NewServer(
 	// referenced transaction or forwarding to its owner. Auth and the role
 	// check pass exactly one method through: the unary health Check, which a
 	// probe calls without a token.
-	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback)
+	txRoute := newTxRouteInterceptor(tokenSigner, nodeRegistry, selfNodeID, j, localGRPCPort, allowLoopback, proxyTimeout)
 	opts = append(opts,
 		googlegrpc.ChainUnaryInterceptor(
 			UnaryRecoveryInterceptor(healthLatch),

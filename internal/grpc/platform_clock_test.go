@@ -84,7 +84,7 @@ func TestPlatformClock_GRPC_FeatureOff(t *testing.T) {
 // the transport status, not an envelope.
 func TestPlatformClock_GRPC_Unauthenticated(t *testing.T) {
 	srv := NewServer(&mockAuthService{err: context.DeadlineExceeded}, nil, NewMemberRegistry(), nil, nil, nil, nil, nil,
-		noCalloutJoiner(t, nil, nil), nil, "n", false, 0, true, nil, KeepAliveConfig{}, newFixedConsistency(),
+		noCalloutJoiner(t, nil, nil), nil, "n", false, 0, true, testProxyTimeout, nil, KeepAliveConfig{}, newFixedConsistency(),
 		func() platformclock.State {
 			t.Error("handler reached without authentication")
 			return platformclock.State{}

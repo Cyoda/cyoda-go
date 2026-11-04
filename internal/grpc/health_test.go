@@ -46,7 +46,7 @@ func startHealthTestServer(t *testing.T, readiness *func() error) (grpc_health_v
 	t.Helper()
 	latch := health.NewLatch()
 	srv := NewServer(healthTestAuth{}, nil, NewMemberRegistry(), nil, nil, nil, nil, nil, noCalloutJoiner(t, nil, nil), nil,
-		"n", false, 0, true, latch, KeepAliveConfig{}, newFixedConsistency(),
+		"n", false, 0, true, testProxyTimeout, latch, KeepAliveConfig{}, newFixedConsistency(),
 		func() platformclock.State { return platformclock.State{} },
 		func() error { return (*readiness)() })
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
@@ -233,6 +233,6 @@ func TestNewServer_NilReadinessPanics(t *testing.T) {
 			t.Fatal("NewServer with a nil readiness check did not panic")
 		}
 	}()
-	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, nil, KeepAliveConfig{}, newFixedConsistency(),
+	NewServer(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, "n", false, 0, true, testProxyTimeout, nil, KeepAliveConfig{}, newFixedConsistency(),
 		func() platformclock.State { return platformclock.State{} }, nil)
 }
