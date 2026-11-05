@@ -24,6 +24,7 @@ func TestWarningHeaderValue_EncodesSafely(t *testing.T) {
 		{"invalid UTF-8 becomes U+FFFD", "bad\xffbyte", "bad%EF%BF%BDbyte"},
 		{"a space at either end is encoded so it survives header trimming", " edge ", "%20edge%20"},
 		{"a control character at an end becomes an encoded space", "x\n", "x%20"},
+		{"a two-byte control character at the end becomes an encoded space", "x\u0085", "x%20"},
 		{"empty stays empty", "", ""},
 	}
 	for _, tc := range cases {

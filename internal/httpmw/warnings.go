@@ -123,10 +123,11 @@ func warningHeaderValue(s string) string {
 	pieces := make([]string, 0, len(s))
 	total := 0
 	for i, r := range s {
+		atEdge := i == 0 || i+utf8.RuneLen(r) == len(s) // the original rune's width
 		if unicode.IsControl(r) {
 			r = ' '
 		}
-		p := encodeWarningRune(r, i == 0 || i+utf8.RuneLen(r) == len(s))
+		p := encodeWarningRune(r, atEdge)
 		pieces = append(pieces, p)
 		total += len(p)
 	}
