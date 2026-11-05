@@ -130,11 +130,19 @@ func jobFailureMessage(err error) string {
 	if errors.As(err, &ceiling) && ceiling.SearchCeilingExceeded() {
 		return searchCeilingMessage
 	}
-	// AppError.Error() returns the client-safe Message alone; Operational
-	// captures no internal detail and Internal keeps it in Detail, not Message.
+	// An operational error's Message is client-safe by construction. A
+	// server-side one is answered as both doors answer it: the generic text and
+	// a ticket, with its detail logged under that ticket — its Message names an
+	// internal step, which a caller has no use for.
 	var appErr *common.AppError
 	if errors.As(err, &appErr) {
-		return appErr.Error()
+		if appErr.Level == common.LevelOperational {
+			return appErr.Error()
+		}
+		ticket := uuid.New().String()
+		slog.Error("async search job failed", "pkg", "search", "ticket", ticket,
+			"message", appErr.Message, "detail", appErr.Detail)
+		return fmt.Sprintf("%s: internal error [ticket: %s]", common.ErrCodeServerError, ticket)
 	}
 	return jobFailureFallback
 }
