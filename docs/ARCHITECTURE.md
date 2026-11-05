@@ -1600,18 +1600,19 @@ it. Node shutdown (`App.Shutdown`)
 drains the worker pool up to a bounded budget, giving in-flight jobs a
 chance to finish normally, then calls `ReleaseRegisteredJobs` for whatever
 is still registered: each is cancelled in-process and `Release`d
-(epoch-fenced) in the store — **released for reclaim, not failed**. A job
-whose executor is recording its outcome is released too: `Release` keeps the
-epoch, so a recording that lands afterwards still finishes it, and one that
-fails leaves it handed back. A job already cancelled, settled or taken over is
-not released; that end is reported once as a lost claim. A peer,
+(epoch-fenced) in the store — **released for reclaim, not failed**. A peer,
 or this same node on its own restart-time startup sweep, claims and
 re-executes it promptly rather than waiting for the stale-heartbeat
 timeout, so a graceful shutdown or rolling restart hands work off within
 one `CYODA_SEARCH_JOB_HEARTBEAT_INTERVAL` to a node with free capacity — a `Release` never counts
 against `SearchJob.StaleClaims`, so a clean rolling restart chain never
-pushes a job toward the attempt cap. A shutdown neither leaves a job stuck
-`RUNNING` forever nor terminates it as `FAILED`.
+pushes a job toward the attempt cap. A job whose executor is recording its
+outcome is released too: `Release` keeps the epoch, so a recording that lands
+afterwards still finishes it, and one that fails leaves it handed back. A job
+that has already ended elsewhere (cancelled, or finished on another node) or
+been taken over is not released; that end is reported once as a lost claim. A
+shutdown neither leaves a job stuck `RUNNING` forever nor terminates it as
+`FAILED`.
 
 **TTL-based cleanup.** Independent of the stale-job reaper above, a
 background reaper goroutine runs on `CYODA_SEARCH_REAP_INTERVAL` (default

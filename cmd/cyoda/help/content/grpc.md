@@ -192,7 +192,7 @@ The full CloudEvent envelope for an ack:
 - `EntityGetAllRequest` / `EntityResponse` (streamed via entitySearchCollection)
 - `EntitySnapshotSearchRequest` / `EntitySnapshotSearchResponse`
 - `EntitySearchRequest` / `EntityResponse`
-- `SnapshotCancelRequest` / `EntitySnapshotSearchResponse` — a snapshot that has already ended is refused: `success` false with `SEARCH_JOB_ALREADY_TERMINAL`, and `status` the status it ended with (`cyoda help errors SEARCH_JOB_ALREADY_TERMINAL`)
+- `SnapshotCancelRequest` / `EntitySnapshotSearchResponse` — a snapshot that has already ended, before the call or while the cancel is landing, is refused: `success` false with `SEARCH_JOB_ALREADY_TERMINAL`, and `status` the snapshot's full status, `failureReason` included (`cyoda help errors SEARCH_JOB_ALREADY_TERMINAL`)
 - `SnapshotGetRequest` / `EntitySnapshotSearchResponse`
 - `SnapshotGetStatusRequest` / `EntitySnapshotSearchResponse` — `status.failureReason` says why a `FAILED` snapshot failed, and is absent for every other status (`cyoda help search`)
 - `EntityStatsGetRequest` / `EntityStatsResponse`

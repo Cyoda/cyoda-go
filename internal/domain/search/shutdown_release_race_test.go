@@ -269,3 +269,61 @@ func TestReleaseRegisteredJobs_FailedRecordingDuringShutdownIsHandedBack(t *test
 		t.Errorf("job = (%v, %v), want RUNNING and released for the next claim", job, err)
 	}
 }
+
+// heldTerminalWrite holds the first terminal status write until hold is
+// closed, then lets it through.
+type heldTerminalWrite struct {
+	spi.AsyncSearchStore
+	entered chan struct{}
+	hold    chan struct{}
+}
+
+func (s *heldTerminalWrite) UpdateJobStatus(ctx context.Context, jobID string, epoch int64, status string, count int, errMsg string, finishTime time.Time, calcTimeMs int64) error {
+	s.entered <- struct{}{}
+	<-s.hold
+	return s.AsyncSearchStore.UpdateJobStatus(ctx, jobID, epoch, status, count, errMsg, finishTime, calcTimeMs)
+}
+
+// A recording that lands after the shutdown release still finishes the job:
+// Release keeps the epoch, so the executor's terminal write is not refused,
+// and nothing is reported as lost.
+func TestReleaseRegisteredJobs_RecordingAfterTheReleaseFinishesTheJob(t *testing.T) {
+	base := memory.NewStoreFactory()
+	defer base.Close()
+	ctx := tenantCtx("tenant-release-then-record")
+	ref := spi.ModelRef{EntityName: "releasethenrecord", ModelVersion: "1"}
+	saveMinimalModel(t, ctx, base, ref)
+	for i := 0; i < 3; i++ {
+		saveEntity(t, ctx, base, ref, fmt.Sprintf("e%03d", i), []byte(`{}`))
+	}
+	inner, _ := base.AsyncSearchStore(context.Background())
+	store := &heldTerminalWrite{AsyncSearchStore: inner, entered: make(chan struct{}, 1), hold: make(chan struct{})}
+	pool := search.NewWorkerPool(1, 4)
+	svc := search.NewSearchService(base, common.NewTestUUIDGenerator(), store, newTestConsistency(t, base), platformclock.Real()).
+		WithAsyncPool(pool).
+		WithHeartbeat(time.Hour)
+
+	jobID, err := svc.SubmitAsync(ctx, ref, &predicate.LifecycleCondition{Field: "state", OperatorType: "EQUALS", Value: "NEW"}, search.SearchOptions{Limit: 10})
+	if err != nil {
+		t.Fatalf("SubmitAsync: %v", err)
+	}
+	select {
+	case <-store.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the job never reached its terminal write")
+	}
+	logs := captureJobLogs(t)
+	if n := svc.ReleaseRegisteredJobs(context.Background()); n != 1 {
+		t.Errorf("ReleaseRegisteredJobs = %d, want 1", n)
+	}
+	close(store.hold)
+	pool.Drain(context.Background())
+
+	job, err := inner.GetJob(ctx, jobID)
+	if err != nil || job.Status != "SUCCESSFUL" || job.ResultCount != 3 {
+		t.Fatalf("job = (%+v, %v), want SUCCESSFUL with 3 results", job, err)
+	}
+	if strings.Contains(logs.String(), lostClaimLine) {
+		t.Errorf("a lost claim was reported for a job that finished here:\n%s", logs.String())
+	}
+}
